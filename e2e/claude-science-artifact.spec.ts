@@ -4279,6 +4279,38 @@ test.describe('Claude Science artifact campaign', () => {
     });
   }
 
+  test('keeps Motif visibly identified across Claude Science frame sizes', async ({ page }) => {
+    for (const viewport of [
+      { width: 1440, height: 900 },
+      { width: 1100, height: 800 },
+      { width: 640, height: 760 },
+      { width: 480, height: 760 },
+    ]) {
+      await openArtifact(page, viewport.width, viewport.height);
+      const topbar = page.getByRole('banner', { name: 'Motif for Claude Science workspace' });
+      const brand = page.locator('.motif-cs-brand');
+      await expect(topbar).toBeVisible();
+      await expect(brand).toBeVisible();
+      await expect(brand).toHaveAccessibleName('Motif for Claude Science');
+      await expect(brand.locator('span')).toHaveText('Motif');
+
+      const brandBox = (await brand.boundingBox())!;
+      const topbarBox = (await topbar.boundingBox())!;
+      expect(brandBox.x).toBeGreaterThanOrEqual(topbarBox.x);
+      expect(brandBox.x + brandBox.width).toBeLessThanOrEqual(topbarBox.x + topbarBox.width + 1);
+      expect(brandBox.y).toBeGreaterThanOrEqual(topbarBox.y);
+      expect(brandBox.y + brandBox.height).toBeLessThanOrEqual(topbarBox.y + topbarBox.height + 1);
+
+      if (viewport.width > 1180) await expect(brand.locator('small')).toBeVisible();
+      else await expect(brand.locator('small')).toBeHidden();
+
+      await page.screenshot({
+        path: path.join(outputDir, `motif-brand-${viewport.width}x${viewport.height}.png`),
+        fullPage: true,
+      });
+    }
+  });
+
   for (const theme of ['light', 'dark', 'claude-light', 'claude-dark'] as const) {
     test(`renders the ${theme} appearance preset`, async ({ page }) => {
       await openArtifact(page, 1180, 900);

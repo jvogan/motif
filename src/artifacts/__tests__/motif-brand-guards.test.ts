@@ -5,6 +5,8 @@ import { describe, expect, it } from 'vitest';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '../../..');
+const artifactSource = readFileSync(resolve(root, 'src/artifacts/motif-artifact.tsx'), 'utf8');
+const artifactCss = readFileSync(resolve(root, 'src/artifacts/motif-artifact.css'), 'utf8');
 const legacyBrand = ['gene', 'chat'].join('');
 const legacyBrandPattern = new RegExp(legacyBrand, 'i');
 
@@ -58,5 +60,20 @@ describe('Motif public-brand guard', () => {
     }
 
     expect(violations, `Legacy product branding remains:\n${violations.join('\n')}`).toEqual([]);
+  });
+
+  it('keeps the Motif identity visible in Claude Science frame widths', () => {
+    expect(artifactSource).toContain('aria-label="Motif for Claude Science workspace"');
+    expect(artifactSource).toContain('<span translate="no">Motif</span>');
+    expect(artifactSource).toContain('<small translate="no">for Claude Science</small>');
+    expect(artifactCss).not.toMatch(/@media \(max-width: (?:1180|840)px\)[\s\S]*?\.motif-cs-brand\s*\{\s*display:\s*none;/);
+  });
+
+  it('brands generated inventory reports and derived-record provenance as Motif', () => {
+    expect(artifactSource).toContain('# Motif Sequence Inventory');
+    expect(artifactSource).toContain('<title>Motif Sequence Inventory</title>');
+    expect(artifactSource).toContain('exported from Motif.');
+    expect(artifactSource).not.toContain('exported from the Claude Science artifact');
+    expect(artifactSource).not.toContain('generated in the Claude Science artifact');
   });
 });

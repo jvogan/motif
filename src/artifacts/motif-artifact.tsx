@@ -2107,7 +2107,7 @@ function htmlEscape(value: string): string {
 
 function inventoryReportMarkdown(records: readonly ArtifactVector[]): string {
   const lines = [
-    '# Sequence Inventory',
+    '# Motif Sequence Inventory',
     '',
     `Records: ${records.length}`,
     '',
@@ -2159,7 +2159,7 @@ export function inventoryReportHtml(records: readonly ArtifactVector[]): string 
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Sequence Inventory</title>
+  <title>Motif Sequence Inventory</title>
   <style>
     body { font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #111827; margin: 32px; }
     h1, h2, h3 { line-height: 1.2; }
@@ -2173,8 +2173,8 @@ export function inventoryReportHtml(records: readonly ArtifactVector[]): string 
   </style>
 </head>
 <body>
-  <h1>Sequence Inventory</h1>
-  <p>${records.length} record${records.length === 1 ? '' : 's'} exported from the Claude Science artifact.</p>
+  <h1>Motif Sequence Inventory</h1>
+  <p>${records.length} record${records.length === 1 ? '' : 's'} exported from Motif.</p>
   <table>
     <thead><tr><th>Record</th><th>Group</th><th>Type</th><th>Length</th><th>Features</th><th>Source</th></tr></thead>
     <tbody>${rows}</tbody>
@@ -6193,7 +6193,7 @@ function App() {
     addRecord({
       id: `${recordId}-reverse-complement`,
       name: `${vector.name} reverse complement`,
-      description: `Reverse complement generated in the Claude Science artifact from ${vector.name}.`,
+      description: `Reverse complement generated with Motif from ${vector.name}.`,
       molecule: sequenceType,
       topology,
       seq: reverseComplement(sequence, isRna),
@@ -6232,7 +6232,7 @@ function App() {
     const isRna = sequenceType === 'rna';
     addRecord({
       name: `${vector.name} · ${selectionSummary.label} reverse complement`,
-      description: `Reverse complement of ${selectionSummary.label} from ${vector.name}, generated in the Claude Science artifact.`,
+      description: `Reverse complement of ${selectionSummary.label} from ${vector.name}, generated with Motif.`,
       molecule: sequenceType,
       topology: 'linear',
       seq: reverseComplement(inspectorSelectionSeq, isRna),
@@ -6261,7 +6261,7 @@ function App() {
     if (!extractedSequence) return;
     addRecord({
       name: `${vector.name} · ${selectedFeature.name}`,
-      description: `${selectedFeature.name} extracted from ${vector.name}, generated in the Claude Science artifact.`,
+      description: `${selectedFeature.name} extracted from ${vector.name}, generated with Motif.`,
       molecule: sequenceType,
       topology: 'linear',
       seq: extractedSequence,
@@ -6301,7 +6301,7 @@ function App() {
     const nameFrameLabel = ` ${frameLabel}`;
     addRecord({
       name: `${vector.name} · ${translateTarget.label}${nameStrandLabel}${nameFrameLabel} protein`,
-      description: `Protein translation of ${translateTarget.label}${strandLabel}, frame ${frameLabel}, from ${vector.name}, generated in the Claude Science artifact.`,
+      description: `Protein translation of ${translateTarget.label}${strandLabel}, frame ${frameLabel}, from ${vector.name}, generated with Motif.`,
       molecule: 'protein',
       topology: 'linear',
       seq: previewProtein,
@@ -6327,7 +6327,7 @@ function App() {
     const frame = `+${track.frame + 1}`;
     addRecord({
       name: `${vector.name} · ${track.label} ${strand} ${frame} protein`,
-      description: `Protein translation of ${track.label}, ${strand} frame ${frame}, from ${vector.name}, generated in the Claude Science artifact.`,
+      description: `Protein translation of ${track.label}, ${strand} frame ${frame}, from ${vector.name}, generated with Motif.`,
       molecule: 'protein',
       topology: 'linear',
       seq: protein,
@@ -8000,9 +8000,10 @@ function App() {
           onConfirm={confirmArtifactDatabaseRestore}
         />
       ) : null}
-      <header className="motif-cs-topbar">
-        <div className="motif-cs-brand">
+      <header className="motif-cs-topbar" aria-label="Motif for Claude Science workspace">
+        <div className="motif-cs-brand" aria-label="Motif for Claude Science">
           <span translate="no">Motif</span>
+          <small translate="no">for Claude Science</small>
         </div>
         <div className="motif-cs-topbar-meta">
           <span className="motif-cs-chip">{payload.records.length} record{payload.records.length === 1 ? '' : 's'}</span>

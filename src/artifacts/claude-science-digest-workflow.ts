@@ -620,8 +620,8 @@ export function materializeDigestWorkflow(
       id: identity.id,
       name: identity.name,
       description: input.recipe.outcome === 'linearized'
-        ? `${input.sourceRecord.name} linearized by ${enzymeNames.join(', ')} in the Claude Science artifact.`
-        : `Restriction digest fragment ${index + 1} of ${input.sourceRecord.name}, generated with ${enzymeNames.join(', ')} in the Claude Science artifact.`,
+        ? `${input.sourceRecord.name} linearized by ${enzymeNames.join(', ')} with Motif.`
+        : `Restriction digest fragment ${index + 1} of ${input.sourceRecord.name}, generated with ${enzymeNames.join(', ')} in Motif.`,
       molecule: 'dna',
       topology: 'linear',
       seq: fragment.sequence,

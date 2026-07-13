@@ -442,6 +442,7 @@ summary,
 .motif-cs-brand {
   display: inline-flex;
   align-items: center;
+  gap: 6px;
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
@@ -9202,7 +9203,8 @@ summary.motif-cs-panel-head:focus-visible {
    reserve eats width, and these facts are shown elsewhere (inventory + seq pane). */
 @media (max-width: 1180px) {
   .motif-cs-brand {
-    display: none;
+    flex: 0 0 auto;
+    font-size: 12px;
   }
 
   .motif-cs-topbar-meta {
@@ -9219,10 +9221,6 @@ summary.motif-cs-panel-head:focus-visible {
 }
 
 @media (max-width: 840px) {
-  .motif-cs-brand {
-    display: none;
-  }
-
   .motif-cs-topbar-meta {
     flex-wrap: nowrap;
     justify-content: flex-start;
