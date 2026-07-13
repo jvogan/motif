@@ -182,7 +182,7 @@ describe('Motif for Claude Science MCP server', () => {
   it('exposes a fully branded app resource, viewer binding, and embedded fallback', async () => {
     const traceEvents: MotifMcpTraceEvent[] = [];
     const server = createMotifClaudeScienceServer({
-      version: '0.2.0-test',
+      version: '0.2.1-test',
       readWorkbenchHtml: async () => '<!doctype html><title>Motif for Claude Science</title><div class="motif-cs-brand">Motif</div>',
       readArtifactTemplate: async () => artifactTemplate,
       trace: event => traceEvents.push(event),
@@ -237,6 +237,10 @@ describe('Motif for Claude Science MCP server', () => {
       mimeType: 'text/html;profile=mcp-app',
       name: 'Motif for Claude Science workbench',
     }));
+    expect(openResult.content).toContainEqual(expect.objectContaining({
+      type: 'text',
+      text: expect.stringContaining('Records: private-sentinel [private-sentinel].'),
+    }));
     expect(isMotifWorkbenchResult(openResult.structuredContent)).toBe(true);
 
     const resource = await client.readResource({ uri: MOTIF_WORKBENCH_RESOURCE_URI });
@@ -274,6 +278,10 @@ describe('Motif for Claude Science MCP server', () => {
         text: expect.stringContaining('Motif for Claude Science'),
       }),
     }));
+    expect(artifactResult.content).toContainEqual(expect.objectContaining({
+      type: 'text',
+      text: expect.stringContaining('Records: private-sentinel [private-sentinel].'),
+    }));
 
     const serializedTrace = JSON.stringify(traceEvents);
     expect(serializedTrace).not.toContain(sensitiveFilename);
@@ -285,9 +293,52 @@ describe('Motif for Claude Science MCP server', () => {
     ]));
   });
 
+  it('bounds record summaries without presenting shortened identifiers as exact', async () => {
+    const server = createMotifClaudeScienceServer({
+      version: '0.2.1-test',
+      readWorkbenchHtml: async () => '<title>Motif for Claude Science</title>',
+      readArtifactTemplate: async () => artifactTemplate,
+    });
+    openedServers.push(server);
+    const client = new Client({ name: 'motif-summary-test', version: '1.0.0' });
+    openedClients.push(client);
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+
+    const longId = `record-${'x'.repeat(140)}`;
+    const result = await client.callTool({
+      name: 'motif_open_workbench',
+      arguments: {
+        payload: {
+          records: [
+            { id: longId, name: 'Alpha\nRecord', sequence: 'ATGC' },
+            { id: 'record-2', name: 'Beta', sequence: 'ATGC' },
+            { id: 'record-3', name: 'Gamma', sequence: 'ATGC' },
+            { id: 'record-4', name: 'Delta', sequence: 'ATGC' },
+            { id: 'record-5', name: 'Epsilon', sequence: 'ATGC' },
+            { id: 'record-6', name: 'HiddenSix', sequence: 'ATGC' },
+          ],
+        },
+      },
+    });
+    const content = result.content as Array<{ type?: string; text?: string }>;
+    const summary = content.find(item => item.type === 'text')?.text ?? '';
+    expect(summary).toContain('Records: Alpha Record [record-');
+    expect(summary).toContain('(truncated; inspect the structured result)');
+    expect(summary).toContain('; +1 more.');
+    expect(summary).not.toContain('HiddenSix');
+    expect(summary).not.toContain('\nRecord');
+    expect(isMotifWorkbenchResult(result.structuredContent)).toBe(true);
+    if (!isMotifWorkbenchResult(result.structuredContent)) throw new Error('Expected a Motif workbench result');
+    const structuredPayload = result.structuredContent.payload as {
+      records?: Array<{ id?: string }>;
+    };
+    expect(structuredPayload.records?.[0]).toMatchObject({ id: longId });
+  });
+
   it('returns bounded public errors without mounting malformed content', async () => {
     const server = createMotifClaudeScienceServer({
-      version: '0.2.0-test',
+      version: '0.2.1-test',
       readWorkbenchHtml: async () => '<title>Motif for Claude Science</title>',
       readArtifactTemplate: async () => artifactTemplate,
     });

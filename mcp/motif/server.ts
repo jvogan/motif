@@ -172,7 +172,47 @@ function workbenchSummaryText(result: ReturnType<typeof prepareMotifWorkbench>):
     return 'Motif for Claude Science workbench requested with its bundled sample inventory. Host rendering is a separate client action.';
   }
   const source = result.sourceName ? ` from ${result.sourceName}` : '';
-  return `Motif for Claude Science workbench requested${source} with ${result.recordCount} record${result.recordCount === 1 ? '' : 's'} and ${result.residueCount.toLocaleString()} residues. Host rendering is a separate client action.`;
+  const records = workbenchRecordSummary(result);
+  return `Motif for Claude Science workbench requested${source} with ${result.recordCount} record${result.recordCount === 1 ? '' : 's'} and ${result.residueCount.toLocaleString()} residues.${records} Host rendering is a separate client action.`;
+}
+
+function workbenchRecordSummary(result: ReturnType<typeof prepareMotifWorkbench>): string {
+  const payload = result.payload;
+  if (!payload || typeof payload !== 'object') return '';
+  const candidate = payload as Record<string, unknown>;
+  const records = Array.isArray(candidate.records)
+    ? candidate.records
+    : Array.isArray(candidate.entries)
+      ? candidate.entries
+      : Array.isArray(candidate.vectors)
+        ? candidate.vectors
+        : candidate.record && typeof candidate.record === 'object'
+          ? [candidate.record]
+          : [];
+  const boundedField = (value: unknown, fallback: string) => {
+    const cleaned = typeof value === 'string'
+      ? Array.from(value, character => {
+        const code = character.codePointAt(0) ?? 0;
+        return code <= 31 || (code >= 127 && code <= 159) ? ' ' : character;
+      }).join('').replace(/\s+/gu, ' ').trim()
+      : '';
+    const normalized = cleaned || fallback;
+    if (normalized.length <= 120) return { text: normalized, truncated: false };
+    return { text: `${normalized.slice(0, 119)}…`, truncated: true };
+  };
+  const labels = records.slice(0, 5).map((record, index) => {
+    if (!record || typeof record !== 'object') return `Record ${index + 1}`;
+    const value = record as Record<string, unknown>;
+    const name = boundedField(value.name, `Record ${index + 1}`);
+    const id = boundedField(value.id, '');
+    const truncation = name.truncated || id.truncated
+      ? ' (truncated; inspect the structured result)'
+      : '';
+    return id.text ? `${name.text} [${id.text}]${truncation}` : `${name.text}${truncation}`;
+  });
+  if (labels.length === 0) return '';
+  const remainder = records.length > labels.length ? `; +${records.length - labels.length} more` : '';
+  return ` Records: ${labels.join(', ')}${remainder}.`;
 }
 
 export function createMotifClaudeScienceServer(options: MotifClaudeScienceServerOptions): McpServer {
@@ -266,7 +306,7 @@ export function createMotifClaudeScienceServer(options: MotifClaudeScienceServer
           content: [
             {
               type: 'text',
-              text: `Prepared self-contained Motif for Claude Science workbench ${artifact.summary.filename} with ${artifact.summary.recordCount} record${artifact.summary.recordCount === 1 ? '' : 's'}. No file was written. Save or open the attached HTML resource in Claude Science.`,
+              text: `Prepared self-contained Motif for Claude Science workbench ${artifact.summary.filename} with ${artifact.summary.recordCount} record${artifact.summary.recordCount === 1 ? '' : 's'}.${workbenchRecordSummary(workbench)} No file was written. Save or open the attached HTML resource in Claude Science.`,
             },
             {
               type: 'resource',

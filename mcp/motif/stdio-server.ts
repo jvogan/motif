@@ -42,7 +42,7 @@ async function readVersion(): Promise<string> {
       // Fall through to the next supported manifest location.
     }
   }
-  return '0.2.0';
+  return '0.2.1';
 }
 
 async function main(): Promise<void> {

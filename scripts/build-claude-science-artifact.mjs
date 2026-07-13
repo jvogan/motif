@@ -38,6 +38,11 @@ const connectorDistPath = join(outDir, 'claude-science');
 const connectorServerPath = join(connectorDistPath, 'motif-mcp-server.mjs');
 const connectorAppPath = join(connectorDistPath, 'motif-mcp-app.html');
 const connectorPluginPath = join(pluginDistPath, 'server');
+const publicPluginDocs = [
+  'CAPABILITIES.md',
+  'CLAUDE_SCIENCE_QUICKSTART.md',
+  'CLAUDE_SCIENCE_TROUBLESHOOTING.md',
+];
 
 const ZIP_UTF8_FLAG = 0x0800;
 const ZIP_STORE_METHOD = 0;
@@ -301,6 +306,14 @@ export function validatePluginSource(pluginPath = pluginSourcePath) {
   }
 }
 
+export function copyPublicPluginDocs(pluginPath) {
+  const pluginDocsPath = join(pluginPath, 'docs');
+  mkdirSync(pluginDocsPath, { recursive: true });
+  for (const filename of publicPluginDocs) {
+    copyFileSync(join(root, 'docs', filename), join(pluginDocsPath, filename));
+  }
+}
+
 function writePluginBundle(html) {
   validatePluginSource();
   rmSync(pluginDistPath, { recursive: true, force: true });
@@ -311,6 +324,7 @@ function writePluginBundle(html) {
   copyFileSync(connectorServerPath, join(connectorPluginPath, 'motif-mcp-server.mjs'));
   copyFileSync(connectorAppPath, join(connectorPluginPath, 'motif-mcp-app.html'));
   copyFileSync(templateHtml, join(connectorPluginPath, 'motif-template.html'));
+  copyPublicPluginDocs(pluginDistPath);
   copyFileSync(
     join(root, 'node_modules', '@modelcontextprotocol', 'ext-apps', 'LICENSE'),
     join(connectorPluginPath, 'licenses', 'mcp-ext-apps-LICENSE.txt'),

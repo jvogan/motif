@@ -59,9 +59,14 @@ npm run claude-science:setup
 
 That command builds and doctors the connector before adding the isolated
 `motif-local` entry. It preserves unrelated local connectors. Fully quit and
-reopen Claude Science after a registration change, then reconnect
-`motif-local`. In the current beta, FASTA and GenBank files mount most reliably
-through the artifact viewer chooser.
+reopen Claude Science after granting the exact Motif checkout and changing a
+registration, then reconnect `motif-local`. In the current beta, FASTA and
+GenBank files mount most reliably through the artifact viewer chooser.
+
+The built plugin includes `docs/CLAUDE_SCIENCE_QUICKSTART.md` and
+`docs/CLAUDE_SCIENCE_TROUBLESHOOTING.md`. The recovery guide contains the exact
+read-only sandbox grant, restart boundary, and acceptance checklist. Local
+connector development requires Node.js 22.12 or newer.
 
 ## Generate a preloaded workbench
 
@@ -140,9 +145,9 @@ the complete checkpoint/restore boundary. The portable HTML is not an
 encrypted vault, a compliance system, or a durable shared database.
 
 The Motif connector is an ephemeral viewer/export surface. It does not write a
-hidden database, run native analysis tools, or claim that any unrelated local
-connector was rebranded. Durable shared-library integration remains a separate
-reviewed workstream.
+hidden database or run native analysis tools. Its registration, server, tools,
+resource, and in-window identity are all Motif-owned. Durable shared-library
+integration remains a separate reviewed workstream.
 
 ## Validate
 

@@ -33,7 +33,7 @@ A passing DOM assertion is not proof that a control is legible or reachable.
 
 - Product name: **Motif for Claude Science**
 - Package/plugin slug: `motif-for-claude-science`
-- Current release version is `0.2.0` and must stay aligned in runtime, package, manifest,
+- Current release version is `0.2.1` and must stay aligned in runtime, package, manifest,
   and changelog.
 - New schemas, environment variables, page APIs, output files, and provenance
   identifiers use `motif` / `MOTIF_` names.

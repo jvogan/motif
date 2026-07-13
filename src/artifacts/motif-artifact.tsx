@@ -125,7 +125,7 @@ import {
 } from './claude-science-session';
 import './motif-artifact.css';
 
-const MOTIF_ARTIFACT_VERSION = '0.2.0';
+const MOTIF_ARTIFACT_VERSION = '0.2.1';
 const MAX_INTERACTIVE_TRANSLATION_RESIDUES = 5_000;
 const ANNOTATION_LIST_PAGE_SIZE = 120;
 export const MOTIF_MAX_RECORD_LENGTH = 250_000;

@@ -6,9 +6,9 @@ self-contained HTML workspace that can be opened locally or mounted as a
 Claude Science MCP App, inspected visually, edited with mouse and keyboard,
 checkpointed, and shared as an ordinary file.
 
-This repository is a clean standalone snapshot. It contains no desktop shell,
-native database, or inherited history. Its optional `motif-local` connector is
-ephemeral and Motif-owned; it does not depend on another application checkout.
+This repository is the standalone Motif source. It contains no desktop shell
+or native database. Its optional `motif-local` connector is ephemeral and
+Motif-owned; it does not depend on another application checkout.
 
 ## What is included
 
@@ -28,7 +28,7 @@ ephemeral and Motif-owned; it does not depend on another application checkout.
 
 ## Quick start
 
-Requires Node.js 22 or newer.
+Requires Node.js 22.12 or newer.
 
 ```bash
 npm install
@@ -96,6 +96,9 @@ is installed.
 
 ## Claude Science local connector
 
+For a fresh installation, follow the
+[public Claude Science quickstart](docs/CLAUDE_SCIENCE_QUICKSTART.md).
+
 Build, protocol-check, and register the connector without replacing any other
 local connector:
 
@@ -106,7 +109,8 @@ npm run claude-science:setup
 This adds exactly one `motif-local` entry to Claude Science's local MCP config
 after a successful build and unregistered protocol doctor. It preserves
 unrelated entries and writes a private backup before any changed config is
-installed. Fully quit and reopen Claude Science, then reconnect `motif-local`.
+installed. Grant the exact Motif checkout read access in Claude Science, fully
+quit and reopen the app, then reconnect `motif-local`.
 
 The connected surface exposes `motif_open_workbench` for bounded Motif payload,
 FASTA, GenBank, or raw-sequence review and
@@ -119,6 +123,8 @@ The connector does not write a database or run external executables. Its
 `window.motif*` API remains page-local and is used only by the bundled narrow
 MCP App bridge. Setup, verification, rollback, and host limitations are
 documented in [Claude Science integration](docs/CLAUDE_SCIENCE_INTEGRATION.md).
+Known host errors, reload boundaries, and visual acceptance steps are in the
+[Motif + Claude Science troubleshooting guide](docs/CLAUDE_SCIENCE_TROUBLESHOOTING.md).
 
 ## Data safety
 
@@ -129,6 +135,8 @@ storage and backup policy.
 
 See the plugin [README](src/artifacts/motif-for-claude-science-plugin/README.md)
 for payload, MSA, Sanger, installation, and security details.
+The public [capability reference](docs/CAPABILITIES.md) distinguishes built-in
+analysis from externally produced results that Motif can store and display.
 
 ## License
 

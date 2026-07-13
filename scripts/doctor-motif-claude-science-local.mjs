@@ -248,6 +248,11 @@ async function inspectProtocol(paths, timeoutMs) {
     assert(opened?.structuredContent?.mode === 'artifact', 'opened FASTA was not identified as an artifact');
     assert(opened?.structuredContent?.recordCount === 1, 'opened FASTA did not produce one record');
     assert(opened?.structuredContent?.residueCount === PRIVACY_SENTINEL.length, 'opened FASTA residue count is incorrect');
+    const openedSummary = opened?.content?.find(item => item?.type === 'text')?.text;
+    assert(
+      typeof openedSummary === 'string' && openedSummary.includes('Records: motif-doctor [motif-doctor].'),
+      'open-workbench summary does not expose the bounded record name and ID',
+    );
     const workbenchLink = opened?.content?.find(
       item => item?.type === 'resource_link' && item.uri === WORKBENCH_URI,
     );
@@ -267,6 +272,11 @@ async function inspectProtocol(paths, timeoutMs) {
       'standalone artifact result schema is not Motif-owned',
     );
     assert(artifactResult?.structuredContent?.recordCount === 1, 'standalone artifact did not retain its record');
+    const artifactSummary = artifactResult?.content?.find(item => item?.type === 'text')?.text;
+    assert(
+      typeof artifactSummary === 'string' && artifactSummary.includes('Records: motif-doctor [motif-doctor].'),
+      'standalone artifact summary does not expose the bounded record name and ID',
+    );
     const embeddedArtifact = artifactResult?.content?.find(
       item => item?.type === 'resource' && item.resource?.mimeType === 'text/html',
     )?.resource;

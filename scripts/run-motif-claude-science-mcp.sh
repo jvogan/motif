@@ -43,9 +43,9 @@ if [[ -z "$NODE_BIN" ]]; then
   exit 1
 fi
 
-NODE_MAJOR="$($NODE_BIN -p 'Number(process.versions.node.split(".")[0])' 2>/dev/null || true)"
-if [[ ! "$NODE_MAJOR" =~ ^[0-9]+$ || "$NODE_MAJOR" -lt 22 ]]; then
-  echo "[motif-claude-science] Node.js 22 or newer is required." >&2
+NODE_SUPPORTED="$($NODE_BIN -p 'const [major, minor] = process.versions.node.split(".").map(Number); Number(major > 22 || (major === 22 && minor >= 12))' 2>/dev/null || true)"
+if [[ "$NODE_SUPPORTED" != "1" ]]; then
+  echo "[motif-claude-science] Node.js 22.12 or newer is required." >&2
   exit 1
 fi
 

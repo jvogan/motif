@@ -253,9 +253,12 @@ describe('Claude Science workspace layout guards', () => {
   });
 
   it('anchors the phone Tools rail and drawer below the visible top bar', () => {
-    expect(artifactCss).toMatch(/@media \(max-width: 639px\)[\s\S]*?\.motif-cs-inspector\[data-tools-pinned="false"\],[\s\S]*?\.motif-cs-inspector\[data-tools-pinned="true"\]\s*\{[\s\S]*?position:\s*fixed;[\s\S]*?top:\s*38px;[\s\S]*?bottom:\s*0/);
+    expect(artifactSource).toContain('const topbarRef = useRef<HTMLElement | null>(null);');
+    expect(artifactSource).toContain("'--motif-cs-topbar-height': `${topbarHeight}px`");
+    expect(artifactSource).toContain('<header ref={topbarRef}');
+    expect(artifactCss).toMatch(/@media \(max-width: 639px\)[\s\S]*?\.motif-cs-inspector\[data-tools-pinned="false"\],[\s\S]*?\.motif-cs-inspector\[data-tools-pinned="true"\]\s*\{[\s\S]*?position:\s*fixed;[\s\S]*?top:\s*var\(--motif-cs-topbar-height,\s*38px\);[\s\S]*?bottom:\s*0/);
     expect(artifactCss).toMatch(/@media \(max-width: 639px\)[\s\S]*?\.motif-cs-inspector\[data-tools-pinned="true"\]\s*\{[\s\S]*?overflow:\s*auto;[\s\S]*?overscroll-behavior:\s*contain/);
-    expect(artifactCss).toMatch(/@media \(max-width: 639px\)[\s\S]*?\.motif-cs-resize-handle\[data-pane="tools"\]\s*\{[\s\S]*?position:\s*fixed;[\s\S]*?top:\s*38px/);
+    expect(artifactCss).toMatch(/@media \(max-width: 639px\)[\s\S]*?\.motif-cs-resize-handle\[data-pane="tools"\]\s*\{[\s\S]*?position:\s*fixed;[\s\S]*?top:\s*var\(--motif-cs-topbar-height,\s*38px\)/);
   });
 
   it('uses a roomy four-column bridge before pane reordering becomes available', () => {

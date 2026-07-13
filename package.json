@@ -1,6 +1,6 @@
 {
   "name": "motif-for-claude-science",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "Motif is a portable molecular-biology workbench, Claude plugin, and MCP App for sequence review, alignment, cloning design, traces, and analysis results.",
   "license": "MIT",

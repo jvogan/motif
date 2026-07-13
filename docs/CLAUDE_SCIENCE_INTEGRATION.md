@@ -1,10 +1,13 @@
 # Motif + Claude Science integration
 
-Last reviewed: July 13, 2026. Connector version: `0.2.0`.
+Last reviewed: July 13, 2026. Connector version: `0.2.1`.
 
-This is the operating note for the Motif-owned local connector. It covers the
-hackathon installation path, the visible in-window workbench, and the boundary
-between a connected viewer and durable biological storage.
+This is the maintainer and technical reference for the Motif-owned local
+connector. End users should start with the
+[quickstart](CLAUDE_SCIENCE_QUICKSTART.md) and use the
+[troubleshooting guide](CLAUDE_SCIENCE_TROUBLESHOOTING.md) for recovery. This
+reference covers the visible in-window workbench and the boundary between a
+connected viewer and durable biological storage.
 
 ## What is implemented
 
@@ -34,7 +37,7 @@ expose DOM evaluation, a shell, or generic filesystem access.
 
 ## Build and protocol verification
 
-Requires Node.js 22 or newer.
+Requires Node.js 22.12 or newer.
 
 ```bash
 npm run claude-science:build
@@ -80,11 +83,12 @@ an atomic rename with a concurrency guard. It never prints config values.
 
 After registration:
 
-1. Fully quit and reopen Claude Science.
-2. In **Customize → Permissions**, grant only the exact Motif checkout or
-   installed package folder if the host asks for local-file access.
+1. Grant only the exact Motif checkout read access. For least privilege, add
+   it to `[sandbox].user_read_paths` in `~/.claude-science/config.toml`; the
+   Permissions UI can also grant the folder.
+2. Fully quit and reopen Claude Science so the host creates a new sandbox.
 3. Reconnect `motif-local` in the connector UI.
-4. Start a fresh kernel after changing grants or tool schemas.
+4. Start a fresh kernel after changing tool schemas.
 
 Check the installed entry at any time:
 
@@ -163,10 +167,15 @@ If the connector does not appear:
 2. Run `npm run claude-science:check-local`.
 3. Fully quit and reopen Claude Science.
 4. Reconnect `motif-local` and start a fresh kernel.
-5. Confirm the exact folder grant, then retry with a small FASTA artifact.
+5. Confirm the exact folder grant, fully relaunch the app, then retry with a
+   small FASTA artifact.
 
 Connection logs prove transport only. A user-visible, correctly populated
 Motif frame is the final acceptance evidence.
+
+See [Motif + Claude Science troubleshooting](CLAUDE_SCIENCE_TROUBLESHOOTING.md)
+for the `Operation not permitted` signature, reconnect matrix, immutable saved
+artifact behavior, and final visual acceptance checklist.
 
 ## Next integration boundary
 

@@ -18,6 +18,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildSync } from 'esbuild';
 import {
+  copyPublicPluginDocs,
   createDeterministicZipBuffer,
   parseBuildArgs,
   runBuild,
@@ -157,11 +158,44 @@ check('plugin source has a matching, bounded manifest and skill', () => {
   assert.ok(manifest.description.length < 256);
   assert.ok(skillDescription.length > 0 && skillDescription.length <= 200);
   assert.match(manifest.version, /^\d+\.\d+\.\d+$/);
-  assert.equal(manifest.version, '0.2.0');
+  assert.equal(manifest.version, '0.2.1');
   assert.equal(manifest.version, artifactVersion);
   assert.match(changelog, new RegExp(`^## ${manifest.version.replace(/\./g, '\\.')}(?:\\s|$)`, 'm'));
   assert.ok(existsSync(join(pluginSource, runnerRelativePath)));
   assert.ok(existsSync(join(pluginSource, 'skills/motif-for-claude-science/scripts/analysis-validator.mjs')));
+});
+
+check('release versions stay aligned across package, runtime, bridge, and plugin', () => {
+  const packageManifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+  const pluginManifest = JSON.parse(readFileSync(join(pluginSource, '.claude-plugin/plugin.json'), 'utf8'));
+  const sources = [
+    readFileSync(join(root, 'src/artifacts/motif-artifact.tsx'), 'utf8'),
+    readFileSync(join(root, 'src/mcp-app/motif-workbench-bridge.ts'), 'utf8'),
+    readFileSync(join(root, 'mcp/motif/stdio-server.ts'), 'utf8'),
+  ];
+  assert.equal(packageManifest.version, pluginManifest.version);
+  for (const source of sources) assert.ok(source.includes(packageManifest.version));
+});
+
+check('public setup, troubleshooting, and capability docs ship with the plugin', () => {
+  const fixture = mkdtempSync(join(tmpdir(), 'motif-public-docs-'));
+  const legacyBrand = ['gene', 'chat'].join('');
+  try {
+    copyPublicPluginDocs(fixture);
+    for (const filename of [
+      'CAPABILITIES.md',
+      'CLAUDE_SCIENCE_QUICKSTART.md',
+      'CLAUDE_SCIENCE_TROUBLESHOOTING.md',
+    ]) {
+      const packaged = readFileSync(join(fixture, 'docs', filename), 'utf8');
+      const canonical = readFileSync(join(root, 'docs', filename), 'utf8');
+      assert.equal(packaged, canonical);
+      assert.equal(packaged.toLowerCase().includes(legacyBrand), false);
+      assert.doesNotMatch(packaged, /\/Users\/|github_3/iu);
+    }
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
 });
 
 check('plugin helpers can be imported from a stdin ES module without running their CLIs', () => {
