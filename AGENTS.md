@@ -1,7 +1,8 @@
 # Motif for Claude Science — Agent Guide
 
-This is a standalone artifact/plugin repository. Keep it independent of any
-desktop application, native database, MCP server, or predecessor identity.
+This is a portable artifact/plugin repository with a narrow Motif-owned MCP
+App connector. Keep it independent of any desktop application, native
+database, or predecessor identity.
 
 ## Start here
 
@@ -22,6 +23,8 @@ A passing DOM assertion is not proof that a control is legible or reachable.
 - `src/artifacts/motif-artifact.css` — artifact styling
 - `src/artifacts/motif-for-claude-science-plugin/` — Claude plugin source
 - `src/artifacts/motif-for-claude-science-skill/` — standalone skill
+- `mcp/motif/` — bounded Motif MCP tools and resource registration
+- `src/mcp-app/` — full-workbench MCP App bridge
 - `scripts/build-claude-science-artifact.mjs` — deterministic distributable
 - `scripts/build-preview.mjs` — isolated browser preview
 - `e2e/` — focused real-browser workflow coverage
@@ -30,7 +33,7 @@ A passing DOM assertion is not proof that a control is legible or reachable.
 
 - Product name: **Motif for Claude Science**
 - Package/plugin slug: `motif-for-claude-science`
-- Version starts at `0.1.0` and must stay aligned in runtime, package, manifest,
+- Current release version is `0.2.0` and must stay aligned in runtime, package, manifest,
   and changelog.
 - New schemas, environment variables, page APIs, output files, and provenance
   identifiers use `motif` / `MOTIF_` names.
@@ -49,8 +52,9 @@ A passing DOM assertion is not proof that a control is legible or reachable.
 - Preserve `data-testid`, keyboard, focus, and ARIA contracts when changing UI.
 - Treat Database JSON and workspace ZIP as portable checkpoints, not encrypted
   durable storage.
-- Do not add a connector or remote mutation surface without an explicit,
-  separately reviewed integration campaign.
+- Connector or remote-mutation changes require an explicit, separately
+  reviewed integration campaign. Keep model-facing tools narrow and typed;
+  never expose generic DOM, eval, shell, or filesystem bridges.
 
 ## Validation before handoff
 

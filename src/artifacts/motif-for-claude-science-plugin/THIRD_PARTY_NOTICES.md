@@ -71,6 +71,21 @@ The Feather-derived portions carry this MIT notice:
 
 Source: <https://github.com/lucide-icons/lucide>
 
+## Model Context Protocol SDK, MCP Apps, and Zod
+
+The optional Motif connector bundles compiled portions of the Model Context
+Protocol TypeScript SDK, MCP Apps SDK, and Zod. The MCP TypeScript SDK and Zod
+are distributed under the MIT License. The MCP Apps package is undergoing an
+Apache-2.0/MIT licensing transition; its complete upstream license notice is
+included beside the bundled connector, along with the complete SDK and Zod
+license files.
+
+Sources:
+
+- <https://github.com/modelcontextprotocol/typescript-sdk>
+- <https://github.com/modelcontextprotocol/ext-apps>
+- <https://github.com/colinhacks/zod>
+
 ## Reference sequence data and external tools
 
 Bundled public reference records retain record-level source and provenance

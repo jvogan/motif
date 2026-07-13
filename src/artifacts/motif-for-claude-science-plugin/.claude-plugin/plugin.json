@@ -2,17 +2,22 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "motif-for-claude-science",
   "displayName": "Motif for Claude Science",
-  "version": "0.1.0",
-  "description": "Creates a portable molecular-biology workbench with alignment, Sanger review, cloning design, typed results, and recovery workflows.",
+  "version": "0.2.0",
+  "description": "Motif creates a portable molecular-biology workbench with alignment, Sanger review, cloning design, typed results, and recovery workflows.",
   "author": {
     "name": "Jacob Vogan"
   },
   "license": "MIT",
   "keywords": [
+    "motif",
+    "claude-science",
+    "molecular-biology",
     "bioinformatics",
     "dna",
     "rna",
     "protein",
-    "sequence-analysis"
+    "sequence-analysis",
+    "alignment",
+    "sanger-sequencing"
   ]
 }

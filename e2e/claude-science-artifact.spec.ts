@@ -165,8 +165,8 @@ test.describe('Claude Science artifact campaign', () => {
 
     const featureRows = annotationsPanel.locator('.motif-cs-feature-annotation-list > .motif-cs-row');
     const translationRows = annotationsPanel.locator('.motif-cs-translation-row-shell');
-    expect(await featureRows.count()).toBe(121);
-    expect(await translationRows.count()).toBe(121);
+    await expect(featureRows).toHaveCount(121);
+    await expect(translationRows).toHaveCount(121);
     await expect(featureRows.filter({ hasText: selectedFeatureName })).toHaveAttribute('data-active', 'true');
     await expect(translationRows.filter({ hasText: selectedFeatureName })).toHaveAttribute('data-active', 'true');
     await expect(annotationsPanel.getByRole('button', { name: /Show 10 more features/ })).toBeVisible();

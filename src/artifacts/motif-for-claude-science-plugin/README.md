@@ -19,9 +19,11 @@ The deterministic build writes only to `dist-motif/`:
 - `motif-template.html` — the self-contained template before payload injection
 - `motif-artifact.html` — the ready-to-open standalone workbench
 - `motif-for-claude-science/` — the unpacked Claude plugin
-- `motif-for-claude-science.zip` — the uploadable plugin archive
+- `motif-for-claude-science.zip` — the Claude Code plugin archive
 - `motif-for-claude-science.checksums.json` — archive and file SHA-256 values
 - `motif-for-claude-science-skill/SKILL.md` — standalone compatibility skill
+- `claude-science/motif-mcp-server.mjs` — compiled local connector
+- `claude-science/motif-mcp-app.html` — full self-contained MCP App
 
 The archive has `.claude-plugin/` at its root. For a session-only Claude Code
 review, load either the archive or unpacked directory:
@@ -33,6 +35,33 @@ claude --plugin-dir ./dist-motif/motif-for-claude-science
 
 The skill is namespaced as
 `/motif-for-claude-science:motif-for-claude-science`.
+
+The plugin also registers one MCP server named `motif` from its own bundled
+`server/` directory. Hosts that support MCP Apps can call
+`motif_open_workbench`; other hosts can call
+`motif_create_workbench_artifact` for a self-contained HTML fallback. Review
+and approve the local MCP server when the host prompts for plugin permissions.
+
+## Connected workbench
+
+`motif_open_workbench` accepts either a bounded Motif inventory payload or
+exact FASTA, GenBank, raw sequence, or Motif JSON content. It returns a typed
+`motif.mcp.workbench.v1` result and links `ui://motif/workbench.html`. The App
+hydrates the full Motif interface after the runtime is ready; it does not use a
+generic DOM or evaluation bridge.
+
+The local Claude Science development setup is separate from Claude Code's
+plugin registration. From the source repository, use:
+
+```bash
+npm run claude-science:setup
+```
+
+That command builds and doctors the connector before adding the isolated
+`motif-local` entry. It preserves unrelated local connectors. Fully quit and
+reopen Claude Science after a registration change, then reconnect
+`motif-local`. In the current beta, FASTA and GenBank files mount most reliably
+through the artifact viewer chooser.
 
 ## Generate a preloaded workbench
 
@@ -100,18 +129,20 @@ an electropherogram.
 ## Runtime and persistence boundaries
 
 The HTML exposes bounded `window.motif*` functions inside its own page. A
-plugin installation does not make those globals callable by Claude. An agent
-may use them only through a verified browser bridge and must confirm the visible
-result. `window.motifHelp()` is the runtime source of truth for current
-functions, schemas, limits, and examples.
+plugin installation does not turn those globals into unrestricted model
+tools. The bundled MCP App uses only the narrow workspace-hydration adapter;
+other agents may use page APIs only through a verified browser bridge and must
+confirm the visible result. `window.motifHelp()` is the runtime source of
+truth for current functions, schemas, limits, and examples.
 
 Edits are session-owned until exported. Database JSON and workspace ZIP are
 the complete checkpoint/restore boundary. The portable HTML is not an
 encrypted vault, a compliance system, or a durable shared database.
 
-This plugin does not include a Motif MCP connector or claim that an older
-connector has been rebranded. Native Claude Science live-frame integration is
-a separate, pending workstream and is intentionally outside this bundle.
+The Motif connector is an ephemeral viewer/export surface. It does not write a
+hidden database, run native analysis tools, or claim that any unrelated local
+connector was rebranded. Durable shared-library integration remains a separate
+reviewed workstream.
 
 ## Validate
 
@@ -119,6 +150,7 @@ a separate, pending workstream and is intentionally outside this bundle.
 npm run typecheck
 npm test
 npm run test:plugin
+npm run test:connector
 npm run test:e2e
 npm run validate:plugin
 ```

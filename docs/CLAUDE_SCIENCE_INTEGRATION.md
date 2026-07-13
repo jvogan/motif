@@ -1,156 +1,177 @@
-# Claude Science Integration Plan
+# Motif + Claude Science integration
 
-Last reviewed: July 13, 2026.
+Last reviewed: July 13, 2026. Connector version: `0.2.0`.
 
-This document records the boundary between the standalone **Motif for Claude
-Science** release and future native integration. It deliberately avoids
-attributing older local connector behavior to Motif.
+This is the operating note for the Motif-owned local connector. It covers the
+hackathon installation path, the visible in-window workbench, and the boundary
+between a connected viewer and durable biological storage.
 
-## Current verified product
+## What is implemented
 
-This repository currently owns:
+Motif now owns three deliberately separate deliverables:
 
-- one self-contained browser workbench;
-- one Claude plugin that generates user-owned copies of that workbench;
-- one standalone compatibility skill;
-- bounded page-local `window.motif*` APIs;
-- a no-shell helper for MAFFT, MUSCLE, and Clustal Omega; and
-- explicit Database JSON / workspace ZIP checkpoint and restore.
+1. `motif-artifact.html` — a user-owned, click-to-open standalone workbench.
+2. `motif-for-claude-science.zip` — a Claude plugin containing the skill,
+   artifact, compiled MCP server, MCP App, and `.mcp.json` registration.
+3. `dist-motif/claude-science/` — a local Claude Science connector build for
+   development and hackathon use.
 
-It does **not** currently own:
+The local connector identity is visible end to end:
 
-- an MCP server or connector;
-- a Claude Science `ui://` resource;
-- a durable SQLite library;
-- an agent-accessible cross-frame bridge; or
-- a background live-update service.
+| Surface | Identity |
+| --- | --- |
+| Claude Science local registration | `motif-local` |
+| MCP server | `motif-claude-science` |
+| Open tool | `motif_open_workbench` |
+| Saveable fallback | `motif_create_workbench_artifact` |
+| MCP App resource | `ui://motif/workbench.html` |
+| In-window product name | `Motif for Claude Science` |
 
-The generated HTML cannot make its page globals callable by Claude. A host or
-browser bridge must already have authority to evaluate JavaScript in the exact
-loaded frame, and every update must still be verified in the rendered UI.
+The App is the full Motif workbench rather than a reduced sequence preview. A
+small MCP Apps bridge receives the exact tool result and calls only Motif's
+bounded workspace replacement API after the runtime is ready. It does not
+expose DOM evaluation, a shell, or generic filesystem access.
 
-## What the local host experiment established
+## Build and protocol verification
 
-During pre-rebrand investigation, Claude Science opened a live frame under its
-local host at `http://localhost:8765/.../frames/...`. That observation proves
-the installed Claude Science host can create a frame. It does not prove that:
+Requires Node.js 22 or newer.
 
-- the frame was created by Motif;
-- Motif has a registered connector;
-- a Motif `ui://` resource was fetched;
-- an open Motif workbench can receive subsequent tool results; or
-- the frame survives reconnect, reload, and revision changes correctly.
-
-The connector involved in that experiment belongs to a separate older local
-checkout. Do not rename it in place, present its logs as Motif evidence, or
-reuse its persisted schemas without an explicit migration and compatibility
-review.
-
-## Required native integration contract
-
-A future Motif connector should use a narrow, typed contract rather than a
-generic DOM or eval bridge.
-
-### Identity and revisions
-
-Every import or mutation returns a durable receipt containing:
-
-```text
-schema
-operationId / idempotencyKey
-replayed
-workspaceRevisionBefore
-workspaceRevisionAfter
-records[{ id, name, molecule, length, sequenceSha256 }]
-selectedRecordId
-warnings
+```bash
+npm run claude-science:build
+npm run claude-science:doctor:unregistered
 ```
 
-Record IDs are opaque. Clients receive them from receipts and never derive
-them from undocumented hashes. Artifact/open calls require explicit record IDs
-or a guarded target containing the expected record ID and sequence hash.
-
-### Read and mutation separation
-
-- Read tools may inspect an exact workspace revision and fetch record detail.
-- Trusted imports may commit with an idempotency key and content hashes.
-- Inferred edits, cloning products, remote analysis, and generated annotations
-  enter a visible review inbox before committing.
-- The proposing agent cannot approve its own staged mutation through a second
-  model-facing call.
-- Every committed mutation is atomic and returns affected IDs and the new
-  content revision.
-
-View focus and selection use separate ephemeral revisions so opening a record
-does not masquerade as a biological data change.
-
-### Live-frame behavior
-
-Use the MCP Apps lifecycle rather than imitating page-local browser APIs:
+The build writes:
 
 ```text
-tool call with explicit record IDs
-  -> host reads the declared ui:// resource
-  -> host mounts and initializes the sandboxed app
-  -> app receives the exact tool result
-  -> app verifies workspace revision and record hashes
-  -> narrow refresh/focus tools fetch deltas or exact detail
+dist-motif/claude-science/motif-mcp-server.mjs
+dist-motif/claude-science/motif-mcp-app.html
+dist-motif/motif-template.html
 ```
 
-Do not expose unrestricted HTML, DOM, eval, filesystem, or full-workspace
-replacement as a connector tool. A mounted app may request `refreshWorkspace`
-or `focusRecord` with narrow schemas and revision guards.
+The unregistered doctor launches the exact compiled wrapper with an allowlisted
+environment and verifies:
 
-## Next integration test campaign
+- the two exact tool names and their schemas;
+- standard MCP App metadata and the exact `ui://` resource;
+- the MCP App MIME type and self-contained HTML;
+- the Claude Science FASTA/GenBank artifact-viewer binding;
+- a real FASTA open call and bounded record/residue counts;
+- the embedded standalone-HTML fallback and checksum metadata; and
+- privacy-safe tracing that does not echo sequence or inherited credentials.
 
-Run these tests only after a Motif-owned connector exists and has its own server
-name, resource URI, tool schemas, storage directory, and privacy-safe logging.
+## Register locally
 
-1. Register one clean Motif connector entry; do not overwrite an older entry.
-2. Start a fresh Claude Science kernel and call the Motif open tool with one
-   explicit record ID and expected sequence SHA-256.
-3. Verify a resource read, app initialization, and delivery of the tool result.
-4. Confirm the visible frame names the intended record, molecule, length, and
-   hash—not merely “1 record.”
-5. Import a second record while the frame remains open and verify a bounded
-   no-click refresh to the returned revision.
-6. Change focus, reconnect, reload, and reopen; confirm biological state and
-   ephemeral view state follow their separate contracts.
-7. Test duplicate idempotency keys, stale revisions, missing records, partial
-   failures, cancellation, and offline recovery.
-8. Inspect privacy-safe logs: no raw sequence, AB1 signal, note content, local
-   filesystem path, or external-tool stdout/stderr may appear.
-9. Exercise compact, tall, wide, light, and dark frame layouts with mouse,
-   keyboard, focus, and changed-state accessibility checks.
-10. Export a portable Motif subset and verify record/result/asset counts and
-    SHA-256 values before and after restore.
+The full setup command builds, doctors, installs, and checks in that order:
 
-The user-visible frame is authoritative. Connection logs alone prove only a
-transport connection; an empty list of app-registered tools alone proves
-nothing about whether a frame mounted.
+```bash
+npm run claude-science:setup
+```
 
-## Durable ownership boundary
+The installer updates only the `motif-local` entry in:
 
-The standalone artifact remains session-owned. A future durable library should
-use transactional local storage, expected revisions, rotating checksummed
-backups, and tested restore drills. Promotion from a portable workbench must
-preview collisions, collection mapping, unsupported fields, results, assets,
-notes, alignments, Sanger traces, overhangs, and provenance before commit.
+```text
+~/.claude-science/mcp/local-mcp.json
+```
 
-Do not claim encryption, regulated-data compliance, or safe long-term storage
-until key management, migrations, backup recovery, and audit behavior have been
-designed and independently reviewed.
+It preserves every unrelated server and unknown top-level field. Before a
+changed config is written, it creates a private same-directory backup and uses
+an atomic rename with a concurrency guard. It never prints config values.
 
-## Compatibility policy
+After registration:
 
-This fresh repository starts public contracts at version `0.1.0`:
+1. Fully quit and reopen Claude Science.
+2. In **Customize → Permissions**, grant only the exact Motif checkout or
+   installed package folder if the host asks for local-file access.
+3. Reconnect `motif-local` in the connector UI.
+4. Start a fresh kernel after changing grants or tool schemas.
 
-- package and plugin slug: `motif-for-claude-science`
-- payload schemas: `motif.*`
-- page globals: `window.motif*`
-- environment variables: `MOTIF_*`
-- distributables: `motif-*`
+Check the installed entry at any time:
 
-If a future connector imports data from an older system, implement that as an
-explicit one-way adapter. Never retain an old product identity in Motif's
-public names merely because local data or a previous tool used it.
+```bash
+npm run claude-science:check-local
+npm run claude-science:doctor
+```
+
+## Exercise the in-window workflow
+
+The current Claude Science beta most reliably mounts local Apps through its
+artifact viewer route:
+
+1. Add a real `.fasta`, `.fa`, `.fna`, `.faa`, `.gb`, `.gbk`, `.gbff`,
+   `.genbank`, or `.seq` artifact to the conversation.
+2. Open the artifact's viewer chooser and select Motif when more than one
+   connector claims the file type.
+3. Confirm Claude Science chrome names `motif-local` and
+   `motif_open_workbench`.
+4. Confirm the workbench topbar visibly says **Motif** at embedded widths and
+   **Motif for Claude Science** when space permits.
+5. Verify record name, molecule, topology, residue count, sequence content,
+   annotations, selection drag, map selection, theme, and pane resizing.
+
+Calling `motif_open_workbench` directly is still useful, but this beta may show
+only the text/tool result rather than automatically mounting a tile. That is a
+host behavior, not permission to claim a frame opened. Use the artifact-viewer
+route for the acceptance screenshot.
+
+If a host cannot mount MCP Apps, call
+`motif_create_workbench_artifact`. It returns a self-contained `text/html`
+resource containing the validated payload. Opening that artifact requires a
+click but does not depend on a live App lifecycle.
+
+## Supported inputs and safety boundary
+
+`motif_open_workbench` accepts exactly one of:
+
+- a bounded Motif inventory payload; or
+- exact FASTA, GenBank, raw sequence, or Motif JSON content plus an optional
+  filename, title, molecule hint, and topology.
+
+The connector enforces record, residue, feature, JSON-depth, node-count, text,
+and byte limits before returning a UI result. GenBank records must contain the
+complete `ORIGIN` sequence. Paths are reduced to a display-safe basename and
+raw sequence content is not written to connector traces.
+
+This first connector is intentionally ephemeral:
+
+- it does not write SQLite, IndexedDB, or a hidden shared library;
+- it does not run MAFFT, MUSCLE, Clustal Omega, BLAST, or a shell;
+- it does not silently import into another application's workspace;
+- it does not make the HTML an encrypted or regulated-data vault; and
+- it does not bind binary AB1/ABI files to the text viewer route.
+
+AB1/ABI remains supported through the standalone workbench's Add Entry and
+drag-and-drop flows. A future connected binary artifact viewer needs a separate
+bounded base64/binary contract and host acceptance pass.
+
+## Rollback and troubleshooting
+
+Remove only the managed local entry with:
+
+```bash
+npm run claude-science:remove-local
+```
+
+This leaves all unrelated connectors untouched and creates the same private
+backup before a changed config is installed. The plugin `.mcp.json` is separate
+from Claude Science's local config; removing one does not silently remove the
+other.
+
+If the connector does not appear:
+
+1. Run `npm run claude-science:doctor:unregistered`.
+2. Run `npm run claude-science:check-local`.
+3. Fully quit and reopen Claude Science.
+4. Reconnect `motif-local` and start a fresh kernel.
+5. Confirm the exact folder grant, then retry with a small FASTA artifact.
+
+Connection logs prove transport only. A user-visible, correctly populated
+Motif frame is the final acceptance evidence.
+
+## Next integration boundary
+
+A durable growing sequence library is a separate campaign. It should add
+transactional local storage, opaque record IDs, expected revisions,
+idempotency receipts, rotating checksummed backups, explicit review before
+inferred mutations, and restore drills. Do not extend this ephemeral viewer by
+adding an unreviewed full-workspace mutation or generic host bridge.

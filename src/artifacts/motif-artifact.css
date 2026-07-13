@@ -9550,7 +9550,7 @@ summary.motif-cs-panel-head:focus-visible {
   .motif-cs-inspector[data-tools-pinned="false"],
   .motif-cs-inspector[data-tools-pinned="true"] {
     position: fixed;
-    top: 38px;
+    top: var(--motif-cs-topbar-height, 38px);
     right: 0;
     bottom: 0;
   }
@@ -9567,7 +9567,7 @@ summary.motif-cs-panel-head:focus-visible {
 
   .motif-cs-resize-handle[data-pane="tools"] {
     position: fixed;
-    top: 38px;
+    top: var(--motif-cs-topbar-height, 38px);
     bottom: 0;
   }
 }

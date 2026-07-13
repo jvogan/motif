@@ -21,6 +21,7 @@ logs/
 !.env.example
 *.local
 .mcp.json
+!src/artifacts/motif-for-claude-science-plugin/.mcp.json
 .claude/
 
 # Local workbench data

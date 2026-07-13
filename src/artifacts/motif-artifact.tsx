@@ -125,7 +125,7 @@ import {
 } from './claude-science-session';
 import './motif-artifact.css';
 
-const MOTIF_ARTIFACT_VERSION = '0.1.0';
+const MOTIF_ARTIFACT_VERSION = '0.2.0';
 const MAX_INTERACTIVE_TRANSLATION_RESIDUES = 5_000;
 const ANNOTATION_LIST_PAGE_SIZE = 120;
 export const MOTIF_MAX_RECORD_LENGTH = 250_000;
@@ -3913,7 +3913,9 @@ function App() {
   const inventoryColumnRef = useRef<HTMLElement | null>(null);
   const sequenceColumnRef = useRef<HTMLElement | null>(null);
   const toolsInspectorRef = useRef<HTMLElement | null>(null);
+  const topbarRef = useRef<HTMLElement | null>(null);
   const workspaceMainRef = useRef<HTMLElement | null>(null);
+  const [topbarHeight, setTopbarHeight] = useState(38);
   const [workspaceMainSize, setWorkspaceMainSize] = useState({ width: 1280, height: 720 });
   const sequenceScrollByRecordRef = useRef<Record<string, number>>({});
   const mapDragRef = useRef<MapDragState | null>(null);
@@ -7587,6 +7589,19 @@ function App() {
   const toolsRailWidth = paneVisibility.tools && !toolsPinned ? TOOLS_RAIL_WIDTH : 0;
 
   useLayoutEffect(() => {
+    const node = topbarRef.current;
+    if (!node || typeof ResizeObserver === 'undefined') return undefined;
+    const measure = () => {
+      const height = Math.max(1, node.getBoundingClientRect().height);
+      setTopbarHeight((current) => Math.abs(current - height) < 0.1 ? current : height);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+
+  useLayoutEffect(() => {
     const node = workspaceMainRef.current;
     if (!node || typeof ResizeObserver === 'undefined') return undefined;
     const measure = () => {
@@ -7966,6 +7981,7 @@ function App() {
       data-motif-artifact="real-component-bundle"
       data-artifact-schema={payload.schema}
       data-theme={theme}
+      style={{ '--motif-cs-topbar-height': `${topbarHeight}px` } as CSSProperties}
       onDragEnter={handleDragEnter}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
@@ -8000,7 +8016,7 @@ function App() {
           onConfirm={confirmArtifactDatabaseRestore}
         />
       ) : null}
-      <header className="motif-cs-topbar" aria-label="Motif for Claude Science workspace">
+      <header ref={topbarRef} className="motif-cs-topbar" aria-label="Motif for Claude Science workspace">
         <div className="motif-cs-brand" aria-label="Motif for Claude Science">
           <span translate="no">Motif</span>
           <small translate="no">for Claude Science</small>

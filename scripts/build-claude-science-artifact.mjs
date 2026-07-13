@@ -34,6 +34,10 @@ const pluginResourcePath = join(
 );
 const pluginZipPath = join(outDir, `${pluginName}.zip`);
 const pluginChecksumPath = join(outDir, `${pluginName}.checksums.json`);
+const connectorDistPath = join(outDir, 'claude-science');
+const connectorServerPath = join(connectorDistPath, 'motif-mcp-server.mjs');
+const connectorAppPath = join(connectorDistPath, 'motif-mcp-app.html');
+const connectorPluginPath = join(pluginDistPath, 'server');
 
 const ZIP_UTF8_FLAG = 0x0800;
 const ZIP_STORE_METHOD = 0;
@@ -141,6 +145,18 @@ function injectPayload(html, payloadJson) {
 function writeStandaloneSkillCopy(skillPath) {
   mkdirSync(dirname(skillPath), { recursive: true });
   copyFileSync(standaloneSkillSourcePath, skillPath);
+}
+
+function runConnectorBuild() {
+  for (const script of ['build-motif-mcp-server.mjs', 'build-motif-mcp-app.mjs']) {
+    const result = spawnSync(process.execPath, [join(root, 'scripts', script)], {
+      cwd: root,
+      stdio: 'inherit',
+    });
+    if (result.status !== 0) {
+      throw new Error(`Motif Claude Science connector build failed in ${script}.`);
+    }
+  }
 }
 
 function sha256(data) {
@@ -276,6 +292,13 @@ export function validatePluginSource(pluginPath = pluginSourcePath) {
   if (!existsSync(join(skillDirectory, 'scripts/run-msa.mjs'))) {
     throw new Error('Plugin is missing its external MSA runner');
   }
+  const mcpConfig = JSON.parse(readFileSync(join(pluginPath, '.mcp.json'), 'utf8'));
+  if (mcpConfig?.motif?.command !== 'node') {
+    throw new Error('Plugin MCP config must register the Motif server with Node.js');
+  }
+  if (mcpConfig.motif.args?.[0] !== '${CLAUDE_PLUGIN_ROOT}/server/motif-mcp-server.mjs') {
+    throw new Error('Plugin MCP config must resolve its server from CLAUDE_PLUGIN_ROOT');
+  }
 }
 
 function writePluginBundle(html) {
@@ -284,6 +307,22 @@ function writePluginBundle(html) {
   cpSync(pluginSourcePath, pluginDistPath, { recursive: true });
   mkdirSync(dirname(pluginResourcePath), { recursive: true });
   writeFileSync(pluginResourcePath, html);
+  mkdirSync(join(connectorPluginPath, 'licenses'), { recursive: true });
+  copyFileSync(connectorServerPath, join(connectorPluginPath, 'motif-mcp-server.mjs'));
+  copyFileSync(connectorAppPath, join(connectorPluginPath, 'motif-mcp-app.html'));
+  copyFileSync(templateHtml, join(connectorPluginPath, 'motif-template.html'));
+  copyFileSync(
+    join(root, 'node_modules', '@modelcontextprotocol', 'ext-apps', 'LICENSE'),
+    join(connectorPluginPath, 'licenses', 'mcp-ext-apps-LICENSE.txt'),
+  );
+  copyFileSync(
+    join(root, 'node_modules', '@modelcontextprotocol', 'sdk', 'LICENSE'),
+    join(connectorPluginPath, 'licenses', 'mcp-sdk-LICENSE.txt'),
+  );
+  copyFileSync(
+    join(root, 'node_modules', 'zod', 'LICENSE'),
+    join(connectorPluginPath, 'licenses', 'zod-LICENSE.txt'),
+  );
 
   const zip = createDeterministicZipBuffer(pluginDistPath);
   writeFileSync(pluginZipPath, zip);
@@ -340,6 +379,7 @@ export function runBuild(args = process.argv.slice(2)) {
 
   const template = inlineAssetTags(readFileSync(distHtml, 'utf8'));
   writeFileSync(templateHtml, template);
+  runConnectorBuild();
 
   let html = template;
   if (payloadPath) {
@@ -371,6 +411,7 @@ export function runBuild(args = process.argv.slice(2)) {
   console.log(`Wrote artifact ${finalPath}`);
   console.log(`Wrote standalone skill ${standaloneSkillDistPath}`);
   console.log(`Wrote plugin ${pluginDistPath}`);
+  console.log(`Wrote Claude Science connector ${connectorDistPath}`);
   console.log(`Wrote plugin archive ${pluginZipPath}`);
   console.log(`Wrote checksums ${pluginChecksumPath}`);
   if (handoffPath) console.log(`Wrote explicit handoff ${handoffPath}`);

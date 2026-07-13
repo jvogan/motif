@@ -23,6 +23,7 @@ import {
   runBuild,
   validatePluginSource,
 } from './build-claude-science-artifact.mjs';
+import { buildMotifMcpApp } from './build-motif-mcp-app.mjs';
 import {
   MAX_ALIGNMENTS,
   MAX_ANALYSIS_ASSETS,
@@ -156,7 +157,7 @@ check('plugin source has a matching, bounded manifest and skill', () => {
   assert.ok(manifest.description.length < 256);
   assert.ok(skillDescription.length > 0 && skillDescription.length <= 200);
   assert.match(manifest.version, /^\d+\.\d+\.\d+$/);
-  assert.equal(manifest.version, '0.1.0');
+  assert.equal(manifest.version, '0.2.0');
   assert.equal(manifest.version, artifactVersion);
   assert.match(changelog, new RegExp(`^## ${manifest.version.replace(/\./g, '\\.')}(?:\\s|$)`, 'm'));
   assert.ok(existsSync(join(pluginSource, runnerRelativePath)));
@@ -314,6 +315,33 @@ check('ZIP bytes are deterministic across file order and timestamp changes', () 
     assert.equal(first.readUInt16LE(10), 0);
     assert.equal(first.readUInt16LE(12), 33);
     assert.equal(first.readUInt32LE(first.length - 22), 0x06054b50);
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+check('MCP App bridge is injected only at the terminal body without replacement expansion', () => {
+  const fixture = mkdtempSync(join(tmpdir(), 'motif-mcp-app-build-'));
+  try {
+    const templatePath = join(fixture, 'template.html');
+    const entryPath = join(fixture, 'bridge.ts');
+    const outputPath = join(fixture, 'app.html');
+    const template = [
+      '<!doctype html><html><head><title>Motif for Claude Science</title></head><body>',
+      '<script type="application/json" id="motif-artifact-data">{}</script>',
+      '<script>const embeddedReport = "</body>";</script>',
+      '</body></html>',
+    ].join('');
+    writeFileSync(templatePath, template);
+    writeFileSync(entryPath, 'document.documentElement.dataset.schema = "motif.mcp.workbench.v1"; const token = "$\'"; void token;');
+
+    buildMotifMcpApp({ template: templatePath, entry: entryPath, out: outputPath });
+    const built = readFileSync(outputPath, 'utf8');
+    assert.equal((built.match(/data-motif-mcp-app-bridge/gu) ?? []).length, 1);
+    assert.match(built, /const embeddedReport = "<\/body>";/u);
+    assert.ok(built.lastIndexOf('data-motif-mcp-app-bridge') > built.indexOf('embeddedReport'));
+    assert.ok(Buffer.byteLength(built) < Buffer.byteLength(template) + 100_000);
+    assert.match(built, /<\/body>\s*<\/html>\s*$/u);
   } finally {
     rmSync(fixture, { recursive: true, force: true });
   }

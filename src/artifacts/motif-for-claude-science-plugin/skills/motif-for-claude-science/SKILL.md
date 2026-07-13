@@ -5,19 +5,42 @@ description: Creates a self-contained Motif for Claude Science workbench, option
 
 # Motif for Claude Science
 
-Create a user-owned, self-contained HTML workbench from this plugin's bundled
-resource. The normal deliverable is an HTML file the user opens and operates in
-a browser.
+Open the connected Motif workbench when its MCP tools are available, or create
+a user-owned self-contained HTML workbench from the bundled resource.
+
+## Connected Claude Science path
+
+When `motif_open_workbench` is available, prefer it for interactive review of
+one bounded Motif payload or exact FASTA, GenBank, raw-sequence, or Motif JSON
+content. Pass either `payload` or `content`, never both. Include `filename`
+when it carries a useful format/provenance hint and include an explicit
+`molecule` for ambiguous raw sequence text.
+
+Verify the returned `motif.mcp.workbench.v1` schema, mode, source name, record
+count, and residue count against the intended input. A successful tool call
+does not prove a frame mounted: confirm the visible Motif identity and exact
+records in the rendered UI. In the current Claude Science beta, FASTA and
+GenBank artifacts mount most reliably through the artifact viewer chooser.
+
+If the host does not mount MCP Apps, call
+`motif_create_workbench_artifact` with the same bounded input. It returns a
+self-contained HTML resource plus filename, byte count, and SHA-256 metadata;
+it does not write a file. Save/open that resource through the host and verify
+the visible workbench.
+
+These connector tools are ephemeral viewer/export operations. They do not
+write a sequence database, run external executables, or make AB1 binary data a
+text artifact.
 
 ## Runtime boundary
 
-Installing this skill does not expose the HTML page as a tool. The artifact's
-`window.motif*` functions exist only inside the loaded page's JavaScript context.
-Do not claim to have called them from Cowork or Claude Code. Use them only when
-the current session has an actual browser bridge that can evaluate JavaScript
-in that page, and verify the result in the rendered UI.
+The artifact's `window.motif*` functions exist only inside the loaded page's
+JavaScript context. Do not claim to have called them from Cowork or Claude Code
+unless the current session has a verified browser bridge. The bundled MCP App
+uses a narrow workspace adapter; it does not expose those globals as general
+model tools.
 
-Without such a bridge, the proven path is:
+Without the connector or another verified bridge, the proven path is:
 
 1. Generate an HTML file with the bundled helper.
 2. Ask the user to open it in a browser.

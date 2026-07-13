@@ -2,12 +2,13 @@
 
 Motif is a portable molecular-biology workbench built for the Claude Science
 hackathon. It turns sequence records and analysis results into one
-self-contained HTML workspace that can be opened locally, inspected visually,
-edited with mouse and keyboard, checkpointed, and shared as an ordinary file.
+self-contained HTML workspace that can be opened locally or mounted as a
+Claude Science MCP App, inspected visually, edited with mouse and keyboard,
+checkpointed, and shared as an ordinary file.
 
 This repository is a clean standalone snapshot. It contains no desktop shell,
-database server, MCP connector, or history from the project it was derived
-from.
+native database, or inherited history. Its optional `motif-local` connector is
+ephemeral and Motif-owned; it does not depend on another application checkout.
 
 ## What is included
 
@@ -22,6 +23,8 @@ from.
 - notes, workflow history, typed analysis results, and inert text/JSON assets
 - Database JSON and workspace ZIP checkpoint/restore
 - deterministic Claude plugin bundle and standalone skill
+- Motif-owned MCP connector with a full-workbench `ui://` App and embedded HTML
+  fallback for Claude Science
 
 ## Quick start
 
@@ -48,6 +51,9 @@ The build writes:
 
 ```text
 dist-motif/
+├── claude-science/
+│   ├── motif-mcp-app.html
+│   └── motif-mcp-server.mjs
 ├── motif-template.html
 ├── motif-artifact.html
 ├── motif-for-claude-science/
@@ -56,9 +62,10 @@ dist-motif/
 └── motif-for-claude-science-skill/SKILL.md
 ```
 
-The HTML is self-contained: Vite's JavaScript and CSS assets are inlined, and
-the plugin resource embeds the same artifact bytes. The ZIP is deterministic
-and its file/archive SHA-256 values are recorded beside it.
+The HTML and MCP App are self-contained: Vite's JavaScript and CSS assets are
+inlined, and the plugin contains its compiled connector, App, standalone
+template, and artifact resource. The ZIP is deterministic and its file/archive
+SHA-256 values are recorded beside it.
 
 To generate an additional repo-local artifact with preloaded data:
 
@@ -78,6 +85,7 @@ npm run typecheck
 npm run lint
 npm test
 npm run test:plugin
+npm run test:connector
 npm run check:css-tokens
 npm run check:aria-controls
 npm run test:e2e
@@ -86,13 +94,31 @@ npm run test:e2e
 `npm run validate:plugin` adds strict validation through the Claude CLI when it
 is installed.
 
-## Claude Science boundary
+## Claude Science local connector
 
-The plugin reliably generates a user-owned HTML workbench. Its
-`window.motif*` API is page-local and is not automatically an agent tool. A
-native Motif connector and live-frame update channel are not included yet and
-must not be inferred from any older local connector. The next integration
-campaign is documented in [Claude Science integration](docs/CLAUDE_SCIENCE_INTEGRATION.md).
+Build, protocol-check, and register the connector without replacing any other
+local connector:
+
+```bash
+npm run claude-science:setup
+```
+
+This adds exactly one `motif-local` entry to Claude Science's local MCP config
+after a successful build and unregistered protocol doctor. It preserves
+unrelated entries and writes a private backup before any changed config is
+installed. Fully quit and reopen Claude Science, then reconnect `motif-local`.
+
+The connected surface exposes `motif_open_workbench` for bounded Motif payload,
+FASTA, GenBank, or raw-sequence review and
+`motif_create_workbench_artifact` as a saveable HTML fallback. The current
+Claude Science beta mounts FASTA/GenBank most reliably through its artifact
+viewer chooser. The workbench itself is the full Motif UI, including the
+visible Motif identity at embedded widths.
+
+The connector does not write a database or run external executables. Its
+`window.motif*` API remains page-local and is used only by the bundled narrow
+MCP App bridge. Setup, verification, rollback, and host limitations are
+documented in [Claude Science integration](docs/CLAUDE_SCIENCE_INTEGRATION.md).
 
 ## Data safety
 
