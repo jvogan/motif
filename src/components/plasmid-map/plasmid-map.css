@@ -1,0 +1,782 @@
+/*
+ * Scoped styles for the sequence map viewer (circular + linear).
+ * Imported ONLY by the lazy map chunk, so compact/detail flows never load it.
+ * Every var() has a fallback so check:css-tokens passes; per-feature color is
+ * passed in via the runtime --pm-base custom property. Selection/hover/TypeIIS
+ * are attribute-selector driven (no inline stroke, no !important) so theme + HC
+ * token switches reach the map live.
+ */
+
+.motif-pm-container {
+  position: relative;
+  isolation: isolate;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+/* Circular: cap + center so the ring is a stable square driven by width, not by
+   the block cell's collapsed height. */
+.motif-pm-container[data-map-mode='circular'] {
+  max-width: 720px;
+  margin-inline: auto;
+}
+.motif-pm-container[data-map-mode='linear'] {
+  --motif-pm-edge: 8px;
+  --motif-pm-overview-gap: 12px;
+  --motif-pm-overview-height: 26px;
+  --motif-pm-zoom-width: 88px;
+  align-items: flex-start;
+  padding-bottom: 48px;
+}
+
+.motif-pm-container[data-fit-content-height='true'] {
+  max-height: 520px;
+}
+
+.motif-pm-container[data-fit-content-height='true'] .motif-plasmid-map {
+  width: 100%;
+  height: 100%;
+  max-height: 100%;
+}
+
+.motif-pm-container[data-frozen='true'] .motif-plasmid-map {
+  cursor: pointer;
+}
+
+/* ---- SVG export affordance (top-right, quiet but always clickable) ---- */
+.motif-pm-workbench {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 3;
+  pointer-events: auto;
+}
+
+.motif-pm-workbench-toggle,
+.motif-pm-export {
+  position: absolute;
+  top: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--border, #d4d4d4) 88%, transparent);
+  border-radius: var(--radius-sm, 4px);
+  background: var(--workspace-bg, #ffffff);
+  color: var(--text-secondary, #8a8a8a);
+  cursor: pointer;
+  opacity: 0.92;
+  pointer-events: auto;
+  transition:
+    opacity var(--duration-fast, 120ms) ease,
+    color var(--duration-fast, 120ms) ease,
+    border-color var(--duration-fast, 120ms) ease,
+    background-color var(--duration-fast, 120ms) ease;
+}
+.motif-pm-workbench-toggle {
+  position: static;
+}
+.motif-pm-export {
+  right: 8px;
+  z-index: 2;
+}
+.motif-pm-container:hover .motif-pm-workbench-toggle,
+.motif-pm-workbench-toggle:focus-visible,
+.motif-pm-container:hover .motif-pm-export,
+.motif-pm-export:focus-visible {
+  opacity: 1;
+}
+.motif-pm-workbench-toggle:hover,
+.motif-pm-workbench-toggle:focus-visible,
+.motif-pm-workbench-toggle[aria-expanded='true'],
+.motif-pm-export:hover {
+  color: var(--accent, #0169cc);
+  border-color: var(--accent, #0169cc);
+  background: var(--bg-primary, #ffffff);
+}
+
+.motif-pm-workbench-panel {
+  position: absolute;
+  top: 32px;
+  left: 0;
+  width: 236px;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--border, #d4d4d4) 88%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--workspace-bg, #ffffff) 96%, transparent);
+  box-shadow: 0 12px 32px color-mix(in srgb, #000000 14%, transparent);
+  color: var(--text-primary, #131313);
+  font: 12px/1.25 var(--font-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
+  backdrop-filter: blur(14px);
+}
+
+.motif-pm-control-section + .motif-pm-control-section,
+.motif-pm-diagnostics-toggle {
+  margin-top: 10px;
+}
+
+.motif-pm-control-heading {
+  margin-bottom: 6px;
+  color: var(--text-secondary, #8a8a8a);
+  font-size: 10px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+
+.motif-pm-check-row {
+  display: flex;
+  min-height: 24px;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-primary, #131313);
+  cursor: pointer;
+}
+
+.motif-pm-check-row input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--accent, #0169cc);
+}
+
+.motif-pm-density-segments {
+  display: grid;
+  grid-template-columns: 1.35fr repeat(3, 1fr);
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--border, #d4d4d4);
+  border-radius: 6px;
+  background: var(--bg-secondary, #f6f6f6);
+}
+
+.motif-pm-density-button {
+  min-width: 0;
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary, #8a8a8a);
+  font: 600 11px/1 var(--font-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
+  cursor: pointer;
+}
+
+.motif-pm-density-button:hover,
+.motif-pm-density-button:focus-visible,
+.motif-pm-density-button[data-active='true'] {
+  border-color: color-mix(in srgb, var(--accent, #0169cc) 42%, transparent);
+  background: color-mix(in srgb, var(--accent, #0169cc) 10%, var(--bg-primary, #ffffff));
+  color: var(--accent, #0169cc);
+  outline: none;
+}
+
+.motif-pm-diagnostics {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 3px;
+  margin-top: 8px;
+  padding: 7px 8px;
+  border-radius: 6px;
+  background: var(--bg-secondary, #f6f6f6);
+  color: var(--text-secondary, #8a8a8a);
+  font: 10px/1.25 var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace);
+}
+
+/* ---- linear overview strip: density/minimap substrate for long sequence work ---- */
+.motif-pm-linear-overview {
+  position: absolute;
+  left: var(--motif-pm-edge, 8px);
+  bottom: var(--motif-pm-edge, 8px);
+  z-index: 2;
+  width: min(
+    260px,
+    calc(100% - var(--motif-pm-zoom-width, 88px) - (var(--motif-pm-edge, 8px) * 2) - var(--motif-pm-overview-gap, 12px))
+  );
+  height: var(--motif-pm-overview-height, 26px);
+  padding: 4px 6px;
+  border: 1px solid color-mix(in srgb, var(--border, #d4d4d4) 84%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--workspace-bg, #ffffff) 94%, transparent);
+  opacity: 0.94;
+  pointer-events: none;
+}
+.motif-pm-linear-overview[data-interactive='true'] {
+  pointer-events: auto;
+  cursor: pointer;
+}
+.motif-pm-linear-overview[data-interactive='true']:focus-visible {
+  outline: 2px solid var(--focus-ring, var(--accent, #0169cc));
+  outline-offset: 2px;
+}
+
+.motif-pm-linear-overview svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.motif-pm-overview-track {
+  fill: color-mix(in srgb, var(--text-secondary, #8a8a8a) 14%, transparent);
+}
+
+.motif-pm-overview-bin {
+  fill: var(--text-secondary, #8a8a8a);
+}
+
+.motif-pm-overview-selection {
+  fill: var(--accent, #0169cc);
+  fill-opacity: 0.22;
+  stroke: var(--accent, #0169cc);
+  stroke-width: 0.6;
+  vector-effect: non-scaling-stroke;
+}
+
+.motif-pm-overview-window {
+  fill: none;
+  stroke: color-mix(in srgb, var(--text-secondary, #8a8a8a) 54%, transparent);
+  stroke-width: 0.65;
+  vector-effect: non-scaling-stroke;
+}
+
+/* ---- in-map zoom controls (bottom-right, quiet but always clickable) ---- */
+.motif-pm-zoom-controls {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  z-index: 2;
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid color-mix(in srgb, var(--border, #d4d4d4) 88%, transparent);
+  border-radius: var(--radius-sm, 4px);
+  background: var(--workspace-bg, #ffffff);
+  opacity: 0.92;
+  pointer-events: auto;
+  transition: opacity var(--duration-fast, 120ms) ease;
+}
+.motif-pm-container:hover .motif-pm-zoom-controls,
+.motif-pm-zoom-controls:focus-within {
+  opacity: 1;
+}
+.motif-pm-zoom-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm, 4px);
+  background: transparent;
+  color: var(--text-secondary, #8a8a8a);
+  font: 600 13px/1 var(--font-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
+  cursor: pointer;
+  transition:
+    color var(--duration-fast, 120ms) ease,
+    border-color var(--duration-fast, 120ms) ease,
+    background-color var(--duration-fast, 120ms) ease;
+}
+.motif-pm-zoom-button:hover,
+.motif-pm-zoom-button:focus-visible {
+  color: var(--accent, #0169cc);
+  border-color: var(--accent, #0169cc);
+  background: color-mix(in srgb, var(--accent, #0169cc) 8%, transparent);
+  outline: none;
+}
+.motif-pm-zoom-button:active {
+  background: color-mix(in srgb, var(--accent, #0169cc) 12%, transparent);
+}
+.motif-pm-zoom-button:disabled {
+  color: var(--text-tertiary, #b0b0b0);
+  border-color: transparent;
+  cursor: default;
+  opacity: 0.55;
+}
+
+/* height:auto -> the SVG height follows its (content-fitted) viewBox aspect, so
+   the container never feeds a collapsed height back into the layout size. */
+.motif-plasmid-map {
+  position: relative;
+  z-index: 0;
+  display: block;
+  width: 100%;
+  height: auto;
+  font-family: var(--font-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.motif-pm-bg {
+  fill: transparent;
+  pointer-events: all;
+}
+.motif-pm-bg[data-pannable='true'] {
+  cursor: grab;
+  touch-action: none;
+}
+.motif-plasmid-map[data-panning='true'] .motif-pm-bg[data-pannable='true'] {
+  cursor: grabbing;
+}
+
+.motif-pm-range-overlays {
+  pointer-events: none;
+}
+
+.motif-pm-range-overlays[data-interactive='true'] .motif-pm-range-overlay {
+  cursor: pointer;
+  pointer-events: none;
+}
+
+.motif-pm-range-overlay-hit {
+  fill: transparent;
+  stroke: transparent;
+  stroke-width: 12;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+
+.motif-pm-range-overlays[data-interactive='true'] .motif-pm-range-overlay-hit {
+  pointer-events: all;
+}
+
+.motif-pm-range-overlay-shape {
+  fill: var(--pm-range-color, #e0b83c);
+  fill-opacity: 0.18;
+  stroke: var(--pm-range-color, #e0b83c);
+  stroke-width: 3.5;
+  stroke-opacity: 0.58;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+
+.motif-pm-range-overlay[data-selected='true'] .motif-pm-range-overlay-shape,
+.motif-pm-range-overlays[data-interactive='true'] .motif-pm-range-overlay:hover .motif-pm-range-overlay-shape,
+.motif-pm-range-overlays[data-interactive='true'] .motif-pm-range-overlay:focus-visible .motif-pm-range-overlay-shape {
+  stroke-opacity: 0.9;
+  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--pm-range-color, #e0b83c) 42%, transparent));
+}
+
+.motif-pm-range-overlay:focus-visible {
+  outline: none;
+}
+
+.motif-pm-range-overlay[data-overlay-kind='comment'] .motif-pm-range-overlay-shape {
+  fill-opacity: 0.12;
+  stroke-width: 2.4;
+  stroke-opacity: 0.62;
+  stroke-dasharray: 5 3;
+}
+
+.motif-pm-range-overlay[data-overlay-kind='orf'] .motif-pm-range-overlay-shape {
+  fill-opacity: 0;
+  stroke-width: 2.1;
+  stroke-opacity: 0.68;
+}
+
+.motif-pm-range-overlay[data-overlay-kind='orf'][data-overlay-variant='reverse'] .motif-pm-range-overlay-shape {
+  stroke-dasharray: 7 3;
+}
+
+.motif-pm-range-overlay[data-overlay-kind='motif'] .motif-pm-range-overlay-shape {
+  fill-opacity: 0.08;
+  stroke-width: 2.4;
+  stroke-opacity: 0.72;
+  stroke-dasharray: 1.5 4;
+}
+
+.motif-pm-range-overlay[data-overlay-kind='variant'] .motif-pm-range-overlay-shape {
+  fill-opacity: 0.14;
+  stroke-width: 2.6;
+  stroke-opacity: 0.76;
+  stroke-dasharray: 4 2 1.2 2;
+}
+
+.motif-pm-range-overlay[data-overlay-kind='digest'] .motif-pm-range-overlay-shape {
+  fill-opacity: 0.1;
+  stroke-width: 2.4;
+  stroke-opacity: 0.66;
+  stroke-dasharray: 8 3;
+}
+
+.motif-pm-range-overlay[data-overlay-kind='design'] .motif-pm-range-overlay-shape {
+  fill-opacity: 0.12;
+  stroke-width: 2.5;
+  stroke-opacity: 0.72;
+}
+
+.motif-pm-range-overlay[data-overlay-kind='design'][data-overlay-variant='amplicon'] .motif-pm-range-overlay-shape {
+  fill-opacity: 0.08;
+  stroke-dasharray: 5 2;
+}
+
+.motif-pm-range-overlay[data-overlay-kind='compare'] .motif-pm-range-overlay-shape {
+  fill-opacity: 0.16;
+  stroke-width: 2.4;
+  stroke-opacity: 0.7;
+  stroke-dasharray: 2 2;
+}
+
+.motif-pm-range-overlay[data-overlay-kind='scar'] .motif-pm-range-overlay-shape {
+  fill-opacity: 0.1;
+  stroke-width: 2.8;
+  stroke-opacity: 0.72;
+}
+
+.motif-pm-range-overlay[data-overlay-variant='deletion'] .motif-pm-range-overlay-shape {
+  stroke-dasharray: 2.5 2;
+}
+
+.motif-pm-container[data-map-mode='linear'] .motif-pm-range-overlay-shape {
+  stroke-width: 0.8;
+  fill-opacity: 0.24;
+  stroke-opacity: 0.42;
+}
+
+.motif-pm-container[data-map-mode='linear'] .motif-pm-range-overlay[data-overlay-kind='comment'] .motif-pm-range-overlay-shape {
+  stroke-width: 1;
+  fill-opacity: 0.18;
+  stroke-opacity: 0.52;
+}
+
+.motif-pm-container[data-map-mode='linear'] .motif-pm-range-overlay[data-overlay-kind='orf'] .motif-pm-range-overlay-shape {
+  stroke-width: 1;
+  fill-opacity: 0.12;
+  stroke-opacity: 0.58;
+}
+
+.motif-pm-container[data-map-mode='linear'] .motif-pm-range-overlay[data-overlay-kind='motif'] .motif-pm-range-overlay-shape {
+  stroke-width: 1;
+  fill-opacity: 0.12;
+  stroke-opacity: 0.62;
+}
+
+.motif-pm-container[data-map-mode='linear'] .motif-pm-range-overlay[data-overlay-kind='variant'] .motif-pm-range-overlay-shape {
+  stroke-width: 1.05;
+  fill-opacity: 0.2;
+  stroke-opacity: 0.68;
+}
+
+.motif-pm-container[data-map-mode='linear'] .motif-pm-range-overlay[data-overlay-kind='digest'] .motif-pm-range-overlay-shape {
+  stroke-width: 1;
+  fill-opacity: 0.16;
+  stroke-opacity: 0.58;
+}
+
+.motif-pm-container[data-map-mode='linear'] .motif-pm-range-overlay[data-overlay-kind='design'] .motif-pm-range-overlay-shape {
+  stroke-width: 1.05;
+  fill-opacity: 0.18;
+  stroke-opacity: 0.62;
+}
+
+.motif-pm-container[data-map-mode='linear'] .motif-pm-range-overlay[data-overlay-kind='compare'] .motif-pm-range-overlay-shape {
+  stroke-width: 1;
+  fill-opacity: 0.22;
+  stroke-opacity: 0.64;
+}
+
+.motif-pm-container[data-map-mode='linear'] .motif-pm-range-overlay[data-overlay-kind='scar'] .motif-pm-range-overlay-shape {
+  stroke-width: 1.1;
+  fill-opacity: 0.16;
+  stroke-opacity: 0.6;
+}
+
+.motif-pm-backbone {
+  fill: none;
+  stroke: var(--border, #d4d4d4);
+  stroke-width: 3;
+  vector-effect: non-scaling-stroke;
+}
+/* Light: --border (#E4E4E4) reads too faint for the plasmid ring — darken to a
+   quiet medium gray so the backbone registers at a glance without competing with
+   the desaturated feature bars. */
+[data-theme='light'] .motif-pm-backbone {
+  stroke: #c8c8c8;
+}
+/* High-contrast must not keep the quiet gray: in light+HC everything else goes
+   pure black, so a #c8c8c8 ring is the faintest thing on screen (~1.4:1). Follow
+   the HC --border (#000) like dark+HC does (white ring). */
+[data-theme='light'][data-contrast='high'] .motif-pm-backbone {
+  stroke: var(--border, #000);
+}
+/* Dark (regular): #333 on the #222 field is only ~1.25:1 — nudge brighter so the
+   ring registers. Leave dark+HC alone (it already gets a strong ring via --border). */
+[data-theme='dark']:not([data-contrast='high']) .motif-pm-backbone {
+  stroke: #4a4a4a;
+}
+
+/* ---- selection overlay (sequence -> map) ---- */
+.motif-pm-selection {
+  pointer-events: none;
+}
+
+.motif-pm-selection-stop {
+  stop-color: var(--accent, #0169cc);
+}
+
+.motif-pm-selection-stop-center {
+  stop-opacity: 0.015;
+}
+
+.motif-pm-selection-stop-mid {
+  stop-opacity: 0.055;
+}
+
+.motif-pm-selection-stop-edge {
+  stop-opacity: 0.16;
+}
+
+.motif-pm-container[data-map-mode='circular'] .motif-pm-selection {
+  fill-opacity: 1;
+  stroke: none;
+  shape-rendering: geometricPrecision;
+}
+.motif-pm-container[data-map-mode='linear'] .motif-pm-selection {
+  fill: var(--accent, #0169cc);
+  fill-opacity: 0.16;
+  stroke: var(--accent, #0169cc);
+  stroke-opacity: 0.5;
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+/* ---- coordinate ring / axis ---- */
+.motif-pm-coords,
+.motif-pm-overflows {
+  pointer-events: none;
+}
+
+.motif-pm-coord-grid {
+  stroke: var(--border, #d4d4d4);
+  stroke-width: 1;
+  stroke-opacity: 0.5;
+  vector-effect: non-scaling-stroke;
+  shape-rendering: crispEdges;
+}
+
+[data-theme='light'] .motif-pm-coord-grid {
+  stroke-opacity: 0.52;
+}
+
+[data-theme='dark'] .motif-pm-coord-grid {
+  stroke-opacity: 0.48;
+}
+
+[data-contrast='high'] .motif-pm-container[data-map-mode='linear'] .motif-pm-coord-grid {
+  /* HC promotes faint guides into foreground marks; keep only the short ruler ticks. */
+  stroke-opacity: 0;
+}
+
+.motif-pm-coord-tick {
+  stroke: var(--text-secondary, #8a8a8a);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+.motif-pm-coord-label {
+  fill: var(--text-secondary, #8a8a8a);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- features ---- */
+.motif-pm-feature {
+  cursor: pointer;
+}
+
+.motif-pm-feature-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 12;
+  vector-effect: non-scaling-stroke;
+  pointer-events: stroke;
+}
+
+.motif-pm-feature-body {
+  fill: color-mix(in srgb, var(--pm-base, #8a8a8a) 32%, var(--bg-primary, #ffffff));
+  stroke: color-mix(in srgb, var(--pm-base, #8a8a8a) 36%, var(--border, #cbd5e1));
+  stroke-width: 0.35;
+  vector-effect: non-scaling-stroke;
+  transition: fill 90ms ease-out, stroke 90ms ease-out, stroke-width 90ms ease-out;
+}
+/* Add a light interaction hairline without returning to the heavy selected
+   outlines that made features visually noisy at map scale. */
+.motif-pm-feature:hover .motif-pm-feature-body {
+  fill: color-mix(in srgb, var(--pm-base, #8a8a8a) 42%, var(--bg-primary, #ffffff));
+  stroke: color-mix(in srgb, var(--pm-base, #8a8a8a) 52%, var(--accent, #0169cc));
+  stroke-width: 0.55;
+}
+.motif-pm-feature[data-selected='true'] .motif-pm-feature-body {
+  fill: color-mix(in srgb, var(--pm-base, #8a8a8a) 52%, var(--bg-primary, #ffffff));
+  stroke: color-mix(in srgb, var(--pm-base, #8a8a8a) 42%, var(--border, #cbd5e1));
+  stroke-width: 0.45;
+}
+.motif-pm-feature:focus {
+  outline: none;
+}
+.motif-pm-feature:focus-visible .motif-pm-feature-body {
+  stroke: color-mix(in srgb, var(--accent, #0169cc) 70%, var(--pm-base, #8a8a8a));
+  stroke-width: 0.7;
+}
+.motif-pm-feature-label {
+  fill: var(--text-primary, #131313);
+  font-family: var(--font-ui, var(--font-sans, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif));
+  font-size: 11px;
+  /* Clickable so the readable name (incl. Wave-B outside-leader labels sitting
+     away from the arc) selects its feature via the group handler, instead of
+     falling through to the background and CLEARING the selection. */
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+/* leader lines for outside labels */
+.motif-pm-leader {
+  fill: none;
+  stroke: var(--text-secondary, #b0b0b0);
+  stroke-width: 0.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+/* ---- restriction ticks ---- */
+.motif-pm-restriction {
+  cursor: pointer;
+}
+.motif-pm-tick-hit {
+  stroke: transparent;
+  stroke-width: 14;
+  vector-effect: non-scaling-stroke;
+}
+.motif-pm-tick {
+  stroke: var(--text-secondary, #8a8a8a);
+  stroke-width: 1.25;
+  vector-effect: non-scaling-stroke;
+}
+.motif-pm-restriction-label {
+  fill: var(--text-primary, #131313);
+  font-family: var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace);
+  font-size: 10px;
+  /* Clickable: the readable enzyme name sits ~60px out on a leader; without this
+     only the tiny tick was interactive and clicking the name hit the background
+     and cleared the selection. Now it joins the cluster group's hover+click. */
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.motif-pm-overflow {
+  fill: var(--text-secondary, #8a8a8a);
+  fill-opacity: 0.7;
+  font-family: var(--font-ui, var(--font-sans, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif));
+  font-size: 10px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  cursor: default;
+}
+
+.motif-pm-container[data-map-mode='circular'] .motif-pm-overflow {
+  font-size: 9px;
+  fill-opacity: 0.58;
+}
+
+[data-theme='light'] .motif-pm-overflow {
+  fill-opacity: 0.68;
+}
+
+[data-theme='dark'] .motif-pm-overflow {
+  fill-opacity: 0.74;
+}
+
+[data-theme='light'] .motif-pm-container[data-map-mode='circular'] .motif-pm-overflow {
+  fill-opacity: 0.56;
+}
+
+[data-theme='dark'] .motif-pm-container[data-map-mode='circular'] .motif-pm-overflow {
+  fill-opacity: 0.62;
+}
+
+/* Type IIS enzymes get the distinct tan language (Benchling).
+   TICK is an aggregate cluster flag: any Type IIS site tints the whole tick
+   (both topologies). LABEL colors PER-ENZYME so a mixed cluster like
+   "BsaI,HpaII,MspI +7" tans ONLY the Type IIS token. Circular labels render as
+   per-enzyme <tspan>s and carry data-segmented → they color via
+   .motif-pm-restriction-enz--typeiis below and the whole-label tint is dropped.
+   Linear labels are a single compact token (data-segmented absent) and keep the
+   aggregate whole-label tint. */
+.motif-pm-restriction[data-typeiis='true'] .motif-pm-tick {
+  fill: var(--pm-typeiis, #b5651d);
+  stroke: var(--pm-typeiis, #b5651d);
+}
+.motif-pm-restriction[data-typeiis='true']:not([data-segmented]) .motif-pm-restriction-label {
+  fill: var(--pm-typeiis, #b5651d);
+  stroke: none;
+}
+/* Per-enzyme Type IIS token (segmented labels): only the Type IIS enzyme
+   <tspan>s get the tan; commas, the " +N" tail, and non-Type-IIS names inherit
+   the label's normal ink. */
+.motif-pm-restriction-enz--typeiis {
+  fill: var(--pm-typeiis, #b5651d);
+}
+.motif-pm-restriction:hover .motif-pm-tick,
+.motif-pm-restriction[data-active='true'] .motif-pm-tick {
+  stroke: var(--accent, #0169cc);
+  stroke-width: 2;
+}
+.motif-pm-restriction:hover .motif-pm-leader,
+.motif-pm-restriction[data-active='true'] .motif-pm-leader {
+  stroke: var(--accent, #0169cc);
+  stroke-width: 1.15;
+}
+.motif-pm-restriction[data-active='true'] .motif-pm-restriction-label {
+  fill: var(--accent, #0169cc);
+}
+/* Active/selected cluster reads accent across the WHOLE label — override the
+   per-enzyme tan so the Type IIS token joins the selection color too. */
+.motif-pm-restriction[data-active='true'] .motif-pm-restriction-enz--typeiis {
+  fill: var(--accent, #0169cc);
+}
+.motif-pm-restriction:focus {
+  outline: none;
+}
+.motif-pm-restriction:focus-visible .motif-pm-tick {
+  stroke: var(--accent, #0169cc);
+  stroke-width: 2;
+}
+
+/* ---- center label (circular) ---- */
+.motif-pm-center-name {
+  fill: var(--text-primary, #131313);
+  font-size: 15px;
+  font-weight: 600;
+}
+.motif-pm-center-len {
+  fill: var(--text-secondary, #8a8a8a);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* dark Type IIS + backbone tuning */
+[data-theme='dark'] .motif-pm-restriction[data-typeiis='true'] .motif-pm-tick {
+  fill: var(--pm-typeiis-dark, #d8a24a);
+  stroke: var(--pm-typeiis-dark, #d8a24a);
+}
+[data-theme='dark'] .motif-pm-restriction[data-typeiis='true']:not([data-segmented]) .motif-pm-restriction-label {
+  fill: var(--pm-typeiis-dark, #d8a24a);
+  stroke: none;
+}
+[data-theme='dark'] .motif-pm-restriction-enz--typeiis {
+  fill: var(--pm-typeiis-dark, #d8a24a);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .motif-pm-feature-body {
+    transition: none;
+  }
+}

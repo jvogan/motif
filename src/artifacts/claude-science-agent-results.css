@@ -1,0 +1,308 @@
+.motif-cs-agent-results {
+  min-width: 0;
+  color: var(--text-primary);
+}
+
+.motif-cs-agent-results-toolbar {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--panel-bg);
+}
+
+.motif-cs-agent-results-toolbar label {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.motif-cs-agent-results-toolbar select {
+  min-width: 148px;
+  min-height: 30px;
+  padding: 4px 24px 4px 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text-primary);
+  font: inherit;
+}
+
+.motif-cs-agent-results-toolbar select:focus-visible,
+.motif-cs-agent-result-details > summary:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.motif-cs-agent-results-toolbar > span {
+  color: var(--text-muted);
+  font: 10px/1.3 var(--font-mono);
+  white-space: nowrap;
+}
+
+.motif-cs-agent-results-empty {
+  display: grid;
+  gap: 4px;
+  padding: 16px 12px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.motif-cs-agent-results-empty strong {
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.motif-cs-agent-result-list {
+  min-width: 0;
+}
+
+.motif-cs-agent-result-row {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 11px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-primary);
+}
+
+.motif-cs-agent-result-row:hover {
+  background: var(--bg-hover);
+}
+
+.motif-cs-agent-result-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.motif-cs-agent-result-heading > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.motif-cs-agent-result-heading strong,
+.motif-cs-agent-result-heading small,
+.motif-cs-agent-result-row > p,
+.motif-cs-agent-result-confirm > span {
+  overflow-wrap: anywhere;
+}
+
+.motif-cs-agent-result-heading strong {
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.motif-cs-agent-result-heading small,
+.motif-cs-agent-result-row > p {
+  color: var(--text-muted);
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+
+.motif-cs-agent-result-row > p {
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+.motif-cs-agent-result-kind {
+  color: var(--accent);
+  font-size: 9.5px;
+  font-weight: 740;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.motif-cs-agent-result-status {
+  flex: 0 0 auto;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text-muted);
+  font-size: 9.5px;
+  font-weight: 650;
+  text-transform: capitalize;
+}
+
+.motif-cs-agent-result-status[data-status="complete"] {
+  border-color: color-mix(in srgb, var(--green) 36%, var(--border));
+  color: var(--green);
+}
+
+.motif-cs-agent-result-status[data-status="failed"] {
+  border-color: color-mix(in srgb, var(--red) 36%, var(--border));
+  color: var(--red);
+}
+
+.motif-cs-agent-result-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+}
+
+.motif-cs-agent-result-facts > div {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  min-width: 0;
+  padding: 3px 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--panel-bg);
+}
+
+.motif-cs-agent-result-facts dt,
+.motif-cs-agent-result-facts dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 9.5px;
+}
+
+.motif-cs-agent-result-facts dt {
+  color: var(--text-muted);
+}
+
+.motif-cs-agent-result-facts dd {
+  color: var(--text-primary);
+  font-weight: 650;
+}
+
+.motif-cs-agent-result-details > summary {
+  width: max-content;
+  padding: 2px 0;
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.motif-cs-agent-result-details > summary:hover {
+  color: var(--accent);
+}
+
+.motif-cs-agent-result-details > div {
+  display: grid;
+  gap: 8px;
+  margin-top: 5px;
+  padding: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--panel-bg);
+}
+
+.motif-cs-agent-result-details dl {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+}
+
+.motif-cs-agent-result-details dl > div {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr);
+  gap: 7px;
+}
+
+.motif-cs-agent-result-details dt,
+.motif-cs-agent-result-details dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 9.5px;
+  line-height: 1.4;
+}
+
+.motif-cs-agent-result-details dt {
+  color: var(--text-muted);
+  font-weight: 650;
+}
+
+.motif-cs-agent-result-details dd {
+  color: var(--text-secondary);
+}
+
+.motif-cs-agent-result-details pre {
+  max-height: 160px;
+  margin: 0;
+  padding: 7px;
+  overflow: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font: 9.5px/1.45 var(--font-mono);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.motif-cs-agent-result-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.motif-cs-agent-result-confirm {
+  justify-content: flex-start;
+}
+
+.motif-cs-agent-result-confirm > span {
+  margin-right: auto;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.motif-cs-agent-results-live {
+  min-height: 0;
+  margin: 0;
+  padding: 8px 12px;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.motif-cs-agent-results-live[data-empty] {
+  display: none;
+}
+
+@container (max-width: 310px) {
+  .motif-cs-agent-results-toolbar,
+  .motif-cs-agent-result-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .motif-cs-agent-results-toolbar select {
+    width: 100%;
+  }
+
+  .motif-cs-agent-result-status {
+    width: max-content;
+  }
+
+  .motif-cs-agent-result-details dl > div {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .motif-cs-agent-results *,
+  .motif-cs-agent-results *::before,
+  .motif-cs-agent-results *::after {
+    scroll-behavior: auto !important;
+  }
+}

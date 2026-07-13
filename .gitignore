@@ -1,0 +1,37 @@
+# Dependencies
+node_modules
+
+# Generated artifacts and reports
+dist-motif/
+preview/
+coverage/
+test-results/
+playwright-report/
+e2e/screenshots/
+output/
+
+# Logs and traces
+logs/
+*.log
+.traces/
+
+# Secrets and machine-local configuration
+.env
+.env.*
+!.env.example
+*.local
+.mcp.json
+.claude/
+
+# Local workbench data
+.motif/
+local-workspaces/
+local-payloads/
+
+# Editors and operating systems
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+*.sw?

@@ -1,0 +1,76 @@
+{
+  "name": "motif-for-claude-science",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A portable molecular-biology workbench and Claude plugin for sequence review, alignment, cloning design, traces, and analysis results.",
+  "license": "MIT",
+  "author": "Jacob Vogan",
+  "type": "module",
+  "sideEffects": [
+    "src/artifacts/*.css"
+  ],
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "keywords": [
+    "claude-science",
+    "bioinformatics",
+    "molecular-biology",
+    "sequence-analysis",
+    "multiple-sequence-alignment",
+    "sanger-sequencing",
+    "primer-design",
+    "cloning"
+  ],
+  "scripts": {
+    "dev": "vite --config vite.claude-science.config.ts --open /motif.html",
+    "build": "npm run typecheck && npm run build:motif",
+    "build:motif": "node scripts/build-claude-science-artifact.mjs",
+    "build:claude-science": "npm run build:motif",
+    "preview": "node scripts/build-preview.mjs",
+    "preview:motif": "node scripts/build-preview.mjs",
+    "preview:claude-science": "npm run preview:motif",
+    "typecheck": "tsc -b --pretty false",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:plugin": "node scripts/test-claude-science-plugin-packaging.mjs",
+    "test:claude-science-plugin": "npm run test:plugin",
+    "test:e2e": "node scripts/run-claude-science-e2e.mjs",
+    "test:e2e:claude-science": "npm run test:e2e",
+    "validate:plugin": "claude plugin validate dist-motif/motif-for-claude-science --strict",
+    "validate:claude-science-plugin": "npm run validate:plugin",
+    "check:css-tokens": "node scripts/check-css-tokens.mjs",
+    "check:aria-controls": "node scripts/check-aria-controls.mjs"
+  },
+  "dependencies": {
+    "lucide-react": "^0.563.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.11.1",
+    "@eslint/js": "^9.39.1",
+    "@playwright/test": "1.58.2",
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/node": "^25.2.1",
+    "@types/react": "^19.2.5",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.0",
+    "@vitest/coverage-v8": "^4.1.2",
+    "esbuild": "^0.28.0",
+    "eslint": "^9.39.1",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "eslint-plugin-react-refresh": "^0.5.0",
+    "globals": "^17.3.0",
+    "jsdom": "^29.1.1",
+    "playwright": "1.58.2",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.46.4",
+    "vite": "^8.0.0",
+    "vitest": "^4.0.18"
+  }
+}

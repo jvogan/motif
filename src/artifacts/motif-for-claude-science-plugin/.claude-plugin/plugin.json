@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "motif-for-claude-science",
+  "displayName": "Motif for Claude Science",
+  "version": "0.1.0",
+  "description": "Creates a portable molecular-biology workbench with alignment, Sanger review, cloning design, typed results, and recovery workflows.",
+  "author": {
+    "name": "Jacob Vogan"
+  },
+  "license": "MIT",
+  "keywords": [
+    "bioinformatics",
+    "dna",
+    "rna",
+    "protein",
+    "sequence-analysis"
+  ]
+}

@@ -1,0 +1,1415 @@
+.motif-cs-cloning-design-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: color-mix(in srgb, var(--text-primary) 18%, transparent);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+}
+
+.motif-cs-cloning-design-overlay[data-embedded="true"] {
+  position: static;
+  display: flex;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0;
+  background: transparent;
+}
+
+.motif-cs-cloning-design {
+  display: flex;
+  width: min(1180px, calc(100vw - 48px));
+  height: min(860px, calc(100vh - 48px));
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  overscroll-behavior: contain;
+}
+
+[data-embedded="true"] > .motif-cs-cloning-design {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+}
+
+.motif-cs-cloning-design button,
+.motif-cs-cloning-design select,
+.motif-cs-cloning-design input,
+.motif-cs-cloning-design summary,
+.motif-cs-cloning-design a {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.motif-cs-cloning-design button,
+.motif-cs-cloning-design select,
+.motif-cs-cloning-design input {
+  font: inherit;
+}
+
+.motif-cs-cloning-design button:focus-visible,
+.motif-cs-cloning-design select:focus-visible,
+.motif-cs-cloning-design input:focus-visible,
+.motif-cs-cloning-design summary:focus-visible,
+.motif-cs-cloning-design a:focus-visible,
+.motif-cs-cloning-design-part:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.motif-cs-cloning-design-header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.motif-cs-cloning-design-header > div {
+  min-width: 0;
+}
+
+.motif-cs-cloning-design-header h2,
+.motif-cs-cloning-design-header p {
+  margin: 0;
+}
+
+.motif-cs-cloning-design-header h2 {
+  margin-top: 2px;
+  font-size: 17px;
+  line-height: 1.2;
+  text-wrap: balance;
+}
+
+.motif-cs-cloning-design-header p {
+  margin-top: 3px;
+  color: var(--text-muted);
+  font-size: 10.5px;
+  line-height: 1.4;
+  text-wrap: pretty;
+}
+
+.motif-cs-cloning-design-kicker {
+  color: var(--text-muted);
+  font-size: 9px;
+  font-weight: 780;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.motif-cs-cloning-design-close,
+.motif-cs-cloning-design-part-actions button {
+  display: grid;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.motif-cs-cloning-design-close {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  font-size: 19px;
+}
+
+.motif-cs-cloning-design-close:hover,
+.motif-cs-cloning-design-part-actions button:hover {
+  border-color: var(--border-subtle);
+  background: var(--control-hover);
+  color: var(--text-primary);
+}
+
+.motif-cs-cloning-design-methods {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 190px));
+  gap: 6px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--bg-secondary) 52%, var(--bg-primary));
+}
+
+.motif-cs-cloning-design-methods button {
+  display: grid;
+  min-width: 0;
+  min-height: 42px;
+  gap: 1px;
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  text-align: left;
+  cursor: pointer;
+}
+
+.motif-cs-cloning-design-methods button:hover {
+  background: var(--control-hover);
+  color: var(--text-secondary);
+}
+
+.motif-cs-cloning-design-methods button[data-selected] {
+  border-color: var(--border-strong);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+.motif-cs-cloning-design-methods strong {
+  font-size: 11.5px;
+}
+
+.motif-cs-cloning-design-methods small {
+  overflow: hidden;
+  font-size: 9px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.motif-cs-cloning-design-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(250px, 290px);
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.motif-cs-cloning-design-main,
+.motif-cs-cloning-design-review {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.motif-cs-cloning-design-main {
+  background: var(--bg-primary);
+}
+
+.motif-cs-cloning-design-review {
+  border-left: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--bg-secondary) 52%, var(--bg-primary));
+}
+
+.motif-cs-cloning-design-setup,
+.motif-cs-cloning-design-parts,
+.motif-cs-cloning-design-junctions,
+.motif-cs-cloning-design-preview,
+.motif-cs-cloning-design-review > section,
+.motif-cs-cloning-design-issues {
+  margin: 0;
+  padding: 12px 14px;
+  border: 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.motif-cs-cloning-design-section-head,
+.motif-cs-cloning-design-review-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.motif-cs-cloning-design-section-head > div:first-child {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+  gap: 7px;
+}
+
+.motif-cs-cloning-design-section-head h3 {
+  min-width: 0;
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.2;
+  text-wrap: balance;
+}
+
+.motif-cs-cloning-design-section-head > div:first-child > span {
+  color: var(--text-muted);
+  font: 9px/1 var(--font-mono);
+}
+
+.motif-cs-cloning-design-section-head > div:first-child > em {
+  color: var(--text-muted);
+  font: 9px/1 var(--font-mono);
+  font-style: normal;
+}
+
+.motif-cs-cloning-design-section-head > small {
+  max-width: 42ch;
+  color: var(--text-muted);
+  font-size: 9.5px;
+  line-height: 1.35;
+  text-align: right;
+  text-wrap: pretty;
+}
+
+.motif-cs-cloning-design-field-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.motif-cs-cloning-design-field-grid > label,
+.motif-cs-cloning-design-add label,
+.motif-cs-cloning-design-footer > label {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 720;
+  letter-spacing: .015em;
+}
+
+.motif-cs-cloning-design-field-grid > label > small {
+  color: var(--text-muted);
+  font-size: 9.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: 1.35;
+  text-wrap: pretty;
+}
+
+.motif-cs-cloning-design-organization-help {
+  margin: 8px 2px 0;
+  color: var(--text-muted);
+  font-size: 9.5px;
+  line-height: 1.4;
+  text-wrap: pretty;
+}
+
+.motif-cs-cloning-design-organization-help strong {
+  color: var(--text-secondary);
+}
+
+.motif-cs-cloning-design-reaction {
+  margin-left: 4px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+.motif-cs-cloning-design-advanced {
+  margin-top: 7px;
+  color: var(--text-muted);
+  font-size: 9.5px;
+}
+
+.motif-cs-cloning-design-advanced summary {
+  width: fit-content;
+  color: var(--text-secondary);
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.motif-cs-cloning-design-advanced > label {
+  display: grid;
+  max-width: 240px;
+  gap: 3px;
+  margin-top: 7px;
+}
+
+.motif-cs-cloning-design select,
+.motif-cs-cloning-design input[type="text"],
+.motif-cs-cloning-design input[type="search"],
+.motif-cs-cloning-design input[type="number"] {
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text-primary);
+  font-size: 10.5px;
+}
+
+.motif-cs-cloning-design select:hover,
+.motif-cs-cloning-design input[type="text"]:hover,
+.motif-cs-cloning-design input[type="search"]:hover,
+.motif-cs-cloning-design input[type="number"]:hover {
+  border-color: var(--border-strong);
+}
+
+.motif-cs-cloning-design select:disabled,
+.motif-cs-cloning-design input:disabled,
+.motif-cs-cloning-design button:disabled {
+  opacity: .46;
+  cursor: default;
+}
+
+.motif-cs-cloning-design-segmented {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.motif-cs-cloning-design-segmented legend {
+  grid-column: 1 / -1;
+  margin-bottom: 3px;
+  padding: 0;
+  color: var(--text-muted);
+  font-size: 9px;
+  font-weight: 720;
+}
+
+.motif-cs-cloning-design-segmented label {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-height: 30px;
+  border: 1px solid var(--border-subtle);
+  background: var(--control-bg);
+  color: var(--text-muted);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.motif-cs-cloning-design-segmented label:first-of-type {
+  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+}
+
+.motif-cs-cloning-design-segmented label:last-of-type {
+  margin-left: -1px;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+
+.motif-cs-cloning-design-segmented label[data-selected] {
+  z-index: 1;
+  border-color: var(--border-strong);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+.motif-cs-cloning-design-segmented label:focus-within {
+  z-index: 2;
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.motif-cs-cloning-design-segmented input {
+  position: absolute;
+  opacity: 0;
+}
+
+.motif-cs-cloning-design-number-field {
+  position: relative;
+  display: block;
+}
+
+.motif-cs-cloning-design-number-field input {
+  padding-right: 28px;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.motif-cs-cloning-design-number-field small {
+  position: absolute;
+  top: 9px;
+  right: 8px;
+  color: var(--text-muted);
+  font: 9px/1 var(--font-mono);
+  pointer-events: none;
+}
+
+.motif-cs-cloning-design-profile-note {
+  margin-top: 9px;
+  padding: 7px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--bg-secondary) 48%, var(--bg-primary));
+  color: var(--text-secondary);
+  font-size: 9.5px;
+}
+
+.motif-cs-cloning-design-profile-note summary,
+.motif-cs-cloning-design-issues summary {
+  color: var(--text-primary);
+  font-weight: 720;
+  cursor: pointer;
+}
+
+.motif-cs-cloning-design-profile-note p {
+  margin: 7px 0;
+  line-height: 1.4;
+  text-wrap: pretty;
+}
+
+.motif-cs-cloning-design-profile-note a {
+  display: inline-block;
+  margin-top: 7px;
+  color: var(--text-secondary);
+  text-underline-offset: 2px;
+}
+
+.motif-cs-cloning-design-profile-note a:hover {
+  color: var(--accent);
+}
+
+.motif-cs-cloning-design-fusion-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+
+.motif-cs-cloning-design-fusion-strip code {
+  padding: 2px 4px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 2px;
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font: 9.5px/1.1 var(--font-mono);
+}
+
+.motif-cs-cloning-design-help {
+  margin: 5px 0 8px 22px;
+  color: var(--text-muted);
+  font-size: 9px;
+  line-height: 1.35;
+}
+
+.motif-cs-cloning-design-section-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 5px;
+}
+
+.motif-cs-cloning-design-part-list {
+  min-width: 0;
+  border-block: 1px solid var(--border-subtle);
+}
+
+.motif-cs-cloning-design-part {
+  display: grid;
+  grid-template-columns: 42px minmax(210px, .95fr) minmax(225px, 1.3fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 58px;
+  padding: 6px 4px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-primary);
+  cursor: default;
+}
+
+.motif-cs-cloning-design-part:last-child {
+  border-bottom: 0;
+}
+
+.motif-cs-cloning-design-part:hover {
+  background: color-mix(in srgb, var(--control-hover) 68%, var(--bg-primary));
+}
+
+.motif-cs-cloning-design-part[data-dragging] {
+  opacity: .56;
+  user-select: none;
+}
+
+.motif-cs-cloning-design-part-order {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  justify-self: center;
+  width: 38px;
+  height: 34px;
+  gap: 2px;
+  padding: 0 4px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font: 9px/1 var(--font-mono);
+  cursor: grab;
+}
+
+.motif-cs-cloning-design-part-order:hover {
+  border-color: var(--border-subtle);
+  background: var(--control-hover);
+  color: var(--text-primary);
+}
+
+.motif-cs-cloning-design-part-order:active {
+  cursor: grabbing;
+}
+
+.motif-cs-cloning-design-part-order > span {
+  font-size: 14px;
+}
+
+.motif-cs-cloning-design-part-identity {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.motif-cs-cloning-design-part-identity-top {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.motif-cs-cloning-design-part-identity-top > label {
+  min-width: 0;
+}
+
+.motif-cs-cloning-design-orientation {
+  display: flex;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.motif-cs-cloning-design-orientation button {
+  min-width: 34px;
+  height: 30px;
+  padding: 0 6px;
+  border: 1px solid var(--border-subtle);
+  background: var(--control-bg);
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 720;
+  cursor: pointer;
+}
+
+.motif-cs-cloning-design-orientation button:first-of-type {
+  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+}
+
+.motif-cs-cloning-design-orientation button:last-of-type {
+  margin-left: -1px;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+
+.motif-cs-cloning-design-orientation button:hover {
+  z-index: 1;
+  border-color: var(--border-strong);
+  background: var(--control-hover);
+  color: var(--text-primary);
+}
+
+.motif-cs-cloning-design-orientation button[data-selected] {
+  z-index: 1;
+  border-color: var(--border-strong);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+.motif-cs-cloning-design-part-identity small {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 9.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.motif-cs-cloning-design-part-metrics {
+  display: grid;
+  grid-template-columns: minmax(65px, .85fr) minmax(95px, 1.25fr) minmax(46px, .55fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.motif-cs-cloning-design-part-metrics[data-method="gibson"] {
+  grid-template-columns: repeat(2, minmax(90px, 1fr));
+}
+
+.motif-cs-cloning-design-part-metrics > span:not(.motif-cs-cloning-design-state) {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.motif-cs-cloning-design-source-identity {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.motif-cs-cloning-design-source-identity select {
+  height: 26px;
+  padding-inline: 6px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+}
+
+.motif-cs-cloning-design-part-metrics small {
+  color: var(--text-muted);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .025em;
+  text-transform: uppercase;
+}
+
+.motif-cs-cloning-design-part-metrics strong,
+.motif-cs-cloning-design-part-metrics code {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 9.5px;
+  font-weight: 620;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.motif-cs-cloning-design-part-metrics code {
+  font-family: var(--font-mono);
+}
+
+.motif-cs-cloning-design-state,
+.motif-cs-cloning-design-plan-badge {
+  justify-self: start;
+  padding: 3px 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-size: 9.5px;
+  font-weight: 720;
+  white-space: nowrap;
+}
+
+.motif-cs-cloning-design-state[data-state="ready"],
+.motif-cs-cloning-design-plan-badge[data-state="ready"] {
+  border-color: color-mix(in srgb, var(--green) 36%, var(--border-subtle));
+  background: color-mix(in srgb, var(--green) 6%, var(--bg-primary));
+}
+
+.motif-cs-cloning-design-state[data-state="needs_domestication"],
+.motif-cs-cloning-design-plan-badge[data-state="needs_preparation"] {
+  border-color: color-mix(in srgb, var(--amber) 38%, var(--border-subtle));
+  background: color-mix(in srgb, var(--amber) 6%, var(--bg-primary));
+}
+
+.motif-cs-cloning-design-plan-badge[data-state="blocked"] {
+  border-color: color-mix(in srgb, var(--red) 40%, var(--border-subtle));
+  background: color-mix(in srgb, var(--red) 5%, var(--bg-primary));
+}
+
+.motif-cs-cloning-design-part-actions {
+  display: flex;
+  gap: 2px;
+}
+
+.motif-cs-cloning-design-part-actions button {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  font-size: 11px;
+}
+
+.motif-cs-cloning-design-fusion-editor {
+  grid-column: 2 / -1;
+  min-width: 0;
+  padding: 5px 0 2px;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  font-size: 9.5px;
+}
+
+.motif-cs-cloning-design-fusion-editor summary {
+  width: fit-content;
+  color: var(--text-secondary);
+  font-weight: 680;
+  cursor: pointer;
+}
+
+.motif-cs-cloning-design-fusion-editor > div {
+  display: grid;
+  grid-template-columns: minmax(105px, 150px) auto minmax(105px, 150px);
+  align-items: end;
+  gap: 7px;
+  margin-top: 7px;
+}
+
+.motif-cs-cloning-design-fusion-editor label {
+  display: grid;
+  gap: 3px;
+  color: var(--text-muted);
+  font-weight: 650;
+}
+
+.motif-cs-cloning-design-fusion-editor input {
+  font-family: var(--font-mono);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.motif-cs-cloning-design-fusion-editor > small {
+  display: block;
+  max-width: 74ch;
+  margin-top: 6px;
+  line-height: 1.35;
+}
+
+.motif-cs-cloning-design-add {
+  display: grid;
+  grid-template-columns: minmax(145px, .8fr) minmax(180px, 1fr) auto;
+  align-items: end;
+  gap: 7px;
+  margin-top: 9px;
+}
+
+.motif-cs-cloning-design-source-limit {
+  margin: 8px 0 0;
+  color: var(--text-muted);
+  font-size: 9.5px;
+  line-height: 1.35;
+}
+
+.motif-cs-cloning-design-primary-button,
+.motif-cs-cloning-design-secondary-button,
+.motif-cs-cloning-design-quiet-button,
+.motif-cs-cloning-design-wide-button {
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text-primary);
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.motif-cs-cloning-design-primary-button {
+  border-color: color-mix(in srgb, var(--accent) 62%, var(--border-strong));
+  background: var(--accent);
+  color: var(--accent-contrast, var(--bg-primary));
+}
+
+.motif-cs-cloning-design-primary-button:hover:not(:disabled) {
+  filter: brightness(.96);
+}
+
+.motif-cs-cloning-design-secondary-button:hover:not(:disabled),
+.motif-cs-cloning-design-quiet-button:hover:not(:disabled),
+.motif-cs-cloning-design-wide-button:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  background: var(--control-hover);
+}
+
+.motif-cs-cloning-design-quiet-button {
+  min-height: 26px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 9px;
+}
+
+.motif-cs-cloning-design-lanes {
+  display: grid;
+  gap: 5px;
+  margin-top: 9px;
+}
+
+.motif-cs-cloning-design-lanes > p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 9.5px;
+}
+
+.motif-cs-cloning-design-lane {
+  display: grid;
+  grid-template-columns: minmax(190px, .85fr) minmax(180px, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--bg-secondary) 44%, var(--bg-primary));
+}
+
+.motif-cs-cloning-design-lane > div {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 5px;
+}
+
+.motif-cs-cloning-design-lane strong {
+  overflow: hidden;
+  font-size: 9.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.motif-cs-cloning-design-lane em {
+  padding: 2px 4px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 9px;
+  font-style: normal;
+}
+
+.motif-cs-cloning-design-lane > code {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font: 9px/1.25 var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.motif-cs-cloning-design-lane > span {
+  color: var(--text-muted);
+  font: 9.5px/1 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.motif-cs-cloning-design-lane[data-state="ready"] {
+  border-color: color-mix(in srgb, var(--green) 30%, var(--border-subtle));
+}
+
+.motif-cs-cloning-design-lane[data-state="low_tm"] {
+  border-color: color-mix(in srgb, var(--amber) 38%, var(--border-subtle));
+}
+
+.motif-cs-cloning-design-lane[data-state="missing_overlap"] {
+  border-color: color-mix(in srgb, var(--red) 38%, var(--border-subtle));
+}
+
+.motif-cs-cloning-design-product {
+  display: grid;
+  gap: 8px;
+  margin-top: 9px;
+  padding: 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--bg-secondary) 42%, var(--bg-primary));
+}
+
+.motif-cs-cloning-design-product-chain {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+
+.motif-cs-cloning-design-product-chain > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-size: 9px;
+}
+
+.motif-cs-cloning-design-product-chain small {
+  color: var(--text-muted);
+  font: 9px/1 var(--font-mono);
+  letter-spacing: .02em;
+  text-transform: uppercase;
+}
+
+.motif-cs-cloning-design-product-chain b {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.motif-cs-cloning-design-product dl,
+.motif-cs-cloning-design-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+  margin: 0;
+}
+
+.motif-cs-cloning-design-product dl > div,
+.motif-cs-cloning-design-summary > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.motif-cs-cloning-design-product dt,
+.motif-cs-cloning-design-summary dt {
+  color: var(--text-muted);
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.motif-cs-cloning-design-product dd,
+.motif-cs-cloning-design-summary dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 9.5px;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.motif-cs-cloning-design-product dd code {
+  font-family: var(--font-mono);
+}
+
+.motif-cs-cloning-design-sequence-preview {
+  overflow: hidden;
+  padding: 6px 7px;
+  border-radius: 3px;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font: 9.5px/1.35 var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.motif-cs-cloning-design-empty {
+  display: grid;
+  min-height: 64px;
+  place-content: center;
+  gap: 3px;
+  padding: 10px;
+  border: 1px dashed var(--border-subtle);
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.motif-cs-cloning-design-preview .motif-cs-cloning-design-empty {
+  margin-top: 9px;
+}
+
+.motif-cs-cloning-design-empty strong {
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+
+.motif-cs-cloning-design-empty span {
+  max-width: 60ch;
+  font-size: 9px;
+  line-height: 1.4;
+  text-wrap: pretty;
+}
+
+.motif-cs-cloning-design-review-head > span,
+.motif-cs-cloning-design-review-head > strong {
+  color: var(--text-secondary);
+  font-size: 9.5px;
+  font-weight: 760;
+  letter-spacing: .025em;
+  text-transform: uppercase;
+}
+
+.motif-cs-cloning-design-review-head > strong[data-state="ready"] {
+  color: var(--green);
+}
+
+.motif-cs-cloning-design-review-head > strong[data-state="needs_preparation"] {
+  color: var(--amber);
+}
+
+.motif-cs-cloning-design-review-head > strong[data-state="blocked"] {
+  color: var(--red);
+}
+
+.motif-cs-cloning-design-review-head > small {
+  color: var(--text-muted);
+  font: 9px/1 var(--font-mono);
+}
+
+.motif-cs-cloning-design-summary {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-top: 9px;
+}
+
+.motif-cs-cloning-design-next-level {
+  margin: 9px 0 0;
+  padding: 7px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-muted);
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+.motif-cs-cloning-design-next-level strong {
+  color: var(--text-secondary);
+}
+
+.motif-cs-cloning-design-checklist {
+  display: grid;
+  gap: 5px;
+  margin-top: 9px;
+}
+
+.motif-cs-cloning-design-check {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 6px;
+  min-width: 0;
+  padding: 7px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+}
+
+.motif-cs-cloning-design-check > span {
+  display: grid;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+  color: var(--text-secondary);
+  font: 9px/1 var(--font-mono);
+}
+
+.motif-cs-cloning-design-check[data-state="required"] > span {
+  border-color: var(--red);
+  color: var(--red);
+}
+
+.motif-cs-cloning-design-check[data-state="recommended"] > span {
+  border-color: var(--amber);
+  color: var(--amber);
+}
+
+.motif-cs-cloning-design-check[data-state="complete"] > span {
+  border-color: var(--green);
+  color: var(--green);
+}
+
+.motif-cs-cloning-design-check > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.motif-cs-cloning-design-check strong {
+  color: var(--text-secondary);
+  font-size: 9.5px;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.motif-cs-cloning-design-check small {
+  color: var(--text-muted);
+  font-size: 9.5px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.motif-cs-cloning-design-check button {
+  justify-self: start;
+  margin-top: 3px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 9.5px;
+  font-weight: 720;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.motif-cs-cloning-design-check button:hover {
+  color: var(--accent);
+}
+
+.motif-cs-cloning-design-check > em {
+  color: var(--text-muted);
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 720;
+  letter-spacing: .02em;
+  text-transform: uppercase;
+}
+
+.motif-cs-cloning-design-wide-button {
+  width: 100%;
+  margin-top: 7px;
+}
+
+.motif-cs-cloning-design-issues {
+  background: transparent;
+  font-size: 9px;
+}
+
+.motif-cs-cloning-design-issues ul {
+  display: grid;
+  gap: 4px;
+  margin: 8px 0 0;
+  padding-left: 17px;
+  color: var(--text-muted);
+  line-height: 1.35;
+}
+
+.motif-cs-cloning-design-issues li[data-level="error"]::marker {
+  color: var(--red);
+}
+
+.motif-cs-cloning-design-issues li[data-level="warning"]::marker {
+  color: var(--amber);
+}
+
+.motif-cs-cloning-design-footer {
+  display: grid;
+  grid-template-columns: minmax(190px, 280px) minmax(140px, 1fr) auto;
+  align-items: end;
+  gap: 9px 12px;
+  padding: 9px 14px;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--bg-primary);
+}
+
+.motif-cs-cloning-design-feedback {
+  align-self: center;
+  min-width: 0;
+}
+
+.motif-cs-cloning-design-feedback p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 9px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.motif-cs-cloning-design-feedback p[role="alert"] {
+  color: var(--red);
+}
+
+.motif-cs-cloning-design-feedback p[data-empty] {
+  display: none;
+}
+
+.motif-cs-cloning-design-save-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.motif-cs-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (max-width: 920px) {
+  .motif-cs-cloning-design-body {
+    grid-template-columns: minmax(0, 1fr) minmax(220px, 250px);
+  }
+
+  .motif-cs-cloning-design-part {
+    grid-template-columns: 42px minmax(0, 1fr) auto;
+  }
+
+  .motif-cs-cloning-design-part-metrics {
+    grid-column: 2 / -1;
+    grid-row: 2;
+    grid-template-columns: repeat(2, minmax(75px, 1fr));
+  }
+
+  .motif-cs-cloning-design-part-actions {
+    grid-column: 3;
+    grid-row: 1;
+  }
+
+  .motif-cs-cloning-design-fusion-editor {
+    grid-column: 2 / -1;
+  }
+
+  .motif-cs-cloning-design-fusion-editor > div {
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  }
+
+  .motif-cs-cloning-design-state {
+    justify-self: stretch;
+    text-align: center;
+  }
+}
+
+@media (max-width: 760px) {
+  .motif-cs-cloning-design-overlay {
+    padding: 0;
+  }
+
+  .motif-cs-cloning-design {
+    width: 100vw;
+    height: 100vh;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .motif-cs-cloning-design-body {
+    display: block;
+    overflow: auto;
+  }
+
+  .motif-cs-cloning-design-main,
+  .motif-cs-cloning-design-review {
+    overflow: visible;
+  }
+
+  .motif-cs-cloning-design-review {
+    border-top: 1px solid var(--border-subtle);
+    border-left: 0;
+  }
+
+  .motif-cs-cloning-design-field-grid,
+  .motif-cs-cloning-design-field-grid[data-method="gibson"] {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .motif-cs-cloning-design-part {
+    grid-template-columns: 42px minmax(0, 1fr) auto;
+  }
+
+  .motif-cs-cloning-design-part-metrics {
+    grid-column: 2 / -1;
+    grid-row: 2;
+  }
+
+  .motif-cs-cloning-design-part-actions {
+    grid-column: 3;
+    grid-row: 1;
+  }
+
+  .motif-cs-cloning-design-fusion-editor {
+    grid-column: 2 / -1;
+  }
+
+  .motif-cs-cloning-design-lane {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .motif-cs-cloning-design-lane > code {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .motif-cs-cloning-design-footer {
+    position: sticky;
+    z-index: 4;
+    bottom: 0;
+    grid-template-columns: minmax(160px, 1fr) auto;
+    flex: 0 0 auto;
+  }
+
+  .motif-cs-cloning-design-feedback {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+}
+
+@media (max-width: 480px) {
+  .motif-cs-cloning-design-header {
+    padding-inline: 12px;
+  }
+
+  .motif-cs-cloning-design-methods {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    padding-inline: 10px;
+  }
+
+  .motif-cs-cloning-design-field-grid,
+  .motif-cs-cloning-design-add,
+  .motif-cs-cloning-design-footer {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .motif-cs-cloning-design-section-head {
+    align-items: start;
+    flex-direction: column;
+  }
+
+  .motif-cs-cloning-design-section-head > small {
+    padding-left: 22px;
+    text-align: left;
+  }
+
+  .motif-cs-cloning-design-part {
+    grid-template-columns: 42px minmax(0, 1fr);
+  }
+
+  .motif-cs-cloning-design-part-actions {
+    grid-column: 2;
+    grid-row: 3;
+    justify-content: flex-end;
+  }
+
+  .motif-cs-cloning-design-part-metrics {
+    grid-column: 2;
+  }
+
+  .motif-cs-cloning-design-fusion-editor {
+    grid-column: 1 / -1;
+  }
+
+  .motif-cs-cloning-design-fusion-editor > div {
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  }
+
+  .motif-cs-cloning-design-lane {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .motif-cs-cloning-design-lane > code {
+    grid-column: 1;
+  }
+
+  .motif-cs-cloning-design-footer > label,
+  .motif-cs-cloning-design-save-actions {
+    width: 100%;
+  }
+
+  .motif-cs-cloning-design-save-actions > button {
+    flex: 1 1 50%;
+  }
+}
+
+@media (pointer: coarse) {
+  .motif-cs-cloning-design-part-order,
+  .motif-cs-cloning-design-part-actions button,
+  .motif-cs-cloning-design-orientation button {
+    min-width: 44px;
+    height: 44px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .motif-cs-cloning-design * {
+    scroll-behavior: auto !important;
+  }
+}
