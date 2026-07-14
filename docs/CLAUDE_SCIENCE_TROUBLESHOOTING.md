@@ -98,26 +98,29 @@ enabled is a reasonable review posture.
 ## Tool succeeds but no workbench appears
 
 A successful tool result, text summary, or `ui://` resource link proves MCP
-execution. It does not prove that Claude Science mounted a visible App frame.
+execution and parsing. It does not prove that Claude Science mounted a visible
+App frame.
 
-For the current local beta, the most reliable visible route is:
+Call `motif_open_workbench` with the complete FASTA or GenBank text in
+`content` and the exact basename in `filename`. Verify the returned source,
+record count, residue count, and bounded record names/IDs. Do not call the tool
+with only a path or filename, and do not report a mount until a frame visibly
+identifies itself as **Motif** and contains the intended records.
 
-1. Add a FASTA or GenBank artifact to the conversation.
-2. Open its viewer chooser.
-3. Select Motif when multiple viewers are available.
-4. Confirm the host chrome identifies `motif-local` and
-   `motif_open_workbench`.
-5. Confirm **Motif** is visible inside the mounted workbench and verify the
-   exact record name, molecule, topology, length, and sequence.
+Current Claude Science local/custom connector builds may not register Motif as
+an artifact viewer. Use the viewer chooser only when Motif is actually listed.
+The message `Sequence viewer unavailable—showing as text` is Claude Science's
+generic artifact fallback; it does not mean that Motif rejected the sequence.
 
-Calling `motif_open_workbench` directly may return a valid result without
-automatically opening a tile. Do not report a mounted workbench until it is
-visible. If App mounting is unavailable, call
-`motif_create_workbench_artifact`, save the embedded HTML, and click it to open
-the standalone workbench.
+If the direct call parses successfully but no frame appears, call
+`motif_create_workbench_artifact` with the same complete `content` and
+`filename`, plus a safe `.html` `outputFilename`. Save the exact embedded HTML
+resource and click or open it in Claude Science's right pane. The standalone
+workbench is interactive, but it is an immutable snapshot rather than a live
+MCP App.
 
 Clicking a saved HTML artifact is normal. It does not mean the connector is
-disconnected.
+disconnected. Regenerate the artifact after source or Motif changes.
 
 ## Rebuild, reconnect, or create a new artifact?
 

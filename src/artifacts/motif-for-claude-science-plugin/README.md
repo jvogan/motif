@@ -60,8 +60,20 @@ npm run claude-science:setup
 That command builds and doctors the connector before adding the isolated
 `motif-local` entry. It preserves unrelated local connectors. Fully quit and
 reopen Claude Science after granting the exact Motif checkout and changing a
-registration, then reconnect `motif-local`. In the current beta, FASTA and
-GenBank files mount most reliably through the artifact viewer chooser.
+registration, then reconnect `motif-local`.
+
+Call `motif_open_workbench` with the complete sequence text and its exact
+filename. Its structured result proves execution and parsing; only a visible
+Motif frame proves that Claude Science mounted the MCP App. Current local/custom
+connector builds may not offer Motif in the artifact viewer chooser, so use the
+chooser only when Motif is actually listed. The host message
+`Sequence viewer unavailable—showing as text` is a generic fallback, not a
+Motif parse failure.
+
+If no frame mounts, call `motif_create_workbench_artifact` with the same input
+and a safe HTML output filename. Save the exact returned HTML resource and
+click or open it in Claude Science's right pane. The workbench is interactive,
+but the file is an immutable snapshot rather than a live MCP App.
 
 The built plugin includes `docs/CLAUDE_SCIENCE_QUICKSTART.md` and
 `docs/CLAUDE_SCIENCE_TROUBLESHOOTING.md`. The recovery guide contains the exact

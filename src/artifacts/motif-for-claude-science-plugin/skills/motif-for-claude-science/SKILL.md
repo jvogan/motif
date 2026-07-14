@@ -19,14 +19,18 @@ when it carries a useful format/provenance hint and include an explicit
 Verify the returned `motif.mcp.workbench.v1` schema, mode, source name, record
 count, and residue count against the intended input. A successful tool call
 does not prove a frame mounted: confirm the visible Motif identity and exact
-records in the rendered UI. In the current Claude Science beta, FASTA and
-GenBank artifacts mount most reliably through the artifact viewer chooser.
+records in the rendered UI. Current Claude Science local/custom connector
+builds may not register Motif as an artifact viewer. Use the viewer chooser
+only when Motif is actually listed. The host message
+`Sequence viewer unavailable—showing as text` is a generic fallback, not a
+Motif parse error.
 
 If the host does not mount MCP Apps, call
 `motif_create_workbench_artifact` with the same bounded input. It returns a
 self-contained HTML resource plus filename, byte count, and SHA-256 metadata;
-it does not write a file. Save/open that resource through the host and verify
-the visible workbench.
+it does not write a file. Preserve the exact returned HTML, save it, and click
+or open it in Claude Science's right pane. Verify the visible workbench. It is
+interactive, but it is an immutable snapshot rather than a live MCP App.
 
 These connector tools are ephemeral viewer/export operations. They do not
 write a sequence database, run external executables, or make AB1 binary data a

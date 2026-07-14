@@ -21,9 +21,11 @@ send binary AB1/ABI content through this text tool.
 
 Verify the returned `motif.mcp.workbench.v1` schema, source name, record count,
 and residue count. A successful call is not proof that the host mounted the
-App: confirm the visible Motif identity and intended sequence in the frame. In
-Claude Science's current local beta, open FASTA and GenBank artifacts through
-the viewer chooser when a direct tool call returns text without a tile.
+App: confirm the visible Motif identity and intended sequence in the frame.
+Current Claude Science local/custom connector builds may not register Motif as
+an artifact viewer. Use the viewer chooser only when Motif is actually listed;
+`Sequence viewer unavailable—showing as text` is a generic host fallback, not
+a Motif parse error.
 
 ## Create the portable fallback
 
@@ -31,7 +33,9 @@ If the host does not mount MCP Apps, call
 `motif_create_workbench_artifact` with the same input. It returns an embedded,
 self-contained HTML resource and `motif.mcp.artifact-export.v1` metadata with a
 safe filename, byte count, and SHA-256. It does not write a file; save or open
-the resource through the host and verify it visually.
+the exact resource through the host and verify it visually. The opened
+workbench is interactive, but it is an immutable snapshot rather than a live
+MCP App.
 
 ## Safety boundary
 

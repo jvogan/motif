@@ -83,19 +83,41 @@ npm run claude-science:check-local
 npm run claude-science:doctor
 ```
 
-Both commands must pass. Then add a small FASTA or GenBank file to a Claude
-Science conversation, open its viewer chooser, and select Motif. Confirm that:
+Both commands must pass. Then attach a small FASTA or GenBank file and ask
+Claude Science to make the input explicit:
 
-- Claude Science identifies `motif-local` and `motif_open_workbench`;
-- **Motif** is visible inside the workbench;
-- the record name, molecule, topology, length, and sequence match the source;
-  and
-- Inventory, Sequence, Map, and Tools respond to mouse and keyboard.
+```text
+Read the complete text of sample.gb. Call motif-local's
+motif_open_workbench exactly once with filename set to sample.gb and content
+set to the complete GenBank text, including ORIGIN. Do not call it without the
+file content. Verify the returned source name, record count, residue count,
+and record names/IDs, then tell me whether a visible Motif frame mounted.
+```
 
-Some Claude Science builds return a successful direct tool result without
-automatically opening a visible App tile. The artifact viewer route is the
-preferred visual acceptance path. The HTML fallback always remains available
-through `motif_create_workbench_artifact`.
+Replace `sample.gb` with the exact basename. For FASTA, likewise pass the
+complete FASTA text. A successful tool result proves execution and parsing; a
+text summary or `ui://` link does not prove that the MCP App mounted. Confirm a
+visible **Motif** identity and matching records before testing Inventory,
+Sequence, Map, and Tools with mouse and keyboard.
+
+Current Claude Science local/custom connector builds may not register Motif as
+an artifact viewer. If Motif is actually listed in the viewer chooser, selecting
+it is a convenient shortcut. If Claude Science instead shows the message
+`Sequence viewer unavailable—showing as text`, that is its generic display
+fallback, not a Motif parser failure.
+
+If no Motif frame appears, use the reliable portable fallback:
+
+```text
+Call motif-local's motif_create_workbench_artifact with filename set to
+sample.gb, content set to the same complete GenBank text, and outputFilename
+set to sample-motif.html. Preserve the exact returned HTML resource so I can
+save it and click or open it in Claude Science's right pane.
+```
+
+The opened HTML is a fully interactive Motif workbench, but it is an immutable
+snapshot. A later source edit or Motif rebuild requires a newly generated HTML
+artifact.
 
 ## Upgrade
 

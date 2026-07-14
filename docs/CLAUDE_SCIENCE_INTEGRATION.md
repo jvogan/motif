@@ -99,29 +99,34 @@ npm run claude-science:doctor
 
 ## Exercise the in-window workflow
 
-The current Claude Science beta most reliably mounts local Apps through its
-artifact viewer route:
+Use the explicit tool path as the primary protocol test:
 
-1. Add a real `.fasta`, `.fa`, `.fna`, `.faa`, `.gb`, `.gbk`, `.gbff`,
-   `.genbank`, or `.seq` artifact to the conversation.
-2. Open the artifact's viewer chooser and select Motif when more than one
-   connector claims the file type.
-3. Confirm Claude Science chrome names `motif-local` and
-   `motif_open_workbench`.
-4. Confirm the workbench topbar visibly says **Motif** at embedded widths and
-   **Motif for Claude Science** when space permits.
-5. Verify record name, molecule, topology, residue count, sequence content,
-   annotations, selection drag, map selection, theme, and pane resizing.
+1. Give Claude Science the complete text of a real `.fasta`, `.fa`, `.fna`,
+   `.faa`, `.gb`, `.gbk`, `.gbff`, `.genbank`, or `.seq` artifact.
+2. Call `motif_open_workbench` with that complete text as `content` and the
+   exact basename as `filename`.
+3. Verify the returned schema, source name, record count, residue count, and
+   bounded record names/IDs against the input.
+4. Separately confirm whether a frame mounted. A mounted frame visibly says
+   **Motif** and contains the intended records; a tool summary or `ui://` link
+   proves execution only.
 
-Calling `motif_open_workbench` directly is still useful, but this beta may show
-only the text/tool result rather than automatically mounting a tile. That is a
-host behavior, not permission to claim a frame opened. Use the artifact-viewer
-route for the acceptance screenshot.
+Current Claude Science local/custom connector builds may not register Motif as
+an artifact viewer. The viewer chooser is an optional shortcut only when Motif
+is actually listed. `Sequence viewer unavailable—showing as text` is the host's
+generic artifact fallback, not evidence of a Motif parse failure.
 
-If a host cannot mount MCP Apps, call
-`motif_create_workbench_artifact`. It returns a self-contained `text/html`
-resource containing the validated payload. Opening that artifact requires a
-click but does not depend on a live App lifecycle.
+If the host does not mount the MCP App, call
+`motif_create_workbench_artifact` with the same `content` and `filename` plus a
+safe `.html` `outputFilename`. Save the exact returned `text/html` resource and
+click or open it in Claude Science's right pane. This route does not depend on
+a live App lifecycle. It provides the full interactive Motif UI, but the HTML
+is an immutable snapshot and must be regenerated after source or build changes.
+
+For visual acceptance, verify record name, molecule, topology, residue count,
+sequence content, annotations, selection drag, map selection, theme, and pane
+resizing in whichever Motif frame was actually opened. Record which route was
+used; do not describe the HTML fallback as a live MCP App.
 
 ## Supported inputs and safety boundary
 

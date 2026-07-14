@@ -113,11 +113,16 @@ installed. Grant the exact Motif checkout read access in Claude Science, fully
 quit and reopen the app, then reconnect `motif-local`.
 
 The connected surface exposes `motif_open_workbench` for bounded Motif payload,
-FASTA, GenBank, or raw-sequence review and
-`motif_create_workbench_artifact` as a saveable HTML fallback. The current
-Claude Science beta mounts FASTA/GenBank most reliably through its artifact
-viewer chooser. The workbench itself is the full Motif UI, including the
-visible Motif identity at embedded widths.
+FASTA, GenBank, or raw-sequence review. Pass the complete text and its exact
+filename; a successful result proves that Motif parsed the input, but only a
+visible Motif frame proves that Claude Science mounted the MCP App. Current
+local/custom connector builds may not list Motif in the artifact viewer
+chooser, so use that shortcut only when Motif is actually offered.
+
+The dependable visual fallback is `motif_create_workbench_artifact`: save the
+exact returned HTML resource, then click or open it in Claude Science's right
+pane. The resulting workbench is interactive, but it is an immutable snapshot
+and does not live-update when the source or Motif build changes.
 
 The connector does not write a database or run external executables. Its
 `window.motif*` API remains page-local and is used only by the bundled narrow
