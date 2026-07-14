@@ -2,13 +2,17 @@
 
 Motif is a portable molecular-biology workbench built for the Claude Science
 hackathon. It turns sequence records and analysis results into one
-self-contained HTML workspace that can be opened locally or mounted as a
-Claude Science MCP App, inspected visually, edited with mouse and keyboard,
-checkpointed, and shared as an ordinary file.
+self-contained HTML workspace that can be opened locally or in Claude
+Science, inspected visually, edited with mouse and keyboard, checkpointed, and
+shared as an ordinary file. Motif also declares a live MCP App; whether a local
+connector mounts automatically depends on the Claude Science host build.
 
 This repository is the standalone Motif source. It contains no desktop shell
 or native database. Its optional `motif-local` connector is ephemeral and
 Motif-owned; it does not depend on another application checkout.
+
+Motif is an independent hackathon project and is not an Anthropic product or
+an official Claude Science integration.
 
 ## What is included
 
@@ -31,7 +35,7 @@ Motif-owned; it does not depend on another application checkout.
 Requires Node.js 22.12 or newer.
 
 ```bash
-npm install
+npm ci
 npm run preview:motif
 ```
 
@@ -40,6 +44,35 @@ Open `preview/motif-artifact.html`, or start an editable Vite session with:
 ```bash
 npm run dev
 ```
+
+## First success in Claude Science
+
+Install the local connector from a fixed checkout:
+
+```bash
+npm run claude-science:setup
+```
+
+Grant Claude Science access to that exact checkout, fully quit and reopen the
+app, then reconnect **motif-local**. The connector should expose exactly
+`motif_open_workbench` and `motif_create_workbench_artifact`.
+
+For the most reliable first visual result, attach the bundled synthetic
+[`examples/motif-demo.gb`](examples/motif-demo.gb) and ask Claude Science:
+
+```text
+Read the complete text of motif-demo.gb, including ORIGIN. Call motif-local's
+motif_create_workbench_artifact exactly once with filename "motif-demo.gb",
+the complete content, title "Motif demo — MOTIFDEMO", and outputFilename
+"motif-demo-workbench.html". Preserve the exact returned HTML as a Claude
+Science artifact and open it in the right pane. Report the record name,
+topology, and residue count.
+```
+
+Clicking the generated HTML once is normal. It opens the full interactive
+workbench as an immutable snapshot. See the
+[Claude Science quickstart](docs/CLAUDE_SCIENCE_QUICKSTART.md) for permission,
+verification, and optional live-App steps.
 
 ## Build the distributable
 
@@ -66,6 +99,10 @@ The HTML and MCP App are self-contained: Vite's JavaScript and CSS assets are
 inlined, and the plugin contains its compiled connector, App, standalone
 template, and artifact resource. The ZIP is deterministic and its file/archive
 SHA-256 values are recorded beside it.
+
+The plugin ZIP is for Claude/plugin hosts. It does not by itself install the
+Claude Science local connector; use `npm run claude-science:setup` from the
+source checkout for that workflow.
 
 To generate an additional repo-local artifact with preloaded data:
 
@@ -133,15 +170,21 @@ Known host errors, reload boundaries, and visual acceptance steps are in the
 
 ## Data safety
 
-Motif runs locally and does not transmit sequence data by itself. External MSA
-tools run only when explicitly invoked outside the HTML. Workspace exports are
-ordinary unencrypted files; keep sensitive data under an appropriate local
-storage and backup policy.
+Motif has no hosted backend and does not transmit sequence data by itself.
+External MSA tools run only when explicitly invoked outside the HTML. Data you
+provide to Claude Science remains subject to your Claude and organization data
+policies. Do not use sensitive or unpublished sequences without authorization.
+Workspace exports are ordinary unencrypted files; keep them under an
+appropriate local storage and backup policy.
 
 See the plugin [README](src/artifacts/motif-for-claude-science-plugin/README.md)
 for payload, MSA, Sanger, installation, and security details.
 The public [capability reference](docs/CAPABILITIES.md) distinguishes built-in
 analysis from externally produced results that Motif can store and display.
+
+For project support and release information, see [SUPPORT.md](SUPPORT.md),
+[SECURITY.md](SECURITY.md), [CHANGELOG.md](CHANGELOG.md), and
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## License
 

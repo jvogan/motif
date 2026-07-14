@@ -58,7 +58,7 @@ environment and verifies:
 - the two exact tool names and their schemas;
 - standard MCP App metadata and the exact `ui://` resource;
 - the MCP App MIME type and self-contained HTML;
-- the Claude Science FASTA/GenBank artifact-viewer binding;
+- the declared Claude Science FASTA/GenBank artifact-viewer metadata;
 - a real FASTA open call and bounded record/residue counts;
 - the embedded standalone-HTML fallback and checksum metadata; and
 - privacy-safe tracing that does not echo sequence or inherited credentials.
@@ -99,34 +99,36 @@ npm run claude-science:doctor
 
 ## Exercise the in-window workflow
 
-Use the explicit tool path as the primary protocol test:
+Use the portable artifact path as the primary visual test:
 
 1. Give Claude Science the complete text of a real `.fasta`, `.fa`, `.fna`,
    `.faa`, `.gb`, `.gbk`, `.gbff`, `.genbank`, or `.seq` artifact.
-2. Call `motif_open_workbench` with that complete text as `content` and the
-   exact basename as `filename`.
-3. Verify the returned schema, source name, record count, residue count, and
-   bounded record names/IDs against the input.
-4. Separately confirm whether a frame mounted. A mounted frame visibly says
-   **Motif** and contains the intended records; a tool summary or `ui://` link
-   proves execution only.
+2. Call `motif_create_workbench_artifact` with that complete text as `content`,
+   the exact basename as `filename`, and a safe `.html` `outputFilename`.
+3. Verify the returned schema, source name, record count, residue count,
+   bounded record names/IDs, byte count, and checksum against the input.
+4. Save the exact returned HTML and click or open it in Claude Science's right
+   pane. Confirm the frame visibly says **Motif** and contains the intended
+   records.
+
+This route does not depend on a live App lifecycle. It provides the full
+interactive Motif UI, but the HTML is an immutable snapshot and must be
+regenerated after source or build changes.
 
 Current Claude Science local/custom connector builds may not register Motif as
 an artifact viewer. The viewer chooser is an optional shortcut only when Motif
 is actually listed. `Sequence viewer unavailable—showing as text` is the host's
 generic artifact fallback, not evidence of a Motif parse failure.
 
-If the host does not mount the MCP App, call
-`motif_create_workbench_artifact` with the same `content` and `filename` plus a
-safe `.html` `outputFilename`. Save the exact returned `text/html` resource and
-click or open it in Claude Science's right pane. This route does not depend on
-a live App lifecycle. It provides the full interactive Motif UI, but the HTML
-is an immutable snapshot and must be regenerated after source or build changes.
+After the portable artifact passes, optionally call `motif_open_workbench`
+with the same complete `content` and exact `filename`. Verify the returned
+source and counts, then separately confirm whether a live frame mounted. A tool
+summary or `ui://` link proves execution only.
 
 For visual acceptance, verify record name, molecule, topology, residue count,
 sequence content, annotations, selection drag, map selection, theme, and pane
 resizing in whichever Motif frame was actually opened. Record which route was
-used; do not describe the HTML fallback as a live MCP App.
+used; do not describe the HTML workbench as a live MCP App.
 
 ## Supported inputs and safety boundary
 

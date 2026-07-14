@@ -1,0 +1,21 @@
+LOCUS       MOTIFDEMO               180 bp    DNA     linear   SYN 13-JUL-2026
+DEFINITION  Synthetic demonstration construct for the Motif workbench.
+ACCESSION   MOTIFDEMO
+VERSION     MOTIFDEMO.1
+KEYWORDS    .
+SOURCE      synthetic construct
+  ORGANISM  synthetic construct
+FEATURES             Location/Qualifiers
+     source          1..180
+                     /label="source"
+                     /organism="synthetic construct"
+                     /mol_type="other DNA"
+                     /note="Synthetic public demo; not a reference sequence"
+     CDS             1..180
+                     /label="demo_cds"
+                     /product="synthetic fluorescent-protein fragment"
+ORIGIN
+        1 atggctagca aaggagaaga acttttcact ggagttgtcc caattcttgt tgaattagat
+       61 ggtgatgtta atgggcacaa attttctgtc agtggagagg gtgaaggtga tgctacatac
+      121 ggaaagctta cccttaaatt tatttgcact actggaaaac tacctgttcc atggccaaca
+//

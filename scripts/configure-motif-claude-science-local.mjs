@@ -74,6 +74,14 @@ export function parseConfigureArgs(args) {
   return options;
 }
 
+function printClaudeScienceNextSteps() {
+  process.stdout.write(`  Motif checkout: ${root}\n`);
+  process.stdout.write('  Next:\n');
+  process.stdout.write('    1. In Claude Science, grant this exact folder under Customize -> Permissions.\n');
+  process.stdout.write('    2. Fully quit Claude Science with Cmd-Q, then reopen it.\n');
+  process.stdout.write('    3. Open Customize -> Connectors -> motif-local and press Reconnect.\n');
+}
+
 export function runConfigure(options) {
   if (options.help) {
     process.stdout.write(usage());
@@ -105,6 +113,7 @@ export function runConfigure(options) {
   const action = options.mode === 'remove' ? 'removal' : 'registration';
   if (!result.changed) {
     process.stdout.write(`\u2713 ${MOTIF_LOCAL_CONNECTOR_NAME} ${action} is already up to date\n`);
+    if (options.mode === 'install') printClaudeScienceNextSteps();
     return { ok: true, ...result };
   }
   if (options.dryRun) {
@@ -113,7 +122,7 @@ export function runConfigure(options) {
   }
   process.stdout.write(`\u2713 ${MOTIF_LOCAL_CONNECTOR_NAME} ${action} written atomically\n`);
   if (result.backupPath) process.stdout.write('  previous config backed up with private file permissions\n');
-  process.stdout.write('  Restart Claude Science and reconnect the local connector to load the change.\n');
+  if (options.mode === 'install') printClaudeScienceNextSteps();
   return { ok: true, ...result };
 }
 

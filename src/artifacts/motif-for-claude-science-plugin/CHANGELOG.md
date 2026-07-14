@@ -10,6 +10,8 @@
 - Included bounded record names and IDs in connector summaries so agents can
   verify the intended records without guessing.
 - Aligned setup and launcher checks on Node.js 22.12 or newer.
+- Made the connector-created HTML workbench the documented first-success path
+  and completed license notices for every dependency bundled into the server.
 
 ## 0.2.0 — 2026-07-13
 
