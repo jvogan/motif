@@ -5,6 +5,14 @@
   "description": "Motif is a portable molecular-biology workbench, Claude plugin, and MCP App for sequence review, alignment, cloning design, traces, and analysis results.",
   "license": "MIT",
   "author": "Jacob Vogan",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jvogan/motif.git"
+  },
+  "homepage": "https://jvogan.github.io/motif-site",
+  "bugs": {
+    "url": "https://github.com/jvogan/motif/issues"
+  },
   "type": "module",
   "sideEffects": [
     "src/artifacts/*.css"

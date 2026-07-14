@@ -102,7 +102,7 @@ describe('ranges: normalizeSpan linear', () => {
   });
 });
 
-describe('ranges: normalizeSpan crash-safety (codex2 review fixes)', () => {
+describe('ranges: normalizeSpan crash-safety (review fixes)', () => {
   it('drops non-finite offsets instead of emitting NaN spans', () => {
     expect(normalizeSpan(NaN, 40, 100, 'linear')).toEqual([]);
     expect(normalizeSpan(10, Infinity, 100, 'linear')).toEqual([]);
@@ -206,7 +206,7 @@ describe('types: mapModeForBlock', () => {
   });
 });
 
-describe('ranges: circular normalization robustness (codex2 review fixes)', () => {
+describe('ranges: circular normalization robustness (review fixes)', () => {
   it('wraps a negative start', () => {
     expect(normalizeSpan(-10, 10, 100, 'circular')).toEqual([
       { start: 90, end: 100 },
@@ -224,7 +224,7 @@ describe('ranges: circular normalization robustness (codex2 review fixes)', () =
   });
 });
 
-describe('coordinates: full-circle arcs do not collapse (codex2 review fix)', () => {
+describe('coordinates: full-circle arcs do not collapse (review fix)', () => {
   it('describeArcBand 0..360 splits into two closed bands', () => {
     const d = describeArcBand(100, 100, 40, 50, 0, 360);
     expect((d.match(/A /g) ?? []).length).toBe(4); // 2 bands x 2 arcs

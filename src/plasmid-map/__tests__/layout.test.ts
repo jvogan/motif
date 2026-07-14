@@ -2107,7 +2107,7 @@ describe('computeMapLayout: dense restriction culling', () => {
     expect(layout.restrictions.filter((r) => r.label).length).toBeLessThanOrEqual(8);
   });
 
-  it('never lets a corrupt restriction/feature poison the fitted viewBox (codex2 fix)', () => {
+  it('never lets a corrupt restriction/feature poison the fitted viewBox (regression fix)', () => {
     const layout = computeMapLayout(
       circularInput({
         features: [

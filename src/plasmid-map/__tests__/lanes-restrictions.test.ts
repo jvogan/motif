@@ -94,7 +94,7 @@ describe('restrictions: toRestrictionTick', () => {
     const t = toRestrictionTick(site('SapI', 30, 25, 'GCTCTTC'));
     expect(t.isTypeIIS).toBe(true); // 25 < 30
   });
-  it('does not misclassify a circular origin-seam site as Type IIS (codex2 fix)', () => {
+  it('does not misclassify a circular origin-seam site as Type IIS (regression fix)', () => {
     // KpnI at pos 96 on a 100bp circle, cut bond stored modulo as 1 (raw 101, inside [96,102]).
     const t = toRestrictionTick(site('KpnI', 96, 1, 'GGTACC'), 100, true);
     expect(t.isTypeIIS).toBe(false);
