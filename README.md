@@ -1,3 +1,7 @@
+<p align="center">
+  <img src=".github/assets/motif-banner.png" alt="Motif for Claude Science — a research partner that shows its work." width="100%" />
+</p>
+
 # Motif for Claude Science
 
 Motif is a portable molecular-biology workbench built for the Claude Science
