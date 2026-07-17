@@ -1,7 +1,9 @@
 # Install Motif for Claude Science
 
-Motif uses a local-first connector: sequence data is validated and rendered on
-your machine, and no hosted Motif service is required.
+Motif uses a local-first connector and has no hosted Motif service. Sequence
+data you give to Claude Science is still subject to your Claude and
+organization data policies; do not use sensitive or unpublished sequences
+without authorization.
 
 ## Requirements
 
@@ -43,7 +45,12 @@ path:
 pwd -P
 ```
 
-Add that absolute path to `~/.claude-science/config.toml`:
+For the simplest setup, open **Customize → Permissions** in Claude Science and
+grant exactly that folder. Fully relaunching Claude Science is required before
+the new grant affects its connector sandbox.
+
+For a least-privilege manual grant, add the absolute path to
+`~/.claude-science/config.toml`:
 
 ```toml
 [sandbox]
@@ -58,9 +65,8 @@ private:
 chmod 600 ~/.claude-science/config.toml
 ```
 
-You may instead grant the exact folder through **Customize → Permissions** in
-Claude Science. The explicit TOML setting is read-only and therefore the
-least-privilege option for Motif's viewer connector.
+The explicit TOML setting is read-only and therefore the least-privilege option
+for Motif's viewer connector.
 
 ## 4. Relaunch and connect
 
@@ -83,41 +89,53 @@ npm run claude-science:check-local
 npm run claude-science:doctor
 ```
 
-Both commands must pass. Then attach a small FASTA or GenBank file and ask
-Claude Science to make the input explicit:
+Both commands must pass. Then attach the bundled synthetic
+[`examples/motif-demo.gb`](../examples/motif-demo.gb). The most reliable first
+visual result is the portable HTML workbench:
 
 ```text
-Read the complete text of sample.gb. Call motif-local's
-motif_open_workbench exactly once with filename set to sample.gb and content
-set to the complete GenBank text, including ORIGIN. Do not call it without the
-file content. Verify the returned source name, record count, residue count,
-and record names/IDs, then tell me whether a visible Motif frame mounted.
+Read the complete text of motif-demo.gb, including ORIGIN. Call motif-local's
+motif_create_workbench_artifact exactly once with filename "motif-demo.gb",
+content set to the complete GenBank text, title "Motif demo — MOTIFDEMO", and
+outputFilename "motif-demo-workbench.html". Preserve the exact returned HTML
+as a Claude Science artifact. Report its record count, residue count, and
+record names/IDs, then open it in the right pane.
 ```
 
-Replace `sample.gb` with the exact basename. For FASTA, likewise pass the
-complete FASTA text. A successful tool result proves execution and parsing; a
-text summary or `ui://` link does not prove that the MCP App mounted. Confirm a
-visible **Motif** identity and matching records before testing Inventory,
-Sequence, Map, and Tools with mouse and keyboard.
+The expected record is `MOTIFDEMO`, linear DNA, 180 bp, with `source` and
+`demo_cds` features spanning 1–180. Clicking the generated HTML once is normal.
+Confirm a visible **Motif** identity and these values before testing Inventory,
+Sequence, Map, and Tools with mouse and keyboard. This HTML is interactive but
+immutable; regenerate it after changing the input or Motif build.
 
-Current Claude Science local/custom connector builds may not register Motif as
-an artifact viewer. If Motif is actually listed in the viewer chooser, selecting
-it is a convenient shortcut. If Claude Science instead shows the message
-`Sequence viewer unavailable—showing as text`, that is its generic display
+## Optional live-App check
+
+After the HTML route works, you may test whether your Claude Science build
+mounts local MCP Apps automatically:
+
+```text
+Call motif-local's motif_open_workbench exactly once with filename set to
+motif-demo.gb and content set to the same complete GenBank text. Verify the
+returned source name, record count, residue count, and record names/IDs, then
+tell me whether a visible Motif frame mounted.
+```
+
+A successful result proves execution and parsing; a text summary or `ui://`
+link does not prove that the MCP App mounted. Current Claude Science
+local/custom connector builds may not register Motif as an artifact viewer. If
+Motif is actually listed in the viewer chooser, selecting it is a convenient
+shortcut. `Sequence viewer unavailable—showing as text` is the host's generic
 fallback, not a Motif parser failure.
 
-If no Motif frame appears, use the reliable portable fallback:
+## Tested compatibility
 
-```text
-Call motif-local's motif_create_workbench_artifact with filename set to
-sample.gb, content set to the same complete GenBank text, and outputFilename
-set to sample-motif.html. Preserve the exact returned HTML resource so I can
-save it and click or open it in Claude Science's right pane.
-```
-
-The opened HTML is a fully interactive Motif workbench, but it is an immutable
-snapshot. A later source edit or Motif rebuild requires a newly generated HTML
-artifact.
+| Component | Tested status |
+| --- | --- |
+| macOS | Supported local setup |
+| Node.js | 22.12 or newer |
+| Claude Science local connector | Two tools register and execute |
+| Connector-created HTML | Opens interactively in the right pane |
+| Automatic local MCP App mount | Host-build dependent; not required |
 
 ## Upgrade
 

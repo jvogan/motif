@@ -71,20 +71,34 @@ The Feather-derived portions carry this MIT notice:
 
 Source: <https://github.com/lucide-icons/lucide>
 
-## Model Context Protocol SDK, MCP Apps, and Zod
+## Connector protocol and validation libraries
 
-The optional Motif connector bundles compiled portions of the Model Context
-Protocol TypeScript SDK, MCP Apps SDK, and Zod. The MCP TypeScript SDK and Zod
-are distributed under the MIT License. The MCP Apps package is undergoing an
-Apache-2.0/MIT licensing transition; its complete upstream license notice is
-included beside the bundled connector, along with the complete SDK and Zod
-license files.
+The optional Motif connector bundles compiled portions of these packages:
+
+- Model Context Protocol TypeScript SDK (MIT)
+- MCP Apps SDK (MIT)
+- Zod (MIT)
+- Ajv and ajv-formats (MIT)
+- fast-deep-equal (MIT)
+- fast-uri (BSD-3-Clause)
+- json-schema-traverse (MIT)
+- zod-to-json-schema (ISC)
+
+The complete upstream license text for every package in this list is included
+under `server/licenses/` in the distributed plugin. These files cover both the
+connector server and the small MCP App bridge bundled into the workbench.
 
 Sources:
 
 - <https://github.com/modelcontextprotocol/typescript-sdk>
 - <https://github.com/modelcontextprotocol/ext-apps>
 - <https://github.com/colinhacks/zod>
+- <https://github.com/ajv-validator/ajv>
+- <https://github.com/ajv-validator/ajv-formats>
+- <https://github.com/epoberezkin/fast-deep-equal>
+- <https://github.com/fastify/fast-uri>
+- <https://github.com/epoberezkin/json-schema-traverse>
+- <https://github.com/StefanTerdell/zod-to-json-schema>
 
 ## Reference sequence data and external tools
 

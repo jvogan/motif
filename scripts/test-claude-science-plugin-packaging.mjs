@@ -18,6 +18,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildSync } from 'esbuild';
 import {
+  copyBundledConnectorLicenses,
   copyPublicPluginDocs,
   createDeterministicZipBuffer,
   parseBuildArgs,
@@ -192,6 +193,34 @@ check('public setup, troubleshooting, and capability docs ship with the plugin',
       assert.equal(packaged, canonical);
       assert.equal(packaged.toLowerCase().includes(legacyBrand), false);
       assert.doesNotMatch(packaged, /\/Users\/|github_3/iu);
+    }
+    assert.equal(
+      readFileSync(join(fixture, 'examples', 'motif-demo.gb'), 'utf8'),
+      readFileSync(join(root, 'examples', 'motif-demo.gb'), 'utf8'),
+    );
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+check('all bundled connector dependency licenses ship with the plugin', () => {
+  const fixture = mkdtempSync(join(tmpdir(), 'motif-connector-licenses-'));
+  const expectedLicenses = [
+    'ajv-LICENSE.txt',
+    'ajv-formats-LICENSE.txt',
+    'fast-deep-equal-LICENSE.txt',
+    'fast-uri-LICENSE.txt',
+    'json-schema-traverse-LICENSE.txt',
+    'mcp-ext-apps-LICENSE.txt',
+    'mcp-sdk-LICENSE.txt',
+    'zod-LICENSE.txt',
+    'zod-to-json-schema-LICENSE.txt',
+  ];
+  try {
+    copyBundledConnectorLicenses(fixture);
+    assert.deepEqual(readdirSync(join(fixture, 'licenses')).sort(), expectedLicenses);
+    for (const filename of expectedLicenses) {
+      assert.ok(readFileSync(join(fixture, 'licenses', filename), 'utf8').trim().length > 0);
     }
   } finally {
     rmSync(fixture, { recursive: true, force: true });

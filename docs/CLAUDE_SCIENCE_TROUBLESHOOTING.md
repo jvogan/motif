@@ -97,27 +97,26 @@ enabled is a reasonable review posture.
 
 ## Tool succeeds but no workbench appears
 
-A successful tool result, text summary, or `ui://` resource link proves MCP
-execution and parsing. It does not prove that Claude Science mounted a visible
-App frame.
+A successful `motif_open_workbench` result, text summary, or `ui://` resource
+link proves MCP execution and parsing. It does not prove that Claude Science
+mounted a visible App frame.
 
-Call `motif_open_workbench` with the complete FASTA or GenBank text in
-`content` and the exact basename in `filename`. Verify the returned source,
-record count, residue count, and bounded record names/IDs. Do not call the tool
-with only a path or filename, and do not report a mount until a frame visibly
-identifies itself as **Motif** and contains the intended records.
+For a dependable visual result, call `motif_create_workbench_artifact` with the
+complete FASTA or GenBank text in `content`, the exact basename in `filename`,
+and a safe `.html` `outputFilename`. Verify the returned source, counts,
+bounded record names/IDs, bytes, and checksum. Save the exact embedded HTML and
+click or open it in Claude Science's right pane. The workbench is interactive,
+but it is an immutable snapshot rather than a live MCP App.
 
 Current Claude Science local/custom connector builds may not register Motif as
 an artifact viewer. Use the viewer chooser only when Motif is actually listed.
 The message `Sequence viewer unavailable—showing as text` is Claude Science's
 generic artifact fallback; it does not mean that Motif rejected the sequence.
 
-If the direct call parses successfully but no frame appears, call
-`motif_create_workbench_artifact` with the same complete `content` and
-`filename`, plus a safe `.html` `outputFilename`. Save the exact embedded HTML
-resource and click or open it in Claude Science's right pane. The standalone
-workbench is interactive, but it is an immutable snapshot rather than a live
-MCP App.
+Use `motif_open_workbench` only as an optional live-App check. Pass the same
+complete `content` and exact `filename`; do not call it with only a path or
+filename. Do not report a mount until a frame visibly identifies itself as
+**Motif** and contains the intended records.
 
 Clicking a saved HTML artifact is normal. It does not mean the connector is
 disconnected. Regenerate the artifact after source or Motif changes.
@@ -173,11 +172,13 @@ portable checkpoint formats. Export before reload when edits matter.
 
 - Connector page loads both Motif tools without an MCP error.
 - Host chrome says `motif-local`; only Motif identities are visible.
-- Mounted frame visibly says **Motif**.
+- Opened workbench visibly says **Motif**.
 - Intended record name, type, topology, length, and sequence match the source.
 - Inventory, Sequence, Map, and Tools respond to mouse and keyboard.
 - Tools can minimize to the rail without covering the header.
-- A FASTA/GenBank viewer open works, and the HTML fallback opens when requested.
+- The connector-created HTML workbench opens and responds interactively.
+- Optional live mounting is reported separately and is not required for a
+  healthy local connector.
 - A newly generated artifact reflects the current build rather than stale
   saved bytes.
 

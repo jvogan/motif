@@ -43,6 +43,17 @@ const publicPluginDocs = [
   'CLAUDE_SCIENCE_QUICKSTART.md',
   'CLAUDE_SCIENCE_TROUBLESHOOTING.md',
 ];
+const bundledConnectorLicenses = [
+  { packagePath: ['@modelcontextprotocol', 'ext-apps'], filename: 'mcp-ext-apps-LICENSE.txt' },
+  { packagePath: ['@modelcontextprotocol', 'sdk'], filename: 'mcp-sdk-LICENSE.txt' },
+  { packagePath: ['ajv'], filename: 'ajv-LICENSE.txt' },
+  { packagePath: ['ajv-formats'], filename: 'ajv-formats-LICENSE.txt' },
+  { packagePath: ['fast-deep-equal'], filename: 'fast-deep-equal-LICENSE.txt' },
+  { packagePath: ['fast-uri'], filename: 'fast-uri-LICENSE.txt' },
+  { packagePath: ['json-schema-traverse'], filename: 'json-schema-traverse-LICENSE.txt' },
+  { packagePath: ['zod'], filename: 'zod-LICENSE.txt' },
+  { packagePath: ['zod-to-json-schema'], filename: 'zod-to-json-schema-LICENSE.txt' },
+];
 
 const ZIP_UTF8_FLAG = 0x0800;
 const ZIP_STORE_METHOD = 0;
@@ -312,6 +323,23 @@ export function copyPublicPluginDocs(pluginPath) {
   for (const filename of publicPluginDocs) {
     copyFileSync(join(root, 'docs', filename), join(pluginDocsPath, filename));
   }
+  const pluginExamplesPath = join(pluginPath, 'examples');
+  mkdirSync(pluginExamplesPath, { recursive: true });
+  copyFileSync(
+    join(root, 'examples', 'motif-demo.gb'),
+    join(pluginExamplesPath, 'motif-demo.gb'),
+  );
+}
+
+export function copyBundledConnectorLicenses(pluginPath) {
+  const licensesPath = join(pluginPath, 'licenses');
+  mkdirSync(licensesPath, { recursive: true });
+  for (const license of bundledConnectorLicenses) {
+    copyFileSync(
+      join(root, 'node_modules', ...license.packagePath, 'LICENSE'),
+      join(licensesPath, license.filename),
+    );
+  }
 }
 
 function writePluginBundle(html) {
@@ -320,23 +348,12 @@ function writePluginBundle(html) {
   cpSync(pluginSourcePath, pluginDistPath, { recursive: true });
   mkdirSync(dirname(pluginResourcePath), { recursive: true });
   writeFileSync(pluginResourcePath, html);
-  mkdirSync(join(connectorPluginPath, 'licenses'), { recursive: true });
+  mkdirSync(connectorPluginPath, { recursive: true });
   copyFileSync(connectorServerPath, join(connectorPluginPath, 'motif-mcp-server.mjs'));
   copyFileSync(connectorAppPath, join(connectorPluginPath, 'motif-mcp-app.html'));
   copyFileSync(templateHtml, join(connectorPluginPath, 'motif-template.html'));
   copyPublicPluginDocs(pluginDistPath);
-  copyFileSync(
-    join(root, 'node_modules', '@modelcontextprotocol', 'ext-apps', 'LICENSE'),
-    join(connectorPluginPath, 'licenses', 'mcp-ext-apps-LICENSE.txt'),
-  );
-  copyFileSync(
-    join(root, 'node_modules', '@modelcontextprotocol', 'sdk', 'LICENSE'),
-    join(connectorPluginPath, 'licenses', 'mcp-sdk-LICENSE.txt'),
-  );
-  copyFileSync(
-    join(root, 'node_modules', 'zod', 'LICENSE'),
-    join(connectorPluginPath, 'licenses', 'zod-LICENSE.txt'),
-  );
+  copyBundledConnectorLicenses(connectorPluginPath);
 
   const zip = createDeterministicZipBuffer(pluginDistPath);
   writeFileSync(pluginZipPath, zip);
