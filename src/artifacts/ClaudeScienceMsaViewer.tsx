@@ -1014,7 +1014,12 @@ function AlignmentMatrix({
     const ids = orderedRows.map((row) => row.id);
     const from = ids.indexOf(id);
     if (from < 0) return;
-    const target = Math.max(0, Math.min(ids.length - 1, from + delta));
+    // The template is pinned at the top with no grip, so a movable row can never
+    // occupy index 0. Clamp the target there so ArrowUp on the first movable row
+    // is a no-op — not a "move" that re-pins the template, clears the selection,
+    // and mis-announces a position change that never actually happened.
+    const minIndex = orderedRows[0]?.id === template?.id ? 1 : 0;
+    const target = Math.max(minIndex, Math.min(ids.length - 1, from + delta));
     if (target === from) return;
     commitRowOrder(moveRowId(ids, id, target), id, orderedRows[from]?.name ?? 'Row');
   };
@@ -1634,6 +1639,25 @@ export function ClaudeScienceMsaViewer({
     setSearchIndex(-1);
   }, [activeAlignment?.id]);
 
+  // Clear an active search on Escape regardless of where focus sits — the matrix,
+  // the step buttons, or another display mode. The search form's own handler only
+  // fires while its input is focused, and in Text mode the form is unmounted, so
+  // without this Escape would either do nothing or (in Text mode) close the host
+  // window while a latent query lingered. The always-mounted workspace carries the
+  // escape scope while a query is set (see the return) so the host stands down and
+  // this clears the query instead.
+  useEffect(() => {
+    if (!searchQuery) return undefined;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setSearchQuery('');
+        setSearchIndex(-1);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [searchQuery]);
+
   const traceAvailable = activeAlignment ? hasLinkedSangerTrace(activeAlignment, records) : false;
 
   useEffect(() => {
@@ -2186,6 +2210,7 @@ export function ClaudeScienceMsaViewer({
       className="motif-cs-msa-workspace"
       data-testid="msa-workspace"
       data-drop-active={dropActive || undefined}
+      data-motif-cs-escape-scope={searchQuery ? 'true' : undefined}
       onDragEnter={handleDragEnter}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}

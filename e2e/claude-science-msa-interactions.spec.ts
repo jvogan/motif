@@ -215,6 +215,20 @@ test.describe('Motif MSA viewer interactions', () => {
     await expect(page.getByTestId('msa-reorder-status')).toContainText('position 4 of 5');
   });
 
+  test('arrow up on the first movable row is a no-op, not a phantom move', async ({ page }) => {
+    await setup(page);
+    const firstMovableId = await rowIdAt(page, 1); // just below the pinned template
+    if (!firstMovableId) throw new Error('no row id');
+
+    await gripForId(page, firstMovableId).focus();
+    await page.keyboard.press('ArrowUp');
+
+    // It cannot move above the pinned template, so the order is unchanged and no
+    // manual reorder is committed (previously it re-pinned and announced a move).
+    expect(await rowIdAt(page, 1)).toBe(firstMovableId);
+    await expect(page.getByTestId('msa-order-note')).toHaveCount(0);
+  });
+
   async function setZoomPercent(page: Page, percent: number) {
     await page.getByTestId('msa-zoom-range').evaluate((element, value) => {
       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
@@ -291,6 +305,31 @@ test.describe('Motif MSA viewer interactions', () => {
     await input.press('Escape');
     await expect(count).not.toContainText('of');
     await expect(page.locator('.motif-cs-msa-symbol[data-search-match]')).toHaveCount(0);
+  });
+
+  test('Escape clears the search from outside the input and in Text mode without closing the window', async ({ page }) => {
+    await setup(page);
+    const input = page.getByTestId('msa-search-input');
+    const count = page.getByTestId('msa-search-count');
+
+    // Focus has left the input (moved onto the Next button). Escape must still
+    // clear the query and must NOT close the host MSA window.
+    await input.fill('AIRCK');
+    await expect(count).toContainText(/\d+/);
+    await page.getByTestId('msa-search-next').click();
+    await page.keyboard.press('Escape');
+    await expect(count).not.toContainText('of');
+    await expect(page.locator('.motif-cs-msa-symbol[data-search-match]')).toHaveCount(0);
+    await expect(page.getByTestId('msa-alignment-view')).toBeVisible();
+
+    // A latent query while in Text mode: Escape clears it instead of closing the
+    // whole window (the search form that used to carry the escape scope is
+    // unmounted in Text mode, so the always-mounted workspace carries it now).
+    await input.fill('AIRCK');
+    await page.getByRole('button', { name: 'Text', exact: true }).click();
+    await expect(page.getByTestId('msa-text-view')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.getByTestId('msa-text-view')).toBeVisible();
   });
 
   test('layout holds and stays scrollable at a narrow width', async ({ page }) => {
