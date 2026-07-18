@@ -38,6 +38,7 @@ export type ClaudeScienceMsaViewPreferences = {
   showConservationHistogram: boolean;
   showOccupancy: boolean;
   showConsensus: boolean;
+  showSequenceLogo: boolean;
   showTranslation: boolean;
   showAminoAcidIndices: boolean;
 };
@@ -61,6 +62,7 @@ export const DEFAULT_CLAUDE_SCIENCE_MSA_VIEW_PREFERENCES: ClaudeScienceMsaViewPr
   showConservationHistogram: true,
   showOccupancy: false,
   showConsensus: true,
+  showSequenceLogo: false,
   showTranslation: false,
   showAminoAcidIndices: true,
 };
@@ -77,7 +79,7 @@ export function normalizeClaudeScienceMsaViewPreferences(value: unknown): Claude
     typeof source[key] === 'boolean' ? source[key] as boolean : true
   );
   // Toggles that default to off unless explicitly enabled.
-  const optional = (key: keyof Pick<ClaudeScienceMsaViewPreferences, 'showOccupancy' | 'showTranslation'>) => (
+  const optional = (key: keyof Pick<ClaudeScienceMsaViewPreferences, 'showOccupancy' | 'showSequenceLogo' | 'showTranslation'>) => (
     source[key] === true
   );
   return {
@@ -111,6 +113,7 @@ export function normalizeClaudeScienceMsaViewPreferences(value: unknown): Claude
     showConservationHistogram: visible('showConservationHistogram'),
     showOccupancy: optional('showOccupancy'),
     showConsensus: visible('showConsensus'),
+    showSequenceLogo: optional('showSequenceLogo'),
     showTranslation: optional('showTranslation'),
     showAminoAcidIndices: visible('showAminoAcidIndices'),
   };

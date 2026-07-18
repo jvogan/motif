@@ -183,6 +183,55 @@
 .motif-cs-msa-hist-bar-conservation[data-bucket='4'] { background: color-mix(in srgb, #2ea043 72%, transparent); }
 .motif-cs-msa-hist-bar-occupancy { background: color-mix(in srgb, var(--accent) 50%, transparent); }
 
+/* ===== Sequence-logo track =====
+ * Per column a bottom-anchored stack whose height = occupancy-weighted
+ * conservation; residues sit most-frequent on top, each block sized by its
+ * share of the column. Blocks reuse the .motif-cs-msa-symbol scheme fills so
+ * the logo follows the active colour scheme (incl. Taylor) with no duplicate
+ * palette. Track height mirrors MSA_LOGO_TRACK_HEIGHT in the viewer. */
+.motif-cs-msa-logo-row {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  height: 46px;
+}
+.motif-cs-msa-logo-window {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: flex-end;
+}
+.motif-cs-msa-logo-col {
+  position: relative;
+  width: var(--motif-cs-msa-cell-width, 10px);
+  height: 100%;
+  box-sizing: border-box;
+}
+.motif-cs-msa-logo-col[data-jump='true'] {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.motif-cs-msa-logo-stack {
+  position: absolute;
+  left: 0.5px;
+  right: 0.5px;
+  bottom: 0;
+  height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.motif-cs-msa-logo-block {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  overflow: hidden;
+  line-height: 1;
+  font-weight: 600;
+  color: var(--text-primary, inherit);
+}
+
 /* ===== Residue colour schemes (letter-cell backgrounds) ===== */
 .motif-cs-msa-matrix[data-color-scheme] .motif-cs-msa-symbol[data-color-key] {
   border-radius: 2px;

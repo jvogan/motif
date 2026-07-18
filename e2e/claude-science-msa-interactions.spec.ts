@@ -305,6 +305,27 @@ test.describe('Motif MSA viewer interactions', () => {
     await expect(page.locator('.motif-cs-msa-aa').first()).toBeVisible();
   });
 
+  test('sequence-logo track toggles on with residue stacks coloured by the active scheme', async ({ page }) => {
+    await setupDna(page);
+    // Opt-in: hidden until enabled.
+    await expect(page.getByTestId('msa-logo-row')).toHaveCount(0);
+
+    await page.getByTestId('msa-view-menu-button').click();
+    await page.getByRole('checkbox', { name: 'Sequence logo' }).check();
+
+    const row = page.getByTestId('msa-logo-row');
+    await expect(row).toBeVisible();
+    // Stacked residue blocks render, coloured by the default nucleotide scheme.
+    await expect(row.locator('.motif-cs-msa-logo-block[data-color-key^="nt-"]').first()).toBeVisible();
+    // Column 1 is fully conserved in the generated data (every row starts 'A'),
+    // so its block carries that residue.
+    await expect(row.locator('.motif-cs-msa-logo-block[data-residue="A"]').first()).toBeVisible();
+
+    // Toggling off removes the track (the View menu stays open between clicks).
+    await page.getByRole('checkbox', { name: 'Sequence logo' }).uncheck();
+    await expect(page.getByTestId('msa-logo-row')).toHaveCount(0);
+  });
+
   test('sequence search highlights motif matches and navigates them', async ({ page }) => {
     await setup(page);
     const input = page.getByTestId('msa-search-input');

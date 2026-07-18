@@ -23,6 +23,7 @@ import {
   ARTIFACT_MSA_LOCAL_WORK_BUDGET,
   ArtifactAlignmentError,
   computeMsaColumnStats,
+  computeSequenceLogoColumns,
   createLocalArtifactAlignment,
   estimateLocalAlignmentWork,
   findMsaMotifMatches,
@@ -44,6 +45,7 @@ import {
   type ArtifactMsaRecord,
   type MsaColorScheme,
   type MsaColumnStats,
+  type MsaLogoColumn,
   type MsaMotifMatch,
   type MsaSelection,
   type MsaShadeMode,
@@ -84,7 +86,8 @@ type ColorMode = ClaudeScienceMsaColorMode;
 type RowSortMode = ClaudeScienceMsaRowSortMode;
 type MsaMatrixVisibility = Pick<ClaudeScienceMsaViewPreferences,
   'showOverview' | 'showAlignmentAxis' | 'showTemplateAxis' | 'showRowStats' | 'showConservation'
-  | 'showConservationHistogram' | 'showOccupancy' | 'showConsensus' | 'showTranslation' | 'showAminoAcidIndices'>;
+  | 'showConservationHistogram' | 'showOccupancy' | 'showConsensus' | 'showSequenceLogo'
+  | 'showTranslation' | 'showAminoAcidIndices'>;
 type CoordinateSystem = 'alignment' | 'template';
 
 const INPUT_FASTA_HEADER_MAX_LENGTH = 1_024;
@@ -425,6 +428,10 @@ const MSA_BASE_CELL_MAX = 15;
 const MSA_CELL_MIN = 3;
 const MSA_CELL_MAX = 30;
 const MSA_LETTER_MIN = 6.5;
+// Sequence-logo track: plotting height (must match .motif-cs-msa-logo-window in
+// the CSS) and the smallest residue-segment height that still fits a letter.
+const MSA_LOGO_TRACK_HEIGHT = 46;
+const MSA_LOGO_LETTER_MIN_HEIGHT = 9;
 
 function AlignmentMatrix({
   alignment,
@@ -604,6 +611,7 @@ function AlignmentMatrix({
     + Number(visibility.showConservationHistogram)
     + Number(visibility.showOccupancy)
     + Number(visibility.showConsensus)
+    + Number(visibility.showSequenceLogo)
     + Number(translationVisible);
 
   const scrollToColumn = useCallback((column: number, behavior: ScrollBehavior = 'auto') => {
@@ -758,6 +766,11 @@ function AlignmentMatrix({
   };
 
   const columnStats = useMemo<MsaColumnStats[]>(() => computeMsaColumnStats(alignment.rows, alignment.molecule), [alignment.rows, alignment.molecule]);
+  // Only pay the O(rows × columns) logo pass when the track is on.
+  const logoColumns = useMemo<MsaLogoColumn[]>(
+    () => (visibility.showSequenceLogo ? computeSequenceLogoColumns(alignment.rows, alignment.molecule) : []),
+    [visibility.showSequenceLogo, alignment.rows, alignment.molecule],
+  );
   const explicitScheme = colorMode === 'residue' && colorScheme !== 'auto';
   const shadeByColumn = shadeMode === 'identity' || shadeMode === 'conservation';
   // Colour cells by auto residue tone when the user asked for residue colours,
@@ -1179,6 +1192,53 @@ function AlignmentMatrix({
     </div>
   );
 
+  // A sequence-logo residue always carries a colour (a colourless logo is
+  // useless), so fall back to the molecule's default scheme when the alignment
+  // itself is drawn mono/auto. Explicit schemes (incl. Taylor via the matrix's
+  // data-color-scheme ancestor) reuse the same fills as the letter cells.
+  const logoScheme: MsaColorScheme = explicitScheme
+    ? colorScheme
+    : alignment.molecule === 'protein' ? 'clustal' : 'nucleotide';
+  const renderLogoTrack = () => (
+    <div className="motif-cs-msa-logo-window" style={{ left: labelWidth + (startColumn * cellWidth) }} aria-hidden="true">
+      {logoColumns.slice(startColumn, endColumn).map((col, offset) => {
+        const column = startColumn + offset;
+        const stackFraction = Math.max(0, Math.min(1, col.information));
+        const title = col.stack.length === 0
+          ? `Column ${column + 1} · all gaps`
+          : `Column ${column + 1} · ${Math.round(stackFraction * 100)}% conserved · `
+            + col.stack.map((entry) => `${entry.symbol} ${Math.round(entry.fraction * 100)}%`).join(', ');
+        return (
+          <span
+            key={column}
+            className="motif-cs-msa-logo-col"
+            data-alignment-column={column + 1}
+            data-jump={jumpColumn === column || undefined}
+            title={title}
+          >
+            <span className="motif-cs-msa-logo-stack" style={{ height: `${stackFraction * 100}%` }}>
+              {col.stack.map((entry) => {
+                const segmentPx = entry.fraction * stackFraction * MSA_LOGO_TRACK_HEIGHT;
+                const showLetter = !blocks && cellWidth >= MSA_LETTER_MIN && segmentPx >= MSA_LOGO_LETTER_MIN_HEIGHT;
+                return (
+                  <span
+                    key={entry.symbol}
+                    className="motif-cs-msa-logo-block motif-cs-msa-symbol"
+                    data-residue={entry.symbol}
+                    data-color-key={residueColorKey(entry.symbol, alignment.molecule, logoScheme) || undefined}
+                    style={{ height: `${entry.fraction * 100}%`, fontSize: showLetter ? renderFontSize : 0 }}
+                  >
+                    {showLetter ? entry.symbol : ''}
+                  </span>
+                );
+              })}
+            </span>
+          </span>
+        );
+      })}
+    </div>
+  );
+
   const selectionColumnLeft = selection ? labelWidth + (selection.colStart * cellWidth) : 0;
   const selectionColumnWidth = selection ? (selection.colEnd - selection.colStart + 1) * cellWidth : 0;
   const hoverColumnLeft = hoverCell ? labelWidth + (hoverCell.column * cellWidth) : 0;
@@ -1453,6 +1513,17 @@ function AlignmentMatrix({
               <small translate="no">frame +{translationFrame + 1}</small>
             </div>
             {renderTranslationTrack()}
+          </div> : null}
+
+          {visibility.showSequenceLogo ? <div
+            className="motif-cs-msa-logo-row"
+            data-testid="msa-logo-row"
+            role="row"
+            aria-rowindex={firstSequenceRow + orderedRows.length + Number(visibility.showConservation) + Number(visibility.showConsensus) + Number(visibility.showConservationHistogram) + Number(visibility.showOccupancy) + Number(translationVisible)}
+            aria-label="Per-column sequence logo: residue heights scaled by occupancy-weighted conservation"
+          >
+            <div className="motif-cs-msa-sticky-label motif-cs-msa-row-label motif-cs-msa-hist-label" role="rowheader"><span>Logo</span></div>
+            {renderLogoTrack()}
           </div> : null}
         </div>
       </div>
@@ -1749,6 +1820,7 @@ export function ClaudeScienceMsaViewer({
     showConservationHistogram: viewPreferences.showConservationHistogram,
     showOccupancy: viewPreferences.showOccupancy,
     showConsensus: viewPreferences.showConsensus,
+    showSequenceLogo: viewPreferences.showSequenceLogo,
     showTranslation: viewPreferences.showTranslation,
     showAminoAcidIndices: viewPreferences.showAminoAcidIndices,
   }), [
@@ -1760,6 +1832,7 @@ export function ClaudeScienceMsaViewer({
     viewPreferences.showOccupancy,
     viewPreferences.showOverview,
     viewPreferences.showRowStats,
+    viewPreferences.showSequenceLogo,
     viewPreferences.showTemplateAxis,
     viewPreferences.showTranslation,
   ]);
@@ -2506,6 +2579,7 @@ export function ClaudeScienceMsaViewer({
                   ['showConservationHistogram', 'Conservation histogram'],
                   ['showOccupancy', 'Occupancy'],
                   ['showConsensus', 'Consensus'],
+                  ['showSequenceLogo', 'Sequence logo'],
                 ] as const).map(([key, label]) => (
                   <label key={key}>
                     <input
