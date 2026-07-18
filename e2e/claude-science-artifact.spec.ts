@@ -711,7 +711,10 @@ test.describe('Claude Science artifact campaign', () => {
     await expect(save).toBeEnabled();
     await expect(save).toHaveText('Save 2 fragments');
 
-    await page.evaluate((workspace) => window.motifReplaceWorkspace?.(workspace as never), backup);
+    await page.evaluate((workspace) => window.motifReplaceWorkspace?.(
+      workspace as never,
+      { discardUnsavedChanges: true },
+    ), backup);
     await expect(save).toBeDisabled();
     await expect(save).toHaveText('Saved');
     expect(await page.evaluate(() => window.motifGetWorkflowResults?.().length)).toBe(2);
@@ -829,7 +832,7 @@ test.describe('Claude Science artifact campaign', () => {
       topology: 'linear',
       seq: 'ATGC',
       active: true,
-    }] }));
+    }] }, { discardUnsavedChanges: true }));
     await expect(assemblyWindow).toHaveCount(0);
   });
 
@@ -1335,7 +1338,7 @@ test.describe('Claude Science artifact campaign', () => {
     await expect(restoreDialog).toBeVisible();
     await restoreDialog.getByRole('button', { name: 'Replace workspace' }).click();
     await expect(page.locator('.motif-cs-record-tab[data-active="true"]')).toContainText('Restored record');
-    await expect(page.getByTestId('session-durability-status')).toHaveText('saved');
+    await expect(page.getByTestId('session-durability-status')).toHaveText('session only');
     await expect(page.locator('.motif-cs-dropzone-card')).toContainText('Database JSON restored · 1 record');
     await expect(page.locator('.motif-cs-dropzone')).toBeHidden({ timeout: 4_000 });
     expect(await page.evaluate(() => window.motifGetAlignments())).toHaveLength(1);
@@ -1400,7 +1403,7 @@ test.describe('Claude Science artifact campaign', () => {
     await expect(restoreDialog).toBeVisible();
     await restoreDialog.getByRole('button', { name: 'Replace workspace' }).click();
     await expect(page.locator('.motif-cs-record-tab[data-active="true"]')).toContainText('Dropped restore');
-    await expect(page.getByTestId('session-durability-status')).toHaveText('saved');
+    await expect(page.getByTestId('session-durability-status')).toHaveText('restored checkpoint');
   });
 
   test('Notes create from a keyboard selection, reveal their range, and stay usable on phone layouts', async ({ page }) => {
@@ -1461,7 +1464,10 @@ test.describe('Claude Science artifact campaign', () => {
       notes: [expect.objectContaining({ id: 'recovery-note' })],
       artifactState: expect.any(Object),
     });
-    expect(await page.evaluate((workspace) => window.motifReplaceWorkspace?.(workspace), snapshot)).toBe(13);
+    expect(await page.evaluate((workspace) => window.motifReplaceWorkspace?.(
+      workspace,
+      { discardUnsavedChanges: true },
+    ), snapshot)).toBe(13);
     const invalid = await page.evaluate(() => {
       try {
         window.motifAddNotes?.({
@@ -1504,11 +1510,14 @@ test.describe('Claude Science artifact campaign', () => {
     await settings.getByTestId('clear-workspace-confirm').click();
     expect(await page.evaluate(() => window.motifGetInventory?.().length)).toBe(0);
     expect(await page.locator('html').getAttribute('data-theme')).toBe(themeBefore);
-    expect(await page.evaluate((workspace) => window.motifReplaceWorkspace?.(workspace), snapshot)).toBe(13);
+    expect(await page.evaluate((workspace) => window.motifReplaceWorkspace?.(
+      workspace,
+      { discardUnsavedChanges: true },
+    ), snapshot)).toBe(13);
     expect(await page.evaluate(() => window.motifGetNotes?.().length)).toBe(1);
   });
 
-  test('durable edits warn before reload and full downloads checkpoint the session', async ({ page }) => {
+  test('durable edits warn before reload and browser downloads remain unverified', async ({ page }) => {
     await openArtifact(page, 1180, 900);
     await expect(page.getByTestId('session-durability-status')).toHaveText('session only');
 
@@ -1532,7 +1541,8 @@ test.describe('Claude Science artifact campaign', () => {
     const downloadPromise = page.waitForEvent('download');
     await exportPanel.getByRole('button', { name: 'Download' }).click();
     await downloadPromise;
-    await expect(page.getByTestId('session-durability-status')).toHaveText('saved');
+    await expect(exportPanel.getByText(/Download requested for motif-inventory\.json/)).toBeVisible();
+    await expect(page.getByTestId('session-durability-status')).toHaveText('unsaved changes');
   });
 
   test('250k records keep sequence and translation DOM bounded and an empty inventory exports only real data', async ({ page }) => {

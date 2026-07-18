@@ -166,7 +166,9 @@ The local connector is an ephemeral viewer/export surface:
 - it does not live-update a previously saved HTML snapshot.
 
 Inside the workbench, Database JSON and workspace ZIP are the complete
-portable checkpoint formats. Export before reload when edits matter.
+portable checkpoint formats. Export and verify the resulting file before
+reload when edits matter; a browser download request alone is not a confirmed
+save.
 
 ## Final acceptance checklist
 

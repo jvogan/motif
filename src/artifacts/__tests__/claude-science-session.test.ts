@@ -157,6 +157,29 @@ describe('Claude Science durable session validation', () => {
     expect(state.translationLayersByRecord['record-a'].map((track) => track.id)).toEqual(['track', 'track-2']);
   });
 
+  it('round-trips the scientific-review flag on remapped translation layers', () => {
+    const state = normalizeArtifactDurableState({
+      translationLayersByRecord: {
+        'record-a': [{
+          id: 'track',
+          label: 'Review me',
+          start: 3,
+          end: 30,
+          strand: 1,
+          frame: 0,
+          needsReview: true,
+        }],
+      },
+    }, recordLengths);
+
+    expect(state.translationLayersByRecord['record-a'][0].needsReview).toBe(true);
+    expect(() => normalizeArtifactDurableState({
+      translationLayersByRecord: {
+        'record-a': [{ id: 'track', label: 'Bad', start: 3, end: 30, strand: 1, frame: 0, needsReview: 'yes' }],
+      },
+    }, recordLengths)).toThrow(/needsReview must be a boolean/i);
+  });
+
   it('keeps exact-boundary duplicate layer ids unique and stable across serialized normalization', () => {
     const exactBoundaryId = 't'.repeat(MAX_TRANSLATION_LAYER_TEXT_LENGTH);
     const value = {

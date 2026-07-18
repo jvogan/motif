@@ -5,8 +5,10 @@ import {
   type ChangeEvent,
   type KeyboardEvent,
 } from 'react';
+import type { BrowserDownloadReceipt } from './claude-science-download';
 
 type MaybePromise = void | Promise<void>;
+type MaybeDownloadPromise = BrowserDownloadReceipt | Promise<BrowserDownloadReceipt>;
 
 export interface ClaudeScienceDataSettingsProps {
   recordCount: number;
@@ -16,7 +18,7 @@ export interface ClaudeScienceDataSettingsProps {
   analysisResultCount?: number;
   sessionOnly: boolean;
   hasUnsavedChanges: boolean;
-  onDownloadBackup: () => MaybePromise;
+  onDownloadBackup: () => MaybeDownloadPromise;
   onRestoreFile: (file: File, returnFocus: HTMLElement | null) => MaybePromise;
   onClearWorkspace: () => MaybePromise;
   onResetDisplayPreferences: () => MaybePromise;
@@ -96,8 +98,8 @@ export default function ClaudeScienceDataSettings({
     setPendingAction('backup');
     setStatus('Preparing workspace backup…');
     try {
-      await onDownloadBackup();
-      setStatus('Workspace backup downloaded.');
+      const receipt = await onDownloadBackup();
+      setStatus(receipt.message);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'Workspace backup could not be downloaded.');
     } finally {

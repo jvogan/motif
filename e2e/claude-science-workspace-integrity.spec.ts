@@ -2,6 +2,15 @@ import { expect, test, type Page } from '@playwright/test';
 
 const artifactUrl = process.env.MOTIF_ARTIFACT_URL;
 
+type RuntimeWorkspace = Record<string, unknown> & {
+  exportedAt?: unknown;
+  records: Array<Record<string, unknown> & { id: string; name: string; seq: string }>;
+  notes: Array<Record<string, unknown> & { id: string }>;
+  artifactState: Record<string, unknown> & {
+    translationLayersByRecord: Record<string, Array<Record<string, unknown> & { id: string }>>;
+  };
+};
+
 const createdAt = '2026-07-12T12:00:00.000Z';
 const embeddedWorkspace = {
   schema: 'motif.claude-science.inventory.v2',
@@ -174,5 +183,265 @@ test.describe('Claude Science workspace integrity', () => {
     ]));
     expect(orphanAttempt.after).toEqual(orphanAttempt.before);
     expect(diagnostics).toEqual([]);
+  });
+
+  test('edits sequence, note anchors, and translation anchors as one undoable transaction', async ({ page }) => {
+    await openInjectedWorkspace(page);
+    await page.evaluate((timestamp) => {
+      const workspace = window.motifGetWorkspace?.() as RuntimeWorkspace;
+      delete workspace.exportedAt;
+      workspace.notes = [
+        ...(workspace.notes ?? []),
+        {
+          id: 'range-note',
+          title: 'Tail observation',
+          body: 'Keep this note attached to its bases.',
+          format: 'plain',
+          scope: 'range',
+          recordId: 'record-a',
+          range: { start: 8, end: 12 },
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        },
+      ];
+      workspace.artifactState.translationLayersByRecord['record-a'].push({
+        id: 'layer-tail',
+        label: 'Tail translation',
+        start: 6,
+        end: 12,
+        strand: 1,
+        frame: 0,
+        source: 'layer',
+      });
+      window.motifReplaceWorkspace?.(workspace);
+    }, createdAt);
+
+    await expect(page.getByTestId('session-durability-status')).toHaveText('session only');
+    const before = await page.evaluate(() => {
+      const workspace = structuredClone(window.motifGetWorkspace?.() as Record<string, unknown>);
+      delete workspace.exportedAt;
+      return workspace;
+    });
+
+    const editor = page.getByRole('textbox', { name: /Editable sequence/ });
+    await editor.click({ position: { x: 70, y: 50 } });
+    await editor.press('End');
+    await editor.press('ArrowLeft');
+    await editor.press('ArrowLeft');
+    await editor.press('ArrowLeft');
+    await expect(page.locator('.motif-cs-edit-hint')).toContainText('Caret 10');
+    await editor.press('t');
+    await expect(page.locator('.motif-cs-edit-hint')).toContainText('Caret 11');
+    const afterSameBase = await page.evaluate(() => {
+      const workspace = structuredClone(window.motifGetWorkspace?.() as Record<string, unknown>);
+      delete workspace.exportedAt;
+      return workspace;
+    });
+    expect(afterSameBase).toEqual(before);
+    await expect(page.getByRole('button', { name: 'Undo' })).toHaveCount(0);
+    await expect(page.getByTestId('session-durability-status')).toHaveText('session only');
+    await editor.press('ArrowLeft');
+    await editor.press('g');
+
+    const edited = await page.evaluate(() => {
+      const workspace = window.motifGetWorkspace?.() as RuntimeWorkspace;
+      return {
+        sequence: workspace.records[0].seq,
+        note: workspace.notes.find((note) => note.id === 'range-note'),
+        layer: workspace.artifactState.translationLayersByRecord['record-a']
+          .find((layer: { id: string }) => layer.id === 'layer-tail'),
+      };
+    });
+    expect(edited.sequence).toBe('ATGGAATTCGAA');
+    expect(edited.note).toMatchObject({
+      scope: 'range',
+      range: { start: 8, end: 12 },
+      provenance: {
+        operation: 'sequence_edit_anchor_review',
+        metadata: { motifRangeAnchor: { status: 'review' } },
+      },
+    });
+    expect(edited.layer).toMatchObject({ start: 6, end: 12, needsReview: true });
+    await expect(page.getByTestId('session-durability-status')).toHaveText('unsaved changes');
+
+    const notesPanel = page.locator('details[data-rail-tool="notes"]');
+    if (!(await notesPanel.getAttribute('open'))) await notesPanel.locator(':scope > summary').click();
+    await expect(notesPanel.getByText('Review range anchor.')).toBeVisible();
+
+    const annotationsPanel = page.locator('details[data-rail-tool="annotations"]');
+    if (!(await annotationsPanel.getAttribute('open'))) await annotationsPanel.locator(':scope > summary').click();
+    await expect(annotationsPanel.getByText('Review anchor')).toBeVisible();
+
+    await page.getByRole('button', { name: 'Undo' }).click();
+    const afterUndo = await page.evaluate(() => {
+      const workspace = structuredClone(window.motifGetWorkspace?.() as Record<string, unknown>);
+      delete workspace.exportedAt;
+      return workspace;
+    });
+    expect(afterUndo).toEqual(before);
+    await expect(page.getByTestId('session-durability-status')).toHaveText('session only');
+
+    await page.getByRole('button', { name: 'Redo' }).click();
+    await expect.poll(() => page.evaluate(() => (
+      (window.motifGetWorkspace?.() as RuntimeWorkspace).records[0].seq
+    ))).toBe('ATGGAATTCGAA');
+    await expect(page.getByTestId('session-durability-status')).toHaveText('unsaved changes');
+  });
+
+  test('undo preserves an absent translation-layer entry exactly', async ({ page }) => {
+    await openInjectedWorkspace(page);
+    await page.evaluate(() => {
+      const workspace = structuredClone(window.motifGetWorkspace?.() as RuntimeWorkspace);
+      delete workspace.exportedAt;
+      workspace.artifactState.translationLayersByRecord = {};
+      window.motifReplaceWorkspace?.(workspace);
+    });
+    await expect(page.getByTestId('session-durability-status')).toHaveText('session only');
+
+    const before = await page.evaluate(() => {
+      const workspace = structuredClone(window.motifGetWorkspace?.() as RuntimeWorkspace);
+      delete workspace.exportedAt;
+      return workspace;
+    });
+    expect(before.artifactState.translationLayersByRecord).not.toHaveProperty('record-a');
+
+    const editor = page.getByRole('textbox', { name: /Editable sequence/ });
+    await editor.click({ position: { x: 70, y: 50 } });
+    await editor.press('End');
+    await editor.press('ArrowLeft');
+    await editor.press('ArrowLeft');
+    await editor.press('ArrowLeft');
+    await editor.press('g');
+    await expect(page.getByTestId('session-durability-status')).toHaveText('unsaved changes');
+
+    await page.getByRole('button', { name: 'Undo' }).click();
+    const afterUndo = await page.evaluate(() => {
+      const workspace = structuredClone(window.motifGetWorkspace?.() as RuntimeWorkspace);
+      delete workspace.exportedAt;
+      return workspace;
+    });
+    expect(afterUndo).toEqual(before);
+    await expect(page.getByTestId('session-durability-status')).toHaveText('session only');
+  });
+
+  test('keeps browser downloads unverified and blocks dirty runtime replacement', async ({ page }) => {
+    await openInjectedWorkspace(page);
+    await expect(page.getByTestId('session-durability-status')).toHaveText('session only');
+
+    await page.evaluate((timestamp) => {
+      window.motifAddRecords?.({
+        id: 'record-b',
+        name: 'Original B',
+        molecule: 'dna',
+        topology: 'linear',
+        seq: 'ATGCCCTAA',
+      });
+      window.motifAddNotes?.({
+        id: 'dirty-note',
+        body: 'Unsaved local observation.',
+        format: 'plain',
+        scope: 'workspace',
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      });
+    }, createdAt);
+    await expect(page.getByTestId('session-durability-status')).toHaveText('unsaved changes');
+
+    await page.locator('.motif-cs-record-tab').filter({ hasText: 'Original A' }).click();
+    const dirty = await page.evaluate(() => {
+      const workspace = structuredClone(window.motifGetWorkspace?.() as RuntimeWorkspace);
+      delete workspace.exportedAt;
+      return workspace;
+    });
+    expect(dirty.selectedRecordId).toBe('record-a');
+
+    const selectionOnlyReplacement = structuredClone(dirty);
+    selectionOnlyReplacement.selectedRecordId = 'record-b';
+
+    const identicalCount = await page.evaluate(
+      (workspace) => window.motifReplaceWorkspace?.(workspace),
+      selectionOnlyReplacement,
+    );
+    expect(identicalCount).toBe(2);
+    await expect(page.locator('.motif-cs-record-tab[data-active="true"]')).toContainText('Original B');
+    const afterSelectionOnlyReplace = await page.evaluate(() => {
+      const workspace = structuredClone(window.motifGetWorkspace?.() as RuntimeWorkspace);
+      delete workspace.exportedAt;
+      return workspace;
+    });
+    expect(afterSelectionOnlyReplace).toEqual(selectionOnlyReplacement);
+    await expect(page.getByTestId('session-durability-status')).toHaveText('unsaved changes');
+
+    const dirtyAfterSelection = selectionOnlyReplacement;
+
+    const blocked = await page.evaluate((workspace) => {
+      const replacement = structuredClone(workspace);
+      replacement.records[0].name = 'Runtime replacement';
+      let error: { code?: string; message: string } | null = null;
+      try {
+        window.motifReplaceWorkspace?.(replacement);
+      } catch (cause) {
+        error = {
+          code: (cause as { code?: string }).code,
+          message: cause instanceof Error ? cause.message : String(cause),
+        };
+      }
+      const after = structuredClone(window.motifGetWorkspace?.() as RuntimeWorkspace);
+      delete after.exportedAt;
+      return { error, after };
+    }, dirtyAfterSelection);
+    expect(blocked.error).toMatchObject({ code: 'MOTIF_UNSAVED_WORKSPACE' });
+    expect(blocked.after).toEqual(dirtyAfterSelection);
+
+    const spoofedDiscard = await page.evaluate((workspace) => {
+      const replacement = structuredClone(workspace);
+      replacement.records[0].name = 'Truthy option must not replace';
+      let error: { code?: string; message: string } | null = null;
+      try {
+        window.motifReplaceWorkspace?.(
+          replacement,
+          { discardUnsavedChanges: 'false' } as never,
+        );
+      } catch (cause) {
+        error = {
+          code: (cause as { code?: string }).code,
+          message: cause instanceof Error ? cause.message : String(cause),
+        };
+      }
+      const after = structuredClone(window.motifGetWorkspace?.() as RuntimeWorkspace);
+      delete after.exportedAt;
+      return { error, after };
+    }, dirtyAfterSelection);
+    expect(spoofedDiscard.error).toMatchObject({ code: 'MOTIF_UNSAVED_WORKSPACE' });
+    expect(spoofedDiscard.after).toEqual(dirtyAfterSelection);
+
+    const exportPanel = page.locator('.motif-cs-sequence-tools-panel');
+    if (!(await exportPanel.getAttribute('open'))) await exportPanel.locator(':scope > summary').click();
+    await exportPanel.locator('select[name="export-format"]').selectOption('inventory-json');
+    const browserDownload = page.waitForEvent('download');
+    await exportPanel.locator('.motif-cs-export-picker-actions').getByRole('button', { name: 'Download' }).click();
+    await browserDownload;
+    await expect(exportPanel.getByText(/Download requested for motif-inventory\.json/)).toBeVisible();
+    await expect(page.getByTestId('session-durability-status')).toHaveText('unsaved changes');
+
+    const checkpointWorkspace = await page.evaluate((workspace) => {
+      const replacement = structuredClone(workspace);
+      replacement.records[0].name = 'Runtime replacement';
+      window.motifReplaceWorkspace?.(replacement, { discardUnsavedChanges: true });
+      return window.motifGetWorkspace?.() as Record<string, unknown>;
+    }, dirtyAfterSelection);
+    await expect(page.getByTestId('session-durability-status')).toHaveText('session only');
+
+    const settings = page.locator('details[data-rail-tool="settings"]');
+    if (!(await settings.getAttribute('open'))) await settings.locator(':scope > summary').click();
+    await settings.getByTestId('restore-workspace-file').setInputFiles({
+      name: 'verified-workspace.json',
+      mimeType: 'application/json',
+      buffer: Buffer.from(JSON.stringify(checkpointWorkspace)),
+    });
+    const dialog = page.getByTestId('database-restore-dialog');
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole('button', { name: 'Replace workspace' }).click();
+    await expect(page.getByTestId('session-durability-status')).toHaveText('restored checkpoint');
   });
 });

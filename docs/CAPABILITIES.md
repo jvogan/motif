@@ -64,6 +64,9 @@ backs it, so the list stays honest.
 - Database JSON restores directly. A workspace ZIP holds the same
   `inventory.json` plus interchange exports; restore it by extracting
   `inventory.json` and loading it from Settings.
+- Browser downloads are reported as requests, not verified saves. Confirm the
+  Database JSON or ZIP exists and can be reopened before treating it as a
+  durable checkpoint.
 - Source: `src/artifacts/claude-science-analysis-results.ts`, `src/artifacts/claude-science-session.ts`.
 
 ## Claude Science connector

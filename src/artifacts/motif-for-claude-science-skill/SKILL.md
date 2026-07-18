@@ -131,6 +131,7 @@ Preserve user-supplied sequence data exactly except for formatting whitespace.
 Do not hand-edit bundled JavaScript or claim an in-page change succeeded without
 observing it in the rendered artifact.
 
-Records edited in the browser are session-only until exported. Database JSON
-and ZIP preserve the complete artifact record; GenBank and GFF3 are intentionally
-basic interchange exports.
+Records edited in the browser are session-only until an exported file is
+verified on disk. Database JSON and ZIP preserve the complete artifact record;
+GenBank and GFF3 are intentionally basic interchange exports. A browser
+download request is not itself proof that a checkpoint was saved.

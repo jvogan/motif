@@ -21,6 +21,26 @@ function joinedFeature(): Feature {
 }
 
 describe('mutation feature-location integrity', () => {
+  it('uses half-open feature affinity at insertion boundaries', () => {
+    const feature: Feature = {
+      id: 'feature',
+      name: 'feature',
+      type: 'misc_feature',
+      start: 2,
+      end: 5,
+      strand: 1,
+      color: '#888888',
+      metadata: {},
+    };
+
+    expect(applyInsertion('AACCGGTT', [], [feature], 1, 'AA').features[0])
+      .toMatchObject({ start: 4, end: 7 });
+    expect(applyInsertion('AACCGGTT', [], [feature], 2, 'AA').features[0])
+      .toMatchObject({ start: 2, end: 7 });
+    expect(applyInsertion('AACCGGTT', [], [feature], 4, 'AA').features[0])
+      .toMatchObject({ start: 2, end: 5 });
+  });
+
   it('shifts authoritative pieces and recomputes their envelope after insertion', () => {
     const result = applyInsertion('ATGCCCGGGCCA', [], [joinedFeature()], 5, 'AA');
 

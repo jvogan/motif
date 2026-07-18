@@ -368,9 +368,10 @@ globals were called.
   Do not report success unless `run-msa.mjs` completed and its payload passed
   artifact validation.
 - If the user later changes the inventory in the UI, tell them that records are
-  session-only until exported. Database JSON and ZIP retain the complete
-  artifact record; FASTA, basic GenBank/GFF3, CSV, and reports are also
-  available for interchange.
+  session-only until an exported file is verified on disk. Database JSON and
+  ZIP retain the complete artifact record; FASTA, basic GenBank/GFF3, CSV, and
+  reports are also available for interchange. A browser download request is
+  not itself proof that a checkpoint was saved.
 - For Sanger review, report that AB1 calls were imported and visually checked;
   do not claim the artifact re-base-called the raw electropherogram. State
   whether the read was aligned forward or reverse to the selected template.

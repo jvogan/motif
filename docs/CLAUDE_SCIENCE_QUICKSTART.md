@@ -166,7 +166,8 @@ The connector is a bounded viewer/export surface. It does not run a shell or
 external alignment tools, write a hidden sequence database, or upload data to
 a Motif service. Workbench Database JSON and workspace ZIP exports are ordinary
 unencrypted user-owned files; handle them according to the sensitivity of the
-sequence data they contain.
+sequence data they contain. Verify the downloaded file exists and can be
+reopened before treating it as a checkpoint.
 
 For symptom-specific recovery, see
 [Motif + Claude Science troubleshooting](CLAUDE_SCIENCE_TROUBLESHOOTING.md).

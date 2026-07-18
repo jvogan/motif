@@ -16,6 +16,7 @@ import {
   type ArtifactNoteScope,
   type ArtifactSequenceRange,
 } from './claude-science-workspace-collections';
+import { getNoteRangeAnchorReview } from './claude-science-sequence-edit';
 
 export type ArtifactNoteInput = Omit<ArtifactNote, 'id' | 'createdAt' | 'updatedAt' | 'provenance'>;
 export type ArtifactNoteTextUpdate = Pick<ArtifactNoteInput, 'title' | 'body' | 'format'>;
@@ -28,6 +29,7 @@ export type ClaudeScienceNotesPanelProps = {
   selectedRange?: ArtifactSequenceRange | null;
   onAdd: (note: ArtifactNoteInput) => void;
   onUpdate: (noteId: string, patch: ArtifactNoteTextUpdate) => void;
+  onConfirmAnchor: (noteId: string) => void;
   onRemove: (noteId: string) => void;
   onReveal: (note: ArtifactNote) => void;
 };
@@ -117,6 +119,7 @@ export function ClaudeScienceNotesPanel({
   selectedRange,
   onAdd,
   onUpdate,
+  onConfirmAnchor,
   onRemove,
   onReveal,
 }: ClaudeScienceNotesPanelProps) {
@@ -282,6 +285,15 @@ export function ClaudeScienceNotesPanel({
     }
   }, [onRemove]);
 
+  const confirmAnchor = useCallback((noteId: string) => {
+    try {
+      onConfirmAnchor(noteId);
+      setStatus('Range anchor confirmed.');
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'The range anchor could not be confirmed.');
+    }
+  }, [onConfirmAnchor]);
+
   const emptyMessage = filter === 'workspace'
     ? 'No workspace notes yet.'
     : filter === 'record'
@@ -392,8 +404,10 @@ export function ClaudeScienceNotesPanel({
       </details>
 
       <div className="motif-cs-annotation-list" data-testid="notes-list">
-        {visibleNotes.length === 0 ? <p className="motif-cs-muted">{emptyMessage}</p> : visibleNotes.map((note) => (
-          <article key={note.id} className="motif-cs-analysis-row" data-testid={`note-${note.id}`}>
+        {visibleNotes.length === 0 ? <p className="motif-cs-muted">{emptyMessage}</p> : visibleNotes.map((note) => {
+          const anchorReview = getNoteRangeAnchorReview(note);
+          return (
+          <article key={note.id} className="motif-cs-analysis-row" data-testid={`note-${note.id}`} data-anchor-review={anchorReview?.status}>
             {editingId === note.id ? (
               <form
                 className="motif-cs-form-body"
@@ -455,6 +469,14 @@ export function ClaudeScienceNotesPanel({
                   <time dateTime={note.updatedAt}>{noteTimestamp(note.updatedAt)}</time>
                 </p>
                 <p>{note.body}</p>
+                {anchorReview ? (
+                  <p className="motif-cs-form-note" role="note">
+                    <strong>Review range anchor.</strong>{' '}
+                    {anchorReview.status === 'detached'
+                      ? `Bases ${anchorReview.previousRange.start + 1}–${anchorReview.previousRange.end} were fully deleted; this note was retained at record level.`
+                      : `The sequence changed inside bases ${anchorReview.previousRange.start + 1}–${anchorReview.previousRange.end}; confirm the updated range after review.`}
+                  </p>
+                ) : null}
               </div>
             )}
 
@@ -505,10 +527,16 @@ export function ClaudeScienceNotesPanel({
                 >
                   Delete
                 </button>
+                {anchorReview?.status === 'review' ? (
+                  <button className="motif-cs-mini-button motif-cs-mini-button-accent" type="button" onClick={() => confirmAnchor(note.id)}>
+                    Confirm anchor
+                  </button>
+                ) : null}
               </div>
             )}
           </article>
-        ))}
+          );
+        })}
       </div>
 
       <p
