@@ -8,53 +8,59 @@
  * --bg-primary so every scheme stays legible in both light and dark themes.
  */
 
-/* The matrix hosts absolutely-positioned selection/hover overlays. */
+/* The matrix hosts absolutely-positioned selection/hover overlays. Each state
+   owns a separate visual channel so stacked states remain readable. */
 .motif-cs-msa-matrix {
   position: relative;
+  --motif-cs-msa-selection-rule: color-mix(in srgb, var(--accent) 86%, var(--text-primary));
+  --motif-cs-msa-hover-rule: color-mix(in srgb, var(--text-primary) 42%, var(--border-strong));
+  --motif-cs-msa-jump-rule: var(--purple);
 }
 
-/* ===== Selection band + row emphasis ===== */
+/* ===== Selection block ===== */
 .motif-cs-msa-selection-band {
   position: absolute;
-  top: 0;
-  bottom: 0;
   z-index: 3;
   pointer-events: none;
-  background: color-mix(in srgb, var(--accent) 15%, transparent);
-  border-left: 2px solid var(--accent);
-  border-right: 2px solid var(--accent);
+  background: transparent;
+  border: 2px solid var(--motif-cs-msa-selection-rule);
+  border-radius: 2px;
   box-sizing: border-box;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--bg-primary) 82%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, var(--bg-primary) 78%, transparent);
 }
 .motif-cs-msa-selection-band::before,
 .motif-cs-msa-selection-band::after {
   content: '';
   position: absolute;
-  top: -1px;
-  width: 0;
-  height: 0;
-  border-left: 5px solid transparent;
-  border-right: 5px solid transparent;
-  border-top: 6px solid var(--accent);
+  top: -4px;
+  width: 6px;
+  height: 6px;
+  border: 1px solid var(--bg-primary);
+  border-radius: 1px;
+  background: var(--motif-cs-msa-selection-rule);
+  box-sizing: border-box;
 }
-.motif-cs-msa-selection-band::before { left: -6px; }
-.motif-cs-msa-selection-band::after { right: -6px; }
-
-.motif-cs-msa-matrix-row[data-selected='true'] {
-  background: color-mix(in srgb, var(--accent) 6%, transparent);
-}
-.motif-cs-msa-matrix-row[data-hover='true'] {
-  background: color-mix(in srgb, var(--accent) 9%, transparent);
-}
+.motif-cs-msa-selection-band::before { left: -4px; }
+.motif-cs-msa-selection-band::after { right: -4px; }
 
 /* ===== Hover crosshair + floating readout ===== */
+.motif-cs-msa-matrix-row[data-hover='true'] {
+  box-shadow:
+    inset 0 1px 0 var(--motif-cs-msa-hover-rule),
+    inset 0 -1px 0 var(--motif-cs-msa-hover-rule);
+}
+
 .motif-cs-msa-hover-column {
   position: absolute;
   top: 0;
   bottom: 0;
   z-index: 2;
   pointer-events: none;
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
-  outline: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  background: transparent;
+  outline: 1px dashed var(--motif-cs-msa-hover-rule);
+  outline-offset: -1px;
 }
 .motif-cs-msa-matrix-scroll[data-selecting='true'] {
   cursor: crosshair;
@@ -145,6 +151,17 @@
   outline: none;
 }
 
+/* Remove the legacy jump wash before later residue, shade, and blocks rules
+   restore their own backgrounds. The marker itself is drawn near search. */
+.motif-cs-msa-symbol[data-jump='true'] {
+  position: relative;
+  background: transparent;
+  box-shadow: none;
+}
+.motif-cs-msa-symbol[data-jump='true'][data-difference='true'] {
+  background: color-mix(in srgb, var(--amber) 10%, transparent);
+}
+
 /* ===== Histogram tracks (conservation + occupancy) ===== */
 .motif-cs-msa-hist-row {
   position: relative;
@@ -167,6 +184,7 @@
   align-items: flex-end;
 }
 .motif-cs-msa-hist-cell {
+  position: relative;
   width: var(--motif-cs-msa-cell-width, 10px);
   height: 100%;
   display: flex;
@@ -179,9 +197,6 @@
   min-height: 1px;
   border-radius: 1px 1px 0 0;
   background: color-mix(in srgb, var(--accent) 55%, transparent);
-}
-.motif-cs-msa-hist-cell[data-jump='true'] {
-  background: color-mix(in srgb, var(--accent) 18%, transparent);
 }
 /* Conservation: greener as it climbs; occupancy: neutral accent. */
 .motif-cs-msa-hist-bar-conservation[data-bucket='0'] { background: color-mix(in srgb, #d64545 60%, transparent); }
@@ -215,9 +230,6 @@
   width: var(--motif-cs-msa-cell-width, 10px);
   height: 100%;
   box-sizing: border-box;
-}
-.motif-cs-msa-logo-col[data-jump='true'] {
-  background: color-mix(in srgb, var(--accent) 18%, transparent);
 }
 .motif-cs-msa-logo-stack {
   position: absolute;
@@ -562,9 +574,6 @@
 .motif-cs-msa-matrix[data-blocks='true'] .motif-cs-msa-symbol[data-tone='negative'] { background: color-mix(in srgb, var(--red) 52%, var(--bg-primary)); }
 .motif-cs-msa-matrix[data-blocks='true'] .motif-cs-msa-symbol[data-tone='positive'] { background: color-mix(in srgb, var(--purple) 50%, var(--bg-primary)); }
 .motif-cs-msa-matrix[data-blocks='true'] .motif-cs-msa-symbol[data-tone='ambiguous'] { background: color-mix(in srgb, var(--text-secondary) 34%, var(--bg-primary)); }
-/* Keep a jumped column findable even as a tile. */
-.motif-cs-msa-matrix[data-blocks='true'] .motif-cs-msa-symbol[data-jump='true'] { outline: 1px solid var(--accent); outline-offset: -1px; }
-
 /* ===== Amino-acid translation track ===== */
 .motif-cs-msa-translation-row {
   position: relative;
@@ -625,7 +634,26 @@
 }
 .motif-cs-msa-aa[data-unknown='true'] { color: var(--text-muted, inherit); }
 .motif-cs-msa-aa[data-gap-spanning='true'] { border-left: 1px dashed color-mix(in srgb, var(--text-muted, currentColor) 55%, transparent); }
-.motif-cs-msa-aa[data-jump='true'] { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* ===== Difference/coordinate jump marker =====
+   A compact purple edge tick survives residue fills without resembling either
+   the amber search frame or the full-block selection perimeter. */
+.motif-cs-msa-hist-cell[data-jump='true']::after,
+.motif-cs-msa-logo-col[data-jump='true']::after,
+.motif-cs-msa-aa[data-jump='true']::after,
+.motif-cs-msa-symbol[data-jump='true']::after {
+  content: '';
+  position: absolute;
+  z-index: 4;
+  top: 25%;
+  bottom: 25%;
+  left: 1px;
+  width: 3px;
+  border-radius: 999px;
+  background: var(--motif-cs-msa-jump-rule);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--bg-primary) 78%, transparent);
+  pointer-events: none;
+}
 
 /* ===== Sequence search ===== */
 .motif-cs-msa-search {
@@ -642,16 +670,22 @@
   color: var(--text-secondary, inherit);
   white-space: nowrap;
 }
-/* Match highlight via an inset fill so it reads over residue/shade/blocks
-   backgrounds without a specificity fight; the letter stays on top. */
+/* Matches use amber plus a bottom rule. The active match switches shape to a
+   complete inset frame, leaving selection and jump markers their own edges. */
 .motif-cs-msa-symbol[data-search-match] {
-  box-shadow: inset 0 0 0 100px color-mix(in srgb, #f2c14e 55%, transparent);
+  box-shadow:
+    inset 0 -3px 0 var(--amber),
+    inset 0 0 0 1px color-mix(in srgb, var(--amber) 72%, var(--border-strong)),
+    inset 0 0 0 100px color-mix(in srgb, var(--amber) 22%, transparent);
   color: var(--text-primary, inherit);
 }
 .motif-cs-msa-symbol[data-search-active] {
-  box-shadow: inset 0 0 0 100px color-mix(in srgb, #f2a10a 62%, transparent);
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
+  z-index: 1;
+  box-shadow:
+    inset 0 0 0 2px var(--amber),
+    inset 0 0 0 100px color-mix(in srgb, var(--amber) 34%, transparent);
+  color: var(--text-primary, inherit);
+  font-weight: 800;
 }
 
 /* ===== Sortable per-row statistics panel ===== */

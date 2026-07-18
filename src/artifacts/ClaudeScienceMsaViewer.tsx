@@ -634,6 +634,9 @@ const MSA_BASE_CELL_MAX = 15;
 const MSA_CELL_MIN = 3;
 const MSA_CELL_MAX = 30;
 const MSA_LETTER_MIN = 6.5;
+// Overlay geometry mirrors the fixed row heights in the viewer stylesheet.
+const MSA_MATRIX_ROW_HEIGHT = 30;
+const MSA_RULER_ROW_HEIGHT = 27;
 // Sequence-logo track: plotting height (must match .motif-cs-msa-logo-row in
 // the CSS) and the smallest glyph, in px, still worth drawing in a segment.
 const MSA_LOGO_TRACK_HEIGHT = 46;
@@ -1840,6 +1843,12 @@ function AlignmentMatrix({
 
   const selectionColumnLeft = selection ? labelWidth + (selection.colStart * cellWidth) : 0;
   const selectionColumnWidth = selection ? (selection.colEnd - selection.colStart + 1) * cellWidth : 0;
+  const selectionRowTop = selection
+    ? (axisRows * MSA_RULER_ROW_HEIGHT) + (selection.rowStart * MSA_MATRIX_ROW_HEIGHT)
+    : 0;
+  const selectionRowHeight = selection
+    ? (selection.rowEnd - selection.rowStart + 1) * MSA_MATRIX_ROW_HEIGHT
+    : 0;
   const hoverColumnLeft = hoverCell ? labelWidth + (hoverCell.column * cellWidth) : 0;
 
   return (
@@ -1932,7 +1941,16 @@ function AlignmentMatrix({
           data-blocks={blocks ? true : undefined}
         >
           {selection ? (
-            <div className="motif-cs-msa-selection-band" style={{ left: selectionColumnLeft, width: selectionColumnWidth }} aria-hidden="true" />
+            <div
+              className="motif-cs-msa-selection-band"
+              style={{
+                left: selectionColumnLeft,
+                top: selectionRowTop,
+                width: selectionColumnWidth,
+                height: selectionRowHeight,
+              }}
+              aria-hidden="true"
+            />
           ) : null}
           {hoverCell ? (
             <div className="motif-cs-msa-hover-column" style={{ left: hoverColumnLeft, width: cellWidth }} aria-hidden="true" />
