@@ -487,6 +487,9 @@ function AlignmentMatrix({
   const [selection, setSelection] = useState<MatrixSelection | null>(null);
   const [hoverCell, setHoverCell] = useState<HoverCell | null>(null);
   const [contextMenu, setContextMenu] = useState<MatrixContextMenu | null>(null);
+  // The context menu's on-screen position after clamping to the viewport (raw
+  // pointer coordinates in `contextMenu` would otherwise overflow near edges).
+  const [menuPosition, setMenuPosition] = useState<{ x: number; y: number } | null>(null);
   // Ephemeral, per-alignment manual row order (ids). Null falls back to the
   // template-pinned sortMode ordering; set once the user drags or key-moves a row.
   const [manualOrder, setManualOrder] = useState<string[] | null>(null);
@@ -1072,12 +1075,36 @@ function AlignmentMatrix({
       setContextMenu(null);
     };
     const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') setContextMenu(null); };
+    // The menu is anchored to a cell's screen position, so any scroll or resize
+    // detaches it from that cell — dismiss rather than leave it stranded.
+    const onDismiss = () => setContextMenu(null);
     window.addEventListener('pointerdown', onPointerDown, true);
     window.addEventListener('keydown', onKeyDown, true);
+    window.addEventListener('resize', onDismiss);
+    window.addEventListener('scroll', onDismiss, true);
     return () => {
       window.removeEventListener('pointerdown', onPointerDown, true);
       window.removeEventListener('keydown', onKeyDown, true);
+      window.removeEventListener('resize', onDismiss);
+      window.removeEventListener('scroll', onDismiss, true);
     };
+  }, [contextMenu]);
+
+  // Once the menu has rendered, measure it and clamp its fixed position so it
+  // stays fully inside the viewport, flipping in from the right/bottom edges
+  // instead of overflowing. Runs before paint, so the clamp is never seen mid-flight.
+  useLayoutEffect(() => {
+    if (!contextMenu) { setMenuPosition(null); return; }
+    const el = contextMenuRef.current;
+    if (!el) { setMenuPosition({ x: contextMenu.x, y: contextMenu.y }); return; }
+    const rect = el.getBoundingClientRect();
+    const pad = 8;
+    const maxX = Math.max(pad, window.innerWidth - rect.width - pad);
+    const maxY = Math.max(pad, window.innerHeight - rect.height - pad);
+    setMenuPosition({
+      x: Math.min(Math.max(pad, contextMenu.x), maxX),
+      y: Math.min(Math.max(pad, contextMenu.y), maxY),
+    });
   }, [contextMenu]);
 
   useEffect(() => {
@@ -1606,7 +1633,7 @@ function AlignmentMatrix({
         </div>
       ) : null}
       {contextMenu ? (
-        <div ref={contextMenuRef} className="motif-cs-msa-context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} role="menu" aria-label="Alignment selection actions">
+        <div ref={contextMenuRef} className="motif-cs-msa-context-menu" style={{ left: (menuPosition ?? contextMenu).x, top: (menuPosition ?? contextMenu).y }} role="menu" aria-label="Alignment selection actions">
           <button type="button" role="menuitem" onClick={() => copySelection('fasta')}>Copy selection (FASTA)</button>
           <button type="button" role="menuitem" onClick={() => copySelection('ungapped')}>Copy without gaps</button>
           <button type="button" role="menuitem" onClick={() => copySelection('columns')}>Copy columns</button>

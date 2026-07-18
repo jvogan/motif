@@ -143,6 +143,44 @@ test.describe('Motif MSA viewer interactions', () => {
     await expect(menu).toHaveCount(0);
   });
 
+  test('context menu stays within the viewport when opened near the edge', async ({ page }) => {
+    // A narrow window puts the sequence area's right edge close to the viewport
+    // edge, so a raw-coordinate menu would overflow off-screen without clamping.
+    await setupDna(page, 720, 620);
+    const vp = page.viewportSize()!;
+    const scrollBox = await page.locator('.motif-cs-msa-matrix-scroll').boundingBox();
+    const rowBox = await page.locator('.motif-cs-msa-matrix-row').first().boundingBox();
+    if (!scrollBox || !rowBox) throw new Error('matrix layout boxes missing');
+    // Click just inside the sequence area's right edge, clear of the vertical
+    // scrollbar (~18px), over the first row.
+    const spot = { x: Math.min(scrollBox.x + scrollBox.width - 30, vp.width - 30), y: rowBox.y + rowBox.height / 2 };
+    // Precondition: the anchor is within a menu-width of the right edge, so the
+    // unclamped menu (min-width 200px) really would overflow the viewport.
+    expect(spot.x).toBeGreaterThan(vp.width - 190);
+    await page.mouse.click(spot.x, spot.y, { button: 'right' });
+    const menu = page.getByRole('menu', { name: 'Alignment selection actions' });
+    await expect(menu).toBeVisible();
+    const box = await menu.boundingBox();
+    if (!box) throw new Error('context menu has no box');
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    expect(box.y).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width).toBeLessThanOrEqual(vp.width + 1);
+    expect(box.y + box.height).toBeLessThanOrEqual(vp.height + 1);
+    // It flipped in from the right edge rather than anchoring at the click point.
+    expect(box.x).toBeLessThan(spot.x);
+  });
+
+  test('context menu dismisses when the matrix scrolls out from under it', async ({ page }) => {
+    await setup(page);
+    const spot = await center(page, 0, 12);
+    await page.mouse.click(spot.x, spot.y, { button: 'right' });
+    const menu = page.getByRole('menu', { name: 'Alignment selection actions' });
+    await expect(menu).toBeVisible();
+    // The menu is anchored to a cell's screen position; scrolling detaches it.
+    await page.locator('.motif-cs-msa-matrix-scroll').evaluate((el) => { el.scrollLeft += 240; });
+    await expect(menu).toHaveCount(0);
+  });
+
   test('conservation and occupancy histogram tracks render with bars', async ({ page }) => {
     await setup(page);
     // Conservation histogram is on by default; occupancy is opt-in.
