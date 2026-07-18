@@ -181,6 +181,33 @@ test.describe('Motif MSA viewer interactions', () => {
     await expect(menu).toHaveCount(0);
   });
 
+  test('a near-vertical wheel gesture is not hijacked into horizontal scroll', async ({ page }) => {
+    await setupDna(page);
+    const scroll = page.locator('.motif-cs-msa-matrix-scroll');
+    const spot = await center(page, 1, 10);
+    await page.mouse.move(spot.x, spot.y);
+    // A dominantly-horizontal gesture scrolls the columns.
+    await page.mouse.wheel(180, 6);
+    await page.waitForTimeout(80);
+    const afterHorizontal = await scroll.evaluate((el) => el.scrollLeft);
+    expect(afterHorizontal).toBeGreaterThan(0);
+    // A near-vertical gesture (tiny deltaX) must not change horizontal scroll —
+    // its vertical delta is honoured instead of being swallowed as horizontal.
+    await page.mouse.wheel(6, 160);
+    await page.waitForTimeout(80);
+    expect(await scroll.evaluate((el) => el.scrollLeft)).toBe(afterHorizontal);
+  });
+
+  test('the hover readout clears when the matrix scrolls', async ({ page }) => {
+    await setupDna(page);
+    const spot = await center(page, 1, 10);
+    await page.mouse.move(spot.x, spot.y);
+    await expect(page.locator('.motif-cs-msa-hover-readout')).toBeVisible();
+    // Scrolling moves the content out from under the fixed readout.
+    await page.locator('.motif-cs-msa-matrix-scroll').evaluate((el) => { el.scrollLeft += 200; });
+    await expect(page.locator('.motif-cs-msa-hover-readout')).toHaveCount(0);
+  });
+
   test('conservation and occupancy histogram tracks render with bars', async ({ page }) => {
     await setup(page);
     // Conservation histogram is on by default; occupancy is opt-in.

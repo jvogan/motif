@@ -698,6 +698,9 @@ function AlignmentMatrix({
   }, []);
 
   const handleScroll = (left: number, top: number) => {
+    // The hover readout is anchored to a fixed screen point; once the content
+    // moves under it, it would describe the wrong cell, so drop it on scroll.
+    setHoverCell(null);
     pendingScrollLeftRef.current = left;
     pendingScrollTopRef.current = top;
     msaMatrixViewportSession.set(alignment.id, { left, top });
@@ -726,7 +729,10 @@ function AlignmentMatrix({
         ? sequenceViewportWidth
         : 1;
     const horizontalDelta = (event.shiftKey ? event.deltaY : event.deltaX) * deltaScale;
-    if (event.shiftKey || Math.abs(event.deltaX) > 0) {
+    // Treat the gesture as horizontal only when the user asked for it (Shift) or
+    // the horizontal component dominates. A near-vertical diagonal (ordinary
+    // trackpad noise) must keep its deltaY instead of being swallowed whole.
+    if (event.shiftKey || (event.deltaX !== 0 && Math.abs(event.deltaX) >= Math.abs(event.deltaY))) {
       event.preventDefault();
       setHorizontalScroll(viewport.scrollLeft + horizontalDelta);
       return;
