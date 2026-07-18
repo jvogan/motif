@@ -1,4 +1,5 @@
-import type { Feature, FeatureType, Topology, Strand } from './types';
+import type { Feature, FeatureStrand, FeatureType, Topology } from './types';
+import { featureLocationCoordinateSignature } from './feature-location';
 
 // Phase 35 P-H (P2-E2): individual qualifier values larger than 1 MB are
 // truncated to this cap and tagged with a suffix so consumers can detect
@@ -169,7 +170,9 @@ const FEATURE_COLORS: Record<FeatureType, string> = {
  * "join(1..100,200..300)", or a single position "100".
  * Returns 0-indexed start (inclusive) and end (exclusive), plus strand.
  */
-type ParsedLocation = Pick<Feature, 'start' | 'end' | 'strand' | 'subRanges'>;
+type ParsedLocation = Pick<Feature, 'start' | 'end' | 'strand' | 'subRanges'> & {
+  locationOperator?: 'join' | 'order';
+};
 
 function splitTopLevel(expr: string): string[] {
   const parts: string[] = [];
@@ -199,11 +202,14 @@ function splitTopLevel(expr: string): string[] {
 function invertParsedLocation(location: ParsedLocation): ParsedLocation {
   return {
     ...location,
-    strand: location.strand === 1 ? -1 : 1,
-    subRanges: location.subRanges?.map((subRange) => ({
+    strand: location.strand === 1 ? -1 : location.strand === -1 ? 1 : 0,
+    // subRanges are stored in biological 5′→3′ order. Complementing a joined
+    // product reverses the order as well as each piece's strand:
+    // RC(a + b) = RC(b) + RC(a).
+    subRanges: location.subRanges ? [...location.subRanges].reverse().map((subRange) => ({
       ...subRange,
       strand: (subRange.strand ?? 1) === 1 ? -1 : 1,
-    })),
+    })) : undefined,
   };
 }
 
@@ -238,27 +244,33 @@ function parseLocation(loc: string, depth = 0): ParsedLocation {
   }
 
   if ((inner.startsWith('join(') || inner.startsWith('order(')) && inner.endsWith(')')) {
-    const offset = inner.startsWith('join(') ? 5 : 6;
+    const locationOperator = inner.startsWith('join(') ? 'join' : 'order';
+    const offset = locationOperator === 'join' ? 5 : 6;
     const parts = splitTopLevel(inner.slice(offset, -1)).map((p) => parseLocation(p, depth + 1));
     const subRanges = collectLeafRanges(parts);
     const start = Math.min(...subRanges.map((part) => part.start));
     const end = Math.max(...subRanges.map((part) => part.end));
-    const strand: Strand = subRanges.every((part) => (part.strand ?? 1) === -1) ? -1 : 1;
-    return assertValidLocation({ start, end, strand, subRanges }, loc);
+    const strand: FeatureStrand = subRanges.every((part) => (part.strand ?? 1) === -1)
+      ? -1
+      : subRanges.every((part) => (part.strand ?? 1) === 1)
+        ? 1
+        : 0;
+    return assertValidLocation({ start, end, strand, subRanges, locationOperator }, loc);
   }
 
-  const normalized = inner.replace(/[<>]/g, '');
-
-  if (normalized.includes('..')) {
-    const [startText, endText] = normalized.split('..');
+  const rangeMatch = inner.match(/^[<>]?(\d+)\.\.[<>]?(\d+)$/);
+  if (rangeMatch) {
     return assertValidLocation({
-      start: parseInt(startText, 10) - 1,
-      end: parseInt(endText, 10),
+      start: parseInt(rangeMatch[1], 10) - 1,
+      end: parseInt(rangeMatch[2], 10),
       strand: 1,
     }, loc);
   }
 
-  const pos = parseInt(normalized, 10);
+  if (!/^[<>]?\d+$/.test(inner)) {
+    throw new Error(`Unsupported GenBank location syntax: ${loc}`);
+  }
+  const pos = parseInt(inner.replace(/[<>]/g, ''), 10);
   return assertValidLocation({ start: pos - 1, end: pos, strand: 1 }, loc);
 }
 
@@ -439,10 +451,13 @@ export function parseFeatures(featuresText: string): Feature[] {
     let locationResult: ParsedLocation;
     try {
       locationResult = parseLocation(locationStr);
-    } catch {
-      continue;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'unsupported syntax';
+      throw new Error(`GenBank feature ${featureKey} has an unsupported location "${locationStr}": ${message}`);
     }
-    const { start, end, strand, subRanges } = locationResult;
+    const { start, end, strand, subRanges, locationOperator } = locationResult;
+    const parsedLocationFeature = { start, end, strand, subRanges };
+    const fuzzyLocation = /[<>]/.test(locationStr);
 
     features.push({
       id: crypto.randomUUID(),
@@ -453,7 +468,16 @@ export function parseFeatures(featuresText: string): Feature[] {
       strand,
       subRanges,
       color: FEATURE_COLORS[mappedType],
-      metadata: qualifiers,
+      metadata: {
+        ...qualifiers,
+        ...(locationOperator ? { motifLocationOperator: locationOperator } : {}),
+        ...(subRanges ? { motifSubRangeOrder: 'biological' } : {}),
+        ...(fuzzyLocation ? {
+          motifOriginalLocation: locationStr,
+          motifOriginalLocationSignature: featureLocationCoordinateSignature(parsedLocationFeature),
+          motifLocationFuzzy: true,
+        } : {}),
+      },
     });
   }
 

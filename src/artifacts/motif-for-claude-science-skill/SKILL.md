@@ -76,7 +76,17 @@ Minimal payload:
 Accepted record aliases include `seq` for `sequence`, `molecule` for `type`,
 and `annotations` for `features`. Group aliases include `project`, `folder`,
 and `collection`. Feature coordinates are zero-indexed: `start` is inclusive
-and `end` is exclusive.
+and `end` is exclusive. For a multipart feature, supply non-empty `subRanges` as
+`[{ start, end, strand? }, ...]` in biological 5′→3′ order; those pieces are
+authoritative, while the feature's `start`/`end` remain their coordinate
+envelope. A piece without `strand` inherits the feature direction. Set
+`metadata.motifLocationOperator` to `order` only when an INSDC multi-piece
+`order(...)` location must stay non-materializable; multipart locations
+otherwise behave as joins. For a manually authored reverse multipart payload,
+also set `metadata.motifSubRangeOrder` to `biological`. Motif preserves an
+unmarked reverse multipart checkpoint, but keeps sequence-derived actions
+unavailable because older text-order and current biological-order arrays cannot
+be distinguished safely without that marker.
 
 ## Add a precomputed alignment
 

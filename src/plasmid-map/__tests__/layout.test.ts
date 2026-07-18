@@ -1344,6 +1344,43 @@ describe('computeMapLayout: segmentation', () => {
     const layout = computeMapLayout(circularInput({ features: [cds], restrictionSites: [] }));
     expect(layout.features[0].segmentPaths).toHaveLength(cds.subRanges!.length);
   });
+
+  it('puts a reverse multipart arrowhead on the biological terminal segment', () => {
+    const reverseCds = feat({
+      id: 'reverse-cds',
+      name: 'reverse split CDS',
+      type: 'cds',
+      start: 100,
+      end: 500,
+      strand: -1,
+      // Biological 5′→3′ order on the reverse strand is high to low.
+      subRanges: [
+        { start: 400, end: 500, strand: -1 },
+        { start: 100, end: 200, strand: -1 },
+      ],
+    });
+    const commandCount = (path: string, command: string) => (
+      path.match(new RegExp(`\\b${command}\\b`, 'g')) ?? []
+    ).length;
+
+    const circular = computeMapLayout(circularInput({ features: [reverseCds], restrictionSites: [] }));
+    expect(commandCount(circular.features[0].segmentPaths[0], 'L')).toBe(1);
+    expect(commandCount(circular.features[0].segmentPaths[1], 'L')).toBe(2);
+
+    const linear = computeMapLayout({
+      mode: 'linear',
+      name: 'reverse multipart',
+      length: 600,
+      topology: 'linear',
+      sequenceType: 'dna',
+      features: [reverseCds],
+      restrictionSites: [],
+      width: 800,
+      height: 260,
+    });
+    expect(linear.features[0].segmentPaths[0]).not.toContain(' L ');
+    expect(linear.features[0].segmentPaths[1]).toContain(' L ');
+  });
 });
 
 // ── protein / linear ──────────────────────────────────────────────────────────

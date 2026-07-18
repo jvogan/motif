@@ -48,6 +48,14 @@ function shiftFeatures(
       start: range.start > editPos ? range.start + delta : range.start,
       end: range.end > editPos ? range.end + delta : range.end,
     }));
+    if (newSubRanges && newSubRanges.length > 0) {
+      return {
+        ...f,
+        start: Math.min(...newSubRanges.map((range) => range.start)),
+        end: Math.max(...newSubRanges.map((range) => range.end)),
+        subRanges: newSubRanges,
+      };
+    }
     return {
       ...f,
       start: newStart,
@@ -288,6 +296,16 @@ export function applyDeletion(
         }))
         .filter((range) => range.end > range.start);
 
+      if (f.subRanges && (!newSubRanges || newSubRanges.length === 0)) return null;
+      if (newSubRanges && newSubRanges.length > 0) {
+        return {
+          ...f,
+          start: Math.min(...newSubRanges.map((range) => range.start)),
+          end: Math.max(...newSubRanges.map((range) => range.end)),
+          subRanges: newSubRanges,
+        };
+      }
+
       return {
         ...f,
         start: newStart,
@@ -296,7 +314,7 @@ export function applyDeletion(
       };
     })
     // Filter out features that became zero-length or invalid
-    .filter((f) => f.end > f.start);
+    .filter((f): f is Feature => f !== null && f.end > f.start);
 
   return {
     raw: newRaw,

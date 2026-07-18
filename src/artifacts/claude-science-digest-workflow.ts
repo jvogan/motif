@@ -1,4 +1,9 @@
 import type { DigestFragment } from '../bio/restriction-digest';
+import {
+  remapFeatureLocation,
+  type FeatureCoordinateMapSpan,
+  type RemappedFeatureLocation,
+} from '../bio/feature-location';
 import type { Feature, SequenceType, Topology } from '../bio/types';
 import type { DigestRecipe } from './claude-science-digest-recipe';
 import {
@@ -362,38 +367,27 @@ function validateRecipe(source: DigestWorkflowSourceRecord, recipe: DigestRecipe
 
 function cloneSourceFeature(
   feature: Feature,
-  offset: number,
+  location: RemappedFeatureLocation,
   index: number,
   sourceRecordId: string,
   budget: JsonCloneBudget,
 ): Feature {
-  const start = feature.start + offset;
-  const end = feature.end + offset;
   const metadata = cloneJsonValue(feature.metadata, `sourceRecord.features[${index}].metadata`, 0, budget);
-  const subRanges = feature.subRanges?.map((range, rangeIndex) => {
-    if (!Number.isInteger(range.start) || !Number.isInteger(range.end)
-      || range.start < feature.start || range.end <= range.start || range.end > feature.end) {
-      fail(
-        'invalid-source',
-        `Source feature ${index + 1} sub-range ${rangeIndex + 1} must fit within its feature.`,
-      );
-    }
-    return { ...range, start: range.start + offset, end: range.end + offset };
-  });
   return {
     ...feature,
+    ...location,
     // restrictionDigest historically allocates feature ids with crypto.
     // Re-keying within each new record makes this materializer deterministic.
     id: `digest-feature-${index + 1}`,
-    start,
-    end,
     metadata: {
       ...(metadata as Record<string, unknown>),
       sourceRecordId,
       sourceFeatureId: feature.id,
       generatedBy: 'restriction_digest',
     },
-    ...(subRanges === undefined ? {} : { subRanges }),
+    ...(location.subRanges === undefined
+      ? {}
+      : { subRanges: location.subRanges.map((range) => ({ ...range })) }),
   };
 }
 
@@ -410,42 +404,48 @@ function sliceSourceFeatures(
   }
   const budget: JsonCloneBudget = { nodes: 0 };
   const cloned: Feature[] = [];
+  const sourceSpans: FeatureCoordinateMapSpan[] = source.topology === 'linear'
+    || fragment.endInOriginal <= source.sequence.length
+    ? [{
+        start: fragment.startInOriginal,
+        end: fragment.endInOriginal,
+        targetStart: 0,
+      }]
+    : [
+        {
+          start: fragment.startInOriginal,
+          end: source.sequence.length,
+          targetStart: 0,
+        },
+        {
+          start: 0,
+          end: fragment.endInOriginal - source.sequence.length,
+          targetStart: source.sequence.length - fragment.startInOriginal,
+        },
+      ];
   sourceFeatures.forEach((feature, index) => {
     if (!Number.isInteger(feature.start) || !Number.isInteger(feature.end)
       || feature.start < 0 || feature.end <= feature.start || feature.end > source.sequence.length) {
       fail('invalid-source', `Source feature ${index + 1} falls outside the source DNA.`);
     }
-    if (source.topology === 'linear' || fragment.endInOriginal <= source.sequence.length) {
-      if (feature.start >= fragment.startInOriginal && feature.end <= fragment.endInOriginal) {
-        cloned.push(cloneSourceFeature(
-          feature,
-          -fragment.startInOriginal,
-          cloned.length,
-          source.id,
-          budget,
-        ));
+    feature.subRanges?.forEach((range, rangeIndex) => {
+      if (!Number.isInteger(range.start) || !Number.isInteger(range.end)
+        || range.start < feature.start || range.end <= range.start || range.end > feature.end) {
+        fail(
+          'invalid-source',
+          `Source feature ${index + 1} sub-range ${rangeIndex + 1} must fit within its feature.`,
+        );
       }
-      return;
-    }
-
-    const headEnd = fragment.endInOriginal - source.sequence.length;
-    if (feature.start >= fragment.startInOriginal && feature.end <= source.sequence.length) {
-      cloned.push(cloneSourceFeature(
-        feature,
-        -fragment.startInOriginal,
-        cloned.length,
-        source.id,
-        budget,
-      ));
-    } else if (feature.start >= 0 && feature.end <= headEnd) {
-      cloned.push(cloneSourceFeature(
-        feature,
-        source.sequence.length - fragment.startInOriginal,
-        cloned.length,
-        source.id,
-        budget,
-      ));
-    }
+    });
+    const location = remapFeatureLocation(feature, sourceSpans);
+    if (!location) return;
+    cloned.push(cloneSourceFeature(
+      feature,
+      location,
+      cloned.length,
+      source.id,
+      budget,
+    ));
   });
   return cloned;
 }

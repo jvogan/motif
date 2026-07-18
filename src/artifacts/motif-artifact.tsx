@@ -5,7 +5,7 @@ import { Activity, AlignCenter, Beaker, ChevronDown, ChevronLeft, ChevronRight, 
 import vectorsRaw from '../../public/data/vectors.json?raw';
 import type { Feature, FeatureStrand, FeatureType, ORF, RestrictionEnzyme, RestrictionSite, SequenceType, Topology } from '../bio/types';
 import { extractEmbeddedFastaContent, parseFasta } from '../bio/fasta-parser';
-import { parseGenBank } from '../bio/genbank-parser';
+import { parseFeatures, parseGenBank } from '../bio/genbank-parser';
 import { gcContent, meltingTemperature, molecularWeight, nucleotideComposition, proteinMolecularWeight } from '../bio/gc-content';
 import { findORFs } from '../bio/orf-detection';
 import type { DigestFragment } from '../bio/restriction-digest';
@@ -23,10 +23,21 @@ import {
   type SangerTraceData,
 } from '../bio/abi-import';
 import { complement, reverseComplement, reverseComplementFeatures } from '../bio/reverse-complement';
+import {
+  extractFeatureSequence,
+  featureGenBankLocation,
+  featureLocationCoordinateSignature,
+  featureLocationLength,
+  featureLocationSegments,
+  isAmbiguousFeatureLocation,
+  isMaterializableFeatureLocation,
+  isMultipartFeature,
+  isOrderedFeatureLocation,
+} from '../bio/feature-location';
 import { translate } from '../bio/translate';
 import { computeMapLayout } from '../plasmid-map/layout';
 import { bpToAngle, pointOnCircle } from '../plasmid-map/geometry/coordinates';
-import { normalizeSpan } from '../plasmid-map/geometry/ranges';
+import { featureSegments as mapFeatureSegments, featureSpans, normalizeSpan } from '../plasmid-map/geometry/ranges';
 import { selectionOverlayPaths } from '../plasmid-map/selection-overlay';
 import { mapModeForBlock, type MapLayout, type MapSpan } from '../plasmid-map/types';
 import { SequenceMapView } from '../components/plasmid-map/SequenceMapView';
@@ -442,6 +453,7 @@ type TranslateTarget = {
   end: number;
   label: string;
   defaultStrand: 'sense' | 'antisense';
+  defaultFrame: 0 | 1 | 2;
   key: string;
   whole: boolean;
 };
@@ -1035,8 +1047,9 @@ const MOTIF_HELP: MotifHelp = {
     start: 'number — 0-indexed inclusive start.',
     end: 'number — exclusive end (end > start).',
     direction: "'forward' | 'reverse' | 'none' (or 1 | -1 | 0) — strand.",
+    subRanges: 'non-empty Array<{ start, end, strand? }> — optional authoritative pieces in biological 5′→3′ order; each strand inherits direction when omitted. start/end remain the coordinate envelope. An empty array is treated like omission at the runtime boundary.',
     color: 'string — optional CSS color for the feature.',
-    metadata: 'object — optional structured provenance/details.',
+    metadata: "object — optional structured provenance/details. Set motifLocationOperator: 'order' only on a multi-piece INSDC order(...) location that must not be implicitly concatenated. For manually authored reverse multipart payloads, set motifSubRangeOrder: 'biological'; unmarked reverse multipart locations are preserved but quarantined from sequence-derived actions because older text-order checkpoints cannot be distinguished safely.",
   },
   alignmentSchema: {
     name: 'string — alignment name used in this session and full-workspace exports.',
@@ -1487,16 +1500,19 @@ function normalizeSubRanges(value: unknown, sequenceLength: number): Feature['su
       : undefined;
     return [{ start, end, ...(strand === undefined ? {} : { strand }) }];
   });
-  return ranges.length > 0 ? ranges : undefined;
+  return ranges;
 }
 
-function normalizeFeature(feature: ArtifactFeatureInput, index: number, sequenceLength: number): Feature | null {
+function normalizeFeature(
+  feature: ArtifactFeatureInput,
+  index: number,
+  sequenceLength: number,
+): Feature | null {
   if (!isPlainObject(feature)) return null;
   const rawStart = Number.isFinite(feature.start) ? Math.floor(Number(feature.start)) : 0;
   const rawEnd = Number.isFinite(feature.end) ? Math.floor(Number(feature.end)) : rawStart;
   const start = Math.max(0, Math.min(sequenceLength, rawStart));
   const end = Math.max(start, Math.min(sequenceLength, rawEnd));
-  if (end <= start) return null;
 
   const direction = feature.direction;
   const strand = feature.strand === -1 || feature.strand === 0 || feature.strand === 1
@@ -1509,16 +1525,54 @@ function normalizeFeature(feature: ArtifactFeatureInput, index: number, sequence
           ? direction
     : 1;
 
+  let subRanges = normalizeSubRanges(feature.subRanges, sequenceLength);
+  if (subRanges?.length === 0) subRanges = undefined;
+  if (!subRanges && end <= start) return null;
+  let metadata = normalizeJsonObject(feature.metadata);
+  const segmentStrands = subRanges?.map((range) => (
+    range.strand === -1 || range.strand === 0 || range.strand === 1 ? range.strand : strand
+  ));
+  const normalizedStrand: FeatureStrand = !segmentStrands
+    ? strand as FeatureStrand
+    : segmentStrands.every((segmentStrand) => segmentStrand === -1)
+      ? -1
+      : segmentStrands.every((segmentStrand) => segmentStrand === 1)
+        ? 1
+        : segmentStrands.every((segmentStrand) => segmentStrand === 0)
+          ? 0
+          : 0;
+  // Preserve caller order: an unmarked reverse array can mean either a current
+  // biological-order payload or an older, undocumented GenBank import in text
+  // order, and those cannot be distinguished losslessly. Never guess by
+  // silently reversing it. Unmarked reverse locations are quarantined from
+  // sequence-derived actions; known/new biological-order locations carry an
+  // explicit marker so subsequent workspace checkpoints are unambiguous. An
+  // existing quarantine remains authoritative across coordinate transforms;
+  // only an explicit biological marker can clear it.
+  if (subRanges && subRanges.length > 1) {
+    if (metadata.motifSubRangeOrder === 'biological') {
+      delete metadata.motifSubRangeOrderAmbiguous;
+    } else if (metadata.motifSubRangeOrderAmbiguous === true || strand === -1 || normalizedStrand === -1) {
+      metadata = { ...metadata, motifSubRangeOrderAmbiguous: true };
+      delete metadata.motifSubRangeOrder;
+    } else {
+      metadata = { ...metadata, motifSubRangeOrder: 'biological' };
+      delete metadata.motifSubRangeOrderAmbiguous;
+    }
+  }
+  const normalizedStart = subRanges ? Math.min(...subRanges.map((range) => range.start)) : start;
+  const normalizedEnd = subRanges ? Math.max(...subRanges.map((range) => range.end)) : end;
+
   return {
     id: normalizeOptionalText(feature.id) ?? `feature-${index + 1}`,
     name: normalizeOptionalText(feature.name) ?? `Feature ${index + 1}`,
     type: normalizeFeatureType(feature.type),
-    start,
-    end,
-    strand: strand as FeatureStrand,
+    start: normalizedStart,
+    end: normalizedEnd,
+    strand: normalizedStrand,
     color: normalizeFeatureColor(feature.color),
-    metadata: normalizeJsonObject(feature.metadata),
-    subRanges: normalizeSubRanges(feature.subRanges, sequenceLength),
+    metadata,
+    subRanges,
   };
 }
 
@@ -1583,7 +1637,10 @@ function truncatedGenBankReason(record: unknown): string | null {
   return 'The GenBank record is marked as truncated.';
 }
 
-export function normalizeRecord(record: ArtifactRecordInput, index: number): ArtifactVector | null {
+export function normalizeRecord(
+  record: ArtifactRecordInput,
+  index: number,
+): ArtifactVector | null {
   if (!isObject(record) || truncatedGenBankReason(record)) return null;
   const sequenceTypeHint = record.molecule ?? record.type;
   const sequence = normalizeSequence(record.seq ?? record.sequence ?? '', sequenceTypeHint);
@@ -1873,7 +1930,16 @@ function buildRecordSummary(
     type: feature.type,
     start: feature.start,
     end: feature.end,
-    strand: strandLabel(feature.strand),
+    strand: featureStrandLabel(feature),
+    location: genBankLocation(feature),
+    length: featureLocationLength(feature),
+    locationOrder: isAmbiguousFeatureLocation(feature)
+      ? 'ambiguous-unmarked'
+      : isOrderedFeatureLocation(feature)
+        ? 'order'
+        : feature.subRanges?.length ? 'biological' : 'contiguous',
+    materializable: isMaterializableFeatureLocation(feature),
+    subRanges: feature.subRanges?.map((range) => ({ ...range })),
   }));
 
   // Per-enzyme cut counts from the current (visible) site set.
@@ -1933,14 +1999,14 @@ function buildRecordSummary(
     selection: selectionData,
   };
 
-  const strandGlyph = (strand: string) => (strand === 'reverse' ? '−' : strand === 'forward' ? '+' : '·');
+  const strandGlyph = (strand: string) => (strand === 'reverse' ? '−' : strand === 'forward' ? '+' : strand === 'mixed' ? '±' : '·');
   const lines: string[] = [];
   lines.push(`${record.name} — ${length.toLocaleString()} ${unit} ${topology} ${molecule.toUpperCase()}`);
   if (gc != null) lines.push(`GC ${(gc * 100).toFixed(1)}%${tm != null ? ` · Tm ${tm.toFixed(1)} °C` : ''}`);
   if (featureList.length > 0) {
     const shown = featureList
       .slice(0, 8)
-      .map((feature) => `${feature.name} ${feature.type} ${feature.start + 1}–${feature.end} (${strandGlyph(feature.strand)})`)
+      .map((feature) => `${feature.name} ${feature.type} ${feature.location} · ${feature.length} ${unit} (${strandGlyph(feature.strand)})${feature.materializable ? '' : ` [${feature.locationOrder}]`}`)
       .join('; ');
     lines.push(`Features (${featureList.length}): ${shown}${featureList.length > 8 ? '; …' : ''}`);
   } else {
@@ -2006,10 +2072,57 @@ function genBankFeatureType(type: FeatureType): string {
 }
 
 function genBankLocation(feature: Feature): string {
-  const start = feature.start + 1;
-  const end = feature.end;
-  const location = start === end ? String(start) : `${start}..${end}`;
-  return feature.strand === -1 ? `complement(${location})` : location;
+  const originalLocation = feature.metadata.motifOriginalLocation;
+  const originalSignature = feature.metadata.motifOriginalLocationSignature;
+  if (!isAmbiguousFeatureLocation(feature)
+    && feature.metadata.motifLocationFuzzy === true
+    && typeof originalLocation === 'string'
+    && typeof originalSignature === 'string'
+    && /[<>]/.test(originalLocation)
+    && !/[\r\n]/.test(originalLocation)
+    && originalSignature === featureLocationCoordinateSignature(feature)) {
+    try {
+      const reparsed = parseFeatures([
+        `     misc_feature    ${originalLocation}`,
+        '                     /label="fuzzy location guard"',
+      ].join('\n'))[0];
+      if (reparsed
+        && featureLocationCoordinateSignature(reparsed) === originalSignature
+        && isOrderedFeatureLocation(reparsed) === isOrderedFeatureLocation(feature)) {
+        return originalLocation;
+      }
+    } catch {
+      // Metadata is user-controlled. Invalid or semantically different raw
+      // locations fall back to the normalized, safe formatter below.
+    }
+  }
+  return featureGenBankLocation(feature);
+}
+
+function genBankFeatureLines(feature: Feature): string[] {
+  const location = genBankLocation(feature);
+  const firstPrefix = `     ${genBankFeatureType(feature.type).padEnd(15, ' ')} `;
+  const continuationPrefix = ' '.repeat(firstPrefix.length);
+  const chunkWidth = 80 - firstPrefix.length;
+  const chunks: string[] = [];
+  let remaining = location;
+  while (remaining.length > chunkWidth) {
+    const comma = remaining.lastIndexOf(',', chunkWidth - 1);
+    const splitAt = comma > 0 ? comma + 1 : chunkWidth;
+    chunks.push(remaining.slice(0, splitAt));
+    remaining = remaining.slice(splitAt);
+  }
+  if (remaining) chunks.push(remaining);
+  const locationLines = chunks.map((chunk, index) => `${index === 0 ? firstPrefix : continuationPrefix}${chunk}`);
+  const rawCodonStart = Number(feature.metadata.codon_start ?? feature.metadata.codonStart);
+  const codonStartLine = Number.isInteger(rawCodonStart) && rawCodonStart >= 1 && rawCodonStart <= 3
+    ? [`                     /codon_start=${rawCodonStart}`]
+    : [];
+  return [
+    ...locationLines,
+    `                     /label="${feature.name.replace(/"/g, "'")}"`,
+    ...codonStartLine,
+  ];
 }
 
 function sequenceOriginLines(sequence: string): string {
@@ -2029,15 +2142,12 @@ function genBankDate(date = new Date()): string {
   return `${day}-${months[date.getUTCMonth()]}-${date.getUTCFullYear()}`;
 }
 
-function toGenBankLite(record: ArtifactVector, topology: Topology): string {
+export function toGenBankLite(record: ArtifactVector, topology: Topology): string {
   const date = genBankDate();
   const molecule = record.type === 'protein' ? 'aa' : record.type === 'rna' ? 'RNA' : 'DNA';
   const topologyLabel = topology === 'circular' ? 'circular' : 'linear';
   const locus = `LOCUS       ${safeSlug(record.name).slice(0, 16).padEnd(16, ' ')} ${String(record.sequence.length).padStart(11, ' ')} ${molecule.padEnd(6, ' ')} ${topologyLabel.padEnd(8, ' ')} UNK ${date}`;
-  const features = record.features.map((feature) => [
-    `     ${genBankFeatureType(feature.type).padEnd(15, ' ')} ${genBankLocation(feature)}`,
-    `                     /label="${feature.name.replace(/"/g, "'")}"`,
-  ].join('\n')).join('\n');
+  const features = record.features.flatMap(genBankFeatureLines).join('\n');
 
   return [
     locus,
@@ -2053,25 +2163,46 @@ function toGenBankLite(record: ArtifactVector, topology: Topology): string {
 }
 
 function gffEscape(value: string): string {
-  return encodeURIComponent(value).replace(/%20/g, ' ');
+  return encodeURIComponent(value);
 }
 
-function toGff3Lite(record: ArtifactVector): string {
+export function toGff3Lite(record: ArtifactVector): string {
   const seqId = safeSlug(record.name);
   const rows = [
     '##gff-version 3',
     `##sequence-region ${seqId} 1 ${record.sequence.length}`,
-    ...record.features.map((feature) => [
-      seqId,
-      'Motif',
-      feature.type,
-      String(feature.start + 1),
-      String(feature.end),
-      '.',
-      feature.strand === -1 ? '-' : feature.strand === 1 ? '+' : '.',
-      '.',
-      `ID=${gffEscape(feature.id)};Name=${gffEscape(feature.name)}`,
-    ].join('\t')),
+    ...record.features.flatMap((feature) => {
+      const segments = featureLocationSegments(feature);
+      const orderedLocation = isOrderedFeatureLocation(feature);
+      const ambiguousLocation = isAmbiguousFeatureLocation(feature);
+      const materializableLocation = isMaterializableFeatureLocation(feature);
+      let nextCdsPhase = codonStartFrame(feature.metadata);
+      return segments.map((segment, segmentIndex) => {
+        const cdsPhase = feature.type === 'cds' && materializableLocation ? nextCdsPhase : null;
+        if (cdsPhase !== null) {
+          const segmentLength = segment.end - segment.start;
+          if (segmentLength <= cdsPhase) nextCdsPhase = (cdsPhase - segmentLength) as 0 | 1 | 2;
+          else {
+            const remainder = (segmentLength - cdsPhase) % 3;
+            nextCdsPhase = ((3 - remainder) % 3) as 0 | 1 | 2;
+          }
+        }
+        const multipartAttributes = segments.length > 1
+          ? `;motif_location_operator=${ambiguousLocation ? 'ambiguous' : orderedLocation ? 'order' : 'join'};motif_part=${segmentIndex + 1}/${segments.length}`
+          : '';
+        return [
+          seqId,
+          'Motif',
+          feature.type,
+          String(segment.start + 1),
+          String(segment.end),
+          '.',
+          segment.strand === -1 ? '-' : segment.strand === 1 ? '+' : '.',
+          cdsPhase === null ? '.' : String(cdsPhase),
+          `ID=${gffEscape(feature.id)};Name=${gffEscape(feature.name)}${multipartAttributes}`,
+        ].join('\t');
+      });
+    }),
     '##FASTA',
     toFasta(seqId, record.sequence),
   ];
@@ -2108,9 +2239,9 @@ function inventoryToCsv(records: readonly ArtifactVector[]): string {
   return rows.join('\n');
 }
 
-function featuresToCsv(records: readonly ArtifactVector[]): string {
+export function featuresToCsv(records: readonly ArtifactVector[]): string {
   const rows = [
-    ['record_id', 'record_name', 'record_group', 'feature_id', 'feature_name', 'type', 'start_1based', 'end_1based', 'strand', 'length'].join(','),
+    ['record_id', 'record_name', 'record_group', 'feature_id', 'feature_name', 'type', 'start_1based', 'end_1based', 'strand', 'length', 'location', 'segment_count'].join(','),
     ...records.flatMap((record) => record.features.map((feature) => [
       record.id,
       record.name,
@@ -2120,8 +2251,10 @@ function featuresToCsv(records: readonly ArtifactVector[]): string {
       feature.type,
       feature.start + 1,
       feature.end,
-      strandLabel(feature.strand),
-      Math.max(0, feature.end - feature.start),
+      featureStrandLabel(feature),
+      featureLocationLength(feature),
+      genBankLocation(feature),
+      featureLocationSegments(feature).length,
     ].map(csvCell).join(','))),
   ];
   return rows.join('\n');
@@ -2216,7 +2349,7 @@ function inventoryReportMarkdown(records: readonly ArtifactVector[]): string {
     lines.push(`- Topology: ${record.topology}`);
     lines.push(`- Length: ${sequenceLengthLabel(record.sequence.length, record.type)}`);
     if (record.features.length > 0) {
-      lines.push(`- Features: ${record.features.map((feature) => `${feature.name} (${formatRange(feature.start, feature.end)})`).join('; ')}`);
+      lines.push(`- Features: ${record.features.map((feature) => `${feature.name} (${featureRangeLabel(feature)}; ${featureLocationLength(feature)} ${sequenceUnitLabel(record.type)})`).join('; ')}`);
     }
     lines.push('');
   }
@@ -2243,7 +2376,7 @@ export function inventoryReportHtml(records: readonly ArtifactVector[]): string 
         <dt>Topology</dt><dd>${htmlEscape(record.topology)}</dd>
         <dt>Length</dt><dd>${htmlEscape(sequenceLengthLabel(record.sequence.length, record.type))}</dd>
       </dl>
-      ${record.features.length > 0 ? `<h3>Features</h3><ul>${record.features.map((feature) => `<li>${htmlEscape(feature.name)} · ${htmlEscape(feature.type)} · ${htmlEscape(formatRange(feature.start, feature.end))}</li>`).join('')}</ul>` : ''}
+      ${record.features.length > 0 ? `<h3>Features</h3><ul>${record.features.map((feature) => `<li>${htmlEscape(feature.name)} · ${htmlEscape(feature.type)} · ${htmlEscape(featureRangeLabel(feature))} · ${featureLocationLength(feature).toLocaleString()} ${htmlEscape(sequenceUnitLabel(record.type))}</li>`).join('')}</ul>` : ''}
     </section>`).join('');
   return `<!doctype html>
 <html lang="en">
@@ -2492,11 +2625,7 @@ function applyImportDefaults(records: readonly ArtifactRecordInput[], defaults: 
 
 function sequenceForFeature(sequence: string, feature: Feature | null, sequenceType?: SequenceType): string {
   if (!feature) return sequence;
-  const subsequence = sequence.slice(feature.start, feature.end);
-  if (feature.strand === -1 && sequenceType && isNucleotideType(sequenceType)) {
-    return reverseComplement(subsequence, sequenceType === 'rna');
-  }
-  return subsequence;
+  return extractFeatureSequence(sequence, feature, sequenceType);
 }
 
 function restrictionSiteTickId(site: Pick<RestrictionSite, 'enzyme' | 'position' | 'cutPosition' | 'strand' | 'recognitionSequence'>): string {
@@ -3998,10 +4127,23 @@ function formatRange(start: number, end: number): string {
   return `${start + 1}-${end}`;
 }
 
+function featureRangeLabel(feature: Pick<Feature, 'start' | 'end' | 'strand' | 'subRanges'>): string {
+  const ranges = featureLocationSegments(feature).map((segment) => formatRange(segment.start, segment.end));
+  if (ranges.length === 0) return feature.subRanges !== undefined ? 'invalid location' : formatRange(feature.start, feature.end);
+  if (ranges.length === 1) return ranges[0];
+  if (ranges.length <= 4) return ranges.join(' + ');
+  return `${ranges.slice(0, 2).join(' + ')} + … + ${ranges[ranges.length - 1]} (${ranges.length} segments)`;
+}
+
 function strandLabel(strand: FeatureStrand): string {
   if (strand === -1) return 'reverse';
   if (strand === 0) return 'none';
   return 'forward';
+}
+
+function featureStrandLabel(feature: Pick<Feature, 'start' | 'end' | 'strand' | 'subRanges'>): string {
+  const strands = new Set(featureLocationSegments(feature).map((segment) => segment.strand));
+  return strands.size > 1 ? 'mixed' : strandLabel(strands.values().next().value ?? feature.strand);
 }
 
 function sequenceLengthLabel(length: number, sequenceType: SequenceType): string {
@@ -4721,7 +4863,8 @@ function App() {
     const fromFeatures: InlineTranslationTrack[] = features
       .filter((feature) => (
         CODING_FEATURE_TYPES.has(feature.type)
-        && feature.end - feature.start >= 3
+        && featureLocationLength(feature) >= 3
+        && !isMultipartFeature(feature)
         && !hiddenFeatureTranslationIds.has(`feat:${feature.id}`)
       ))
       .map((feature) => ({
@@ -5618,18 +5761,28 @@ function App() {
   const selectedRestrictionTickIds = selection?.kind === 'restriction' ? selection.tickIds : emptyTickIds;
   const selectedRestrictionTickSet = useMemo(() => new Set(selectedRestrictionTickIds), [selectedRestrictionTickIds]);
   const selectedFeature = features.find((feature) => feature.id === selectedFeatureId) ?? null;
-  const guideScopeRange = selectedFeature
-    ? { start: selectedFeature.start, end: selectedFeature.end }
-    : selectedMapRange;
-  const visibleMapRange = useMemo(
+  const selectedFeatureSpans = useMemo(
+    () => selectedFeature ? featureSpans(selectedFeature, sequence.length, topology) : [],
+    [selectedFeature, sequence.length, topology],
+  );
+  // A multipart biological product is not a contiguous primer/guide scope. Do
+  // not silently pass its coordinate envelope to design tools.
+  const guideScopeRange = selectedFeatureSpans.length === 1
+    ? selectedFeatureSpans[0]
+    : selectedFeature
+      ? null
+      : selectedMapRange;
+  const visibleMapRanges = useMemo(
     () => selectedFeature
-      ? { start: selectedFeature.start, end: selectedFeature.end }
-      : selectedMapRange,
-    [selectedFeature, selectedMapRange],
+      ? selectedFeatureSpans
+      : selectedMapRange
+        ? normalizeSpan(selectedMapRange.start, selectedMapRange.end, sequence.length, topology)
+        : [],
+    [selectedFeature, selectedFeatureSpans, selectedMapRange, sequence.length, topology],
   );
   const selectionPaths = useMemo(
-    () => (visibleMapRange ? artifactSelectionOverlayPaths(layout, [visibleMapRange]) : []),
-    [layout, visibleMapRange],
+    () => artifactSelectionOverlayPaths(layout, visibleMapRanges),
+    [layout, visibleMapRanges],
   );
   const selectedRestriction = activeClusterId
     ? layout.restrictions.find((restriction) => restriction.clusterId === activeClusterId) ?? null
@@ -5645,12 +5798,11 @@ function App() {
       : '';
   const inspectorGc = isEditable && inspectorSelectionSeq ? gcContent(inspectorSelectionSeq) : null;
   const inspectorTm = isEditable && inspectorSelectionSeq ? meltingTemperature(inspectorSelectionSeq) : null;
-  const selectedMapRangeWraps = !!selectedMapRange && selectedMapRange.end > sequence.length;
-  const canAnnotateSelectedMapRange = !!selectedMapRange && !selectedMapRangeWraps;
+  const canAnnotateSelectedMapRange = !!selectedMapRange;
   // Current selection distilled for the record summary (Claude-legible snapshot).
   const selectionSummary = useMemo(() => {
     if (selectedFeature) {
-      return { label: `${selectedFeature.name} ${formatRange(selectedFeature.start, selectedFeature.end)}`, sequence: inspectorSelectionSeq };
+      return { label: `${selectedFeature.name} ${featureRangeLabel(selectedFeature)}`, sequence: inspectorSelectionSeq };
     }
     if (selectedMapRange) {
       return { label: mapRangeLabel(selectedMapRange, sequence.length), sequence: inspectorSelectionSeq };
@@ -5668,8 +5820,9 @@ function App() {
       return {
         start: selectedFeature.start,
         end: selectedFeature.end,
-        label: `${selectedFeature.name} ${formatRange(selectedFeature.start, selectedFeature.end)}`,
+        label: `${selectedFeature.name} ${featureRangeLabel(selectedFeature)}`,
         defaultStrand: (selectedFeature.strand === -1 ? 'antisense' : 'sense') as 'sense' | 'antisense',
+        defaultFrame: CODING_FEATURE_TYPES.has(selectedFeature.type) ? codonStartFrame(selectedFeature.metadata) : 0,
         key: `f:${selectedFeature.id}`,
         whole: false,
       };
@@ -5680,25 +5833,31 @@ function App() {
         end: selectedMapRange.end,
         label: mapRangeLabel(selectedMapRange, sequence.length),
         defaultStrand: 'sense' as const,
+        defaultFrame: 0,
         key: `r:${selectedMapRange.start}:${selectedMapRange.end}`,
         whole: false,
       };
     }
-    return { start: 0, end: sequence.length, label: 'Whole sequence', defaultStrand: 'sense' as const, key: 'whole', whole: true };
+    return { start: 0, end: sequence.length, label: 'Whole sequence', defaultStrand: 'sense' as const, defaultFrame: 0, key: 'whole', whole: true };
   }, [selectedFeature, selectedMapRange, sequence.length]);
   const translateTarget = lockedTranslateTarget?.recordId === recordId ? lockedTranslateTarget.target : baseTranslateTarget;
   const translateTargetKey = translateTarget.key;
-  // Follow the target's natural strand (and reset to frame +1) whenever the target
-  // changes — the panel updates in place; the user can still override afterwards.
+  const multipartTranslateFeature = selectedFeature
+    && translateTargetKey === `f:${selectedFeature.id}`
+    && isMultipartFeature(selectedFeature)
+      ? selectedFeature
+      : null;
+  // Follow the target's natural strand and imported codon_start whenever the
+  // target changes; the user can still override either control afterwards.
   useEffect(() => {
     setTranslateStrand(translateTarget.defaultStrand);
-    setTranslateFrame(0);
-  }, [recordId, translateTarget.defaultStrand, translateTargetKey]);
+    setTranslateFrame(translateTarget.defaultFrame);
+  }, [recordId, translateTarget.defaultFrame, translateTarget.defaultStrand, translateTargetKey]);
 
   // A translation track built from the target + chosen strand/frame — the single
   // source of truth for the popup readout AND for pinning an inline layer.
   const previewTrack = useMemo<InlineTranslationTrack | null>(() => {
-    if (!isEditable || translateTarget.end - translateTarget.start < 3) return null;
+    if (!isEditable || multipartTranslateFeature || translateTarget.end - translateTarget.start < 3) return null;
     return {
       id: `preview:${translateTargetKey}:${translateStrand}:${translateFrame}`,
       label: translateTarget.label,
@@ -5708,13 +5867,27 @@ function App() {
       frame: translateFrame,
       source: 'layer',
     };
-  }, [isEditable, translateTarget, translateTargetKey, translateStrand, translateFrame]);
+  }, [isEditable, multipartTranslateFeature, translateTarget, translateTargetKey, translateStrand, translateFrame]);
   const translationPreviewActive = translationPanelOpen || showTranslations || !translateTarget.whole;
   const previewResidues = useMemo(
     () => (translationPreviewActive && previewTrack ? inlineTrackResidues(sequence, sequenceType, previewTrack, topology) : []),
     [previewTrack, sequence, sequenceType, topology, translationPreviewActive],
   );
-  const previewProtein = useMemo(() => previewResidues.map((residue) => residue.aa).join(''), [previewResidues]);
+  const previewProtein = useMemo(() => {
+    if (!multipartTranslateFeature) return previewResidues.map((residue) => residue.aa).join('');
+    const naturalSequence = sequenceForFeature(sequence, multipartTranslateFeature, sequenceType);
+    const naturalControl = multipartTranslateFeature.strand === -1 ? 'antisense' : 'sense';
+    const source = translateStrand === naturalControl
+      ? naturalSequence
+      : reverseComplement(naturalSequence, sequenceType === 'rna');
+    return translate(source, translateFrame);
+  }, [multipartTranslateFeature, previewResidues, sequence, sequenceType, translateFrame, translateStrand]);
+  const translationUnavailableReason = selectedFeature && isOrderedFeatureLocation(selectedFeature)
+    ? 'INSDC order(...) records segment order but does not assert one materializable sequence, so Motif will not translate it implicitly.'
+    : selectedFeature && isAmbiguousFeatureLocation(selectedFeature)
+      ? 'This unmarked reverse multipart location has ambiguous segment order. Re-import its original GenBank record or confirm biological order in the source data before translation.'
+      : undefined;
+  const canPinPreviewTranslation = !!previewTrack && !translateTarget.whole;
   // Selection-only translation (drives the selection bar's Translate / New-record
   // enablement); null for the whole-sequence target.
   const selectionTranslation = useMemo(() => {
@@ -5722,9 +5895,7 @@ function App() {
     return { label: translateTarget.label, protein: previewProtein, isReverse: translateStrand === 'antisense' };
   }, [translateTarget, previewProtein, translateStrand]);
   const selectionActionTranslation = (selectedFeature || selectedMapRange) ? selectionTranslation : null;
-  const hasPartialSequenceSelection = !!selectionSummary
-    && inspectorSelectionSeq.length > 0
-    && inspectorSelectionSeq.length < sequence.length;
+  const hasMaterializableSequenceSelection = !!selectionSummary && inspectorSelectionSeq.length > 0;
   const singleCutters = useMemo(() => {
     const counts = new Map<string, number>();
     for (const site of visibleRestrictionSites) counts.set(site.enzyme, (counts.get(site.enzyme) ?? 0) + 1);
@@ -5927,7 +6098,8 @@ function App() {
     const feature = features.find((candidate) => candidate.id === featureId);
     const automaticTranslationId = feature
       && CODING_FEATURE_TYPES.has(feature.type)
-      && feature.end - feature.start >= 3
+      && featureLocationLength(feature) >= 3
+      && !isMultipartFeature(feature)
       && !hiddenFeatureTranslationIds.has(`feat:${feature.id}`)
       ? `feat:${feature.id}`
       : null;
@@ -6001,6 +6173,7 @@ function App() {
       end: rangeEnd,
       label: mapRangeLabel({ start: rangeStart, end: rangeEnd }, sequence.length),
       defaultStrand: strand === -1 ? 'antisense' : strand === 1 ? 'sense' : translateStrand,
+      defaultFrame: 0,
       key: `r:${rangeStart}:${rangeEnd}`,
       whole: false,
     };
@@ -6793,12 +6966,12 @@ function App() {
   }, [addRecord, inspectorSelectionSeq, recordId, selectionSummary, sequenceType, vector.group, vector.name]);
 
   const addContextReverseComplementRecord = useCallback(() => {
-    if (hasPartialSequenceSelection) {
-      addSelectionReverseComplementRecord();
+    if (selectionSummary) {
+      if (hasMaterializableSequenceSelection) addSelectionReverseComplementRecord();
       return;
     }
     addReverseComplementRecord();
-  }, [addReverseComplementRecord, addSelectionReverseComplementRecord, hasPartialSequenceSelection]);
+  }, [addReverseComplementRecord, addSelectionReverseComplementRecord, hasMaterializableSequenceSelection, selectionSummary]);
 
   const addSelectedFeatureRecord = useCallback(() => {
     if (!selectedFeature) return;
@@ -6831,7 +7004,7 @@ function App() {
       provenance: {
         parentRecordId: recordId,
         operation: 'extract_feature',
-        selection: `${selectedFeature.name} ${formatRange(selectedFeature.start, selectedFeature.end)}`,
+        selection: `${selectedFeature.name} ${featureRangeLabel(selectedFeature)}`,
       },
     });
   }, [addRecord, recordId, selectedFeature, sequence, sequenceType, vector.group, vector.name]);
@@ -9344,7 +9517,7 @@ function App() {
               <div className="motif-cs-panel-head">
                 <span>Sequence</span>
                 <span className="motif-cs-panel-meta">
-                  {!hasActiveRecord ? 'empty' : selectedFeature ? formatRange(selectedFeature.start, selectedFeature.end) : selectedMapRange ? mapRangeLabel(selectedMapRange, sequence.length) : sequenceType === 'protein' ? 'amino acid' : '5′ → 3′'}
+                  {!hasActiveRecord ? 'empty' : selectedFeature ? featureRangeLabel(selectedFeature) : selectedMapRange ? mapRangeLabel(selectedMapRange, sequence.length) : sequenceType === 'protein' ? 'amino acid' : '5′ → 3′'}
                 </span>
               </div>
               {hasActiveRecord ? (
@@ -9449,12 +9622,16 @@ function App() {
                   <button
                     className="motif-cs-mini-button"
                     type="button"
-                    disabled={!selectedInlineTranslationTrack && !selectionActionTranslation}
+                    disabled={!selectedInlineTranslationTrack && (!selectionActionTranslation || !canPinPreviewTranslation)}
                     onClick={() => {
                       if (selectedInlineTranslationTrack) deleteTranslationLayer(selectedInlineTranslationTrack.id);
                       else translateSelectionInline();
                     }}
-                    title={selectedInlineTranslationTrack ? 'Remove the selected amino-acid translation track' : 'Add this selection as an inline amino-acid translation track'}
+                    title={selectedInlineTranslationTrack
+                      ? 'Remove the selected amino-acid translation track'
+                      : multipartTranslateFeature
+                        ? 'Multipart translation is available in the Translation panel, but cannot be pinned as one contiguous track'
+                        : 'Add this selection as an inline amino-acid translation track'}
                   >
                     {selectedInlineTranslationTrack ? 'Del AA' : 'Add AA'}
                   </button>
@@ -9463,11 +9640,11 @@ function App() {
                     type="button"
                     disabled={!canAnnotateSelectedMapRange}
                     onClick={handleAnnotateRange}
-                    title={selectedMapRangeWraps ? 'Wrapped circular ranges can be copied or translated; drag a non-wrapping span to add a feature' : selectedMapRange ? 'Annotate this range as a new feature' : 'Drag-select a range on the sequence to add a feature'}
+                    title={selectedMapRange ? 'Annotate this range as a new feature' : 'Drag-select a range on the sequence to add a feature'}
                   >
                     + Feature
                   </button>
-                  <button className="motif-cs-mini-button" type="button" disabled={!isNucleotideRecord} onClick={addContextReverseComplementRecord} aria-label="Reverse complement" title={hasPartialSequenceSelection ? 'Create a reverse-complement record from this selection' : 'Create a reverse-complement record from the whole sequence'}>
+                  <button className="motif-cs-mini-button" type="button" disabled={!isNucleotideRecord || (!!selectionSummary && !hasMaterializableSequenceSelection)} onClick={addContextReverseComplementRecord} aria-label="Reverse complement" title={selectionSummary ? hasMaterializableSequenceSelection ? 'Create a reverse-complement record from this selection' : 'This ordered location cannot be materialized as one sequence' : 'Create a reverse-complement record from the whole sequence'}>
                     <span className="motif-cs-label-full">Rev comp</span>
                     <span className="motif-cs-label-short">RC</span>
                   </button>
@@ -9635,6 +9812,7 @@ function App() {
                 embedded
                 sequenceLength={sequence.length}
                 sequenceType={sequenceType}
+                topology={topology}
                 featureCount={features.length}
                 selectedFeature={selectedFeature}
                 selectedMapRange={selectedMapRange}
@@ -9645,9 +9823,10 @@ function App() {
                 onDeleteFeature={deleteFeature}
                 onCreateRecord={addSelectedFeatureRecord}
                 onCreateProteinRecord={
-                  selectedInlineTranslationTrack?.source === 'feature'
-                  && selectedInlineTranslationTrack.id === selectedTranslationLayerId
-                    ? () => addTranslationTrackRecord(selectedInlineTranslationTrack)
+                  selectedFeature
+                  && CODING_FEATURE_TYPES.has(selectedFeature.type)
+                  && previewProtein
+                    ? addSelectionTranslationRecord
                     : undefined
                 }
               />
@@ -9693,7 +9872,13 @@ function App() {
               {selectedFeature ? (
                 <>
                   <strong>{selectedFeature.name}</strong>
-                  <span>{selectedFeature.type} · {formatRange(selectedFeature.start, selectedFeature.end)} · {strandLabel(selectedFeature.strand)}</span>
+                  <span>{selectedFeature.type} · {featureRangeLabel(selectedFeature)} · {featureStrandLabel(selectedFeature)}</span>
+                  {isOrderedFeatureLocation(selectedFeature) ? (
+                    <span>Ordered segments are not implicitly joined; export preserves the INSDC order(...) location.</span>
+                  ) : null}
+                  {isAmbiguousFeatureLocation(selectedFeature) ? (
+                    <span>Segment order is ambiguous in this legacy reverse multipart location; Motif preserves the coordinates but blocks sequence-derived actions.</span>
+                  ) : null}
                   {isEditable && inspectorSelectionSeq ? (
                     <div className="motif-cs-inspector-stats">
                       <span>{inspectorSelectionSeq.length} {sequenceUnitLabel(sequenceType)}</span>
@@ -9808,6 +9993,8 @@ function App() {
                 frame={translateFrame}
                 residues={previewResidues}
                 protein={previewProtein}
+                unavailableReason={translationUnavailableReason}
+                canAddToSequence={canPinPreviewTranslation}
                 layerCount={translationLayers.length}
                 onStrandChange={setTranslateStrand}
                 onFrameChange={setTranslateFrame}
@@ -10111,6 +10298,8 @@ function App() {
             frame={translateFrame}
             residues={previewResidues}
             protein={previewProtein}
+            unavailableReason={translationUnavailableReason}
+            canAddToSequence={canPinPreviewTranslation}
             layerCount={translationLayers.length}
             onStrandChange={setTranslateStrand}
             onFrameChange={setTranslateFrame}
@@ -10994,7 +11183,7 @@ function FeatureList({
             >
               <span className="motif-cs-swatch" style={{ backgroundColor: feature.color }} />
               <span className="motif-cs-row-main" translate="no">{feature.name}</span>
-              <span className="motif-cs-row-meta">{formatRange(feature.start, feature.end)}</span>
+              <span className="motif-cs-row-meta">{featureRangeLabel(feature)}</span>
             </button>
           )) : (
             <p className="motif-cs-muted">No annotated features.</p>
@@ -11413,6 +11602,7 @@ function ConfirmDeleteButton({
 function QuickFeatureEditor({
   sequenceLength,
   sequenceType,
+  topology,
   featureCount,
   selectedFeature,
   selectedMapRange,
@@ -11427,6 +11617,7 @@ function QuickFeatureEditor({
 }: {
   sequenceLength: number;
   sequenceType: SequenceType;
+  topology: Topology;
   featureCount: number;
   selectedFeature: Feature | null;
   selectedMapRange: MapSelectionRange | null;
@@ -11447,6 +11638,9 @@ function QuickFeatureEditor({
   const [codonStart, setCodonStart] = useState<1 | 2 | 3>(1);
   const [color, setColor] = useState(defaultFeatureColor('misc_feature'));
   const [formError, setFormError] = useState<string | null>(null);
+  const selectedFeatureHasSegments = !!selectedFeature && isMultipartFeature(selectedFeature);
+  const selectedFeatureIsOrdered = !!selectedFeature && isOrderedFeatureLocation(selectedFeature);
+  const selectedFeatureCannotMaterialize = !!selectedFeature && !isMaterializableFeatureLocation(selectedFeature);
 
   useEffect(() => {
     if (selectedFeature) return;
@@ -11487,8 +11681,11 @@ function QuickFeatureEditor({
   }, [applyRange, selectedFeature, sequenceType]);
 
   useEffect(() => {
-    if (selectedFeature || !selectedMapRange || selectedMapRange.end > sequenceLength) return;
-    applyRange(selectedMapRange.start + 1, selectedMapRange.end);
+    if (selectedFeature || !selectedMapRange) return;
+    const wrappedEnd = selectedMapRange.end > sequenceLength
+      ? selectedMapRange.end - sequenceLength
+      : selectedMapRange.end;
+    applyRange(selectedMapRange.start + 1, wrappedEnd || sequenceLength);
   }, [applyRange, selectedFeature, selectedMapRange, sequenceLength]);
 
   const useMotifHit = useCallback(() => {
@@ -11497,8 +11694,11 @@ function QuickFeatureEditor({
   }, [applyRange, motifLength, motifStart]);
 
   const useMapRange = useCallback(() => {
-    if (!selectedMapRange || selectedMapRange.end > sequenceLength) return;
-    applyRange(selectedMapRange.start + 1, selectedMapRange.end);
+    if (!selectedMapRange) return;
+    const wrappedEnd = selectedMapRange.end > sequenceLength
+      ? selectedMapRange.end - sequenceLength
+      : selectedMapRange.end;
+    applyRange(selectedMapRange.start + 1, wrappedEnd || sequenceLength);
   }, [applyRange, selectedMapRange, sequenceLength]);
 
   const handleTypeChange = useCallback((nextType: FeatureType) => {
@@ -11520,15 +11720,29 @@ function QuickFeatureEditor({
     if (startIndex1 < 1 || endIndex1 < 1 || startIndex1 > sequenceLength || endIndex1 > sequenceLength) {
       return { valid: false as const, message: `Range must stay within 1-${sequenceLength}.` };
     }
-    if (endIndex1 < startIndex1) {
+    const wraps = topology === 'circular' && endIndex1 < startIndex1;
+    if (endIndex1 < startIndex1 && !wraps) {
       return { valid: false as const, message: 'End must be greater than or equal to start.' };
+    }
+    if (wraps) {
+      const subRanges = normalizeSpan(startIndex1 - 1, endIndex1, sequenceLength, topology);
+      if (subRanges.length < 2) {
+        return { valid: false as const, message: 'Wrapped range could not be resolved on this circular record.' };
+      }
+      return {
+        valid: true as const,
+        startIndex: Math.min(...subRanges.map((range) => range.start)),
+        endIndex: Math.max(...subRanges.map((range) => range.end)),
+        subRanges,
+      };
     }
     return {
       valid: true as const,
       startIndex: startIndex1 - 1,
       endIndex: endIndex1,
+      subRanges: undefined,
     };
-  }, [end, sequenceLength, start]);
+  }, [end, sequenceLength, start, topology]);
 
   useEffect(() => {
     if (rangeValidation.valid && formError) setFormError(null);
@@ -11547,6 +11761,10 @@ function QuickFeatureEditor({
       delete metadata.codon_start;
       delete metadata.codonStart;
     }
+    if (rangeValidation.subRanges) {
+      metadata.motifSubRangeOrder = 'biological';
+      delete metadata.motifSubRangeOrderAmbiguous;
+    }
     return {
       name: name.trim() || `${type}_${featureCount + 1}`,
       type,
@@ -11555,8 +11773,14 @@ function QuickFeatureEditor({
       strand: sequenceType === 'protein' ? 0 : strand,
       color,
       metadata,
+      subRanges: selectedFeatureHasSegments
+        ? selectedFeature?.subRanges?.map((range) => ({ ...range }))
+        : rangeValidation.subRanges
+          ? (strand === -1 ? [...rangeValidation.subRanges].reverse() : rangeValidation.subRanges)
+            .map((range) => ({ ...range, strand }))
+          : undefined,
     };
-  }, [codonStart, color, featureCount, name, rangeValidation, selectedFeature?.metadata, sequenceType, strand, type]);
+  }, [codonStart, color, featureCount, name, rangeValidation, selectedFeature?.metadata, selectedFeature?.subRanges, selectedFeatureHasSegments, sequenceType, strand, type]);
 
   const submit = useCallback(() => {
     if (!rangeValidation.valid) {
@@ -11597,7 +11821,7 @@ function QuickFeatureEditor({
   }, [onDeleteFeature, selectedFeature]);
 
   const canUseMotif = motifStart !== undefined && motifLength > 0;
-  const canUseMapRange = !!selectedMapRange && selectedMapRange.end <= sequenceLength;
+  const canUseMapRange = !!selectedMapRange && !selectedFeatureHasSegments;
   const rangeErrorMessage = formError ?? (!rangeValidation.valid ? rangeValidation.message : null);
   const showTranslationMetadata = isNucleotideType(sequenceType) && CODING_FEATURE_TYPES.has(type);
 
@@ -11634,7 +11858,7 @@ function QuickFeatureEditor({
               name="feature-strand"
               value={String(sequenceType === 'protein' ? 0 : strand)}
               onChange={(event) => setStrand(Number(event.target.value) as FeatureStrand)}
-              disabled={sequenceType === 'protein'}
+              disabled={sequenceType === 'protein' || selectedFeatureHasSegments}
             >
               {sequenceType === 'protein' ? (
                 <option value="0">none</option>
@@ -11670,11 +11894,11 @@ function QuickFeatureEditor({
         <div className="motif-cs-form-grid motif-cs-form-grid-compact">
           <label>
             <span>Start</span>
-            <input className="motif-cs-field" name="feature-start" type="number" inputMode="numeric" autoComplete="off" min="1" max={sequenceLength} value={start} onChange={(event) => setStart(event.target.value)} aria-invalid={!rangeValidation.valid || undefined} aria-describedby={!rangeValidation.valid ? 'motif-cs-feature-range-error' : undefined} />
+            <input className="motif-cs-field" name="feature-start" type="number" inputMode="numeric" autoComplete="off" min="1" max={sequenceLength} value={start} onChange={(event) => setStart(event.target.value)} disabled={selectedFeatureHasSegments} aria-invalid={!rangeValidation.valid || undefined} aria-describedby={!rangeValidation.valid ? 'motif-cs-feature-range-error' : undefined} />
           </label>
           <label>
             <span>End</span>
-            <input className="motif-cs-field" name="feature-end" type="number" inputMode="numeric" autoComplete="off" min="1" max={sequenceLength} value={end} onChange={(event) => setEnd(event.target.value)} aria-invalid={!rangeValidation.valid || undefined} aria-describedby={!rangeValidation.valid ? 'motif-cs-feature-range-error' : undefined} />
+            <input className="motif-cs-field" name="feature-end" type="number" inputMode="numeric" autoComplete="off" min="1" max={sequenceLength} value={end} onChange={(event) => setEnd(event.target.value)} disabled={selectedFeatureHasSegments} aria-invalid={!rangeValidation.valid || undefined} aria-describedby={!rangeValidation.valid ? 'motif-cs-feature-range-error' : undefined} />
           </label>
           <label>
             <span>Color</span>
@@ -11694,7 +11918,17 @@ function QuickFeatureEditor({
             disabled={!selectedFeature}
             onConfirm={deleteSelected}
           />
-          <button className="motif-cs-mini-button" type="button" onClick={onCreateRecord} disabled={!selectedFeature} title="Extract the selected feature as a new inventory entry">New record</button>
+          <button
+            className="motif-cs-mini-button"
+            type="button"
+            onClick={onCreateRecord}
+            disabled={!selectedFeature || selectedFeatureCannotMaterialize}
+            title={selectedFeatureIsOrdered
+              ? 'INSDC order(...) does not imply that segments can be joined into one sequence'
+              : selectedFeature && isAmbiguousFeatureLocation(selectedFeature)
+                ? 'Confirm the biological order of this legacy reverse multipart location before extracting it'
+                : 'Extract the selected feature as a new inventory entry'}
+          >New record</button>
           {onCreateProteinRecord ? <button className="motif-cs-mini-button" type="button" onClick={onCreateProteinRecord}>New protein</button> : null}
           <button className="motif-cs-mini-button" type="button" onClick={useMapRange} disabled={!canUseMapRange}>Use map</button>
           <button className="motif-cs-mini-button" type="button" onClick={useMotifHit} disabled={!canUseMotif}>Use pattern</button>
@@ -11702,8 +11936,15 @@ function QuickFeatureEditor({
         {rangeErrorMessage ? (
           <p id="motif-cs-feature-range-error" className="motif-cs-form-note" role="alert">{rangeErrorMessage}</p>
         ) : null}
-        {selectedMapRange && selectedMapRange.end > sequenceLength ? (
-          <p className="motif-cs-form-note">Map range wraps the origin. Copy it from Sequence Tools or drag a non-wrapping span to add it as a feature.</p>
+        {selectedFeatureHasSegments && selectedFeature ? (
+          <p className="motif-cs-form-note">
+            Multipart location · {featureRangeLabel(selectedFeature)} · {featureLocationLength(selectedFeature).toLocaleString()} {sequenceUnitLabel(sequenceType)}. Update preserves its segment coordinates and orientation; create a new contiguous feature to replace them.
+            {isAmbiguousFeatureLocation(selectedFeature) ? ' This legacy reverse location has no reliable segment-order marker, so sequence extraction and translation remain unavailable.' : ''}
+          </p>
+        ) : selectedMapRange && selectedMapRange.end > sequenceLength ? (
+          <p className="motif-cs-form-note">This range wraps the origin. Motif will save it as two joined segments in biological order.</p>
+        ) : topology === 'circular' ? (
+          <p className="motif-cs-form-note">For an origin-wrapping feature, enter an End position lower than Start.</p>
         ) : null}
       </div>
   );
@@ -11970,13 +12211,16 @@ function AnalysisPanel({
             ) : null}
             {visibleOrfs.length > 0 ? visibleOrfs.map((orf, index) => {
               const wraps = orf.end > record.sequence.length;
+              const spans = normalizeSpan(orf.start, orf.end, record.sequence.length, topology);
+              const featureStart = spans.length > 0 ? Math.min(...spans.map((span) => span.start)) : orf.start;
+              const featureEnd = spans.length > 0 ? Math.max(...spans.map((span) => span.end)) : Math.min(orf.end, record.sequence.length);
               return (
                 <div key={`${orf.strand}:${orf.frame}:${orf.start}:${orf.end}`} className="motif-cs-analysis-row">
                   <button
                     className="motif-cs-row-main motif-cs-orf-select"
                     type="button"
                     title={wraps ? 'Wrap-spanning ORF' : 'Highlight this ORF on the sequence and map'}
-                    onClick={() => onSelectRange(orf.start, Math.min(orf.end, record.sequence.length))}
+                    onClick={() => onSelectRange(orf.start, orf.end)}
                   >
                     ORF {index + 1} · {orf.strand === -1 ? '-' : '+'}{orf.frame}
                     <small>{orfRangeLabel(orf, record.sequence.length)} · {orf.aminoAcids} aa · {orf.startCodon} to {orf.stopCodon}</small>
@@ -11984,16 +12228,24 @@ function AnalysisPanel({
                   <button
                     className="motif-cs-mini-button"
                     type="button"
-                    disabled={wraps}
-                    title={wraps ? 'Wrap-spanning ORFs need split-feature support before annotation' : 'Add ORF as feature'}
+                    title={wraps ? 'Add origin-spanning ORF as a two-segment feature' : 'Add ORF as feature'}
                     onClick={() => onAddFeature({
                       name: `ORF ${index + 1}`,
                       type: 'orf',
-                      start: orf.start,
-                      end: orf.end,
+                      start: featureStart,
+                      end: featureEnd,
                       strand: orf.strand,
+                      subRanges: spans.length > 1
+                        ? (orf.strand === -1 ? [...spans].reverse() : spans)
+                          .map((span) => ({ ...span, strand: orf.strand }))
+                        : undefined,
                       color: defaultFeatureColor('orf'),
-                      metadata: { source: 'motif_orf_detection', frame: orf.frame, aminoAcids: orf.aminoAcids },
+                      metadata: {
+                        source: 'motif_orf_detection',
+                        frame: orf.frame,
+                        aminoAcids: orf.aminoAcids,
+                        ...(spans.length > 1 ? { motifSubRangeOrder: 'biological' } : {}),
+                      },
                     })}
                   >
                     Add
@@ -12550,6 +12802,8 @@ function SequenceToolsPanel({
   const isNucleotide = isNucleotideType(sequenceType);
   const isRna = sequenceType === 'rna';
   const selectedFeatureIsReverse = Boolean(selectedFeature && selectedFeature.strand === -1 && isNucleotide);
+  const selectedFeatureIsOrdered = Boolean(selectedFeature && isOrderedFeatureLocation(selectedFeature));
+  const selectedFeatureCannotMaterialize = Boolean(selectedFeature && !isMaterializableFeatureLocation(selectedFeature));
   const targetSequence = !exportPanelOpen ? '' : selectedFeature ? selectedSequence : selectedMapRange ? selectedRangeSequence : record.sequence;
   const reverseComplementSequence = exportPanelOpen && isNucleotide ? reverseComplement(targetSequence, isRna) : '';
   const complementSequence = exportPanelOpen && isNucleotide ? complement(targetSequence, isRna) : '';
@@ -12608,7 +12862,7 @@ function SequenceToolsPanel({
     ];
   }, [alignments, exportRecordsWithSites, featureCsv, inventoryCsv, inventoryJson, multiFasta, multiGenbank, needsZipExport, reportHtml, reportMarkdown, siteCsv]);
   const preview = selectedFeature
-    ? `${selectedFeature.name} (${formatRange(selectedFeature.start, selectedFeature.end)})\n${selectedSequence}`
+    ? `${selectedFeature.name} (${featureRangeLabel(selectedFeature)})\n${selectedSequence}`
     : selectedMapRange
       ? `Map range ${mapRangeLabel(selectedMapRange, record.sequence.length)}\n${selectedRangeSequence}`
       : record.sequence;
@@ -12728,7 +12982,7 @@ function SequenceToolsPanel({
       ) : null}
       {exportPanelOpen ? (
       <div className="motif-cs-export-body">
-        <p className="motif-cs-form-note">Session data is not durable across reloads. Database JSON restores directly; ZIP contains the same inventory.json plus interchange exports, so extract inventory.json before using Add Entry. Basic GenBank/GFF3 exports preserve sequence and simple feature locations only.</p>
+        <p className="motif-cs-form-note">Session data is not durable across reloads. Database JSON restores directly; ZIP contains the same inventory.json plus interchange exports, so extract inventory.json before using Add Entry. Basic GenBank preserves joined, ordered, and origin-spanning locations; ambiguous legacy reverse locations export conservatively as non-materializable order(...). GFF3 emits discontinuous rows with Motif part-order attributes. Use Database JSON for full Motif metadata.</p>
         <div className="motif-cs-export-row">
           <span className="motif-cs-export-label">Copy</span>
           <div className="motif-cs-export-actions">
@@ -12738,7 +12992,7 @@ function SequenceToolsPanel({
             <button
               className="motif-cs-mini-button"
               type="button"
-              title="Copy basic GenBank (sequence plus simple feature locations)"
+              title="Copy basic GenBank with preserved feature locations"
               onClick={() => onCopy('Basic GenBank', genbank)}
               disabled={!hasActiveRecord}
             >
@@ -12754,6 +13008,7 @@ function SequenceToolsPanel({
                 className="motif-cs-mini-button"
                 type="button"
                 onClick={() => onCopy(selectedFeature ? 'Feature sequence' : 'Map range', selectedFeature ? selectedSequence : selectedRangeSequence)}
+                disabled={selectedFeature ? !selectedSequence : !selectedRangeSequence}
                 title={selectedFeatureIsReverse ? 'Copies the reverse feature in feature orientation.' : `Copy ${selectedTargetLabel}`}
               >
                 Copy
@@ -12763,7 +13018,7 @@ function SequenceToolsPanel({
                 type="button"
                 onClick={() => onAnnotateRange()}
                 disabled={!canAnnotateRange}
-                title={selectedMapRange && !canAnnotateRange ? 'Wrapped circular ranges can be copied or translated; drag a non-wrapping span to add a feature' : undefined}
+                title={selectedMapRange ? 'Annotate this range as a new feature' : undefined}
               >
                 Annotate
               </button>
@@ -12773,21 +13028,27 @@ function SequenceToolsPanel({
         <div className="motif-cs-export-row">
           <span className="motif-cs-export-label">DNA/RNA</span>
           <div className="motif-cs-export-actions">
-            <button className="motif-cs-mini-button" type="button" onClick={() => onCopy('Complement', complementSequence)} disabled={!hasActiveRecord || !isNucleotide}>Complement</button>
+            <button className="motif-cs-mini-button" type="button" onClick={() => onCopy('Complement', complementSequence)} disabled={!hasActiveRecord || !isNucleotide || selectedFeatureCannotMaterialize}>Complement</button>
             <button
               className="motif-cs-mini-button"
               type="button"
               onClick={() => onCopy('Reverse complement', reverseComplementSequence)}
-              disabled={!hasActiveRecord || !isNucleotide}
-              title={selectedFeatureIsReverse ? 'For a reverse feature, this returns the source record orientation for the same span.' : 'Copy the reverse complement of the current target'}
+              disabled={!hasActiveRecord || !isNucleotide || selectedFeatureCannotMaterialize}
+              title={selectedFeatureIsReverse ? 'Return the opposite orientation of the assembled reverse-feature sequence.' : 'Copy the reverse complement of the current target'}
             >
               Copy rev comp
             </button>
-            <button className="motif-cs-mini-button" type="button" onClick={onAddReverseComplement} disabled={!hasActiveRecord || !isNucleotide}>New rev comp</button>
+            <button className="motif-cs-mini-button" type="button" onClick={onAddReverseComplement} disabled={!hasActiveRecord || !isNucleotide || selectedFeatureCannotMaterialize}>New rev comp</button>
           </div>
         </div>
         {selectedFeatureIsReverse ? (
-          <p className="motif-cs-form-note">Reverse feature: Copy uses feature orientation; Copy rev comp returns the source record span.</p>
+          <p className="motif-cs-form-note">Reverse feature: Copy uses biological feature orientation; Copy rev comp returns the opposite orientation of the assembled feature sequence.</p>
+        ) : null}
+        {selectedFeatureIsOrdered ? (
+          <p className="motif-cs-form-note">INSDC order(...) records segment order but does not assert that the pieces form one materializable sequence. Sequence copy, complement, translation, and derived-record actions stay unavailable.</p>
+        ) : null}
+        {selectedFeature && isAmbiguousFeatureLocation(selectedFeature) ? (
+          <p className="motif-cs-form-note">This legacy reverse multipart location has no reliable biological-order marker. Database JSON preserves it exactly; Basic GenBank and GFF3 label it non-materializable. Sequence copy, complement, translation, and derived-record actions stay unavailable until the source order is confirmed.</p>
         ) : null}
         <div className="motif-cs-export-picker">
           <label>
@@ -13140,6 +13401,8 @@ function TranslationPanel({
   frame,
   residues,
   protein,
+  unavailableReason,
+  canAddToSequence,
   layerCount,
   onStrandChange,
   onFrameChange,
@@ -13157,6 +13420,8 @@ function TranslationPanel({
   frame: 0 | 1 | 2;
   residues: readonly TrackResidue[];
   protein: string;
+  unavailableReason?: string;
+  canAddToSequence: boolean;
   layerCount: number;
   onStrandChange: (strand: 'sense' | 'antisense') => void;
   onFrameChange: (frame: 0 | 1 | 2) => void;
@@ -13242,24 +13507,35 @@ function TranslationPanel({
 
       <div className="motif-cs-translate-controls">
         <div className="motif-cs-segmented" role="group" aria-label="Strand">
-          <button type="button" data-active={strand === 'sense' || undefined} aria-pressed={strand === 'sense'} onClick={() => onStrandChange('sense')}>Sense</button>
-          <button type="button" data-active={strand === 'antisense' || undefined} aria-pressed={strand === 'antisense'} onClick={() => onStrandChange('antisense')}>Antisense</button>
+          <button type="button" disabled={!!unavailableReason} data-active={strand === 'sense' || undefined} aria-pressed={strand === 'sense'} onClick={() => onStrandChange('sense')}>Sense</button>
+          <button type="button" disabled={!!unavailableReason} data-active={strand === 'antisense' || undefined} aria-pressed={strand === 'antisense'} onClick={() => onStrandChange('antisense')}>Antisense</button>
         </div>
         <div className="motif-cs-segmented" role="group" aria-label="Reading frame">
           {([0, 1, 2] as const).map((value) => (
-            <button key={value} type="button" data-active={frame === value || undefined} aria-pressed={frame === value} onClick={() => onFrameChange(value)}>+{value + 1}</button>
+            <button key={value} type="button" disabled={!!unavailableReason} data-active={frame === value || undefined} aria-pressed={frame === value} onClick={() => onFrameChange(value)}>+{value + 1}</button>
           ))}
         </div>
       </div>
 
       <div className="motif-cs-translate-actions">
         <button className="motif-cs-mini-button" type="button" disabled={!protein} onClick={handleCopyProtein}>Copy</button>
-        <button className="motif-cs-mini-button" type="button" disabled={isWhole || !protein} onClick={onAddToSequence} title={isWhole ? 'Select a region to pin its translation to the sequence' : 'Pin this translation to the sequence (above if sense, below if antisense)'}>Add AA track</button>
+        <button className="motif-cs-mini-button" type="button" disabled={!canAddToSequence || !protein} onClick={onAddToSequence} title={isWhole ? 'Select a region to pin its translation to the sequence' : !canAddToSequence ? 'Multipart translations cannot be represented as one contiguous amino-acid track' : 'Pin this translation to the sequence (above if sense, below if antisense)'}>Add AA track</button>
         <button className="motif-cs-mini-button motif-cs-mini-button-accent" type="button" disabled={!protein} onClick={onAddRecord}>New protein</button>
         {onOpenFloating ? <button className="motif-cs-mini-button" type="button" onClick={onOpenFloating}>Pop out</button> : null}
       </div>
 
-      {protein && residues.length > MAX_INTERACTIVE_TRANSLATION_RESIDUES ? (
+      {protein && residues.length === 0 ? (
+        <>
+          <div
+            className="motif-cs-protein-readout motif-cs-protein-readout-dense"
+            aria-label={`Multipart translation, ${protein.length.toLocaleString()} amino acids. Use native text selection or Copy.`}
+            translate="no"
+          >
+            {protein}
+          </div>
+          <p className="motif-cs-form-note">Multipart feature pieces were stitched in biological order before translation. Codon clicks and a contiguous AA track are unavailable across junctions.</p>
+        </>
+      ) : protein && residues.length > MAX_INTERACTIVE_TRANSLATION_RESIDUES ? (
         <>
           <div
             className="motif-cs-protein-readout motif-cs-protein-readout-dense"
@@ -13314,7 +13590,7 @@ function TranslationPanel({
           ))}
         </div>
       ) : (
-        <p className="motif-cs-muted">Region is shorter than one codon.</p>
+        <p className="motif-cs-muted">{unavailableReason ?? 'Region is shorter than one codon.'}</p>
       )}
 
       {layerCount > 0 ? (
@@ -13830,6 +14106,11 @@ type LineFeatureBlock = {
   feature: Feature;
   start: number;
   end: number;
+  segmentStart: number;
+  segmentEnd: number;
+  segmentIndex: number;
+  isStart: boolean;
+  isEnd: boolean;
 };
 
 type RestrictionCutGeometry = {
@@ -13920,13 +14201,20 @@ function featureLanesForLine(
   features: readonly Feature[],
   lineStart: number,
   lineEnd: number,
+  sequenceLength: number,
+  topology: Topology,
 ): LineFeatureBlock[][] {
   const blocks = features
-    .map((feature) => ({
+    .flatMap((feature) => mapFeatureSegments(feature, sequenceLength, topology).map((segment, segmentIndex) => ({
       feature,
-      start: Math.max(lineStart, feature.start),
-      end: Math.min(lineEnd, feature.end),
-    }))
+      start: Math.max(lineStart, segment.start),
+      end: Math.min(lineEnd, segment.end),
+      segmentStart: segment.start,
+      segmentEnd: segment.end,
+      segmentIndex,
+      isStart: segment.isStart,
+      isEnd: segment.isEnd,
+    })))
     .filter((block) => block.end > block.start)
     .sort((a, b) => a.start - b.start || b.end - a.end || a.feature.name.localeCompare(b.feature.name));
 
@@ -14413,7 +14701,7 @@ function SequenceText({
     if (rafRef.current !== null) window.cancelAnimationFrame(rafRef.current);
   }, []);
   const selectedRanges = selectedFeature
-    ? [{ start: selectedFeature.start, end: selectedFeature.end }]
+    ? featureSpans(selectedFeature, sequence.length, topology)
     : selectedMapRange
       ? normalizeSpan(selectedMapRange.start, selectedMapRange.end, sequence.length, topology)
       : [];
@@ -14534,7 +14822,7 @@ function SequenceText({
     const lineEnd = Math.min(sequence.length, lineStart + basesPerLine);
     const lineLen = lineEnd - lineStart;
     const lineSequence = sequence.slice(lineStart, lineEnd);
-    const lineFeatureLanes = detailMode ? featureLanesForLine(features, lineStart, lineEnd) : [];
+    const lineFeatureLanes = detailMode ? featureLanesForLine(features, lineStart, lineEnd, sequence.length, topology) : [];
     const lineRestrictionLabels = detailMode
       ? restrictionLabelLanesForLine(restrictionSites, lineStart, lineEnd)
       : { lanes: [], hidden: 0 };
@@ -14618,7 +14906,7 @@ function SequenceText({
           <div className="motif-cs-feature-tracks" aria-label={`Feature annotations for ${lineStart + 1}-${lineEnd}`}>
             {lineFeatureLanes.map((lane, laneIndex) => (
               <div className="motif-cs-feature-track-lane" key={laneIndex}>
-                {lane.map(({ feature, start, end }) => {
+                {lane.map(({ feature, start, end, segmentStart, segmentEnd, segmentIndex, isStart, isEnd }) => {
                   // Position ribbons in character (ch) units so they lock to the
                   // monospace bases below — one base == one ch. (A % of the full
                   // track width does NOT match, because the 60 bases only fill
@@ -14627,19 +14915,21 @@ function SequenceText({
                   const widthCh = Math.max(1, end - start);
                   // Only the segment holding the true 3' terminus gets the arrowhead,
                   // so a feature wrapping across lines doesn't look like many arrows.
-                  const showHead = (feature.strand === 1 && end === feature.end)
-                    || (feature.strand === -1 && start === feature.start);
+                  const showHead = isEnd && (
+                    (feature.strand === 1 && end === segmentEnd)
+                    || (feature.strand === -1 && start === segmentStart)
+                  );
                   return (
                     <button
-                      key={`${feature.id}:${start}:${end}`}
+                      key={`${feature.id}:${segmentIndex}:${start}:${end}`}
                       className="motif-cs-feature-block"
                       data-selected={selectedFeature?.id === feature.id || undefined}
                       aria-pressed={selectedFeature?.id === feature.id}
-                      aria-label={`${feature.name}, ${feature.type}, full range ${formatRange(feature.start, feature.end)}, segment ${formatRange(start, end)}, ${strandLabel(feature.strand)} strand`}
+                      aria-label={`${feature.name}, ${feature.type}, full location ${featureRangeLabel(feature)}, segment ${formatRange(start, end)}, ${featureStrandLabel(feature)} strand`}
                       data-strand={feature.strand}
                       data-head={showHead || undefined}
                       type="button"
-                      tabIndex={start === feature.start ? 0 : -1}
+                      tabIndex={isStart && start === segmentStart ? 0 : -1}
                       style={{ left: `${leftCh}ch`, width: `${widthCh}ch`, '--feature-color': feature.color } as CSSProperties}
                       onPointerDown={(event) => {
                         event.stopPropagation();
@@ -14649,7 +14939,7 @@ function SequenceText({
                         suppressNextFocusScrollRef.current = true;
                         onFeatureSelect(feature.id);
                       }}
-                      title={`${feature.name} · ${feature.type} · ${formatRange(feature.start, feature.end)}`}
+                      title={`${feature.name} · ${feature.type} · ${featureRangeLabel(feature)}`}
                     >
                       <span translate="no">{feature.name}</span>
                     </button>

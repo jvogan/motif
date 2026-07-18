@@ -12,6 +12,9 @@
 import type { Feature, Topology } from '../../bio/types';
 import type { MapSpan, MapFeatureSegment, FeatureSelectionRanges } from '../types';
 
+type MapFeatureLocation = Pick<Feature, 'start' | 'end' | 'subRanges'>
+  & Partial<Pick<Feature, 'strand'>>;
+
 /**
  * Split a [start, end) range into non-wrapping spans clamped to [0, length).
  * - linear: clamp to bounds; drop if empty.
@@ -61,11 +64,11 @@ export function normalizeSpan(
 /**
  * All drawable segments of a feature in biological/import order, honoring
  * subRanges (authoritative when present) and origin wrap. `isStart`/`isEnd` mark
- * the biologically-first/last segments (layout folds the strand point into
- * `isEnd` for forward, `isStart` for reverse, none for directionless).
+ * the biologically-first/last segments (layout folds the 3′ strand point into
+ * `isEnd` for either direction, using strand to choose the pointed edge).
  */
 export function featureSegments(
-  feature: Pick<Feature, 'start' | 'end' | 'subRanges'>,
+  feature: MapFeatureLocation,
   length: number,
   topology: Topology,
 ): MapFeatureSegment[] {
@@ -79,16 +82,21 @@ export function featureSegments(
 
 /** Bare spans (no start/end flags) for a feature, biological/import order. */
 export function featureSpans(
-  feature: Pick<Feature, 'start' | 'end' | 'subRanges'>,
+  feature: MapFeatureLocation,
   length: number,
   topology: Topology,
 ): MapSpan[] {
-  const sub = feature.subRanges?.filter((r) => Number.isFinite(r.start) && Number.isFinite(r.end));
-  if (sub && sub.length > 0) {
+  if (feature.subRanges !== undefined) {
+    const sub = feature.subRanges.filter((r) => Number.isFinite(r.start) && Number.isFinite(r.end));
     // subRanges are authoritative and kept in stored (import/biological) order.
     return sub.flatMap((r) => normalizeSpan(r.start, r.end, length, topology));
   }
-  return normalizeSpan(feature.start, feature.end, length, topology);
+  const spans = normalizeSpan(feature.start, feature.end, length, topology);
+  // Aggregate origin wraps have no stored piece order. normalizeSpan emits
+  // genomic traversal order (tail then head), which is biological order only
+  // on the forward strand. Reverse features traverse head then tail so their
+  // first selection span and final 3′ arrow segment remain biologically honest.
+  return feature.strand === -1 && spans.length > 1 ? [...spans].reverse() : spans;
 }
 
 /**
@@ -97,7 +105,7 @@ export function featureSpans(
  * a wrapping range; callers pass this straight to the store setters.
  */
 export function featureSelectionRanges(
-  feature: Pick<Feature, 'start' | 'end' | 'subRanges'>,
+  feature: MapFeatureLocation,
   length: number,
   topology: Topology,
 ): FeatureSelectionRanges {

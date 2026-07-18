@@ -3,6 +3,7 @@ import { gcContent } from './gc-content';
 import { calculateTm } from './tm-calculator';
 import { DEFAULT_TM_OPTIONS } from './primer-design';
 import type { Feature, Topology } from './types';
+import { remapFeatureLocation, type FeatureCoordinateMapSpan } from './feature-location';
 
 /**
  * Primer Tm for the PCR engine, computed with the SAME nearest-neighbor model +
@@ -62,19 +63,16 @@ export interface PCRBindingSelection {
   reverse: { start: number; end: number };
 }
 
-function propagateFeature(feature: Feature, offset: number): Feature {
+function propagateFeature(
+  feature: Feature,
+  sourceSpans: readonly FeatureCoordinateMapSpan[],
+): Feature | null {
+  const location = remapFeatureLocation(feature, sourceSpans);
+  if (!location) return null;
   return {
     ...feature,
     id: crypto.randomUUID(),
-    start: feature.start + offset,
-    end: feature.end + offset,
-    ...(feature.subRanges ? {
-      subRanges: feature.subRanges.map((range) => ({
-        ...range,
-        start: range.start + offset,
-        end: range.end + offset,
-      })),
-    } : {}),
+    ...location,
     metadata: {
       ...feature.metadata,
       pcrSourceFeatureId: feature.id,
@@ -250,32 +248,15 @@ export function simulatePCR(
   // into product coordinates by the forward tail length and template start.
   const productFeatures: Feature[] = [];
   if (features && features.length > 0) {
-    if (!wraps) {
-      // Linear / non-wrapping span [fwdMatch.pos, revBindEnd).
-      const regionStart = fwdMatch.pos;
-      const regionEnd = revBindEnd;
-      const offset = fwdTailLen - regionStart; // shift: template coord → product coord
-      for (const f of features) {
-        if (f.start >= regionStart && f.end <= regionEnd) {
-          productFeatures.push(propagateFeature(f, offset));
-        }
-      }
-    } else {
-      // Circular wrap: two contiguous template regions joined at the origin —
-      // [fwdMatch.pos, N) then [0, revBindEnd) — each with its own offset. A
-      // feature that straddles the origin would belong to both regions; it
-      // matches NEITHER "fully inside" test below and is skipped (we do not
-      // split features across the junction).
-      const headOffset = fwdTailLen - fwdMatch.pos;       // [fwdMatch.pos, N)
-      const tailOffset = fwdTailLen + (N - fwdMatch.pos); // [0, revBindEnd)
-      for (const f of features) {
-        if (f.start >= fwdMatch.pos && f.end <= N) {
-          productFeatures.push(propagateFeature(f, headOffset));
-        } else if (f.start >= 0 && f.end <= revBindEnd) {
-          productFeatures.push(propagateFeature(f, tailOffset));
-        }
-        // else: feature straddles the origin or lies outside the amplicon — skip.
-      }
+    const sourceSpans: FeatureCoordinateMapSpan[] = !wraps
+      ? [{ start: fwdMatch.pos, end: revBindEnd, targetStart: fwdTailLen }]
+      : [
+          { start: fwdMatch.pos, end: N, targetStart: fwdTailLen },
+          { start: 0, end: revBindEnd, targetStart: fwdTailLen + (N - fwdMatch.pos) },
+        ];
+    for (const feature of features) {
+      const propagated = propagateFeature(feature, sourceSpans);
+      if (propagated) productFeatures.push(propagated);
     }
   }
 

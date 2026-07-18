@@ -32,6 +32,47 @@ const DEFAULT_MAX_OVERLAP = 60;
 const IDEAL_OVERLAP_TM = 50; // °C minimum recommended Tm
 
 /**
+ * Keep the portions of a feature that fall inside one source span and place
+ * them in product coordinates. Multipart locations are authoritative: their
+ * stored biological order is preserved, empty pieces are removed, and the
+ * aggregate bounds are rebuilt from the surviving pieces.
+ */
+function clipFeatureToSpan(
+  feature: Feature,
+  sourceStart: number,
+  sourceEnd: number,
+  destinationStart: number,
+  rekey = false,
+): Feature | null {
+  if (sourceEnd <= sourceStart) return null;
+
+  const hasSubRanges = feature.subRanges !== undefined;
+  const sourceRanges = hasSubRanges
+    ? feature.subRanges!
+    : [{ start: feature.start, end: feature.end, strand: feature.strand }];
+  const mappedRanges = sourceRanges.flatMap((range) => {
+    const clippedStart = Math.max(range.start, sourceStart);
+    const clippedEnd = Math.min(range.end, sourceEnd);
+    if (clippedEnd <= clippedStart) return [];
+    return [{
+      ...range,
+      start: destinationStart + clippedStart - sourceStart,
+      end: destinationStart + clippedEnd - sourceStart,
+    }];
+  });
+  if (mappedRanges.length === 0) return null;
+
+  const { subRanges: _subRanges, ...featureWithoutSubRanges } = feature;
+  return {
+    ...featureWithoutSubRanges,
+    ...(rekey ? { id: crypto.randomUUID() } : {}),
+    start: Math.min(...mappedRanges.map((range) => range.start)),
+    end: Math.max(...mappedRanges.map((range) => range.end)),
+    ...(hasSubRanges ? { subRanges: mappedRanges } : {}),
+  };
+}
+
+/**
  * Find overlap between the 3' end of seq1 and the 5' end of seq2.
  * Scans from maxOverlap down to minOverlap for an exact match.
  */
@@ -179,21 +220,11 @@ export function gibsonAssemble(
   // trim the overlap from its beginning before appending
   let sequence = fragments[0].sequence.toUpperCase();
   const features: Feature[] = [];
-  let offset = 0;
 
   // Carry features from fragment 0
   for (const feat of fragments[0].features ?? []) {
-    features.push({
-      ...feat,
-      id: crypto.randomUUID(),
-      start: feat.start + offset,
-      end: feat.end + offset,
-      subRanges: feat.subRanges?.map((sr) => ({
-        ...sr,
-        start: sr.start + offset,
-        end: sr.end + offset,
-      })),
-    });
+    const copied = clipFeatureToSpan(feat, 0, fragments[0].sequence.length, 0, true);
+    if (copied) features.push(copied);
   }
 
   for (let i = 1; i < fragments.length; i++) {
@@ -223,7 +254,7 @@ export function gibsonAssemble(
       },
     });
 
-    offset = sequence.length;
+    const offset = sequence.length;
     sequence += trimmed;
 
     // Shift features: coordinates in frag are relative to frag.sequence[0].
@@ -231,28 +262,8 @@ export function gibsonAssemble(
     // and are skipped. Features spanning the overlap boundary are truncated.
     const overlapLength = overlap.length;
     for (const feat of frag.features ?? []) {
-      // Skip features entirely within the overlap (they belong to the previous fragment)
-      if (feat.end <= overlapLength) continue;
-
-      // Truncate features that span the overlap boundary
-      const newStart = Math.max(feat.start - overlapLength, 0);
-      const newEnd = feat.end - overlapLength;
-
-      if (newEnd > newStart) {
-        features.push({
-          ...feat,
-          id: crypto.randomUUID(),
-          start: newStart + offset,
-          end: newEnd + offset,
-          subRanges: feat.subRanges
-            ?.map((sr) => ({
-              ...sr,
-              start: Math.max(sr.start - overlapLength, 0) + offset,
-              end: sr.end - overlapLength + offset,
-            }))
-            .filter((sr) => sr.end > sr.start),
-        });
-      }
+      const copied = clipFeatureToSpan(feat, overlapLength, frag.sequence.length, offset, true);
+      if (copied) features.push(copied);
     }
   }
 
@@ -260,9 +271,14 @@ export function gibsonAssemble(
   // (head of fragment 0) and the end (tail of the last fragment) of the linear
   // accumulator. Trim the trailing copy so the overlap appears exactly once,
   // and annotate the seam (which physically sits at [0, len) on the product).
+  let productFeatures = features;
   if (topology === 'circular' && closingOverlap && closingOverlap.length > 0) {
     sequence = sequence.slice(0, sequence.length - closingOverlap.length);
-    features.push({
+    productFeatures = features.flatMap((feature) => {
+      const clipped = clipFeatureToSpan(feature, 0, sequence.length, 0);
+      return clipped ? [clipped] : [];
+    });
+    productFeatures.push({
       id: crypto.randomUUID(),
       name: `Junction: ${fragments[fragments.length - 1].name}×${fragments[0].name} (${closingOverlap.length} bp, closing)`,
       type: 'misc_feature',
@@ -280,7 +296,7 @@ export function gibsonAssemble(
     });
   }
 
-  return { sequence, features, overlaps, topology, success: true, errors: [], warnings };
+  return { sequence, features: productFeatures, overlaps, topology, success: true, errors: [], warnings };
 }
 
 /**
