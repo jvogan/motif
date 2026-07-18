@@ -108,6 +108,8 @@ export type PairwiseRowStats = {
   identity: number;
 };
 
+type ArtifactAlignmentRow = ArtifactAlignment['rows'][number];
+
 type AlignmentCoverage = { first: number; last: number } | null;
 
 export type MsaCellOutcome = 'match' | 'substitution' | 'deletion' | 'insertion' | 'uncovered' | 'gap';
@@ -530,6 +532,41 @@ function formatIdentity(identity: number): string {
   return identity < 100 && identity >= 99.9 ? identity.toFixed(2) : identity.toFixed(1);
 }
 
+function firstRowDifferenceColumn(aligned: string, template: string): number | null {
+  const rowCoverage = alignmentCoverage(aligned);
+  const templateCoverage = alignmentCoverage(template);
+  for (let column = 0; column < Math.max(aligned.length, template.length); column += 1) {
+    if (!coversColumn(templateCoverage, column)) continue;
+    const outcome = classifyMsaCell(
+      template[column] ?? '-',
+      aligned[column] ?? '-',
+      coversColumn(rowCoverage, column),
+    );
+    if (isMsaCellDifference(outcome)) return column;
+  }
+  return null;
+}
+
+function sortedMsaRows(
+  rows: readonly ArtifactAlignmentRow[],
+  template: ArtifactAlignmentRow | undefined,
+  sortMode: RowSortMode,
+  statsByRow: ReadonlyMap<string, PairwiseRowStats>,
+): ArtifactAlignmentRow[] {
+  const originalIndex = new Map(rows.map((row, index) => [row.id, index]));
+  const nonTemplateRows = rows.filter((row) => row.id !== template?.id);
+  nonTemplateRows.sort((left, right) => {
+    const leftStats = statsByRow.get(left.id)!;
+    const rightStats = statsByRow.get(right.id)!;
+    if (sortMode === 'name') return left.name.localeCompare(right.name, undefined, { numeric: true });
+    if (sortMode === 'identity') return rightStats.identity - leftStats.identity || left.name.localeCompare(right.name, undefined, { numeric: true });
+    if (sortMode === 'mismatches') return leftStats.mismatches - rightStats.mismatches || left.name.localeCompare(right.name, undefined, { numeric: true });
+    if (sortMode === 'length') return rightStats.ungappedLength - leftStats.ungappedLength || left.name.localeCompare(right.name, undefined, { numeric: true });
+    return (originalIndex.get(left.id) ?? 0) - (originalIndex.get(right.id) ?? 0);
+  });
+  return template ? [template, ...nonTemplateRows] : nonTemplateRows;
+}
+
 // eslint-disable-next-line react-refresh/only-export-components -- pure MSA helper exported for unit tests
 export function mismatchOverviewBins(alignment: ArtifactAlignment, referenceRowId: string, binCount: number): number[] {
   const bins = Array.from({ length: binCount }, () => 0);
@@ -601,6 +638,133 @@ const MSA_LETTER_MIN = 6.5;
 // the CSS) and the smallest glyph, in px, still worth drawing in a segment.
 const MSA_LOGO_TRACK_HEIGHT = 46;
 const MSA_LOGO_LETTER_MIN_PX = 7;
+
+function MsaRowStatsPanel({
+  alignment,
+  referenceRowId,
+  sortMode,
+  onSortModeChange,
+  onJump,
+}: {
+  alignment: ArtifactAlignment;
+  referenceRowId: string;
+  sortMode: RowSortMode;
+  onSortModeChange: (sortMode: RowSortMode) => void;
+  onJump: (rowId: string, column: number) => void;
+}) {
+  const [open, setOpen] = useState(true);
+  const template = alignment.rows.find((row) => row.id === referenceRowId) ?? alignment.rows[0];
+  const statsByRow = useMemo(() => new Map(alignment.rows.map((row) => [
+    row.id,
+    pairwiseRowStats(row.aligned, template?.aligned ?? ''),
+  ])), [alignment.rows, template]);
+  const orderedRows = useMemo(
+    () => sortedMsaRows(alignment.rows, template, sortMode, statsByRow),
+    [alignment.rows, sortMode, statsByRow, template],
+  );
+  const firstDifferenceByRow = useMemo(() => new Map(alignment.rows.map((row) => [
+    row.id,
+    firstRowDifferenceColumn(row.aligned, template?.aligned ?? ''),
+  ])), [alignment.rows, template]);
+  const activeSortLabel = sortMode === 'original'
+    ? 'Original order'
+    : sortMode === 'name'
+      ? 'Name'
+      : sortMode === 'identity'
+        ? 'Identity'
+        : sortMode === 'mismatches'
+          ? 'Differences'
+          : 'Length';
+  const sortDirection = (mode: RowSortMode): 'ascending' | 'descending' | 'none' => {
+    if (sortMode !== mode) return 'none';
+    return mode === 'name' || mode === 'mismatches' ? 'ascending' : 'descending';
+  };
+  const sortIndicator = (mode: RowSortMode): string => {
+    if (sortMode !== mode) return '↕';
+    return sortDirection(mode) === 'ascending' ? '↑' : '↓';
+  };
+
+  return (
+    <details
+      className="motif-cs-msa-row-stats-panel"
+      data-testid="msa-row-stats-panel"
+      open={open}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
+      <summary>
+        <span className="motif-cs-msa-row-stats-summary-copy">
+          <strong>Row statistics</strong>
+          <small>Compared with {template?.name ?? 'template'}</small>
+        </span>
+        <span className="motif-cs-msa-row-stats-summary-meta">
+          {alignment.rows.length.toLocaleString()} rows · {activeSortLabel}
+        </span>
+      </summary>
+      <div className="motif-cs-msa-row-stats-scroll">
+        <table data-testid="msa-row-stats-table">
+          <caption className="motif-cs-visually-hidden">Per-row alignment statistics compared with the template row</caption>
+          <thead>
+            <tr>
+              {([
+                ['name', 'Name', 'Sort rows by name'],
+                ['mismatches', 'Δ', 'Sort rows by differences'],
+                ['length', 'Length', 'Sort rows by ungapped length'],
+                ['identity', 'Identity', 'Sort rows by identity'],
+              ] as const).map(([mode, label, ariaLabel]) => (
+                <th key={mode} scope="col" aria-sort={sortDirection(mode)}>
+                  <button
+                    type="button"
+                    data-testid={`msa-row-stats-sort-${mode}`}
+                    data-active={sortMode === mode || undefined}
+                    aria-label={ariaLabel}
+                    aria-sort={sortDirection(mode)}
+                    onClick={() => onSortModeChange(mode)}
+                  >
+                    <span>{label}</span>
+                    <span className="motif-cs-msa-row-stats-sort-indicator" aria-hidden="true">{sortIndicator(mode)}</span>
+                  </button>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {orderedRows.map((row) => {
+              const stats = statsByRow.get(row.id) ?? pairwiseRowStats(row.aligned, template?.aligned ?? '');
+              const isTemplate = row.id === template?.id;
+              const firstDifference = firstDifferenceByRow.get(row.id) ?? null;
+              const jump = firstDifference === null ? null : () => onJump(row.id, firstDifference);
+              return (
+                <tr
+                  key={row.id}
+                  data-testid="msa-row-stats-row"
+                  data-row-id={row.id}
+                  data-template={isTemplate || undefined}
+                  data-jumpable={jump ? true : undefined}
+                  data-first-difference-column={firstDifference === null ? undefined : firstDifference + 1}
+                  onClick={jump ?? undefined}
+                >
+                  <td>
+                    <span className="motif-cs-msa-row-stats-name">
+                      {jump ? (
+                        <button type="button" aria-label={`Jump ${row.name} to its first difference, alignment column ${firstDifference! + 1}`}>
+                          {row.name}
+                        </button>
+                      ) : <span>{row.name}</span>}
+                      {isTemplate ? <span className="motif-cs-msa-template-badge">Template</span> : null}
+                    </span>
+                  </td>
+                  <td className="motif-cs-msa-row-stats-number">{stats.mismatches.toLocaleString()}</td>
+                  <td className="motif-cs-msa-row-stats-number">{stats.ungappedLength.toLocaleString()} {sequenceUnit(alignment.molecule)}</td>
+                  <td className="motif-cs-msa-row-stats-number">{formatIdentity(stats.identity)}%</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </details>
+  );
+}
 
 function AlignmentMatrix({
   alignment,
@@ -755,17 +919,7 @@ function AlignmentMatrix({
         return template ? [template, ...manual.filter((row) => row.id !== template.id)] : manual;
       }
     }
-    const originalIndex = new Map(alignment.rows.map((row, index) => [row.id, index]));
-    const nonTemplateRows = alignment.rows.filter((row) => row.id !== template?.id);
-    nonTemplateRows.sort((left, right) => {
-      const leftStats = statsByRow.get(left.id)!;
-      const rightStats = statsByRow.get(right.id)!;
-      if (sortMode === 'name') return left.name.localeCompare(right.name, undefined, { numeric: true });
-      if (sortMode === 'identity') return rightStats.identity - leftStats.identity || left.name.localeCompare(right.name, undefined, { numeric: true });
-      if (sortMode === 'mismatches') return leftStats.mismatches - rightStats.mismatches || left.name.localeCompare(right.name, undefined, { numeric: true });
-      return (originalIndex.get(left.id) ?? 0) - (originalIndex.get(right.id) ?? 0);
-    });
-    return template ? [template, ...nonTemplateRows] : nonTemplateRows;
+    return sortedMsaRows(alignment.rows, template, sortMode, statsByRow);
   }, [alignment.rows, manualOrder, sortMode, statsByRow, template]);
   const allRowNames = useMemo(() => alignment.rows.map((row) => row.name), [alignment.rows]);
   const rowLabelsById = useMemo(() => new Map(alignment.rows.map((row) => [
@@ -2639,6 +2793,13 @@ export function ClaudeScienceMsaViewer({
     setJumpToken((token) => token + 1);
   };
 
+  const jumpToRowDifference = useCallback((rowId: string, column: number) => {
+    setDifferenceIndex(-1);
+    setJumpColumn(column);
+    setJumpRowId(rowId);
+    setJumpToken((token) => token + 1);
+  }, []);
+
   const goToSearchMatch = useCallback((index: number) => {
     const count = searchMatches.length;
     if (count === 0) return;
@@ -3222,6 +3383,7 @@ export function ClaudeScienceMsaViewer({
                     <option value="name">Name</option>
                     <option value="identity">Identity</option>
                     <option value="mismatches">Mismatches</option>
+                    <option value="length">Ungapped length</option>
                   </select>
                 </label>
                 <div className="motif-cs-msa-difference-nav" role="group" aria-label="Variable column navigation">
@@ -3321,6 +3483,15 @@ export function ClaudeScienceMsaViewer({
                   <span className="motif-cs-visually-hidden" role="status" aria-live="polite">{columnStatus}</span>
                 </form>
               </div>
+              {viewPreferences.showRowStats ? (
+                <MsaRowStatsPanel
+                  alignment={activeAlignment}
+                  referenceRowId={referenceRowId}
+                  sortMode={sortMode}
+                  onSortModeChange={(nextSortMode) => updateViewPreferences({ sortMode: nextSortMode })}
+                  onJump={jumpToRowDifference}
+                />
+              ) : null}
               <AlignmentMatrix
                 key={activeAlignment.id}
                 alignment={activeAlignment}

@@ -9,7 +9,7 @@ export type ClaudeScienceMsaTextFormat = 'fasta' | 'clustal' | 'consensus' | 'js
 export type ClaudeScienceMsaDisplayMode = 'viewer' | 'trace' | 'text';
 export type ClaudeScienceMsaEmphasisMode = 'differences' | 'letters';
 export type ClaudeScienceMsaColorMode = 'mono' | 'residue';
-export type ClaudeScienceMsaRowSortMode = 'original' | 'name' | 'identity' | 'mismatches';
+export type ClaudeScienceMsaRowSortMode = 'original' | 'name' | 'identity' | 'mismatches' | 'length';
 export type ClaudeScienceMsaColorScheme = MsaColorScheme;
 export type ClaudeScienceMsaShadeMode = MsaShadeMode;
 
@@ -135,7 +135,7 @@ export function normalizeClaudeScienceMsaViewPreferences(value: unknown): Claude
     shadeMode: MSA_SHADE_MODES.includes(source.shadeMode as MsaShadeMode)
       ? source.shadeMode as MsaShadeMode
       : 'none',
-    sortMode: source.sortMode === 'name' || source.sortMode === 'identity' || source.sortMode === 'mismatches'
+    sortMode: source.sortMode === 'name' || source.sortMode === 'identity' || source.sortMode === 'mismatches' || source.sortMode === 'length'
       ? source.sortMode
       : 'original',
     fontSize: Number.isFinite(source.fontSize)

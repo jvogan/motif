@@ -231,7 +231,7 @@ describe('Claude Science MSA interaction and rendering guards', () => {
     expect(viewerSource).toContain('Alignment position');
     expect(viewerSource).toContain('data-template={isTemplate || undefined}');
     expect(viewerSource).toContain('return template ? [template, ...nonTemplateRows] : nonTemplateRows;');
-    expect(viewPreferencesSource).toContain("export type ClaudeScienceMsaRowSortMode = 'original' | 'name' | 'identity' | 'mismatches';");
+    expect(viewPreferencesSource).toContain("export type ClaudeScienceMsaRowSortMode = 'original' | 'name' | 'identity' | 'mismatches' | 'length';");
     expect(viewerSource).toContain('<option value="mismatches">Mismatches</option>');
     expect(viewerSource).toContain('pairwiseRowStats(row.aligned, template?.aligned ?? \'\')');
     expect(viewerSource).toContain('{stats.mismatches.toLocaleString()}Δ');

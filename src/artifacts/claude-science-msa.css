@@ -654,6 +654,184 @@
   outline-offset: -2px;
 }
 
+/* ===== Sortable per-row statistics panel ===== */
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-panel {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  margin: 0 0 8px;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text-primary);
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-panel > summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 12px;
+  min-height: 34px;
+  padding: 6px 10px;
+  cursor: pointer;
+  user-select: none;
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-panel > summary::marker {
+  color: var(--text-muted);
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-panel > summary:hover,
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-panel > summary:focus-visible {
+  background: color-mix(in srgb, var(--accent) 7%, var(--control-bg));
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-panel > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-summary-copy {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 3px 8px;
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-summary-copy strong {
+  font-size: 12px;
+  letter-spacing: 0.01em;
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-summary-copy small,
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-summary-meta {
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.25;
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-summary-meta {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-scroll {
+  box-sizing: border-box;
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  border-top: 1px solid var(--border-subtle);
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-scroll table {
+  width: 100%;
+  min-width: 430px;
+  border-spacing: 0;
+  border-collapse: separate;
+  font-size: 11px;
+  line-height: 1.25;
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-scroll th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--control-bg);
+  text-align: right;
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-scroll th:first-child {
+  width: 100%;
+  text-align: left;
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-scroll th > button {
+  display: inline-flex;
+  width: 100%;
+  min-height: 28px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  padding: 5px 9px;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font: 600 10px/1.2 var(--font-ui);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-scroll th:first-child > button {
+  justify-content: flex-start;
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-scroll th > button:hover,
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-scroll th > button:focus-visible,
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-scroll th > button[data-active='true'] {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--accent);
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-scroll th > button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-sort-indicator {
+  width: 1em;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  text-align: center;
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-scroll td {
+  padding: 6px 9px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-scroll tbody tr:last-child td {
+  border-bottom: 0;
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-scroll tbody tr[data-template='true'] td {
+  background: color-mix(in srgb, var(--accent) 7%, var(--bg-primary));
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-scroll tbody tr[data-jumpable='true'] {
+  cursor: pointer;
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-scroll tbody tr[data-jumpable='true']:hover td,
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-scroll tbody tr[data-jumpable='true']:focus-within td {
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-primary));
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-name {
+  display: flex;
+  min-width: 150px;
+  align-items: center;
+  gap: 7px;
+  color: var(--text-primary);
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-name > button {
+  min-width: 0;
+  max-width: 260px;
+  overflow: hidden;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: 600 11px/1.25 var(--font-ui);
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-name > button:focus-visible {
+  border-radius: 2px;
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-number {
+  text-align: right;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 520px) {
+  .motif-cs-msa-workspace .motif-cs-msa-row-stats-summary-meta {
+    flex-basis: 100%;
+    padding-left: 0;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .motif-cs-msa-hover-column,
   .motif-cs-msa-selection-band { transition: none; }
