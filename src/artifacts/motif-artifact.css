@@ -3009,13 +3009,19 @@ summary.motif-cs-panel-head {
 
 .motif-cs-feature-translation-meta {
   display: grid;
-  grid-template-columns: minmax(88px, 0.62fr) minmax(0, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: end;
   gap: 8px;
   margin-top: 8px;
 }
 
+.motif-cs-feature-translation-meta > label,
+.motif-cs-feature-translation-meta .motif-cs-field {
+  min-width: 0;
+}
+
 .motif-cs-feature-translation-meta > span {
+  grid-column: 1 / -1;
   align-self: center;
   min-width: 0;
   overflow: hidden;
@@ -8037,6 +8043,34 @@ summary.motif-cs-panel-head:focus-visible {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.motif-cs-translation-code-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: end;
+  gap: 8px;
+}
+
+.motif-cs-translation-code-control > label,
+.motif-cs-translation-code-control .motif-cs-field {
+  min-width: 0;
+}
+
+.motif-cs-translation-code-control .motif-cs-form-note {
+  margin: 0 0 6px;
+}
+
+.motif-cs-analysis-code-field {
+  display: grid;
+  gap: 4px;
+  margin: 8px 0;
+}
+
+@media (max-width: 520px) {
+  .motif-cs-translation-code-control .motif-cs-form-note {
+    margin: 0;
+  }
 }
 
 /* Segmented control (strand toggle, frame picker). */

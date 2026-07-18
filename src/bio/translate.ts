@@ -41,6 +41,25 @@ export function translate(
 }
 
 /**
+ * Translate a complete coding sequence. NCBI genetic codes distinguish a
+ * codon's ordinary residue from its initiator meaning: for example, GTG is
+ * Val inside a bacterial CDS but Met when it is the first complete codon.
+ * Arbitrary range/frame translation must continue to use {@link translate}.
+ */
+export function translateCompleteCds(
+  seq: string,
+  frame: 0 | 1 | 2 = 0,
+  table: CodonTable = STANDARD_CODE,
+  stopAtFirst = false,
+): string {
+  const protein = translate(seq, frame, table, stopAtFirst);
+  if (!protein) return protein;
+  const dna = rnaToDna(seq.toUpperCase());
+  const initiator = dna.slice(frame, frame + 3);
+  return table.starts.includes(initiator) ? `M${protein.slice(1)}` : protein;
+}
+
+/**
  * Translate in all 3 reading frames.
  */
 export function translateAllFrames(

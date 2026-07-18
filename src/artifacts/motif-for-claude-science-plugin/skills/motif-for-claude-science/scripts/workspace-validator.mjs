@@ -1,5 +1,371 @@
 // Generated from src/artifacts/claude-science-workspace-envelope.ts. Regenerate with the documented esbuild command; do not edit by hand.
 
+// src/bio/codon-tables.ts
+var STANDARD_CODE = {
+  id: 1,
+  name: "Standard",
+  codons: {
+    TTT: "F",
+    TTC: "F",
+    TTA: "L",
+    TTG: "L",
+    CTT: "L",
+    CTC: "L",
+    CTA: "L",
+    CTG: "L",
+    ATT: "I",
+    ATC: "I",
+    ATA: "I",
+    ATG: "M",
+    GTT: "V",
+    GTC: "V",
+    GTA: "V",
+    GTG: "V",
+    TCT: "S",
+    TCC: "S",
+    TCA: "S",
+    TCG: "S",
+    CCT: "P",
+    CCC: "P",
+    CCA: "P",
+    CCG: "P",
+    ACT: "T",
+    ACC: "T",
+    ACA: "T",
+    ACG: "T",
+    GCT: "A",
+    GCC: "A",
+    GCA: "A",
+    GCG: "A",
+    TAT: "Y",
+    TAC: "Y",
+    TAA: "*",
+    TAG: "*",
+    CAT: "H",
+    CAC: "H",
+    CAA: "Q",
+    CAG: "Q",
+    AAT: "N",
+    AAC: "N",
+    AAA: "K",
+    AAG: "K",
+    GAT: "D",
+    GAC: "D",
+    GAA: "E",
+    GAG: "E",
+    TGT: "C",
+    TGC: "C",
+    TGA: "*",
+    TGG: "W",
+    CGT: "R",
+    CGC: "R",
+    CGA: "R",
+    CGG: "R",
+    AGT: "S",
+    AGC: "S",
+    AGA: "R",
+    AGG: "R",
+    GGT: "G",
+    GGC: "G",
+    GGA: "G",
+    GGG: "G"
+  },
+  // The initiator list is distinct from the residue map: NCBI Table 1 marks
+  // TTG and CTG as alternative starts even though both encode Leu internally.
+  // See https://www.ncbi.nlm.nih.gov/Taxonomy/Utils/wprintgc.cgi?mode=t#SG1.
+  starts: ["TTG", "CTG", "ATG"],
+  stops: ["TAA", "TAG", "TGA"]
+};
+var VERTEBRATE_MITO_CODE = {
+  id: 2,
+  name: "Vertebrate Mitochondrial",
+  codons: {
+    ...STANDARD_CODE.codons,
+    TGA: "W",
+    ATA: "M",
+    AGA: "*",
+    AGG: "*"
+  },
+  starts: ["ATT", "ATC", "ATA", "ATG", "GTG"],
+  stops: ["TAA", "TAG", "AGA", "AGG"]
+};
+var INVERTEBRATE_MITO_CODE = {
+  id: 5,
+  name: "Invertebrate Mitochondrial",
+  codons: {
+    ...STANDARD_CODE.codons,
+    TGA: "W",
+    ATA: "M",
+    AGA: "S",
+    AGG: "S"
+  },
+  starts: ["ATT", "ATC", "ATA", "ATG", "GTG", "TTG"],
+  stops: ["TAA", "TAG"]
+};
+var BACTERIAL_CODE = {
+  id: 11,
+  name: "Bacterial, Archaeal and Plant Plastid",
+  codons: { ...STANDARD_CODE.codons },
+  starts: ["ATG", "GTG", "TTG", "ATT", "CTG", "ATC", "ATA"],
+  stops: ["TAA", "TAG", "TGA"]
+};
+var ASCIDIAN_MITO_CODE = {
+  id: 13,
+  name: "Ascidian Mitochondrial",
+  codons: {
+    ...STANDARD_CODE.codons,
+    TGA: "W",
+    ATA: "M",
+    AGA: "G",
+    AGG: "G"
+  },
+  starts: ["ATG", "GTG", "TTG", "ATA"],
+  stops: ["TAA", "TAG"]
+};
+var SCENEDESMUS_MITO_CODE = {
+  id: 22,
+  name: "Scenedesmus obliquus Mitochondrial",
+  codons: {
+    ...STANDARD_CODE.codons,
+    TCA: "*",
+    TAG: "L"
+  },
+  starts: ["ATG"],
+  stops: ["TAA", "TCA", "TGA"]
+};
+var YEAST_MITO_CODE = {
+  id: 3,
+  name: "Yeast Mitochondrial",
+  codons: {
+    ...STANDARD_CODE.codons,
+    TGA: "W",
+    CTT: "T",
+    CTC: "T",
+    CTA: "T",
+    CTG: "T",
+    ATA: "M"
+  },
+  starts: ["ATA", "ATG", "GTG"],
+  stops: ["TAA", "TAG"]
+};
+var MOLD_PROTOZOAN_MITO_CODE = {
+  id: 4,
+  name: "Mold, Protozoan, Coelenterate Mitochondrial / Mycoplasma",
+  codons: {
+    ...STANDARD_CODE.codons,
+    TGA: "W"
+  },
+  starts: ["TTA", "TTG", "CTG", "ATT", "ATC", "ATA", "ATG", "GTG"],
+  stops: ["TAA", "TAG"]
+};
+var CILIATE_NUCLEAR_CODE = {
+  id: 6,
+  name: "Ciliate, Dasycladacean and Hexamita Nuclear",
+  codons: {
+    ...STANDARD_CODE.codons,
+    TAA: "Q",
+    TAG: "Q"
+  },
+  starts: ["ATG"],
+  stops: ["TGA"]
+};
+var ECHINODERM_MITO_CODE = {
+  id: 9,
+  name: "Echinoderm and Flatworm Mitochondrial",
+  codons: {
+    ...STANDARD_CODE.codons,
+    TGA: "W",
+    AAA: "N",
+    AGA: "S",
+    AGG: "S"
+  },
+  starts: ["ATG", "GTG"],
+  stops: ["TAA", "TAG"]
+};
+var EUPLOTID_NUCLEAR_CODE = {
+  id: 10,
+  name: "Euplotid Nuclear",
+  codons: {
+    ...STANDARD_CODE.codons,
+    TGA: "C"
+  },
+  starts: ["ATG"],
+  stops: ["TAA", "TAG"]
+};
+var ALT_YEAST_NUCLEAR_CODE = {
+  id: 12,
+  name: "Alternative Yeast Nuclear",
+  codons: {
+    ...STANDARD_CODE.codons,
+    CTG: "S"
+  },
+  starts: ["CTG", "ATG"],
+  stops: ["TAA", "TAG", "TGA"]
+};
+var ALT_FLATWORM_MITO_CODE = {
+  id: 14,
+  name: "Alternative Flatworm Mitochondrial",
+  codons: {
+    ...STANDARD_CODE.codons,
+    TAA: "Y",
+    TGA: "W",
+    AAA: "N",
+    AGA: "S",
+    AGG: "S"
+  },
+  starts: ["ATG"],
+  stops: ["TAG"]
+};
+var BLEPHARISMA_MACRONUCLEAR_CODE = {
+  id: 15,
+  name: "Blepharisma Macronuclear",
+  codons: {
+    ...STANDARD_CODE.codons,
+    TAG: "Q"
+  },
+  starts: ["ATG"],
+  stops: ["TAA", "TGA"]
+};
+var CHLOROPHYCEAN_MITO_CODE = {
+  id: 16,
+  name: "Chlorophycean Mitochondrial",
+  codons: {
+    ...STANDARD_CODE.codons,
+    TAG: "L"
+  },
+  starts: ["ATG"],
+  stops: ["TAA", "TGA"]
+};
+var TREMATODE_MITO_CODE = {
+  id: 21,
+  name: "Trematode Mitochondrial",
+  codons: {
+    ...STANDARD_CODE.codons,
+    TGA: "W",
+    ATA: "M",
+    AAA: "N",
+    AGA: "S",
+    AGG: "S"
+  },
+  starts: ["ATG", "GTG"],
+  stops: ["TAA", "TAG"]
+};
+var THRAUSTOCHYTRIUM_MITO_CODE = {
+  id: 23,
+  name: "Thraustochytrium Mitochondrial",
+  codons: {
+    ...STANDARD_CODE.codons,
+    TTA: "*"
+  },
+  starts: ["ATT", "ATG", "GTG"],
+  stops: ["TTA", "TAA", "TAG", "TGA"]
+};
+var RHABDOPLEURIDAE_MITO_CODE = {
+  id: 24,
+  name: "Rhabdopleuridae Mitochondrial",
+  codons: {
+    ...STANDARD_CODE.codons,
+    TGA: "W",
+    AGA: "S",
+    AGG: "K"
+  },
+  starts: ["TTG", "CTG", "ATG", "GTG"],
+  stops: ["TAA", "TAG"]
+};
+var GRACILIBACTERIA_CODE = {
+  id: 25,
+  name: "Candidate Division SR1 and Gracilibacteria",
+  codons: {
+    ...STANDARD_CODE.codons,
+    TGA: "G"
+  },
+  starts: ["TTG", "ATG", "GTG"],
+  stops: ["TAA", "TAG"]
+};
+var PACHYSOLEN_NUCLEAR_CODE = {
+  id: 26,
+  name: "Pachysolen tannophilus Nuclear",
+  codons: {
+    ...STANDARD_CODE.codons,
+    CTG: "A"
+  },
+  starts: ["CTG", "ATG"],
+  stops: ["TAA", "TAG", "TGA"]
+};
+var MESODINIUM_NUCLEAR_CODE = {
+  id: 29,
+  name: "Mesodinium Nuclear",
+  codons: {
+    ...STANDARD_CODE.codons,
+    TAA: "Y",
+    TAG: "Y"
+  },
+  starts: ["ATG"],
+  stops: ["TGA"]
+};
+var PERITRICH_NUCLEAR_CODE = {
+  id: 30,
+  name: "Peritrich Nuclear",
+  codons: {
+    ...STANDARD_CODE.codons,
+    TAA: "E",
+    TAG: "E"
+  },
+  starts: ["ATG"],
+  stops: ["TGA"]
+};
+var BALANOPHORACEAE_PLASTID_CODE = {
+  id: 32,
+  name: "Balanophoraceae Plastid",
+  codons: {
+    ...STANDARD_CODE.codons,
+    TAG: "W"
+  },
+  starts: ["TTG", "CTG", "ATT", "ATC", "ATA", "ATG", "GTG"],
+  stops: ["TAA", "TGA"]
+};
+var CEPHALODISCIDAE_MITO_CODE = {
+  id: 33,
+  name: "Cephalodiscidae Mitochondrial UAA-Tyr",
+  codons: {
+    ...STANDARD_CODE.codons,
+    TAA: "Y",
+    TGA: "W",
+    AGA: "S",
+    AGG: "K"
+  },
+  starts: ["TTG", "CTG", "ATG", "GTG"],
+  stops: ["TAG"]
+};
+var NCBI_TRANSLATION_TABLES = {
+  1: STANDARD_CODE,
+  2: VERTEBRATE_MITO_CODE,
+  3: YEAST_MITO_CODE,
+  4: MOLD_PROTOZOAN_MITO_CODE,
+  5: INVERTEBRATE_MITO_CODE,
+  6: CILIATE_NUCLEAR_CODE,
+  9: ECHINODERM_MITO_CODE,
+  10: EUPLOTID_NUCLEAR_CODE,
+  11: BACTERIAL_CODE,
+  12: ALT_YEAST_NUCLEAR_CODE,
+  13: ASCIDIAN_MITO_CODE,
+  14: ALT_FLATWORM_MITO_CODE,
+  15: BLEPHARISMA_MACRONUCLEAR_CODE,
+  16: CHLOROPHYCEAN_MITO_CODE,
+  21: TREMATODE_MITO_CODE,
+  22: SCENEDESMUS_MITO_CODE,
+  23: THRAUSTOCHYTRIUM_MITO_CODE,
+  24: RHABDOPLEURIDAE_MITO_CODE,
+  25: GRACILIBACTERIA_CODE,
+  26: PACHYSOLEN_NUCLEAR_CODE,
+  29: MESODINIUM_NUCLEAR_CODE,
+  30: PERITRICH_NUCLEAR_CODE,
+  32: BALANOPHORACEAE_PLASTID_CODE,
+  33: CEPHALODISCIDAE_MITO_CODE
+};
+var VALID_NCBI_TABLE_IDS = Object.keys(NCBI_TRANSLATION_TABLES).map(Number);
+var CUSTOM_AA_ALPHABET = new Set("ACDEFGHIKLMNPQRSTVWY*".split(""));
+
 // src/artifacts/claude-science-session.ts
 var MAX_ARTIFACT_DATABASE_JSON_CHARACTERS = 128 * 1024 * 1024;
 var MAX_CUSTOM_ENZYMES = 100;
@@ -19,6 +385,7 @@ var VALID_SOURCE_IDS = /* @__PURE__ */ new Set([
   "classic-6-cutter",
   "diagnostic-screening"
 ]);
+var VALID_TRANSLATION_TABLE_IDS = new Set(VALID_NCBI_TABLE_IDS);
 function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -102,10 +469,18 @@ function normalizeTranslationLayers(value, recordLengths) {
       if (strand === null) throw new Error(`${path}.strand must be 1 or -1.`);
       const frame = raw.frame === 0 || raw.frame === 1 || raw.frame === 2 ? raw.frame : null;
       if (frame === null) throw new Error(`${path}.frame must be 0, 1, or 2.`);
+      const translationTableId = raw.translationTableId === void 0 ? 1 : requiredInteger(raw.translationTableId, `${path}.translationTableId`);
+      if (!VALID_TRANSLATION_TABLE_IDS.has(translationTableId)) {
+        throw new Error(`${path}.translationTableId must be a supported NCBI genetic-code id.`);
+      }
       const color = raw.color === void 0 ? void 0 : requiredString(raw.color, `${path}.color`, 32);
+      const featureId = raw.featureId === void 0 ? void 0 : requiredString(raw.featureId, `${path}.featureId`);
       if (color && !/^#[0-9a-f]{6}$/i.test(color)) throw new Error(`${path}.color must be a 6-digit hex color.`);
       if (raw.needsReview !== void 0 && typeof raw.needsReview !== "boolean") {
         throw new Error(`${path}.needsReview must be a boolean.`);
+      }
+      if (raw.completeCds !== void 0 && typeof raw.completeCds !== "boolean") {
+        throw new Error(`${path}.completeCds must be a boolean.`);
       }
       return {
         id: uniqueId(baseId, usedIds),
@@ -114,9 +489,12 @@ function normalizeTranslationLayers(value, recordLengths) {
         end,
         strand,
         frame,
+        translationTableId,
         source: "layer",
         color,
-        ...raw.needsReview ? { needsReview: true } : {}
+        ...raw.needsReview ? { needsReview: true } : {},
+        ...raw.completeCds ? { completeCds: true } : {},
+        ...featureId ? { featureId } : {}
       };
     });
   }

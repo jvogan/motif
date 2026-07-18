@@ -96,6 +96,9 @@ describe('Claude Science durable session validation', () => {
           end: 90,
           strand: 1,
           frame: 0,
+          translationTableId: 2,
+          completeCds: true,
+          featureId: 'cds-1',
           source: 'layer',
           color: '#3399cc',
         }],
@@ -121,6 +124,9 @@ describe('Claude Science durable session validation', () => {
           end: 90,
           strand: 1,
           frame: 0,
+          translationTableId: 2,
+          completeCds: true,
+          featureId: 'cds-1',
           source: 'layer',
           color: '#3399cc',
         }],
@@ -141,6 +147,11 @@ describe('Claude Science durable session validation', () => {
       },
     }, recordLengths)).toThrow(/valid 0-based/i);
     expect(() => normalizeArtifactDurableState({
+      translationLayersByRecord: {
+        'record-a': [{ id: 'bad-code', label: 'bad code', start: 5, end: 50, strand: 1, frame: 0, translationTableId: 27 }],
+      },
+    }, recordLengths)).toThrow(/supported NCBI genetic-code id/i);
+    expect(() => normalizeArtifactDurableState({
       enzymeSourcesByRecord: { 'record-a': ['not-a-source'] },
     }, recordLengths)).toThrow(/unknown source/i);
   });
@@ -155,6 +166,24 @@ describe('Claude Science durable session validation', () => {
       },
     }, recordLengths);
     expect(state.translationLayersByRecord['record-a'].map((track) => track.id)).toEqual(['track', 'track-2']);
+    expect(state.translationLayersByRecord['record-a'].map((track) => track.translationTableId)).toEqual([1, 1]);
+  });
+
+  it('canonicalizes legacy layer codes once while preserving explicit codes', () => {
+    const value = {
+      translationLayersByRecord: {
+        'record-a': [
+          { id: 'legacy', label: 'Legacy Standard track', start: 0, end: 3, strand: 1, frame: 0 },
+          { id: 'mitochondrial', label: 'Mitochondrial track', start: 3, end: 6, strand: 1, frame: 0, translationTableId: 2 },
+        ],
+      },
+    };
+
+    const first = normalizeArtifactDurableState(value, recordLengths);
+    const second = normalizeArtifactDurableState(JSON.parse(JSON.stringify(first)), recordLengths);
+
+    expect(first.translationLayersByRecord['record-a'].map((track) => track.translationTableId)).toEqual([1, 2]);
+    expect(second).toEqual(first);
   });
 
   it('round-trips the scientific-review flag on remapped translation layers', () => {

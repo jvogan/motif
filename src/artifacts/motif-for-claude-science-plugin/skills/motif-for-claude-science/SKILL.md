@@ -200,7 +200,10 @@ coordinates.
 
 Accepted record aliases include `seq` for `sequence`, `molecule` for `type`,
 and `annotations` for `features`. Group aliases include `project`, `folder`,
-and `collection`. Feature coordinates are zero-indexed: `start` is inclusive
+and `collection`. Nucleotide records may set `translationTableId` to a supported
+NCBI genetic-code id (table 1 is the default). A CDS/ORF feature may override it
+with `metadata.transl_table`; an unsupported explicit qualifier is preserved but
+translation is blocked until a supported code is chosen. Feature coordinates are zero-indexed: `start` is inclusive
 and `end` is exclusive. For a multipart feature, supply non-empty `subRanges` as
 `[{ start, end, strand? }, ...]` in biological 5′→3′ order; those pieces are
 authoritative, while the feature's `start`/`end` remain their coordinate

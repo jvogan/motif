@@ -263,6 +263,7 @@ describe('PCR amplicon materialization', () => {
     };
     const selected = selection(pairFor(template, 4, 14, 20, 30, 'GGATCC', 'CATATG'));
     const templateRecord = source(template, 'linear', [feature]);
+    templateRecord.translationTableId = 2;
     const sourceSnapshot = structuredClone(templateRecord);
     const result = materializePcrAmplicon({
       sourceRecord: templateRecord,
@@ -287,6 +288,7 @@ describe('PCR amplicon materialization', () => {
       id: 'amplicon-record',
       molecule: 'dna',
       topology: 'linear',
+      translationTableId: 2,
       length: result.record.seq.length,
       active: true,
       group: 'Cloning',
@@ -296,6 +298,7 @@ describe('PCR amplicon materialization', () => {
         parentRecordId: 'template-1',
         primerDesignResultId: 'primer-result',
         productSha256: sha256HexSync(result.record.seq),
+        translationTableId: 2,
         cloningPreparation: {
           requestSha256: 'a'.repeat(64),
           actionId: 'prep-action',

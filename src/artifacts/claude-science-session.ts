@@ -1,5 +1,6 @@
 import type { RestrictionEnzyme } from '../bio/types';
 import type { RestrictionEnzymeSourceId } from '../bio/restriction-presets';
+import { VALID_NCBI_TABLE_IDS } from '../bio/codon-tables';
 
 export const LARGE_SEQUENCE_DETAIL_THRESHOLD = 50_000;
 /**
@@ -29,6 +30,7 @@ const VALID_SOURCE_IDS = new Set<RestrictionEnzymeSourceId>([
   'classic-6-cutter',
   'diagnostic-screening',
 ]);
+const VALID_TRANSLATION_TABLE_IDS = new Set<number>(VALID_NCBI_TABLE_IDS);
 
 export type PortableTranslationTrack = {
   id: string;
@@ -37,9 +39,12 @@ export type PortableTranslationTrack = {
   end: number;
   strand: 1 | -1;
   frame: 0 | 1 | 2;
+  translationTableId: number;
   source: 'layer';
   color?: string;
   needsReview?: boolean;
+  completeCds?: boolean;
+  featureId?: string;
 };
 
 export type ArtifactDurableState = {
@@ -227,10 +232,20 @@ function normalizeTranslationLayers(
       if (strand === null) throw new Error(`${path}.strand must be 1 or -1.`);
       const frame = raw.frame === 0 || raw.frame === 1 || raw.frame === 2 ? raw.frame : null;
       if (frame === null) throw new Error(`${path}.frame must be 0, 1, or 2.`);
+      const translationTableId = raw.translationTableId === undefined
+        ? 1
+        : requiredInteger(raw.translationTableId, `${path}.translationTableId`);
+      if (!VALID_TRANSLATION_TABLE_IDS.has(translationTableId)) {
+        throw new Error(`${path}.translationTableId must be a supported NCBI genetic-code id.`);
+      }
       const color = raw.color === undefined ? undefined : requiredString(raw.color, `${path}.color`, 32);
+      const featureId = raw.featureId === undefined ? undefined : requiredString(raw.featureId, `${path}.featureId`);
       if (color && !/^#[0-9a-f]{6}$/i.test(color)) throw new Error(`${path}.color must be a 6-digit hex color.`);
       if (raw.needsReview !== undefined && typeof raw.needsReview !== 'boolean') {
         throw new Error(`${path}.needsReview must be a boolean.`);
+      }
+      if (raw.completeCds !== undefined && typeof raw.completeCds !== 'boolean') {
+        throw new Error(`${path}.completeCds must be a boolean.`);
       }
       return {
         id: uniqueId(baseId, usedIds),
@@ -239,9 +254,12 @@ function normalizeTranslationLayers(
         end,
         strand,
         frame,
+        translationTableId,
         source: 'layer',
         color,
         ...(raw.needsReview ? { needsReview: true } : {}),
+        ...(raw.completeCds ? { completeCds: true } : {}),
+        ...(featureId ? { featureId } : {}),
       };
     });
   }

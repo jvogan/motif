@@ -1,5 +1,5 @@
 /* eslint-disable react-refresh/only-export-components -- artifact entry exports pure runtime test seams */
-import { Component, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from 'react';
+import { Component, useCallback, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Activity, AlignCenter, Beaker, ChevronDown, ChevronLeft, ChevronRight, Crosshair, Dna, FileText, History, Info, Languages, LayoutGrid, List, Map as MapIcon, Maximize2, Minimize2, NotebookPen, Plus, Redo2, Search, Settings, ShieldCheck, Tag, Trash2, Undo2, Workflow, Wrench, X, type LucideIcon } from 'lucide-react';
 import vectorsRaw from '../../public/data/vectors.json?raw';
@@ -34,7 +34,7 @@ import {
   isMultipartFeature,
   isOrderedFeatureLocation,
 } from '../bio/feature-location';
-import { translate } from '../bio/translate';
+import { translate, translateCompleteCds } from '../bio/translate';
 import { computeMapLayout } from '../plasmid-map/layout';
 import { bpToAngle, pointOnCircle } from '../plasmid-map/geometry/coordinates';
 import { featureSegments as mapFeatureSegments, featureSpans, normalizeSpan } from '../plasmid-map/geometry/ranges';
@@ -169,6 +169,15 @@ import {
   type PortableTranslationTrack,
 } from './claude-science-session';
 import {
+  ARTIFACT_TRANSLATION_CODE_OPTIONS,
+  artifactFeatureTranslationTableValue,
+  artifactTranslationCodeLabel,
+  isSupportedArtifactTranslationTableId,
+  normalizeArtifactTranslationTableId,
+  resolveArtifactTranslationCode,
+  type ArtifactTranslationCodeResolution,
+} from './claude-science-translation-code';
+import {
   applySequenceEditToAnchors,
   confirmNoteRangeAnchor,
   restoreNoteAnchors,
@@ -220,6 +229,8 @@ type ArtifactRecordInput = {
   molecule?: SequenceType;
   topology?: Topology;
   type?: SequenceType;
+  /** Portable NCBI genetic-code id used when a feature does not define /transl_table. */
+  translationTableId?: number;
   length?: number;
   annotations?: ArtifactFeatureInput[];
   features?: ArtifactFeatureInput[];
@@ -263,6 +274,7 @@ type ArtifactVector = {
   sequence: string;
   topology: Topology;
   type: SequenceType;
+  translationTableId?: number;
   features: Feature[];
   organism?: string;
   source?: string;
@@ -472,6 +484,10 @@ type TranslateTarget = {
   defaultFrame: 0 | 1 | 2;
   key: string;
   whole: boolean;
+  featureId?: string;
+  translationTableId?: number;
+  completeCds?: boolean;
+  translationSource?: 'feature' | 'layer';
 };
 
 const THEME_OPTIONS: Array<{ id: ArtifactThemeName; label: string; description: string }> = [
@@ -1017,8 +1033,8 @@ const MOTIF_HELP: MotifHelp = {
     inspectSelections: 'Use motifDescribe() after user map/sequence/feature selections to summarize the active record and selected range.',
     restrictionMaps: "Switch restriction source groups with motifSetRestrictionSources([...]); use [] to scan no bundled enzymes, or ['all'] for the full bundled list including Type IIS enzymes.",
     reverseComplement: 'The UI can show/add reverse complements for DNA/RNA records and preserve feature coordinates.',
-    translate: 'The UI can translate selected nucleotide ranges or whole records; amino-acid clicks highlight source codons.',
-    multipleSequenceAlignment: 'Open Alignment from Tools to compare 2–10 same-type records locally, or inspect/import precomputed MAFFT, MUSCLE, or Clustal Omega aligned FASTA.',
+    translate: 'Translate ranges, complete coding features, or whole nucleotide records with selectable supported NCBI genetic codes. CDS/ORF metadata.transl_table overrides the record translationTableId; unsupported explicit qualifiers block instead of falling back.',
+    multipleSequenceAlignment: 'Open Alignment from Tools to compare 2–10 same-type records locally, or inspect/import precomputed MAFFT, MUSCLE, or Clustal Omega aligned FASTA. Alignment nucleotide-to-protein overlays currently use the Standard code.',
     notes: 'Save workspace, record, or selected-range notes in the Tools pane or with motifAddNotes(...). Markdown is stored as inert text.',
     workflowHistory: 'Store digest, gel, Golden Gate, and ligation result summaries with explicit input/output record ids and engine provenance.',
     analysisResults: 'Store typed primer, PCR, assembly, construct-verification, BLAST, structure, report, or table results. The UI renders supplied content as inert text/data only.',
@@ -1047,6 +1063,7 @@ const MOTIF_HELP: MotifHelp = {
     sequence: `string — residues (maximum ${MOTIF_MAX_RECORD_LENGTH.toLocaleString()} per record). Aliases: seq. DNA/RNA = ACGTU…, protein = amino-acid letters.`,
     type: "'dna' | 'rna' | 'protein' — molecule type. Aliases: molecule. Inferred from the sequence if omitted.",
     topology: "'circular' | 'linear' — defaults to circular for DNA, linear otherwise.",
+    translationTableId: 'number — optional supported NCBI genetic-code id for DNA/RNA records; defaults to table 1. A CDS/ORF metadata.transl_table qualifier takes precedence.',
     description: 'string — optional one-line description.',
     features: 'ArtifactFeatureInput[] — optional annotations. Alias: annotations.',
     group: 'string — optional compact inventory group. Aliases: project, folder, collection; aliases serialize back as canonical group.',
@@ -1068,7 +1085,7 @@ const MOTIF_HELP: MotifHelp = {
     direction: "'forward' | 'reverse' | 'none' (or 1 | -1 | 0) — strand.",
     subRanges: 'non-empty Array<{ start, end, strand? }> — optional authoritative pieces in biological 5′→3′ order; each strand inherits direction when omitted. start/end remain the coordinate envelope. An empty array is treated like omission at the runtime boundary.',
     color: 'string — optional CSS color for the feature.',
-    metadata: "object — optional structured provenance/details. Set motifLocationOperator: 'order' only on a multi-piece INSDC order(...) location that must not be implicitly concatenated. For manually authored reverse multipart payloads, set motifSubRangeOrder: 'biological'; unmarked reverse multipart locations are preserved but quarantined from sequence-derived actions because older text-order checkpoints cannot be distinguished safely.",
+    metadata: "object — optional structured provenance/details. CDS/ORF features may set transl_table to a supported NCBI table id; translated feature types may set codon_start to 1, 2, or 3. An unsupported explicit CDS/ORF transl_table is preserved but translation is blocked. Set motifLocationOperator: 'order' only on a multi-piece INSDC order(...) location that must not be implicitly concatenated. For manually authored reverse multipart payloads, set motifSubRangeOrder: 'biological'; unmarked reverse multipart locations are preserved but quarantined from sequence-derived actions because older text-order checkpoints cannot be distinguished safely.",
   },
   alignmentSchema: {
     name: 'string — alignment name used in this session and full-workspace exports.',
@@ -1129,10 +1146,11 @@ const MOTIF_HELP: MotifHelp = {
     name: 'Design insert A',
     type: 'dna',
     topology: 'linear',
+    translationTableId: 11,
     group: 'Design queue',
     description: 'Example grouped DNA record added via motifAddRecords.',
     sequence: 'ATGGCCGCCGCCGCCGCCGCCGCCGCCGCC',
-    features: [{ name: 'coding insert', type: 'cds', start: 0, end: 30, direction: 'forward' }],
+    features: [{ name: 'coding insert', type: 'cds', start: 0, end: 30, direction: 'forward', metadata: { transl_table: 11, codon_start: 1 } }],
     source: 'demo',
   },
 };
@@ -1669,6 +1687,15 @@ export function normalizeRecord(
   if (record.sangerTrace !== undefined && type !== 'dna') {
     throw new Error('sangerTrace is only valid on DNA records.');
   }
+  const translationTableId = record.translationTableId === undefined
+    ? undefined
+    : normalizeArtifactTranslationTableId(record.translationTableId);
+  if (translationTableId === null) {
+    throw new Error('translationTableId must be a supported NCBI genetic-code id.');
+  }
+  if (translationTableId !== undefined && !isNucleotideType(type)) {
+    throw new Error('translationTableId is only valid on DNA and RNA records.');
+  }
   const topology = normalizeTopology(record.topology, type);
   const rawId = normalizeOptionalText(record.id) ?? normalizeOptionalText(record.name) ?? `record-${index + 1}`;
   const id = rawId || `record-${index + 1}`;
@@ -1692,6 +1719,7 @@ export function normalizeRecord(
     sequence,
     topology,
     type,
+    translationTableId,
     features,
     sites: normalizeSites(record.sites, sequence.length),
     organism: normalizeOptionalText(record.organism),
@@ -1842,6 +1870,7 @@ function serializeRecord(record: ArtifactVector): ArtifactRecordInput {
     description: record.description,
     molecule: record.type,
     topology: record.topology,
+    translationTableId: record.translationTableId,
     seq: record.sequence,
     length: record.sequence.length,
     annotations: record.features.map((feature) => ({
@@ -1942,24 +1971,38 @@ function buildRecordSummary(
   const unit = isNucleotide ? (isDna ? 'bp' : 'nt') : 'aa';
   const gc = isNucleotide && length > 0 ? gcContent(record.sequence) : null;
   const tm = isNucleotide && length > 0 ? meltingTemperature(record.sequence) : null;
+  const translationCode = resolveArtifactTranslationCode(record.translationTableId);
 
   const features = record.features ?? [];
-  const featureList = features.map((feature) => ({
-    name: feature.name,
-    type: feature.type,
-    start: feature.start,
-    end: feature.end,
-    strand: featureStrandLabel(feature),
-    location: genBankLocation(feature),
-    length: featureLocationLength(feature),
-    locationOrder: isAmbiguousFeatureLocation(feature)
-      ? 'ambiguous-unmarked'
-      : isOrderedFeatureLocation(feature)
-        ? 'order'
-        : feature.subRanges?.length ? 'biological' : 'contiguous',
-    materializable: isMaterializableFeatureLocation(feature),
-    subRanges: feature.subRanges?.map((range) => ({ ...range })),
-  }));
+  const featureList = features.map((feature) => {
+    const featureTranslationCode = CODING_FEATURE_TYPES.has(feature.type)
+      ? resolveArtifactTranslationCode(
+          record.translationTableId,
+          TRANSLATION_CODE_FEATURE_TYPES.has(feature.type) ? feature.metadata : undefined,
+        )
+      : null;
+    return {
+      name: feature.name,
+      type: feature.type,
+      start: feature.start,
+      end: feature.end,
+      strand: featureStrandLabel(feature),
+      location: genBankLocation(feature),
+      length: featureLocationLength(feature),
+      locationOrder: isAmbiguousFeatureLocation(feature)
+        ? 'ambiguous-unmarked'
+        : isOrderedFeatureLocation(feature)
+          ? 'order'
+          : feature.subRanges?.length ? 'biological' : 'contiguous',
+      materializable: isMaterializableFeatureLocation(feature),
+      subRanges: feature.subRanges?.map((range) => ({ ...range })),
+      translationTable: featureTranslationCode?.supported
+        ? { id: featureTranslationCode.id, name: featureTranslationCode.name, source: featureTranslationCode.source }
+        : featureTranslationCode
+          ? { supported: false, message: featureTranslationCode.message }
+          : null,
+    };
+  });
 
   // Per-enzyme cut counts from the current (visible) site set.
   const counts = new Map<string, number>();
@@ -1970,7 +2013,9 @@ function buildRecordSummary(
     .sort((a, b) => a.localeCompare(b));
   const enzymesThatCut = counts.size;
 
-  const orfs = isDna ? findORFs(record.sequence, 30, undefined, { topology }) : [];
+  const orfs = isDna && translationCode.supported
+    ? findORFs(record.sequence, 30, translationCode.table, { topology })
+    : [];
   const longestOrf = orfs[0] ?? null; // findORFs sorts by length desc
 
   const selectionData = selection && selection.sequence
@@ -2007,6 +2052,9 @@ function buildRecordSummary(
     features: featureList,
     restriction: isDna ? { enzymesThatCut, singleCutters } : null,
     ends,
+    translationTable: isNucleotide && translationCode.supported
+      ? { id: translationCode.id, name: translationCode.name, source: translationCode.source }
+      : null,
     orfs: isDna
       ? {
           count: orfs.length,
@@ -2032,6 +2080,7 @@ function buildRecordSummary(
     lines.push('Features: none annotated');
   }
   if (isDna) {
+    if (translationCode.supported) lines.push(`Genetic code: ${artifactTranslationCodeLabel(translationCode)}`);
     if (ends) lines.push(`Ends: left ${ends.left.label}; right ${ends.right.label}`);
     const shownCutters = singleCutters.slice(0, 10).join(', ');
     lines.push(
@@ -2118,7 +2167,7 @@ function genBankLocation(feature: Feature): string {
   return featureGenBankLocation(feature);
 }
 
-function genBankFeatureLines(feature: Feature): string[] {
+function genBankFeatureLines(feature: Feature, recordTranslationTableId?: number): string[] {
   const location = genBankLocation(feature);
   const firstPrefix = `     ${genBankFeatureType(feature.type).padEnd(15, ' ')} `;
   const continuationPrefix = ' '.repeat(firstPrefix.length);
@@ -2137,10 +2186,29 @@ function genBankFeatureLines(feature: Feature): string[] {
   const codonStartLine = Number.isInteger(rawCodonStart) && rawCodonStart >= 1 && rawCodonStart <= 3
     ? [`                     /codon_start=${rawCodonStart}`]
     : [];
+  const hasFeatureTranslationTable = ['transl_table', 'translTable', 'translationTableId']
+    .some((key) => Object.prototype.hasOwnProperty.call(feature.metadata, key));
+  const rawTranslationTable = feature.metadata.transl_table
+    ?? feature.metadata.translTable
+    ?? feature.metadata.translationTableId;
+  const parsedFeatureTranslationTable = typeof rawTranslationTable === 'string' && /^\d+$/.test(rawTranslationTable.trim())
+    ? Number(rawTranslationTable.trim())
+    : typeof rawTranslationTable === 'number' && Number.isInteger(rawTranslationTable)
+      ? rawTranslationTable
+      : null;
+  const emittedTranslationTable = feature.type === 'cds' || feature.type === 'orf'
+    ? hasFeatureTranslationTable
+      ? parsedFeatureTranslationTable
+      : recordTranslationTableId ?? null
+    : null;
+  const translationTableLine = emittedTranslationTable !== null && emittedTranslationTable > 0
+    ? [`                     /transl_table=${emittedTranslationTable}`]
+    : [];
   return [
     ...locationLines,
     `                     /label="${feature.name.replace(/"/g, "'")}"`,
     ...codonStartLine,
+    ...translationTableLine,
   ];
 }
 
@@ -2166,7 +2234,9 @@ export function toGenBankLite(record: ArtifactVector, topology: Topology): strin
   const molecule = record.type === 'protein' ? 'aa' : record.type === 'rna' ? 'RNA' : 'DNA';
   const topologyLabel = topology === 'circular' ? 'circular' : 'linear';
   const locus = `LOCUS       ${safeSlug(record.name).slice(0, 16).padEnd(16, ' ')} ${String(record.sequence.length).padStart(11, ' ')} ${molecule.padEnd(6, ' ')} ${topologyLabel.padEnd(8, ' ')} UNK ${date}`;
-  const features = record.features.flatMap(genBankFeatureLines).join('\n');
+  const features = record.features
+    .flatMap((feature) => genBankFeatureLines(feature, record.translationTableId))
+    .join('\n');
 
   return [
     locus,
@@ -2195,6 +2265,15 @@ export function toGff3Lite(record: ArtifactVector): string {
       const orderedLocation = isOrderedFeatureLocation(feature);
       const ambiguousLocation = isAmbiguousFeatureLocation(feature);
       const materializableLocation = isMaterializableFeatureLocation(feature);
+      const featureTranslationTableValue = artifactFeatureTranslationTableValue(feature.metadata);
+      const gffTranslationTable = feature.type === 'cds' || feature.type === 'orf'
+        ? featureTranslationTableValue
+          ? featureTranslationTableValue === '__invalid__' ? '' : featureTranslationTableValue
+          : record.translationTableId === undefined ? '' : String(record.translationTableId)
+        : '';
+      const translationTableAttribute = gffTranslationTable
+        ? `;transl_table=${gffEscape(gffTranslationTable)}`
+        : '';
       let nextCdsPhase = codonStartFrame(feature.metadata);
       return segments.map((segment, segmentIndex) => {
         const cdsPhase = feature.type === 'cds' && materializableLocation ? nextCdsPhase : null;
@@ -2218,7 +2297,7 @@ export function toGff3Lite(record: ArtifactVector): string {
           '.',
           segment.strand === -1 ? '-' : segment.strand === 1 ? '+' : '.',
           cdsPhase === null ? '.' : String(cdsPhase),
-          `ID=${gffEscape(feature.id)};Name=${gffEscape(feature.name)}${multipartAttributes}`,
+          `ID=${gffEscape(feature.id)};Name=${gffEscape(feature.name)}${translationTableAttribute}${multipartAttributes}`,
         ].join('\t');
       });
     }),
@@ -2236,13 +2315,14 @@ function csvCell(value: unknown): string {
 
 function inventoryToCsv(records: readonly ArtifactVector[]): string {
   const rows = [
-    ['id', 'name', 'group', 'type', 'topology', 'length', 'overhang5', 'overhang5_type', 'overhang3', 'overhang3_type', 'feature_count', 'site_count', 'source', 'organism', 'tags'].join(','),
+    ['id', 'name', 'group', 'type', 'topology', 'translation_table_id', 'length', 'overhang5', 'overhang5_type', 'overhang3', 'overhang3_type', 'feature_count', 'site_count', 'source', 'organism', 'tags'].join(','),
     ...records.map((record) => [
       record.id,
       record.name,
       record.group ?? '',
       record.type,
       record.topology,
+      isNucleotideType(record.type) ? record.translationTableId ?? 1 : '',
       record.sequence.length,
       record.overhang5 ?? '',
       record.overhang5Type ?? '',
@@ -2260,21 +2340,34 @@ function inventoryToCsv(records: readonly ArtifactVector[]): string {
 
 export function featuresToCsv(records: readonly ArtifactVector[]): string {
   const rows = [
-    ['record_id', 'record_name', 'record_group', 'feature_id', 'feature_name', 'type', 'start_1based', 'end_1based', 'strand', 'length', 'location', 'segment_count'].join(','),
-    ...records.flatMap((record) => record.features.map((feature) => [
-      record.id,
-      record.name,
-      record.group ?? '',
-      feature.id,
-      feature.name,
-      feature.type,
-      feature.start + 1,
-      feature.end,
-      featureStrandLabel(feature),
-      featureLocationLength(feature),
-      genBankLocation(feature),
-      featureLocationSegments(feature).length,
-    ].map(csvCell).join(','))),
+    ['record_id', 'record_name', 'record_group', 'record_translation_table_id', 'feature_id', 'feature_name', 'type', 'feature_translation_table', 'effective_translation_table_id', 'start_1based', 'end_1based', 'strand', 'length', 'location', 'segment_count'].join(','),
+    ...records.flatMap((record) => record.features.map((feature) => {
+      const hasTranslationSemantics = isNucleotideType(record.type) && CODING_FEATURE_TYPES.has(feature.type);
+      const supportsFeatureCode = hasTranslationSemantics && TRANSLATION_CODE_FEATURE_TYPES.has(feature.type);
+      const featureCodeValue = supportsFeatureCode
+        ? artifactFeatureTranslationTableValue(feature.metadata)
+        : '';
+      const effectiveCode = hasTranslationSemantics
+        ? resolveArtifactTranslationCode(record.translationTableId, supportsFeatureCode ? feature.metadata : undefined)
+        : null;
+      return [
+        record.id,
+        record.name,
+        record.group ?? '',
+        isNucleotideType(record.type) ? record.translationTableId ?? 1 : '',
+        feature.id,
+        feature.name,
+        feature.type,
+        featureCodeValue === '__invalid__' ? 'invalid' : featureCodeValue,
+        effectiveCode?.supported ? effectiveCode.id : '',
+        feature.start + 1,
+        feature.end,
+        featureStrandLabel(feature),
+        featureLocationLength(feature),
+        genBankLocation(feature),
+        featureLocationSegments(feature).length,
+      ].map(csvCell).join(',');
+    })),
   ];
   return rows.join('\n');
 }
@@ -3122,6 +3215,15 @@ function collectMalformedRecordIssues(
   }
   const normalizedRecordSequence = normalizeSequence(record.seq ?? record.sequence ?? '', record.molecule ?? record.type);
   const normalizedRecordType = normalizeSequenceType(record.molecule ?? record.type, normalizedRecordSequence);
+  if (record.translationTableId !== undefined) {
+    if (typeof record.translationTableId !== 'number'
+      || !Number.isInteger(record.translationTableId)
+      || !isSupportedArtifactTranslationTableId(record.translationTableId)) {
+      add(`${basePath}.translationTableId`, 'translationTableId must be a supported integer NCBI genetic-code id');
+    } else if (!isNucleotideType(normalizedRecordType)) {
+      add(`${basePath}.translationTableId`, 'translationTableId is valid on DNA and RNA records only');
+    }
+  }
   for (const field of ['overhang5', 'overhang3'] as const) {
     const value = record[field];
     if (value === undefined) continue;
@@ -3652,6 +3754,7 @@ function errorMessage(error: unknown): string {
 function artifactRecordBiologyChanged(previous: ArtifactVector, next: ArtifactVector): boolean {
   return previous.sequence !== next.sequence
     || previous.type !== next.type
+    || previous.translationTableId !== next.translationTableId
     || previous.topology !== next.topology
     || previous.overhang5 !== next.overhang5
     || previous.overhang3 !== next.overhang3
@@ -4235,9 +4338,12 @@ function portableTranslationLayersByRecord(
         end: layer.end,
         strand: layer.strand,
         frame: layer.frame,
+        translationTableId: layer.translationTableId,
         source: 'layer' as const,
         color: layer.color,
         ...(layer.needsReview ? { needsReview: true } : {}),
+        ...(layer.completeCds ? { completeCds: true } : {}),
+        ...(layer.featureId ? { featureId: layer.featureId } : {}),
       })),
     ]),
   );
@@ -4923,24 +5029,36 @@ function App() {
     const fromFeatures: InlineTranslationTrack[] = features
       .filter((feature) => (
         CODING_FEATURE_TYPES.has(feature.type)
+        && (feature.strand === 1 || feature.strand === -1)
         && featureLocationLength(feature) >= 3
         && !isMultipartFeature(feature)
         && !hiddenFeatureTranslationIds.has(`feat:${feature.id}`)
       ))
-      .map((feature) => ({
-        id: `feat:${feature.id}`,
-        label: feature.name,
-        start: feature.start,
-        end: feature.end,
-        strand: feature.strand === -1 ? -1 : 1,
-        frame: codonStartFrame(feature.metadata),
-        source: 'feature',
-        color: feature.color,
-      }));
+      .flatMap((feature) => {
+        const code = resolveArtifactTranslationCode(
+          vector.translationTableId,
+          TRANSLATION_CODE_FEATURE_TYPES.has(feature.type) ? feature.metadata : undefined,
+        );
+        if (!code.supported) return [];
+        return [{
+          id: `feat:${feature.id}`,
+          label: feature.name,
+          start: feature.start,
+          end: feature.end,
+          strand: feature.strand === -1 ? -1 : 1,
+          frame: codonStartFrame(feature.metadata),
+          translationTableId: code.id,
+          source: 'feature' as const,
+          color: feature.color,
+          completeCds: isCompleteCodingFeature(feature),
+          featureId: feature.id,
+        }];
+      });
     return translationLayers.length > 0 ? [...fromFeatures, ...translationLayers] : fromFeatures;
-  }, [sequenceType, features, hiddenFeatureTranslationIds, translationLayers]);
+  }, [sequenceType, features, hiddenFeatureTranslationIds, translationLayers, vector.translationTableId]);
   const selectedInlineTranslationTrack = inlineTranslationTracks.find((track) => track.id === selectedTranslationLayerId) ?? null;
   const selectedTranslationLayer = selectedInlineTranslationTrack?.source === 'layer' ? selectedInlineTranslationTrack : null;
+  const selectedPinnedLayerNeedsReview = !!selectedTranslationLayer?.needsReview;
   useEffect(() => {
     if (!selectedTranslationLayerId) return;
     if (inlineTranslationTracks.some((track) => track.id === selectedTranslationLayerId)) return;
@@ -5910,6 +6028,7 @@ function App() {
         defaultFrame: CODING_FEATURE_TYPES.has(selectedFeature.type) ? codonStartFrame(selectedFeature.metadata) : 0,
         key: `f:${selectedFeature.id}`,
         whole: false,
+        featureId: selectedFeature.id,
       };
     }
     if (selectedMapRange) {
@@ -5927,10 +6046,40 @@ function App() {
   }, [selectedFeature, selectedMapRange, sequence.length]);
   const translateTarget = lockedTranslateTarget?.recordId === recordId ? lockedTranslateTarget.target : baseTranslateTarget;
   const translateTargetKey = translateTarget.key;
-  const multipartTranslateFeature = selectedFeature
-    && translateTargetKey === `f:${selectedFeature.id}`
-    && isMultipartFeature(selectedFeature)
-      ? selectedFeature
+  const translateTargetFeature = translateTarget.featureId
+    ? features.find((feature) => feature.id === translateTarget.featureId) ?? null
+    : null;
+  const translateTargetSemanticFeature = translateTarget.translationSource === 'layer'
+    ? null
+    : translateTargetFeature;
+  const translateTargetCodingFeature = translateTargetSemanticFeature && CODING_FEATURE_TYPES.has(translateTargetSemanticFeature.type)
+    ? translateTargetSemanticFeature
+    : null;
+  const translateTargetCodeFeature = translateTargetSemanticFeature && TRANSLATION_CODE_FEATURE_TYPES.has(translateTargetSemanticFeature.type)
+    ? translateTargetSemanticFeature
+    : null;
+  const hasUndefinedCodingStrand = translateTargetCodingFeature?.strand === 0;
+  const translationCode = useMemo<ArtifactTranslationCodeResolution>(() => (
+    translateTarget.translationTableId !== undefined
+      ? resolveArtifactTranslationCode(translateTarget.translationTableId)
+      : resolveArtifactTranslationCode(vector.translationTableId, translateTargetCodeFeature?.metadata)
+  ), [translateTarget.translationTableId, translateTargetCodeFeature?.metadata, vector.translationTableId]);
+  const translationCodeContext = translateTarget.translationTableId !== undefined
+    ? translateTarget.translationSource === 'feature'
+      ? 'Captured from a feature-derived amino-acid track.'
+      : 'Captured with the selected pinned amino-acid track.'
+    : translationCode.supported && translationCode.source === 'feature'
+      ? 'Feature /transl_table override.'
+      : translationCode.supported && translateTargetCodeFeature
+        ? `${translationCode.source === 'record' ? 'Inherited from the record' : 'Standard default'}; changing creates a feature override.`
+      : translationCode.supported && translationCode.source === 'record'
+        ? 'Record genetic-code default.'
+        : translationCode.supported
+          ? 'Standard default; selecting another code saves it on this record.'
+          : 'Choose a supported code to repair this explicit qualifier.';
+  const multipartTranslateFeature = translateTargetSemanticFeature
+    && isMultipartFeature(translateTargetSemanticFeature)
+      ? translateTargetSemanticFeature
       : null;
   // Follow the target's natural strand and imported codon_start whenever the
   // target changes; the user can still override either control afterwards.
@@ -5942,34 +6091,57 @@ function App() {
   // A translation track built from the target + chosen strand/frame — the single
   // source of truth for the popup readout AND for pinning an inline layer.
   const previewTrack = useMemo<InlineTranslationTrack | null>(() => {
-    if (!isEditable || multipartTranslateFeature || translateTarget.end - translateTarget.start < 3) return null;
+    if (!isEditable || !translationCode.supported || selectedPinnedLayerNeedsReview || hasUndefinedCodingStrand || multipartTranslateFeature || translateTarget.end - translateTarget.start < 3) return null;
+    const naturalStrand = translateTargetSemanticFeature?.strand === -1 ? 'antisense' : 'sense';
     return {
-      id: `preview:${translateTargetKey}:${translateStrand}:${translateFrame}`,
+      id: `preview:${translateTargetKey}:${translateStrand}:${translateFrame}:table-${translationCode.id}`,
       label: translateTarget.label,
       start: translateTarget.start,
       end: translateTarget.end,
       strand: translateStrand === 'antisense' ? -1 : 1,
       frame: translateFrame,
+      translationTableId: translationCode.id,
       source: 'layer',
+      completeCds: translateTarget.completeCds ?? (
+        !!translateTargetSemanticFeature
+          && translateTarget.start === translateTargetSemanticFeature.start
+          && translateTarget.end === translateTargetSemanticFeature.end
+          && translateStrand === naturalStrand
+          && translateFrame === codonStartFrame(translateTargetSemanticFeature.metadata)
+          && isCompleteCodingFeature(translateTargetSemanticFeature)
+      ),
+      featureId: translateTargetFeature?.id,
     };
-  }, [isEditable, multipartTranslateFeature, translateTarget, translateTargetKey, translateStrand, translateFrame]);
+  }, [hasUndefinedCodingStrand, isEditable, multipartTranslateFeature, selectedPinnedLayerNeedsReview, translateFrame, translateStrand, translateTarget, translateTargetFeature?.id, translateTargetKey, translateTargetSemanticFeature, translationCode]);
   const translationPreviewActive = translationPanelOpen || showTranslations || !translateTarget.whole;
   const previewResidues = useMemo(
     () => (translationPreviewActive && previewTrack ? inlineTrackResidues(sequence, sequenceType, previewTrack, topology) : []),
     [previewTrack, sequence, sequenceType, topology, translationPreviewActive],
   );
   const previewProtein = useMemo(() => {
+    if (hasUndefinedCodingStrand) return '';
     if (!multipartTranslateFeature) return previewResidues.map((residue) => residue.aa).join('');
+    if (!translationCode.supported) return '';
     const naturalSequence = sequenceForFeature(sequence, multipartTranslateFeature, sequenceType);
     const naturalControl = multipartTranslateFeature.strand === -1 ? 'antisense' : 'sense';
     const source = translateStrand === naturalControl
       ? naturalSequence
       : reverseComplement(naturalSequence, sequenceType === 'rna');
-    return translate(source, translateFrame);
-  }, [multipartTranslateFeature, previewResidues, sequence, sequenceType, translateFrame, translateStrand]);
-  const translationUnavailableReason = selectedFeature && isOrderedFeatureLocation(selectedFeature)
+    return translateStrand === naturalControl
+      && translateFrame === codonStartFrame(multipartTranslateFeature.metadata)
+      && isCompleteCodingFeature(multipartTranslateFeature)
+      ? translateCompleteCds(source, translateFrame, translationCode.table)
+      : translate(source, translateFrame, translationCode.table);
+  }, [hasUndefinedCodingStrand, multipartTranslateFeature, previewResidues, sequence, sequenceType, translateFrame, translateStrand, translationCode]);
+  const translationUnavailableReason = !translationCode.supported
+    ? translationCode.message
+    : selectedPinnedLayerNeedsReview
+      ? 'This pinned translation is marked for review. Confirm its range, strand, and frame in Annotations before copying or creating a protein.'
+    : hasUndefinedCodingStrand
+      ? 'This coding feature has no strand direction. Choose forward or reverse before translating it.'
+    : translateTargetSemanticFeature && isOrderedFeatureLocation(translateTargetSemanticFeature)
     ? 'INSDC order(...) records segment order but does not assert one materializable sequence, so Motif will not translate it implicitly.'
-    : selectedFeature && isAmbiguousFeatureLocation(selectedFeature)
+    : translateTargetSemanticFeature && isAmbiguousFeatureLocation(translateTargetSemanticFeature)
       ? 'This unmarked reverse multipart location has ambiguous segment order. Re-import its original GenBank record or confirm biological order in the source data before translation.'
       : undefined;
   const canPinPreviewTranslation = !!previewTrack && !translateTarget.whole;
@@ -6245,7 +6417,17 @@ function App() {
     }));
   }, [recordId, sequence.length, topology]);
 
-  const selectTranslationCodon = useCallback((start: number, end: number, strand?: 1 | -1) => {
+  const selectTranslationCodon = useCallback((
+    start: number,
+    end: number,
+    strand?: 1 | -1,
+    translationTableId?: number,
+    featureId?: string,
+    translationSource?: 'feature' | 'layer',
+    frame?: 0 | 1 | 2,
+    completeCds?: boolean,
+    label?: string,
+  ) => {
     if (sequence.length <= 0) return;
     const rawStart = Math.floor(start);
     const rawEnd = Math.floor(end);
@@ -6256,11 +6438,15 @@ function App() {
     const target: TranslateTarget = {
       start: rangeStart,
       end: rangeEnd,
-      label: mapRangeLabel({ start: rangeStart, end: rangeEnd }, sequence.length),
+      label: label ?? mapRangeLabel({ start: rangeStart, end: rangeEnd }, sequence.length),
       defaultStrand: strand === -1 ? 'antisense' : strand === 1 ? 'sense' : translateStrand,
-      defaultFrame: 0,
-      key: `r:${rangeStart}:${rangeEnd}`,
+      defaultFrame: frame ?? 0,
+      key: `r:${rangeStart}:${rangeEnd}:table-${translationTableId ?? 'record'}:${featureId ?? ''}:${translationSource ?? ''}:${frame ?? 0}:${completeCds ? 'cds' : 'range'}`,
       whole: false,
+      translationTableId,
+      featureId,
+      completeCds,
+      translationSource,
     };
     setLockedTranslateTarget({ recordId, target });
     setSelectedTranslationLayerByRecord((current) => (
@@ -6811,6 +6997,7 @@ function App() {
           sequence: vector.sequence,
           type: vector.type,
           topology: vector.topology,
+          translationTableId: vector.translationTableId,
           active: vector.active,
           features: vector.features,
           description: vector.description,
@@ -6886,6 +7073,16 @@ function App() {
       )),
     }));
   }, [recordId, showWorkbenchNotice]);
+
+  const updateRecordTranslationTableId = useCallback((translationTableId: number) => {
+    if (!isSupportedArtifactTranslationTableId(translationTableId)) return;
+    setPayload((current) => ({
+      ...current,
+      records: current.records.map((record) => (
+        record.id === recordId ? { ...record, translationTableId } : record
+      )),
+    }));
+  }, [recordId]);
 
   const deleteActiveRecord = useCallback(() => {
     const deletedName = vector.name;
@@ -7111,41 +7308,102 @@ function App() {
     requestFeatureEditor();
   }, [canAnnotateSelectedMapRange, selectedMapRange]);
 
-  const updateFeature = useCallback((featureId: string, featureInput: ArtifactFeatureInput) => {
-    setPayload((current) => {
-      const currentRecord = current.records.find((record) => record.id === recordId);
-      if (!currentRecord) return current;
-      const featureIndex = currentRecord.features.findIndex((feature) => feature.id === featureId);
-      const existingFeature = currentRecord.features[featureIndex];
-      if (!existingFeature) return current;
-      const feature = normalizeFeature(
-        {
-          ...existingFeature,
-          ...featureInput,
-          id: featureId,
-        },
-        featureIndex,
-        currentRecord.sequence.length,
-      );
-      if (!feature) return current;
-      setSelection({ kind: 'feature', id: featureId });
+  const markFeatureTranslationLayersForReview = useCallback((featureId: string) => {
+    updateTranslationLayers((current) => {
+      const layers = current[recordId] ?? [];
+      if (!layers.some((layer) => layer.featureId === featureId && !layer.needsReview)) return current;
       return {
         ...current,
-        records: current.records.map((record) => (
-          record.id === recordId
-            ? {
-                ...record,
-                features: record.features.map((currentFeature) => (
-                  currentFeature.id === featureId ? { ...feature, id: featureId } : currentFeature
-                )),
-              }
-            : record
+        [recordId]: layers.map((layer) => (
+          layer.featureId === featureId ? { ...layer, needsReview: true } : layer
         )),
       };
     });
-  }, [recordId]);
+  }, [recordId, updateTranslationLayers]);
+
+  const updateFeature = useCallback((featureId: string, featureInput: ArtifactFeatureInput) => {
+    const featureIndex = features.findIndex((feature) => feature.id === featureId);
+    const existingFeature = features[featureIndex];
+    if (!existingFeature) return;
+    const feature = normalizeFeature(
+      { ...existingFeature, ...featureInput, id: featureId },
+      featureIndex,
+      sequence.length,
+    );
+    if (!feature) return;
+    if (featureTranslationSignature(existingFeature) !== featureTranslationSignature(feature)) {
+      markFeatureTranslationLayersForReview(featureId);
+    }
+    setPayload((current) => ({
+      ...current,
+      records: current.records.map((record) => (
+        record.id === recordId
+          ? {
+              ...record,
+              features: record.features.map((currentFeature) => (
+                currentFeature.id === featureId ? { ...feature, id: featureId } : currentFeature
+              )),
+            }
+          : record
+      )),
+    }));
+    setSelection({ kind: 'feature', id: featureId });
+  }, [features, markFeatureTranslationLayersForReview, recordId, sequence.length]);
+
+  const updateTranslationCodeForTarget = useCallback((translationTableId: number) => {
+    if (!isSupportedArtifactTranslationTableId(translationTableId)) return;
+    if (translateTarget.translationTableId !== undefined) {
+      if (selectedTranslationLayer) {
+        updateTranslationLayers((current) => ({
+          ...current,
+          [recordId]: (current[recordId] ?? []).map((layer) => (
+            layer.id === selectedTranslationLayer.id
+              ? { ...layer, translationTableId }
+              : layer
+          )),
+        }));
+      }
+      setLockedTranslateTarget((current) => current?.recordId === recordId
+        ? { ...current, target: { ...current.target, translationTableId } }
+        : current);
+      return;
+    }
+    const featureId = translateTargetCodeFeature?.id;
+    if (featureId) markFeatureTranslationLayersForReview(featureId);
+    setPayload((current) => ({
+      ...current,
+      records: current.records.map((record) => {
+        if (record.id !== recordId) return record;
+        if (!featureId) return { ...record, translationTableId };
+        return {
+          ...record,
+          features: record.features.map((feature) => {
+            if (feature.id !== featureId) return feature;
+            const metadata: Record<string, unknown> = {
+              ...feature.metadata,
+              transl_table: translationTableId,
+            };
+            delete metadata.translTable;
+            delete metadata.translationTableId;
+            return { ...feature, metadata };
+          }),
+        };
+      }),
+    }));
+    setLockedTranslateTarget((current) => {
+      if (!current || current.recordId !== recordId) return current;
+      return {
+        ...current,
+        target: {
+          ...current.target,
+          translationTableId: featureId ? undefined : translationTableId,
+        },
+      };
+    });
+  }, [markFeatureTranslationLayersForReview, recordId, selectedTranslationLayer, translateTarget.translationTableId, translateTargetCodeFeature?.id, updateTranslationLayers]);
 
   const deleteFeature = useCallback((featureId: string) => {
+    markFeatureTranslationLayersForReview(featureId);
     setPayload((current) => {
       const currentRecord = current.records.find((record) => record.id === recordId);
       if (!currentRecord || !currentRecord.features.some((feature) => feature.id === featureId)) return current;
@@ -7162,7 +7420,7 @@ function App() {
         )),
       };
     });
-  }, [recordId]);
+  }, [markFeatureTranslationLayersForReview, recordId]);
 
   const addReverseComplementRecord = useCallback(() => {
     if (!isNucleotideType(sequenceType)) return;
@@ -7173,6 +7431,7 @@ function App() {
       description: `Reverse complement generated with Motif from ${vector.name}.`,
       molecule: sequenceType,
       topology,
+      translationTableId: vector.translationTableId,
       seq: reverseComplement(sequence, isRna),
       overhang5: vector.overhang3 === undefined ? undefined : reverseComplement(vector.overhang3),
       overhang3: vector.overhang5 === undefined ? undefined : reverseComplement(vector.overhang5),
@@ -7202,17 +7461,53 @@ function App() {
     vector.overhang5,
     vector.overhang5Type,
     vector.sites,
+    vector.translationTableId,
   ]);
 
   const addSelectionReverseComplementRecord = useCallback(() => {
     if (!isNucleotideType(sequenceType) || !inspectorSelectionSeq || !selectionSummary) return;
     const isRna = sequenceType === 'rna';
+    const selectedFeatureCode = selectedFeature && TRANSLATION_CODE_FEATURE_TYPES.has(selectedFeature.type)
+      ? resolveArtifactTranslationCode(vector.translationTableId, selectedFeature.metadata)
+      : null;
+    const selectedFeatureMetadata: Record<string, unknown> | null = selectedFeature ? {
+      ...selectedFeature.metadata,
+      sourceRecordId: recordId,
+      sourceFeatureId: selectedFeature.id,
+      generatedBy: 'reverse_complement_selection',
+    } : null;
+    if (selectedFeatureMetadata) {
+      const sourceOriginalLocation = typeof selectedFeature?.metadata.motifOriginalLocation === 'string'
+        ? selectedFeature.metadata.motifOriginalLocation
+        : null;
+      if (selectedFeature?.metadata.motifLocationFuzzy === true || (sourceOriginalLocation && /[<>]/.test(sourceOriginalLocation))) {
+        selectedFeatureMetadata.partial = true;
+        selectedFeatureMetadata.sourceMotifLocationFuzzy = true;
+        if (sourceOriginalLocation) selectedFeatureMetadata.sourceMotifOriginalLocation = sourceOriginalLocation;
+      }
+      delete selectedFeatureMetadata.motifOriginalLocation;
+      delete selectedFeatureMetadata.motifOriginalLocationSignature;
+      delete selectedFeatureMetadata.motifLocationFuzzy;
+      delete selectedFeatureMetadata.motifSubRangeOrder;
+      delete selectedFeatureMetadata.motifSubRangeOrderAmbiguous;
+      delete selectedFeatureMetadata.motifLocationOperator;
+    }
     addRecord({
       name: `${vector.name} · ${selectionSummary.label} reverse complement`,
       description: `Reverse complement of ${selectionSummary.label} from ${vector.name}, generated with Motif.`,
       molecule: sequenceType,
       topology: 'linear',
+      translationTableId: selectedFeatureCode?.supported ? selectedFeatureCode.id : vector.translationTableId,
       seq: reverseComplement(inspectorSelectionSeq, isRna),
+      annotations: selectedFeature ? [{
+        name: `${selectedFeature.name} reverse-complement source`,
+        type: selectedFeature.type,
+        start: 0,
+        end: inspectorSelectionSeq.length,
+        strand: selectedFeature.strand === 0 ? 0 : -1,
+        color: selectedFeature.color,
+        metadata: selectedFeatureMetadata ?? {},
+      }] : undefined,
       active: true,
       source: 'Motif for Claude Science',
       group: vector.group,
@@ -7222,7 +7517,7 @@ function App() {
         selection: selectionSummary.label,
       },
     });
-  }, [addRecord, inspectorSelectionSeq, recordId, selectionSummary, sequenceType, vector.group, vector.name]);
+  }, [addRecord, inspectorSelectionSeq, recordId, selectedFeature, selectionSummary, sequenceType, vector.group, vector.name, vector.translationTableId]);
 
   const addContextReverseComplementRecord = useCallback(() => {
     if (selectionSummary) {
@@ -7236,11 +7531,18 @@ function App() {
     if (!selectedFeature) return;
     const extractedSequence = sequenceForFeature(sequence, selectedFeature, sequenceType);
     if (!extractedSequence) return;
+    const featureTranslationCode = resolveArtifactTranslationCode(
+      vector.translationTableId,
+      TRANSLATION_CODE_FEATURE_TYPES.has(selectedFeature.type) ? selectedFeature.metadata : undefined,
+    );
     addRecord({
       name: `${vector.name} · ${selectedFeature.name}`,
       description: `${selectedFeature.name} extracted from ${vector.name}, generated with Motif.`,
       molecule: sequenceType,
       topology: 'linear',
+      translationTableId: isNucleotideType(sequenceType) && featureTranslationCode.supported
+        ? featureTranslationCode.id
+        : vector.translationTableId,
       seq: extractedSequence,
       annotations: [{
         name: selectedFeature.name,
@@ -7266,19 +7568,19 @@ function App() {
         selection: `${selectedFeature.name} ${featureRangeLabel(selectedFeature)}`,
       },
     });
-  }, [addRecord, recordId, selectedFeature, sequence, sequenceType, vector.group, vector.name]);
+  }, [addRecord, recordId, selectedFeature, sequence, sequenceType, vector.group, vector.name, vector.translationTableId]);
 
   // One "New protein record" for the current translate target (selection or whole),
   // honoring the chosen strand + frame.
   const addPreviewTranslationRecord = useCallback(() => {
-    if (!previewProtein) return;
+    if (!previewProtein || !translationCode.supported) return;
     const strandLabel = translateStrand === 'antisense' ? ' (antisense)' : '';
     const nameStrandLabel = translateStrand === 'antisense' ? ' antisense' : '';
     const frameLabel = `+${translateFrame + 1}`;
     const nameFrameLabel = ` ${frameLabel}`;
     addRecord({
       name: `${vector.name} · ${translateTarget.label}${nameStrandLabel}${nameFrameLabel} protein`,
-      description: `Protein translation of ${translateTarget.label}${strandLabel}, frame ${frameLabel}, from ${vector.name}, generated with Motif.`,
+      description: `Protein translation of ${translateTarget.label}${strandLabel}, frame ${frameLabel}, from ${vector.name}, using ${artifactTranslationCodeLabel(translationCode)}, generated with Motif.`,
       molecule: 'protein',
       topology: 'linear',
       seq: previewProtein,
@@ -7287,24 +7589,49 @@ function App() {
       group: vector.group,
       provenance: {
         parentRecordId: recordId,
+        parentSequenceSha256: sha256HexSync(sequence),
         operation: 'translate',
         selection: translateTarget.label,
+        rangeStart: translateTarget.start,
+        rangeEnd: translateTarget.end,
+        coordinateSystem: 'zero-based-half-open',
         strand: translateStrand,
         frame: frameLabel,
+        completeCds: !!previewTrack?.completeCds,
+        translationMode: previewTrack?.completeCds ? 'complete-cds' : 'arbitrary-range',
+        translationTableId: translationCode.id,
+        translationTableName: translationCode.name,
+        translationTableSource: translateTarget.translationSource === 'layer'
+          ? 'pinned-layer'
+          : translateTarget.translationSource ?? translationCode.source,
+        ...(translateTargetFeature ? {
+          sourceFeatureId: translateTargetFeature.id,
+          sourceFeatureLocation: genBankLocation(translateTargetFeature),
+          sourceFeatureCoordinateSignature: featureLocationCoordinateSignature(translateTargetFeature),
+        } : {}),
       },
     });
     setShowTranslations(false);
-  }, [addRecord, previewProtein, recordId, translateTarget, translateStrand, translateFrame, vector.group, vector.name]);
+  }, [addRecord, previewProtein, previewTrack?.completeCds, recordId, sequence, translateTarget, translateTargetFeature, translateStrand, translateFrame, translationCode, vector.group, vector.name]);
   const addSelectionTranslationRecord = addPreviewTranslationRecord;
 
   const addTranslationTrackRecord = useCallback((track: InlineTranslationTrack) => {
+    if (track.needsReview) {
+      showWorkbenchNotice('Review and update this pinned translation before creating a protein.', 'error');
+      return;
+    }
     const protein = inlineTrackResidues(sequence, sequenceType, track, topology).map((residue) => residue.aa).join('');
     if (!protein) return;
+    const trackCode = resolveArtifactTranslationCode(track.translationTableId);
+    if (!trackCode.supported) return;
+    const sourceFeature = track.featureId
+      ? features.find((feature) => feature.id === track.featureId) ?? null
+      : null;
     const strand = track.strand === -1 ? 'antisense' : 'sense';
     const frame = `+${track.frame + 1}`;
     addRecord({
       name: `${vector.name} · ${track.label} ${strand} ${frame} protein`,
-      description: `Protein translation of ${track.label}, ${strand} frame ${frame}, from ${vector.name}, generated with Motif.`,
+      description: `Protein translation of ${track.label}, ${strand} frame ${frame}, from ${vector.name}, using ${artifactTranslationCodeLabel(trackCode)}, generated with Motif.`,
       molecule: 'protein',
       topology: 'linear',
       seq: protein,
@@ -7313,13 +7640,27 @@ function App() {
       group: vector.group,
       provenance: {
         parentRecordId: recordId,
+        parentSequenceSha256: sha256HexSync(sequence),
         operation: 'translate',
         selection: track.label,
+        rangeStart: track.start,
+        rangeEnd: track.end,
+        coordinateSystem: 'zero-based-half-open',
         strand,
         frame,
+        completeCds: !!track.completeCds,
+        translationMode: track.completeCds ? 'complete-cds' : 'arbitrary-range',
+        translationTableId: trackCode.id,
+        translationTableName: trackCode.name,
+        translationTableSource: track.source === 'feature' ? 'feature' : 'pinned-layer',
+        ...(track.featureId ? { sourceFeatureId: track.featureId } : {}),
+        ...(sourceFeature ? {
+          sourceFeatureLocation: genBankLocation(sourceFeature),
+          sourceFeatureCoordinateSignature: featureLocationCoordinateSignature(sourceFeature),
+        } : {}),
       },
     });
-  }, [addRecord, recordId, sequence, sequenceType, topology, vector.group, vector.name]);
+  }, [addRecord, features, recordId, sequence, sequenceType, showWorkbenchNotice, topology, vector.group, vector.name]);
 
   // Pin the current translate target as a persistent inline amino-acid layer
   // (renders above the bases if sense, below if antisense).
@@ -7330,6 +7671,8 @@ function App() {
       && track.end === previewTrack.end
       && track.strand === previewTrack.strand
       && track.frame === previewTrack.frame
+      && track.translationTableId === previewTrack.translationTableId
+      && !!track.completeCds === !!previewTrack.completeCds
     ));
     if (equivalentTrack) {
       if (options?.select !== false) {
@@ -7363,18 +7706,42 @@ function App() {
   }, [recordId, updateTranslationLayers]);
 
   const updateTranslationLayer = useCallback((layerId: string, patch: Partial<Omit<InlineTranslationTrack, 'id' | 'source'>>) => {
+    const existingLayer = translationLayers.find((layer) => layer.id === layerId);
+    if (!existingLayer) return;
+    const nextLayer: InlineTranslationTrack = {
+      ...existingLayer,
+      ...patch,
+      needsReview: false,
+      source: 'layer',
+    };
     updateTranslationLayers((current) => {
       const layers = current[recordId] ?? [];
       if (!layers.some((layer) => layer.id === layerId)) return current;
       return {
         ...current,
         [recordId]: layers.map((layer) => (
-          layer.id === layerId ? { ...layer, ...patch, needsReview: false, source: 'layer' } : layer
+          layer.id === layerId ? nextLayer : layer
         )),
       };
     });
+    setLockedTranslateTarget({
+      recordId,
+      target: {
+        start: nextLayer.start,
+        end: nextLayer.end,
+        label: nextLayer.label,
+        defaultStrand: nextLayer.strand === -1 ? 'antisense' : 'sense',
+        defaultFrame: nextLayer.frame,
+        key: `layer:${nextLayer.id}:${nextLayer.start}:${nextLayer.end}:${nextLayer.strand}:${nextLayer.frame}:table-${nextLayer.translationTableId}:${nextLayer.completeCds ? 'cds' : 'range'}`,
+        whole: false,
+        translationTableId: nextLayer.translationTableId,
+        featureId: nextLayer.featureId,
+        completeCds: nextLayer.completeCds,
+        translationSource: 'layer',
+      },
+    });
     setSelectedTranslationLayerByRecord((current) => ({ ...current, [recordId]: layerId }));
-  }, [recordId, updateTranslationLayers]);
+  }, [recordId, translationLayers, updateTranslationLayers]);
 
   const deleteTranslationLayer = useCallback((layerId: string) => {
     if (layerId.startsWith('feat:')) {
@@ -7779,6 +8146,7 @@ function App() {
       sequence: template.sequence,
       type: 'dna',
       topology: template.topology,
+      translationTableId: template.translationTableId,
       active: template.active,
       features: template.features,
       description: template.description,
@@ -7877,6 +8245,7 @@ function App() {
       sequence: template.sequence,
       type: 'dna',
       topology: template.topology,
+      translationTableId: template.translationTableId,
       active: template.active,
       features: template.features,
       ...(template.description ? { description: template.description } : {}),
@@ -7992,8 +8361,28 @@ function App() {
       : `Created and opened “${normalized.name}”. The source record is unchanged.`);
   }, [rememberActiveSequenceScroll, savePrimerDesignResult, showWorkbenchNotice]);
 
-  const selectTranslationCodonAndReveal = useCallback((start: number, end: number, strand?: 1 | -1) => {
-    selectTranslationCodon(start, end, strand);
+  const selectTranslationCodonAndReveal = useCallback((
+    start: number,
+    end: number,
+    strand?: 1 | -1,
+    translationTableId?: number,
+    featureId?: string,
+    translationSource?: 'feature' | 'layer',
+    frame?: 0 | 1 | 2,
+    completeCds?: boolean,
+    label?: string,
+  ) => {
+    selectTranslationCodon(
+      start,
+      end,
+      strand,
+      translationTableId,
+      featureId,
+      translationSource,
+      frame,
+      completeCds,
+      label,
+    );
     revealSequencePaneIfStacked();
   }, [revealSequencePaneIfStacked, selectTranslationCodon]);
 
@@ -8010,9 +8399,19 @@ function App() {
       revealSequencePaneIfStacked();
       return;
     }
-    selectSequenceRangeAndReveal(track.start, track.end);
+    selectTranslationCodonAndReveal(
+      track.start,
+      track.end,
+      track.strand,
+      track.translationTableId,
+      track.featureId,
+      track.source,
+      track.frame,
+      track.completeCds,
+      track.label,
+    );
     setSelectedTranslationLayerByRecord((current) => ({ ...current, [recordId]: track.id }));
-  }, [handleFeatureClick, recordId, revealSequencePaneIfStacked, selectSequenceRangeAndReveal]);
+  }, [handleFeatureClick, recordId, revealSequencePaneIfStacked, selectTranslationCodonAndReveal]);
 
   const closeOpenToolDetails = useCallback(() => {
     if (typeof document === 'undefined') return;
@@ -8157,7 +8556,26 @@ function App() {
     }
     const additions: ArtifactVector[] = [];
     if (saved.derivedRecord) {
-      const recordInput = omitUndefinedObjectProperties(saved.derivedRecord) as ArtifactRecordInput;
+      const inputTranslationTableIds = saved.workflowResult.inputRecordIds.map((id) => (
+        current.records.find((record) => record.id === id)?.translationTableId ?? 1
+      ));
+      const uniqueInputRecordIds = [...new Set(saved.workflowResult.inputRecordIds)];
+      const singleParentRecord = uniqueInputRecordIds.length === 1
+        ? current.records.find((record) => record.id === uniqueInputRecordIds[0])
+        : undefined;
+      const translationTableId = singleParentRecord?.translationTableId;
+      const recordInput = omitUndefinedObjectProperties({
+        ...saved.derivedRecord,
+        translationTableId,
+        provenance: {
+          ...saved.derivedRecord.provenance,
+          inputTranslationTableIds,
+          ...(translationTableId !== undefined ? { translationTableId } : {}),
+          translationTablePolicy: singleParentRecord
+            ? 'single-parent-inherited'
+            : 'unset-for-multi-parent-product',
+        },
+      }) as ArtifactRecordInput;
       validateRuntimeRecordInputs([recordInput], 'motifAddRecords');
       const normalized = normalizeRecord(recordInput, current.records.length);
       if (!normalized) throw new Error('The assembly product could not be normalized.');
@@ -8342,6 +8760,14 @@ function App() {
       [id, saved.requestedOrientations[index] ?? 'forward'] as const
     )));
     const actualOrientations = actualOrderedRecordIds.map((id) => requestedOrientationById.get(id) ?? 'forward');
+    const inputTranslationTableIds = actualOrderedRecordIds.map((id) => (
+      currentRecordsById.get(id)?.translationTableId ?? 1
+    ));
+    const uniqueInputRecordIds = [...new Set(actualOrderedRecordIds)];
+    const singleParentRecord = uniqueInputRecordIds.length === 1
+      ? currentRecordsById.get(uniqueInputRecordIds[0] ?? '')
+      : undefined;
+    const productTranslationTableId = singleParentRecord?.translationTableId;
     if (shouldCreateProduct && current.records.length >= MOTIF_MAX_RECORDS) {
       throw new Error(`Creating this product would exceed the ${MOTIF_MAX_RECORDS}-record artifact limit.`);
     }
@@ -8357,6 +8783,7 @@ function App() {
         description: `${saved.method === 'gibson' ? 'Gibson' : 'Golden Gate'} design product generated from ${verifiedProduct.orderedRecordIds.length} ordered inputs.`,
         type: 'dna',
         topology: verifiedProduct.topology,
+        ...(productTranslationTableId !== undefined ? { translationTableId: productTranslationTableId } : {}),
         sequence: verifiedProduct.sequence,
         source: 'Motif for Claude Science',
         group: 'Cloning products',
@@ -8368,6 +8795,11 @@ function App() {
           requestedOrientations: [...saved.requestedOrientations],
           requestSha256: verifiedProvenance.requestSha256,
           productSha256: verifiedProduct.sha256,
+          inputTranslationTableIds,
+          ...(productTranslationTableId !== undefined ? { translationTableId: productTranslationTableId } : {}),
+          translationTablePolicy: singleParentRecord
+            ? 'single-parent-inherited'
+            : 'unset-for-multi-parent-product',
         },
       };
       validateRuntimeRecordInputs([recordInput], 'motifAddRecords');
@@ -10088,6 +10520,7 @@ function App() {
                 embedded
                 sequenceLength={sequence.length}
                 sequenceType={sequenceType}
+                recordTranslationTableId={vector.translationTableId}
                 topology={topology}
                 featureCount={features.length}
                 selectedFeature={selectedFeature}
@@ -10266,6 +10699,8 @@ function App() {
                 canTranslate={isEditable}
                 targetLabel={translateTarget.label}
                 isWhole={translateTarget.whole}
+                translationCode={translationCode}
+                translationCodeContext={translationCodeContext}
                 strand={translateStrand}
                 frame={translateFrame}
                 residues={previewResidues}
@@ -10275,7 +10710,14 @@ function App() {
                 layerCount={translationLayers.length}
                 onStrandChange={setTranslateStrand}
                 onFrameChange={setTranslateFrame}
-                onSelectCodon={selectTranslationCodonAndReveal}
+                onTranslationCodeChange={updateTranslationCodeForTarget}
+                onSelectCodon={(start, end) => selectTranslationCodonAndReveal(
+                  start,
+                  end,
+                  previewTrack?.strand,
+                  translationCode.supported ? translationCode.id : undefined,
+                  translateTargetFeature?.id,
+                )}
                 onCopy={copyText}
                 onAddToSequence={addTranslationLayer}
                 onAddRecord={addPreviewTranslationRecord}
@@ -10327,6 +10769,7 @@ function App() {
             onCopy={copyText}
             onAddFeature={addFeature}
             onSelectRange={selectSequenceRangeAndReveal}
+            onTranslationCodeChange={updateRecordTranslationTableId}
           />
 
           <details className="motif-cs-panel" name="motif-cs-tools" data-rail-tool="cloning">
@@ -10571,6 +11014,8 @@ function App() {
             canTranslate={isEditable}
             targetLabel={translateTarget.label}
             isWhole={translateTarget.whole}
+            translationCode={translationCode}
+            translationCodeContext={translationCodeContext}
             strand={translateStrand}
             frame={translateFrame}
             residues={previewResidues}
@@ -10580,7 +11025,14 @@ function App() {
             layerCount={translationLayers.length}
             onStrandChange={setTranslateStrand}
             onFrameChange={setTranslateFrame}
-            onSelectCodon={selectTranslationCodonAndReveal}
+            onTranslationCodeChange={updateTranslationCodeForTarget}
+            onSelectCodon={(start, end) => selectTranslationCodonAndReveal(
+              start,
+              end,
+              previewTrack?.strand,
+              translationCode.supported ? translationCode.id : undefined,
+              translateTargetFeature?.id,
+            )}
             onCopy={copyText}
             onAddToSequence={addTranslationLayer}
             onAddRecord={addPreviewTranslationRecord}
@@ -11880,6 +12332,7 @@ function ConfirmDeleteButton({
 function QuickFeatureEditor({
   sequenceLength,
   sequenceType,
+  recordTranslationTableId,
   topology,
   featureCount,
   selectedFeature,
@@ -11895,6 +12348,7 @@ function QuickFeatureEditor({
 }: {
   sequenceLength: number;
   sequenceType: SequenceType;
+  recordTranslationTableId?: number;
   topology: Topology;
   featureCount: number;
   selectedFeature: Feature | null;
@@ -11914,8 +12368,10 @@ function QuickFeatureEditor({
   const [end, setEnd] = useState(String(Math.min(sequenceLength, 60)));
   const [strand, setStrand] = useState<FeatureStrand>(sequenceType === 'protein' ? 0 : 1);
   const [codonStart, setCodonStart] = useState<1 | 2 | 3>(1);
+  const [translationTableValue, setTranslationTableValue] = useState('');
   const [color, setColor] = useState(defaultFeatureColor('misc_feature'));
   const [formError, setFormError] = useState<string | null>(null);
+  const translationTableMessageId = useId();
   const selectedFeatureHasSegments = !!selectedFeature && isMultipartFeature(selectedFeature);
   const selectedFeatureIsOrdered = !!selectedFeature && isOrderedFeatureLocation(selectedFeature);
   const selectedFeatureCannotMaterialize = !!selectedFeature && !isMaterializableFeatureLocation(selectedFeature);
@@ -11928,6 +12384,7 @@ function QuickFeatureEditor({
     setEnd(String(Math.min(sequenceLength, 60)));
     setStrand(sequenceType === 'protein' ? 0 : 1);
     setCodonStart(1);
+    setTranslationTableValue('');
     setColor(defaultFeatureColor('misc_feature'));
     setFormError(null);
   }, [featureCount, selectedFeature, sequenceLength, sequenceType]);
@@ -11945,6 +12402,7 @@ function QuickFeatureEditor({
     setColor(selectedFeature.color);
     setStrand(sequenceType === 'protein' ? 0 : selectedFeature.strand);
     setCodonStart((codonStartFrame(selectedFeature.metadata) + 1) as 1 | 2 | 3);
+    setTranslationTableValue(artifactFeatureTranslationTableValue(selectedFeature.metadata));
     applyRange(selectedFeature.start + 1, selectedFeature.end);
   }, [applyRange, selectedFeature, sequenceType]);
 
@@ -11955,6 +12413,7 @@ function QuickFeatureEditor({
     setColor(selectedFeature.color);
     setStrand(sequenceType === 'protein' ? 0 : selectedFeature.strand);
     setCodonStart((codonStartFrame(selectedFeature.metadata) + 1) as 1 | 2 | 3);
+    setTranslationTableValue(artifactFeatureTranslationTableValue(selectedFeature.metadata));
     applyRange(selectedFeature.start + 1, selectedFeature.end);
   }, [applyRange, selectedFeature, sequenceType]);
 
@@ -12039,6 +12498,20 @@ function QuickFeatureEditor({
       delete metadata.codon_start;
       delete metadata.codonStart;
     }
+    if (isNucleotideType(sequenceType) && TRANSLATION_CODE_FEATURE_TYPES.has(type)) {
+      if (translationTableValue === '') {
+        delete metadata.transl_table;
+        delete metadata.translTable;
+        delete metadata.translationTableId;
+      } else {
+        const translationTableId = normalizeArtifactTranslationTableId(translationTableValue);
+        if (translationTableId !== null) {
+          metadata.transl_table = translationTableId;
+          delete metadata.translTable;
+          delete metadata.translationTableId;
+        }
+      }
+    }
     if (rangeValidation.subRanges) {
       metadata.motifSubRangeOrder = 'biological';
       delete metadata.motifSubRangeOrderAmbiguous;
@@ -12058,7 +12531,7 @@ function QuickFeatureEditor({
             .map((range) => ({ ...range, strand }))
           : undefined,
     };
-  }, [codonStart, color, featureCount, name, rangeValidation, selectedFeature?.metadata, selectedFeature?.subRanges, selectedFeatureHasSegments, sequenceType, strand, type]);
+  }, [codonStart, color, featureCount, name, rangeValidation, selectedFeature?.metadata, selectedFeature?.subRanges, selectedFeatureHasSegments, sequenceType, strand, translationTableValue, type]);
 
   const submit = useCallback(() => {
     if (!rangeValidation.valid) {
@@ -12102,6 +12575,12 @@ function QuickFeatureEditor({
   const canUseMapRange = !!selectedMapRange && !selectedFeatureHasSegments;
   const rangeErrorMessage = formError ?? (!rangeValidation.valid ? rangeValidation.message : null);
   const showTranslationMetadata = isNucleotideType(sequenceType) && CODING_FEATURE_TYPES.has(type);
+  const supportsFeatureTranslationCode = isNucleotideType(sequenceType) && TRANSLATION_CODE_FEATURE_TYPES.has(type);
+  const recordTranslationCode = resolveArtifactTranslationCode(recordTranslationTableId);
+  const unsupportedTranslationTableValue = supportsFeatureTranslationCode && translationTableValue
+    && normalizeArtifactTranslationTableId(translationTableValue) === null
+      ? translationTableValue
+      : null;
 
   const editor = (
     <div className="motif-cs-feature-form motif-cs-tool-panel-body">
@@ -12166,7 +12645,41 @@ function QuickFeatureEditor({
                 <option value="3">+3</option>
               </select>
             </label>
-            <span>feature translation · codon_start {codonStart}</span>
+            {supportsFeatureTranslationCode ? (
+              <label>
+                <span>Genetic code</span>
+                <select
+                  className="motif-cs-field"
+                  name="feature-translation-table"
+                  value={translationTableValue}
+                  onChange={(event) => setTranslationTableValue(event.target.value)}
+                  title="Set the feature /transl_table qualifier, or inherit the record default"
+                  aria-invalid={!!unsupportedTranslationTableValue || undefined}
+                  aria-describedby={translationTableMessageId}
+                >
+                  <option value="">
+                    Inherit record ({recordTranslationCode.supported ? `table ${recordTranslationCode.id}` : 'unavailable'})
+                  </option>
+                  {unsupportedTranslationTableValue ? (
+                    <option value={unsupportedTranslationTableValue} disabled>
+                      {unsupportedTranslationTableValue === '__invalid__'
+                        ? 'Malformed imported qualifier (preserved)'
+                        : `Table ${unsupportedTranslationTableValue} unsupported (preserved)`}
+                    </option>
+                  ) : null}
+                  {ARTIFACT_TRANSLATION_CODE_OPTIONS.map((option) => (
+                    <option key={option.id} value={String(option.id)}>{option.id} — {option.name}</option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+            <span id={translationTableMessageId} role={unsupportedTranslationTableValue ? 'alert' : undefined}>
+              feature translation · codon_start {codonStart}{supportsFeatureTranslationCode
+                ? ` · ${translationTableValue
+                    ? `feature table ${translationTableValue === '__invalid__' ? 'invalid' : translationTableValue}`
+                    : `record table ${recordTranslationCode.supported ? recordTranslationCode.id : 'unavailable'}`}`
+                : ' · record genetic code'}
+            </span>
           </div>
         ) : null}
         <div className="motif-cs-form-grid motif-cs-form-grid-compact">
@@ -12268,6 +12781,7 @@ function TranslationLayerEditor({
   const [label, setLabel] = useState(track.label);
   const [strand, setStrand] = useState<1 | -1>(track.strand);
   const [frame, setFrame] = useState<0 | 1 | 2>(track.frame);
+  const [translationTableId, setTranslationTableId] = useState(track.translationTableId);
   const [start, setStart] = useState(String(track.start + 1));
   const [end, setEnd] = useState(String(track.end > sequenceLength ? ((track.end - 1) % sequenceLength) + 1 : track.end));
   const [color, setColor] = useState(track.color ?? (track.strand === -1 ? '#c6737b' : '#7e9bbf'));
@@ -12276,6 +12790,7 @@ function TranslationLayerEditor({
     setLabel(track.label);
     setStrand(track.strand);
     setFrame(track.frame);
+    setTranslationTableId(track.translationTableId);
     setStart(String(track.start + 1));
     setEnd(String(track.end > sequenceLength ? ((track.end - 1) % sequenceLength) + 1 : track.end));
     setColor(track.color ?? (track.strand === -1 ? '#c6737b' : '#7e9bbf'));
@@ -12308,15 +12823,22 @@ function TranslationLayerEditor({
 
   const update = useCallback(() => {
     if (!rangeValidation.valid) return;
+    const translationAnchorChanged = track.start !== rangeValidation.startIndex
+      || track.end !== rangeValidation.endIndex
+      || track.strand !== strand
+      || track.frame !== frame;
+    const resetCapturedFeatureSemantics = track.needsReview || translationAnchorChanged;
     onUpdate(track.id, {
       label: label.trim() || track.label,
       strand,
       frame,
+      translationTableId,
       start: rangeValidation.startIndex,
       end: rangeValidation.endIndex,
       color,
+      ...(resetCapturedFeatureSemantics ? { completeCds: false, featureId: undefined } : {}),
     });
-  }, [color, frame, label, onUpdate, rangeValidation, strand, track.id, track.label]);
+  }, [color, frame, label, onUpdate, rangeValidation, strand, track.end, track.frame, track.id, track.label, track.needsReview, track.start, track.strand, translationTableId]);
 
   const handleLabelKeyDown = useCallback((event: ReactKeyboardEvent<HTMLInputElement>) => {
     if (event.key !== 'Enter') return;
@@ -12330,7 +12852,7 @@ function TranslationLayerEditor({
       <div className="motif-cs-feature-form motif-cs-tool-panel-body">
         {track.needsReview ? (
           <p className="motif-cs-form-note" role="status">
-            The sequence changed inside this pinned translation. Review its range and frame, then choose Update to confirm it.
+            Its source sequence or feature semantics changed. Review the range, strand, and frame; Update converts it to an independent range translation.
           </p>
         ) : null}
         <label>
@@ -12364,6 +12886,19 @@ function TranslationLayerEditor({
               <option value="2">+3</option>
             </select>
           </label>
+          <label>
+            <span>Genetic code</span>
+            <select
+              className="motif-cs-field"
+              name="translation-layer-table"
+              value={String(translationTableId)}
+              onChange={(event) => setTranslationTableId(Number(event.target.value))}
+            >
+              {ARTIFACT_TRANSLATION_CODE_OPTIONS.map((option) => (
+                <option key={option.id} value={String(option.id)}>{option.id} — {option.name}</option>
+              ))}
+            </select>
+          </label>
         </div>
         <div className="motif-cs-form-grid motif-cs-form-grid-compact">
           <label>
@@ -12386,12 +12921,12 @@ function TranslationLayerEditor({
             noun="translation layer"
             onConfirm={() => onDelete(track.id)}
           />
-          <button className="motif-cs-mini-button" type="button" onClick={onAddRecord}>New protein</button>
+          <button className="motif-cs-mini-button" type="button" onClick={onAddRecord} disabled={!!track.needsReview}>New protein</button>
         </div>
         {!rangeValidation.valid ? (
           <p id="motif-cs-translation-range-error" className="motif-cs-form-note" role="alert">{rangeValidation.message}</p>
         ) : (
-          <p className="motif-cs-form-note">Pinned amino-acid layer · {strand === -1 ? 'antisense' : 'sense'} frame {frame + 1}</p>
+          <p className="motif-cs-form-note">Pinned amino-acid layer · {strand === -1 ? 'antisense' : 'sense'} frame {frame + 1} · NCBI table {translationTableId}</p>
         )}
       </div>
     </div>
@@ -12421,6 +12956,7 @@ function AnalysisPanel({
   onCopy,
   onAddFeature,
   onSelectRange,
+  onTranslationCodeChange,
 }: {
   record: ArtifactVector;
   sequenceType: SequenceType;
@@ -12428,12 +12964,19 @@ function AnalysisPanel({
   onCopy: (label: string, value: string) => void;
   onAddFeature: (feature: ArtifactFeatureInput) => void;
   onSelectRange: (start: number, end: number) => void;
+  onTranslationCodeChange: (translationTableId: number) => void;
 }) {
   const isNucleotide = isNucleotideType(sequenceType);
+  const translationCode = useMemo(
+    () => resolveArtifactTranslationCode(record.translationTableId),
+    [record.translationTableId],
+  );
   const composition = useMemo(() => isNucleotide ? nucleotideComposition(record.sequence) : null, [isNucleotide, record.sequence]);
   const allOrfs = useMemo(
-    () => isNucleotide ? findORFs(record.sequence, 10, undefined, { topology }) : [],
-    [isNucleotide, record.sequence, topology],
+    () => isNucleotide && translationCode.supported
+      ? findORFs(record.sequence, 10, translationCode.table, { topology })
+      : [],
+    [isNucleotide, record.sequence, topology, translationCode],
   );
   const visibleOrfs = useMemo(() => allOrfs.slice(0, 8), [allOrfs]);
   const mw = useMemo(
@@ -12453,6 +12996,9 @@ function AnalysisPanel({
     molecularWeight: mw,
     composition,
     orfCount: allOrfs.length,
+    translationTable: isNucleotide && translationCode.supported
+      ? { id: translationCode.id, name: translationCode.name }
+      : undefined,
     orfsShown: visibleOrfs.map((orf) => ({
       start: orf.start,
       end: orf.end,
@@ -12460,7 +13006,7 @@ function AnalysisPanel({
       strand: orf.strand,
       aminoAcids: orf.aminoAcids,
     })),
-  }, null, 2), [allOrfs.length, composition, gc, isNucleotide, mw, record.id, record.name, record.sequence.length, sequenceType, tm, topology, visibleOrfs]);
+  }, null, 2), [allOrfs.length, composition, gc, isNucleotide, mw, record.id, record.name, record.sequence.length, sequenceType, tm, topology, translationCode, visibleOrfs]);
 
   return (
     <details className="motif-cs-panel" name="motif-cs-tools" data-rail-tool="analysis">
@@ -12488,6 +13034,20 @@ function AnalysisPanel({
           ) : null}
         </div>
         {isNucleotide ? (
+          <>
+          <label className="motif-cs-analysis-code-field">
+            <span>Record genetic code</span>
+            <select
+              className="motif-cs-field"
+              name="analysis-translation-table"
+              value={translationCode.supported ? String(translationCode.id) : ''}
+              onChange={(event) => onTranslationCodeChange(Number(event.target.value))}
+            >
+              {ARTIFACT_TRANSLATION_CODE_OPTIONS.map((option) => (
+                <option key={option.id} value={String(option.id)}>{option.id} — {option.name}</option>
+              ))}
+            </select>
+          </label>
           <div className="motif-cs-list">
             {allOrfs.length > visibleOrfs.length ? (
               <p className="motif-cs-form-note">Showing the 8 longest of {allOrfs.length} detected ORFs.</p>
@@ -12526,6 +13086,8 @@ function AnalysisPanel({
                       metadata: {
                         source: 'motif_orf_detection',
                         frame: orf.frame,
+                        codon_start: 1,
+                        ...(translationCode.supported ? { transl_table: translationCode.id } : {}),
                         aminoAcids: orf.aminoAcids,
                         ...(spans.length > 1 ? { motifSubRangeOrder: 'biological' } : {}),
                       },
@@ -12539,6 +13101,7 @@ function AnalysisPanel({
               <p className="motif-cs-muted">No ORFs above the artifact threshold.</p>
             )}
           </div>
+          </>
         ) : (
           <p className="motif-cs-muted">Protein records show chain-level stats here; translation is available from nucleotide records.</p>
         )}
@@ -13666,6 +14229,8 @@ function TranslationPanel({
   canTranslate,
   targetLabel,
   isWhole,
+  translationCode,
+  translationCodeContext,
   strand,
   frame,
   residues,
@@ -13675,6 +14240,7 @@ function TranslationPanel({
   layerCount,
   onStrandChange,
   onFrameChange,
+  onTranslationCodeChange,
   onSelectCodon,
   onCopy,
   onAddToSequence,
@@ -13685,6 +14251,8 @@ function TranslationPanel({
   canTranslate: boolean;
   targetLabel: string;
   isWhole: boolean;
+  translationCode: ArtifactTranslationCodeResolution;
+  translationCodeContext: string;
   strand: 'sense' | 'antisense';
   frame: 0 | 1 | 2;
   residues: readonly TrackResidue[];
@@ -13694,6 +14262,7 @@ function TranslationPanel({
   layerCount: number;
   onStrandChange: (strand: 'sense' | 'antisense') => void;
   onFrameChange: (frame: 0 | 1 | 2) => void;
+  onTranslationCodeChange: (translationTableId: number) => void;
   onSelectCodon: (start: number, end: number) => void;
   onCopy: (label: string, value: string) => void;
   onAddToSequence: () => void;
@@ -13702,6 +14271,13 @@ function TranslationPanel({
   onOpenFloating?: () => void;
 }) {
   const proteinPointerRef = useRef<{ pointerId: number; x: number; y: number; moved: boolean } | null>(null);
+  const translationCodeMessageId = useId();
+  const translationCodeValue = translationCode.supported
+    ? String(translationCode.id)
+    : translationCode.requestedId === null
+      ? '__invalid__'
+      : String(translationCode.requestedId);
+  const unsupportedTranslationCode = translationCode.supported ? null : translationCode;
   const handleProteinClick = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
     const origin = proteinPointerRef.current;
     proteinPointerRef.current = null;
@@ -13772,6 +14348,37 @@ function TranslationPanel({
       <div className="motif-cs-translate-target">
         <span className="motif-cs-pane-title">{isWhole ? 'Whole sequence' : 'Selection'}</span>
         <span className="motif-cs-chip" title={targetLabel}>{targetLabel}</span>
+      </div>
+
+      <div className="motif-cs-translation-code-control">
+        <label>
+          <span>Genetic code</span>
+          <select
+            className="motif-cs-field"
+            name="translation-table"
+            value={translationCodeValue}
+            onChange={(event) => onTranslationCodeChange(Number(event.target.value))}
+            aria-invalid={!!unsupportedTranslationCode || undefined}
+            aria-describedby={translationCodeMessageId}
+          >
+            {unsupportedTranslationCode ? (
+              <option value={translationCodeValue} disabled>
+                {unsupportedTranslationCode.requestedId === null
+                  ? 'Malformed feature qualifier'
+                  : `Table ${unsupportedTranslationCode.requestedId} unsupported`}
+              </option>
+            ) : null}
+            {ARTIFACT_TRANSLATION_CODE_OPTIONS.map((option) => (
+              <option key={option.id} value={String(option.id)}>{option.id} — {option.name}</option>
+            ))}
+          </select>
+        </label>
+        <span
+          className="motif-cs-form-note"
+          id={translationCodeMessageId}
+        >
+          {translationCodeContext}
+        </span>
       </div>
 
       <div className="motif-cs-translate-controls">
@@ -13859,7 +14466,9 @@ function TranslationPanel({
           ))}
         </div>
       ) : (
-        <p className="motif-cs-muted">{unavailableReason ?? 'Region is shorter than one codon.'}</p>
+        <p className="motif-cs-muted" role={unavailableReason ? 'alert' : undefined}>
+          {unavailableReason ?? 'Region is shorter than one codon.'}
+        </p>
       )}
 
       {layerCount > 0 ? (
@@ -14321,9 +14930,12 @@ type InlineTranslationTrack = {
   end: number;   // plus-strand, exclusive
   strand: 1 | -1;
   frame: 0 | 1 | 2;
+  translationTableId: number;
   source: 'feature' | 'layer';
   color?: string;
   needsReview?: boolean;
+  completeCds?: boolean;
+  featureId?: string;
 };
 
 // One residue placed in PLUS-STRAND codon coordinates so it aligns to the bases
@@ -14338,12 +14950,38 @@ const CODING_FEATURE_TYPES: ReadonlySet<FeatureType> = new Set<FeatureType>([
   'cds', 'gene', 'orf', 'resistance', 'mat_peptide', 'sig_peptide', 'transit_peptide', 'exon',
 ]);
 
+// INSDC /transl_table is meaningful for CDS-like annotations. Other feature
+// types can still display an amino-acid track, but they inherit the record code.
+const TRANSLATION_CODE_FEATURE_TYPES: ReadonlySet<FeatureType> = new Set<FeatureType>(['cds', 'orf']);
+
 // /codon_start (1|2|3) → 0-based frame offset from the feature's 5' end.
 function codonStartFrame(metadata: Record<string, unknown> | undefined): 0 | 1 | 2 {
   const raw = Number(metadata?.codon_start ?? (metadata as Record<string, unknown> | undefined)?.codonStart);
   if (raw === 2) return 1;
   if (raw === 3) return 2;
   return 0;
+}
+
+function featureTranslationSignature(feature: Feature): string {
+  return JSON.stringify({
+    type: feature.type,
+    strand: feature.strand,
+    location: featureLocationCoordinateSignature(feature),
+    frame: codonStartFrame(feature.metadata),
+    translationTable: TRANSLATION_CODE_FEATURE_TYPES.has(feature.type)
+      ? artifactFeatureTranslationTableValue(feature.metadata)
+      : '',
+    completeCds: isCompleteCodingFeature(feature),
+  });
+}
+
+function isCompleteCodingFeature(feature: Feature): boolean {
+  if (feature.type !== 'cds' && feature.type !== 'orf') return false;
+  if (feature.strand !== 1 && feature.strand !== -1) return false;
+  if (codonStartFrame(feature.metadata) !== 0) return false;
+  if (feature.metadata.partial === true || feature.metadata.pseudo === true) return false;
+  const originalLocation = feature.metadata.motifOriginalLocation;
+  return typeof originalLocation !== 'string' || !/[<>]/.test(originalLocation);
 }
 
 // Residues of one track in plus-strand codon coordinates. Reverse tracks read the
@@ -14361,7 +14999,11 @@ function inlineTrackResidues(
   const region = spans.map((span) => sequence.slice(span.start, span.end)).join('');
   if (region.length < 3) return [];
   const source = track.strand === -1 ? reverseComplement(region, sequenceType === 'rna') : region;
-  const aminoAcids = translate(source, track.frame);
+  const table = resolveArtifactTranslationCode(track.translationTableId);
+  if (!table.supported) return [];
+  const aminoAcids = track.completeCds
+    ? translateCompleteCds(source, track.frame, table.table)
+    : translate(source, track.frame, table.table);
   const residues: TrackResidue[] = [];
   for (let i = 0; i < aminoAcids.length; i += 1) {
     const off = track.frame + i * 3;
@@ -14666,7 +15308,14 @@ function SequenceText({
   onFeatureSelect: (featureId: string) => void;
   onRestrictionSelect: (site: RestrictionSite) => void;
   onTranslationTrackSelect: (track: InlineTranslationTrack) => void;
-  onTranslationCodonSelect: (start: number, end: number, strand: 1 | -1) => void;
+  onTranslationCodonSelect: (
+    start: number,
+    end: number,
+    strand: 1 | -1,
+    translationTableId?: number,
+    featureId?: string,
+    translationSource?: 'feature' | 'layer',
+  ) => void;
   onRangeSelect: (start: number, end: number) => void;
   onPlaceCaret: (index: number) => void;
   onEditKeyDown: (event: ReactKeyboardEvent) => void;
@@ -15046,7 +15695,14 @@ function SequenceText({
               setSelectedAaTrackId(null);
               setSelectedAaTrackText('');
               suppressNextFocusScrollRef.current = true;
-              onTranslationCodonSelect(start, end, track.strand);
+              onTranslationCodonSelect(
+                start,
+                end,
+                track.strand,
+                track.translationTableId,
+                track.featureId,
+                track.source,
+              );
             }}
           />
         );

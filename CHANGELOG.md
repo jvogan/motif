@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Added record-level and feature-level NCBI genetic-code selection across
+  translation, ORF discovery, pinned amino-acid tracks, GenBank interchange,
+  and derived-protein provenance. Unsupported explicit feature codes now fail
+  closed, reviewed pinned tracks cannot materialize stale proteins, and complete
+  CDS translations honor alternative initiators.
+- Reconciled the built-in genetic-code registry with current NCBI definitions,
+  including Standard-code initiators and representable tables 15 and 32.
 - Made discontinuous feature locations authoritative across inspection,
   translation, exports, maps, mutation, PCR, digestion, Gibson assembly, and
   Golden Gate assembly instead of silently using their coordinate envelopes.
