@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   computeMsaColumnStats,
+  computeSequenceLogoColumns,
   msaShadeBucket,
   residueColorKey,
   sliceSelectionRows,
@@ -66,6 +67,38 @@ describe('computeMsaColumnStats', () => {
     expect(stats[3].identity).toBeCloseTo(2 / 3, 6);
     expect(stats[3].conservation).toBeCloseTo(1 - 0.9182958 / 2, 5);
     expect(Math.abs(stats[3].conservation - stats[3].identity)).toBeGreaterThan(0.1);
+  });
+});
+
+describe('computeSequenceLogoColumns', () => {
+  it('returns a full-height single-letter stack for a fully conserved column', () => {
+    const cols = computeSequenceLogoColumns([{ aligned: 'A' }, { aligned: 'A' }, { aligned: 'A' }]);
+    expect(cols[0].information).toBeCloseTo(1, 6);
+    expect(cols[0].stack).toEqual([{ symbol: 'A', fraction: 1 }]);
+  });
+
+  it('ranks residues by frequency and scales height by information content', () => {
+    const cols = computeSequenceLogoColumns([{ aligned: 'A' }, { aligned: 'A' }, { aligned: 'C' }]);
+    expect(cols[0].stack.map((entry) => entry.symbol)).toEqual(['A', 'C']);
+    expect(cols[0].stack[0].fraction).toBeCloseTo(2 / 3, 6);
+    expect(cols[0].information).toBeCloseTo(1 - 0.9182958 / 2, 5); // dna alphabet, max entropy log2 4 = 2
+  });
+
+  it('scales height down by occupancy and ignores gaps', () => {
+    const cols = computeSequenceLogoColumns([{ aligned: 'A' }, { aligned: '-' }, { aligned: '-' }]);
+    expect(cols[0].stack).toEqual([{ symbol: 'A', fraction: 1 }]);
+    expect(cols[0].information).toBeCloseTo(1 / 3, 6);
+  });
+
+  it('normalises against the protein alphabet when requested', () => {
+    // Two equally-frequent residues: entropy is 1 bit; protein max entropy is log2 20.
+    const cols = computeSequenceLogoColumns([{ aligned: 'K' }, { aligned: 'R' }], 'protein');
+    expect(cols[0].information).toBeCloseTo(1 - 1 / Math.log2(20), 5);
+  });
+
+  it('is empty for an all-gap column', () => {
+    const cols = computeSequenceLogoColumns([{ aligned: '-' }, { aligned: '-' }]);
+    expect(cols[0]).toEqual({ information: 0, stack: [] });
   });
 });
 

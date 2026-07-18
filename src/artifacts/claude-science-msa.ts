@@ -706,6 +706,58 @@ export function computeMsaColumnStats(
   return stats;
 }
 
+/** One column of a sequence logo: the residues present and the column height. */
+export type MsaLogoColumn = {
+  /**
+   * Fill height 0..1 = occupancy × (1 − H/Hmax) — the same conservation measure
+   * the histogram uses, so a fully conserved fully occupied column fills the
+   * track and a diverse or gappy column is shorter.
+   */
+  information: number;
+  /** Residues present, descending by frequency; fraction is share of occupied rows. */
+  stack: { symbol: string; fraction: number }[];
+};
+
+/**
+ * Per-column data for a sequence-logo track: for each column the residues present
+ * (sorted most-frequent first, ties alphabetical) and a 0..1 fill height scaled by
+ * information content. O(rows × columns), single pass; gaps never count. Mirrors
+ * the conservation definition in computeMsaColumnStats so the logo height and the
+ * conservation histogram agree.
+ */
+export function computeSequenceLogoColumns(
+  rows: ReadonlyArray<{ aligned: string }>,
+  molecule: SequenceType = 'dna',
+): MsaLogoColumn[] {
+  const rowCount = rows.length;
+  const length = rows[0]?.aligned.length ?? 0;
+  const maxEntropy = Math.log2(molecule === 'protein' ? 20 : 4);
+  const columns: MsaLogoColumn[] = new Array(length);
+  for (let column = 0; column < length; column += 1) {
+    const counts = new Map<string, number>();
+    let nonGap = 0;
+    for (let row = 0; row < rowCount; row += 1) {
+      const symbol = rows[row].aligned[column] ?? '-';
+      if (symbol === '-') continue;
+      nonGap += 1;
+      counts.set(symbol, (counts.get(symbol) ?? 0) + 1);
+    }
+    if (nonGap === 0) { columns[column] = { information: 0, stack: [] }; continue; }
+    let entropy = 0;
+    const stack: { symbol: string; fraction: number }[] = [];
+    for (const [symbol, count] of counts) {
+      const probability = count / nonGap;
+      entropy -= probability * (Math.log(probability) / LOG2);
+      stack.push({ symbol, fraction: probability });
+    }
+    stack.sort((a, b) => b.fraction - a.fraction || (a.symbol < b.symbol ? -1 : 1));
+    const occupancy = nonGap / rowCount;
+    const information = maxEntropy > 0 ? occupancy * Math.max(0, Math.min(1, 1 - entropy / maxEntropy)) : 0;
+    columns[column] = { information, stack };
+  }
+  return columns;
+}
+
 /** Bucket a 0..1 score into 0..4 for CSS-driven shading intensity. */
 export function msaShadeBucket(value: number): 0 | 1 | 2 | 3 | 4 {
   if (!(value > 0)) return 0;
