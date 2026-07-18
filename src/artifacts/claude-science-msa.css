@@ -111,7 +111,12 @@
 .motif-cs-msa-context-menu {
   position: fixed;
   z-index: 70;
-  min-width: 200px;
+  /* Shrink below the 200px ideal on a tiny/zoomed viewport so the JS clamp can
+     always keep the whole menu on-screen; scroll if it is taller than the view. */
+  min-width: min(200px, calc(100vw - 16px));
+  max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   padding: 4px;
@@ -182,6 +187,61 @@
 .motif-cs-msa-hist-bar-conservation[data-bucket='3'] { background: color-mix(in srgb, #79b155 66%, transparent); }
 .motif-cs-msa-hist-bar-conservation[data-bucket='4'] { background: color-mix(in srgb, #2ea043 72%, transparent); }
 .motif-cs-msa-hist-bar-occupancy { background: color-mix(in srgb, var(--accent) 50%, transparent); }
+
+/* ===== Sequence-logo track =====
+ * Per column a bottom-anchored stack whose height = occupancy-weighted
+ * conservation; residues sit most-frequent on top, each block sized by its
+ * share of the column. Blocks reuse the .motif-cs-msa-symbol scheme fills so
+ * the logo follows the active colour scheme (incl. Taylor) with no duplicate
+ * palette. Track height mirrors MSA_LOGO_TRACK_HEIGHT in the viewer. */
+.motif-cs-msa-logo-row {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  height: 46px;
+}
+.motif-cs-msa-logo-window {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: flex-end;
+}
+.motif-cs-msa-logo-col {
+  position: relative;
+  width: var(--motif-cs-msa-cell-width, 10px);
+  height: 100%;
+  box-sizing: border-box;
+}
+.motif-cs-msa-logo-col[data-jump='true'] {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.motif-cs-msa-logo-stack {
+  position: absolute;
+  left: 0.5px;
+  right: 0.5px;
+  bottom: 0;
+  height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.motif-cs-msa-logo-block {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  overflow: hidden;
+  line-height: 1;
+  font-weight: 600;
+  color: var(--text-primary, inherit);
+  /* Neutral base so a counted residue that the active scheme can't colour
+   * (e.g. '?' / '.', or a noncanonical residue under Taylor) still reads as
+   * occupied. Without it the block is transparent, which in blocks mode is
+   * indistinguishable from a gap — an occupied column would look empty. The
+   * per-residue scheme fills are more specific and override this. */
+  background: color-mix(in srgb, var(--text-muted) 26%, var(--bg-primary));
+}
 
 /* ===== Residue colour schemes (letter-cell backgrounds) ===== */
 .motif-cs-msa-matrix[data-color-scheme] .motif-cs-msa-symbol[data-color-key] {
@@ -345,8 +405,9 @@
 /* ===== Zoom control + birdseye blocks ===== */
 .motif-cs-msa-zoom-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 6px 8px;
   margin-top: 8px;
   font-size: 12px;
   color: var(--text-secondary, inherit);
@@ -359,8 +420,9 @@
   font-size: 10.5px;
 }
 .motif-cs-msa-zoom-range {
-  flex: 0 1 220px;
-  min-width: 120px;
+  flex: 1 1 140px;
+  min-width: 90px;
+  max-width: 260px;
   accent-color: var(--accent);
   cursor: pointer;
 }

@@ -48,6 +48,7 @@
     "test:connector": "vitest run src/mcp-app/__tests__/motif-connector.test.ts src/mcp-app/__tests__/motif-workbench-bridge.jsdom.test.ts scripts/__tests__/motif-local-mcp-config.test.mjs",
     "test:claude-science-plugin": "npm run test:plugin",
     "test:e2e": "node scripts/run-claude-science-e2e.mjs",
+    "test:e2e:msa": "playwright test --config e2e/playwright.msa.config.ts",
     "test:e2e:claude-science": "npm run test:e2e",
     "validate:plugin": "claude plugin validate dist-motif/motif-for-claude-science --strict",
     "validate:claude-science-plugin": "npm run validate:plugin",

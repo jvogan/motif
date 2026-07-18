@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useDeferredValue,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -22,7 +23,9 @@ import {
   ARTIFACT_MSA_MAX_IMPORT_BYTES,
   ARTIFACT_MSA_LOCAL_WORK_BUDGET,
   ArtifactAlignmentError,
+  MSA_MOTIF_SEARCH_MAX_QUERY_LENGTH,
   computeMsaColumnStats,
+  computeSequenceLogoColumns,
   createLocalArtifactAlignment,
   estimateLocalAlignmentWork,
   findMsaMotifMatches,
@@ -44,6 +47,7 @@ import {
   type ArtifactMsaRecord,
   type MsaColorScheme,
   type MsaColumnStats,
+  type MsaLogoColumn,
   type MsaMotifMatch,
   type MsaSelection,
   type MsaShadeMode,
@@ -58,6 +62,7 @@ import {
   MSA_ZOOM_MIN,
   MSA_ZOOM_MAX,
   normalizeClaudeScienceMsaViewPreferences,
+  resolveMsaFitZoom,
   type ClaudeScienceMsaColorMode,
   type ClaudeScienceMsaEmphasisMode,
   type ClaudeScienceMsaRowSortMode,
@@ -84,11 +89,13 @@ type ColorMode = ClaudeScienceMsaColorMode;
 type RowSortMode = ClaudeScienceMsaRowSortMode;
 type MsaMatrixVisibility = Pick<ClaudeScienceMsaViewPreferences,
   'showOverview' | 'showAlignmentAxis' | 'showTemplateAxis' | 'showRowStats' | 'showConservation'
-  | 'showConservationHistogram' | 'showOccupancy' | 'showConsensus' | 'showTranslation' | 'showAminoAcidIndices'>;
+  | 'showConservationHistogram' | 'showOccupancy' | 'showConsensus' | 'showSequenceLogo'
+  | 'showTranslation' | 'showAminoAcidIndices'>;
 type CoordinateSystem = 'alignment' | 'template';
 
 const INPUT_FASTA_HEADER_MAX_LENGTH = 1_024;
 const msaMatrixViewportSession = new Map<string, { left: number; top: number }>();
+const EMPTY_MSA_SEARCH_RESULT = { matches: [] as MsaMotifMatch[], truncated: false };
 
 type PairwiseRowStats = {
   ungappedLength: number;
@@ -425,6 +432,10 @@ const MSA_BASE_CELL_MAX = 15;
 const MSA_CELL_MIN = 3;
 const MSA_CELL_MAX = 30;
 const MSA_LETTER_MIN = 6.5;
+// Sequence-logo track: plotting height (must match .motif-cs-msa-logo-row in
+// the CSS) and the smallest glyph, in px, still worth drawing in a segment.
+const MSA_LOGO_TRACK_HEIGHT = 46;
+const MSA_LOGO_LETTER_MIN_PX = 7;
 
 function AlignmentMatrix({
   alignment,
@@ -480,6 +491,9 @@ function AlignmentMatrix({
   const [selection, setSelection] = useState<MatrixSelection | null>(null);
   const [hoverCell, setHoverCell] = useState<HoverCell | null>(null);
   const [contextMenu, setContextMenu] = useState<MatrixContextMenu | null>(null);
+  // The context menu's on-screen position after clamping to the viewport (raw
+  // pointer coordinates in `contextMenu` would otherwise overflow near edges).
+  const [menuPosition, setMenuPosition] = useState<{ x: number; y: number } | null>(null);
   // Ephemeral, per-alignment manual row order (ids). Null falls back to the
   // template-pinned sortMode ordering; set once the user drags or key-moves a row.
   const [manualOrder, setManualOrder] = useState<string[] | null>(null);
@@ -510,6 +524,14 @@ function AlignmentMatrix({
   const sequenceWidth = alignment.alignmentLength * cellWidth;
   const totalWidth = labelWidth + sequenceWidth;
   const maxHorizontalScroll = Math.max(0, sequenceWidth - sequenceViewportWidth);
+  const fitResolution = useMemo(() => resolveMsaFitZoom({
+    baseCellWidth,
+    columnCount: alignment.alignmentLength,
+    viewportWidth: sequenceViewportWidth,
+    minimumCellWidth: MSA_CELL_MIN,
+    maximumCellWidth: MSA_CELL_MAX,
+  }), [alignment.alignmentLength, baseCellWidth, sequenceViewportWidth]);
+  const canFitAlignment = fitResolution.fits;
   const panThumbWidth = Math.max(
     36,
     Math.min(sequenceViewportWidth, sequenceViewportWidth * (sequenceViewportWidth / Math.max(sequenceViewportWidth, sequenceWidth))),
@@ -604,6 +626,7 @@ function AlignmentMatrix({
     + Number(visibility.showConservationHistogram)
     + Number(visibility.showOccupancy)
     + Number(visibility.showConsensus)
+    + Number(visibility.showSequenceLogo)
     + Number(translationVisible);
 
   const scrollToColumn = useCallback((column: number, behavior: ScrollBehavior = 'auto') => {
@@ -619,12 +642,12 @@ function AlignmentMatrix({
     onZoomChange(Math.max(MSA_ZOOM_MIN, Math.min(MSA_ZOOM_MAX, Math.round(next * 100) / 100)));
   }, [onZoomChange]);
 
-  // Fit the whole alignment across the sequence viewport by solving for the zoom
-  // that makes every column's base-width cell span the available width.
+  // Use the greatest persisted zoom whose tenth-pixel cell width actually fits;
+  // the pure resolver accounts for both renderer rounding stages.
   const fitZoom = useCallback(() => {
     if (alignment.alignmentLength === 0) return;
-    setZoom(sequenceViewportWidth / (alignment.alignmentLength * baseCellWidth));
-  }, [alignment.alignmentLength, baseCellWidth, sequenceViewportWidth, setZoom]);
+    setZoom(fitResolution.zoom);
+  }, [alignment.alignmentLength, fitResolution.zoom, setZoom]);
 
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
@@ -687,6 +710,9 @@ function AlignmentMatrix({
   }, []);
 
   const handleScroll = (left: number, top: number) => {
+    // The hover readout is anchored to a fixed screen point; once the content
+    // moves under it, it would describe the wrong cell, so drop it on scroll.
+    setHoverCell(null);
     pendingScrollLeftRef.current = left;
     pendingScrollTopRef.current = top;
     msaMatrixViewportSession.set(alignment.id, { left, top });
@@ -715,7 +741,10 @@ function AlignmentMatrix({
         ? sequenceViewportWidth
         : 1;
     const horizontalDelta = (event.shiftKey ? event.deltaY : event.deltaX) * deltaScale;
-    if (event.shiftKey || Math.abs(event.deltaX) > 0) {
+    // Treat the gesture as horizontal only when the user asked for it (Shift) or
+    // the horizontal component dominates. A near-vertical diagonal (ordinary
+    // trackpad noise) must keep its deltaY instead of being swallowed whole.
+    if (event.shiftKey || (event.deltaX !== 0 && Math.abs(event.deltaX) >= Math.abs(event.deltaY))) {
       event.preventDefault();
       setHorizontalScroll(viewport.scrollLeft + horizontalDelta);
       return;
@@ -757,7 +786,14 @@ function AlignmentMatrix({
     setHorizontalScroll(target);
   };
 
-  const columnStats = useMemo<MsaColumnStats[]>(() => computeMsaColumnStats(alignment.rows), [alignment.rows]);
+  const columnStats = useMemo<MsaColumnStats[]>(() => computeMsaColumnStats(alignment.rows, alignment.molecule), [alignment.rows, alignment.molecule]);
+  // Only pay the O(rows × visible columns) logo pass when the track is on.
+  const logoColumns = useMemo<MsaLogoColumn[]>(
+    () => (visibility.showSequenceLogo
+      ? computeSequenceLogoColumns(alignment.rows, alignment.molecule, { startColumn, endColumn })
+      : []),
+    [alignment.molecule, alignment.rows, endColumn, startColumn, visibility.showSequenceLogo],
+  );
   const explicitScheme = colorMode === 'residue' && colorScheme !== 'auto';
   const shadeByColumn = shadeMode === 'identity' || shadeMode === 'conservation';
   // Colour cells by auto residue tone when the user asked for residue colours,
@@ -789,7 +825,7 @@ function AlignmentMatrix({
     const selectedRows = orderedRows
       .slice(selection.rowStart, selection.rowEnd + 1)
       .map((row) => ({ ...row, aligned: row.aligned.slice(selection.colStart, selection.colEnd + 1) }));
-    const blockStats = computeMsaColumnStats(selectedRows);
+    const blockStats = computeMsaColumnStats(selectedRows, alignment.molecule);
     const stats = summarizeSelectionColumns(blockStats, { start: 0, end: selection.colEnd - selection.colStart });
     // Template coordinates: first/last non-gap position within the range, so a
     // gapped endpoint doesn't hide the whole template range.
@@ -802,7 +838,7 @@ function AlignmentMatrix({
       if (templateCoordinates[column] != null) { endPosition = templateCoordinates[column]!; break; }
     }
     return { stats, startPosition, endPosition, rows: selectedRows.length };
-  }, [orderedRows, selection, templateCoordinates]);
+  }, [orderedRows, selection, templateCoordinates, alignment.molecule]);
 
   const pointToCell = useCallback((clientX: number, clientY: number): HoverCell | null => {
     const viewport = viewportRef.current;
@@ -961,8 +997,6 @@ function AlignmentMatrix({
     event.stopPropagation();
     setContextMenu(null);
     setHoverCell(null);
-    setSelection(null);
-    selectionAnchorRef.current = null;
     const state: RowDragState = { id, fromIndex: index, overIndex: index, edge: 'before' };
     rowDragRef.current = state;
     setRowDrag(state);
@@ -995,6 +1029,11 @@ function AlignmentMatrix({
     // the array with the dragged id removed.
     let insertion = state.overIndex + (state.edge === 'after' ? 1 : 0);
     if (state.fromIndex < insertion) insertion -= 1;
+    // The template is pinned at index 0 and cannot accept a movable row before
+    // it. Clamp pointer drops to the same minimum as keyboard reorder so a drop
+    // on the template is a real no-op, preserving selection and announcements.
+    const minIndex = orderedRows[0]?.id === template?.id ? 1 : 0;
+    insertion = Math.max(minIndex, Math.min(orderedRows.length - 1, insertion));
     if (insertion === state.fromIndex) return; // a plain click, or dropped in place
     const ids = orderedRows.map((row) => row.id);
     commitRowOrder(moveRowId(ids, state.id, insertion), state.id, orderedRows[state.fromIndex]?.name ?? 'Row');
@@ -1014,13 +1053,24 @@ function AlignmentMatrix({
     const ids = orderedRows.map((row) => row.id);
     const from = ids.indexOf(id);
     if (from < 0) return;
-    const target = Math.max(0, Math.min(ids.length - 1, from + delta));
+    // The template is pinned at the top with no grip, so a movable row can never
+    // occupy index 0. Clamp the target there so ArrowUp on the first movable row
+    // is a no-op — not a "move" that re-pins the template, clears the selection,
+    // and mis-announces a position change that never actually happened.
+    const minIndex = orderedRows[0]?.id === template?.id ? 1 : 0;
+    const target = Math.max(minIndex, Math.min(ids.length - 1, from + delta));
     if (target === from) return;
     commitRowOrder(moveRowId(ids, id, target), id, orderedRows[from]?.name ?? 'Row');
   };
 
   const resetRowOrder = useCallback(() => {
     setManualOrder(null);
+    // Reordering rows re-indexes them, so an index-based selection would now
+    // point at different rows (silently changing what copy actions yield).
+    // Drop it, matching commitRowOrder.
+    setSelection(null);
+    selectionAnchorRef.current = null;
+    setContextMenu(null);
     setReorderStatus('Row order reset to the current sort.');
   }, []);
 
@@ -1054,12 +1104,41 @@ function AlignmentMatrix({
       setContextMenu(null);
     };
     const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') setContextMenu(null); };
+    // The menu is anchored to a cell's screen position, so any scroll or resize
+    // detaches it from that cell — dismiss rather than leave it stranded. Its
+    // own bounded overflow remains scrollable so every action stays reachable.
+    const onResize = () => setContextMenu(null);
+    const onScroll = (event: Event) => {
+      if (event.target instanceof Node && contextMenuRef.current?.contains(event.target)) return;
+      setContextMenu(null);
+    };
     window.addEventListener('pointerdown', onPointerDown, true);
     window.addEventListener('keydown', onKeyDown, true);
+    window.addEventListener('resize', onResize);
+    window.addEventListener('scroll', onScroll, true);
     return () => {
       window.removeEventListener('pointerdown', onPointerDown, true);
       window.removeEventListener('keydown', onKeyDown, true);
+      window.removeEventListener('resize', onResize);
+      window.removeEventListener('scroll', onScroll, true);
     };
+  }, [contextMenu]);
+
+  // Once the menu has rendered, measure it and clamp its fixed position so it
+  // stays fully inside the viewport, flipping in from the right/bottom edges
+  // instead of overflowing. Runs before paint, so the clamp is never seen mid-flight.
+  useLayoutEffect(() => {
+    if (!contextMenu) { setMenuPosition(null); return; }
+    const el = contextMenuRef.current;
+    if (!el) { setMenuPosition({ x: contextMenu.x, y: contextMenu.y }); return; }
+    const rect = el.getBoundingClientRect();
+    const pad = 8;
+    const maxX = Math.max(pad, window.innerWidth - rect.width - pad);
+    const maxY = Math.max(pad, window.innerHeight - rect.height - pad);
+    setMenuPosition({
+      x: Math.min(Math.max(pad, contextMenu.x), maxX),
+      y: Math.min(Math.max(pad, contextMenu.y), maxY),
+    });
   }, [contextMenu]);
 
   useEffect(() => {
@@ -1174,6 +1253,60 @@ function AlignmentMatrix({
     </div>
   );
 
+  // A sequence-logo residue always carries a colour (a colourless logo is
+  // useless), so fall back to the molecule's default scheme when the alignment
+  // itself is drawn mono/auto. Explicit schemes (incl. Taylor via the matrix's
+  // data-color-scheme ancestor) reuse the same fills as the letter cells.
+  const logoScheme: MsaColorScheme = explicitScheme
+    ? colorScheme
+    : alignment.molecule === 'protein' ? 'clustal' : 'nucleotide';
+  const renderLogoTrack = () => (
+    <div className="motif-cs-msa-logo-window" style={{ left: labelWidth + (startColumn * cellWidth) }}>
+      {logoColumns.map((col, offset) => {
+        const column = startColumn + offset;
+        const stackFraction = Math.max(0, Math.min(1, col.information));
+        const title = col.stack.length === 0
+          ? `Column ${column + 1} · all gaps`
+          : `Column ${column + 1} · ${Math.round(stackFraction * 100)}% conserved · `
+            + col.stack.map((entry) => `${entry.symbol} ${Math.round(entry.fraction * 100)}%`).join(', ');
+        return (
+          <span
+            key={column}
+            className="motif-cs-msa-logo-col"
+            data-alignment-column={column + 1}
+            data-jump={jumpColumn === column || undefined}
+            role="cell"
+            aria-colindex={column + 1}
+            aria-label={title}
+            title={title}
+          >
+            <span className="motif-cs-msa-logo-stack" style={{ height: `${stackFraction * 100}%` }} aria-hidden="true">
+              {col.stack.map((entry) => {
+                const segmentPx = entry.fraction * stackFraction * MSA_LOGO_TRACK_HEIGHT;
+                // Cap the glyph to the segment height so a tall font never
+                // overflows a short block (line-height:1 + overflow:hidden would
+                // clip it); only draw it once the capped glyph is still legible.
+                const letterPx = Math.min(renderFontSize, Math.floor(segmentPx));
+                const showLetter = !blocks && cellWidth >= MSA_LETTER_MIN && letterPx >= MSA_LOGO_LETTER_MIN_PX;
+                return (
+                  <span
+                    key={entry.symbol}
+                    className="motif-cs-msa-logo-block motif-cs-msa-symbol"
+                    data-residue={entry.symbol}
+                    data-color-key={residueColorKey(entry.symbol, alignment.molecule, logoScheme) || undefined}
+                    style={{ height: `${entry.fraction * 100}%`, fontSize: showLetter ? letterPx : 0 }}
+                  >
+                    {showLetter ? entry.symbol : ''}
+                  </span>
+                );
+              })}
+            </span>
+          </span>
+        );
+      })}
+    </div>
+  );
+
   const selectionColumnLeft = selection ? labelWidth + (selection.colStart * cellWidth) : 0;
   const selectionColumnWidth = selection ? (selection.colEnd - selection.colStart + 1) * cellWidth : 0;
   const hoverColumnLeft = hoverCell ? labelWidth + (hoverCell.column * cellWidth) : 0;
@@ -1200,6 +1333,7 @@ function AlignmentMatrix({
           aria-valuenow={overviewCenter + 1}
           aria-valuetext={`Alignment columns ${visibleStartColumn + 1}–${Math.max(visibleStartColumn + 1, visibleEndColumn)} of ${alignment.alignmentLength}`}
           onPointerDown={(event) => {
+            if (event.button !== 0) return;
             overviewDraggingRef.current = true;
             event.currentTarget.setPointerCapture(event.pointerId);
             navigateOverviewPointer(event.currentTarget, event.clientX);
@@ -1449,6 +1583,17 @@ function AlignmentMatrix({
             </div>
             {renderTranslationTrack()}
           </div> : null}
+
+          {visibility.showSequenceLogo ? <div
+            className="motif-cs-msa-logo-row"
+            data-testid="msa-logo-row"
+            role="row"
+            aria-rowindex={firstSequenceRow + orderedRows.length + Number(visibility.showConservation) + Number(visibility.showConsensus) + Number(visibility.showConservationHistogram) + Number(visibility.showOccupancy) + Number(translationVisible)}
+            aria-label="Per-column sequence logo: residue heights scaled by occupancy-weighted conservation"
+          >
+            <div className="motif-cs-msa-sticky-label motif-cs-msa-row-label motif-cs-msa-hist-label" role="rowheader"><span>Logo</span></div>
+            {renderLogoTrack()}
+          </div> : null}
         </div>
       </div>
       <div className="motif-cs-msa-zoom-row" data-testid="msa-zoom-row">
@@ -1467,7 +1612,19 @@ function AlignmentMatrix({
           title="Compress or expand alignment columns"
         />
         <span className="motif-cs-msa-zoom-value" data-testid="msa-zoom-value">{Math.round(zoom * 100)}%</span>
-        <button type="button" className="motif-cs-mini-button" data-testid="msa-zoom-fit" onClick={fitZoom} title="Fit the whole alignment to the window width">Fit</button>
+        <button
+          type="button"
+          className="motif-cs-mini-button"
+          data-testid="msa-zoom-fit"
+          data-fit-limited={!canFitAlignment || undefined}
+          onClick={fitZoom}
+          aria-label={canFitAlignment ? 'Fit alignment to window width' : 'Use minimum column zoom'}
+          title={canFitAlignment
+            ? 'Fit the whole alignment to the window width'
+            : 'Use minimum column zoom; the whole alignment remains available through the overview and column scroller'}
+        >
+          {canFitAlignment ? 'Fit' : 'Min zoom'}
+        </button>
         {Math.round(zoom * 100) !== 100 ? (
           <button type="button" className="motif-cs-mini-button" data-testid="msa-zoom-reset" onClick={() => setZoom(1)} title="Reset zoom to 100%">100%</button>
         ) : null}
@@ -1526,7 +1683,7 @@ function AlignmentMatrix({
         </div>
       ) : null}
       {contextMenu ? (
-        <div ref={contextMenuRef} className="motif-cs-msa-context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} role="menu" aria-label="Alignment selection actions">
+        <div ref={contextMenuRef} className="motif-cs-msa-context-menu" style={{ left: (menuPosition ?? contextMenu).x, top: (menuPosition ?? contextMenu).y }} role="menu" aria-label="Alignment selection actions">
           <button type="button" role="menuitem" onClick={() => copySelection('fasta')}>Copy selection (FASTA)</button>
           <button type="button" role="menuitem" onClick={() => copySelection('ungapped')}>Copy without gaps</button>
           <button type="button" role="menuitem" onClick={() => copySelection('columns')}>Copy columns</button>
@@ -1581,6 +1738,7 @@ export function ClaudeScienceMsaViewer({
   const [jumpToken, setJumpToken] = useState(0);
   const [jumpRowId, setJumpRowId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const deferredSearchQuery = useDeferredValue(searchQuery);
   const [searchIndex, setSearchIndex] = useState(-1);
   const [viewResetToken, setViewResetToken] = useState(0);
   const [coordinateSystem, setCoordinateSystem] = useState<CoordinateSystem>('alignment');
@@ -1633,6 +1791,25 @@ export function ClaudeScienceMsaViewer({
     setSearchQuery('');
     setSearchIndex(-1);
   }, [activeAlignment?.id]);
+
+  // Clear an active search on Escape regardless of where focus sits — the matrix,
+  // the step buttons, or another display mode. The search form's own handler only
+  // fires while its input is focused, and in Text mode the form is unmounted, so
+  // without this Escape would either do nothing or (in Text mode) close the host
+  // window while a latent query lingered. The always-mounted workspace carries the
+  // escape scope while a query is set (see the return) so the host stands down and
+  // this clears the query instead.
+  useEffect(() => {
+    if (!searchQuery) return undefined;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setSearchQuery('');
+        setSearchIndex(-1);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [searchQuery]);
 
   const traceAvailable = activeAlignment ? hasLinkedSangerTrace(activeAlignment, records) : false;
 
@@ -1690,12 +1867,16 @@ export function ClaudeScienceMsaViewer({
     () => activeAlignment ? differenceColumns(activeAlignment, referenceRowId) : [],
     [activeAlignment, referenceRowId],
   );
-  const searchResult = useMemo(
-    () => (activeAlignment && searchQuery.trim()
-      ? findMsaMotifMatches(activeAlignment.rows, searchQuery, { molecule: activeAlignment.molecule })
-      : { matches: [], truncated: false }),
-    [activeAlignment, searchQuery],
+  const computedSearchResult = useMemo(
+    () => (activeAlignment && deferredSearchQuery.trim()
+      ? findMsaMotifMatches(activeAlignment.rows, deferredSearchQuery, { molecule: activeAlignment.molecule })
+      : EMPTY_MSA_SEARCH_RESULT),
+    [activeAlignment, deferredSearchQuery],
   );
+  const searchPending = deferredSearchQuery !== searchQuery;
+  // Do not leave stale highlights from the previous query while React defers the
+  // bounded scan; input stays urgent and the deferred render performs the work.
+  const searchResult = searchPending ? EMPTY_MSA_SEARCH_RESULT : computedSearchResult;
   const searchMatches = searchResult.matches;
   const activeSearchMatch = searchIndex >= 0 && searchMatches.length > 0
     ? searchMatches[Math.min(searchIndex, searchMatches.length - 1)] ?? null
@@ -1725,6 +1906,7 @@ export function ClaudeScienceMsaViewer({
     showConservationHistogram: viewPreferences.showConservationHistogram,
     showOccupancy: viewPreferences.showOccupancy,
     showConsensus: viewPreferences.showConsensus,
+    showSequenceLogo: viewPreferences.showSequenceLogo,
     showTranslation: viewPreferences.showTranslation,
     showAminoAcidIndices: viewPreferences.showAminoAcidIndices,
   }), [
@@ -1736,6 +1918,7 @@ export function ClaudeScienceMsaViewer({
     viewPreferences.showOccupancy,
     viewPreferences.showOverview,
     viewPreferences.showRowStats,
+    viewPreferences.showSequenceLogo,
     viewPreferences.showTemplateAxis,
     viewPreferences.showTranslation,
   ]);
@@ -2186,6 +2369,7 @@ export function ClaudeScienceMsaViewer({
       className="motif-cs-msa-workspace"
       data-testid="msa-workspace"
       data-drop-active={dropActive || undefined}
+      data-motif-cs-escape-scope={searchQuery ? 'true' : undefined}
       onDragEnter={handleDragEnter}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
@@ -2481,6 +2665,7 @@ export function ClaudeScienceMsaViewer({
                   ['showConservationHistogram', 'Conservation histogram'],
                   ['showOccupancy', 'Occupancy'],
                   ['showConsensus', 'Consensus'],
+                  ['showSequenceLogo', 'Sequence logo'],
                 ] as const).map(([key, label]) => (
                   <label key={key}>
                     <input
@@ -2656,6 +2841,7 @@ export function ClaudeScienceMsaViewer({
                   className="motif-cs-msa-search"
                   data-testid="msa-search"
                   role="search"
+                  aria-busy={searchPending}
                   data-motif-cs-escape-scope={searchQuery ? 'true' : undefined}
                   onSubmit={(event) => { event.preventDefault(); stepSearch(1); }}
                 >
@@ -2667,6 +2853,7 @@ export function ClaudeScienceMsaViewer({
                     name="alignment-search"
                     autoComplete="off"
                     spellCheck={false}
+                    maxLength={MSA_MOTIF_SEARCH_MAX_QUERY_LENGTH}
                     value={searchQuery}
                     placeholder="Find sequence…"
                     aria-label="Find a sequence motif in the alignment"
@@ -2678,9 +2865,11 @@ export function ClaudeScienceMsaViewer({
                   />
                   <span className="motif-cs-msa-search-count" data-testid="msa-search-count" role="status" aria-live="polite">
                     {searchQuery.trim()
-                      ? searchMatches.length === 0
-                        ? 'No matches'
-                        : `${searchIndex >= 0 ? `${Math.min(searchIndex, searchMatches.length - 1) + 1} of ` : ''}${searchMatches.length.toLocaleString()}${searchResult.truncated ? '+' : ''}`
+                      ? searchPending
+                        ? 'Searching…'
+                        : searchMatches.length === 0
+                          ? searchResult.truncated ? 'Search limit reached' : 'No matches'
+                          : `${searchIndex >= 0 ? `${Math.min(searchIndex, searchMatches.length - 1) + 1} of ` : ''}${searchMatches.length.toLocaleString()}${searchResult.truncated ? '+' : ''}`
                       : ''}
                   </span>
                   <button type="button" className="motif-cs-mini-button" data-testid="msa-search-prev" disabled={searchMatches.length === 0} onClick={() => stepSearch(-1)} aria-label="Previous match"><ChevronLeft size={13} /></button>

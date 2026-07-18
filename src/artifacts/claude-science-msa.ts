@@ -652,10 +652,17 @@ export type MsaColumnStats = {
 const LOG2 = Math.log(2);
 
 /** Per-column statistics for an alignment's rows. O(rows × columns), single pass. */
-export function computeMsaColumnStats(rows: ReadonlyArray<{ aligned: string }>): MsaColumnStats[] {
+export function computeMsaColumnStats(
+  rows: ReadonlyArray<{ aligned: string }>,
+  molecule: SequenceType = 'dna',
+): MsaColumnStats[] {
   const rowCount = rows.length;
   const length = rows[0]?.aligned.length ?? 0;
   const stats: MsaColumnStats[] = new Array(length);
+  // Normalise Shannon entropy against the alphabet so conservation measures
+  // residue diversity (1 = a single residue, 0 = maximally diverse) — genuinely
+  // distinct from identity, which only tracks the majority residue's share.
+  const maxEntropy = Math.log2(molecule === 'protein' ? 20 : 4);
   for (let column = 0; column < length; column += 1) {
     const counts = new Map<string, number>();
     let nonGap = 0;
@@ -691,12 +698,71 @@ export function computeMsaColumnStats(rows: ReadonlyArray<{ aligned: string }>):
       consensusCount: winnerCount,
       consensusFraction,
       identity: winnerCount / rowCount,
-      conservation: consensusFraction * occupancy,
+      conservation: occupancy * Math.max(0, Math.min(1, 1 - entropy / maxEntropy)),
       entropy,
       fullyConserved: winnerCount === rowCount,
     };
   }
   return stats;
+}
+
+/** One column of a sequence logo: the residues present and the column height. */
+export type MsaLogoColumn = {
+  /**
+   * Fill height 0..1 = occupancy × (1 − H/Hmax) — the same conservation measure
+   * the histogram uses, so a fully conserved fully occupied column fills the
+   * track and a diverse or gappy column is shorter.
+   */
+  information: number;
+  /** Residues present, descending by frequency; fraction is share of occupied rows. */
+  stack: { symbol: string; fraction: number }[];
+};
+
+/**
+ * Per-column data for a sequence-logo track: for each column the residues present
+ * (sorted most-frequent first, ties alphabetical) and a 0..1 fill height scaled by
+ * information content. The optional half-open range keeps UI callers windowed;
+ * work and retained objects are O(rows × requested columns). Gaps never count.
+ * Mirrors the conservation definition in computeMsaColumnStats so the logo
+ * height and the conservation histogram agree.
+ */
+export function computeSequenceLogoColumns(
+  rows: ReadonlyArray<{ aligned: string }>,
+  molecule: SequenceType = 'dna',
+  range: { startColumn?: number; endColumn?: number } = {},
+): MsaLogoColumn[] {
+  const rowCount = rows.length;
+  const length = rows[0]?.aligned.length ?? 0;
+  const requestedStart = Number.isFinite(range.startColumn) ? Math.floor(range.startColumn!) : 0;
+  const requestedEnd = Number.isFinite(range.endColumn) ? Math.ceil(range.endColumn!) : length;
+  const startColumn = Math.max(0, Math.min(length, requestedStart));
+  const endColumn = Math.max(startColumn, Math.min(length, requestedEnd));
+  const maxEntropy = Math.log2(molecule === 'protein' ? 20 : 4);
+  const columns: MsaLogoColumn[] = new Array(endColumn - startColumn);
+  for (let column = startColumn; column < endColumn; column += 1) {
+    const outputIndex = column - startColumn;
+    const counts = new Map<string, number>();
+    let nonGap = 0;
+    for (let row = 0; row < rowCount; row += 1) {
+      const symbol = rows[row].aligned[column] ?? '-';
+      if (symbol === '-') continue;
+      nonGap += 1;
+      counts.set(symbol, (counts.get(symbol) ?? 0) + 1);
+    }
+    if (nonGap === 0) { columns[outputIndex] = { information: 0, stack: [] }; continue; }
+    let entropy = 0;
+    const stack: { symbol: string; fraction: number }[] = [];
+    for (const [symbol, count] of counts) {
+      const probability = count / nonGap;
+      entropy -= probability * (Math.log(probability) / LOG2);
+      stack.push({ symbol, fraction: probability });
+    }
+    stack.sort((a, b) => b.fraction - a.fraction || (a.symbol < b.symbol ? -1 : 1));
+    const occupancy = nonGap / rowCount;
+    const information = maxEntropy > 0 ? occupancy * Math.max(0, Math.min(1, 1 - entropy / maxEntropy)) : 0;
+    columns[outputIndex] = { information, stack };
+  }
+  return columns;
 }
 
 /** Bucket a 0..1 score into 0..4 for CSS-driven shading intensity. */
@@ -842,21 +908,23 @@ export function summarizeSelectionColumns(
   for (let column = start; column <= end && column < length; column += 1) {
     const stat = columnStats[column];
     if (!stat) continue;
+    // An all-gap column has no residues to agree or disagree, so it is neither
+    // conserved nor variable, and must not dilute the mean identity/conservation
+    // — it counts only as a gap column.
+    if (stat.occupancy === 0) { gapColumns += 1; continue; }
     identitySum += stat.identity;
     conservationSum += stat.conservation;
-    // An all-gap column has no residues to agree or disagree, so it is neither
-    // conserved nor variable — only a gap column.
-    if (stat.occupancy === 0) { gapColumns += 1; continue; }
     if (stat.fullyConserved) fullyConserved += 1;
     else if (stat.consensusFraction < 1) variableColumns += 1;
   }
+  const informative = columns - gapColumns;
   return {
     columns,
     variableColumns,
     fullyConserved,
     gapColumns,
-    meanIdentity: columns > 0 ? identitySum / columns : 0,
-    meanConservation: columns > 0 ? conservationSum / columns : 0,
+    meanIdentity: informative > 0 ? identitySum / informative : 0,
+    meanConservation: informative > 0 ? conservationSum / informative : 0,
   };
 }
 
@@ -941,6 +1009,13 @@ export type MsaMotifMatch = {
 export type MsaMotifSearchResult = { matches: MsaMotifMatch[]; truncated: boolean };
 
 export const MSA_MOTIF_SEARCH_MAX_MATCHES = 5_000;
+export const MSA_MOTIF_SEARCH_MAX_QUERY_LENGTH = 256;
+export const MSA_MOTIF_SEARCH_MAX_RETAINED_COLUMNS = 200_000;
+
+// Upper bound on residue comparisons per search so a long, rare, or absent query
+// on a large alignment cannot block the render thread: once exceeded the scan
+// stops and reports `truncated` instead of running to completion.
+export const MSA_MOTIF_SEARCH_MAX_COMPARISONS = 2_000_000;
 
 // IUPAC nucleotide ambiguity → the concrete bases each code covers.
 const IUPAC_NUCLEOTIDES: Record<string, string> = {
@@ -966,6 +1041,82 @@ function normalizeMotifResidue(symbol: string, molecule: SequenceType): string {
   return molecule !== 'protein' && upper === 'U' ? 'T' : upper;
 }
 
+type MsaMotifMatchOrder = Pick<MsaMotifMatch, 'rowId' | 'rowName' | 'startColumn' | 'endColumn'>;
+
+/** Total order over matches: earliest alignment column first, then row identity. */
+function compareMotifMatches(a: MsaMotifMatchOrder, b: MsaMotifMatchOrder): number {
+  return a.startColumn - b.startColumn
+    || a.endColumn - b.endColumn
+    || a.rowName.localeCompare(b.rowName, undefined, { numeric: true })
+    || a.rowId.localeCompare(b.rowId, undefined, { numeric: true });
+}
+
+/**
+ * Retains only the `capacity` globally-earliest matches (by compareMotifMatches)
+ * using a binary max-heap, so a low-complexity query stays O(total × log capacity)
+ * in time and O(capacity) in memory no matter how many raw hits it produces —
+ * instead of collecting every hit and sorting (which the row-order cap got wrong,
+ * and which could exhaust memory before the count cap ever tripped).
+ */
+class BoundedEarliestMatches {
+  private heap: MsaMotifMatch[] = [];
+  private readonly capacity: number;
+
+  constructor(capacity: number) {
+    this.capacity = capacity;
+  }
+
+  /**
+   * Add a match; returns true when the set was already full (results capped).
+   * The columns factory runs only when the candidate is retained, avoiding a
+   * query-length array allocation for every discarded low-complexity hit.
+   */
+  push(order: MsaMotifMatchOrder, columns: () => number[]): boolean {
+    if (this.capacity <= 0) return true;
+    const materialize = (): MsaMotifMatch => ({ ...order, columns: columns() });
+    if (this.heap.length < this.capacity) {
+      this.heap.push(materialize());
+      this.siftUp(this.heap.length - 1);
+      return false;
+    }
+    // Full: keep the new match only if it is earlier than the current worst (root).
+    if (compareMotifMatches(order, this.heap[0]) < 0) {
+      this.heap[0] = materialize();
+      this.siftDown(0);
+    }
+    return true;
+  }
+
+  toSortedArray(): MsaMotifMatch[] {
+    return this.heap.slice().sort(compareMotifMatches);
+  }
+
+  private siftUp(index: number): void {
+    let i = index;
+    while (i > 0) {
+      const parent = (i - 1) >> 1;
+      if (compareMotifMatches(this.heap[i], this.heap[parent]) <= 0) break;
+      [this.heap[i], this.heap[parent]] = [this.heap[parent], this.heap[i]];
+      i = parent;
+    }
+  }
+
+  private siftDown(index: number): void {
+    let i = index;
+    const size = this.heap.length;
+    for (;;) {
+      let largest = i;
+      const left = 2 * i + 1;
+      const right = 2 * i + 2;
+      if (left < size && compareMotifMatches(this.heap[left], this.heap[largest]) > 0) largest = left;
+      if (right < size && compareMotifMatches(this.heap[right], this.heap[largest]) > 0) largest = right;
+      if (largest === i) break;
+      [this.heap[i], this.heap[largest]] = [this.heap[largest], this.heap[i]];
+      i = largest;
+    }
+  }
+}
+
 /**
  * Find every occurrence of `query` across the ungapped residues of each row,
  * mapping each hit back to the alignment columns it covers (gap columns between
@@ -979,17 +1130,34 @@ function normalizeMotifResidue(symbol: string, molecule: SequenceType): string {
 export function findMsaMotifMatches(
   rows: readonly { id: string; name: string; aligned: string }[],
   query: string,
-  options: { molecule: SequenceType; maxMatches?: number },
+  options: {
+    molecule: SequenceType;
+    maxMatches?: number;
+    maxComparisons?: number;
+    maxQueryLength?: number;
+    maxRetainedColumns?: number;
+  },
 ): MsaMotifSearchResult {
   const trimmed = query.trim();
   if (!trimmed || /[-.]/.test(trimmed)) return { matches: [], truncated: false };
   const { molecule } = options;
   const maxMatches = Math.max(0, Math.floor(options.maxMatches ?? MSA_MOTIF_SEARCH_MAX_MATCHES));
+  const maxComparisons = Math.max(1, Math.floor(options.maxComparisons ?? MSA_MOTIF_SEARCH_MAX_COMPARISONS));
+  const maxQueryLength = Math.max(1, Math.floor(options.maxQueryLength ?? MSA_MOTIF_SEARCH_MAX_QUERY_LENGTH));
+  const maxRetainedColumns = Math.max(0, Math.floor(options.maxRetainedColumns ?? MSA_MOTIF_SEARCH_MAX_RETAINED_COLUMNS));
   const needle = Array.from(trimmed, (symbol) => normalizeMotifResidue(symbol, molecule));
-  const matches: MsaMotifMatch[] = [];
+  if (needle.length > maxQueryLength) return { matches: [], truncated: true };
+  // Every retained match owns one alignment-column index per query residue.
+  // Bound that aggregate independently of the match count so long motifs cannot
+  // turn a nominally bounded result into millions of array entries.
+  const retainedCapacity = Math.min(maxMatches, Math.floor(maxRetainedColumns / needle.length));
+  // Keep only the globally-earliest `maxMatches` regardless of row scan order,
+  // and cap total residue comparisons so a rare/absent long query stays bounded.
+  const collector = new BoundedEarliestMatches(retainedCapacity);
   let truncated = false;
+  let comparisons = 0;
 
-  outer: for (const row of rows) {
+  scan: for (const row of rows) {
     const residues: string[] = [];
     const columns: number[] = [];
     for (let column = 0; column < row.aligned.length; column += 1) {
@@ -1002,25 +1170,24 @@ export function findMsaMotifMatches(
     for (let start = 0; start <= limit; start += 1) {
       let ok = true;
       for (let offset = 0; offset < needle.length; offset += 1) {
+        comparisons += 1;
+        if (comparisons > maxComparisons) { truncated = true; break scan; }
         if (!residueMatch(needle[offset], residues[start + offset], molecule)) { ok = false; break; }
       }
       if (!ok) continue;
-      if (matches.length >= maxMatches) { truncated = true; break outer; }
-      const matchColumns = columns.slice(start, start + needle.length);
-      matches.push({
+      if (collector.push({
         rowId: row.id,
         rowName: row.name,
-        startColumn: matchColumns[0],
-        endColumn: matchColumns[matchColumns.length - 1],
-        columns: matchColumns,
-      });
+        startColumn: columns[start],
+        endColumn: columns[start + needle.length - 1],
+      }, () => columns.slice(start, start + needle.length))) {
+        truncated = true;
+        // With zero retention capacity, the first hit proves truncation and no
+        // later scan can change the intentionally empty result.
+        if (retainedCapacity === 0) break scan;
+      }
     }
   }
 
-  matches.sort((left, right) => (
-    left.startColumn - right.startColumn
-    || left.endColumn - right.endColumn
-    || left.rowName.localeCompare(right.rowName, undefined, { numeric: true })
-  ));
-  return { matches, truncated };
+  return { matches: collector.toSortedArray(), truncated };
 }

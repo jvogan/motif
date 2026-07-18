@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   computeMsaColumnStats,
+  computeSequenceLogoColumns,
   msaShadeBucket,
   residueColorKey,
   sliceSelectionRows,
@@ -57,6 +58,55 @@ describe('computeMsaColumnStats', () => {
   it('handles all-gap columns without dividing by zero', () => {
     const gapped = computeMsaColumnStats([{ aligned: 'A-' }, { aligned: 'A-' }]);
     expect(gapped[1]).toMatchObject({ occupancy: 0, consensusResidue: '-', conservation: 0, entropy: 0, fullyConserved: false });
+  });
+
+  it('scores conservation from entropy so it is distinct from identity in diverse columns', () => {
+    // col 3: T,A,T — identity is winner/rows = 2/3, but conservation discounts the
+    // T/A diversity via Shannon entropy (dna alphabet, max entropy log2 4 = 2), so
+    // the two metrics must diverge. Previously conservation collapsed onto identity.
+    expect(stats[3].identity).toBeCloseTo(2 / 3, 6);
+    expect(stats[3].conservation).toBeCloseTo(1 - 0.9182958 / 2, 5);
+    expect(Math.abs(stats[3].conservation - stats[3].identity)).toBeGreaterThan(0.1);
+  });
+});
+
+describe('computeSequenceLogoColumns', () => {
+  it('returns a full-height single-letter stack for a fully conserved column', () => {
+    const cols = computeSequenceLogoColumns([{ aligned: 'A' }, { aligned: 'A' }, { aligned: 'A' }]);
+    expect(cols[0].information).toBeCloseTo(1, 6);
+    expect(cols[0].stack).toEqual([{ symbol: 'A', fraction: 1 }]);
+  });
+
+  it('ranks residues by frequency and scales height by information content', () => {
+    const cols = computeSequenceLogoColumns([{ aligned: 'A' }, { aligned: 'A' }, { aligned: 'C' }]);
+    expect(cols[0].stack.map((entry) => entry.symbol)).toEqual(['A', 'C']);
+    expect(cols[0].stack[0].fraction).toBeCloseTo(2 / 3, 6);
+    expect(cols[0].information).toBeCloseTo(1 - 0.9182958 / 2, 5); // dna alphabet, max entropy log2 4 = 2
+  });
+
+  it('scales height down by occupancy and ignores gaps', () => {
+    const cols = computeSequenceLogoColumns([{ aligned: 'A' }, { aligned: '-' }, { aligned: '-' }]);
+    expect(cols[0].stack).toEqual([{ symbol: 'A', fraction: 1 }]);
+    expect(cols[0].information).toBeCloseTo(1 / 3, 6);
+  });
+
+  it('normalises against the protein alphabet when requested', () => {
+    // Two equally-frequent residues: entropy is 1 bit; protein max entropy is log2 20.
+    const cols = computeSequenceLogoColumns([{ aligned: 'K' }, { aligned: 'R' }], 'protein');
+    expect(cols[0].information).toBeCloseTo(1 - 1 / Math.log2(20), 5);
+  });
+
+  it('is empty for an all-gap column', () => {
+    const cols = computeSequenceLogoColumns([{ aligned: '-' }, { aligned: '-' }]);
+    expect(cols[0]).toEqual({ information: 0, stack: [] });
+  });
+
+  it('computes only the requested half-open column window', () => {
+    const rows = [{ aligned: 'ACGT' }, { aligned: 'ACGT' }];
+    const cols = computeSequenceLogoColumns(rows, 'dna', { startColumn: 1, endColumn: 3 });
+    expect(cols).toHaveLength(2);
+    expect(cols.map((column) => column.stack[0]?.symbol)).toEqual(['C', 'G']);
+    expect(computeSequenceLogoColumns(rows, 'dna', { startColumn: 99, endColumn: 120 })).toEqual([]);
   });
 });
 
@@ -148,6 +198,17 @@ describe('summarizeSelectionColumns', () => {
     const summary = summarizeSelectionColumns(computeMsaColumnStats(aln.rows), { start: 1, end: 1 });
     expect(summary.gapColumns).toBe(1);
     expect(summary.variableColumns).toBe(0);
+  });
+
+  it('excludes all-gap columns from the mean identity, not just the variable count', () => {
+    // Column 0 is perfectly identical (A/A); column 1 is all-gap. The mean must
+    // reflect only the informative column (1.0), not be halved to 0.5 by the gap.
+    const stats = computeMsaColumnStats([{ aligned: 'A-' }, { aligned: 'A-' }]);
+    const summary = summarizeSelectionColumns(stats, { start: 0, end: 1 });
+    expect(summary.columns).toBe(2);
+    expect(summary.gapColumns).toBe(1);
+    expect(summary.meanIdentity).toBeCloseTo(1, 6);
+    expect(summary.meanConservation).toBeCloseTo(1, 6);
   });
 });
 
@@ -267,6 +328,79 @@ describe('findMsaMotifMatches', () => {
     expect(matches).toHaveLength(4);
     expect(truncated).toBe(true);
     // A zero/negative cap stores nothing (does not leak one match).
-    expect(findMsaMotifMatches(rows, 'A', { molecule: 'dna', maxMatches: 0 }).matches).toHaveLength(0);
+    const zero = findMsaMotifMatches(rows, 'A', { molecule: 'dna', maxMatches: 0 });
+    expect(zero.matches).toHaveLength(0);
+    expect(zero.truncated).toBe(true);
+  });
+
+  it('returns the globally-earliest columns when the cap truncates, regardless of row order', () => {
+    // The row holding the earlier column is scanned LAST, yet must win the cap —
+    // the previous implementation kept whichever hit it happened to reach first.
+    const rows = [
+      { id: 'late', name: 'Late', aligned: '--A' }, // A at column 2, scanned first
+      { id: 'early', name: 'Early', aligned: 'A--' }, // A at column 0, scanned second
+    ];
+    const { matches, truncated } = findMsaMotifMatches(rows, 'A', { molecule: 'dna', maxMatches: 1 });
+    expect(truncated).toBe(true);
+    expect(matches).toHaveLength(1);
+    expect(matches[0]).toMatchObject({ rowId: 'early', startColumn: 0 });
+  });
+
+  it('keeps an exact earliest-K order through multi-node heap replacements and ties', () => {
+    const rows = [
+      { id: 'late', name: 'Same', aligned: '----A-A' },
+      { id: 'tie-b', name: 'Same', aligned: 'A------' },
+      { id: 'tie-a', name: 'Same', aligned: 'A------' },
+      { id: 'middle', name: 'Middle', aligned: '--A----' },
+    ];
+    const { matches, truncated } = findMsaMotifMatches(rows, 'A', { molecule: 'dna', maxMatches: 3 });
+    expect(truncated).toBe(true);
+    expect(matches.map((match) => [match.startColumn, match.rowId])).toEqual([
+      [0, 'tie-a'],
+      [0, 'tie-b'],
+      [2, 'middle'],
+    ]);
+  });
+
+  it('bounds query length and aggregate retained column entries', () => {
+    const rows = [{ id: 'r', name: 'r', aligned: 'AAAAAAAAAAAA' }];
+    const tooLong = findMsaMotifMatches(rows, 'AAAAA', {
+      molecule: 'dna',
+      maxQueryLength: 4,
+    });
+    expect(tooLong).toEqual({ matches: [], truncated: true });
+
+    const retained = findMsaMotifMatches(rows, 'AAAA', {
+      molecule: 'dna',
+      maxMatches: 10,
+      maxRetainedColumns: 8,
+    });
+    expect(retained.truncated).toBe(true);
+    expect(retained.matches).toHaveLength(2);
+    expect(retained.matches.flatMap((match) => match.columns)).toHaveLength(8);
+  });
+
+  it('bounds total work and reports truncation for a long, absent query', () => {
+    // 200 columns of A searched for a 150-long A…C motif never matches; without a
+    // comparison budget this scans every start position. The cap stops it early.
+    const rows = [{ id: 'r', name: 'r', aligned: 'A'.repeat(200) }];
+    const query = `${'A'.repeat(149)}C`;
+    const { matches, truncated } = findMsaMotifMatches(rows, query, { molecule: 'dna', maxComparisons: 500 });
+    expect(matches).toHaveLength(0);
+    expect(truncated).toBe(true);
+  });
+
+  it('preserves matches found before the comparison budget is exhausted', () => {
+    const rows = [
+      { id: 'early', name: 'Early', aligned: 'AAAAC' },
+      { id: 'work', name: 'Work', aligned: 'A'.repeat(100) },
+    ];
+    const { matches, truncated } = findMsaMotifMatches(rows, 'AAAAC', {
+      molecule: 'dna',
+      maxComparisons: 10,
+    });
+    expect(truncated).toBe(true);
+    expect(matches).toHaveLength(1);
+    expect(matches[0]).toMatchObject({ rowId: 'early', columns: [0, 1, 2, 3, 4] });
   });
 });

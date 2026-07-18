@@ -19,6 +19,49 @@ export type ClaudeScienceMsaShadeMode = MsaShadeMode;
 export const MSA_ZOOM_MIN = 0.2;
 export const MSA_ZOOM_MAX = 2;
 
+export type MsaFitZoomInput = {
+  baseCellWidth: number;
+  columnCount: number;
+  viewportWidth: number;
+  minimumCellWidth: number;
+  maximumCellWidth: number;
+};
+
+/**
+ * Select the greatest persisted (0.01-step) zoom whose final, tenth-pixel
+ * rounded cell width fits the available sequence viewport. Keeping the same
+ * quantization as the renderer prevents a nominal "Fit" from leaving a small
+ * overflow lane at rounding boundaries.
+ */
+export function resolveMsaFitZoom({
+  baseCellWidth,
+  columnCount,
+  viewportWidth,
+  minimumCellWidth,
+  maximumCellWidth,
+}: MsaFitZoomInput): { zoom: number; fits: boolean } {
+  const valid = [baseCellWidth, columnCount, viewportWidth, minimumCellWidth, maximumCellWidth]
+    .every((value) => Number.isFinite(value) && value >= 0);
+  if (!valid || baseCellWidth === 0 || maximumCellWidth < minimumCellWidth) {
+    return { zoom: MSA_ZOOM_MIN, fits: false };
+  }
+
+  const renderedWidth = (zoom: number) => {
+    const boundedCellWidth = Math.max(minimumCellWidth, Math.min(maximumCellWidth, baseCellWidth * zoom));
+    return (Math.round(boundedCellWidth * 10) / 10) * columnCount;
+  };
+  const fitsAt = (zoom: number) => renderedWidth(zoom) <= viewportWidth;
+  if (!fitsAt(MSA_ZOOM_MIN)) return { zoom: MSA_ZOOM_MIN, fits: false };
+
+  const minimumStep = Math.ceil(MSA_ZOOM_MIN * 100);
+  const maximumStep = Math.floor(MSA_ZOOM_MAX * 100);
+  for (let step = maximumStep; step >= minimumStep; step -= 1) {
+    const zoom = step / 100;
+    if (fitsAt(zoom)) return { zoom, fits: true };
+  }
+  return { zoom: MSA_ZOOM_MIN, fits: true };
+}
+
 export type ClaudeScienceMsaViewPreferences = {
   displayMode: ClaudeScienceMsaDisplayMode;
   emphasis: ClaudeScienceMsaEmphasisMode;
@@ -38,6 +81,7 @@ export type ClaudeScienceMsaViewPreferences = {
   showConservationHistogram: boolean;
   showOccupancy: boolean;
   showConsensus: boolean;
+  showSequenceLogo: boolean;
   showTranslation: boolean;
   showAminoAcidIndices: boolean;
 };
@@ -61,6 +105,7 @@ export const DEFAULT_CLAUDE_SCIENCE_MSA_VIEW_PREFERENCES: ClaudeScienceMsaViewPr
   showConservationHistogram: true,
   showOccupancy: false,
   showConsensus: true,
+  showSequenceLogo: false,
   showTranslation: false,
   showAminoAcidIndices: true,
 };
@@ -77,7 +122,7 @@ export function normalizeClaudeScienceMsaViewPreferences(value: unknown): Claude
     typeof source[key] === 'boolean' ? source[key] as boolean : true
   );
   // Toggles that default to off unless explicitly enabled.
-  const optional = (key: keyof Pick<ClaudeScienceMsaViewPreferences, 'showOccupancy' | 'showTranslation'>) => (
+  const optional = (key: keyof Pick<ClaudeScienceMsaViewPreferences, 'showOccupancy' | 'showSequenceLogo' | 'showTranslation'>) => (
     source[key] === true
   );
   return {
@@ -111,6 +156,7 @@ export function normalizeClaudeScienceMsaViewPreferences(value: unknown): Claude
     showConservationHistogram: visible('showConservationHistogram'),
     showOccupancy: optional('showOccupancy'),
     showConsensus: visible('showConsensus'),
+    showSequenceLogo: optional('showSequenceLogo'),
     showTranslation: optional('showTranslation'),
     showAminoAcidIndices: visible('showAminoAcidIndices'),
   };
