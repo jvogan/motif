@@ -138,6 +138,14 @@ import {
   type ArtifactAnalysisResult,
 } from './claude-science-analysis-results';
 import {
+  clampFloatingSurfaceRect,
+  moveFloatingSurfaceRect,
+  resizeFloatingSurfaceRectFromBottomRight,
+  type FloatingSurfaceRect,
+  type FloatingSurfaceSizeLimits,
+  type FloatingSurfaceViewport,
+} from './floating-surface-geometry';
+import {
   addArtifactNote,
   appendArtifactWorkflowResult,
   getArtifactNotesSnapshot,
@@ -434,6 +442,9 @@ type ArtifactThemeName = 'light' | 'dark' | 'claude-light' | 'claude-dark';
 type SequenceViewMode = 'standard' | 'detail';
 type MapThemeName = 'dark' | 'light';
 type PaneKey = 'inventory' | 'map' | 'sequence' | 'tools';
+type PanePlacement = 'docked' | 'floating';
+type PanePlacements = Record<PaneKey, PanePlacement>;
+type FloatingPaneRects = Record<PaneKey, FloatingSurfaceRect>;
 type ResizablePaneKey = 'inventory' | 'sequence' | 'map' | 'tools';
 type StackedResizablePaneKey = 'inventory' | 'sequence';
 type ResizeEdge = 'before' | 'after';
@@ -624,6 +635,49 @@ const PANE_ICONS: Record<PaneKey, LucideIcon> = {
   tools: Wrench,
 };
 
+const DEFAULT_PANE_PLACEMENTS: PanePlacements = {
+  inventory: 'docked',
+  map: 'docked',
+  sequence: 'docked',
+  tools: 'docked',
+};
+
+const FLOATING_PANE_LIMITS: Record<PaneKey, FloatingSurfaceSizeLimits> = {
+  inventory: { minWidth: 260, minHeight: 280, maxWidth: 620, maxHeight: 760 },
+  sequence: { minWidth: 420, minHeight: 320, maxWidth: 1040, maxHeight: 900 },
+  map: { minWidth: 340, minHeight: 320, maxWidth: 900, maxHeight: 900 },
+  tools: { minWidth: 280, minHeight: 280, maxWidth: 720, maxHeight: 900 },
+};
+
+function floatingPaneViewport(): FloatingSurfaceViewport {
+  const topbarBottom = typeof document === 'undefined'
+    ? 0
+    : document.querySelector<HTMLElement>('.motif-cs-topbar')?.getBoundingClientRect().bottom ?? 0;
+  const toolsRailWidth = typeof document === 'undefined'
+    ? 0
+    : document.querySelector<HTMLElement>('.motif-cs-inspector[data-tools-pinned="false"]')?.getBoundingClientRect().width ?? 0;
+  return {
+    width: typeof window === 'undefined' ? 1280 : window.innerWidth,
+    height: typeof window === 'undefined' ? 800 : window.innerHeight,
+    insets: {
+      top: Math.max(8, topbarBottom + 8),
+      right: Math.max(8, toolsRailWidth + 8),
+      bottom: 8,
+      left: 8,
+    },
+  };
+}
+
+function defaultFloatingPaneRects(viewport = floatingPaneViewport()): FloatingPaneRects {
+  const defaults: FloatingPaneRects = {
+    inventory: { x: 24, y: 92, w: 340, h: 520 },
+    sequence: { x: Math.max(24, viewport.width * 0.18), y: 76, w: 680, h: 620 },
+    map: { x: Math.max(24, viewport.width - 620), y: 92, w: 580, h: 580 },
+    tools: { x: Math.max(24, viewport.width - 420), y: 84, w: 360, h: 620 },
+  };
+  return defaults;
+}
+
 type WorkspaceLayoutPrefs = {
   theme: ArtifactThemeName;
   paneWidths: PaneWidths;
@@ -631,6 +685,8 @@ type WorkspaceLayoutPrefs = {
   paneVisibility: PaneVisibility;
   paneOrder: PaneKey[];
   toolsPinned: boolean;
+  panePlacements: PanePlacements;
+  floatingPaneRects: FloatingPaneRects;
 };
 
 const WORKSPACE_LAYOUT_STORAGE_KEY = 'motif.claude-science.workspace-layout.v1';
@@ -642,6 +698,8 @@ const DEFAULT_WORKSPACE_LAYOUT: WorkspaceLayoutPrefs = {
   paneVisibility: DEFAULT_PANE_VISIBILITY,
   paneOrder: [...DEFAULT_PANE_ORDER],
   toolsPinned: false,
+  panePlacements: DEFAULT_PANE_PLACEMENTS,
+  floatingPaneRects: defaultFloatingPaneRects(),
 };
 
 function isPaneKey(value: unknown): value is PaneKey {
@@ -706,15 +764,53 @@ function normalizePaneOrder(value: unknown): PaneKey[] {
   return [...ordered, ...DEFAULT_PANE_ORDER].filter((pane, index, list) => list.indexOf(pane) === index);
 }
 
+function normalizePanePlacements(value: unknown): PanePlacements {
+  const source = value && typeof value === 'object' ? value as Partial<Record<PaneKey, unknown>> : {};
+  return Object.fromEntries(DEFAULT_PANE_ORDER.map((pane) => [
+    pane,
+    source[pane] === 'floating' ? 'floating' : 'docked',
+  ])) as PanePlacements;
+}
+
+function normalizeFloatingPaneRects(value: unknown): FloatingPaneRects {
+  const source = value && typeof value === 'object' ? value as Partial<Record<PaneKey, unknown>> : {};
+  const defaults = defaultFloatingPaneRects();
+  return Object.fromEntries(DEFAULT_PANE_ORDER.map((pane) => {
+    const candidate = source[pane];
+    const rect = candidate && typeof candidate === 'object' ? candidate as Partial<FloatingSurfaceRect> : {};
+    const limits = FLOATING_PANE_LIMITS[pane];
+    const preferred = {
+      x: Number.isFinite(rect.x) ? rect.x as number : defaults[pane].x,
+      y: Number.isFinite(rect.y) ? rect.y as number : defaults[pane].y,
+      w: clamp(
+        Number.isFinite(rect.w) ? rect.w as number : defaults[pane].w,
+        limits.minWidth ?? 1,
+        limits.maxWidth ?? Number.POSITIVE_INFINITY,
+      ),
+      h: clamp(
+        Number.isFinite(rect.h) ? rect.h as number : defaults[pane].h,
+        limits.minHeight ?? 1,
+        limits.maxHeight ?? Number.POSITIVE_INFINITY,
+      ),
+    };
+    return [pane, preferred];
+  })) as FloatingPaneRects;
+}
+
 function normalizeWorkspaceLayout(value: unknown): WorkspaceLayoutPrefs {
   const source = value && typeof value === 'object' ? value as Partial<Record<keyof WorkspaceLayoutPrefs, unknown>> : {};
+  const panePlacements = normalizePanePlacements(source.panePlacements);
   return {
     theme: normalizeArtifactThemeName(source.theme),
     paneWidths: normalizePaneWidths(source.paneWidths),
     stackedPaneHeights: normalizeStackedPaneHeights(source.stackedPaneHeights),
     paneVisibility: normalizePaneVisibility(source.paneVisibility),
     paneOrder: normalizePaneOrder(source.paneOrder),
-    toolsPinned: typeof source.toolsPinned === 'boolean' ? source.toolsPinned : DEFAULT_WORKSPACE_LAYOUT.toolsPinned,
+    toolsPinned: panePlacements.tools === 'floating'
+      ? true
+      : typeof source.toolsPinned === 'boolean' ? source.toolsPinned : DEFAULT_WORKSPACE_LAYOUT.toolsPinned,
+    panePlacements,
+    floatingPaneRects: normalizeFloatingPaneRects(source.floatingPaneRects),
   };
 }
 
@@ -4536,6 +4632,12 @@ function App() {
   const [paneVisibility, setPaneVisibility] = useState<PaneVisibility>(initialWorkspaceLayout.paneVisibility);
   const [toolsPinned, setToolsPinned] = useState(initialWorkspaceLayout.toolsPinned);
   const [paneOrder, setPaneOrder] = useState<PaneKey[]>(initialWorkspaceLayout.paneOrder);
+  const [panePlacements, setPanePlacements] = useState<PanePlacements>(initialWorkspaceLayout.panePlacements);
+  const [floatingPaneRects, setFloatingPaneRects] = useState<FloatingPaneRects>(initialWorkspaceLayout.floatingPaneRects);
+  const [floatingPaneZOrder, setFloatingPaneZOrder] = useState<PaneKey[]>(() => (
+    DEFAULT_PANE_ORDER.filter((pane) => initialWorkspaceLayout.panePlacements[pane] === 'floating')
+  ));
+  const [floatingViewport, setFloatingViewport] = useState(floatingPaneViewport);
   // Translations live in a floating "dynamic window" (toggle in the top bar). Rect
   // is remembered so it reopens where the user left it; seeded to the lower-right.
   const [showTranslations, setShowTranslations] = useState(false);
@@ -4653,6 +4755,16 @@ function App() {
   const workspaceMainRef = useRef<HTMLElement | null>(null);
   const [topbarHeight, setTopbarHeight] = useState(38);
   const [workspaceMainSize, setWorkspaceMainSize] = useState({ width: 1280, height: 720 });
+  const floatingPaneRectsRef = useRef(floatingPaneRects);
+  const floatingPaneInteractionRef = useRef<{
+    pane: PaneKey;
+    mode: 'move' | 'resize';
+    pointerId: number;
+    startX: number;
+    startY: number;
+    base: FloatingSurfaceRect;
+  } | null>(null);
+  const floatingPaneInteractionCleanupRef = useRef<(() => void) | null>(null);
   const sequenceScrollByRecordRef = useRef<Record<string, number>>({});
   const mapDragRef = useRef<MapDragState | null>(null);
   const mapPointerIdRef = useRef<number | null>(null);
@@ -7898,10 +8010,198 @@ function App() {
     setPaneVisibility((current) => current[pane] ? current : { ...current, [pane]: true });
   }, []);
 
+  useEffect(() => {
+    floatingPaneRectsRef.current = floatingPaneRects;
+  }, [floatingPaneRects]);
+
+  useEffect(() => {
+    const updateViewport = () => setFloatingViewport(floatingPaneViewport());
+    updateViewport();
+    window.addEventListener('resize', updateViewport);
+    return () => window.removeEventListener('resize', updateViewport);
+  }, []);
+
+  const paneElementForKey = useCallback((pane: PaneKey): HTMLElement | null => {
+    if (pane === 'inventory') return inventoryColumnRef.current;
+    if (pane === 'map') return mapColumnRef.current;
+    if (pane === 'sequence') return sequenceColumnRef.current;
+    return toolsInspectorRef.current;
+  }, []);
+
+  const bringFloatingPaneToFront = useCallback((pane: PaneKey) => {
+    setFloatingPaneZOrder((current) => current[current.length - 1] === pane
+      ? current
+      : [...current.filter((candidate) => candidate !== pane), pane]);
+  }, []);
+
+  const popOutPane = useCallback((pane: PaneKey) => {
+    setPaneVisibility((current) => current[pane] ? current : { ...current, [pane]: true });
+    setPanePlacements((current) => current[pane] === 'floating'
+      ? current
+      : { ...current, [pane]: 'floating' });
+    if (pane === 'tools') setToolsPinned(true);
+    bringFloatingPaneToFront(pane);
+    window.requestAnimationFrame(() => {
+      paneElementForKey(pane)?.querySelector<HTMLButtonElement>('[data-pane-dock]')?.focus({ preventScroll: true });
+    });
+  }, [bringFloatingPaneToFront, paneElementForKey]);
+
+  const dockPane = useCallback((pane: PaneKey) => {
+    setPanePlacements((current) => current[pane] === 'docked'
+      ? current
+      : { ...current, [pane]: 'docked' });
+    setFloatingPaneZOrder((current) => current.filter((candidate) => candidate !== pane));
+    window.requestAnimationFrame(() => {
+      paneElementForKey(pane)?.querySelector<HTMLButtonElement>('[data-pane-popout]')?.focus({ preventScroll: true });
+    });
+  }, [paneElementForKey]);
+
+  const stopFloatingPaneInteraction = useCallback(() => {
+    floatingPaneInteractionCleanupRef.current?.();
+    floatingPaneInteractionCleanupRef.current = null;
+    floatingPaneInteractionRef.current = null;
+    delete document.body.dataset.motifCsPaneFloatingAction;
+  }, []);
+
+  useEffect(() => () => stopFloatingPaneInteraction(), [stopFloatingPaneInteraction]);
+
+  const setFloatingPaneRect = useCallback((pane: PaneKey, rect: FloatingSurfaceRect) => {
+    floatingPaneRectsRef.current = { ...floatingPaneRectsRef.current, [pane]: rect };
+    setFloatingPaneRects((current) => ({ ...current, [pane]: rect }));
+  }, []);
+
+  const beginFloatingPaneInteraction = useCallback((
+    pane: PaneKey,
+    mode: 'move' | 'resize',
+    event: ReactPointerEvent<HTMLElement>,
+  ) => {
+    if (panePlacements[pane] !== 'floating' || window.innerWidth <= 520) return;
+    if (!event.isPrimary || event.button !== 0) return;
+    if (mode === 'move' && (event.target as HTMLElement).closest('button, input, textarea, select, a, summary, [contenteditable="true"]')) return;
+    event.preventDefault();
+    stopFloatingPaneInteraction();
+    bringFloatingPaneToFront(pane);
+    const surface = event.currentTarget;
+    const base = clampFloatingSurfaceRect(
+      floatingPaneRectsRef.current[pane],
+      floatingPaneViewport(),
+      FLOATING_PANE_LIMITS[pane],
+    );
+    floatingPaneInteractionRef.current = {
+      pane,
+      mode,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      base,
+    };
+    document.body.dataset.motifCsPaneFloatingAction = mode;
+    try {
+      surface.setPointerCapture?.(event.pointerId);
+    } catch {
+      /* Window listeners keep the interaction alive when capture is unavailable. */
+    }
+
+    const applyPointer = (clientX: number, clientY: number) => {
+      const interaction = floatingPaneInteractionRef.current;
+      if (!interaction) return;
+      const delta = {
+        dx: clientX - interaction.startX,
+        dy: clientY - interaction.startY,
+      };
+      const viewport = floatingPaneViewport();
+      const next = interaction.mode === 'move'
+        ? moveFloatingSurfaceRect(interaction.base, delta, viewport, FLOATING_PANE_LIMITS[interaction.pane])
+        : resizeFloatingSurfaceRectFromBottomRight(interaction.base, delta, viewport, FLOATING_PANE_LIMITS[interaction.pane]);
+      setFloatingPaneRect(interaction.pane, next);
+    };
+
+    const removeListeners = () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', finishPointer);
+      window.removeEventListener('pointercancel', finishPointer);
+      window.removeEventListener('blur', finishFromBlur);
+      surface.removeEventListener('lostpointercapture', finishPointer);
+      if (floatingPaneInteractionCleanupRef.current === removeListeners) {
+        floatingPaneInteractionCleanupRef.current = null;
+      }
+    };
+    function handlePointerMove(moveEvent: PointerEvent) {
+      if (moveEvent.pointerId !== floatingPaneInteractionRef.current?.pointerId) return;
+      moveEvent.preventDefault();
+      applyPointer(moveEvent.clientX, moveEvent.clientY);
+    }
+    function finishPointer(endEvent: PointerEvent) {
+      if (endEvent.pointerId !== floatingPaneInteractionRef.current?.pointerId) return;
+      stopFloatingPaneInteraction();
+    }
+    function finishFromBlur() {
+      stopFloatingPaneInteraction();
+    }
+    floatingPaneInteractionCleanupRef.current = removeListeners;
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', finishPointer);
+    window.addEventListener('pointercancel', finishPointer);
+    window.addEventListener('blur', finishFromBlur);
+    surface.addEventListener('lostpointercapture', finishPointer);
+  }, [bringFloatingPaneToFront, panePlacements, setFloatingPaneRect, stopFloatingPaneInteraction]);
+
+  const moveFloatingPaneFromKeyboard = useCallback((pane: PaneKey, event: ReactKeyboardEvent<HTMLElement>) => {
+    if (panePlacements[pane] !== 'floating' || !event.altKey) return;
+    if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
+    event.preventDefault();
+    const step = event.shiftKey ? 24 : 10;
+    const delta = {
+      dx: event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0,
+      dy: event.key === 'ArrowUp' ? -step : event.key === 'ArrowDown' ? step : 0,
+    };
+    setFloatingPaneRect(pane, moveFloatingSurfaceRect(
+      floatingPaneRectsRef.current[pane],
+      delta,
+      floatingPaneViewport(),
+      FLOATING_PANE_LIMITS[pane],
+    ));
+  }, [panePlacements, setFloatingPaneRect]);
+
+  const resizeFloatingPaneFromKeyboard = useCallback((pane: PaneKey, event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
+    event.preventDefault();
+    const step = event.shiftKey ? 24 : 10;
+    setFloatingPaneRect(pane, resizeFloatingSurfaceRectFromBottomRight(
+      floatingPaneRectsRef.current[pane],
+      {
+        dx: event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0,
+        dy: event.key === 'ArrowUp' ? -step : event.key === 'ArrowDown' ? step : 0,
+      },
+      floatingPaneViewport(),
+      FLOATING_PANE_LIMITS[pane],
+    ));
+  }, [setFloatingPaneRect]);
+
+  useEffect(() => {
+    const dockFocusedFloatingPane = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      const targetPane = (event.target as HTMLElement | null)?.closest<HTMLElement>('[data-pane-placement="floating"]');
+      if (!targetPane || (event.target as HTMLElement | null)?.closest('[data-motif-cs-escape-scope="true"]')) return;
+      const pane = targetPane.dataset.paneKey as PaneKey | undefined;
+      if (!pane || !DEFAULT_PANE_ORDER.includes(pane)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      dockPane(pane);
+    };
+    window.addEventListener('keydown', dockFocusedFloatingPane);
+    return () => window.removeEventListener('keydown', dockFocusedFloatingPane);
+  }, [dockPane]);
+
   const scrollPaneIntoView = useCallback((pane: PaneKey) => {
     if (typeof document === 'undefined') return;
+    if (panePlacements[pane] === 'floating') {
+      bringFloatingPaneToFront(pane);
+      paneElementForKey(pane)?.focus({ preventScroll: true });
+      return;
+    }
     document.querySelector(PANE_SELECTOR[pane])?.scrollIntoView({ block: 'start', behavior: 'auto' });
-  }, []);
+  }, [bringFloatingPaneToFront, paneElementForKey, panePlacements]);
 
   const revealSequencePaneIfStacked = useCallback(() => {
     // Selection focus belongs to the sequence pane's own scroller. Moving the
@@ -9160,8 +9460,17 @@ function App() {
   }, [closeOpenToolDetails, mapFrameRef]);
 
   useEffect(() => {
-    saveWorkspaceLayoutPrefs({ theme, paneWidths: preferredPaneWidths, stackedPaneHeights, paneVisibility, paneOrder, toolsPinned });
-  }, [paneOrder, paneVisibility, preferredPaneWidths, stackedPaneHeights, theme, toolsPinned]);
+    saveWorkspaceLayoutPrefs({
+      theme,
+      paneWidths: preferredPaneWidths,
+      stackedPaneHeights,
+      paneVisibility,
+      paneOrder,
+      toolsPinned,
+      panePlacements,
+      floatingPaneRects,
+    });
+  }, [floatingPaneRects, paneOrder, panePlacements, paneVisibility, preferredPaneWidths, stackedPaneHeights, theme, toolsPinned]);
 
   useEffect(() => {
     saveMsaViewPreferences(msaViewPreferences);
@@ -9175,6 +9484,9 @@ function App() {
     setPaneVisibility({ ...DEFAULT_WORKSPACE_LAYOUT.paneVisibility });
     setToolsPinned(DEFAULT_WORKSPACE_LAYOUT.toolsPinned);
     setPaneOrder([...DEFAULT_WORKSPACE_LAYOUT.paneOrder]);
+    setPanePlacements({ ...DEFAULT_WORKSPACE_LAYOUT.panePlacements });
+    setFloatingPaneRects(defaultFloatingPaneRects());
+    setFloatingPaneZOrder([]);
   }, []);
 
   const resetDisplayPreferences = useCallback(() => {
@@ -9196,6 +9508,14 @@ function App() {
 
   const toggleToolsPinned = useCallback(() => {
     setPaneVisibility((current) => current.tools ? current : { ...current, tools: true });
+    if (panePlacements.tools === 'floating') {
+      stopFloatingPaneInteraction();
+      setPanePlacements((current) => ({ ...current, tools: 'docked' }));
+      setFloatingPaneZOrder((current) => current.filter((pane) => pane !== 'tools'));
+      setToolsPinned(false);
+      window.requestAnimationFrame(closeOpenToolDetails);
+      return;
+    }
     setToolsPinned((current) => {
       const next = !current;
       if (!next && typeof window !== 'undefined') {
@@ -9203,7 +9523,7 @@ function App() {
       }
       return next;
     });
-  }, [closeOpenToolDetails]);
+  }, [closeOpenToolDetails, panePlacements.tools, stopFloatingPaneInteraction]);
 
   const togglePane = useCallback((pane: PaneKey) => {
     const isStacked = typeof window !== 'undefined' && window.matchMedia(STACKED_LAYOUT_MEDIA).matches;
@@ -9212,10 +9532,10 @@ function App() {
       if (pane !== 'tools' && current[pane] && openContentCount <= 1) return current;
       return { ...current, [pane]: !current[pane] };
     });
-    if (isStacked && !paneVisibility[pane]) {
+    if ((isStacked || panePlacements[pane] === 'floating') && !paneVisibility[pane]) {
       window.requestAnimationFrame(() => scrollPaneIntoView(pane));
     }
-  }, [paneVisibility, scrollPaneIntoView]);
+  }, [panePlacements, paneVisibility, scrollPaneIntoView]);
 
   const reorderPane = useCallback((dragged: PaneKey, target: PaneKey) => {
     if (dragged === target) return;
@@ -9304,13 +9624,18 @@ function App() {
     return base + 1;
   }, [paneOrderIndex]);
 
+  const toolsFloating = panePlacements.tools === 'floating';
+  const toolsDocked = panePlacements.tools === 'docked' && toolsPinned;
+  const toolsRail = panePlacements.tools === 'docked' && !toolsPinned;
   const visibleOrderedPanes = useMemo(
-    () => paneOrder.filter((pane) => paneVisibility[pane]),
-    [paneOrder, paneVisibility],
+    () => paneOrder.filter((pane) => paneVisibility[pane] && panePlacements[pane] === 'docked'),
+    [paneOrder, panePlacements, paneVisibility],
   );
   const visibleContentPanes = useMemo(
-    () => paneOrder.filter((pane): pane is Exclude<PaneKey, 'tools'> => pane !== 'tools' && paneVisibility[pane]),
-    [paneOrder, paneVisibility],
+    () => paneOrder.filter((pane): pane is Exclude<PaneKey, 'tools'> => (
+      pane !== 'tools' && paneVisibility[pane] && panePlacements[pane] === 'docked'
+    )),
+    [paneOrder, panePlacements, paneVisibility],
   );
   const paneCollapsePointsRight = useCallback((pane: Exclude<PaneKey, 'tools'>) => {
     const index = visibleContentPanes.indexOf(pane);
@@ -9320,22 +9645,26 @@ function App() {
     const index = visibleOrderedPanes.indexOf(pane);
     return index > 0 ? visibleOrderedPanes[index - 1] : undefined;
   }, [visibleOrderedPanes]);
-  const sequenceBeforeMap = paneVisibility.sequence && paneVisibility.map && previousVisiblePane('map') === 'sequence';
-  const mapBeforeSequence = paneVisibility.sequence && paneVisibility.map && previousVisiblePane('sequence') === 'map';
+  const sequenceBeforeMap = paneVisibility.sequence && paneVisibility.map
+    && panePlacements.sequence === 'docked' && panePlacements.map === 'docked'
+    && previousVisiblePane('map') === 'sequence';
+  const mapBeforeSequence = paneVisibility.sequence && paneVisibility.map
+    && panePlacements.sequence === 'docked' && panePlacements.map === 'docked'
+    && previousVisiblePane('sequence') === 'map';
   const showSequenceMapResizeHandle = sequenceBeforeMap || mapBeforeSequence;
-  const showToolsResizeHandle = paneVisibility.tools && visibleOrderedPanes[0] !== 'tools';
+  const showToolsResizeHandle = paneVisibility.tools && toolsDocked && visibleOrderedPanes[0] !== 'tools';
   const visibleResizablePanes = useMemo(() => {
     const keys: ResizablePaneKey[] = [];
-    if (paneVisibility.inventory) keys.push('inventory');
-    if (paneVisibility.sequence) keys.push('sequence');
-    if (paneVisibility.map) keys.push('map');
-    if (paneVisibility.tools && toolsPinned) keys.push('tools');
+    if (paneVisibility.inventory && panePlacements.inventory === 'docked') keys.push('inventory');
+    if (paneVisibility.sequence && panePlacements.sequence === 'docked') keys.push('sequence');
+    if (paneVisibility.map && panePlacements.map === 'docked') keys.push('map');
+    if (paneVisibility.tools && toolsDocked) keys.push('tools');
     return keys;
-  }, [paneVisibility, toolsPinned]);
-  const resizeHandleCount = (paneVisibility.inventory ? 1 : 0)
+  }, [panePlacements, paneVisibility, toolsDocked]);
+  const resizeHandleCount = (paneVisibility.inventory && panePlacements.inventory === 'docked' ? 1 : 0)
     + (showSequenceMapResizeHandle ? 1 : 0)
-    + (showToolsResizeHandle && toolsPinned ? 1 : 0);
-  const toolsRailWidth = paneVisibility.tools && !toolsPinned ? TOOLS_RAIL_WIDTH : 0;
+    + (showToolsResizeHandle ? 1 : 0);
+  const toolsRailWidth = paneVisibility.tools && toolsRail ? TOOLS_RAIL_WIDTH : 0;
 
   useLayoutEffect(() => {
     const node = topbarRef.current;
@@ -9385,14 +9714,14 @@ function App() {
       document.querySelector<HTMLButtonElement>(`[data-pane-toggle="${pane}"]`)?.focus({ preventScroll: true });
     });
   }, [paneReorderAvailable]);
-  const compactPinnedLayout = toolsPinned && stableCompactTopology;
+  const compactPinnedLayout = toolsDocked && stableCompactTopology;
   const compactMapHiddenTwoRowLayout = compactPinnedLayout
     && workspaceMainSize.width <= 767
-    && !paneVisibility.map;
+    && (!paneVisibility.map || panePlacements.map === 'floating');
   const compactRowResizeActive = compactPinnedLayout
-    && paneVisibility.sequence
-    && (paneVisibility.map || compactMapHiddenTwoRowLayout);
-  const twoRowResizeActive = !toolsPinned
+    && paneVisibility.sequence && panePlacements.sequence === 'docked'
+    && ((paneVisibility.map && panePlacements.map === 'docked') || compactMapHiddenTwoRowLayout);
+  const twoRowResizeActive = !toolsDocked
     && stableCompactTopology
     && visibleContentPanes.length === 3
     && paneVisibility.sequence
@@ -9455,7 +9784,7 @@ function App() {
     const mainWidth = document.querySelector<HTMLElement>('.motif-cs-main')?.clientWidth ?? window.innerWidth;
     const effectiveHandleCount = twoRowLayout
       ? Number(fittedPanes.includes('inventory') && fittedPanes.includes('sequence'))
-      : resizeHandleCount - (overlayTools && showToolsResizeHandle && toolsPinned ? 1 : 0);
+      : resizeHandleCount - (overlayTools && showToolsResizeHandle ? 1 : 0);
     const resizeHandleSpace = Math.max(0, effectiveHandleCount) * 7;
     const effectiveToolsRailWidth = overlayTools ? TOOLS_RAIL_WIDTH : toolsRailWidth;
     const next = { ...widths };
@@ -9484,7 +9813,7 @@ function App() {
       deficit -= consumed;
     }
     return next;
-  }, [compactPinnedLayout, paneWidthLimitsForCurrentLayout, resizeHandleCount, showToolsResizeHandle, stableCompactTopology, toolsPinned, toolsRailWidth, visibleContentPanes.length, visibleResizablePanes]);
+  }, [compactPinnedLayout, paneWidthLimitsForCurrentLayout, resizeHandleCount, showToolsResizeHandle, stableCompactTopology, toolsRailWidth, visibleContentPanes.length, visibleResizablePanes]);
 
   useEffect(() => {
     const clampForCurrentViewport = () => {
@@ -9560,7 +9889,7 @@ function App() {
     const otherPaneWidth = fittedPanes
       .filter((key) => key !== pane)
       .reduce((sum, key) => sum + paneWidths[key], effectiveToolsRailWidth);
-    const effectiveHandleCount = resizeHandleCount - (overlayLayout && showToolsResizeHandle && toolsPinned ? 1 : 0);
+    const effectiveHandleCount = resizeHandleCount - (overlayLayout && showToolsResizeHandle ? 1 : 0);
     const resizeHandleSpace = Math.max(0, effectiveHandleCount) * resizeHandleWidth;
     const mainWidth = document.querySelector<HTMLElement>('.motif-cs-main')?.clientWidth ?? window.innerWidth;
     const overlayTools = pane === 'tools' && overlayLayout;
@@ -9617,7 +9946,7 @@ function App() {
     window.addEventListener('pointermove', handlePointerMove);
     window.addEventListener('pointerup', handlePointerUp);
     window.addEventListener('pointercancel', handlePointerUp);
-  }, [clampPaneWidthsForViewport, compactPinnedLayout, paneResizeNeighbor, paneWidthLimitsForCurrentLayout, paneWidths, preferredPaneWidths, resizeHandleCount, resizePanePair, showToolsResizeHandle, toolsPinned, toolsRailWidth, visibleResizablePanes]);
+  }, [clampPaneWidthsForViewport, compactPinnedLayout, paneResizeNeighbor, paneWidthLimitsForCurrentLayout, paneWidths, preferredPaneWidths, resizeHandleCount, resizePanePair, showToolsResizeHandle, toolsRailWidth, visibleResizablePanes]);
   const resizePaneFromKeyboard = useCallback((pane: ResizablePaneKey, event: ReactKeyboardEvent<HTMLDivElement>, edge: ResizeEdge = 'after') => {
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
     event.preventDefault();
@@ -9657,7 +9986,7 @@ function App() {
     if (!event.isPrimary || event.button !== 0) return;
     const supportsRowResize = window.matchMedia(STACKED_LAYOUT_MEDIA).matches
       || window.matchMedia(TWO_ROW_LAYOUT_MEDIA).matches
-      || (toolsPinned && window.matchMedia(COMPACT_PINNED_LAYOUT_MEDIA).matches);
+      || (toolsDocked && window.matchMedia(COMPACT_PINNED_LAYOUT_MEDIA).matches);
     if (!supportsRowResize) return;
     const paneElement = pane === 'inventory' ? inventoryColumnRef.current : sequenceColumnRef.current;
     if (!paneElement) return;
@@ -9686,7 +10015,7 @@ function App() {
     window.addEventListener('pointermove', handlePointerMove);
     window.addEventListener('pointerup', stopResize);
     window.addEventListener('pointercancel', stopResize);
-  }, [resizeStackedPaneTo, toolsPinned]);
+  }, [resizeStackedPaneTo, toolsDocked]);
 
   const resizeStackedPaneFromKeyboard = useCallback((pane: StackedResizablePaneKey, event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
@@ -9699,9 +10028,11 @@ function App() {
     resizeStackedPaneTo(pane, currentHeight + (event.key === 'ArrowDown' ? step : -step));
   }, [resizeStackedPaneTo, stackedPaneHeights]);
 
-  const visiblePaneCount = (['inventory', 'map', 'sequence', 'tools'] as const)
-    .filter((pane) => paneVisibility[pane]).length;
   const visibleContentPaneCount = CONTENT_PANE_KEYS.filter((pane) => paneVisibility[pane]).length;
+  const dockedContentPaneCount = CONTENT_PANE_KEYS.filter((pane) => (
+    paneVisibility[pane] && panePlacements[pane] === 'docked'
+  )).length;
+  const dockedPaneCount = dockedContentPaneCount + Number(paneVisibility.tools && toolsDocked);
   const canCollapseContentPane = visibleContentPaneCount > 1;
   const stackedInventoryBounds = stackedPaneBoundsForCurrentLayout('inventory');
   const effectiveStackedInventoryHeight = stackedPaneHeights.inventory === null
@@ -9723,6 +10054,27 @@ function App() {
   const renderedStackedSequenceHeight = effectiveStackedSequenceHeight
     ?? (workspaceRowResizeActive ? defaultCompactTopRowHeight : 360);
   const activeRecordTabIndex = Math.max(0, payload.records.findIndex((record) => record.id === recordId));
+  const floatingPaneStyle = (pane: PaneKey): CSSProperties => {
+    if (panePlacements[pane] !== 'floating') return {};
+    const safeViewport: FloatingSurfaceViewport = {
+      width: floatingViewport.width,
+      height: floatingViewport.height,
+      insets: { top: topbarHeight + 8, right: toolsRail ? TOOLS_RAIL_WIDTH + 8 : 8, bottom: 8, left: 8 },
+    };
+    const rect = clampFloatingSurfaceRect(floatingPaneRects[pane], safeViewport, FLOATING_PANE_LIMITS[pane]);
+    const zIndex = 60 + Math.max(0, floatingPaneZOrder.indexOf(pane));
+    return {
+      '--motif-cs-floating-pane-left': `${rect.x}px`,
+      '--motif-cs-floating-pane-top': `${rect.y}px`,
+      '--motif-cs-floating-pane-width': `${rect.w}px`,
+      '--motif-cs-floating-pane-height': `${rect.h}px`,
+      left: rect.x,
+      top: rect.y,
+      width: rect.w,
+      height: rect.h,
+      zIndex,
+    } as CSSProperties;
+  };
 
   return (
     <div
@@ -9784,13 +10136,14 @@ function App() {
               const PaneIcon = PANE_ICONS[pane];
               const paneOn = pane === 'tools' ? true : paneVisibility[pane];
               const isLastVisiblePane = pane !== 'tools' && paneOn && visibleContentPaneCount <= 1;
+              const paneFloating = panePlacements[pane] === 'floating';
               return (
                 <button
                   key={pane}
                   className="motif-cs-pane-toggle"
                   type="button"
                   data-pane-toggle={pane}
-                  data-active={(pane === 'tools' ? toolsPinned : paneOn) || undefined}
+                  data-active={(pane === 'tools' ? toolsDocked || toolsFloating : paneOn) || undefined}
                   data-dragging={paneDragUi?.dragged === pane || undefined}
                   data-drop-target={paneDragUi?.target === pane && paneDragUi.dragged !== pane || undefined}
                   draggable={paneReorderAvailable}
@@ -9801,20 +10154,21 @@ function App() {
                   onDragOver={handlePaneDragOver}
                   onDrop={(event) => handlePaneDrop(pane, event)}
                   onDragEnd={handlePaneDragEnd}
-                  aria-pressed={pane === 'tools' ? toolsPinned : paneOn}
+                  aria-pressed={pane === 'tools' ? toolsDocked || toolsFloating : paneOn}
                   aria-keyshortcuts={paneReorderAvailable ? 'Alt+Shift+ArrowLeft Alt+Shift+ArrowRight' : undefined}
                   aria-label={pane === 'tools'
-                    ? `Tools ${toolsPinned ? 'expanded' : 'rail'}${paneReorderAvailable ? '; drag or use Alt+Shift+Left/Right Arrow to reorder' : ''}`
-                    : `${PANE_LABELS[pane]} pane ${paneOn ? 'on' : 'off'}${isLastVisiblePane ? '; at least one pane must stay visible' : paneReorderAvailable ? '; drag or use Alt+Shift+Left/Right Arrow to reorder' : ''}`}
+                    ? `Tools ${toolsFloating ? 'floating' : toolsDocked ? 'expanded' : 'rail'}${paneReorderAvailable ? '; drag or use Alt+Shift+Left/Right Arrow to reorder' : ''}`
+                    : `${PANE_LABELS[pane]} pane ${paneOn ? paneFloating ? 'floating' : 'on' : 'off'}${isLastVisiblePane ? '; at least one pane must stay visible' : paneReorderAvailable ? '; drag or use Alt+Shift+Left/Right Arrow to reorder' : ''}`}
                   title={pane === 'tools'
-                    ? `${toolsPinned ? 'Minimize tools to the right rail' : 'Expand tools panel'}${paneReorderAvailable ? '; drag to reorder' : ''}`
+                    ? `${toolsFloating || toolsDocked ? 'Minimize tools to the right rail' : 'Expand tools panel'}${paneReorderAvailable ? '; drag to reorder' : ''}`
                     : isLastVisiblePane
                       ? 'At least one pane must stay visible'
                       : `${paneOn ? 'Hide' : 'Show'} ${PANE_LABELS[pane]} pane${paneReorderAvailable ? '; drag to reorder' : ''}`}
                 >
                   <PaneIcon className="motif-cs-nav-icon" aria-hidden="true" />
                   <span>{PANE_LABELS[pane]}</span>
-                  {pane === 'tools' && !toolsPinned ? <small className="motif-cs-pane-state">Rail</small> : null}
+                  {paneFloating ? <small className="motif-cs-pane-state">Float</small> : null}
+                  {pane === 'tools' && toolsRail ? <small className="motif-cs-pane-state">Rail</small> : null}
                 </button>
               );
             })}
@@ -9882,12 +10236,12 @@ function App() {
         aria-labelledby={payload.records.length > 0 ? `motif-cs-record-tab-${activeRecordTabIndex}` : undefined}
         aria-label={payload.records.length === 0 ? 'Sequence workspace; no records open' : undefined}
         tabIndex={-1}
-        data-visible-pane-count={visiblePaneCount}
-        data-content-pane-count={visibleContentPaneCount}
-        data-inventory-hidden={!paneVisibility.inventory || undefined}
-        data-map-hidden={!paneVisibility.map || undefined}
-        data-sequence-hidden={!paneVisibility.sequence || undefined}
-        data-tools-pinned={toolsPinned || undefined}
+        data-visible-pane-count={dockedPaneCount}
+        data-content-pane-count={dockedContentPaneCount}
+        data-inventory-hidden={!paneVisibility.inventory || panePlacements.inventory === 'floating' || undefined}
+        data-map-hidden={!paneVisibility.map || panePlacements.map === 'floating' || undefined}
+        data-sequence-hidden={!paneVisibility.sequence || panePlacements.sequence === 'floating' || undefined}
+        data-tools-pinned={toolsDocked || undefined}
         style={{
           '--motif-cs-inventory-pane-width': `${paneWidths.inventory}px`,
           '--motif-cs-sequence-pane-width': `${paneWidths.sequence}px`,
@@ -9904,17 +10258,33 @@ function App() {
         {paneVisibility.inventory ? (
           <>
             <aside
+              key="inventory-pane"
               ref={inventoryColumnRef}
               className="motif-cs-sidebar motif-cs-pane"
+              data-pane-key="inventory"
+              data-pane-placement={panePlacements.inventory}
               data-stacked-resized={effectiveStackedInventoryHeight !== null || undefined}
+              role={panePlacements.inventory === 'floating' ? 'dialog' : undefined}
+              aria-label={panePlacements.inventory === 'floating' ? 'Inventory pane' : undefined}
+              tabIndex={panePlacements.inventory === 'floating' ? -1 : undefined}
+              onPointerDown={() => panePlacements.inventory === 'floating' && bringFloatingPaneToFront('inventory')}
+              onFocusCapture={() => panePlacements.inventory === 'floating' && bringFloatingPaneToFront('inventory')}
               style={{
                 '--motif-cs-inventory-pane-width': `${paneWidths.inventory}px`,
                 '--motif-cs-stacked-inventory-pane-height': effectiveStackedInventoryHeight === null ? undefined : `${effectiveStackedInventoryHeight}px`,
                 flexBasis: paneWidths.inventory,
                 order: paneCssOrder('inventory'),
+                ...floatingPaneStyle('inventory'),
               } as CSSProperties}
             >
-              <div className="motif-cs-pane-title">
+              <div
+                className="motif-cs-pane-title"
+                tabIndex={panePlacements.inventory === 'floating' ? 0 : undefined}
+                role={panePlacements.inventory === 'floating' ? 'group' : undefined}
+                aria-label={panePlacements.inventory === 'floating' ? 'Move Inventory pane; use Alt plus arrow keys' : undefined}
+                onPointerDown={(event) => beginFloatingPaneInteraction('inventory', 'move', event)}
+                onKeyDown={(event) => moveFloatingPaneFromKeyboard('inventory', event)}
+              >
                 <div>
                   <span>Inventory</span>
                 </div>
@@ -9929,6 +10299,14 @@ function App() {
                 >
                   <Plus size={15} strokeWidth={2.3} aria-hidden="true" />
                 </button>
+                <PanePlacementControl
+                  pane="inventory"
+                  title="Inventory"
+                  floating={panePlacements.inventory === 'floating'}
+                  disabled={dockedContentPaneCount <= 1}
+                  onPopOut={popOutPane}
+                  onDock={dockPane}
+                />
                 <button
                   className="motif-cs-pane-collapse"
                   type="button"
@@ -9955,9 +10333,12 @@ function App() {
                 onRestoreDatabase={(database) => requestArtifactDatabaseRestore(database)}
               />
               <InventoryList records={payload.records} selectedRecordId={recordId} onSelect={selectRecord} />
+              {panePlacements.inventory === 'floating' ? (
+                <FloatingPaneResizeHandle pane="inventory" title="Inventory" onPointerDown={beginFloatingPaneInteraction} onKeyDown={resizeFloatingPaneFromKeyboard} />
+              ) : null}
             </aside>
-            <PaneResizeHandle pane="inventory" label="Resize inventory pane" width={paneWidths.inventory} limits={paneWidthLimitsForCurrentLayout('inventory')} edge="after" onPointerDown={startPaneResize} onKeyDown={resizePaneFromKeyboard} style={{ order: paneCssOrder('inventory', 'after') }} />
-            <StackedPaneResizeHandle
+            {panePlacements.inventory === 'docked' ? <PaneResizeHandle pane="inventory" label="Resize inventory pane" width={paneWidths.inventory} limits={paneWidthLimitsForCurrentLayout('inventory')} edge="after" onPointerDown={startPaneResize} onKeyDown={resizePaneFromKeyboard} style={{ order: paneCssOrder('inventory', 'after') }} /> : null}
+            {panePlacements.inventory === 'docked' ? <StackedPaneResizeHandle
               pane="inventory"
               label="Inventory"
               height={effectiveStackedInventoryHeight ?? 160}
@@ -9967,26 +10348,50 @@ function App() {
               onKeyDown={resizeStackedPaneFromKeyboard}
               onReset={(pane) => setStackedPaneHeights((current) => ({ ...current, [pane]: null }))}
               style={{ order: paneCssOrder('inventory', 'after') }}
-            />
+            /> : null}
           </>
         ) : null}
 
         {paneVisibility.map ? (
           <>
             <section
+              key="map-pane"
               ref={mapColumnRef}
               className="motif-cs-map-column motif-cs-pane"
+              data-pane-key="map"
+              data-pane-placement={panePlacements.map}
+              role={panePlacements.map === 'floating' ? 'dialog' : undefined}
+              aria-label={panePlacements.map === 'floating' ? 'Map pane' : undefined}
+              tabIndex={panePlacements.map === 'floating' ? -1 : undefined}
+              onPointerDown={() => panePlacements.map === 'floating' && bringFloatingPaneToFront('map')}
+              onFocusCapture={() => panePlacements.map === 'floating' && bringFloatingPaneToFront('map')}
               style={{
                 '--motif-cs-map-pane-width': `${paneWidths.map}px`,
                 flexBasis: paneWidths.map,
                 order: paneCssOrder('map'),
+                ...floatingPaneStyle('map'),
               } as CSSProperties}
             >
-              <div className="motif-cs-pane-title">
+              <div
+                className="motif-cs-pane-title"
+                tabIndex={panePlacements.map === 'floating' ? 0 : undefined}
+                role={panePlacements.map === 'floating' ? 'group' : undefined}
+                aria-label={panePlacements.map === 'floating' ? 'Move Map pane; use Alt plus arrow keys' : undefined}
+                onPointerDown={(event) => beginFloatingPaneInteraction('map', 'move', event)}
+                onKeyDown={(event) => moveFloatingPaneFromKeyboard('map', event)}
+              >
                 <div>
                   <span>{hasActiveRecord ? mapPaneTitle : 'Map'}</span>
                   <small>{hasActiveRecord ? `${topology} · ${sequenceLengthLabel(sequence.length, sequenceType)}` : 'No active record'}</small>
                 </div>
+                <PanePlacementControl
+                  pane="map"
+                  title="Map"
+                  floating={panePlacements.map === 'floating'}
+                  disabled={dockedContentPaneCount <= 1}
+                  onPopOut={popOutPane}
+                  onDock={dockPane}
+                />
                 <button
                   className="motif-cs-pane-collapse"
                   type="button"
@@ -10173,6 +10578,9 @@ function App() {
                   onSelectRange={selectSequenceRangeAndReveal}
                 />
               </div>
+              {panePlacements.map === 'floating' ? (
+                <FloatingPaneResizeHandle pane="map" title="Map" onPointerDown={beginFloatingPaneInteraction} onKeyDown={resizeFloatingPaneFromKeyboard} />
+              ) : null}
             </section>
             {showSequenceMapResizeHandle ? (
               <PaneResizeHandle
@@ -10191,17 +10599,33 @@ function App() {
         {paneVisibility.sequence ? (
           <>
             <section
+              key="sequence-pane"
               ref={sequenceColumnRef}
               className="motif-cs-sequence-column motif-cs-pane motif-cs-primary-pane"
+              data-pane-key="sequence"
+              data-pane-placement={panePlacements.sequence}
               data-stacked-resized={effectiveStackedSequenceHeight !== null || undefined}
+              role={panePlacements.sequence === 'floating' ? 'dialog' : undefined}
+              aria-label={panePlacements.sequence === 'floating' ? 'Sequence pane' : undefined}
+              tabIndex={panePlacements.sequence === 'floating' ? -1 : undefined}
+              onPointerDown={() => panePlacements.sequence === 'floating' && bringFloatingPaneToFront('sequence')}
+              onFocusCapture={() => panePlacements.sequence === 'floating' && bringFloatingPaneToFront('sequence')}
               style={{
                 '--motif-cs-sequence-pane-width': `${paneWidths.sequence}px`,
                 '--motif-cs-stacked-sequence-pane-height': effectiveStackedSequenceHeight === null ? undefined : `${effectiveStackedSequenceHeight}px`,
                 flexBasis: paneWidths.sequence,
                 order: paneCssOrder('sequence'),
+                ...floatingPaneStyle('sequence'),
               } as CSSProperties}
             >
-            <div className="motif-cs-title-row motif-cs-sequence-title">
+            <div
+              className="motif-cs-title-row motif-cs-sequence-title"
+              tabIndex={panePlacements.sequence === 'floating' ? 0 : undefined}
+              role={panePlacements.sequence === 'floating' ? 'group' : undefined}
+              aria-label={panePlacements.sequence === 'floating' ? 'Move Sequence pane; use Alt plus arrow keys' : undefined}
+              onPointerDown={(event) => beginFloatingPaneInteraction('sequence', 'move', event)}
+              onKeyDown={(event) => moveFloatingPaneFromKeyboard('sequence', event)}
+            >
               <div>
                 {hasActiveRecord ? <EditableRecordTitle record={vector} onUpdate={updateRecordDetails} /> : <h1>No sequence loaded</h1>}
                 <p title={vector.description ?? payload.inventory.description}>{vector.description ?? payload.inventory.description}</p>
@@ -10213,6 +10637,14 @@ function App() {
                     <span className="motif-cs-chip">{sequenceLengthLabel(sequence.length, sequenceType)}</span>
                   </>
                 ) : null}
+                <PanePlacementControl
+                  pane="sequence"
+                  title="Sequence"
+                  floating={panePlacements.sequence === 'floating'}
+                  disabled={dockedContentPaneCount <= 1}
+                  onPopOut={popOutPane}
+                  onDock={dockPane}
+                />
                 <button
                   className="motif-cs-pane-collapse"
                   type="button"
@@ -10439,8 +10871,11 @@ function App() {
               onAnnotateRange={handleAnnotateRange}
               canAnnotateRange={canAnnotateSelectedMapRange}
             />
+            {panePlacements.sequence === 'floating' ? (
+              <FloatingPaneResizeHandle pane="sequence" title="Sequence" onPointerDown={beginFloatingPaneInteraction} onKeyDown={resizeFloatingPaneFromKeyboard} />
+            ) : null}
             </section>
-            <StackedPaneResizeHandle
+            {panePlacements.sequence === 'docked' ? <StackedPaneResizeHandle
               pane="sequence"
               label="Sequence"
               height={renderedStackedSequenceHeight}
@@ -10450,36 +10885,61 @@ function App() {
               onKeyDown={resizeStackedPaneFromKeyboard}
               onReset={(pane) => setStackedPaneHeights((current) => ({ ...current, [pane]: null }))}
               style={{ order: paneCssOrder('sequence', 'after') }}
-            />
+            /> : null}
           </>
         ) : null}
 
         {paneVisibility.tools ? (
           <>
-            {showToolsResizeHandle && toolsPinned ? <PaneResizeHandle pane="tools" label="Resize tools pane" width={paneWidths.tools} limits={paneWidthLimitsForCurrentLayout('tools')} edge="before" onPointerDown={startPaneResize} onKeyDown={resizePaneFromKeyboard} style={{ order: paneCssOrder('tools', 'before') }} /> : null}
+            {showToolsResizeHandle ? <PaneResizeHandle pane="tools" label="Resize tools pane" width={paneWidths.tools} limits={paneWidthLimitsForCurrentLayout('tools')} edge="before" onPointerDown={startPaneResize} onKeyDown={resizePaneFromKeyboard} style={{ order: paneCssOrder('tools', 'before') }} /> : null}
             <aside
+              key="tools-pane"
               ref={toolsInspectorRef}
               className="motif-cs-inspector motif-cs-pane"
-              data-tools-pinned={toolsPinned ? 'true' : 'false'}
+              data-pane-key="tools"
+              data-pane-placement={panePlacements.tools}
+              data-tools-pinned={toolsDocked || toolsFloating ? 'true' : 'false'}
+              role={toolsFloating ? 'dialog' : undefined}
+              aria-label={toolsFloating ? 'Tools pane' : undefined}
+              tabIndex={toolsFloating ? -1 : undefined}
+              onPointerDown={() => toolsFloating && bringFloatingPaneToFront('tools')}
+              onFocusCapture={() => toolsFloating && bringFloatingPaneToFront('tools')}
               style={{
                 '--motif-cs-tools-pane-width': `${paneWidths.tools}px`,
                 flexBasis: paneWidths.tools,
                 order: paneCssOrder('tools'),
+                ...floatingPaneStyle('tools'),
               } as CSSProperties}
             >
-              <div className="motif-cs-pane-title">
+              <div
+                className="motif-cs-pane-title"
+                tabIndex={toolsFloating ? 0 : undefined}
+                role={toolsFloating ? 'group' : undefined}
+                aria-label={toolsFloating ? 'Move Tools pane; use Alt plus arrow keys' : undefined}
+                onPointerDown={(event) => beginFloatingPaneInteraction('tools', 'move', event)}
+                onKeyDown={(event) => moveFloatingPaneFromKeyboard('tools', event)}
+              >
                 <div>
                   <span>Tools</span>
                   <small>selection + analysis</small>
                 </div>
+                {toolsDocked || toolsFloating ? (
+                  <PanePlacementControl
+                    pane="tools"
+                    title="Tools"
+                    floating={toolsFloating}
+                    onPopOut={popOutPane}
+                    onDock={dockPane}
+                  />
+                ) : null}
                 <button
                   className="motif-cs-pane-collapse"
                   type="button"
                   onClick={() => collapsePaneAndRestoreFocus('tools')}
-                  aria-label={toolsPinned ? 'Minimize tools panel to rail' : 'Expand tools panel'}
-                  title={toolsPinned ? 'Minimize tools panel to rail' : 'Expand tools panel'}
+                  aria-label={toolsDocked || toolsFloating ? 'Minimize tools panel to rail' : 'Expand tools panel'}
+                  title={toolsDocked || toolsFloating ? 'Minimize tools panel to rail' : 'Expand tools panel'}
                 >
-                  {toolsPinned ? (
+                  {toolsDocked || toolsFloating ? (
                     <ChevronRight size={14} strokeWidth={2.2} aria-hidden="true" />
                   ) : (
                     <ChevronLeft size={14} strokeWidth={2.2} aria-hidden="true" />
@@ -10496,7 +10956,7 @@ function App() {
             selectedFeatureId={selectedFeatureId}
             translationTracks={inlineTranslationTracks}
             selectedTranslationLayerId={selectedTranslationLayerId}
-            defaultOpen={toolsPinned}
+            defaultOpen={toolsDocked || toolsFloating}
             editorRequest={featureEditorRequest}
             editorLabel={
               selectedTranslationLayer
@@ -11004,6 +11464,9 @@ function App() {
               </div>
             </div>
           </details>
+            {toolsFloating ? (
+              <FloatingPaneResizeHandle pane="tools" title="Tools" onPointerDown={beginFloatingPaneInteraction} onKeyDown={resizeFloatingPaneFromKeyboard} />
+            ) : null}
             </aside>
           </>
         ) : null}
@@ -11324,6 +11787,66 @@ function RestoreWorkspaceDialog({
         </div>
       </div>
     </div>
+  );
+}
+
+function PanePlacementControl({
+  pane,
+  title,
+  floating,
+  disabled = false,
+  onPopOut,
+  onDock,
+}: {
+  pane: PaneKey;
+  title: string;
+  floating: boolean;
+  disabled?: boolean;
+  onPopOut: (pane: PaneKey) => void;
+  onDock: (pane: PaneKey) => void;
+}) {
+  return (
+    <button
+      className="motif-cs-pane-placement-button"
+      type="button"
+      data-pane-popout={!floating || undefined}
+      data-pane-dock={floating || undefined}
+      disabled={!floating && disabled}
+      onClick={() => floating ? onDock(pane) : onPopOut(pane)}
+      aria-label={floating ? `Dock ${title} pane` : `Pop out ${title} pane`}
+      title={floating
+        ? `Dock ${title} back into the workspace`
+        : disabled
+          ? 'Keep one content pane docked in the workspace'
+          : `Open ${title} as a movable pane`}
+    >
+      {floating ? <Minimize2 size={14} strokeWidth={2.1} aria-hidden="true" /> : <Maximize2 size={14} strokeWidth={2.1} aria-hidden="true" />}
+    </button>
+  );
+}
+
+function FloatingPaneResizeHandle({
+  pane,
+  title,
+  onPointerDown,
+  onKeyDown,
+}: {
+  pane: PaneKey;
+  title: string;
+  onPointerDown: (pane: PaneKey, mode: 'move' | 'resize', event: ReactPointerEvent<HTMLElement>) => void;
+  onKeyDown: (pane: PaneKey, event: ReactKeyboardEvent<HTMLButtonElement>) => void;
+}) {
+  return (
+    <button
+      className="motif-cs-floating-pane-resize"
+      type="button"
+      data-testid={`floating-pane-resize-${pane}`}
+      onPointerDown={(event) => onPointerDown(pane, 'resize', event)}
+      onKeyDown={(event) => onKeyDown(pane, event)}
+      aria-label={`Resize ${title} pane in 2 dimensions`}
+      aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown"
+      title={`Drag to resize ${title}; use arrow keys for precise control`}
+    />
   );
 }
 

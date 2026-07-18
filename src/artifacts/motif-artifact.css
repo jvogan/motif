@@ -10011,3 +10011,173 @@ summary.motif-cs-panel-head:focus-visible {
     scrollbar-gutter: stable;
   }
 }
+
+/* Pane placement ---------------------------------------------------------
+   A pane keeps one React/DOM identity while moving between the workspace and
+   a floating surface. These overrides intentionally follow every responsive
+   layout rule so old grid tracks cannot pull a floating pane back into flow. */
+.motif-cs-pane-placement-button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.motif-cs-pane-placement-button:hover,
+.motif-cs-pane-placement-button:focus-visible {
+  border-color: var(--border-subtle);
+  background: var(--control-hover);
+  color: var(--text-primary);
+  outline: none;
+}
+
+.motif-cs-pane-placement-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.motif-cs-pane-placement-button svg {
+  display: block;
+}
+
+.motif-cs-main > .motif-cs-pane[data-pane-placement="floating"] {
+  position: fixed !important;
+  top: var(--motif-cs-floating-pane-top) !important;
+  left: var(--motif-cs-floating-pane-left) !important;
+  width: var(--motif-cs-floating-pane-width) !important;
+  height: var(--motif-cs-floating-pane-height) !important;
+  grid-column: auto !important;
+  grid-row: auto !important;
+  align-self: auto !important;
+  flex: none !important;
+  max-width: none !important;
+  max-height: none !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  overflow: auto !important;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  border: 1px solid var(--border-strong) !important;
+  border-radius: 4px;
+  background-color: var(--bg-primary);
+  box-shadow: var(--elevation-popover);
+  isolation: isolate;
+}
+
+.motif-cs-main > .motif-cs-sidebar[data-pane-placement="floating"] {
+  overflow: hidden !important;
+  background-color: var(--panel-bg);
+}
+
+.motif-cs-main > .motif-cs-pane[data-pane-placement="floating"] > .motif-cs-pane-title,
+.motif-cs-main > .motif-cs-pane[data-pane-placement="floating"] > .motif-cs-sequence-title {
+  position: sticky;
+  z-index: 4;
+  top: 0;
+  min-height: 34px;
+  cursor: grab;
+  touch-action: none;
+  border-bottom: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--bg-primary) 90%, var(--bg-secondary));
+}
+
+.motif-cs-main > .motif-cs-pane[data-pane-placement="floating"] > .motif-cs-pane-title:active,
+.motif-cs-main > .motif-cs-pane[data-pane-placement="floating"] > .motif-cs-sequence-title:active {
+  cursor: grabbing;
+}
+
+.motif-cs-main > .motif-cs-sidebar[data-pane-placement="floating"] > .motif-cs-pane-title {
+  padding-inline: 10px 8px;
+}
+
+.motif-cs-main > .motif-cs-map-column[data-pane-placement="floating"] > .motif-cs-pane-title {
+  padding: 5px 7px 5px 10px;
+}
+
+.motif-cs-main > .motif-cs-sequence-column[data-pane-placement="floating"] > .motif-cs-sequence-title {
+  padding: 6px 8px 7px 10px;
+}
+
+.motif-cs-main > .motif-cs-inspector[data-pane-placement="floating"] {
+  gap: 0;
+  padding-block: 8px;
+}
+
+.motif-cs-sidebar[data-pane-placement="floating"] .motif-cs-import-panel[open] {
+  position: absolute;
+  z-index: 6;
+  top: 38px;
+  right: 8px;
+  left: 8px;
+  width: auto;
+  max-height: calc(100% - 46px);
+}
+
+.motif-cs-floating-pane-resize {
+  position: absolute;
+  z-index: 8;
+  right: 0;
+  bottom: 0;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px 0 3px;
+  background:
+    linear-gradient(135deg, transparent 0 48%, var(--border-strong) 49% 55%, transparent 56% 65%, var(--border-strong) 66% 72%, transparent 73%);
+  color: transparent;
+  cursor: nwse-resize;
+  touch-action: none;
+}
+
+.motif-cs-floating-pane-resize:hover,
+.motif-cs-floating-pane-resize:focus-visible {
+  background:
+    linear-gradient(135deg, transparent 0 48%, var(--accent) 49% 55%, transparent 56% 65%, var(--accent) 66% 72%, transparent 73%);
+  outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent);
+  outline-offset: -3px;
+}
+
+body[data-motif-cs-pane-floating-action="move"] {
+  cursor: grabbing;
+  user-select: none;
+}
+
+body[data-motif-cs-pane-floating-action="resize"] {
+  cursor: nwse-resize;
+  user-select: none;
+}
+
+@media (max-width: 520px) {
+  .motif-cs-main > .motif-cs-pane[data-pane-placement="floating"] {
+    top: calc(var(--motif-cs-topbar-height, 38px) + 8px) !important;
+    right: 8px !important;
+    bottom: 8px !important;
+    left: 8px !important;
+    width: auto !important;
+    height: auto !important;
+    border-radius: 8px 8px 3px 3px;
+  }
+
+  .motif-cs-main:has(> .motif-cs-inspector[data-tools-pinned="false"]) > .motif-cs-pane[data-pane-placement="floating"]:not(.motif-cs-inspector) {
+    right: 56px !important;
+  }
+
+  .motif-cs-main > .motif-cs-pane[data-pane-placement="floating"] > .motif-cs-pane-title,
+  .motif-cs-main > .motif-cs-pane[data-pane-placement="floating"] > .motif-cs-sequence-title {
+    cursor: default;
+    touch-action: auto;
+  }
+
+  .motif-cs-floating-pane-resize {
+    display: none;
+  }
+}

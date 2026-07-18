@@ -190,7 +190,8 @@ describe('Claude Science workspace layout guards', () => {
     expect(artifactSource).toContain("const overlayTools = pane === 'tools' && overlayLayout;");
     expect(artifactSource).toContain("visibleResizablePanes.filter((pane) => pane !== 'tools')");
     expect(artifactSource).toContain("visibleResizablePanes.filter((pane) => pane === 'inventory' || pane === 'sequence')");
-    expect(artifactSource).toContain('saveWorkspaceLayoutPrefs({ theme, paneWidths: preferredPaneWidths');
+    expect(artifactSource).toContain('saveWorkspaceLayoutPrefs({');
+    expect(artifactSource).toContain('floatingPaneRects,');
     expect(artifactSource).toContain('const next = clampPaneWidthsForViewport(preferredPaneWidths);');
     expect(artifactSource).toContain("'--motif-cs-inventory-pane-width': `${paneWidths.inventory}px`");
     expect(artifactSource).toContain("'--motif-cs-sequence-pane-width': `${paneWidths.sequence}px`");
@@ -208,7 +209,7 @@ describe('Claude Science workspace layout guards', () => {
   });
 
   it('reflows a pinned compact workspace without overlaying or reserving a hidden map lane', () => {
-    expect(artifactSource).toContain('data-tools-pinned={toolsPinned || undefined}');
+    expect(artifactSource).toContain('data-tools-pinned={toolsDocked || undefined}');
     expect(artifactCss).toMatch(/@media \(min-width: 640px\) and \(max-width: 1535px\)[\s\S]*?\.motif-cs-main\[data-tools-pinned="true"\]\s*\{[\s\S]*?display:\s*grid/);
     expect(artifactCss).toContain('.motif-cs-main[data-tools-pinned="true"] > .motif-cs-stacked-resize-handle[data-pane="sequence"]');
     expect(artifactSource).toContain('COMPACT_PINNED_LAYOUT_MEDIA');
@@ -539,7 +540,7 @@ describe('Claude Science workspace layout guards', () => {
   });
 
   it('collapses absent intermediate-width pane tracks and preserves wider-layout preferences', () => {
-    expect(artifactSource).toContain('data-content-pane-count={visibleContentPaneCount}');
+    expect(artifactSource).toContain('data-content-pane-count={dockedContentPaneCount}');
     expect(artifactSource).toContain("&& visibleContentPanes.length === 3");
     expect(artifactSource).toContain("if (twoRowLayout && pane === 'inventory') return 'sequence';");
     expect(artifactSource).toContain('const startPreferredWidths = { ...preferredPaneWidths };');
