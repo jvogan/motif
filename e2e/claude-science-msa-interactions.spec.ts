@@ -71,6 +71,86 @@ test.describe('Motif MSA viewer interactions', () => {
     return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
   }
 
+  async function selectedColumnRange(page: Page): Promise<{ start: number; end: number }> {
+    const text = await page.getByTestId('msa-selection-readout').textContent();
+    const match = text?.match(/cols\s+([\d,]+)–([\d,]+)/);
+    if (!match) throw new Error(`selection range missing from readout: ${text ?? ''}`);
+    return {
+      start: Number(match[1].replaceAll(',', '')),
+      end: Number(match[2].replaceAll(',', '')),
+    };
+  }
+
+  function activeGridCell(page: Page) {
+    return page.locator('[data-msa-grid-cell="true"][data-active-cell="true"]');
+  }
+
+  test('keyboard arrows move the active gridcell and announce its residue', async ({ page }) => {
+    await setup(page);
+    const initial = activeGridCell(page);
+    await expect(initial).toHaveAttribute('data-alignment-column', '1');
+    await initial.focus();
+    await page.keyboard.press('ArrowRight');
+
+    const moved = activeGridCell(page);
+    await expect(moved).toBeFocused();
+    await expect(moved).toHaveAttribute('data-alignment-column', '2');
+    await expect(moved).toHaveAttribute('aria-label', 'Residue I, alignment column 2, row ref');
+  });
+
+  test('Shift plus Arrow extends the keyboard selection from its anchor', async ({ page }) => {
+    await setup(page);
+    await activeGridCell(page).focus();
+    await page.keyboard.press('Shift+ArrowRight');
+
+    await expect(activeGridCell(page)).toHaveAttribute('data-alignment-column', '2');
+    const readout = page.getByTestId('msa-selection-readout');
+    await expect(readout).toContainText('cols 1–2');
+    await expect(readout).toContainText('1 row');
+  });
+
+  test('Home End and Control Home navigate row and grid boundaries', async ({ page }) => {
+    await setup(page);
+    await activeGridCell(page).focus();
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('End');
+    await expect(activeGridCell(page)).toHaveAttribute('data-alignment-column', '120');
+    await expect(activeGridCell(page).locator('xpath=..').locator('xpath=..')).toHaveAttribute('data-msa-row-index', '1');
+
+    await page.keyboard.press('Home');
+    await expect(activeGridCell(page)).toHaveAttribute('data-alignment-column', '1');
+    await expect(activeGridCell(page).locator('xpath=..').locator('xpath=..')).toHaveAttribute('data-msa-row-index', '1');
+
+    await page.keyboard.press('End');
+    await page.keyboard.press('Control+Home');
+    await expect(activeGridCell(page)).toBeFocused();
+    await expect(activeGridCell(page)).toHaveAttribute('data-alignment-column', '1');
+    await expect(activeGridCell(page).locator('xpath=..').locator('xpath=..')).toHaveAttribute('data-msa-row-index', '0');
+  });
+
+  test('Shift F10 opens selection actions at the active gridcell', async ({ page }) => {
+    await setup(page);
+    await activeGridCell(page).focus();
+    await page.keyboard.press('Shift+F10');
+
+    const menu = page.getByRole('menu', { name: 'Alignment selection actions' });
+    await expect(menu).toBeVisible();
+    await expect(menu.getByRole('menuitem', { name: /Copy selection \(FASTA\)/ })).toBeVisible();
+    await expect(page.getByTestId('msa-selection-readout')).toContainText('cols 1–1');
+  });
+
+  test('sequence search transfers focus to the matched gridcell', async ({ page }) => {
+    await setup(page);
+    const input = page.getByTestId('msa-search-input');
+    await input.fill('AIRCK');
+    await input.press('Enter');
+
+    const active = activeGridCell(page);
+    await expect(active).toBeFocused();
+    await expect(active).toHaveAttribute('data-search-active', 'true');
+    await expect(active).toHaveAttribute('aria-label', /Residue R, alignment column 3, row ref/);
+  });
+
   test('drag selects a rectangular block and reports selection stats', async ({ page }) => {
     await setup(page);
     const start = await center(page, 0, 8);
@@ -92,6 +172,51 @@ test.describe('Motif MSA viewer interactions', () => {
     await page.keyboard.press('Escape');
     await expect(page.locator('.motif-cs-msa-selection-band')).toHaveCount(0);
     await expect(page.getByTestId('msa-alignment-view')).toBeVisible();
+  });
+
+  test('grid drag past the right edge auto-scrolls into far columns', async ({ page }) => {
+    await setup(page, 1000, 720);
+    const scroll = page.locator('.motif-cs-msa-matrix-scroll');
+    const scrollBox = await scroll.boundingBox();
+    const start = await center(page, 1, 2);
+    const initialVisibleText = await page.getByTestId('msa-horizontal-scroll').getAttribute('aria-valuetext');
+    const initialVisibleEnd = Number(initialVisibleText?.match(/–(\d+) of/)?.[1] ?? 0);
+    if (!scrollBox || initialVisibleEnd === 0) throw new Error('matrix scroll geometry missing');
+
+    await page.mouse.move(start.x, start.y);
+    await page.mouse.down();
+    await page.mouse.move(scrollBox.x + scrollBox.width + 28, start.y);
+    await page.waitForTimeout(450);
+    expect(await scroll.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);
+    await page.mouse.up();
+
+    expect((await selectedColumnRange(page)).end).toBeGreaterThan(initialVisibleEnd);
+  });
+
+  test('grid pointerup past the edge resolves the final clamped cell', async ({ page }) => {
+    await setup(page, 1000, 720);
+    const scroll = page.locator('.motif-cs-msa-matrix-scroll');
+    const scrollBox = await scroll.boundingBox();
+    const start = await center(page, 1, 2);
+    const lastMovedCell = await center(page, 1, 8);
+    if (!scrollBox) throw new Error('matrix scroll geometry missing');
+
+    await page.mouse.move(start.x, start.y);
+    await page.mouse.down();
+    await page.mouse.move(lastMovedCell.x, lastMovedCell.y);
+    await scroll.dispatchEvent('pointerup', {
+      bubbles: true,
+      button: 0,
+      clientX: scrollBox.x + scrollBox.width + 28,
+      clientY: start.y,
+      pointerId: 1,
+      pointerType: 'mouse',
+    });
+    await page.mouse.up();
+
+    const range = await selectedColumnRange(page);
+    expect(range.start).toBe(3);
+    expect(range.end).toBeGreaterThan(9);
   });
 
   test('clicking the alignment ruler selects a whole column', async ({ page }) => {
@@ -319,6 +444,26 @@ test.describe('Motif MSA viewer interactions', () => {
     await page.getByTestId('msa-order-note').getByRole('button', { name: /reset order/i }).click();
     await expect(page.getByTestId('msa-order-note')).toHaveCount(0);
     expect(await rowIdAt(page, 0)).toBe(templateId);
+  });
+
+  test('row drag released off-grid cancels without reordering', async ({ page }) => {
+    await setup(page);
+    const before = await Promise.all(Array.from({ length: 5 }, (_, index) => rowIdAt(page, index)));
+    const gripBox = await page.locator('.motif-cs-msa-matrix-row[data-msa-row-index="3"] .motif-cs-msa-row-grip').boundingBox();
+    const targetGrip = await page.locator('.motif-cs-msa-matrix-row[data-msa-row-index="1"] .motif-cs-msa-row-grip').boundingBox();
+    const scrollBox = await page.locator('.motif-cs-msa-matrix-scroll').boundingBox();
+    if (!gripBox || !targetGrip || !scrollBox) throw new Error('row drag geometry missing');
+
+    await page.mouse.move(gripBox.x + gripBox.width / 2, gripBox.y + gripBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(targetGrip.x + targetGrip.width / 2, targetGrip.y + 3, { steps: 8 });
+    await expect(page.locator('.motif-cs-msa-matrix-row[data-drop-before="true"]')).toHaveCount(1);
+    await page.mouse.move(targetGrip.x + targetGrip.width / 2, scrollBox.y + scrollBox.height + 36);
+    await page.mouse.up();
+
+    expect(await Promise.all(Array.from({ length: 5 }, (_, index) => rowIdAt(page, index)))).toEqual(before);
+    await expect(page.locator('.motif-cs-msa-matrix-row[data-drop-before], .motif-cs-msa-matrix-row[data-drop-after]')).toHaveCount(0);
+    await expect(page.getByTestId('msa-order-note')).toHaveCount(0);
   });
 
   test('resetting the row order clears a selection it would otherwise misalign', async ({ page }) => {

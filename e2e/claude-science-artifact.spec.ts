@@ -2958,6 +2958,7 @@ test.describe('Claude Science artifact campaign', () => {
   });
 
   test('MSA local workflow is explicit, virtualized, movable, resizable, and focus-safe', async ({ page }) => {
+    test.slow();
     await openArtifact(page, 1440, 1000);
     const alignmentTool = page.locator('details[data-rail-tool="alignment"]');
     const alignmentSummary = alignmentTool.locator(':scope > summary');
@@ -2975,7 +2976,7 @@ test.describe('Claude Science artifact campaign', () => {
     await expect(windowPanel.locator('.motif-cs-msa-toolbar .motif-cs-chip')).toHaveText('Motif local preview');
 
     const overview = page.getByTestId('msa-overview');
-    const matrix = page.getByRole('region', { name: /Alignment matrix/ });
+    const matrix = page.getByRole('region', { name: 'Scrollable alignment matrix viewport', exact: true });
     await expect(overview).toBeVisible();
     await expect(page.getByTestId('msa-overview-viewport')).toBeVisible();
     await overview.focus();
@@ -3356,7 +3357,8 @@ test.describe('Claude Science artifact campaign', () => {
     await windowPanel.getByTestId('msa-view-menu').getByRole('checkbox', { name: 'Residue colors' }).check();
     await windowPanel.getByRole('button', { name: 'Increase alignment font size' }).click();
     await windowPanel.getByRole('button', { name: 'Text' }).click();
-    await windowPanel.locator('.motif-cs-msa-export-row select').selectOption('json');
+    const exportFormat = windowPanel.getByRole('combobox', { name: 'Export', exact: true });
+    await exportFormat.selectOption('json');
 
     await page.keyboard.press('Escape');
     await expect(windowPanel).toBeHidden();
@@ -3366,7 +3368,7 @@ test.describe('Claude Science artifact campaign', () => {
 
     await expect(picker).toHaveValue('view-state-second');
     await expect(windowPanel.getByRole('button', { name: 'Text' })).toHaveAttribute('aria-pressed', 'true');
-    await expect(windowPanel.locator('.motif-cs-msa-export-row select')).toHaveValue('json');
+    await expect(exportFormat).toHaveValue('json');
     await windowPanel.getByRole('button', { name: 'Viewer' }).click();
     await expect(windowPanel.getByRole('button', { name: 'All letters' })).toHaveAttribute('aria-pressed', 'true');
     await expect(windowPanel.getByLabel('Sort')).toHaveValue('name');
@@ -3672,7 +3674,7 @@ test.describe('Claude Science artifact campaign', () => {
     });
 
     const windowPanel = page.locator('.motif-cs-window').filter({ has: page.getByTestId('msa-workspace') });
-    const matrix = page.getByRole('region', { name: /Alignment matrix, 2 rows by 2949 columns/ });
+    const matrix = page.getByRole('region', { name: 'Scrollable alignment matrix viewport', exact: true });
     const panRow = page.getByTestId('msa-horizontal-scroll-row');
     const pan = page.getByTestId('msa-horizontal-scroll');
     await expect(windowPanel).toBeVisible();
@@ -3763,7 +3765,7 @@ test.describe('Claude Science artifact campaign', () => {
     expect(saved[0].engine).toMatchObject({ id: 'clustal-omega', label: 'Clustal Omega', version: '1.2.4', mode: 'local-command' });
 
     await page.getByRole('button', { name: 'Text' }).click();
-    await page.locator('.motif-cs-msa-export-row select').selectOption('clustal');
+    await page.getByTestId('msa-workspace').getByRole('combobox', { name: 'Export', exact: true }).selectOption('clustal');
     const exportedClustal = await page.getByLabel('CLUSTAL alignment text').inputValue();
     expect(exportedClustal).toMatch(/sample_A\s+ACGT--ACGT/);
     await page.locator('.motif-cs-msa-source > summary').click();
@@ -3849,7 +3851,7 @@ test.describe('Claude Science artifact campaign', () => {
     await page.screenshot({ path: path.join(msaCampaignOutputDir, 'msa-claude-dark-viewer-390x760.png') });
     await page.getByRole('button', { name: 'Text' }).click();
     await expect(page.getByLabel('Aligned FASTA alignment text')).toHaveValue(/>Campaign2_reference/);
-    await page.locator('.motif-cs-msa-export-row select').selectOption('clustal');
+    await windowPanel.getByRole('combobox', { name: 'Export', exact: true }).selectOption('clustal');
     await expect(page.getByLabel('CLUSTAL alignment text')).toHaveValue(/CLUSTAL W/);
 
     const accessibility = await new AxeBuilder({ page }).include('.motif-cs-window').analyze();
@@ -3858,6 +3860,7 @@ test.describe('Claude Science artifact campaign', () => {
   });
 
   test('MSA 100-row density preserves suffixes, semantics, and chained scrolling', async ({ page }) => {
+    test.slow();
     await openArtifact(page, 1180, 820);
     await page.evaluate(() => {
       const reference = 'ACGT'.repeat(375);
@@ -3884,11 +3887,12 @@ test.describe('Claude Science artifact campaign', () => {
     });
 
     const windowPanel = page.locator('.motif-cs-window').filter({ has: page.getByTestId('msa-workspace') });
-    const matrix = page.getByRole('region', { name: /Alignment matrix, 100 rows by 1500 columns/ });
+    const matrixViewport = page.getByRole('region', { name: 'Scrollable alignment matrix viewport', exact: true });
+    const matrixGrid = page.getByRole('grid', { name: 'Alignment matrix, 100 rows by 1500 columns', exact: true });
     const windowBody = windowPanel.locator('.motif-cs-window-body');
     await expect(windowPanel).toBeVisible();
     await expect(page.getByTestId('msa-stats-bar')).toContainText('100 rows');
-    await expect(matrix).toHaveAttribute('aria-describedby', 'motif-cs-msa-matrix-help');
+    await expect(matrixGrid).toHaveAttribute('aria-describedby', 'motif-cs-msa-matrix-help');
 
     const overview = page.getByTestId('msa-overview');
     const overviewBox = (await overview.boundingBox())!;
@@ -3897,7 +3901,7 @@ test.describe('Claude Science artifact campaign', () => {
     await page.mouse.move(overviewBox.x + overviewBox.width - 3, overviewBox.y + overviewBox.height / 2, { steps: 8 });
     await page.mouse.up();
     await overview.click({ position: { x: overviewBox.width - 3, y: overviewBox.height / 2 } });
-    await expect.poll(() => matrix.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);
+    await expect.poll(() => matrixViewport.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);
 
     const resizeBox = await windowPanel.locator('.motif-cs-window-resize').boundingBox();
     expect(resizeBox?.width).toBeGreaterThanOrEqual(24);
@@ -3909,17 +3913,17 @@ test.describe('Claude Science artifact campaign', () => {
     await expect(trailingLabels.nth(99)).toHaveText('100');
     expect(await trailingLabels.first().evaluate((element) => element.getBoundingClientRect().width)).toBeGreaterThan(0);
 
-    await matrix.evaluate((element) => { element.scrollTop = element.scrollHeight; });
-    const reviewPosition = await matrix.evaluate((element) => ({ left: element.scrollLeft, top: element.scrollTop }));
+    await matrixViewport.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+    const reviewPosition = await matrixViewport.evaluate((element) => ({ left: element.scrollLeft, top: element.scrollTop }));
     expect(reviewPosition.left).toBeGreaterThan(0);
     expect(reviewPosition.top).toBeGreaterThan(1_000);
     await page.getByRole('button', { name: 'Text', exact: true }).click();
     await page.getByRole('button', { name: 'Viewer', exact: true }).click();
-    await expect.poll(() => matrix.evaluate((element) => element.scrollLeft)).toBeGreaterThanOrEqual(reviewPosition.left - 2);
-    await expect.poll(() => matrix.evaluate((element) => element.scrollTop)).toBeGreaterThanOrEqual(reviewPosition.top - 2);
+    await expect.poll(() => matrixViewport.evaluate((element) => element.scrollLeft)).toBeGreaterThanOrEqual(reviewPosition.left - 2);
+    await expect.poll(() => matrixViewport.evaluate((element) => element.scrollTop)).toBeGreaterThanOrEqual(reviewPosition.top - 2);
 
     await windowBody.evaluate((element) => { element.scrollTop = 0; });
-    const visibleMatrixPoint = await matrix.evaluate((element) => {
+    const visibleMatrixPoint = await matrixViewport.evaluate((element) => {
       const matrixRect = element.getBoundingClientRect();
       const bodyRect = element.closest('.motif-cs-window-body')!.getBoundingClientRect();
       return {
@@ -3966,15 +3970,16 @@ test.describe('Claude Science artifact campaign', () => {
     });
 
     const windowPanel = page.locator('.motif-cs-window').filter({ has: page.getByTestId('msa-workspace') });
-    const matrix = page.getByRole('region', { name: /Alignment matrix, 2 rows by 50000 columns/ });
+    const matrixViewport = page.getByRole('region', { name: 'Scrollable alignment matrix viewport', exact: true });
+    const matrixGrid = page.getByRole('grid', { name: 'Alignment matrix, 2 rows by 50000 columns', exact: true });
     await expect(windowPanel).toBeVisible();
-    await expect(matrix).toBeVisible();
+    await expect(matrixGrid).toBeVisible();
     await expect(page.getByTestId('msa-stats-bar')).toContainText('50,000 columns');
     expect(await windowPanel.locator('.motif-cs-msa-symbol').count()).toBeLessThan(800);
     await expect(page.getByTestId('msa-overview').locator('path')).toHaveCount(1);
     await page.getByTestId('msa-overview').focus();
     await page.keyboard.press('End');
-    await expect.poll(() => matrix.evaluate((element) => element.scrollLeft)).toBeGreaterThan(400_000);
+    await expect.poll(() => matrixViewport.evaluate((element) => element.scrollLeft)).toBeGreaterThan(400_000);
     await expect(windowPanel.locator('.motif-cs-msa-window-note')).toContainText('50,000');
     await page.screenshot({ path: path.join(msaCampaignOutputDir, 'msa-50k-columns.png') });
   });

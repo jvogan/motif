@@ -130,9 +130,12 @@ describe('Claude Science MSA interaction and rendering guards', () => {
     const coverageHelpers = sliceBetween(viewerSource, 'type AlignmentCoverage =', 'function useObservedWidth');
     expect(coverageHelpers).toContain("const first = aligned.search(/[^-]/);");
     expect(coverageHelpers).toContain('column >= coverage.first && column <= coverage.last');
+    expect(coverageHelpers).toContain('export function classifyMsaCell(');
+    expect(coverageHelpers).toContain("if (rowResidue === '-' && !isColumnCoveredByRow) return 'uncovered';");
     expect(coverageHelpers).toContain('!coversColumn(referenceCoverage, column)');
     expect(coverageHelpers).toContain('coversColumn(rowCoverage.get(row.id) ?? null, column)');
-    expect(coverageHelpers).toContain('!coversColumn(rowCoverage, column) || !coversColumn(templateCoverage, column)');
+    expect(coverageHelpers).toContain('classifyMsaCell(templateSymbol, symbol, coversColumn(rowCoverage, column))');
+    expect(coverageHelpers).toContain('classifyMsaCell(templateSymbol, symbol, coversColumn(rowCoverage[rowIndex], column))');
   });
 
   it('runs browser alignment only from an explicit bounded action', () => {
@@ -208,8 +211,10 @@ describe('Claude Science MSA interaction and rendering guards', () => {
     expect(viewerSource).toContain('aria-label={`Use ${row.name} as template`}');
     expect(viewerSource).toContain('aria-pressed={isTemplate}');
     expect(viewerSource).toContain('role="region"');
-    expect(viewerSource).toContain('aria-label={`Alignment matrix, ${alignment.rows.length} rows by ${alignment.alignmentLength} columns. Scroll horizontally to inspect columns.`}');
-    expect(viewerSource).toContain('Use the Columns slider, Shift plus wheel, or Left and Right arrow keys to pan.');
+    expect(viewerSource).toContain('role="grid"');
+    expect(viewerSource).toContain('aria-label={`Alignment matrix, ${alignment.rows.length} rows by ${alignment.alignmentLength} columns`}');
+    expect(viewerSource).toContain('Shift plus Arrow keys to extend a selection');
+    expect(viewerSource).toContain('The Columns slider and Shift plus wheel also pan the alignment.');
     expect(viewerSource).toContain('Switch to Text to read or copy the complete aligned sequences with assistive technology.');
     expect(viewerSource).toContain('aria-live="polite"');
   });
@@ -228,7 +233,7 @@ describe('Claude Science MSA interaction and rendering guards', () => {
     expect(viewerSource).toContain('Alignment position');
     expect(viewerSource).toContain('data-template={isTemplate || undefined}');
     expect(viewerSource).toContain('return template ? [template, ...nonTemplateRows] : nonTemplateRows;');
-    expect(viewPreferencesSource).toContain("export type ClaudeScienceMsaRowSortMode = 'original' | 'name' | 'identity' | 'mismatches';");
+    expect(viewPreferencesSource).toContain("export type ClaudeScienceMsaRowSortMode = 'original' | 'name' | 'identity' | 'mismatches' | 'length';");
     expect(viewerSource).toContain('<option value="mismatches">Mismatches</option>');
     expect(viewerSource).toContain('pairwiseRowStats(row.aligned, template?.aligned ?? \'\')');
     expect(viewerSource).toContain('{stats.mismatches.toLocaleString()}Δ');

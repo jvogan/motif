@@ -8,57 +8,75 @@
  * --bg-primary so every scheme stays legible in both light and dark themes.
  */
 
-/* The matrix hosts absolutely-positioned selection/hover overlays. */
+/* The matrix hosts absolutely-positioned selection/hover overlays. Each state
+   owns a separate visual channel so stacked states remain readable. */
 .motif-cs-msa-matrix {
   position: relative;
+  --motif-cs-msa-selection-rule: color-mix(in srgb, var(--accent) 86%, var(--text-primary));
+  --motif-cs-msa-hover-rule: color-mix(in srgb, var(--text-primary) 42%, var(--border-strong));
+  --motif-cs-msa-jump-rule: var(--purple);
 }
 
-/* ===== Selection band + row emphasis ===== */
+/* ===== Selection block ===== */
 .motif-cs-msa-selection-band {
   position: absolute;
-  top: 0;
-  bottom: 0;
   z-index: 3;
   pointer-events: none;
-  background: color-mix(in srgb, var(--accent) 15%, transparent);
-  border-left: 2px solid var(--accent);
-  border-right: 2px solid var(--accent);
+  background: transparent;
+  border: 2px solid var(--motif-cs-msa-selection-rule);
+  border-radius: 2px;
   box-sizing: border-box;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--bg-primary) 82%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, var(--bg-primary) 78%, transparent);
 }
 .motif-cs-msa-selection-band::before,
 .motif-cs-msa-selection-band::after {
   content: '';
   position: absolute;
-  top: -1px;
-  width: 0;
-  height: 0;
-  border-left: 5px solid transparent;
-  border-right: 5px solid transparent;
-  border-top: 6px solid var(--accent);
+  top: -4px;
+  width: 6px;
+  height: 6px;
+  border: 1px solid var(--bg-primary);
+  border-radius: 1px;
+  background: var(--motif-cs-msa-selection-rule);
+  box-sizing: border-box;
 }
-.motif-cs-msa-selection-band::before { left: -6px; }
-.motif-cs-msa-selection-band::after { right: -6px; }
-
-.motif-cs-msa-matrix-row[data-selected='true'] {
-  background: color-mix(in srgb, var(--accent) 6%, transparent);
-}
-.motif-cs-msa-matrix-row[data-hover='true'] {
-  background: color-mix(in srgb, var(--accent) 9%, transparent);
-}
+.motif-cs-msa-selection-band::before { left: -4px; }
+.motif-cs-msa-selection-band::after { right: -4px; }
 
 /* ===== Hover crosshair + floating readout ===== */
+.motif-cs-msa-matrix-row[data-hover='true'] {
+  box-shadow:
+    inset 0 1px 0 var(--motif-cs-msa-hover-rule),
+    inset 0 -1px 0 var(--motif-cs-msa-hover-rule);
+}
+
 .motif-cs-msa-hover-column {
   position: absolute;
   top: 0;
   bottom: 0;
   z-index: 2;
   pointer-events: none;
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
-  outline: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  background: transparent;
+  outline: 1px dashed var(--motif-cs-msa-hover-rule);
+  outline-offset: -1px;
 }
 .motif-cs-msa-matrix-scroll[data-selecting='true'] {
   cursor: crosshair;
   user-select: none;
+}
+
+/* Roving keyboard focus stays independent of hover, selection, search, and
+   jump overlays so every combination remains visible. */
+.motif-cs-msa-symbol[data-active-cell='true'] {
+  position: relative;
+  z-index: 5;
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.motif-cs-msa-symbol[data-active-cell='true']:focus-visible {
+  outline-width: 3px;
 }
 
 .motif-cs-msa-hover-readout {
@@ -66,8 +84,11 @@
   z-index: 60;
   pointer-events: none;
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   gap: 6px;
+  box-sizing: border-box;
+  max-width: calc(100vw - 16px);
   padding: 4px 8px;
   border-radius: 6px;
   font-size: 11px;
@@ -142,6 +163,17 @@
   outline: none;
 }
 
+/* Remove the legacy jump wash before later residue, shade, and blocks rules
+   restore their own backgrounds. The marker itself is drawn near search. */
+.motif-cs-msa-symbol[data-jump='true'] {
+  position: relative;
+  background: transparent;
+  box-shadow: none;
+}
+.motif-cs-msa-symbol[data-jump='true'][data-difference='true'] {
+  background: color-mix(in srgb, var(--amber) 10%, transparent);
+}
+
 /* ===== Histogram tracks (conservation + occupancy) ===== */
 .motif-cs-msa-hist-row {
   position: relative;
@@ -164,6 +196,7 @@
   align-items: flex-end;
 }
 .motif-cs-msa-hist-cell {
+  position: relative;
   width: var(--motif-cs-msa-cell-width, 10px);
   height: 100%;
   display: flex;
@@ -176,9 +209,6 @@
   min-height: 1px;
   border-radius: 1px 1px 0 0;
   background: color-mix(in srgb, var(--accent) 55%, transparent);
-}
-.motif-cs-msa-hist-cell[data-jump='true'] {
-  background: color-mix(in srgb, var(--accent) 18%, transparent);
 }
 /* Conservation: greener as it climbs; occupancy: neutral accent. */
 .motif-cs-msa-hist-bar-conservation[data-bucket='0'] { background: color-mix(in srgb, #d64545 60%, transparent); }
@@ -212,9 +242,6 @@
   width: var(--motif-cs-msa-cell-width, 10px);
   height: 100%;
   box-sizing: border-box;
-}
-.motif-cs-msa-logo-col[data-jump='true'] {
-  background: color-mix(in srgb, var(--accent) 18%, transparent);
 }
 .motif-cs-msa-logo-stack {
   position: absolute;
@@ -329,6 +356,104 @@
   cursor: not-allowed;
 }
 
+/* ===== Contextual residue colour key ===== */
+.motif-cs-msa-workspace .motif-cs-msa-color-legend {
+  min-width: 0;
+  max-width: 100%;
+  margin: 2px 3px 5px;
+  padding: 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text-secondary);
+}
+.motif-cs-msa-workspace .motif-cs-msa-color-legend-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 2px 8px;
+  margin-bottom: 5px;
+  font-size: 9.5px;
+  line-height: 1.2;
+}
+.motif-cs-msa-workspace .motif-cs-msa-color-legend-heading strong {
+  color: var(--text-primary);
+  font-size: 10px;
+}
+.motif-cs-msa-workspace .motif-cs-msa-color-legend-heading > span {
+  color: var(--text-muted);
+}
+.motif-cs-msa-workspace .motif-cs-msa-color-legend-items {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 7px;
+  min-width: 0;
+}
+.motif-cs-msa-workspace .motif-cs-msa-color-legend-item {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+  font-size: 9.5px;
+  line-height: 1.15;
+  overflow-wrap: anywhere;
+}
+.motif-cs-msa-workspace .motif-cs-msa-color-legend-swatch {
+  display: block;
+  flex: 0 0 12px;
+  width: 12px;
+  height: 12px;
+  border: 1px solid color-mix(in srgb, var(--text-primary) 18%, var(--border-subtle));
+  border-radius: 2px;
+  box-sizing: border-box;
+}
+.motif-cs-msa-workspace .motif-cs-msa-color-legend-swatch[data-tone] {
+  background: currentColor;
+}
+.motif-cs-msa-workspace .motif-cs-msa-color-legend-scale {
+  min-width: 0;
+}
+.motif-cs-msa-workspace .motif-cs-msa-color-legend-scale-stops {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+.motif-cs-msa-workspace .motif-cs-msa-color-legend-scale-stop {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  color: var(--text-muted);
+  font: 8px/1 var(--font-mono);
+}
+.motif-cs-msa-workspace .motif-cs-msa-color-legend-scale-stop .motif-cs-msa-color-legend-swatch {
+  width: 100%;
+  height: 10px;
+  border-radius: 0;
+}
+.motif-cs-msa-workspace .motif-cs-msa-color-legend-scale-stop:first-child .motif-cs-msa-color-legend-swatch {
+  border-radius: 2px 0 0 2px;
+}
+.motif-cs-msa-workspace .motif-cs-msa-color-legend-scale-stop:last-child .motif-cs-msa-color-legend-swatch {
+  border-radius: 0 2px 2px 0;
+}
+.motif-cs-msa-workspace .motif-cs-msa-color-legend-scale-labels {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 2px;
+  color: var(--text-secondary);
+  font-size: 9px;
+  line-height: 1.2;
+}
+.motif-cs-msa-workspace .motif-cs-msa-color-legend-note {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 9.5px;
+  line-height: 1.35;
+}
+
 .motif-cs-msa-ruler-window-clickable .motif-cs-msa-ruler-cell { cursor: pointer; }
 .motif-cs-msa-ruler-window-clickable:hover .motif-cs-msa-ruler-cell {
   color: var(--accent);
@@ -339,7 +464,7 @@
    grip anchors to the sticky label (position: sticky) and so stays pinned at
    the left edge while the alignment scrolls horizontally. */
 .motif-cs-msa-matrix-row .motif-cs-msa-row-label-draggable {
-  padding-left: 18px;
+  padding-left: 27px;
 }
 .motif-cs-msa-row-grip {
   position: absolute;
@@ -350,7 +475,8 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 15px;
+  width: 24px;
+  min-height: 24px;
   padding: 0;
   border: 0;
   border-radius: 3px;
@@ -368,6 +494,10 @@
 .motif-cs-msa-row-grip:hover { opacity: 1; color: var(--accent); }
 .motif-cs-msa-row-grip:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; opacity: 1; }
 .motif-cs-msa-row-grip:active { cursor: grabbing; }
+
+@media (pointer: coarse) {
+  .motif-cs-msa-row-grip { opacity: 0.72; }
+}
 
 /* The dragged row is dimmed; drop target draws an accent rule on the near edge.
    The row is already position: relative, so these pseudo-elements need no extra
@@ -456,9 +586,6 @@
 .motif-cs-msa-matrix[data-blocks='true'] .motif-cs-msa-symbol[data-tone='negative'] { background: color-mix(in srgb, var(--red) 52%, var(--bg-primary)); }
 .motif-cs-msa-matrix[data-blocks='true'] .motif-cs-msa-symbol[data-tone='positive'] { background: color-mix(in srgb, var(--purple) 50%, var(--bg-primary)); }
 .motif-cs-msa-matrix[data-blocks='true'] .motif-cs-msa-symbol[data-tone='ambiguous'] { background: color-mix(in srgb, var(--text-secondary) 34%, var(--bg-primary)); }
-/* Keep a jumped column findable even as a tile. */
-.motif-cs-msa-matrix[data-blocks='true'] .motif-cs-msa-symbol[data-jump='true'] { outline: 1px solid var(--accent); outline-offset: -1px; }
-
 /* ===== Amino-acid translation track ===== */
 .motif-cs-msa-translation-row {
   position: relative;
@@ -519,7 +646,26 @@
 }
 .motif-cs-msa-aa[data-unknown='true'] { color: var(--text-muted, inherit); }
 .motif-cs-msa-aa[data-gap-spanning='true'] { border-left: 1px dashed color-mix(in srgb, var(--text-muted, currentColor) 55%, transparent); }
-.motif-cs-msa-aa[data-jump='true'] { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* ===== Difference/coordinate jump marker =====
+   A compact purple edge tick survives residue fills without resembling either
+   the amber search frame or the full-block selection perimeter. */
+.motif-cs-msa-hist-cell[data-jump='true']::after,
+.motif-cs-msa-logo-col[data-jump='true']::after,
+.motif-cs-msa-aa[data-jump='true']::after,
+.motif-cs-msa-symbol[data-jump='true']::after {
+  content: '';
+  position: absolute;
+  z-index: 4;
+  top: 25%;
+  bottom: 25%;
+  left: 1px;
+  width: 3px;
+  border-radius: 999px;
+  background: var(--motif-cs-msa-jump-rule);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--bg-primary) 78%, transparent);
+  pointer-events: none;
+}
 
 /* ===== Sequence search ===== */
 .motif-cs-msa-search {
@@ -536,16 +682,231 @@
   color: var(--text-secondary, inherit);
   white-space: nowrap;
 }
-/* Match highlight via an inset fill so it reads over residue/shade/blocks
-   backgrounds without a specificity fight; the letter stays on top. */
+/* Matches use amber plus a bottom rule. The active match switches shape to a
+   complete inset frame, leaving selection and jump markers their own edges. */
 .motif-cs-msa-symbol[data-search-match] {
-  box-shadow: inset 0 0 0 100px color-mix(in srgb, #f2c14e 55%, transparent);
+  box-shadow:
+    inset 0 -3px 0 var(--amber),
+    inset 0 0 0 1px color-mix(in srgb, var(--amber) 72%, var(--border-strong)),
+    inset 0 0 0 100px color-mix(in srgb, var(--amber) 22%, transparent);
   color: var(--text-primary, inherit);
 }
 .motif-cs-msa-symbol[data-search-active] {
-  box-shadow: inset 0 0 0 100px color-mix(in srgb, #f2a10a 62%, transparent);
+  z-index: 1;
+  box-shadow:
+    inset 0 0 0 2px var(--amber),
+    inset 0 0 0 100px color-mix(in srgb, var(--amber) 34%, transparent);
+  color: var(--text-primary, inherit);
+  font-weight: 800;
+}
+
+/* ===== Sortable per-row statistics panel ===== */
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-panel {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  margin: 0 0 8px;
+  /* Anchor the open table as a floating popover (below) so expanding the panel
+     never consumes the MSA window's bounded height and pushes the matrix out. */
+  position: relative;
+  overflow: visible;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text-primary);
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-panel > summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 12px;
+  min-height: 34px;
+  padding: 6px 10px;
+  cursor: pointer;
+  user-select: none;
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-panel > summary::marker {
+  color: var(--text-muted);
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-panel > summary:hover,
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-panel > summary:focus-visible {
+  background: color-mix(in srgb, var(--accent) 7%, var(--control-bg));
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-panel > summary:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-summary-copy {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 3px 8px;
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-summary-copy strong {
+  font-size: 12px;
+  letter-spacing: 0.01em;
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-summary-copy small,
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-summary-meta {
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.25;
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-summary-meta {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-scroll {
+  box-sizing: border-box;
+  /* Float the open table over the alignment instead of pushing it down, and
+     bound the height so a tall alignment scrolls the table internally. */
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  right: 0;
+  z-index: 30;
+  max-height: 210px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  background: var(--control-bg);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-scroll table {
+  width: 100%;
+  min-width: 430px;
+  border-spacing: 0;
+  border-collapse: separate;
+  font-size: 11px;
+  line-height: 1.25;
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-scroll th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--control-bg);
+  text-align: right;
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-scroll th:first-child {
+  width: 100%;
+  text-align: left;
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-scroll th > button {
+  display: inline-flex;
+  width: 100%;
+  min-height: 28px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  padding: 5px 9px;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font: 600 10px/1.2 var(--font-ui);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-scroll th:first-child > button {
+  justify-content: flex-start;
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-scroll th > button:hover,
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-scroll th > button:focus-visible,
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-scroll th > button[data-active='true'] {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--accent);
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-scroll th > button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-sort-indicator {
+  width: 1em;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  text-align: center;
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-scroll td {
+  padding: 6px 9px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-scroll tbody tr:last-child td {
+  border-bottom: 0;
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-scroll tbody tr[data-template='true'] td {
+  background: color-mix(in srgb, var(--accent) 7%, var(--bg-primary));
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-scroll tbody tr[data-jumpable='true'] {
+  cursor: pointer;
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-scroll tbody tr[data-jumpable='true']:hover td,
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-scroll tbody tr[data-jumpable='true']:focus-within td {
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-primary));
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-name {
+  display: flex;
+  min-width: 150px;
+  align-items: center;
+  gap: 7px;
+  color: var(--text-primary);
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-name > button {
+  min-width: 0;
+  max-width: 260px;
+  overflow: hidden;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: 600 11px/1.25 var(--font-ui);
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-name > button:focus-visible {
+  border-radius: 2px;
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.motif-cs-msa-workspace .motif-cs-msa-row-stats-number {
+  text-align: right;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 520px) {
+  .motif-cs-msa-workspace .motif-cs-msa-row-stats-summary-meta {
+    flex-basis: 100%;
+    padding-left: 0;
+  }
+}
+
+/* ===== Image export controls (scope selector + PNG/SVG) =====
+ * A grouped unit within the existing export row (which is flex-wrap), separated
+ * from the text-export controls by a subtle rule. The scope <select> inherits
+ * the row's select styling; a tighter column keeps the group from overflowing
+ * the export row on a narrow (~470px) artifact. */
+.motif-cs-msa-workspace .motif-cs-msa-export-image {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding-left: 8px;
+  border-left: 1px solid var(--border-subtle);
+}
+.motif-cs-msa-workspace .motif-cs-msa-export-row .motif-cs-msa-image-scope {
+  grid-template-columns: auto minmax(96px, 140px);
 }
 
 @media (prefers-reduced-motion: reduce) {

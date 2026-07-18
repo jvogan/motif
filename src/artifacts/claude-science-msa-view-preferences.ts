@@ -9,7 +9,7 @@ export type ClaudeScienceMsaTextFormat = 'fasta' | 'clustal' | 'consensus' | 'js
 export type ClaudeScienceMsaDisplayMode = 'viewer' | 'trace' | 'text';
 export type ClaudeScienceMsaEmphasisMode = 'differences' | 'letters';
 export type ClaudeScienceMsaColorMode = 'mono' | 'residue';
-export type ClaudeScienceMsaRowSortMode = 'original' | 'name' | 'identity' | 'mismatches';
+export type ClaudeScienceMsaRowSortMode = 'original' | 'name' | 'identity' | 'mismatches' | 'length';
 export type ClaudeScienceMsaColorScheme = MsaColorScheme;
 export type ClaudeScienceMsaShadeMode = MsaShadeMode;
 
@@ -77,6 +77,7 @@ export type ClaudeScienceMsaViewPreferences = {
   showAlignmentAxis: boolean;
   showTemplateAxis: boolean;
   showRowStats: boolean;
+  showRowStatsPanel: boolean;
   showConservation: boolean;
   showConservationHistogram: boolean;
   showOccupancy: boolean;
@@ -101,6 +102,7 @@ export const DEFAULT_CLAUDE_SCIENCE_MSA_VIEW_PREFERENCES: ClaudeScienceMsaViewPr
   showAlignmentAxis: true,
   showTemplateAxis: true,
   showRowStats: true,
+  showRowStatsPanel: false,
   showConservation: true,
   showConservationHistogram: true,
   showOccupancy: false,
@@ -122,7 +124,7 @@ export function normalizeClaudeScienceMsaViewPreferences(value: unknown): Claude
     typeof source[key] === 'boolean' ? source[key] as boolean : true
   );
   // Toggles that default to off unless explicitly enabled.
-  const optional = (key: keyof Pick<ClaudeScienceMsaViewPreferences, 'showOccupancy' | 'showSequenceLogo' | 'showTranslation'>) => (
+  const optional = (key: keyof Pick<ClaudeScienceMsaViewPreferences, 'showOccupancy' | 'showSequenceLogo' | 'showTranslation' | 'showRowStatsPanel'>) => (
     source[key] === true
   );
   return {
@@ -135,7 +137,7 @@ export function normalizeClaudeScienceMsaViewPreferences(value: unknown): Claude
     shadeMode: MSA_SHADE_MODES.includes(source.shadeMode as MsaShadeMode)
       ? source.shadeMode as MsaShadeMode
       : 'none',
-    sortMode: source.sortMode === 'name' || source.sortMode === 'identity' || source.sortMode === 'mismatches'
+    sortMode: source.sortMode === 'name' || source.sortMode === 'identity' || source.sortMode === 'mismatches' || source.sortMode === 'length'
       ? source.sortMode
       : 'original',
     fontSize: Number.isFinite(source.fontSize)
@@ -152,6 +154,7 @@ export function normalizeClaudeScienceMsaViewPreferences(value: unknown): Claude
     showAlignmentAxis: visible('showAlignmentAxis'),
     showTemplateAxis: visible('showTemplateAxis'),
     showRowStats: visible('showRowStats'),
+    showRowStatsPanel: optional('showRowStatsPanel'),
     showConservation: visible('showConservation'),
     showConservationHistogram: visible('showConservationHistogram'),
     showOccupancy: optional('showOccupancy'),

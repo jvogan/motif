@@ -13,6 +13,104 @@ export const ARTIFACT_MSA_MAX_NAME_LENGTH = 1_024;
 export const ARTIFACT_MSA_MAX_IMPORT_CHARACTERS = 2_250_000;
 export const ARTIFACT_MSA_MAX_IMPORT_BYTES = 2_500_000;
 
+export type MsaClientBounds = { left: number; right: number; top: number; bottom: number };
+
+export type MsaColumnHitTestMetrics = {
+  viewportLeft: number;
+  viewportRight: number;
+  labelWidth: number;
+  scrollLeft: number;
+  cellWidth: number;
+  columnCount: number;
+};
+
+export type MsaGridCellPosition = { rowIndex: number; column: number };
+
+export type MsaGridNavigationOptions = {
+  rowCount: number;
+  columnCount: number;
+  pageColumnCount: number;
+  toGridBoundary?: boolean;
+};
+
+const MSA_DRAG_EDGE_MIN_SPEED = 2;
+const MSA_DRAG_EDGE_MAX_SPEED = 32;
+const MSA_DRAG_EDGE_SPEED_SCALE = 0.35;
+
+/** Clamp a drag pointer just inside a client-coordinate rectangle. */
+export function clampMsaClientPoint(
+  clientX: number,
+  clientY: number,
+  bounds: MsaClientBounds,
+): { clientX: number; clientY: number } {
+  const maxX = Math.max(bounds.left, bounds.right - 0.5);
+  const maxY = Math.max(bounds.top, bounds.bottom - 0.5);
+  return {
+    clientX: Math.max(bounds.left, Math.min(maxX, clientX)),
+    clientY: Math.max(bounds.top, Math.min(maxY, clientY)),
+  };
+}
+
+/** Per-frame signed scroll distance for a pointer beyond one viewport axis. */
+export function msaEdgeAutoScrollDelta(pointer: number, start: number, end: number): number {
+  const overshoot = pointer < start ? pointer - start : pointer > end ? pointer - end : 0;
+  if (overshoot === 0) return 0;
+  const speed = Math.min(
+    MSA_DRAG_EDGE_MAX_SPEED,
+    Math.max(MSA_DRAG_EDGE_MIN_SPEED, Math.ceil(Math.abs(overshoot) * MSA_DRAG_EDGE_SPEED_SCALE)),
+  );
+  return overshoot < 0 ? -speed : speed;
+}
+
+/** Map a client X coordinate to an alignment column, optionally clamping drag overflow. */
+export function msaColumnFromClientX(
+  clientX: number,
+  metrics: MsaColumnHitTestMetrics,
+  clampToViewport = false,
+): number | null {
+  if (metrics.columnCount <= 0 || metrics.cellWidth <= 0) return null;
+  const sequenceLeft = metrics.viewportLeft + metrics.labelWidth;
+  const sequenceRight = Math.max(sequenceLeft, metrics.viewportRight);
+  const resolvedX = clampToViewport
+    ? clampMsaClientPoint(clientX, 0, { left: sequenceLeft, right: sequenceRight, top: 0, bottom: 1 }).clientX
+    : clientX;
+  if (!clampToViewport && (resolvedX < sequenceLeft || resolvedX >= sequenceRight)) return null;
+  const column = Math.floor((resolvedX - sequenceLeft + metrics.scrollLeft) / metrics.cellWidth);
+  if (clampToViewport) return Math.max(0, Math.min(metrics.columnCount - 1, column));
+  return column >= 0 && column < metrics.columnCount ? column : null;
+}
+
+/** Resolve a keyboard navigation key to a clamped cell in the sequence grid. */
+export function navigateMsaGridCell(
+  current: MsaGridCellPosition,
+  key: string,
+  options: MsaGridNavigationOptions,
+): MsaGridCellPosition | null {
+  const rowCount = Math.max(0, Math.floor(options.rowCount));
+  const columnCount = Math.max(0, Math.floor(options.columnCount));
+  if (rowCount === 0 || columnCount === 0) return null;
+
+  const lastRow = rowCount - 1;
+  const lastColumn = columnCount - 1;
+  const rowIndex = Math.max(0, Math.min(lastRow, Math.floor(current.rowIndex)));
+  const column = Math.max(0, Math.min(lastColumn, Math.floor(current.column)));
+  const page = Math.max(1, Math.floor(options.pageColumnCount));
+
+  if (key === 'ArrowLeft') return { rowIndex, column: Math.max(0, column - 1) };
+  if (key === 'ArrowRight') return { rowIndex, column: Math.min(lastColumn, column + 1) };
+  if (key === 'ArrowUp') return { rowIndex: Math.max(0, rowIndex - 1), column };
+  if (key === 'ArrowDown') return { rowIndex: Math.min(lastRow, rowIndex + 1), column };
+  if (key === 'PageUp') return { rowIndex, column: Math.max(0, column - page) };
+  if (key === 'PageDown') return { rowIndex, column: Math.min(lastColumn, column + page) };
+  if (key === 'Home') return options.toGridBoundary ? { rowIndex: 0, column: 0 } : { rowIndex, column: 0 };
+  if (key === 'End') {
+    return options.toGridBoundary
+      ? { rowIndex: lastRow, column: lastColumn }
+      : { rowIndex, column: lastColumn };
+  }
+  return null;
+}
+
 export type ArtifactAlignmentMode = 'browser' | 'local-command' | 'imported';
 
 export type ArtifactAlignmentEngineInput = {
@@ -779,14 +877,22 @@ export function msaShadeBucket(value: number): 0 | 1 | 2 | 3 | 4 {
 //
 // residueColorKey returns a stable class-like token consumed as a data-attribute
 // and coloured in claude-science-msa.css (so palettes stay theme-aware in light
-// and dark). 'auto' keeps the viewer's existing residueTone behaviour and is
-// handled there, so this function is only called for explicit schemes.
+// and dark). The viewer keeps its existing residueTone rendering for 'auto';
+// resolveMsaColorScheme exposes the matching molecule-aware scheme semantics.
 
 export type MsaColorScheme = 'auto' | 'nucleotide' | 'clustal' | 'hydrophobicity' | 'taylor';
 export type MsaShadeMode = 'none' | 'mismatch' | 'identity' | 'conservation';
 
 export const MSA_COLOR_SCHEMES: readonly MsaColorScheme[] = ['auto', 'nucleotide', 'clustal', 'hydrophobicity', 'taylor'];
 export const MSA_SHADE_MODES: readonly MsaShadeMode[] = ['none', 'mismatch', 'identity', 'conservation'];
+
+export function resolveMsaColorScheme(
+  molecule: SequenceType,
+  scheme: MsaColorScheme,
+): Exclude<MsaColorScheme, 'auto'> {
+  if (scheme !== 'auto') return scheme;
+  return molecule === 'protein' ? 'clustal' : 'nucleotide';
+}
 
 // ClustalX-style amino-acid chemistry groups.
 const CLUSTAL_GROUP: Record<string, string> = {
@@ -817,15 +923,16 @@ function hydropathyBucket(symbol: string): 0 | 1 | 2 | 3 | 4 {
 export function residueColorKey(symbol: string, molecule: SequenceType, scheme: MsaColorScheme): string {
   const residue = symbol.toUpperCase();
   if (residue === '-' || residue === '.' || residue === '' || residue === '?') return '';
-  if (scheme === 'nucleotide' || (scheme === 'auto' && molecule !== 'protein')) {
+  const resolvedScheme = resolveMsaColorScheme(molecule, scheme);
+  if (resolvedScheme === 'nucleotide') {
     if (residue === 'A') return 'nt-a';
     if (residue === 'C') return 'nt-c';
     if (residue === 'G') return 'nt-g';
     if (residue === 'T' || residue === 'U') return 'nt-t';
     return 'nt-other';
   }
-  if (scheme === 'taylor') return 'taylor';
-  if (scheme === 'hydrophobicity') return `hyd-${hydropathyBucket(residue)}`;
+  if (resolvedScheme === 'taylor') return 'taylor';
+  if (resolvedScheme === 'hydrophobicity') return `hyd-${hydropathyBucket(residue)}`;
   const group = CLUSTAL_GROUP[residue];
   return group ? `cl-${group}` : 'cl-other';
 }
@@ -1190,4 +1297,263 @@ export function findMsaMotifMatches(
   }
 
   return { matches: collector.toSortedArray(), truncated };
+}
+
+// ===== Alignment image export (pure geometry + palette) =====
+//
+// PNG/SVG export must render from the data model, not the DOM: the matrix is
+// column-virtualised, so only a sliver of columns is ever mounted. These helpers
+// stay DOM-free and deterministic so they unit-test without a canvas —
+// computeAlignmentImageLayout derives the pixel geometry, and
+// resolveResidueCellColor mirrors the residue-scheme fills in
+// claude-science-msa.css as concrete sRGB hex against an explicit export
+// background (live CSS variables never resolve in pure code).
+
+export type AlignmentImageScope = 'view' | 'all';
+
+/** Minimal alignment shape the layout needs — ArtifactAlignment satisfies it. */
+export type AlignmentImageSource = {
+  rows: ReadonlyArray<{ name: string; aligned: string }>;
+  alignmentLength: number;
+};
+
+export type AlignmentImageLayoutOptions = {
+  scope: AlignmentImageScope;
+  /** Half-open [startColumn, endColumn) window used when scope === 'view'. */
+  startColumn?: number;
+  endColumn?: number;
+  cellWidth?: number;
+  cellHeight?: number;
+  fontSize?: number;
+  labelWidth?: number;
+  maxWidth?: number;
+  maxHeight?: number;
+  maxCells?: number;
+};
+
+export type AlignmentImageLayout = {
+  scope: AlignmentImageScope;
+  startColumn: number;
+  columnCount: number;
+  rowCount: number;
+  cellWidth: number;
+  cellHeight: number;
+  fontSize: number;
+  /** True when cells are wide enough to draw glyphs (else birdseye blocks). */
+  drawLetters: boolean;
+  labelWidth: number;
+  titleHeight: number;
+  axisHeight: number;
+  headerHeight: number;
+  /** Final canvas/SVG dimensions, clamped to the pixel budget. */
+  width: number;
+  height: number;
+  /** Unclamped ideal dimensions (before the pixel budget was applied). */
+  contentWidth: number;
+  contentHeight: number;
+  /** True when the cell/column budget forced a shrink (offer SVG as vector). */
+  clamped: boolean;
+};
+
+// Legibility floor shared with the viewer's birdseye threshold (MSA_LETTER_MIN).
+export const MSA_IMAGE_LETTER_MIN = 6.5;
+export const MSA_IMAGE_MAX_WIDTH = 12_000;
+export const MSA_IMAGE_MAX_HEIGHT = 8_000;
+// Cap on drawn cells so a huge alignment cannot produce an unbounded canvas or
+// SVG string; past this the whole-alignment scope draws a leading window.
+export const MSA_IMAGE_MAX_CELLS = 400_000;
+const MSA_IMAGE_DEFAULT_CELL_WIDTH = 12;
+const MSA_IMAGE_DEFAULT_CELL_HEIGHT = 16;
+const MSA_IMAGE_DEFAULT_FONT_SIZE = 11;
+const MSA_IMAGE_MIN_LABEL_WIDTH = 96;
+const MSA_IMAGE_MAX_LABEL_WIDTH = 320;
+
+function imageLabelWidth(rows: AlignmentImageSource['rows'], fontSize: number): number {
+  const approxChar = fontSize * 0.62;
+  let longest = 0;
+  for (const row of rows) longest = Math.max(longest, Math.min(row.name.length, 40));
+  const raw = Math.round(longest * approxChar) + 18;
+  return Math.max(MSA_IMAGE_MIN_LABEL_WIDTH, Math.min(MSA_IMAGE_MAX_LABEL_WIDTH, raw));
+}
+
+/**
+ * Pixel geometry for an exported alignment image. Resolves the column window
+ * from `scope` (the visible [start, end) range for 'view', the whole alignment
+ * for 'all'), caps the drawn cell count, then scales the cell size down to fit
+ * within the pixel budget rather than clipping — so a wide alignment renders as
+ * a birdseye mosaic with every column visible. `drawLetters` follows the final
+ * (possibly scaled) cell width, matching the viewer's blocks threshold, and
+ * `clamped` reports whether any budget forced a shrink.
+ */
+export function computeAlignmentImageLayout(
+  alignment: AlignmentImageSource,
+  options: AlignmentImageLayoutOptions,
+): AlignmentImageLayout {
+  const rowCount = alignment.rows.length;
+  const alignmentLength = Math.max(0, Math.floor(alignment.alignmentLength));
+  const maxWidth = Math.max(200, options.maxWidth ?? MSA_IMAGE_MAX_WIDTH);
+  const maxHeight = Math.max(200, options.maxHeight ?? MSA_IMAGE_MAX_HEIGHT);
+  const maxCells = Math.max(1, Math.floor(options.maxCells ?? MSA_IMAGE_MAX_CELLS));
+
+  // Resolve the column window.
+  let startColumn = 0;
+  let columnCount = alignmentLength;
+  if (options.scope === 'view') {
+    const rawStart = Math.floor(options.startColumn ?? 0);
+    const rawEnd = Math.ceil(options.endColumn ?? alignmentLength);
+    const start = Math.max(0, Math.min(alignmentLength, rawStart));
+    const end = Math.max(start, Math.min(alignmentLength, rawEnd));
+    startColumn = start;
+    columnCount = end - start;
+    // A degenerate/empty window falls back to the whole alignment.
+    if (columnCount <= 0) { startColumn = 0; columnCount = alignmentLength; }
+  }
+  columnCount = Math.max(0, columnCount);
+
+  let clamped = false;
+
+  // Cell-count cap: draw a leading window rather than an unbounded image.
+  if (rowCount > 0 && columnCount * rowCount > maxCells) {
+    columnCount = Math.max(1, Math.floor(maxCells / rowCount));
+    clamped = true;
+  }
+
+  let cellWidth = Math.max(0.5, options.cellWidth ?? MSA_IMAGE_DEFAULT_CELL_WIDTH);
+  let cellHeight = Math.max(1, options.cellHeight ?? MSA_IMAGE_DEFAULT_CELL_HEIGHT);
+  const baseFont = Math.max(6, Math.floor(options.fontSize ?? MSA_IMAGE_DEFAULT_FONT_SIZE));
+  let labelWidth = Math.round(options.labelWidth ?? imageLabelWidth(alignment.rows, baseFont));
+  labelWidth = Math.max(1, Math.min(labelWidth, Math.floor(maxWidth * 0.5)));
+
+  const titleHeight = Math.round(baseFont * 1.7) + 10;
+  const axisHeight = Math.round(baseFont) + 8;
+  const headerHeight = titleHeight + axisHeight;
+
+  // Scale cells down to fit the pixel budget (never clip; birdseye when tiny).
+  const idealSequenceWidth = columnCount * cellWidth;
+  if (idealSequenceWidth > 0 && labelWidth + idealSequenceWidth > maxWidth) {
+    cellWidth = Math.max(0.2, (maxWidth - labelWidth) / columnCount);
+    clamped = true;
+  }
+  const idealRowsHeight = rowCount * cellHeight;
+  if (idealRowsHeight > 0 && headerHeight + idealRowsHeight > maxHeight) {
+    cellHeight = Math.max(1, (maxHeight - headerHeight) / rowCount);
+    clamped = true;
+  }
+
+  const drawLetters = cellWidth >= MSA_IMAGE_LETTER_MIN;
+  const fontSize = drawLetters
+    ? Math.max(6, Math.min(baseFont, Math.floor(cellWidth * 1.35), Math.max(6, Math.floor(cellHeight * 0.78))))
+    : 0;
+
+  const contentWidth = labelWidth + columnCount * cellWidth;
+  const contentHeight = headerHeight + rowCount * cellHeight;
+  const width = Math.max(1, Math.min(maxWidth, Math.ceil(contentWidth)));
+  const height = Math.max(1, Math.min(maxHeight, Math.ceil(contentHeight)));
+
+  return {
+    scope: options.scope,
+    startColumn,
+    columnCount,
+    rowCount,
+    cellWidth,
+    cellHeight,
+    fontSize,
+    drawLetters,
+    labelWidth,
+    titleHeight,
+    axisHeight,
+    headerHeight,
+    width,
+    height,
+    contentWidth,
+    contentHeight,
+    clamped,
+  };
+}
+
+type ImageFill = { hex: string; pct: number };
+
+// Base hex + mix percent for each residue colour-key token, mirroring the fills
+// in claude-science-msa.css: color-mix(in srgb, HEX P%, var(--bg-primary)).
+const MSA_IMAGE_COLOR_KEY_FILL: Record<string, ImageFill> = {
+  'nt-a': { hex: '#2ea043', pct: 34 },
+  'nt-c': { hex: '#4c8dff', pct: 34 },
+  'nt-g': { hex: '#f0a020', pct: 36 },
+  'nt-t': { hex: '#f0553f', pct: 34 },
+  'nt-other': { hex: '#8b93a1', pct: 30 },
+  'cl-hydrophobic': { hex: '#5b8def', pct: 34 },
+  'cl-positive': { hex: '#e0533f', pct: 34 },
+  'cl-negative': { hex: '#b657c4', pct: 34 },
+  'cl-polar': { hex: '#3fae6b', pct: 34 },
+  'cl-cysteine': { hex: '#e58fa8', pct: 36 },
+  'cl-glycine': { hex: '#e08a3c', pct: 36 },
+  'cl-proline': { hex: '#cdbb3a', pct: 40 },
+  'cl-aromatic': { hex: '#2fb0b8', pct: 34 },
+  'cl-other': { hex: '#8b93a1', pct: 26 },
+  'hyd-0': { hex: '#4c8dff', pct: 34 },
+  'hyd-1': { hex: '#86b6f0', pct: 32 },
+  'hyd-2': { hex: '#cfd3da', pct: 28 },
+  'hyd-3': { hex: '#f0a86a', pct: 34 },
+  'hyd-4': { hex: '#f0553f', pct: 36 },
+};
+
+// Taylor wheel: per-residue base hex + percent (the data-residue fills in the
+// CSS), keyed by uppercase single-letter residue.
+const MSA_IMAGE_TAYLOR_FILL: Record<string, ImageFill> = {
+  A: { hex: '#ccff00', pct: 40 }, R: { hex: '#0000ff', pct: 34 }, N: { hex: '#cc00ff', pct: 34 },
+  D: { hex: '#ff0000', pct: 34 }, C: { hex: '#ffff00', pct: 40 }, Q: { hex: '#ff00cc', pct: 34 },
+  E: { hex: '#ff0066', pct: 34 }, G: { hex: '#ff9900', pct: 38 }, H: { hex: '#0066ff', pct: 34 },
+  I: { hex: '#66ff00', pct: 40 }, L: { hex: '#33ff00', pct: 40 }, K: { hex: '#6600ff', pct: 34 },
+  M: { hex: '#00ff00', pct: 40 }, F: { hex: '#00ff66', pct: 40 }, P: { hex: '#ffcc00', pct: 40 },
+  S: { hex: '#ff3300', pct: 36 }, T: { hex: '#ff6600', pct: 38 }, W: { hex: '#00ccff', pct: 36 },
+  Y: { hex: '#00ffcc', pct: 40 }, V: { hex: '#99ff00', pct: 40 },
+};
+
+function parseHexColor(hex: string): { r: number; g: number; b: number } {
+  let value = hex.trim().replace(/^#/, '');
+  if (value.length === 3) value = value.split('').map((channel) => channel + channel).join('');
+  const int = Number.parseInt(value, 16);
+  if (value.length !== 6 || Number.isNaN(int)) return { r: 0, g: 0, b: 0 };
+  return { r: (int >> 16) & 0xff, g: (int >> 8) & 0xff, b: int & 0xff };
+}
+
+function toHexChannel(value: number): string {
+  return Math.max(0, Math.min(255, Math.round(value))).toString(16).padStart(2, '0');
+}
+
+/**
+ * Replicate CSS `color-mix(in srgb, hex pct%, background)`: a per-channel linear
+ * blend in gamma-encoded sRGB (no linearisation), matching how the viewer's
+ * residue fills mix a base colour toward --bg-primary. Returns `#rrggbb`.
+ */
+export function mixSrgb(hex: string, pct: number, backgroundHex: string): string {
+  const weight = Math.max(0, Math.min(1, pct / 100));
+  const color = parseHexColor(hex);
+  const bg = parseHexColor(backgroundHex);
+  return `#${toHexChannel(color.r * weight + bg.r * (1 - weight))}`
+    + `${toHexChannel(color.g * weight + bg.g * (1 - weight))}`
+    + `${toHexChannel(color.b * weight + bg.b * (1 - weight))}`;
+}
+
+/**
+ * Final sRGB fill for a residue cell in an exported image, mirroring the CSS
+ * scheme fills against an explicit (deterministic) export background. Returns
+ * null when the residue has no fill (a gap, '?', '.', or a residue the active
+ * scheme leaves uncoloured) so the caller can leave the cell as background.
+ * 'auto' resolves through residueColorKey to the molecule's default scheme.
+ */
+export function resolveResidueCellColor(
+  symbol: string,
+  molecule: SequenceType,
+  scheme: MsaColorScheme,
+  backgroundHex: string,
+): string | null {
+  const token = residueColorKey(symbol, molecule, scheme);
+  if (!token) return null;
+  if (token === 'taylor') {
+    const fill = MSA_IMAGE_TAYLOR_FILL[symbol.toUpperCase()];
+    return fill ? mixSrgb(fill.hex, fill.pct, backgroundHex) : null;
+  }
+  const fill = MSA_IMAGE_COLOR_KEY_FILL[token];
+  return fill ? mixSrgb(fill.hex, fill.pct, backgroundHex) : null;
 }

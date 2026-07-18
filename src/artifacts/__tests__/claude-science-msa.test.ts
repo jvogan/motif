@@ -11,6 +11,7 @@ import {
   ARTIFACT_MSA_MAX_WORKSPACE_CELLS,
   ArtifactAlignmentError,
   artifactAlignmentResult,
+  clampMsaClientPoint,
   createLocalArtifactAlignment,
   estimateLocalAlignmentWork,
   formatAlignedFasta,
@@ -18,6 +19,8 @@ import {
   formatConsensusFasta,
   normalizeArtifactAlignment,
   normalizeArtifactAlignments,
+  msaColumnFromClientX,
+  msaEdgeAutoScrollDelta,
   parseAlignmentText,
   parseAlignedFasta,
   safeAlignmentFilename,
@@ -43,6 +46,38 @@ function rows(count: number, sequence: string, prefix = 'row') {
     aligned: sequence,
   }));
 }
+
+describe('Claude Science alignment drag geometry', () => {
+  it('clamps an out-of-bounds pointer just inside the viewport', () => {
+    expect(clampMsaClientPoint(480, -20, {
+      left: 100,
+      right: 420,
+      top: 40,
+      bottom: 240,
+    })).toEqual({ clientX: 419.5, clientY: 40 });
+  });
+
+  it('scales edge auto-scroll with overshoot and caps the per-frame speed', () => {
+    expect(msaEdgeAutoScrollDelta(50, 50, 250)).toBe(0);
+    expect(msaEdgeAutoScrollDelta(45, 50, 250)).toBe(-2);
+    expect(msaEdgeAutoScrollDelta(270, 50, 250)).toBe(7);
+    expect(msaEdgeAutoScrollDelta(500, 50, 250)).toBe(32);
+  });
+
+  it('maps clamped client coordinates to the newly scrolled edge column', () => {
+    const metrics = {
+      viewportLeft: 100,
+      viewportRight: 500,
+      labelWidth: 160,
+      scrollLeft: 300,
+      cellWidth: 10,
+      columnCount: 120,
+    };
+    expect(msaColumnFromClientX(700, metrics)).toBeNull();
+    expect(msaColumnFromClientX(700, metrics, true)).toBe(53);
+    expect(msaColumnFromClientX(0, metrics, true)).toBe(30);
+  });
+});
 
 describe('Claude Science alignment normalization', () => {
   it('parses ordinary aligned FASTA while normalizing BOMs, comments, dots, whitespace, and case', () => {
