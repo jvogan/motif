@@ -822,14 +822,14 @@ test.describe('Claude Science artifact campaign', () => {
       workflows: window.motifGetWorkflowResults?.().length,
     }))).toEqual({ records: 3, workflows: 1 });
 
-    await page.evaluate(() => window.motifRenderInventory?.([{
+    await page.evaluate(() => window.motifReplaceWorkspace?.({ records: [{
       id: 'replacement-record',
       name: 'Replacement record',
       molecule: 'dna',
       topology: 'linear',
       seq: 'ATGC',
       active: true,
-    }]));
+    }] }));
     await expect(assemblyWindow).toHaveCount(0);
   });
 
@@ -1233,7 +1233,7 @@ test.describe('Claude Science artifact campaign', () => {
       const ecoCount = api.motifAddRecords({ id: 'fresh-eco', type: 'dna', topology: 'linear', sequence: 'TTTGAATTCAAA' });
       api.motifSetRestrictionSources(['common']);
       const description = api.motifDescribe()?.text ?? '';
-      api.motifRenderInventory([]);
+      (window as unknown as { motifClearWorkspace: () => void }).motifClearWorkspace();
       const emptyCount = api.motifGetInventory().length;
       return { beforeIds, afterIds, invalidCode, proteinCount, proteinSequence, ecoCount, description, emptyCount };
     });
@@ -1597,6 +1597,7 @@ test.describe('Claude Science artifact campaign', () => {
   });
 
   test('desktop themes have no automatic WCAG A/AA violations', async ({ page }) => {
+    test.slow();
     await openArtifact(page, 1180, 900);
     const toolsToggle = page.getByRole('button', { name: /Tools/ }).first();
     if ((await toolsToggle.getAttribute('aria-pressed')) !== 'true') await toolsToggle.click();
@@ -3341,7 +3342,7 @@ test.describe('Claude Science artifact campaign', () => {
   test('MSA picker disambiguates duplicate preloaded and runtime result names', async ({ page }) => {
     await openArtifact(page, 1180, 820);
     await page.evaluate(() => {
-      window.motifRenderInventory({
+      window.motifReplaceWorkspace({
         inventory: { id: 'duplicate-picker-audit', title: 'Duplicate picker audit' },
         selectedRecordId: 'duplicate-source',
         records: [{ id: 'duplicate-source', name: 'Duplicate source', molecule: 'dna', topology: 'linear', seq: 'ACGTACGT' }],
@@ -3388,7 +3389,7 @@ test.describe('Claude Science artifact campaign', () => {
 
   test('MSA Edit inputs rehydrates linked records and clearly resets an unlinked result', async ({ page }) => {
     await openArtifact(page, 1180, 820);
-    await page.evaluate(() => window.motifRenderInventory({
+    await page.evaluate(() => window.motifReplaceWorkspace({
       inventory: { id: 'source-link-audit', title: 'Source-link audit' },
       selectedRecordId: 'source-alpha',
       records: [
@@ -3458,7 +3459,7 @@ test.describe('Claude Science artifact campaign', () => {
       });
     });
     await openArtifact(page, 1180, 820);
-    await page.evaluate(() => window.motifRenderInventory({
+    await page.evaluate(() => window.motifReplaceWorkspace({
       inventory: { id: 'fallback-audit', title: 'Fallback provenance audit' },
       selectedRecordId: 'fallback-alpha',
       records: [

@@ -4,12 +4,17 @@ import type {
   ArtifactAnalysisKind,
   ArtifactAnalysisResult,
 } from './claude-science-analysis-results';
+import {
+  ClaudeScienceFreshnessBadge,
+  type ScientificFreshnessDisplayEvaluation,
+} from './ClaudeScienceFreshnessBadge';
 import './claude-science-agent-results.css';
 
 export type ClaudeScienceAgentResultsPanelProps = {
   results: readonly ArtifactAnalysisResult[];
   assets: readonly ArtifactAnalysisAsset[];
   recordNames: Readonly<Record<string, string>>;
+  freshnessByResultId?: ReadonlyMap<string, ScientificFreshnessDisplayEvaluation>;
   onRevealRecord: (recordId: string) => void;
   onRemove: (resultId: string) => boolean | void;
 };
@@ -18,6 +23,7 @@ const KIND_LABELS: Record<ArtifactAnalysisKind, string> = {
   primer_design: 'Primer Design',
   pcr: 'PCR',
   assembly_plan: 'Assembly Plan',
+  construct_verification: 'Construct Verification',
   blast_search: 'BLAST Search',
   structure_model: 'Structure Model',
   report: 'Report',
@@ -28,7 +34,7 @@ type ResultFilter = 'all' | 'design' | 'sequence' | 'evidence';
 
 const FILTER_KINDS: Record<Exclude<ResultFilter, 'all'>, ReadonlySet<ArtifactAnalysisKind>> = {
   design: new Set(['primer_design', 'pcr', 'assembly_plan']),
-  sequence: new Set(['blast_search', 'structure_model']),
+  sequence: new Set(['construct_verification', 'blast_search', 'structure_model']),
   evidence: new Set(['report', 'table']),
 };
 
@@ -61,6 +67,13 @@ function resultFacts(result: ArtifactAnalysisResult): Array<{ label: string; val
         { label: 'Method', value: result.data.method.replaceAll('_', ' ') },
         { label: 'Parts', value: result.data.orderedPartRecordIds.length.toLocaleString() },
         ...(result.data.standard ? [{ label: 'Standard', value: result.data.standard }] : []),
+      ];
+    case 'construct_verification':
+      return [
+        { label: 'Verdict', value: result.data.state.replaceAll('_', ' ') },
+        { label: 'Coverage', value: `${(result.data.coverageFraction * 100).toFixed(1)}%` },
+        { label: 'Mapped Reads', value: `${result.data.mappedReadCount}/${result.data.readRecordIds.length}` },
+        { label: 'Unexpected', value: result.data.unexpectedVariantCount.toLocaleString() },
       ];
     case 'blast_search':
       return [
@@ -96,6 +109,11 @@ function safePreview(result: ArtifactAnalysisResult): string | null {
     const rows = result.data.rows.slice(0, 8).map((row) => row.map((cell) => String(cell ?? '')).join('\t'));
     return [header, ...rows].join('\n');
   }
+  if (result.kind === 'construct_verification') {
+    return result.data.reasonCodes.length
+      ? result.data.reasonCodes.map((code) => code.replaceAll('_', ' ')).join('\n')
+      : 'No verification issues recorded.';
+  }
   return null;
 }
 
@@ -103,6 +121,7 @@ export function ClaudeScienceAgentResultsPanel({
   results,
   assets,
   recordNames,
+  freshnessByResultId,
   onRevealRecord,
   onRemove,
 }: ClaudeScienceAgentResultsPanelProps) {
@@ -156,7 +175,7 @@ export function ClaudeScienceAgentResultsPanel({
       {results.length === 0 ? (
         <div className="motif-cs-agent-results-empty">
           <strong>No analysis results yet</strong>
-          <span>Primer designs, assembly plans, BLAST hits, structures, reports, and tables will appear here with their provenance.</span>
+          <span>Primer designs, assembly plans, construct checks, BLAST hits, structures, reports, and tables will appear here with their provenance.</span>
         </div>
       ) : ordered.length === 0 ? (
         <div className="motif-cs-agent-results-empty">
@@ -172,6 +191,7 @@ export function ClaudeScienceAgentResultsPanel({
             const engine = result.provenance.engine
               ? `${result.provenance.engine}${result.provenance.engineVersion ? ` ${result.provenance.engineVersion}` : ''}`
               : result.provenance.source;
+            const freshness = freshnessByResultId?.get(result.id);
             return (
               <article className="motif-cs-agent-result-row" key={result.id} data-testid={`analysis-result-${result.id}`}>
                 <div className="motif-cs-agent-result-heading">
@@ -180,7 +200,10 @@ export function ClaudeScienceAgentResultsPanel({
                     <strong>{result.name}</strong>
                     <small>{recordList(result.inputRecordIds, recordNames)}</small>
                   </div>
-                  <span className="motif-cs-agent-result-status" data-status={result.status}>{result.status}</span>
+                  <span className="motif-cs-agent-result-state">
+                    <span className="motif-cs-agent-result-status" data-status={result.status}>{result.status}</span>
+                    {freshness ? <ClaudeScienceFreshnessBadge evaluation={freshness} recordNames={recordNames} /> : null}
+                  </span>
                 </div>
 
                 {result.summary ? <p>{result.summary}</p> : null}
@@ -202,6 +225,12 @@ export function ClaudeScienceAgentResultsPanel({
                       <div><dt>Inputs</dt><dd>{recordList(result.inputRecordIds, recordNames)}</dd></div>
                       {result.inputSha256s?.length ? (
                         <div><dt>Hashes</dt><dd>{result.inputSha256s.map((hash) => hash.slice(0, 12)).join(', ')}…</dd></div>
+                      ) : null}
+                      {freshness ? (
+                        <div>
+                          <dt>Freshness</dt>
+                          <dd><ClaudeScienceFreshnessBadge evaluation={freshness} recordNames={recordNames} showReason /></dd>
+                        </div>
                       ) : null}
                       {linkedAssets.length ? (
                         <div><dt>Assets</dt><dd>{linkedAssets.map((asset) => `${asset.name} (${asset.mediaType})`).join(', ')}</dd></div>

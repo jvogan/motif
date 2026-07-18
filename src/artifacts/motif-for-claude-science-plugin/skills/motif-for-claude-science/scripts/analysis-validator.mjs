@@ -1,5 +1,142 @@
 // Generated from src/artifacts/claude-science-analysis-results.ts. Regenerate with the documented esbuild command; do not edit by hand.
 
+// src/artifacts/claude-science-sha256.ts
+var SHA256_ROUND_CONSTANTS = new Uint32Array([
+  1116352408,
+  1899447441,
+  3049323471,
+  3921009573,
+  961987163,
+  1508970993,
+  2453635748,
+  2870763221,
+  3624381080,
+  310598401,
+  607225278,
+  1426881987,
+  1925078388,
+  2162078206,
+  2614888103,
+  3248222580,
+  3835390401,
+  4022224774,
+  264347078,
+  604807628,
+  770255983,
+  1249150122,
+  1555081692,
+  1996064986,
+  2554220882,
+  2821834349,
+  2952996808,
+  3210313671,
+  3336571891,
+  3584528711,
+  113926993,
+  338241895,
+  666307205,
+  773529912,
+  1294757372,
+  1396182291,
+  1695183700,
+  1986661051,
+  2177026350,
+  2456956037,
+  2730485921,
+  2820302411,
+  3259730800,
+  3345764771,
+  3516065817,
+  3600352804,
+  4094571909,
+  275423344,
+  430227734,
+  506948616,
+  659060556,
+  883997877,
+  958139571,
+  1322822218,
+  1537002063,
+  1747873779,
+  1955562222,
+  2024104815,
+  2227730452,
+  2361852424,
+  2428436474,
+  2756734187,
+  3204031479,
+  3329325298
+]);
+function rotateRight(value, amount) {
+  return value >>> amount | value << 32 - amount;
+}
+function sha256HexSync(value) {
+  if (typeof value !== "string") throw new TypeError("SHA-256 input must be a string.");
+  const bytes = new TextEncoder().encode(value);
+  const paddingBytes = (64 + 56 - (bytes.length + 1) % 64) % 64;
+  const padded = new Uint8Array(bytes.length + 1 + paddingBytes + 8);
+  padded.set(bytes);
+  padded[bytes.length] = 128;
+  const bitLength = bytes.length * 8;
+  const view = new DataView(padded.buffer);
+  view.setUint32(padded.length - 8, Math.floor(bitLength / 4294967296), false);
+  view.setUint32(padded.length - 4, bitLength >>> 0, false);
+  let h0 = 1779033703;
+  let h1 = 3144134277;
+  let h2 = 1013904242;
+  let h3 = 2773480762;
+  let h4 = 1359893119;
+  let h5 = 2600822924;
+  let h6 = 528734635;
+  let h7 = 1541459225;
+  const schedule = new Uint32Array(64);
+  for (let offset = 0; offset < padded.length; offset += 64) {
+    for (let index = 0; index < 16; index += 1) {
+      schedule[index] = view.getUint32(offset + index * 4, false);
+    }
+    for (let index = 16; index < 64; index += 1) {
+      const previous15 = schedule[index - 15];
+      const previous2 = schedule[index - 2];
+      const sigma0 = rotateRight(previous15, 7) ^ rotateRight(previous15, 18) ^ previous15 >>> 3;
+      const sigma1 = rotateRight(previous2, 17) ^ rotateRight(previous2, 19) ^ previous2 >>> 10;
+      schedule[index] = schedule[index - 16] + sigma0 + schedule[index - 7] + sigma1 >>> 0;
+    }
+    let a = h0;
+    let b = h1;
+    let c = h2;
+    let d = h3;
+    let e = h4;
+    let f = h5;
+    let g = h6;
+    let h = h7;
+    for (let index = 0; index < 64; index += 1) {
+      const upperSigma1 = rotateRight(e, 6) ^ rotateRight(e, 11) ^ rotateRight(e, 25);
+      const choose = e & f ^ ~e & g;
+      const temp1 = h + upperSigma1 + choose + SHA256_ROUND_CONSTANTS[index] + schedule[index] >>> 0;
+      const upperSigma0 = rotateRight(a, 2) ^ rotateRight(a, 13) ^ rotateRight(a, 22);
+      const majority = a & b ^ a & c ^ b & c;
+      const temp2 = upperSigma0 + majority >>> 0;
+      h = g;
+      g = f;
+      f = e;
+      e = d + temp1 >>> 0;
+      d = c;
+      c = b;
+      b = a;
+      a = temp1 + temp2 >>> 0;
+    }
+    h0 = h0 + a >>> 0;
+    h1 = h1 + b >>> 0;
+    h2 = h2 + c >>> 0;
+    h3 = h3 + d >>> 0;
+    h4 = h4 + e >>> 0;
+    h5 = h5 + f >>> 0;
+    h6 = h6 + g >>> 0;
+    h7 = h7 + h >>> 0;
+  }
+  return [h0, h1, h2, h3, h4, h5, h6, h7].map((word) => word.toString(16).padStart(8, "0")).join("");
+}
+
 // src/artifacts/claude-science-analysis-results.ts
 var MAX_ARTIFACT_ANALYSIS_RESULTS = 1e3;
 var MAX_ARTIFACT_ANALYSIS_ASSETS = 2e3;
@@ -21,6 +158,7 @@ var ARTIFACT_ANALYSIS_KINDS = [
   "primer_design",
   "pcr",
   "assembly_plan",
+  "construct_verification",
   "blast_search",
   "structure_model",
   "report",
@@ -198,6 +336,9 @@ function normalizeAsset(value, index, budget) {
     normalizeJsonValue(parsed, `${path}.content JSON`, budget, /* @__PURE__ */ new WeakSet(), 0);
   }
   const sha256 = value.sha256 === void 0 ? void 0 : normalizeSha256(value.sha256, `${path}.sha256`, budget);
+  if (sha256 !== void 0 && sha256 !== sha256HexSync(content)) {
+    throw new Error(`${path}.sha256 must match the exact UTF-8 content.`);
+  }
   return {
     id,
     name,
@@ -332,6 +473,95 @@ function normalizeAssemblyData(value, path, budget) {
     ...junctions === void 0 ? {} : { junctions }
   };
 }
+function normalizeConstructVerificationData(value, path, budget, context) {
+  if (!isPlainObject(value)) throw new Error(`${path} must be an object.`);
+  assertKnownKeys(value, [
+    "referenceRecordId",
+    "readRecordIds",
+    "state",
+    "referenceLength",
+    "coveredBases",
+    "coverageFraction",
+    "mappedReadCount",
+    "requiredRegionCount",
+    "passingRegionCount",
+    "observedVariantCount",
+    "expectedVariantCount",
+    "unexpectedVariantCount",
+    "missingExpectedVariantCount",
+    "reasonCodes",
+    "verificationReportAssetId"
+  ], path);
+  const referenceRecordId = normalizeId(value.referenceRecordId, `${path}.referenceRecordId`, budget);
+  const readRecordIds = normalizeStringArray(
+    value.readRecordIds,
+    `${path}.readRecordIds`,
+    MAX_ARTIFACT_ANALYSIS_RECORD_IDS - 1,
+    budget,
+    { required: true, deduplicate: true }
+  );
+  if (readRecordIds.length === 0) throw new Error(`${path}.readRecordIds must contain at least one sequencing read.`);
+  if (readRecordIds.includes(referenceRecordId)) throw new Error(`${path}.readRecordIds cannot contain the reference record.`);
+  if (context.recordLengths) {
+    if (!context.recordLengths.has(referenceRecordId)) throw new Error(`${path}.referenceRecordId does not match a workspace record.`);
+    readRecordIds.forEach((recordId, index) => {
+      if (!context.recordLengths?.has(recordId)) throw new Error(`${path}.readRecordIds[${index}] does not match a workspace record.`);
+    });
+  }
+  if (value.state !== "consistent" && value.state !== "needs_review" && value.state !== "inconsistent") {
+    throw new Error(`${path}.state must be "consistent", "needs_review", or "inconsistent".`);
+  }
+  const referenceLength = finiteNumber(value.referenceLength, `${path}.referenceLength`, { min: 1, integer: true });
+  const coveredBases = finiteNumber(value.coveredBases, `${path}.coveredBases`, { min: 0, max: referenceLength, integer: true });
+  const coverageFraction = finiteNumber(value.coverageFraction, `${path}.coverageFraction`, { min: 0, max: 1 });
+  const expectedCoverageFraction = coveredBases / referenceLength;
+  if (Math.abs(coverageFraction - expectedCoverageFraction) > 1e-6) {
+    throw new Error(`${path}.coverageFraction must agree with coveredBases / referenceLength.`);
+  }
+  const mappedReadCount = finiteNumber(value.mappedReadCount, `${path}.mappedReadCount`, {
+    min: 0,
+    max: readRecordIds.length,
+    integer: true
+  });
+  const count = (field) => finiteNumber(value[field], `${path}.${field}`, { min: 0, integer: true });
+  const requiredRegionCount = count("requiredRegionCount");
+  const passingRegionCount = count("passingRegionCount");
+  if (passingRegionCount > requiredRegionCount) {
+    throw new Error(`${path}.passingRegionCount cannot exceed requiredRegionCount.`);
+  }
+  const observedVariantCount = count("observedVariantCount");
+  const expectedVariantCount = count("expectedVariantCount");
+  const unexpectedVariantCount = count("unexpectedVariantCount");
+  const missingExpectedVariantCount = count("missingExpectedVariantCount");
+  if (unexpectedVariantCount > observedVariantCount) {
+    throw new Error(`${path}.unexpectedVariantCount cannot exceed observedVariantCount.`);
+  }
+  if (missingExpectedVariantCount > expectedVariantCount) {
+    throw new Error(`${path}.missingExpectedVariantCount cannot exceed expectedVariantCount.`);
+  }
+  const reasonCodes = normalizeTextArray(value.reasonCodes, `${path}.reasonCodes`, 500, 128, budget);
+  reasonCodes.forEach((code, index) => {
+    if (!/^[a-z][a-z0-9_]*$/.test(code)) throw new Error(`${path}.reasonCodes[${index}] must be a stable lowercase code.`);
+  });
+  const verificationReportAssetId = value.verificationReportAssetId === void 0 ? void 0 : normalizeId(value.verificationReportAssetId, `${path}.verificationReportAssetId`, budget);
+  return {
+    referenceRecordId,
+    readRecordIds,
+    state: value.state,
+    referenceLength,
+    coveredBases,
+    coverageFraction,
+    mappedReadCount,
+    requiredRegionCount,
+    passingRegionCount,
+    observedVariantCount,
+    expectedVariantCount,
+    unexpectedVariantCount,
+    missingExpectedVariantCount,
+    reasonCodes,
+    ...verificationReportAssetId === void 0 ? {} : { verificationReportAssetId }
+  };
+}
 function normalizeBlastData(value, path, budget) {
   if (!isPlainObject(value)) throw new Error(`${path} must be an object.`);
   assertKnownKeys(value, ["program", "database", "databaseVersion", "queryRecordId", "hits"], path);
@@ -445,6 +675,7 @@ function normalizeData(kind, value, path, budget, context) {
   if (kind === "primer_design") return normalizePrimerDesignData(value, path, budget, context);
   if (kind === "pcr") return normalizePcrData(value, path, budget, context);
   if (kind === "assembly_plan") return normalizeAssemblyData(value, path, budget);
+  if (kind === "construct_verification") return normalizeConstructVerificationData(value, path, budget, context);
   if (kind === "blast_search") return normalizeBlastData(value, path, budget);
   if (kind === "structure_model") return normalizeStructureData(value, path, budget);
   if (kind === "report") return normalizeReportData(value, path, budget);
@@ -494,7 +725,7 @@ function assertUniqueIds(values, path) {
     ids.add(value.id);
   }
 }
-function resultRecordIds(result) {
+function artifactAnalysisResultRecordIds(result) {
   const ids = [...result.inputRecordIds];
   if (result.kind === "primer_design") ids.push(result.data.targetRecordId);
   if (result.kind === "pcr") {
@@ -509,6 +740,9 @@ function resultRecordIds(result) {
     if (result.data.productRecordId) ids.push(result.data.productRecordId);
     result.data.junctions?.forEach((junction) => ids.push(junction.leftRecordId, junction.rightRecordId));
   }
+  if (result.kind === "construct_verification") {
+    ids.push(result.data.referenceRecordId, ...result.data.readRecordIds);
+  }
   if (result.kind === "blast_search") ids.push(result.data.queryRecordId);
   if (result.kind === "structure_model") result.data.chains.forEach((chain) => {
     if (chain.recordId) ids.push(chain.recordId);
@@ -521,6 +755,9 @@ function resultAssetIds(result) {
     if (hit.alignmentAssetId) ids.push(hit.alignmentAssetId);
   });
   if (result.kind === "structure_model") ids.push(result.data.modelAssetId);
+  if (result.kind === "construct_verification" && result.data.verificationReportAssetId) {
+    ids.push(result.data.verificationReportAssetId);
+  }
   if (result.kind === "report" && result.data.bodyAssetId) ids.push(result.data.bodyAssetId);
   return Array.from(new Set(ids));
 }
@@ -528,6 +765,1084 @@ function resultDependencyIds(result) {
   const ids = [...result.dependsOnResultIds];
   if (result.kind === "pcr" && result.data.primerDesignResultId) ids.push(result.data.primerDesignResultId);
   return Array.from(new Set(ids));
+}
+var CONSTRUCT_VERIFICATION_REPORT_SCHEMA = "motif.construct-verification-report.v1";
+var STABLE_REASON_CODE_PATTERN = /^[a-z][a-z0-9_]*$/;
+var CONSTRUCT_REPORT_READ_STATUS_SET = /* @__PURE__ */ new Set([
+  "mapped",
+  "trimmed_read_too_short",
+  "unmapped",
+  "ambiguous_mapping",
+  "low_mapping_identity",
+  "excessive_indel"
+]);
+var CONSTRUCT_REPORT_REGION_STATUS_SET = /* @__PURE__ */ new Set(["covered", "uncovered", "low_depth", "missing_strand"]);
+var CONSTRUCT_REPORT_VARIANT_TYPE_SET = /* @__PURE__ */ new Set(["substitution", "insertion", "deletion"]);
+var CONSTRUCT_REPORT_EXPECTED_VARIANT_STATUS_SET = /* @__PURE__ */ new Set([
+  "observed",
+  "low_confidence",
+  "not_observed",
+  "not_covered"
+]);
+var CONSTRUCT_REPORT_THRESHOLD_KEYS = [
+  "trimQuality",
+  "trimWindow",
+  "minTrimmedReadLength",
+  "minMappingIdentity",
+  "minMappingMargin",
+  "maxIndelFraction",
+  "minCoverageFraction",
+  "minDepth",
+  "requireBothStrands",
+  "minConsensusFraction",
+  "minVariantQuality",
+  "minVariantFraction"
+];
+var CONSTRUCT_REPORT_LIMITS = {
+  maxReferenceLength: 5e4,
+  maxReads: 96,
+  maxReadLength: 5e3,
+  maxRequiredRegions: 128,
+  maxRequiredRegionBases: 5e5,
+  maxExpectedVariants: 256,
+  maxObservedVariants: 2e3,
+  maxIndelLength: 24,
+  maxWorkUnits: 25e6
+};
+var CONSTRUCT_REPORT_REASON_LIMIT = 256;
+var CONSTRUCT_REPORT_SUPPORTING_READ_LIMIT = 8;
+var CONSTRUCT_REPORT_OBSERVED_VARIANT_LIMIT = 192;
+var CONSTRUCT_REPORT_IUPAC_CONSENSUS_PATTERN = /^[ACGTN]*$/;
+var CONSTRUCT_REPORT_CANONICAL_DNA_PATTERN = /^[ACGT]*$/;
+function reportObject(value, path) {
+  if (!isPlainObject(value)) throw new Error(`${path} must be an object.`);
+  return value;
+}
+function reportArray(value, path) {
+  if (!Array.isArray(value)) throw new Error(`${path} must be an array.`);
+  return value;
+}
+function reportString(value, path) {
+  if (typeof value !== "string" || value.length === 0) throw new Error(`${path} must be a nonempty string.`);
+  return value;
+}
+function reportSha256(value, path) {
+  const sha256 = reportString(value, path).toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(sha256)) throw new Error(`${path} must be a 64-character SHA-256 value.`);
+  return sha256;
+}
+function reportInteger(value, path) {
+  if (!Number.isInteger(value) || value < 0) throw new Error(`${path} must be a non-negative integer.`);
+  return value;
+}
+function reportSignedInteger(value, path) {
+  if (!Number.isInteger(value)) throw new Error(`${path} must be an integer.`);
+  return value;
+}
+function reportFiniteNumber(value, path) {
+  if (typeof value !== "number" || !Number.isFinite(value)) throw new Error(`${path} must be a finite number.`);
+  return value;
+}
+function reportBoolean(value, path) {
+  if (typeof value !== "boolean") throw new Error(`${path} must be a boolean.`);
+  return value;
+}
+function reportIntegerBetween(value, path, minimum, maximum) {
+  const integer = reportInteger(value, path);
+  if (integer < minimum || integer > maximum) {
+    throw new Error(`${path} must be an integer from ${minimum.toLocaleString()} through ${maximum.toLocaleString()}.`);
+  }
+  return integer;
+}
+function reportNumberBetween(value, path, minimum, maximum) {
+  const number = reportFiniteNumber(value, path);
+  if (number < minimum || number > maximum) {
+    throw new Error(`${path} must be from ${minimum} through ${maximum}.`);
+  }
+  return number;
+}
+function reportNullableNumber(value, path, minimum, maximum) {
+  if (value === null) return null;
+  const number = reportFiniteNumber(value, path);
+  if (minimum !== void 0 && number < minimum) throw new Error(`${path} must be at least ${minimum}.`);
+  if (maximum !== void 0 && number > maximum) throw new Error(`${path} must be no greater than ${maximum}.`);
+  return number;
+}
+function reportIdentityText(value, path, maximumLength) {
+  const text = reportString(value, path);
+  if (text.trim() !== text || text.length > maximumLength) {
+    throw new Error(`${path} must contain 1\u2013${maximumLength.toLocaleString()} unpadded characters.`);
+  }
+  return text;
+}
+function reportOptionalIdentityText(value, path, maximumLength) {
+  return value === void 0 ? void 0 : reportIdentityText(value, path, maximumLength);
+}
+function reportNumbersAgree(actual, expected) {
+  return Object.is(actual, expected) || Math.abs(actual - expected) <= 1e-12;
+}
+function assertReportNumber(result, field, actual, expected) {
+  if (!reportNumbersAgree(actual, expected)) reportMismatch(result, field);
+}
+function reportMismatch(result, field) {
+  throw new Error(`Analysis result "${result.id}" verification report ${field} must match the saved result.`);
+}
+function assertReportValue(result, field, actual, expected) {
+  if (!Object.is(actual, expected)) reportMismatch(result, field);
+}
+function assertReportArray(result, field, actual, expected) {
+  if (actual.length !== expected.length || actual.some((value, index) => value !== expected[index])) {
+    reportMismatch(result, field);
+  }
+}
+function assertReportThresholds(result, reportThresholds) {
+  const savedThresholds = result.parameters.thresholds;
+  if (!isPlainObject(savedThresholds)) reportMismatch(result, "thresholds");
+  const reportKeys = Object.keys(reportThresholds).sort();
+  const savedKeys = Object.keys(savedThresholds).sort();
+  const expectedKeys = [...CONSTRUCT_REPORT_THRESHOLD_KEYS].sort();
+  assertReportArray(result, "thresholds schema", reportKeys, expectedKeys);
+  assertReportArray(result, "thresholds keys", reportKeys, savedKeys);
+  reportKeys.forEach((key) => {
+    const reportValue = reportThresholds[key];
+    const savedValue = savedThresholds[key];
+    if (typeof reportValue !== "number" && typeof reportValue !== "boolean" || !Object.is(reportValue, savedValue)) {
+      reportMismatch(result, `thresholds.${key}`);
+    }
+  });
+  reportIntegerBetween(reportThresholds.trimQuality, "verification report thresholds.trimQuality", 0, 255);
+  reportIntegerBetween(reportThresholds.trimWindow, "verification report thresholds.trimWindow", 1, 100);
+  reportIntegerBetween(
+    reportThresholds.minTrimmedReadLength,
+    "verification report thresholds.minTrimmedReadLength",
+    1,
+    CONSTRUCT_REPORT_LIMITS.maxReadLength
+  );
+  reportNumberBetween(reportThresholds.minMappingIdentity, "verification report thresholds.minMappingIdentity", 0, 1);
+  reportNumberBetween(reportThresholds.minMappingMargin, "verification report thresholds.minMappingMargin", 0, 1);
+  reportNumberBetween(reportThresholds.maxIndelFraction, "verification report thresholds.maxIndelFraction", 0, 1);
+  reportNumberBetween(reportThresholds.minCoverageFraction, "verification report thresholds.minCoverageFraction", 0, 1);
+  reportIntegerBetween(reportThresholds.minDepth, "verification report thresholds.minDepth", 1, CONSTRUCT_REPORT_LIMITS.maxReads);
+  reportBoolean(reportThresholds.requireBothStrands, "verification report thresholds.requireBothStrands");
+  reportNumberBetween(reportThresholds.minConsensusFraction, "verification report thresholds.minConsensusFraction", 0, 1);
+  reportNumberBetween(reportThresholds.minVariantQuality, "verification report thresholds.minVariantQuality", 0, 255);
+  reportNumberBetween(reportThresholds.minVariantFraction, "verification report thresholds.minVariantFraction", 0, 1);
+}
+function validateConstructReportMapping(value, path, topology, referenceLength, trimmedLength, status, thresholds) {
+  const mapping = reportObject(value, path);
+  assertKnownKeys(mapping, [
+    "orientation",
+    "referenceStart",
+    "referenceEnd",
+    "wraps",
+    "referenceSpan",
+    "score",
+    "secondBestScore",
+    "mappingMargin",
+    "identity",
+    "alignedLength",
+    "matches",
+    "substitutions",
+    "insertions",
+    "deletions",
+    "indelFraction"
+  ], path);
+  if (mapping.orientation !== "forward" && mapping.orientation !== "reverse") {
+    throw new Error(`${path}.orientation must be forward or reverse.`);
+  }
+  const referenceStart = reportIntegerBetween(mapping.referenceStart, `${path}.referenceStart`, 0, referenceLength - 1);
+  const referenceEnd = reportIntegerBetween(mapping.referenceEnd, `${path}.referenceEnd`, 0, referenceLength);
+  const wraps = reportBoolean(mapping.wraps, `${path}.wraps`);
+  const referenceSpan = reportIntegerBetween(
+    mapping.referenceSpan,
+    `${path}.referenceSpan`,
+    1,
+    CONSTRUCT_REPORT_LIMITS.maxReadLength + CONSTRUCT_REPORT_LIMITS.maxIndelLength * CONSTRUCT_REPORT_LIMITS.maxReadLength
+  );
+  const score = reportSignedInteger(mapping.score, `${path}.score`);
+  const secondBestScore = mapping.secondBestScore === null ? null : reportSignedInteger(mapping.secondBestScore, `${path}.secondBestScore`);
+  const mappingMargin = reportNullableNumber(mapping.mappingMargin, `${path}.mappingMargin`, 0);
+  if (secondBestScore === null !== (mappingMargin === null)) {
+    throw new Error(`${path}.secondBestScore and mappingMargin must either both be null or both be numbers.`);
+  }
+  if (secondBestScore !== null) {
+    if (secondBestScore > score) throw new Error(`${path}.secondBestScore cannot exceed score.`);
+    const expectedMargin = (score - secondBestScore) / Math.max(1, 3 * trimmedLength);
+    if (!reportNumbersAgree(mappingMargin, expectedMargin)) {
+      throw new Error(`${path}.mappingMargin must agree with score, secondBestScore, and trimmedLength.`);
+    }
+  }
+  const alignedLength = reportIntegerBetween(
+    mapping.alignedLength,
+    `${path}.alignedLength`,
+    1,
+    trimmedLength + CONSTRUCT_REPORT_LIMITS.maxIndelLength * CONSTRUCT_REPORT_LIMITS.maxReadLength
+  );
+  const matches = reportIntegerBetween(mapping.matches, `${path}.matches`, 0, alignedLength);
+  const substitutions = reportIntegerBetween(mapping.substitutions, `${path}.substitutions`, 0, alignedLength);
+  const insertions = reportIntegerBetween(mapping.insertions, `${path}.insertions`, 0, alignedLength);
+  const deletions = reportIntegerBetween(mapping.deletions, `${path}.deletions`, 0, alignedLength);
+  if (matches + substitutions + insertions + deletions !== alignedLength) {
+    throw new Error(`${path}.alignedLength must equal matches + substitutions + insertions + deletions.`);
+  }
+  if (matches + substitutions + insertions !== trimmedLength) {
+    throw new Error(`${path} operation counts must consume exactly trimmedLength read calls.`);
+  }
+  if (matches + substitutions + deletions !== referenceSpan) {
+    throw new Error(`${path}.referenceSpan must equal matches + substitutions + deletions.`);
+  }
+  const identity = reportNumberBetween(mapping.identity, `${path}.identity`, 0, 1);
+  const indelFraction = reportNumberBetween(mapping.indelFraction, `${path}.indelFraction`, 0, 1);
+  if (!reportNumbersAgree(identity, matches / alignedLength)) {
+    throw new Error(`${path}.identity must equal matches / alignedLength.`);
+  }
+  if (!reportNumbersAgree(indelFraction, (insertions + deletions) / alignedLength)) {
+    throw new Error(`${path}.indelFraction must agree with the insertion and deletion counts.`);
+  }
+  const minimumIdentity = reportFiniteNumber(
+    thresholds.minMappingIdentity,
+    "verification report thresholds.minMappingIdentity"
+  );
+  const maximumIndelFraction = reportFiniteNumber(
+    thresholds.maxIndelFraction,
+    "verification report thresholds.maxIndelFraction"
+  );
+  const minimumMargin = reportFiniteNumber(
+    thresholds.minMappingMargin,
+    "verification report thresholds.minMappingMargin"
+  );
+  if (status === "low_mapping_identity" !== identity < minimumIdentity || (status === "mapped" || status === "ambiguous_mapping") && indelFraction > maximumIndelFraction) {
+    throw new Error(`${path} identity or indel evidence is inconsistent with status ${status}.`);
+  }
+  if (status === "excessive_indel" && indelFraction <= maximumIndelFraction && insertions + deletions <= CONSTRUCT_REPORT_LIMITS.maxIndelLength) {
+    throw new Error(`${path} cannot support excessive_indel status.`);
+  }
+  if (status === "mapped" && secondBestScore !== null) {
+    if (secondBestScore >= score || mappingMargin < minimumMargin) {
+      throw new Error(`${path} runner-up evidence is inconsistent with mapped status.`);
+    }
+  }
+  if (status === "ambiguous_mapping" && secondBestScore !== null && secondBestScore !== score && mappingMargin >= minimumMargin) {
+    throw new Error(`${path} runner-up evidence is inconsistent with ambiguous_mapping status.`);
+  }
+  if (topology === "linear") {
+    if (wraps || referenceEnd !== referenceStart + referenceSpan || referenceEnd > referenceLength) {
+      throw new Error(`${path} linear coordinates must be nonwrapping and agree with referenceSpan.`);
+    }
+  } else {
+    const expectedWraps = referenceStart + referenceSpan > referenceLength;
+    const expectedEnd = expectedWraps ? (referenceStart + referenceSpan) % referenceLength : referenceStart + referenceSpan;
+    if (wraps !== expectedWraps || referenceEnd !== expectedEnd) {
+      throw new Error(`${path} circular coordinates must agree with wraps and referenceSpan.`);
+    }
+    if (status === "mapped" && referenceSpan > referenceLength) {
+      throw new Error(`${path} mapped reads cannot traverse a circular reference position more than once.`);
+    }
+  }
+}
+function validateConstructReportRead(value, index, topology, referenceLength, thresholds) {
+  const path = `verification report reads[${index}]`;
+  const read = reportObject(value, path);
+  assertKnownKeys(read, [
+    "id",
+    "name",
+    "sha256",
+    "rawLength",
+    "qualityProvided",
+    "meanQuality",
+    "status",
+    "trim",
+    "mapping"
+  ], path);
+  const id = reportIdentityText(read.id, `${path}.id`, MAX_ARTIFACT_ANALYSIS_ID_LENGTH);
+  reportOptionalIdentityText(read.name, `${path}.name`, MAX_ARTIFACT_ANALYSIS_NAME_LENGTH);
+  const sha256 = reportSha256(read.sha256, `${path}.sha256`);
+  const rawLength = reportIntegerBetween(read.rawLength, `${path}.rawLength`, 1, CONSTRUCT_REPORT_LIMITS.maxReadLength);
+  const qualityProvided = reportBoolean(read.qualityProvided, `${path}.qualityProvided`);
+  const meanQuality = reportNullableNumber(read.meanQuality, `${path}.meanQuality`, 0, 255);
+  const status = reportString(read.status, `${path}.status`);
+  if (!CONSTRUCT_REPORT_READ_STATUS_SET.has(status)) throw new Error(`${path}.status is not supported.`);
+  const trim = reportObject(read.trim, `${path}.trim`);
+  assertKnownKeys(trim, [
+    "method",
+    "rawStart",
+    "rawEnd",
+    "trimmedLength",
+    "removedFromStart",
+    "removedFromEnd"
+  ], `${path}.trim`);
+  if (trim.method !== "quality_window" && trim.method !== "none_missing_quality") {
+    throw new Error(`${path}.trim.method is not supported.`);
+  }
+  const rawStart = reportIntegerBetween(trim.rawStart, `${path}.trim.rawStart`, 0, rawLength);
+  const rawEnd = reportIntegerBetween(trim.rawEnd, `${path}.trim.rawEnd`, rawStart, rawLength);
+  const trimmedLength = reportIntegerBetween(trim.trimmedLength, `${path}.trim.trimmedLength`, 0, rawLength);
+  const removedFromStart = reportIntegerBetween(trim.removedFromStart, `${path}.trim.removedFromStart`, 0, rawLength);
+  const removedFromEnd = reportIntegerBetween(trim.removedFromEnd, `${path}.trim.removedFromEnd`, 0, rawLength);
+  if (trimmedLength !== rawEnd - rawStart || removedFromStart !== rawStart || removedFromEnd !== rawLength - rawEnd) {
+    throw new Error(`${path}.trim ranges and derived lengths are inconsistent.`);
+  }
+  if (trim.method === "none_missing_quality") {
+    if (qualityProvided || rawStart !== 0 || rawEnd !== rawLength || trimmedLength !== rawLength || meanQuality !== null) {
+      throw new Error(`${path}.trim none_missing_quality must retain the full read and omit quality evidence.`);
+    }
+  } else if (!qualityProvided || trimmedLength > 0 && meanQuality === null) {
+    throw new Error(`${path}.trim quality_window must agree with qualityProvided and meanQuality.`);
+  }
+  const minimumTrimmedLength = reportInteger(
+    thresholds.minTrimmedReadLength,
+    "verification report thresholds.minTrimmedReadLength"
+  );
+  if (status === "trimmed_read_too_short" !== trimmedLength < minimumTrimmedLength) {
+    throw new Error(`${path}.trimmedLength is inconsistent with status ${status}.`);
+  }
+  const requiresMapping = status !== "trimmed_read_too_short" && status !== "unmapped";
+  if (requiresMapping !== (read.mapping !== null)) {
+    throw new Error(`${path}.mapping presence is inconsistent with status ${status}.`);
+  }
+  if (read.mapping !== null) {
+    validateConstructReportMapping(
+      read.mapping,
+      `${path}.mapping`,
+      topology,
+      referenceLength,
+      trimmedLength,
+      status,
+      thresholds
+    );
+  }
+  return { id, sha256, status, mapped: status === "mapped", qualityProvided };
+}
+function validateConstructReportRegion(value, index, topology, referenceLength, mappedReadCount) {
+  const path = `verification report coverage.requiredRegions[${index}]`;
+  const region = reportObject(value, path);
+  assertKnownKeys(region, [
+    "id",
+    "name",
+    "start",
+    "end",
+    "wraps",
+    "length",
+    "minDepth",
+    "requireBothStrands",
+    "coveredBases",
+    "basesMeetingMinDepth",
+    "coveredFraction",
+    "minimumDepth",
+    "maximumDepth",
+    "meanDepth",
+    "forwardCoveredBases",
+    "reverseCoveredBases",
+    "bothStrandsCoveredBases",
+    "status"
+  ], path);
+  const id = reportIdentityText(region.id, `${path}.id`, MAX_ARTIFACT_ANALYSIS_ID_LENGTH);
+  reportOptionalIdentityText(region.name, `${path}.name`, MAX_ARTIFACT_ANALYSIS_NAME_LENGTH);
+  const start = reportIntegerBetween(region.start, `${path}.start`, 0, referenceLength - 1);
+  const end = reportIntegerBetween(region.end, `${path}.end`, 0, referenceLength);
+  if (start === end) throw new Error(`${path} must span at least one reference base.`);
+  const wraps = reportBoolean(region.wraps, `${path}.wraps`);
+  const expectedWraps = start > end;
+  if (wraps !== expectedWraps || wraps && topology !== "circular") {
+    throw new Error(`${path}.wraps is inconsistent with its topology and coordinates.`);
+  }
+  const expectedLength = wraps ? referenceLength - start + end : end - start;
+  const length = reportIntegerBetween(region.length, `${path}.length`, 1, referenceLength);
+  if (length !== expectedLength) throw new Error(`${path}.length must agree with its coordinates.`);
+  const minDepth = reportIntegerBetween(
+    region.minDepth,
+    `${path}.minDepth`,
+    1,
+    CONSTRUCT_REPORT_LIMITS.maxReads
+  );
+  const requireBothStrands = reportBoolean(region.requireBothStrands, `${path}.requireBothStrands`);
+  const coveredBases = reportIntegerBetween(region.coveredBases, `${path}.coveredBases`, 0, length);
+  const basesMeetingMinDepth = reportIntegerBetween(
+    region.basesMeetingMinDepth,
+    `${path}.basesMeetingMinDepth`,
+    0,
+    coveredBases
+  );
+  const coveredFraction = reportNumberBetween(region.coveredFraction, `${path}.coveredFraction`, 0, 1);
+  if (!reportNumbersAgree(coveredFraction, basesMeetingMinDepth / length)) {
+    throw new Error(`${path}.coveredFraction must equal basesMeetingMinDepth / length.`);
+  }
+  const minimumDepth = reportIntegerBetween(region.minimumDepth, `${path}.minimumDepth`, 0, mappedReadCount);
+  const maximumDepth = reportIntegerBetween(region.maximumDepth, `${path}.maximumDepth`, minimumDepth, mappedReadCount);
+  const meanDepth = reportNumberBetween(region.meanDepth, `${path}.meanDepth`, minimumDepth, maximumDepth);
+  if (length > 0 && (meanDepth < minimumDepth || meanDepth > maximumDepth)) {
+    throw new Error(`${path}.meanDepth must lie between minimumDepth and maximumDepth.`);
+  }
+  if (coveredBases === 0 !== (maximumDepth === 0) || coveredBases === length !== minimumDepth > 0 || basesMeetingMinDepth === 0 !== maximumDepth < minDepth || basesMeetingMinDepth === length !== minimumDepth >= minDepth) {
+    throw new Error(`${path} depth extrema, thresholds, and covered-base counts are inconsistent.`);
+  }
+  const forwardCoveredBases = reportIntegerBetween(
+    region.forwardCoveredBases,
+    `${path}.forwardCoveredBases`,
+    0,
+    coveredBases
+  );
+  const reverseCoveredBases = reportIntegerBetween(
+    region.reverseCoveredBases,
+    `${path}.reverseCoveredBases`,
+    0,
+    coveredBases
+  );
+  const bothStrandsCoveredBases = reportIntegerBetween(
+    region.bothStrandsCoveredBases,
+    `${path}.bothStrandsCoveredBases`,
+    0,
+    Math.min(forwardCoveredBases, reverseCoveredBases)
+  );
+  if (bothStrandsCoveredBases !== forwardCoveredBases + reverseCoveredBases - coveredBases) {
+    throw new Error(`${path} strand coverage counts violate inclusion-exclusion.`);
+  }
+  const status = reportString(region.status, `${path}.status`);
+  if (!CONSTRUCT_REPORT_REGION_STATUS_SET.has(status)) throw new Error(`${path}.status is not supported.`);
+  const expectedStatus = coveredBases < length ? "uncovered" : basesMeetingMinDepth < length ? "low_depth" : requireBothStrands && bothStrandsCoveredBases < length ? "missing_strand" : "covered";
+  if (status !== expectedStatus) throw new Error(`${path}.status is inconsistent with its coverage evidence.`);
+  const reasonCodes = [];
+  if (coveredBases < length) {
+    reasonCodes.push("required_region_uncovered");
+  } else if (basesMeetingMinDepth < length) {
+    reasonCodes.push("required_region_low_depth");
+  }
+  if (requireBothStrands && coveredBases === length && bothStrandsCoveredBases < length) {
+    reasonCodes.push("required_region_missing_strand");
+  }
+  return { id, status, reasonCodes };
+}
+function validateConstructReportVariantAlleles(value, path, topology, referenceLength) {
+  const type = reportString(value.type, `${path}.type`);
+  if (!CONSTRUCT_REPORT_VARIANT_TYPE_SET.has(type)) throw new Error(`${path}.type is not supported.`);
+  const maximumStart = type === "insertion" && topology === "linear" ? referenceLength : referenceLength - 1;
+  const start = reportIntegerBetween(value.referenceStart, `${path}.referenceStart`, 0, maximumStart);
+  const end = reportIntegerBetween(value.referenceEnd, `${path}.referenceEnd`, 0, referenceLength);
+  if (typeof value.reference !== "string" || typeof value.alternate !== "string") {
+    throw new Error(`${path}.reference and alternate must be strings.`);
+  }
+  const reference = value.reference;
+  const alternate = value.alternate;
+  if (!CONSTRUCT_REPORT_CANONICAL_DNA_PATTERN.test(reference) || !CONSTRUCT_REPORT_CANONICAL_DNA_PATTERN.test(alternate)) {
+    throw new Error(`${path} alleles must contain canonical A/C/G/T bases only.`);
+  }
+  if (type === "substitution") {
+    if (end !== start + 1 || reference.length !== 1 || alternate.length !== 1 || reference === alternate) {
+      throw new Error(`${path} substitution alleles and coordinates are inconsistent.`);
+    }
+  } else if (type === "insertion") {
+    if (end !== start || reference !== "" || alternate.length < 1 || alternate.length > CONSTRUCT_REPORT_LIMITS.maxIndelLength) {
+      throw new Error(`${path} insertion alleles and coordinates are inconsistent.`);
+    }
+  } else if (end <= start || end - start > CONSTRUCT_REPORT_LIMITS.maxIndelLength || reference.length !== end - start || alternate !== "") {
+    throw new Error(`${path} deletion alleles and coordinates are inconsistent.`);
+  }
+  return { type, start, end, reference, alternate };
+}
+function validateConstructReportObservedVariant(value, path, topology, referenceLength, mappedReadCount, mappedReadIds, qualityMappedReadIds, thresholds) {
+  const variant = reportObject(value, path);
+  assertKnownKeys(variant, [
+    "id",
+    "type",
+    "referenceStart",
+    "referenceEnd",
+    "reference",
+    "alternate",
+    "depth",
+    "support",
+    "supportWeight",
+    "fraction",
+    "meanQuality",
+    "confidence",
+    "supportingReadIds",
+    "expectedVariantId",
+    "omittedSupportingReadIds"
+  ], path);
+  const id = reportIdentityText(variant.id, `${path}.id`, MAX_ARTIFACT_ANALYSIS_ID_LENGTH);
+  const alleles = validateConstructReportVariantAlleles(variant, path, topology, referenceLength);
+  const depth = reportIntegerBetween(variant.depth, `${path}.depth`, 0, mappedReadCount);
+  const support = reportIntegerBetween(variant.support, `${path}.support`, 0, depth);
+  const supportWeight = reportNumberBetween(variant.supportWeight, `${path}.supportWeight`, 0, support * 256);
+  const fraction = reportNumberBetween(variant.fraction, `${path}.fraction`, 0, 1);
+  const meanQuality = reportNullableNumber(variant.meanQuality, `${path}.meanQuality`, 0, 255);
+  if (variant.confidence !== "high" && variant.confidence !== "low") {
+    throw new Error(`${path}.confidence must be high or low.`);
+  }
+  if (variant.confidence === "high" && (meanQuality === null || meanQuality < reportFiniteNumber(thresholds.minVariantQuality, "verification report thresholds.minVariantQuality") || fraction < reportFiniteNumber(thresholds.minVariantFraction, "verification report thresholds.minVariantFraction"))) {
+    throw new Error(`${path}.confidence high is inconsistent with the saved variant thresholds.`);
+  }
+  const supportingReadIds = reportArray(variant.supportingReadIds, `${path}.supportingReadIds`).map((readId, index) => reportIdentityText(readId, `${path}.supportingReadIds[${index}]`, MAX_ARTIFACT_ANALYSIS_ID_LENGTH));
+  if (supportingReadIds.length > CONSTRUCT_REPORT_SUPPORTING_READ_LIMIT || new Set(supportingReadIds).size !== supportingReadIds.length || supportingReadIds.some((readId) => !mappedReadIds.has(readId))) {
+    throw new Error(`${path}.supportingReadIds must be unique mapped reads within the compact-report limit.`);
+  }
+  const omittedSupportingReadIds = reportInteger(variant.omittedSupportingReadIds, `${path}.omittedSupportingReadIds`);
+  if (supportingReadIds.length + omittedSupportingReadIds !== support) {
+    throw new Error(`${path} included and omitted supporting read ids must equal support.`);
+  }
+  const canNameQualitySupport = supportingReadIds.some((readId) => qualityMappedReadIds.has(readId));
+  const canOmitQualitySupport = omittedSupportingReadIds > 0 && [...qualityMappedReadIds].some((readId) => !supportingReadIds.includes(readId));
+  if (variant.confidence === "high" && !canNameQualitySupport && !canOmitQualitySupport) {
+    throw new Error(`${path}.confidence high requires possible quality-bearing mapped-read support.`);
+  }
+  const expectedVariantId = reportOptionalIdentityText(
+    variant.expectedVariantId,
+    `${path}.expectedVariantId`,
+    MAX_ARTIFACT_ANALYSIS_ID_LENGTH
+  );
+  const signature = JSON.stringify([
+    id,
+    alleles.type,
+    alleles.start,
+    alleles.end,
+    alleles.reference,
+    alleles.alternate,
+    depth,
+    support,
+    supportWeight,
+    fraction,
+    meanQuality,
+    variant.confidence,
+    supportingReadIds,
+    expectedVariantId ?? null,
+    omittedSupportingReadIds
+  ]);
+  return {
+    id,
+    ...expectedVariantId === void 0 ? {} : { expectedVariantId },
+    confidence: variant.confidence,
+    depth,
+    alleleKey: JSON.stringify(alleles),
+    signature,
+    omittedSupportingReadIds
+  };
+}
+function validateConstructReportExpectedVariant(value, path, topology, referenceLength, qualityMappedReadCount) {
+  const variant = reportObject(value, path);
+  assertKnownKeys(variant, [
+    "id",
+    "type",
+    "referenceStart",
+    "referenceEnd",
+    "reference",
+    "alternate",
+    "status",
+    "depth",
+    "observedVariantId"
+  ], path);
+  const id = reportIdentityText(variant.id, `${path}.id`, MAX_ARTIFACT_ANALYSIS_ID_LENGTH);
+  const alleles = validateConstructReportVariantAlleles(variant, path, topology, referenceLength);
+  const status = reportString(variant.status, `${path}.status`);
+  if (!CONSTRUCT_REPORT_EXPECTED_VARIANT_STATUS_SET.has(status)) throw new Error(`${path}.status is not supported.`);
+  const depth = reportIntegerBetween(variant.depth, `${path}.depth`, 0, qualityMappedReadCount);
+  const observedVariantId = reportOptionalIdentityText(
+    variant.observedVariantId,
+    `${path}.observedVariantId`,
+    MAX_ARTIFACT_ANALYSIS_ID_LENGTH
+  );
+  if ((status === "observed" || status === "low_confidence") !== (observedVariantId !== void 0)) {
+    throw new Error(`${path}.observedVariantId presence is inconsistent with status ${status}.`);
+  }
+  if (status === "not_covered" && depth !== 0 || (status === "observed" || status === "not_observed") && depth === 0) {
+    throw new Error(`${path}.depth is inconsistent with status ${status}.`);
+  }
+  const signature = JSON.stringify([
+    id,
+    alleles.type,
+    alleles.start,
+    alleles.end,
+    alleles.reference,
+    alleles.alternate,
+    status,
+    depth,
+    observedVariantId ?? null
+  ]);
+  return {
+    id,
+    status,
+    ...observedVariantId === void 0 ? {} : { observedVariantId },
+    depth,
+    alleleKey: JSON.stringify(alleles),
+    signature
+  };
+}
+function validateConstructVerificationReport(result, asset) {
+  const path = `Analysis result "${result.id}" verification report`;
+  if (result.status !== "complete") throw new Error(`${path} requires a complete analysis result.`);
+  if (asset.sha256 === void 0) throw new Error(`${path} asset requires a content SHA-256.`);
+  if (asset.createdAt !== result.createdAt) throw new Error(`${path} asset and result timestamps must match.`);
+  let parsed;
+  try {
+    parsed = JSON.parse(asset.content);
+  } catch {
+    throw new Error(`${path} must contain valid JSON.`);
+  }
+  const report = reportObject(parsed, path);
+  assertKnownKeys(report, [
+    "schema",
+    "version",
+    "state",
+    "reasons",
+    "reference",
+    "thresholds",
+    "reads",
+    "coverage",
+    "consensus",
+    "variants",
+    "provenance",
+    "omitted"
+  ], path);
+  if (report.schema !== CONSTRUCT_VERIFICATION_REPORT_SCHEMA || report.version !== 1) {
+    throw new Error(`${path} must use ${CONSTRUCT_VERIFICATION_REPORT_SCHEMA} version 1.`);
+  }
+  assertReportValue(result, "state", report.state, result.data.state);
+  if (!result.assetIds.includes(asset.id)) {
+    throw new Error(`Analysis result "${result.id}" verification report asset must also appear in assetIds.`);
+  }
+  if (!result.inputSha256s || result.inputSha256s.length !== result.inputRecordIds.length) {
+    throw new Error(`Analysis result "${result.id}" with a verification report requires ordered inputSha256s.`);
+  }
+  const reference = reportObject(report.reference, `${path}.reference`);
+  assertKnownKeys(reference, ["id", "name", "length", "topology", "sha256"], `${path}.reference`);
+  assertReportValue(
+    result,
+    "reference.id",
+    reportIdentityText(reference.id, `${path}.reference.id`, MAX_ARTIFACT_ANALYSIS_ID_LENGTH),
+    result.data.referenceRecordId
+  );
+  reportOptionalIdentityText(reference.name, `${path}.reference.name`, MAX_ARTIFACT_ANALYSIS_NAME_LENGTH);
+  const referenceLength = reportIntegerBetween(
+    reference.length,
+    `${path}.reference.length`,
+    1,
+    CONSTRUCT_REPORT_LIMITS.maxReferenceLength
+  );
+  assertReportValue(result, "reference.length", referenceLength, result.data.referenceLength);
+  const topology = reportString(reference.topology, `${path}.reference.topology`);
+  if (topology !== "linear" && topology !== "circular") throw new Error(`${path}.reference.topology is not supported.`);
+  assertReportValue(result, "reference.topology", topology, result.parameters.topology);
+  const referenceSha256 = reportSha256(reference.sha256, `${path}.reference.sha256`);
+  assertReportValue(result, "reference.sha256", referenceSha256, result.inputSha256s[0]);
+  const reportThresholds = reportObject(report.thresholds, `${path}.thresholds`);
+  assertReportThresholds(result, reportThresholds);
+  const reads = reportArray(report.reads, `${path}.reads`);
+  const omitted = reportObject(report.omitted, `${path}.omitted`);
+  assertKnownKeys(omitted, [
+    "reasons",
+    "reads",
+    "requiredRegions",
+    "observedVariants",
+    "expectedVariants",
+    "unexpectedVariants",
+    "missingExpectedVariants",
+    "supportingReadIds"
+  ], `${path}.omitted`);
+  if (reportInteger(omitted.reads, `${path}.omitted.reads`) !== 0) {
+    throw new Error(`${path} cannot omit read identities.`);
+  }
+  if (reads.length !== result.data.readRecordIds.length) reportMismatch(result, "reads length");
+  const validatedReads = reads.map((value, index) => validateConstructReportRead(
+    value,
+    index,
+    topology,
+    referenceLength,
+    reportThresholds
+  ));
+  const reportReadIds = validatedReads.map((read) => read.id);
+  const reportReadSha256s = validatedReads.map((read) => read.sha256);
+  const mappedReadCount = validatedReads.filter((read) => read.mapped).length;
+  if (new Set(reportReadIds).size !== reportReadIds.length) throw new Error(`${path}.reads cannot contain duplicate ids.`);
+  assertReportArray(result, "reads[].id", reportReadIds, result.data.readRecordIds);
+  assertReportArray(result, "reads[].sha256", reportReadSha256s, result.inputSha256s.slice(1));
+  assertReportValue(result, "mapped read count", mappedReadCount, result.data.mappedReadCount);
+  const provenance = reportObject(report.provenance, `${path}.provenance`);
+  assertKnownKeys(provenance, [
+    "engine",
+    "engineVersion",
+    "referenceSha256",
+    "readSha256s",
+    "requestSha256",
+    "workUnits",
+    "limits"
+  ], `${path}.provenance`);
+  const engine = reportString(provenance.engine, `${path}.provenance.engine`);
+  const engineVersion = reportString(provenance.engineVersion, `${path}.provenance.engineVersion`);
+  if (engine !== "motif-construct-verification" || engineVersion !== "1") {
+    throw new Error(`${path}.provenance must identify motif-construct-verification version 1.`);
+  }
+  assertReportValue(result, "provenance.engine", engine, result.provenance.engine);
+  assertReportValue(result, "provenance.engineVersion", engineVersion, result.provenance.engineVersion);
+  assertReportValue(result, "provenance.referenceSha256", reportSha256(provenance.referenceSha256, `${path}.provenance.referenceSha256`), referenceSha256);
+  const provenanceReadSha256s = reportArray(provenance.readSha256s, `${path}.provenance.readSha256s`).map((sha256, index) => reportSha256(sha256, `${path}.provenance.readSha256s[${index}]`));
+  assertReportArray(result, "provenance.readSha256s", provenanceReadSha256s, reportReadSha256s);
+  const requestSha256 = reportSha256(provenance.requestSha256, `${path}.provenance.requestSha256`);
+  const savedRequestSha256 = reportSha256(result.parameters.requestSha256, `Analysis result "${result.id}" parameters.requestSha256`);
+  assertReportValue(result, "provenance.requestSha256", requestSha256, savedRequestSha256);
+  const readEvidence = reportObject(
+    result.parameters.readEvidence,
+    `Analysis result "${result.id}" parameters.readEvidence`
+  );
+  assertKnownKeys(readEvidence, ["schema", "sha256s"], `Analysis result "${result.id}" parameters.readEvidence`);
+  if (readEvidence.schema !== "motif.construct-read-evidence.v1") {
+    throw new Error(`Analysis result "${result.id}" parameters.readEvidence schema is not supported.`);
+  }
+  const readEvidenceSha256s = reportArray(
+    readEvidence.sha256s,
+    `Analysis result "${result.id}" parameters.readEvidence.sha256s`
+  ).map((sha256, index) => reportSha256(
+    sha256,
+    `Analysis result "${result.id}" parameters.readEvidence.sha256s[${index}]`
+  ));
+  if (readEvidenceSha256s.length !== reportReadIds.length) {
+    throw new Error(`Analysis result "${result.id}" parameters.readEvidence must align one-to-one with reads.`);
+  }
+  const workUnits = reportIntegerBetween(
+    provenance.workUnits,
+    `${path}.provenance.workUnits`,
+    0,
+    CONSTRUCT_REPORT_LIMITS.maxWorkUnits
+  );
+  const provenanceLimits = reportObject(provenance.limits, `${path}.provenance.limits`);
+  assertKnownKeys(provenanceLimits, Object.keys(CONSTRUCT_REPORT_LIMITS), `${path}.provenance.limits`);
+  assertReportArray(
+    result,
+    "provenance.limits keys",
+    Object.keys(provenanceLimits).sort(),
+    Object.keys(CONSTRUCT_REPORT_LIMITS).sort()
+  );
+  Object.entries(CONSTRUCT_REPORT_LIMITS).forEach(([key, expected2]) => {
+    assertReportValue(
+      result,
+      `provenance.limits.${key}`,
+      reportInteger(provenanceLimits[key], `${path}.provenance.limits.${key}`),
+      expected2
+    );
+  });
+  const validateSavedProvenance = (saved, savedPath) => {
+    if (saved.source !== "motif-for-claude-science-artifact" || saved.operation !== "construct_verification" || saved.actor !== "user" || saved.engine !== engine || saved.engineVersion !== engineVersion) {
+      throw new Error(`${savedPath} must identify the Motif construct-verification engine and user action.`);
+    }
+    if (saved.parentIds === void 0) throw new Error(`${savedPath}.parentIds is required.`);
+    assertReportArray(result, `${savedPath}.parentIds`, saved.parentIds, result.inputRecordIds);
+    const metadata = reportObject(saved.metadata, `${savedPath}.metadata`);
+    assertKnownKeys(metadata, ["requestSha256", "workUnits"], `${savedPath}.metadata`);
+    assertReportValue(
+      result,
+      `${savedPath}.metadata.requestSha256`,
+      reportSha256(metadata.requestSha256, `${savedPath}.metadata.requestSha256`),
+      requestSha256
+    );
+    assertReportValue(
+      result,
+      `${savedPath}.metadata.workUnits`,
+      reportIntegerBetween(metadata.workUnits, `${savedPath}.metadata.workUnits`, 0, CONSTRUCT_REPORT_LIMITS.maxWorkUnits),
+      workUnits
+    );
+  };
+  validateSavedProvenance(result.provenance, `Analysis result "${result.id}" provenance`);
+  validateSavedProvenance(asset.provenance, `Analysis asset "${asset.id}" provenance`);
+  const consensus = reportObject(report.consensus, `${path}.consensus`);
+  assertKnownKeys(consensus, ["sequence"], `${path}.consensus`);
+  if (typeof consensus.sequence !== "string" || !CONSTRUCT_REPORT_IUPAC_CONSENSUS_PATTERN.test(consensus.sequence) || consensus.sequence.length > referenceLength + result.data.observedVariantCount * CONSTRUCT_REPORT_LIMITS.maxIndelLength) {
+    throw new Error(`${path}.consensus.sequence must be bounded A/C/G/T/N evidence.`);
+  }
+  const coverage = reportObject(report.coverage, `${path}.coverage`);
+  assertKnownKeys(coverage, [
+    "coveredBasesAtAnyDepth",
+    "basesMeetingMinDepth",
+    "coverageFraction",
+    "minimumDepth",
+    "maximumDepth",
+    "meanDepth",
+    "requiredRegions"
+  ], `${path}.coverage`);
+  const coveredBasesAtAnyDepth = reportIntegerBetween(
+    coverage.coveredBasesAtAnyDepth,
+    `${path}.coverage.coveredBasesAtAnyDepth`,
+    0,
+    referenceLength
+  );
+  const basesMeetingMinDepth = reportIntegerBetween(
+    coverage.basesMeetingMinDepth,
+    `${path}.coverage.basesMeetingMinDepth`,
+    0,
+    coveredBasesAtAnyDepth
+  );
+  assertReportValue(
+    result,
+    "coverage.basesMeetingMinDepth",
+    basesMeetingMinDepth,
+    result.data.coveredBases
+  );
+  const coverageFraction = reportNumberBetween(
+    coverage.coverageFraction,
+    `${path}.coverage.coverageFraction`,
+    0,
+    1
+  );
+  assertReportNumber(result, "coverage.coverageFraction", coverageFraction, result.data.coverageFraction);
+  assertReportNumber(result, "coverage.coverageFraction formula", coverageFraction, basesMeetingMinDepth / referenceLength);
+  const minimumDepth = reportIntegerBetween(
+    coverage.minimumDepth,
+    `${path}.coverage.minimumDepth`,
+    0,
+    mappedReadCount
+  );
+  const maximumDepth = reportIntegerBetween(
+    coverage.maximumDepth,
+    `${path}.coverage.maximumDepth`,
+    minimumDepth,
+    mappedReadCount
+  );
+  reportNumberBetween(coverage.meanDepth, `${path}.coverage.meanDepth`, minimumDepth, maximumDepth);
+  const globalMinDepth = reportInteger(
+    reportThresholds.minDepth,
+    `${path}.thresholds.minDepth`
+  );
+  if (coveredBasesAtAnyDepth === 0 !== (maximumDepth === 0) || coveredBasesAtAnyDepth === referenceLength !== minimumDepth > 0 || basesMeetingMinDepth === 0 !== maximumDepth < globalMinDepth || basesMeetingMinDepth === referenceLength !== minimumDepth >= globalMinDepth) {
+    throw new Error(`${path}.coverage depth extrema, thresholds, and covered-base counts are inconsistent.`);
+  }
+  const requiredRegions = reportArray(coverage.requiredRegions, `${path}.coverage.requiredRegions`);
+  const omittedRequiredRegions = reportInteger(omitted.requiredRegions, `${path}.omitted.requiredRegions`);
+  assertReportValue(result, "required region count", requiredRegions.length + omittedRequiredRegions, result.data.requiredRegionCount);
+  if (omittedRequiredRegions !== 0) throw new Error(`${path} cannot omit required-region acceptance states.`);
+  if (requiredRegions.length > CONSTRUCT_REPORT_LIMITS.maxRequiredRegions) {
+    throw new Error(`${path}.coverage.requiredRegions exceeds the v1 limit.`);
+  }
+  const validatedRegions = requiredRegions.map((value, index) => validateConstructReportRegion(
+    value,
+    index,
+    topology,
+    referenceLength,
+    mappedReadCount
+  ));
+  if (new Set(validatedRegions.map((region) => region.id)).size !== validatedRegions.length) {
+    throw new Error(`${path}.coverage.requiredRegions cannot contain duplicate ids.`);
+  }
+  const passingRegionCount = validatedRegions.filter((region) => region.status === "covered").length;
+  assertReportValue(result, "passing region count", passingRegionCount, result.data.passingRegionCount);
+  const variants = reportObject(report.variants, `${path}.variants`);
+  assertKnownKeys(variants, ["observed", "expected", "unexpected", "missingExpected"], `${path}.variants`);
+  const observedValues = reportArray(variants.observed, `${path}.variants.observed`);
+  const expectedValues = reportArray(variants.expected, `${path}.variants.expected`);
+  const unexpectedValues = reportArray(variants.unexpected, `${path}.variants.unexpected`);
+  const missingExpectedValues = reportArray(variants.missingExpected, `${path}.variants.missingExpected`);
+  const omittedObservedVariants = reportInteger(omitted.observedVariants, `${path}.omitted.observedVariants`);
+  const omittedUnexpectedVariants = reportInteger(omitted.unexpectedVariants, `${path}.omitted.unexpectedVariants`);
+  const omittedExpectedVariants = reportInteger(omitted.expectedVariants, `${path}.omitted.expectedVariants`);
+  const omittedMissingExpectedVariants = reportInteger(
+    omitted.missingExpectedVariants,
+    `${path}.omitted.missingExpectedVariants`
+  );
+  const assertCompactCount = (field, displayed, omittedCount, total, displayLimit) => {
+    assertReportValue(result, `variants.${field} displayed count`, displayed, Math.min(total, displayLimit));
+    assertReportValue(result, `variants.${field} omitted count`, omittedCount, Math.max(0, total - displayLimit));
+  };
+  assertCompactCount(
+    "observed",
+    observedValues.length,
+    omittedObservedVariants,
+    result.data.observedVariantCount,
+    CONSTRUCT_REPORT_OBSERVED_VARIANT_LIMIT
+  );
+  assertCompactCount(
+    "unexpected",
+    unexpectedValues.length,
+    omittedUnexpectedVariants,
+    result.data.unexpectedVariantCount,
+    CONSTRUCT_REPORT_OBSERVED_VARIANT_LIMIT
+  );
+  assertCompactCount(
+    "expected",
+    expectedValues.length,
+    omittedExpectedVariants,
+    result.data.expectedVariantCount,
+    CONSTRUCT_REPORT_LIMITS.maxExpectedVariants
+  );
+  assertCompactCount(
+    "missingExpected",
+    missingExpectedValues.length,
+    omittedMissingExpectedVariants,
+    result.data.missingExpectedVariantCount,
+    CONSTRUCT_REPORT_LIMITS.maxExpectedVariants
+  );
+  if (observedValues.length > CONSTRUCT_REPORT_OBSERVED_VARIANT_LIMIT || unexpectedValues.length > CONSTRUCT_REPORT_OBSERVED_VARIANT_LIMIT || expectedValues.length > CONSTRUCT_REPORT_LIMITS.maxExpectedVariants || missingExpectedValues.length > CONSTRUCT_REPORT_LIMITS.maxExpectedVariants) {
+    throw new Error(`${path}.variants exceeds the v1 limits.`);
+  }
+  const knownReadIds = new Set(reportReadIds);
+  const mappedReadIds = new Set(validatedReads.filter((read) => read.mapped).map((read) => read.id));
+  const qualityMappedReadIds = new Set(validatedReads.filter((read) => read.mapped && read.qualityProvided).map((read) => read.id));
+  const observed = observedValues.map((value, index) => validateConstructReportObservedVariant(
+    value,
+    `${path}.variants.observed[${index}]`,
+    topology,
+    referenceLength,
+    mappedReadCount,
+    mappedReadIds,
+    qualityMappedReadIds,
+    reportThresholds
+  ));
+  const unexpected = unexpectedValues.map((value, index) => validateConstructReportObservedVariant(
+    value,
+    `${path}.variants.unexpected[${index}]`,
+    topology,
+    referenceLength,
+    mappedReadCount,
+    mappedReadIds,
+    qualityMappedReadIds,
+    reportThresholds
+  ));
+  const expected = expectedValues.map((value, index) => validateConstructReportExpectedVariant(
+    value,
+    `${path}.variants.expected[${index}]`,
+    topology,
+    referenceLength,
+    qualityMappedReadIds.size
+  ));
+  const missingExpected = missingExpectedValues.map((value, index) => validateConstructReportExpectedVariant(
+    value,
+    `${path}.variants.missingExpected[${index}]`,
+    topology,
+    referenceLength,
+    qualityMappedReadIds.size
+  ));
+  const assertUniqueVariantIds = (entries, field) => {
+    if (new Set(entries.map((entry) => entry.id)).size !== entries.length) {
+      throw new Error(`${path}.variants.${field} cannot contain duplicate ids.`);
+    }
+  };
+  assertUniqueVariantIds(observed, "observed");
+  assertUniqueVariantIds(expected, "expected");
+  assertUniqueVariantIds(unexpected, "unexpected");
+  assertUniqueVariantIds(missingExpected, "missingExpected");
+  const observedById = new Map(observed.map((variant) => [variant.id, variant]));
+  const expectedById = new Map(expected.map((variant) => [variant.id, variant]));
+  observed.forEach((variant) => {
+    if (variant.expectedVariantId === void 0) return;
+    const linked = expectedById.get(variant.expectedVariantId);
+    if (!linked || linked.observedVariantId !== variant.id || linked.alleleKey !== variant.alleleKey || linked.depth > variant.depth) {
+      throw new Error(`${path}.variants observed/expected cross-links are inconsistent.`);
+    }
+  });
+  expected.forEach((variant) => {
+    if (variant.observedVariantId === void 0) return;
+    const linked = observedById.get(variant.observedVariantId);
+    if (linked !== void 0 && (linked.expectedVariantId !== variant.id || linked.alleleKey !== variant.alleleKey || variant.depth > linked.depth || (variant.status === "observed" ? linked.confidence !== "high" : linked.confidence !== "low"))) {
+      throw new Error(`${path}.variants expected/observed cross-links are inconsistent.`);
+    }
+    if (linked === void 0 && omittedObservedVariants === 0) {
+      throw new Error(`${path}.variants expected/observed cross-links are inconsistent.`);
+    }
+  });
+  const unexpectedById = new Map(unexpected.map((variant) => [variant.id, variant]));
+  observed.filter((variant) => variant.expectedVariantId === void 0).forEach((variant) => {
+    const matching = unexpectedById.get(variant.id);
+    if (!matching || matching.signature !== variant.signature) {
+      throw new Error(`${path}.variants.unexpected must retain every visible unexpected observed variant.`);
+    }
+  });
+  unexpected.forEach((variant) => {
+    if (variant.expectedVariantId !== void 0) {
+      throw new Error(`${path}.variants.unexpected cannot contain an expected variant link.`);
+    }
+    const matching = observedById.get(variant.id);
+    if (matching !== void 0 && matching.signature !== variant.signature) {
+      throw new Error(`${path}.variants.unexpected must exactly match observed evidence.`);
+    }
+    if (matching === void 0 && omittedObservedVariants === 0) {
+      throw new Error(`${path}.variants.unexpected references absent observed evidence.`);
+    }
+  });
+  const expectedMissingSignatures = expected.filter((variant) => variant.status !== "observed").map((variant) => variant.signature);
+  assertReportArray(
+    result,
+    "variants.missingExpected subset",
+    missingExpected.map((variant) => variant.signature),
+    expectedMissingSignatures
+  );
+  const expectedSupportingOmissions = [...observed, ...unexpected].reduce((total, variant) => total + variant.omittedSupportingReadIds, 0);
+  const reportedSupportingOmissions = reportInteger(
+    omitted.supportingReadIds,
+    `${path}.omitted.supportingReadIds`
+  );
+  if (omittedObservedVariants === 0 && omittedUnexpectedVariants === 0 && reportedSupportingOmissions !== expectedSupportingOmissions || reportedSupportingOmissions < expectedSupportingOmissions) {
+    throw new Error(`${path}.omitted.supportingReadIds is inconsistent with compact variant evidence.`);
+  }
+  const requiredReasonCodes = /* @__PURE__ */ new Set();
+  if (mappedReadCount === 0) requiredReasonCodes.add("no_usable_reads");
+  validatedReads.forEach((read) => {
+    if (!read.qualityProvided) requiredReasonCodes.add("missing_quality");
+    if (read.status === "trimmed_read_too_short") requiredReasonCodes.add("trimmed_read_too_short");
+    else if (read.status === "unmapped") requiredReasonCodes.add("unmapped_read");
+    else if (read.status !== "mapped") requiredReasonCodes.add(read.status);
+  });
+  if (coverageFraction < reportFiniteNumber(reportThresholds.minCoverageFraction, `${path}.thresholds.minCoverageFraction`)) requiredReasonCodes.add("partial_reference_coverage");
+  validatedRegions.forEach((region) => {
+    region.reasonCodes.forEach((code) => requiredReasonCodes.add(code));
+  });
+  observed.forEach((variant) => {
+    if (variant.confidence === "low") requiredReasonCodes.add("low_confidence_variant");
+  });
+  const visibleHighConfidenceUnexpected = unexpected.some((variant) => variant.confidence === "high");
+  if (visibleHighConfidenceUnexpected) requiredReasonCodes.add("unexpected_variant");
+  expected.forEach((variant) => {
+    if (variant.status === "not_covered") requiredReasonCodes.add("expected_variant_not_covered");
+    else if (variant.status === "not_observed") requiredReasonCodes.add("expected_variant_not_observed");
+  });
+  requiredReasonCodes.forEach((code) => {
+    if (!result.data.reasonCodes.includes(code)) {
+      throw new Error(`${path} is missing required reason code ${code}.`);
+    }
+  });
+  const visibleInconsistency = visibleHighConfidenceUnexpected || expected.some((variant) => variant.status === "not_observed");
+  if (visibleInconsistency && result.data.state !== "inconsistent") {
+    throw new Error(`${path}.state must be inconsistent for visible contradictory variant evidence.`);
+  }
+  if (requiredReasonCodes.size > 0 && result.data.state === "consistent") {
+    throw new Error(`${path}.state cannot be consistent while review or inconsistent evidence is present.`);
+  }
+  const reasons = reportArray(report.reasons, `${path}.reasons`);
+  if (reasons.length > CONSTRUCT_REPORT_REASON_LIMIT) throw new Error(`${path}.reasons exceeds the v1 limit.`);
+  const reportReasonCodes = [];
+  const seenReasonCodes = /* @__PURE__ */ new Set();
+  let hasReviewReason = false;
+  let hasInconsistentReason = false;
+  const knownRegionIds = new Set(validatedRegions.map((region) => region.id));
+  const knownVariantIds = new Set([...observed, ...expected].map((variant) => variant.id));
+  reasons.forEach((value, index) => {
+    const reason = reportObject(value, `${path}.reasons[${index}]`);
+    assertKnownKeys(reason, ["code", "severity", "message", "readId", "regionId", "variantId"], `${path}.reasons[${index}]`);
+    const code = reportIdentityText(reason.code, `${path}.reasons[${index}].code`, 128);
+    if (!STABLE_REASON_CODE_PATTERN.test(code)) throw new Error(`${path}.reasons[${index}].code is not stable.`);
+    if (reason.severity !== "review" && reason.severity !== "inconsistent") {
+      throw new Error(`${path}.reasons[${index}].severity is not supported.`);
+    }
+    if (reason.severity === "review") hasReviewReason = true;
+    else hasInconsistentReason = true;
+    if (typeof reason.message !== "string" || reason.message.length > 512) {
+      throw new Error(`${path}.reasons[${index}].message must be a string no longer than 512 characters.`);
+    }
+    const readId = reportOptionalIdentityText(reason.readId, `${path}.reasons[${index}].readId`, MAX_ARTIFACT_ANALYSIS_ID_LENGTH);
+    const regionId = reportOptionalIdentityText(reason.regionId, `${path}.reasons[${index}].regionId`, MAX_ARTIFACT_ANALYSIS_ID_LENGTH);
+    const variantId = reportOptionalIdentityText(reason.variantId, `${path}.reasons[${index}].variantId`, MAX_ARTIFACT_ANALYSIS_ID_LENGTH);
+    if (readId !== void 0 && !knownReadIds.has(readId)) throw new Error(`${path}.reasons[${index}].readId is unknown.`);
+    if (regionId !== void 0 && !knownRegionIds.has(regionId)) throw new Error(`${path}.reasons[${index}].regionId is unknown.`);
+    if (variantId !== void 0 && !knownVariantIds.has(variantId) && omittedObservedVariants === 0 && omittedUnexpectedVariants === 0) throw new Error(`${path}.reasons[${index}].variantId is unknown.`);
+    if (!seenReasonCodes.has(code)) {
+      seenReasonCodes.add(code);
+      reportReasonCodes.push(code);
+    }
+  });
+  assertReportArray(result, "reason code prefix", reportReasonCodes, result.data.reasonCodes.slice(0, reportReasonCodes.length));
+  const omittedReasons = reportInteger(omitted.reasons, `${path}.omitted.reasons`);
+  if (reasons.length < CONSTRUCT_REPORT_REASON_LIMIT && omittedReasons !== 0) {
+    throw new Error(`${path}.omitted.reasons cannot be nonzero below the report limit.`);
+  }
+  if (omittedReasons === 0) {
+    assertReportArray(result, "reason codes", reportReasonCodes, result.data.reasonCodes);
+  }
+  if (result.data.state === "consistent" && (hasReviewReason || hasInconsistentReason || omittedReasons > 0) || result.data.state === "needs_review" && (hasInconsistentReason || !hasReviewReason && omittedReasons === 0) || result.data.state === "inconsistent" && !hasInconsistentReason && omittedReasons === 0) {
+    throw new Error(`${path}.state is inconsistent with its reason severities.`);
+  }
 }
 function validateDependencies(workspace, context) {
   const resultIds = new Set(workspace.analysisResults.map((result) => result.id));
@@ -541,9 +1856,22 @@ function validateDependencies(workspace, context) {
       if (!assetIds.has(assetId)) throw new Error(`Analysis result "${result.id}" references missing asset "${assetId}".`);
     });
     if (context.recordLengths) {
-      resultRecordIds(result).forEach((recordId) => {
+      artifactAnalysisResultRecordIds(result).forEach((recordId) => {
         if (!context.recordLengths?.has(recordId)) throw new Error(`Analysis result "${result.id}" references missing record "${recordId}".`);
       });
+    }
+    if (result.kind === "construct_verification") {
+      const expectedInputRecordIds = [result.data.referenceRecordId, ...result.data.readRecordIds];
+      if (result.inputRecordIds.length !== expectedInputRecordIds.length || result.inputRecordIds.some((recordId, index) => recordId !== expectedInputRecordIds[index])) {
+        throw new Error(`Analysis result "${result.id}" inputRecordIds must list the construct reference first, followed by readRecordIds in saved order.`);
+      }
+      if (result.data.verificationReportAssetId) {
+        const reportAsset = workspace.analysisAssets.find((candidate) => candidate.id === result.data.verificationReportAssetId);
+        if (reportAsset && reportAsset.mediaType !== "application/json") {
+          throw new Error(`Analysis result "${result.id}" verification report asset must use application/json.`);
+        }
+        if (reportAsset) validateConstructVerificationReport(result, reportAsset);
+      }
     }
     if (result.kind === "structure_model") {
       const asset = workspace.analysisAssets.find((candidate) => candidate.id === result.data.modelAssetId);
@@ -618,7 +1946,7 @@ function getArtifactAnalysisAssetDependents(value, assetId) {
 }
 function getArtifactAnalysisRecordDependents(value, recordId) {
   const workspace = normalizeArtifactAnalysisWorkspace(value);
-  return workspace.analysisResults.filter((result) => resultRecordIds(result).includes(recordId)).map((result) => result.id);
+  return workspace.analysisResults.filter((result) => artifactAnalysisResultRecordIds(result).includes(recordId)).map((result) => result.id);
 }
 function removeArtifactAnalysisWorkspaceResult(value, resultId, context = {}) {
   const workspace = normalizeArtifactAnalysisWorkspace(value, context);
@@ -681,7 +2009,7 @@ function removeArtifactAnalysisResultCascade(value, resultId, options = {}, cont
 }
 function removeArtifactAnalysisResultsForRecord(value, recordId, options = {}) {
   const workspace = normalizeArtifactAnalysisWorkspace(value);
-  const directIds = workspace.analysisResults.filter((result) => resultRecordIds(result).includes(recordId)).map((result) => result.id);
+  const directIds = workspace.analysisResults.filter((result) => artifactAnalysisResultRecordIds(result).includes(recordId)).map((result) => result.id);
   if (directIds.length === 0) return workspace;
   const removedIds = collectResultCascade(workspace.analysisResults, directIds);
   const keptResults = workspace.analysisResults.filter((result) => !removedIds.has(result.id));
@@ -712,6 +2040,7 @@ export {
   appendArtifactAnalysisAsset,
   appendArtifactAnalysisResult,
   appendArtifactAnalysisWorkspaceResult,
+  artifactAnalysisResultRecordIds,
   cloneArtifactAnalysisWorkspace,
   getArtifactAnalysisAssetDependents,
   getArtifactAnalysisRecordDependents,

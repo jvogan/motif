@@ -18,9 +18,27 @@ import {
   removeArtifactAnalysisResultsForRecord,
   serializeArtifactAnalysisWorkspace,
 } from '../claude-science-analysis-results';
+import { sha256HexSync } from '../claude-science-sha256';
 
 const CREATED_AT = '2026-07-12T16:30:00.000Z';
 const SHA256 = 'A'.repeat(64);
+const NORMALIZED_SHA256 = SHA256.toLowerCase();
+const REQUEST_SHA256 = sha256HexSync('construct-verification-request');
+const READ_EVIDENCE_SHA256 = sha256HexSync('construct-read-evidence');
+const VERIFICATION_THRESHOLDS = {
+  trimQuality: 20,
+  trimWindow: 12,
+  minTrimmedReadLength: 40,
+  minMappingIdentity: 0.82,
+  minMappingMargin: 0.03,
+  maxIndelFraction: 0.12,
+  minCoverageFraction: 1,
+  minDepth: 1,
+  requireBothStrands: false,
+  minConsensusFraction: 0.7,
+  minVariantQuality: 20,
+  minVariantFraction: 0.6,
+};
 
 function provenance() {
   return {
@@ -33,16 +51,245 @@ function provenance() {
 }
 
 function asset(overrides: Record<string, unknown> = {}) {
+  const content = typeof overrides.content === 'string' ? overrides.content : 'Inert analysis text';
   return {
     id: 'asset-1',
     name: 'analysis.txt',
     mediaType: 'text/plain',
-    content: 'Inert analysis text',
-    sha256: SHA256,
+    content,
+    sha256: sha256HexSync(content),
     createdAt: CREATED_AT,
     provenance: provenance(),
     ...overrides,
   };
+}
+
+function constructVerificationProvenance() {
+  return {
+    source: 'motif-for-claude-science-artifact',
+    operation: 'construct_verification',
+    actor: 'user',
+    engine: 'motif-construct-verification',
+    engineVersion: '1',
+    parentIds: ['record-a', 'record-b'],
+    metadata: { requestSha256: REQUEST_SHA256, workUnits: 128 },
+  };
+}
+
+function constructVerificationReport() {
+  return {
+    schema: 'motif.construct-verification-report.v1',
+    version: 1,
+    state: 'needs_review',
+    reasons: [{
+      code: 'partial_reference_coverage',
+      severity: 'review',
+      message: 'Only part of the reference met the requested depth.',
+    }, {
+      code: 'required_region_uncovered',
+      severity: 'review',
+      message: 'A required region is not fully covered.',
+      regionId: 'region-review',
+    }, {
+      code: 'low_confidence_variant',
+      severity: 'review',
+      message: 'A low-confidence unexpected variant requires review.',
+    }],
+    reference: {
+      id: 'record-a',
+      name: 'Predicted construct',
+      length: 2_000,
+      topology: 'linear',
+      sha256: NORMALIZED_SHA256,
+    },
+    thresholds: { ...VERIFICATION_THRESHOLDS },
+    reads: [{
+      id: 'record-b',
+      sha256: NORMALIZED_SHA256,
+      rawLength: 1_000,
+      qualityProvided: true,
+      meanQuality: 30,
+      status: 'mapped',
+      trim: {
+        method: 'quality_window',
+        rawStart: 0,
+        rawEnd: 1_000,
+        trimmedLength: 1_000,
+        removedFromStart: 0,
+        removedFromEnd: 0,
+      },
+      mapping: {
+        orientation: 'forward',
+        referenceStart: 0,
+        referenceEnd: 1_000,
+        wraps: false,
+        referenceSpan: 1_000,
+        score: 3_000,
+        secondBestScore: null,
+        mappingMargin: null,
+        identity: 1,
+        alignedLength: 1_000,
+        matches: 1_000,
+        substitutions: 0,
+        insertions: 0,
+        deletions: 0,
+        indelFraction: 0,
+      },
+    }],
+    coverage: {
+      coveredBasesAtAnyDepth: 1_500,
+      basesMeetingMinDepth: 1_500,
+      coverageFraction: 0.75,
+      minimumDepth: 0,
+      maximumDepth: 1,
+      meanDepth: 0.75,
+      requiredRegions: [{
+        id: 'region-pass',
+        start: 0,
+        end: 100,
+        wraps: false,
+        length: 100,
+        minDepth: 1,
+        requireBothStrands: false,
+        coveredBases: 100,
+        basesMeetingMinDepth: 100,
+        coveredFraction: 1,
+        minimumDepth: 1,
+        maximumDepth: 1,
+        meanDepth: 1,
+        forwardCoveredBases: 100,
+        reverseCoveredBases: 0,
+        bothStrandsCoveredBases: 0,
+        status: 'covered',
+      }, {
+        id: 'region-review',
+        start: 100,
+        end: 200,
+        wraps: false,
+        length: 100,
+        minDepth: 1,
+        requireBothStrands: false,
+        coveredBases: 0,
+        basesMeetingMinDepth: 0,
+        coveredFraction: 0,
+        minimumDepth: 0,
+        maximumDepth: 0,
+        meanDepth: 0,
+        forwardCoveredBases: 0,
+        reverseCoveredBases: 0,
+        bothStrandsCoveredBases: 0,
+        status: 'uncovered',
+      }],
+    },
+    consensus: { sequence: 'N' },
+    variants: {
+      observed: [{
+        id: 'observed-1',
+        type: 'substitution',
+        referenceStart: 10,
+        referenceEnd: 11,
+        reference: 'A',
+        alternate: 'C',
+        depth: 1,
+        support: 1,
+        supportWeight: 31,
+        fraction: 1,
+        meanQuality: 30,
+        confidence: 'high',
+        supportingReadIds: ['record-b'],
+        expectedVariantId: 'expected-1',
+        omittedSupportingReadIds: 0,
+      }, {
+        id: 'observed-2',
+        type: 'substitution',
+        referenceStart: 20,
+        referenceEnd: 21,
+        reference: 'A',
+        alternate: 'G',
+        depth: 1,
+        support: 1,
+        supportWeight: 1,
+        fraction: 1,
+        meanQuality: null,
+        confidence: 'low',
+        supportingReadIds: ['record-b'],
+        omittedSupportingReadIds: 0,
+      }],
+      expected: [{
+        id: 'expected-1',
+        type: 'substitution',
+        referenceStart: 10,
+        referenceEnd: 11,
+        reference: 'A',
+        alternate: 'C',
+        status: 'observed',
+        depth: 1,
+        observedVariantId: 'observed-1',
+      }],
+      unexpected: [{
+        id: 'observed-2',
+        type: 'substitution',
+        referenceStart: 20,
+        referenceEnd: 21,
+        reference: 'A',
+        alternate: 'G',
+        depth: 1,
+        support: 1,
+        supportWeight: 1,
+        fraction: 1,
+        meanQuality: null,
+        confidence: 'low',
+        supportingReadIds: ['record-b'],
+        omittedSupportingReadIds: 0,
+      }],
+      missingExpected: [],
+    },
+    provenance: {
+      engine: 'motif-construct-verification',
+      engineVersion: '1',
+      referenceSha256: NORMALIZED_SHA256,
+      readSha256s: [NORMALIZED_SHA256],
+      requestSha256: REQUEST_SHA256,
+      workUnits: 128,
+      limits: {
+        maxReferenceLength: 50_000,
+        maxReads: 96,
+        maxReadLength: 5_000,
+        maxRequiredRegions: 128,
+        maxRequiredRegionBases: 500_000,
+        maxExpectedVariants: 256,
+        maxObservedVariants: 2_000,
+        maxIndelLength: 24,
+        maxWorkUnits: 25_000_000,
+      },
+    },
+    omitted: {
+      reasons: 0,
+      reads: 0,
+      requiredRegions: 0,
+      observedVariants: 0,
+      expectedVariants: 0,
+      unexpectedVariants: 0,
+      missingExpectedVariants: 0,
+      supportingReadIds: 0,
+    },
+  };
+}
+
+function constructVerificationReportAsset(
+  mutate?: (report: ReturnType<typeof constructVerificationReport>) => void,
+) {
+  const report = constructVerificationReport();
+  mutate?.(report);
+  const content = `${JSON.stringify(report, null, 2)}\n`;
+  return asset({
+    id: 'verification-report',
+    name: 'construct-verification-report.json',
+    mediaType: 'application/json',
+    content,
+    sha256: sha256HexSync(content),
+    provenance: constructVerificationProvenance(),
+  });
 }
 
 function baseResult(kind: string, data: Record<string, unknown>, overrides: Record<string, unknown> = {}) {
@@ -91,6 +338,37 @@ const resultFixtures = [
     enzyme: 'BsaI',
     junctions: [{ leftRecordId: 'record-a', rightRecordId: 'record-b', compatible: true, overhang: 'AATG' }],
   }, { inputRecordIds: ['record-a', 'record-b', 'record-c', 'record-d'], inputSha256s: [SHA256, SHA256, SHA256, SHA256] }),
+  baseResult('construct_verification', {
+    referenceRecordId: 'record-a',
+    readRecordIds: ['record-b'],
+    state: 'needs_review',
+    referenceLength: 2_000,
+    coveredBases: 1_500,
+    coverageFraction: 0.75,
+    mappedReadCount: 1,
+    requiredRegionCount: 2,
+    passingRegionCount: 1,
+    observedVariantCount: 2,
+    expectedVariantCount: 1,
+    unexpectedVariantCount: 1,
+    missingExpectedVariantCount: 0,
+    reasonCodes: ['partial_reference_coverage', 'required_region_uncovered', 'low_confidence_variant'],
+    verificationReportAssetId: 'verification-report',
+  }, {
+    inputRecordIds: ['record-a', 'record-b'],
+    inputSha256s: [SHA256, SHA256],
+    assetIds: ['verification-report'],
+    parameters: {
+      topology: 'linear',
+      requestSha256: REQUEST_SHA256,
+      thresholds: { ...VERIFICATION_THRESHOLDS },
+      readEvidence: {
+        schema: 'motif.construct-read-evidence.v1',
+        sha256s: [READ_EVIDENCE_SHA256],
+      },
+    },
+    provenance: constructVerificationProvenance(),
+  }),
   baseResult('blast_search', {
     program: 'blastn',
     database: 'nt',
@@ -139,11 +417,12 @@ const recordLengths = new Map([
 ]);
 
 describe('Claude Science typed analysis results', () => {
-  it('normalizes all seven discriminated result kinds with record, hash, and asset references', () => {
+  it('normalizes all eight discriminated result kinds with record, hash, and asset references', () => {
     const workspace = normalizeArtifactAnalysisWorkspace({
       analysisResults: resultFixtures,
       analysisAssets: [
         asset(),
+        constructVerificationReportAsset(),
         asset({ id: 'structure-asset', name: 'model.pdb', mediaType: 'chemical/x-pdb', content: 'ATOM      1  N   MET A   1' }),
       ],
     }, { recordLengths });
@@ -152,6 +431,7 @@ describe('Claude Science typed analysis results', () => {
       'primer_design',
       'pcr',
       'assembly_plan',
+      'construct_verification',
       'blast_search',
       'structure_model',
       'report',
@@ -160,7 +440,7 @@ describe('Claude Science typed analysis results', () => {
     expect(workspace.analysisResults[0].inputSha256s).toEqual(['a'.repeat(64)]);
     expect(workspace.analysisResults[0].kind === 'primer_design' && workspace.analysisResults[0].data.pairs[0].forward.sequence)
       .toBe('ACGTACGTACGTACGTACGT');
-    expect(workspace.analysisAssets[0].sha256).toBe('a'.repeat(64));
+    expect(workspace.analysisAssets[0].sha256).toBe(sha256HexSync('Inert analysis text'));
   });
 
   it('keeps absent collections backward-compatible and omits empty serialized fields', () => {
@@ -203,9 +483,136 @@ describe('Claude Science typed analysis results', () => {
       analysisAssets: [asset({ content: 'é'.repeat(Math.floor(MAX_ARTIFACT_ANALYSIS_ASSET_BYTES / 2) + 1) })],
     })).toThrow(/UTF-8 bytes/i);
     expect(() => normalizeArtifactAnalysisWorkspace({
-      analysisResults: [resultFixtures[4]],
+      analysisResults: [resultFixtures[5]],
       analysisAssets: [asset({ id: 'structure-asset', mediaType: 'text/csv' })],
     })).toThrow(/mediaType does not match pdb/i);
+  });
+
+  it('recomputes supplied asset digests and rejects content tampering with a retained SHA-256', () => {
+    const originalContent = 'Signed inert analysis text';
+    const signed = asset({
+      content: originalContent,
+      sha256: sha256HexSync(originalContent),
+    });
+    expect(normalizeArtifactAnalysisWorkspace({ analysisResults: [], analysisAssets: [signed] }).analysisAssets[0].sha256)
+      .toBe(sha256HexSync(originalContent));
+
+    expect(() => normalizeArtifactAnalysisWorkspace({
+      analysisResults: [],
+      analysisAssets: [{ ...signed, content: 'Tampered inert analysis text' }],
+    })).toThrow(/sha256 must match the exact UTF-8 content/i);
+
+    expect(normalizeArtifactAnalysisWorkspace({
+      analysisResults: [],
+      analysisAssets: [asset({ sha256: undefined })],
+    }).analysisAssets[0].sha256).toBeUndefined();
+  });
+
+  it('rejects imported compact construct reports whose identity no longer matches the saved result', () => {
+    const normalizeReport = (reportAsset: ReturnType<typeof constructVerificationReportAsset>) => (
+      normalizeArtifactAnalysisWorkspace({
+        analysisResults: [resultFixtures[3]],
+        analysisAssets: [reportAsset],
+      }, { recordLengths })
+    );
+    expect(() => normalizeReport(constructVerificationReportAsset())).not.toThrow();
+
+    expect(() => normalizeReport(constructVerificationReportAsset((report) => {
+      report.state = 'inconsistent';
+    }))).toThrow(/verification report state must match the saved result/i);
+
+    expect(() => normalizeReport(constructVerificationReportAsset((report) => {
+      report.provenance.requestSha256 = sha256HexSync('different-request');
+    }))).toThrow(/provenance\.requestSha256 must match the saved result/i);
+
+    expect(() => normalizeReport(constructVerificationReportAsset((report) => {
+      report.reference.sha256 = sha256HexSync('different-reference');
+    }))).toThrow(/reference\.sha256 must match the saved result/i);
+
+    expect(() => normalizeReport(constructVerificationReportAsset((report) => {
+      report.reads[0].sha256 = sha256HexSync('different-read');
+    }))).toThrow(/reads\[\]\.sha256 must match the saved result/i);
+  });
+
+  it('rejects rehashed compact reports with impossible or incomplete nested scientific evidence', () => {
+    type ConstructReport = ReturnType<typeof constructVerificationReport>;
+    const normalizeReport = (reportAsset: ReturnType<typeof constructVerificationReportAsset>) => (
+      normalizeArtifactAnalysisWorkspace({
+        analysisResults: [resultFixtures[3]],
+        analysisAssets: [reportAsset],
+      }, { recordLengths })
+    );
+    const cases: Array<[string, (report: ConstructReport) => void]> = [
+      ['mapped read without a mapping', (report) => {
+        (report.reads[0] as { mapping: unknown }).mapping = null;
+      }],
+      ['nonmapped read with a mapping', (report) => {
+        report.reads[0].status = 'unmapped';
+      }],
+      ['inconsistent trim arithmetic', (report) => {
+        report.reads[0].trim.trimmedLength -= 1;
+      }],
+      ['inconsistent alignment counts', (report) => {
+        report.reads[0].mapping.matches -= 1;
+      }],
+      ['linear mapping marked as wrapping', (report) => {
+        report.reads[0].mapping.wraps = true;
+      }],
+      ['mapped status below the saved identity threshold', (report) => {
+        report.reads[0].mapping.matches = 800;
+        report.reads[0].mapping.substitutions = 200;
+        report.reads[0].mapping.identity = 0.8;
+      }],
+      ['invalid consensus alphabet', (report) => {
+        report.consensus.sequence = '<script>';
+      }],
+      ['coverage meeting more bases than are covered', (report) => {
+        report.coverage.coveredBasesAtAnyDepth = 1_000;
+      }],
+      ['global depth extrema below the saved threshold with passing bases', (report) => {
+        report.coverage.maximumDepth = 0;
+        report.coverage.meanDepth = 0;
+      }],
+      ['region status contradicting its depth evidence', (report) => {
+        report.coverage.requiredRegions[1].status = 'covered';
+      }],
+      ['region passing a depth threshold above its maximum depth', (report) => {
+        report.coverage.requiredRegions[0].minDepth = 2;
+      }],
+      ['substitution with identical alleles', (report) => {
+        report.variants.observed[0].alternate = report.variants.observed[0].reference;
+      }],
+      ['unknown supporting read', (report) => {
+        report.variants.observed[0].supportingReadIds[0] = 'forged-read';
+      }],
+      ['unexpected variant differing from observed evidence', (report) => {
+        report.variants.unexpected[0].alternate = 'T';
+      }],
+      ['broken expected-observed cross-link', (report) => {
+        report.variants.expected[0].observedVariantId = 'observed-2';
+      }],
+      ['cross-linked expected and observed variants with different alleles', (report) => {
+        report.variants.expected[0].alternate = 'T';
+      }],
+      ['below-cap variants hidden through an omission count', (report) => {
+        report.variants.observed.pop();
+        report.omitted.observedVariants = 1;
+      }],
+      ['partial provenance limits', (report) => {
+        delete (report.provenance.limits as Record<string, number>).maxWorkUnits;
+      }],
+      ['unknown nested mapping field', (report) => {
+        Object.assign(report.reads[0].mapping, { executableHint: 'ignored?' });
+      }],
+    ];
+
+    cases.forEach(([label, mutate]) => {
+      expect(() => normalizeReport(constructVerificationReportAsset(mutate)), label).toThrow();
+    });
+
+    const unsigned = constructVerificationReportAsset();
+    (unsigned as { sha256: string | undefined }).sha256 = undefined;
+    expect(() => normalizeReport(unsigned)).toThrow(/requires a content SHA-256/i);
   });
 
   it('rejects dangling, self-referential, and cyclic dependencies as atomic batches', () => {
@@ -238,7 +645,7 @@ describe('Claude Science typed analysis results', () => {
       analysisResults: [{ ...resultFixtures[0], inputRecordIds: ['missing'], inputSha256s: [SHA256] }],
       analysisAssets: [],
     }, { recordLengths })).toThrow(/does not match a workspace record/i);
-    expect(() => normalizeArtifactAnalysisWorkspace({ analysisResults: [resultFixtures[4]], analysisAssets: [] }))
+    expect(() => normalizeArtifactAnalysisWorkspace({ analysisResults: [resultFixtures[5]], analysisAssets: [] }))
       .toThrow(/references missing asset/i);
     expect(() => normalizeArtifactAnalysisWorkspace({ analysisResults: [resultFixtures[0], resultFixtures[0]], analysisAssets: [] }))
       .toThrow(/duplicate id/i);
@@ -278,6 +685,16 @@ describe('Claude Science typed analysis results', () => {
       })],
       analysisAssets: [],
     })).toThrow(/no greater than 100/i);
+    const verification = resultFixtures[3] as Record<string, unknown>;
+    const verificationData = verification.data as Record<string, unknown>;
+    expect(() => normalizeArtifactAnalysisWorkspace({
+      analysisResults: [{ ...verification, data: { ...verificationData, coverageFraction: 0.5 } }],
+      analysisAssets: [asset({ id: 'verification-report', name: 'verification.json', mediaType: 'application/json', content: '{}' })],
+    })).toThrow(/must agree with coveredBases/i);
+    expect(() => normalizeArtifactAnalysisWorkspace({
+      analysisResults: [{ ...verification, inputRecordIds: ['record-b', 'record-a'] }],
+      analysisAssets: [asset({ id: 'verification-report', name: 'verification.json', mediaType: 'application/json', content: '{}' })],
+    })).toThrow(/reference first/i);
   });
 
   it('defensively clones nested data and provides familiar result collection helpers', () => {
@@ -305,10 +722,10 @@ describe('Claude Science typed analysis results', () => {
       mediaType: 'chemical/x-pdb',
       content: 'ATOM      1  N   MET A   1',
     }));
-    const withResult = appendArtifactAnalysisWorkspaceResult(withAsset, resultFixtures[4]);
+    const withResult = appendArtifactAnalysisWorkspaceResult(withAsset, resultFixtures[5]);
     expect(withResult.analysisAssets).toHaveLength(1);
     expect(withResult.analysisResults).toHaveLength(1);
-    expect(() => appendArtifactAnalysisWorkspaceResult(withResult, resultFixtures[4])).toThrow(/duplicate id/i);
+    expect(() => appendArtifactAnalysisWorkspaceResult(withResult, resultFixtures[5])).toThrow(/duplicate id/i);
     expect(withAsset.analysisResults).toEqual([]);
   });
 
@@ -320,7 +737,7 @@ describe('Claude Science typed analysis results', () => {
       products: [],
     }, { id: 'pcr-dependent', dependsOnResultIds: ['primer_design-1'] });
     const workspace = normalizeArtifactAnalysisWorkspace({
-      analysisResults: [primer, pcr, resultFixtures[4]],
+      analysisResults: [primer, pcr, resultFixtures[5]],
       analysisAssets: [asset({ id: 'structure-asset', name: 'model.pdb', mediaType: 'chemical/x-pdb' })],
     });
 

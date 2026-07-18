@@ -102,6 +102,26 @@ describe('ClaudeScienceAgentResultsPanel', () => {
     expect(screen.getByText('1 shown')).toBeTruthy();
   });
 
+  it('shows saved-input freshness and its reason without changing the result status', () => {
+    render(
+      <ClaudeScienceAgentResultsPanel
+        results={[primerResult]}
+        assets={[]}
+        recordNames={{ puc19: 'pUC19' }}
+        freshnessByResultId={new Map([[
+          'primer-1',
+          { state: 'stale', reasons: [{ code: 'sequence_changed', recordId: 'puc19' }] },
+        ]])}
+        onRevealRecord={vi.fn()}
+        onRemove={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('complete')).toBeTruthy();
+    expect(screen.getAllByText('Stale')).toHaveLength(2);
+    fireEvent.click(screen.getByText('Provenance & Data'));
+    expect(screen.getByText(/pUC19's sequence has changed/)).toBeTruthy();
+  });
+
   it('reveals linked records and confirms removal with focus restoration', async () => {
     const onRevealRecord = vi.fn();
     const onRemove = vi.fn(() => true);

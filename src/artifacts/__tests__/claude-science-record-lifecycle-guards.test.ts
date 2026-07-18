@@ -15,11 +15,16 @@ function sliceBetween(source: string, startNeedle: string, endNeedle: string): s
 }
 
 describe('Claude Science record lifecycle guards', () => {
-  it('clears same-id transient state when replacing the whole inventory', () => {
-    const resetState = sliceBetween(
+  it('clears view state while preserving durable state during records-only replacement', () => {
+    const resetViewState = sliceBetween(
+      artifactSource,
+      'const resetWorkspaceViewState = useCallback',
+      'const resetRecordTransientState = useCallback',
+    );
+    const resetAllRecordState = sliceBetween(
       artifactSource,
       'const resetRecordTransientState = useCallback',
-      'useEffect(() => {\n    payloadRef.current = payload;',
+      'const resetWorkflowWindowState = useCallback',
     );
     const renderInventory = sliceBetween(
       artifactSource,
@@ -27,13 +32,16 @@ describe('Claude Science record lifecycle guards', () => {
       '// Append helper',
     );
 
-    expect(resetState).toContain('setMapRangesByRecord({});');
-    expect(resetState).toContain('setMapViewportsByRecord({});');
-    expect(resetState).toContain('setTranslationLayersByRecord({});');
-    expect(resetState).toContain('setHiddenFeatureTranslationsByRecord({});');
-    expect(resetState).toContain('sequenceScrollByRecordRef.current = {};');
-    expect(resetState).toContain('editHistoryRef.current = {};');
-    expect(renderInventory).toContain('resetRecordTransientState();');
+    expect(resetViewState).toContain('setMapRangesByRecord({});');
+    expect(resetViewState).toContain('setMapViewportsByRecord({});');
+    expect(resetViewState).toContain('sequenceScrollByRecordRef.current = {};');
+    expect(resetViewState).toContain('editHistoryRef.current = {};');
+    expect(resetViewState).not.toContain('setTranslationLayersByRecord({});');
+    expect(resetViewState).not.toContain('setHiddenFeatureTranslationsByRecord({});');
+    expect(resetAllRecordState).toContain('setTranslationLayersByRecord({});');
+    expect(resetAllRecordState).toContain('setHiddenFeatureTranslationsByRecord({});');
+    expect(renderInventory).toContain('resetWorkspaceViewState();');
+    expect(renderInventory).not.toContain('resetRecordTransientState();');
   });
 
   it('stores topology on the record so the UI, API, and exports agree', () => {

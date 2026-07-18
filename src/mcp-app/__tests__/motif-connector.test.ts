@@ -122,6 +122,77 @@ describe('Motif MCP payload boundary', () => {
     ]);
   });
 
+  it('preserves workspace sidecars when coercing a bare sequence record', () => {
+    const createdAt = '2026-07-12T12:00:00.000Z';
+    const validated = validateMotifPayload({
+      id: 'bare-record',
+      sequence: 'ATGC',
+      notes: [{
+        id: 'bare-note',
+        body: 'Keep this note.',
+        format: 'plain',
+        scope: 'record',
+        recordId: 'bare-record',
+        createdAt,
+        updatedAt: createdAt,
+      }],
+    });
+    expect(validated.payload.records).toEqual([
+      expect.objectContaining({ id: 'bare-record', sequence: 'ATGC' }),
+    ]);
+    expect(validated.payload.notes).toEqual([
+      expect.objectContaining({ id: 'bare-note', recordId: 'bare-record' }),
+    ]);
+
+    const explicitRecordsWin = validateMotifPayload({
+      sequence: 'TTTT',
+      records: [{ id: 'explicit-record', sequence: 'ATGC' }],
+      notes: [{
+        id: 'explicit-note',
+        body: 'Keep the explicit record container.',
+        format: 'plain',
+        scope: 'record',
+        recordId: 'explicit-record',
+        createdAt,
+        updatedAt: createdAt,
+      }],
+    });
+    expect(explicitRecordsWin.payload.records).toEqual([
+      expect.objectContaining({ id: 'explicit-record', sequence: 'ATGC' }),
+    ]);
+
+    const sidecarOnly = validateMotifPayload({ name: 'Workspace label', notes: [] });
+    expect(sidecarOnly.recordCount).toBe(0);
+    expect(sidecarOnly.payload).toMatchObject({ name: 'Workspace label', notes: [] });
+
+    const sangerTrace = {
+      schema: 'motif.sanger-trace.v1',
+      version: 1,
+      baseCalls: 'A',
+      sequence: 'A',
+      qualityScores: [],
+      peakPositions: [],
+      channels: { A: [1], C: [0], G: [0], T: [0] },
+      sampleCount: 1,
+      dyeOrder: null,
+      storedReverseComplement: null,
+      warnings: [],
+      metadata: {
+        format: 'ABIF',
+        abifVersion: 101,
+        baseCallsTag: 'PBAS2',
+        qualityScoresTag: null,
+        peakPositionsTag: null,
+        channelTags: {},
+      },
+    };
+    const bareTrace = validateMotifPayload({ id: 'bare-trace', type: 'dna', sequence: 'A', sangerTrace });
+    expect(bareTrace.payload.sangerTrace).toBeUndefined();
+    expect(bareTrace.payload.records).toEqual([
+      expect.objectContaining({ id: 'bare-trace', sangerTrace: expect.objectContaining({ baseCalls: 'A' }) }),
+    ]);
+  });
+
   it('rejects ambiguous inputs and out-of-range biological data transactionally', () => {
     expect(() => prepareMotifWorkbench({ payload: { records: [] }, content: '>x\nATGC' }))
       .toThrow(/either payload or content/i);
@@ -142,6 +213,84 @@ describe('Motif MCP payload boundary', () => {
     expect(() => validateMotifPayload({
       records: [{ name: 'bad active flag', sequence: 'ATGC', active: 'yes' }],
     })).toThrow(/active must be a boolean/i);
+    expect(() => validateMotifPayload({
+      records: [{ id: 'record-a', name: 'bad note', sequence: 'ATGC' }],
+      notes: { malformed: true },
+    })).toThrow(/payload workspace is invalid.*notes must be an array/i);
+    expect(() => validateMotifPayload({
+      records: [{ id: 'record-a', name: 'bad state', sequence: 'ATGC' }],
+      artifactState: { customEnzymes: { malformed: true } },
+    })).toThrow(/payload workspace is invalid.*customEnzymes must be an array/i);
+    expect(() => validateMotifPayload({
+      records: [{ id: 'record-a', name: 'bad color', sequence: 'ATGC', features: [{ start: 0, end: 2, color: 'url(javascript:alert(1))' }] }],
+    })).toThrow(/simple CSS color value/i);
+    expect(() => validateMotifPayload({
+      records: [
+        { name: 'record-a', sequence: 'ATGC', active: false },
+        { id: 'record-a', sequence: 'ATGC', active: true },
+      ],
+      notes: [{
+        id: 'note-a', body: 'Ambiguous link', format: 'plain', scope: 'record', recordId: 'record-a',
+        createdAt: '2026-07-12T12:00:00.000Z', updatedAt: '2026-07-12T12:00:00.000Z',
+      }],
+    })).toThrow(/payload workspace is invalid/i);
+    expect(() => validateMotifPayload({
+      records: [{ id: 'record-a', sequence: 'ATGC' }],
+      alignments: [{
+        id: 'orphaned', molecule: 'dna', rows: [
+          { id: 'a', name: 'A', aligned: 'ATGC', sourceRecordId: 'missing' },
+          { id: 'b', name: 'B', aligned: 'AT-C' },
+        ],
+      }],
+    })).toThrow(/alignment rows reference unknown record id: missing/i);
+  });
+
+  it('matches browser record validation for nested metadata and DNA end chemistry', () => {
+    const base = { id: 'record-a', molecule: 'dna' as const, sequence: 'ATGC' };
+    expect(() => validateMotifPayload({ records: [{ ...base, overhang5: 'AATT', overhang5Type: '5prime', overhang3: '', overhang3Type: 'blunt' }] }))
+      .not.toThrow();
+
+    for (const record of [
+      { ...base, dateAdded: 42 },
+      { ...base, provenance: [] },
+      { ...base, provenance: { blob: 'x'.repeat(MOTIF_MCP_LIMITS.maxTextLength + 1) } },
+      { ...base, sites: { enzyme: 'EcoRI' } },
+      { ...base, sangerTrace: {} },
+      { ...base, features: [{ start: 0, end: 2, metadata: [] }] },
+      { ...base, features: [{ start: 0, end: 2, metadata: { blob: 'x'.repeat(MOTIF_MCP_LIMITS.maxTextLength + 1) } }] },
+      { ...base, features: [{ start: 0, end: 2, subRanges: [{ start: 0, end: 1, strand: 2 }] }] },
+      { ...base, overhang5: 'AATT', overhang5Type: 'blunt' },
+      { ...base, overhang5Type: '5prime' },
+      { ...base, overhang3: 'AX' },
+      { ...base, molecule: 'protein', sequence: 'MPEPTIDE', overhang5: 'AATT', overhang5Type: '5prime' },
+      { ...base, type: 'plasmid' },
+    ]) {
+      expect(() => validateMotifPayload({ records: [record] })).toThrow();
+    }
+
+    expect(() => validateMotifPayload({
+      sequence: 'ATGC',
+      records: { malformed: true },
+    })).toThrow(/records must be an array/i);
+    expect(() => validateMotifPayload({
+      records: [{ ...base, sequence: 'AT*GC' }],
+      artifactState: {
+        translationLayersByRecord: {
+          'record-a': [{ id: 'too-long', label: 'Too long', start: 0, end: 5, strand: 1, frame: 0 }],
+        },
+      },
+    })).toThrow(/payload workspace is invalid/i);
+    expect(() => validateMotifPayload({
+      records: [{ id: 'dual-sequence', molecule: 'dna', seq: 'AT', sequence: 'ATGCGC' }],
+      artifactState: {
+        translationLayersByRecord: {
+          'dual-sequence': [{ id: 'too-long', label: 'Too long', start: 0, end: 6, strand: 1, frame: 0 }],
+        },
+      },
+    })).toThrow(/payload workspace is invalid/i);
+    expect(validateMotifPayload({
+      records: [{ id: 'dual-sequence', molecule: 'dna', seq: 'AT', sequence: 'ATGCGC' }],
+    }).residueCount).toBe(2);
   });
 
   it('rejects unsupported future schemas instead of silently downgrading', () => {

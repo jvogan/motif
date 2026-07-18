@@ -1,0 +1,55 @@
+.motif-cs-freshness {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+}
+
+.motif-cs-freshness-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  width: max-content;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--control-bg);
+  color: var(--text-secondary);
+  font-size: 9.5px;
+  font-weight: 720;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+
+.motif-cs-freshness-badge > span {
+  width: 5px;
+  height: 5px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: currentcolor;
+}
+
+.motif-cs-freshness[data-freshness="fresh"] .motif-cs-freshness-badge {
+  border-color: color-mix(in srgb, var(--green) 36%, var(--border));
+  color: var(--green);
+}
+
+.motif-cs-freshness[data-freshness="stale"] .motif-cs-freshness-badge {
+  border-color: color-mix(in srgb, var(--red) 38%, var(--border));
+  color: var(--red);
+}
+
+.motif-cs-freshness[data-freshness="unverified"] .motif-cs-freshness-badge {
+  border-color: color-mix(in srgb, var(--amber) 42%, var(--border));
+  color: var(--amber);
+}
+
+.motif-cs-freshness-reason {
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 9.5px;
+  font-weight: 450;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}

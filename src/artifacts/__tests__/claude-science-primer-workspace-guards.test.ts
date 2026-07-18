@@ -4,11 +4,13 @@ import { describe, expect, it } from 'vitest';
 const component = readFileSync(new URL('../ClaudeSciencePrimerWorkspace.tsx', import.meta.url), 'utf8');
 const css = readFileSync(new URL('../claude-science-primer-workspace.css', import.meta.url), 'utf8');
 const host = readFileSync(new URL('../motif-artifact.tsx', import.meta.url), 'utf8');
+const materialization = readFileSync(new URL('../claude-science-pcr-materialization.ts', import.meta.url), 'utf8');
 
 describe('Claude Science primer workspace source guards', () => {
   it('keeps all mutations behind explicit host callbacks', () => {
     expect(component).toContain('onAddAnnotations?:');
     expect(component).toContain('onSimulatePcr?:');
+    expect(component).toContain('onCreateAmplicon?:');
     expect(component).toContain('onUseForCloning?:');
     expect(component).not.toContain('useSequenceStore');
     expect(component).not.toContain('innerHTML');
@@ -25,8 +27,10 @@ describe('Claude Science primer workspace source guards', () => {
     expect(component).toContain('initialForwardTail?: string;');
     expect(component).toContain('initialReverseTail?: string;');
     expect(component).toContain('aria-label="Cloning preparation context"');
-    expect(component).toContain("preparationContext ? 'Save primer plan' : 'Use in cloning'");
-    expect(component).toContain('It does not create an amplicon or modify the source record');
+    expect(component).toContain('Save primer plan only');
+    expect(component).toContain('Create & use amplicon');
+    expect(component).toContain('Simulate PCR saves a result only');
+    expect(component).toContain('keeps the source record unchanged');
     expect(component).toContain('No homology tail was inferred');
     expect(component).toContain("if (preferFullRecord) return { start: 1, end: sequenceLength };");
   });
@@ -39,6 +43,11 @@ describe('Claude Science primer workspace source guards', () => {
     expect(host).toContain('orientation: handoff.preparationContext.orientation');
     expect(host).toContain("if (!junction?.overlapSequence) return { forward: undefined, reverse: undefined };");
     expect(host).toContain('No prepared amplicon was created.');
+    expect(host).toContain('materializePcrAmplicon({');
+    expect(host).toContain('replacePreparedPart({');
+    expect(host).toContain('PCR simulation saved in Results only. No sequence record was created.');
+    expect(host).toContain('topology: template.topology');
+    expect(materialization).toContain('topology: sourceRecord.topology');
     expect(host).toContain('navigateCloningPrimerRecord(wrappedIndex);');
     expect(host).toContain("setShowPrimerDesign(false);\n    showWorkbenchNotice('Primer-plan worklist saved. Returned to the existing cloning draft. No amplicon was created.');");
   });

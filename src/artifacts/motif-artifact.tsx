@@ -1,7 +1,7 @@
 /* eslint-disable react-refresh/only-export-components -- artifact entry exports pure runtime test seams */
 import { Component, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Activity, AlignCenter, Beaker, ChevronDown, ChevronLeft, ChevronRight, Crosshair, Dna, FileText, History, Info, Languages, LayoutGrid, List, Map as MapIcon, Maximize2, Minimize2, NotebookPen, Plus, Redo2, Search, Settings, Tag, Trash2, Undo2, Workflow, Wrench, X, type LucideIcon } from 'lucide-react';
+import { Activity, AlignCenter, Beaker, ChevronDown, ChevronLeft, ChevronRight, Crosshair, Dna, FileText, History, Info, Languages, LayoutGrid, List, Map as MapIcon, Maximize2, Minimize2, NotebookPen, Plus, Redo2, Search, Settings, ShieldCheck, Tag, Trash2, Undo2, Workflow, Wrench, X, type LucideIcon } from 'lucide-react';
 import vectorsRaw from '../../public/data/vectors.json?raw';
 import type { Feature, FeatureStrand, FeatureType, ORF, RestrictionEnzyme, RestrictionSite, SequenceType, Topology } from '../bio/types';
 import { extractEmbeddedFastaContent, parseFasta } from '../bio/fasta-parser';
@@ -40,6 +40,7 @@ import {
 import ClaudeScienceDataSettings from './ClaudeScienceDataSettings';
 import { ClaudeScienceWorkflowHistoryPanel } from './ClaudeScienceWorkflowHistoryPanel';
 import { ClaudeScienceAgentResultsPanel } from './ClaudeScienceAgentResultsPanel';
+import { ClaudeScienceFreshnessBadge } from './ClaudeScienceFreshnessBadge';
 import { ClaudeSciencePrimerWorkspace, type ClaudeSciencePrimerExport, type ClaudeSciencePrimerHandoff } from './ClaudeSciencePrimerWorkspace';
 import ClaudeScienceGelWorkspace, {
   createClaudeScienceGelLaneCandidates,
@@ -49,9 +50,32 @@ import { type ArtifactGelLadderPreset, type ArtifactGelPreview } from './claude-
 import { ClaudeScienceAssemblyWorkspace, type ClaudeScienceAssemblySavePayload } from './ClaudeScienceAssemblyWorkspace';
 import {
   ClaudeScienceCloningDesignWorkspace,
+  type ClaudeScienceCloningDesignWorkspaceHandle,
   type ClaudeScienceCloningPrimerRequest,
   type ClaudeScienceCloningSavePayload,
 } from './ClaudeScienceCloningDesignWorkspace';
+import {
+  ClaudeScienceConstructVerificationWorkspace,
+  type ClaudeScienceConstructVerificationRecord,
+  type ClaudeScienceConstructVerificationRequest,
+  type ClaudeScienceConstructVerificationSavePayload,
+} from './ClaudeScienceConstructVerificationWorkspace';
+import {
+  artifactConstructReadEvidenceSha256,
+  buildArtifactConstructVerificationArtifacts,
+  findDuplicateArtifactConstructVerificationResult,
+} from './claude-science-construct-verification-artifacts';
+import {
+  ARTIFACT_CONSTRUCT_VERIFICATION_LIMITS,
+  ARTIFACT_CONSTRUCT_VERIFICATION_TEXT_LIMITS,
+  verifyArtifactConstruct,
+} from './claude-science-construct-verification';
+import {
+  findPcrMaterializationDuplicate,
+  materializePcrAmplicon,
+  simulateSelectedPrimerPair,
+  type PcrMaterializationSourceRecord,
+} from './claude-science-pcr-materialization';
 import {
   planArtifactGibsonDesign,
   planArtifactGoldenGateDesign,
@@ -83,11 +107,19 @@ import { buildDigestRecipe, type DigestRecipe } from './claude-science-digest-re
 import { materializeDigestWorkflow } from './claude-science-digest-workflow';
 import { sha256HexSync } from './claude-science-sha256';
 import {
+  createScientificFreshnessRecordIndex,
+  evaluateAlignmentsFreshness,
+  evaluateAnalysisResultsFreshness,
+  evaluateWorkflowResultsFreshness,
+} from './claude-science-freshness';
+import {
   appendArtifactAnalysisAsset,
   appendArtifactAnalysisWorkspaceResult,
+  artifactAnalysisResultRecordIds,
   cloneArtifactAnalysisWorkspace,
   normalizeArtifactAnalysisWorkspace,
-  removeArtifactAnalysisResult,
+  removeArtifactAnalysisAsset,
+  removeArtifactAnalysisWorkspaceResult,
   removeArtifactAnalysisResultsForRecord,
   serializeArtifactAnalysisWorkspace,
   type ArtifactAnalysisAsset,
@@ -108,6 +140,7 @@ import {
   type ArtifactNote,
   type ArtifactWorkflowResult,
 } from './claude-science-workspace-collections';
+import { normalizeArtifactWorkspaceEnvelope } from './claude-science-workspace-envelope';
 import {
   MOTIF_INVENTORY_SCHEMA,
   MOTIF_INVENTORY_SCHEMA_V1,
@@ -222,6 +255,38 @@ type ArtifactVector = {
   sangerTrace?: SangerTraceData;
 };
 
+type ArtifactConstructTraceEvidence = {
+  baseCalls: string;
+  qualityScores?: readonly number[];
+  sha256: string;
+};
+
+/** The digest follows exactly the bounded calls and qualities sent to verification. */
+function artifactConstructTraceEvidence(record: ArtifactVector): ArtifactConstructTraceEvidence | null {
+  const trace = record.sangerTrace;
+  if (!trace || trace.baseCalls.length > ARTIFACT_CONSTRUCT_VERIFICATION_LIMITS.maxReadLength) return null;
+  // Malformed imported quality arrays are not repaired. The engine receives the
+  // calls without qualities and will surface that limitation as review evidence.
+  const qualityScores = trace.qualityScores.length > 0 && trace.qualityScores.length === trace.baseCalls.length
+    ? trace.qualityScores
+    : undefined;
+  const evidence = {
+    baseCalls: trace.baseCalls,
+    ...(qualityScores ? { qualityScores } : {}),
+  };
+  return {
+    ...evidence,
+    sha256: artifactConstructReadEvidenceSha256(evidence),
+  };
+}
+
+function boundedArtifactConstructName(value: string): string {
+  const maximumLength = ARTIFACT_CONSTRUCT_VERIFICATION_TEXT_LIMITS.maxNameLength;
+  return value.length <= maximumLength
+    ? value
+    : `${value.slice(0, Math.max(0, maximumLength - 1))}…`;
+}
+
 type ArtifactOverhangType = 'blunt' | '5prime' | '3prime';
 
 type ArtifactPayload = {
@@ -267,6 +332,15 @@ type LoadedPayload = {
   analysisResults: ArtifactAnalysisResult[];
   analysisAssets: ArtifactAnalysisAsset[];
 };
+
+type PreparedArtifactWorkspace = {
+  payload: LoadedPayload;
+  artifactState: ArtifactDurableState;
+};
+
+type InitialArtifactSource =
+  | { kind: 'sample' }
+  | { kind: 'payload'; value: unknown; origin: 'script' | 'window' };
 
 type RuntimeRecoveryPayload = {
   schema: string;
@@ -347,7 +421,8 @@ type MotifArtifactErrorCode =
   | 'MOTIF_RECORD_TOO_LARGE'
   | 'MOTIF_INPUT_LIMIT_EXCEEDED'
   | 'MOTIF_INVALID_ALIGNMENT_INPUT'
-  | 'MOTIF_INVALID_WORKSPACE_INPUT';
+  | 'MOTIF_INVALID_WORKSPACE_INPUT'
+  | 'MOTIF_INVALID_PRELOAD';
 type MotifArtifactErrorDetails = Record<string, unknown>;
 
 export class MotifArtifactRuntimeError extends Error {
@@ -774,6 +849,19 @@ function defaultCloningDesignWindowRect(): WindowRect {
   }, viewportWidth, viewportHeight);
 }
 
+function defaultConstructVerificationWindowRect(): WindowRect {
+  const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1280;
+  const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 800;
+  const width = Math.min(1180, Math.max(360, viewportWidth - 32));
+  const height = Math.min(760, Math.max(380, viewportHeight - 72));
+  return clampWindowRect({
+    x: Math.max(12, Math.round((viewportWidth - width) / 2)),
+    y: Math.max(34, Math.round((viewportHeight - height) / 2)),
+    w: width,
+    h: height,
+  }, viewportWidth, viewportHeight);
+}
+
 function createGelResultIdentity(): ClaudeScienceGelResultIdentity {
   return {
     workflowResultId: `gel-${crypto.randomUUID()}`,
@@ -853,7 +941,7 @@ const builtInRecords = JSON.parse(vectorsRaw) as ArtifactRecordInput[];
 
 const MOTIF_HELP_API: Record<string, string> = {
   'motifAddRecords(recordOrRecords)': 'Append one record or an array; returns number added; focuses the first new record.',
-  'motifRenderInventory(recordsOrPayload)': 'Transactionally replace the inventory. Passing [] intentionally clears; invalid non-empty input throws MotifArtifactRuntimeError and preserves the current inventory.',
+  'motifRenderInventory(recordsOrPayload)': 'Replace records while preserving compatible alignments, notes, results, and durable settings. Workspace fields or orphaning replacements are rejected transactionally; use motifReplaceWorkspace for intentional full replacement.',
   'motifGetInventory()': 'Return all current records (serialized, round-trippable into motifAddRecords/motifRenderInventory).',
   'motifGetActiveRecord()': 'Return the currently selected record, or null.',
   'motifAddAlignments(alignmentOrAlignments)': 'Validate and append one precomputed gapped alignment or an array; returns number added.',
@@ -866,7 +954,7 @@ const MOTIF_HELP_API: Record<string, string> = {
   'motifGetWorkflowResults()': 'Return a defensive snapshot of saved workflow results.',
   'motifRemoveWorkflowResults(resultIdOrIds)': 'Remove saved workflow-result ids transactionally; returns number removed.',
   'motifAddAnalysisAssets(assetOrAssets)': 'Append bounded inert text/JSON assets for typed analyses; returns number added.',
-  'motifAddAnalysisResults(resultOrResults)': 'Append validated primer, PCR, assembly, BLAST, structure, report, or table results; returns number added and reveals Results.',
+  'motifAddAnalysisResults(resultOrResults)': 'Append validated primer, PCR, assembly, construct-verification, BLAST, structure, report, or table results; returns number added and reveals Results.',
   'motifGetAnalysisWorkspace()': 'Return defensive snapshots of typed analysis results and their inert assets.',
   'motifRemoveAnalysisResults(resultIdOrIds)': 'Remove analysis results only when no other result depends on them; returns number removed.',
   'motifGetWorkspace()': 'Return a complete defensive workspace snapshot suitable for motifReplaceWorkspace or JSON backup.',
@@ -889,7 +977,8 @@ const MOTIF_HELP: MotifHelp = {
   howToAddSequences:
     'Call window.motifAddRecords(recordOrRecords) to APPEND without disturbing existing records ' +
     '(returns the count added and focuses the first). Use window.motifRenderInventory(records) only ' +
-    'to REPLACE the whole inventory. Read the current inventory with window.motifGetInventory().',
+    'to REPLACE the record inventory; linked workspace data is preserved or the call is rejected. ' +
+    'Read the current inventory with window.motifGetInventory().',
   capabilities: {
     addSequences: 'Append DNA, RNA, or protein records at runtime with motifAddRecords(...).',
     groupSequences: "Put records into compact collapsible groups using record.group, project, folder, collection, or tags like 'project:Design queue'.",
@@ -901,7 +990,7 @@ const MOTIF_HELP: MotifHelp = {
     multipleSequenceAlignment: 'Open Alignment from Tools to compare 2–10 same-type records locally, or inspect/import precomputed MAFFT, MUSCLE, or Clustal Omega aligned FASTA.',
     notes: 'Save workspace, record, or selected-range notes in the Tools pane or with motifAddNotes(...). Markdown is stored as inert text.',
     workflowHistory: 'Store digest, gel, Golden Gate, and ligation result summaries with explicit input/output record ids and engine provenance.',
-    analysisResults: 'Store typed primer, PCR, assembly, BLAST, structure, report, or table results. The UI renders supplied content as inert text/data only.',
+    analysisResults: 'Store typed primer, PCR, assembly, construct-verification, BLAST, structure, report, or table results. The UI renders supplied content as inert text/data only.',
     backupRecovery: 'motifGetWorkspace() and Settings → Data & recovery produce a complete v2 JSON snapshot; motifReplaceWorkspace(...) restores it transactionally.',
     exportInventory: 'The export panel can produce database JSON, CSV, FASTA, multi-FASTA, basic GenBank, HTML/Markdown report, PDF via print, and ZIP. Workspace data lives in this artifact session, so export JSON or ZIP before reloading.',
   },
@@ -980,7 +1069,7 @@ const MOTIF_HELP: MotifHelp = {
     provenance: 'required { source, operation?, actor?, engine?, engineVersion?, parentIds?, metadata? }.',
   },
   analysisResultSchema: {
-    kind: "'primer_design' | 'pcr' | 'assembly_plan' | 'blast_search' | 'structure_model' | 'report' | 'table'.",
+    kind: "'primer_design' | 'pcr' | 'assembly_plan' | 'construct_verification' | 'blast_search' | 'structure_model' | 'report' | 'table'.",
     status: "'complete' | 'partial' | 'failed'.",
     inputRecordIds: 'string[] — ordered existing workspace records used by the analysis.',
     inputSha256s: 'optional string[] — exact sequence SHA-256 values aligned to inputRecordIds.',
@@ -1018,6 +1107,7 @@ const MOTIF_HELP: MotifHelp = {
 
 const enzymeByLowerName = new Map(RESTRICTION_ENZYMES.map((enzyme) => [enzyme.name.toLowerCase(), enzyme]));
 const fullEnzymeByLowerName = new Map(RESTRICTION_ENZYMES_FULL.map((enzyme) => [enzyme.name.toLowerCase(), enzyme]));
+const ALLOWED_SEQUENCE_TYPES = new Set<SequenceType>(['dna', 'rna', 'protein', 'misc', 'unknown', 'mixed']);
 const emptyFeatures: readonly Feature[] = [];
 const emptySites: readonly RestrictionSite[] = [];
 const emptyTracks: readonly InlineTranslationTrack[] = [];
@@ -2600,20 +2690,43 @@ async function writeTextToClipboard(text: string): Promise<boolean> {
   }
 }
 
-function readJsonPayloadFromDom(): unknown | null {
-  const scriptPayload = document.getElementById('motif-artifact-data')?.textContent?.trim();
-  if (scriptPayload && !DATA_PLACEHOLDERS.some((placeholder) => scriptPayload.includes(placeholder))) {
-    try {
-      if (scriptPayload.length > MOTIF_MAX_PAYLOAD_JSON_BYTES
-        || utf8Encoder.encode(scriptPayload).byteLength > MOTIF_MAX_PAYLOAD_JSON_BYTES) {
-        throw new Error('Embedded artifact payload exceeds the 32 MiB input limit.');
+export function readInitialArtifactSourceFromDom(): InitialArtifactSource {
+  const scriptElement = document.getElementById('motif-artifact-data');
+  if (scriptElement) {
+    const scriptPayload = scriptElement.textContent?.trim() ?? '';
+    const isBuildPlaceholder = DATA_PLACEHOLDERS.includes(scriptPayload);
+    if (!scriptPayload && !isBuildPlaceholder) {
+      throw new MotifArtifactRuntimeError(
+        'MOTIF_INVALID_PRELOAD',
+        'Preloaded workspace could not be opened: the embedded payload is blank. No bundled sample data was substituted.',
+        { operation: 'initialHydration', origin: 'script', mutated: false },
+      );
+    }
+    if (!isBuildPlaceholder && (scriptPayload.length > MOTIF_MAX_PAYLOAD_JSON_BYTES
+      || utf8Encoder.encode(scriptPayload).byteLength > MOTIF_MAX_PAYLOAD_JSON_BYTES)) {
+      throw new MotifArtifactRuntimeError(
+        'MOTIF_INVALID_PRELOAD',
+        'Preloaded workspace could not be opened: the embedded payload exceeds the 32 MiB input limit. No bundled sample data was substituted.',
+        { operation: 'initialHydration', origin: 'script', mutated: false },
+      );
+    }
+    if (!isBuildPlaceholder) {
+      try {
+        return { kind: 'payload', value: JSON.parse(scriptPayload), origin: 'script' };
+      } catch (cause) {
+        const detail = cause instanceof Error ? cause.message : String(cause);
+        throw new MotifArtifactRuntimeError(
+          'MOTIF_INVALID_PRELOAD',
+          `Preloaded workspace could not be opened: embedded JSON is malformed (${detail}). No bundled sample data was substituted.`,
+          { operation: 'initialHydration', origin: 'script', mutated: false },
+        );
       }
-      return JSON.parse(scriptPayload);
-    } catch {
-      // Keep the artifact usable if an edited payload is malformed.
     }
   }
-  return window.MOTIF_ARTIFACT_DATA ?? null;
+  if (window.MOTIF_ARTIFACT_DATA !== undefined) {
+    return { kind: 'payload', value: window.MOTIF_ARTIFACT_DATA, origin: 'window' };
+  }
+  return { kind: 'sample' };
 }
 
 function coercePayload(raw: unknown): ArtifactPayload {
@@ -2621,12 +2734,14 @@ function coercePayload(raw: unknown): ArtifactPayload {
   if (!isObject(raw)) return {};
 
   const payload = raw as ArtifactPayload;
-  if (Array.isArray(payload.records) || Array.isArray(payload.entries) || Array.isArray(payload.vectors) || payload.record) {
+  if (['records', 'entries', 'vectors', 'record'].some((field) => (
+    Object.prototype.hasOwnProperty.call(payload, field)
+  ))) {
     return payload;
   }
 
   const maybeRecord = raw as ArtifactRecordInput;
-  if (typeof maybeRecord.seq === 'string' || typeof maybeRecord.sequence === 'string' || typeof maybeRecord.name === 'string') {
+  if (typeof maybeRecord.seq === 'string' || typeof maybeRecord.sequence === 'string') {
     return { ...payload, records: [maybeRecord] };
   }
 
@@ -2643,6 +2758,9 @@ function payloadRecords(payload: ArtifactPayload): ArtifactRecordInput[] {
 
 function payloadHasExplicitRecords(rawPayload: unknown, payload: ArtifactPayload): boolean {
   return Array.isArray(rawPayload)
+    || (isObject(rawPayload) && ['records', 'entries', 'vectors', 'record'].some((field) => (
+      Object.prototype.hasOwnProperty.call(rawPayload, field)
+    )))
     || Array.isArray(payload.records)
     || Array.isArray(payload.entries)
     || Array.isArray(payload.vectors)
@@ -2677,7 +2795,7 @@ function resolveSelectedRecordId(
   return records[0]?.id ?? 'record-1';
 }
 
-function loadArtifactPayload(rawPayload = readJsonPayloadFromDom(), fallbackSelectedRecordId?: string): LoadedPayload {
+function loadArtifactPayload(rawPayload: unknown = null, fallbackSelectedRecordId?: string): LoadedPayload {
   const fallbackRecords = normalizeRecords(builtInRecords).filter((record) => record.active);
   const fallbackPayload: LoadedPayload = {
     schema: DEFAULT_SCHEMA,
@@ -2704,7 +2822,6 @@ function loadArtifactPayload(rawPayload = readJsonPayloadFromDom(), fallbackSele
   validateRuntimePayloadEnvelope(rawPayload);
   const records = normalizeRecords(rawRecords as ArtifactRecordInput[]).filter((record) => record.active);
   const hasExplicitRecords = payloadHasExplicitRecords(rawPayload, payload);
-  const hasInjectedRecords = records.length > 0;
   const usableRecords = hasExplicitRecords ? records : records.length > 0 ? records : fallbackRecords;
   const inventory = isPlainObject(payload.inventory) ? payload.inventory : undefined;
   const alignments = normalizeArtifactAlignments(payload.alignments ?? payload.alignment);
@@ -2723,7 +2840,7 @@ function loadArtifactPayload(rawPayload = readJsonPayloadFromDom(), fallbackSele
       ? DEFAULT_SCHEMA
       : normalizeOptionalText(payload.schema) ?? DEFAULT_SCHEMA,
     inventory: {
-      id: normalizeOptionalText(inventory?.id) ?? (hasInjectedRecords ? 'motif-sequence-inventory' : fallbackPayload.inventory.id),
+      id: normalizeOptionalText(inventory?.id) ?? (hasExplicitRecords ? 'motif-sequence-inventory' : fallbackPayload.inventory.id),
       title: normalizeOptionalText(inventory?.title) ?? (hasExplicitRecords ? 'Motif sequence inventory' : fallbackPayload.inventory.title),
       description: normalizeOptionalText(inventory?.description) ?? (
         hasExplicitRecords
@@ -2743,31 +2860,41 @@ function loadArtifactPayload(rawPayload = readJsonPayloadFromDom(), fallbackSele
   };
 }
 
-function loadInitialArtifactPayload(): LoadedPayload {
+export function prepareInitialArtifactWorkspace(
+  rawWorkspace: unknown,
+  origin: 'script' | 'window' = 'script',
+): PreparedArtifactWorkspace {
   try {
-    const payload = loadArtifactPayload();
-    rememberLastGoodRuntimePayload(
-      payload,
-      normalizeArtifactDurableState(
-        undefined,
-        new Map(payload.records.map((record) => [record.id, record.sequence.length])),
-      ),
+    return prepareArtifactDatabaseRestore(rawWorkspace);
+  } catch (cause) {
+    if (cause instanceof MotifArtifactRuntimeError && cause.code === 'MOTIF_INVALID_PRELOAD') throw cause;
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    throw new MotifArtifactRuntimeError(
+      'MOTIF_INVALID_PRELOAD',
+      `Preloaded workspace could not be opened: ${detail} No bundled sample data was substituted.`,
+      { operation: 'initialHydration', origin, mutated: false },
     );
-    return payload;
-  } catch {
-    // A hand-edited or externally injected payload must never blank the shell.
-    // Runtime replacement APIs still throw the structured error transactionally;
-    // initial boot falls back to the vetted built-in inventory.
-    const payload = loadArtifactPayload(null);
-    rememberLastGoodRuntimePayload(
-      payload,
-      normalizeArtifactDurableState(
-        undefined,
-        new Map(payload.records.map((record) => [record.id, record.sequence.length])),
-      ),
-    );
-    return payload;
   }
+}
+
+export function loadInitialArtifactWorkspace(): PreparedArtifactWorkspace {
+  const source = readInitialArtifactSourceFromDom();
+  if (source.kind === 'sample') {
+    const payload = loadArtifactPayload(null);
+    const artifactState = normalizeArtifactDurableState(
+      undefined,
+      new Map(payload.records.map((record) => [record.id, record.sequence.length])),
+    );
+    rememberLastGoodRuntimePayload(
+      payload,
+      artifactState,
+    );
+    return { payload, artifactState };
+  }
+
+  const prepared = prepareInitialArtifactWorkspace(source.value, source.origin);
+  rememberLastGoodRuntimePayload(prepared.payload, prepared.artifactState);
+  return prepared;
 }
 
 type RuntimeRecordIssue = {
@@ -2790,6 +2917,13 @@ function omitTraceArraysForGenericJsonValidation(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(stripRecord);
   if (!isPlainObject(value)) return value;
   const projected = { ...value };
+  const hasRecordContainer = ['records', 'entries', 'vectors', 'record'].some((field) => (
+    Object.prototype.hasOwnProperty.call(projected, field)
+  ));
+  if (!hasRecordContainer
+    && (typeof projected.seq === 'string' || typeof projected.sequence === 'string')) {
+    return stripRecord(projected);
+  }
   for (const field of ['records', 'entries', 'vectors'] as const) {
     if (Array.isArray(projected[field])) projected[field] = projected[field].map(stripRecord);
   }
@@ -2829,6 +2963,14 @@ function collectMalformedRecordIssues(
     if (record[field] !== undefined && typeof record[field] !== 'boolean') {
       add(`${basePath}.${field}`, `${field} must be a boolean when provided`);
     }
+  }
+  for (const field of ['type', 'molecule'] as const) {
+    if (record[field] !== undefined && !ALLOWED_SEQUENCE_TYPES.has(record[field] as SequenceType)) {
+      add(`${basePath}.${field}`, `${field} is not a supported sequence type`);
+    }
+  }
+  if (record.topology !== undefined && record.topology !== 'linear' && record.topology !== 'circular') {
+    add(`${basePath}.topology`, 'topology must be linear or circular');
   }
   const normalizedRecordSequence = normalizeSequence(record.seq ?? record.sequence ?? '', record.molecule ?? record.type);
   const normalizedRecordType = normalizeSequenceType(record.molecule ?? record.type, normalizedRecordSequence);
@@ -3226,6 +3368,22 @@ function validateRuntimePayloadEnvelope(rawPayload: unknown): void {
   };
   const payload = coercePayload(rawPayload);
   const recordCount = payloadRecords(payload).length;
+  if (isPlainObject(rawPayload)) {
+    for (const field of ['records', 'entries', 'vectors'] as const) {
+      if (Object.prototype.hasOwnProperty.call(rawPayload, field) && !Array.isArray(rawPayload[field])) {
+        add(`payload.${field}`, `${field} must be an array when provided`);
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(rawPayload, 'record') && !isPlainObject(rawPayload.record)) {
+      add('payload.record', 'record must be a plain object when provided');
+    }
+    const recordContainers = ['records', 'entries', 'vectors', 'record'].filter((field) => (
+      Object.prototype.hasOwnProperty.call(rawPayload, field)
+    ));
+    if (recordContainers.length > 1) {
+      add('payload', `payload has ambiguous record containers: ${recordContainers.join(', ')}`);
+    }
+  }
   if (recordCount > MOTIF_MAX_RECORDS) {
     add(
       'payload.records',
@@ -3253,6 +3411,12 @@ function validateRuntimePayloadEnvelope(rawPayload: unknown): void {
         'resource_limit',
       );
     }
+  }
+  if (typeof payload.schema === 'string'
+    && payload.schema.startsWith('motif.claude-science.inventory.')
+    && payload.schema !== MOTIF_INVENTORY_SCHEMA_V1
+    && payload.schema !== DEFAULT_SCHEMA) {
+    add('payload.schema', `Unsupported Motif inventory schema: ${payload.schema}`);
   }
   if (payload.selectedIndex !== undefined && !Number.isInteger(payload.selectedIndex)) {
     add('payload.selectedIndex', 'selectedIndex must be an integer when provided');
@@ -3318,16 +3482,245 @@ export function prepareInventoryReplacement(
   return nextPayload;
 }
 
-export function prepareArtifactDatabaseRestore(
-  rawDatabase: Record<string, unknown>,
+const RECORDS_ONLY_FORBIDDEN_FIELDS = [
+  'alignment',
+  'alignments',
+  'artifactState',
+  'notes',
+  'workflowResults',
+  'analysisResults',
+  'analysisAssets',
+] as const;
+
+type RecordsOnlyCompatibilityIssue = {
+  category: 'alignment' | 'note' | 'workflowResult' | 'analysisResult' | 'artifactState';
+  message: string;
+};
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function artifactRecordBiologyChanged(previous: ArtifactVector, next: ArtifactVector): boolean {
+  return previous.sequence !== next.sequence
+    || previous.type !== next.type
+    || previous.topology !== next.topology
+    || previous.overhang5 !== next.overhang5
+    || previous.overhang3 !== next.overhang3
+    || previous.overhang5Type !== next.overhang5Type
+    || previous.overhang3Type !== next.overhang3Type;
+}
+
+/**
+ * Prepare the records-only page API as one transaction. Existing workspace
+ * sidecars are cloned and revalidated against the prospective record set; a
+ * caller must use motifReplaceWorkspace when a replacement would orphan any
+ * linked result or durable record setting.
+ */
+export function prepareRecordsOnlyWorkspaceReplacement(
+  currentPayload: LoadedPayload,
+  currentArtifactState: ArtifactDurableState,
+  rawPayload: ArtifactPayload | ArtifactRecordInput | ArtifactRecordInput[],
   fallbackSelectedRecordId?: string,
-): { payload: LoadedPayload; artifactState: ArtifactDurableState } {
+): PreparedArtifactWorkspace {
+  if (isPlainObject(rawPayload)) {
+    const forbiddenFields = RECORDS_ONLY_FORBIDDEN_FIELDS.filter((field) => (
+      Object.prototype.hasOwnProperty.call(rawPayload, field)
+    ));
+    if (forbiddenFields.length > 0) {
+      throw new MotifArtifactRuntimeError(
+        'MOTIF_INVALID_WORKSPACE_INPUT',
+        'motifRenderInventory is records-only and will not discard workspace state silently. Use motifReplaceWorkspace for a complete backup payload.',
+        { operation: 'motifRenderInventory', forbiddenFields, mutated: false },
+      );
+    }
+  }
+
+  const replacement = prepareInventoryReplacement(rawPayload, fallbackSelectedRecordId);
+  const recordLengths = new Map(replacement.records.map((record) => [record.id, record.sequence.length]));
+  const previousRecordsById = new Map(currentPayload.records.map((record) => [record.id, record]));
+  const biologicallyChangedRecordIds = new Set(replacement.records.flatMap((record) => {
+    const previous = previousRecordsById.get(record.id);
+    return previous && artifactRecordBiologyChanged(previous, record) ? [record.id] : [];
+  }));
+  const issues: RecordsOnlyCompatibilityIssue[] = [];
+  const capture = <T,>(
+    category: RecordsOnlyCompatibilityIssue['category'],
+    operation: () => T,
+  ): T | null => {
+    try {
+      return operation();
+    } catch (error) {
+      issues.push({ category, message: errorMessage(error) });
+      return null;
+    }
+  };
+  const addBiologicalIdentityIssue = (
+    category: RecordsOnlyCompatibilityIssue['category'],
+    recordIds: Iterable<string | undefined>,
+  ) => {
+    const changedIds = Array.from(new Set(Array.from(recordIds).flatMap((recordId) => (
+      recordId && biologicallyChangedRecordIds.has(recordId) ? [recordId] : []
+    ))));
+    if (changedIds.length > 0) {
+      issues.push({
+        category,
+        message: `Preserved ${category} data is linked to biologically changed record${changedIds.length === 1 ? '' : 's'}: ${changedIds.join(', ')}.`,
+      });
+    }
+  };
+
+  const missingAlignmentRecordIds = Array.from(new Set(currentPayload.alignments.flatMap((alignment) => (
+    alignment.rows.flatMap((row) => (
+      row.sourceRecordId && !recordLengths.has(row.sourceRecordId) ? [row.sourceRecordId] : []
+    ))
+  ))));
+  if (missingAlignmentRecordIds.length > 0) {
+    issues.push({
+      category: 'alignment',
+      message: `Alignment rows reference records absent from the replacement: ${missingAlignmentRecordIds.join(', ')}.`,
+    });
+  }
+  addBiologicalIdentityIssue('alignment', currentPayload.alignments.flatMap((alignment) => (
+    alignment.rows.map((row) => row.sourceRecordId)
+  )));
+  const alignments = capture('alignment', () => normalizeArtifactAlignments(
+    currentPayload.alignments.map(serializeArtifactAlignment),
+  ));
+  addBiologicalIdentityIssue('note', currentPayload.notes.map((note) => note.recordId));
+  const noteCollections = capture('note', () => normalizeArtifactWorkspaceCollections({
+    notes: currentPayload.notes,
+    workflowResults: [],
+  }, { recordLengths }));
+  addBiologicalIdentityIssue('workflowResult', currentPayload.workflowResults.flatMap((result) => (
+    [...result.inputRecordIds, ...result.outputRecordIds]
+  )));
+  const previousRecordIds = new Set(currentPayload.records.map((record) => record.id));
+  const newlyMissingWorkflowOutputIds = Array.from(new Set(currentPayload.workflowResults.flatMap((result) => (
+    result.outputRecordIds.filter((recordId) => previousRecordIds.has(recordId) && !recordLengths.has(recordId))
+  ))));
+  if (newlyMissingWorkflowOutputIds.length > 0) {
+    issues.push({
+      category: 'workflowResult',
+      message: `Workflow outputs would become newly orphaned: ${newlyMissingWorkflowOutputIds.join(', ')}.`,
+    });
+  }
+  const workflowCollections = capture('workflowResult', () => normalizeArtifactWorkspaceCollections({
+    notes: [],
+    workflowResults: currentPayload.workflowResults,
+  }, { recordLengths, allowMissingWorkflowOutputRecords: true }));
+  addBiologicalIdentityIssue(
+    'analysisResult',
+    currentPayload.analysisResults.flatMap(artifactAnalysisResultRecordIds),
+  );
+  const analysisWorkspace = capture('analysisResult', () => normalizeArtifactAnalysisWorkspace({
+    analysisResults: currentPayload.analysisResults,
+    analysisAssets: currentPayload.analysisAssets,
+  }, { recordLengths }));
+
+  const artifactStateRecordIds = new Set<string>();
+  for (const field of [
+    'translationLayersByRecord',
+    'enzymeSourcesByRecord',
+    'hiddenEnzymesByRecord',
+    'hiddenFeatureTranslationsByRecord',
+    'restrictionLabelsByRecord',
+    'motifsByRecord',
+  ] as const) {
+    Object.keys(currentArtifactState[field]).forEach((recordId) => artifactStateRecordIds.add(recordId));
+    const missingIds = Object.keys(currentArtifactState[field]).filter((recordId) => !recordLengths.has(recordId));
+    if (missingIds.length > 0) {
+      issues.push({
+        category: 'artifactState',
+        message: `artifactState.${field} references records absent from the replacement: ${missingIds.join(', ')}.`,
+      });
+    }
+  }
+  for (const [recordId, hiddenIds] of Object.entries(currentArtifactState.hiddenFeatureTranslationsByRecord)) {
+    const previous = previousRecordsById.get(recordId);
+    const next = replacement.records.find((record) => record.id === recordId);
+    if (!previous || !next) continue;
+    const previousFeatureIds = new Set(previous.features.map((feature) => `feat:${feature.id}`));
+    const nextFeatureIds = new Set(next.features.map((feature) => `feat:${feature.id}`));
+    const newlyMissingFeatureIds = hiddenIds.filter((id) => previousFeatureIds.has(id) && !nextFeatureIds.has(id));
+    if (newlyMissingFeatureIds.length > 0) {
+      issues.push({
+        category: 'artifactState',
+        message: `artifactState.hiddenFeatureTranslationsByRecord.${recordId} would reference removed feature${newlyMissingFeatureIds.length === 1 ? '' : 's'}: ${newlyMissingFeatureIds.join(', ')}.`,
+      });
+    }
+  }
+  addBiologicalIdentityIssue('artifactState', artifactStateRecordIds);
+  const artifactState = capture('artifactState', () => (
+    normalizeArtifactDurableState(currentArtifactState, recordLengths)
+  ));
+
+  if (issues.length > 0 || !alignments || !noteCollections || !workflowCollections || !analysisWorkspace || !artifactState) {
+    throw new MotifArtifactRuntimeError(
+      'MOTIF_INVALID_INVENTORY_REPLACEMENT',
+      'motifRenderInventory would orphan existing workspace data. The existing workspace was preserved; use motifReplaceWorkspace for an intentional complete replacement.',
+      { operation: 'motifRenderInventory', issues, mutated: false },
+    );
+  }
+
+  const rawPayloadObject = isPlainObject(rawPayload) ? rawPayload : null;
+  const suppliesInventory = Boolean(rawPayloadObject
+    && Object.prototype.hasOwnProperty.call(rawPayloadObject, 'inventory'));
+  const suppliesSchema = Boolean(rawPayloadObject
+    && Object.prototype.hasOwnProperty.call(rawPayloadObject, 'schema'));
+  const suppliesDefaultMotif = Boolean(rawPayloadObject && (
+    Object.prototype.hasOwnProperty.call(rawPayloadObject, 'defaultMotif')
+    || Object.prototype.hasOwnProperty.call(rawPayloadObject, 'motif')
+  ));
+
+  return {
+    payload: {
+      ...replacement,
+      schema: suppliesSchema ? replacement.schema : currentPayload.schema,
+      inventory: suppliesInventory ? replacement.inventory : { ...currentPayload.inventory },
+      defaultMotif: suppliesDefaultMotif ? replacement.defaultMotif : currentPayload.defaultMotif,
+      alignments,
+      notes: noteCollections.notes,
+      workflowResults: workflowCollections.workflowResults,
+      analysisResults: analysisWorkspace.analysisResults,
+      analysisAssets: analysisWorkspace.analysisAssets,
+    },
+    artifactState,
+  };
+}
+
+export function prepareArtifactDatabaseRestore(
+  rawDatabase: unknown,
+  fallbackSelectedRecordId?: string,
+): PreparedArtifactWorkspace {
   // Validate both halves before returning either one. Callers can therefore
   // replace the current workspace in one commit without leaving a partially
   // imported inventory behind when nested session state is malformed.
-  const payload = prepareInventoryReplacement(rawDatabase as ArtifactPayload, fallbackSelectedRecordId);
-  const recordLengths = new Map(payload.records.map((record) => [record.id, record.sequence.length]));
-  const artifactState = normalizeArtifactDurableState(rawDatabase.artifactState, recordLengths);
+  const coercedDatabase = coercePayload(rawDatabase);
+  const isSidecarOnlyWorkspace = isPlainObject(rawDatabase)
+    && !payloadHasExplicitRecords(rawDatabase, coercedDatabase)
+    && RECORDS_ONLY_FORBIDDEN_FIELDS.some((field) => Object.prototype.hasOwnProperty.call(rawDatabase, field));
+  const restoreInput = isSidecarOnlyWorkspace
+    ? { ...rawDatabase, records: [] }
+    : rawDatabase;
+  const preparedPayload = prepareInventoryReplacement(
+    restoreInput as ArtifactPayload | ArtifactRecordInput | ArtifactRecordInput[],
+    fallbackSelectedRecordId,
+  );
+  const recordLengths = new Map(preparedPayload.records.map((record) => [record.id, record.sequence.length]));
+  if (!isPlainObject(rawDatabase)) {
+    return {
+      payload: preparedPayload,
+      artifactState: normalizeArtifactDurableState(undefined, recordLengths),
+    };
+  }
+  const envelope = normalizeArtifactWorkspaceEnvelope(rawDatabase, recordLengths);
+  const payload: LoadedPayload = {
+    ...preparedPayload,
+    notes: envelope.notes,
+    workflowResults: envelope.workflowResults,
+  };
+  const artifactState = envelope.artifactState;
   return { payload, artifactState };
 }
 
@@ -3694,15 +4087,17 @@ function compactMapFeatureLabel(name: string): string {
 
 type ArtifactRuntimeErrorBoundaryState = {
   errorMessage: string | null;
+  errorCode: MotifArtifactErrorCode | null;
   recoveryStatus: string | null;
 };
 
 export class ArtifactRuntimeErrorBoundary extends Component<{ children: ReactNode }, ArtifactRuntimeErrorBoundaryState> {
-  state: ArtifactRuntimeErrorBoundaryState = { errorMessage: null, recoveryStatus: null };
+  state: ArtifactRuntimeErrorBoundaryState = { errorMessage: null, errorCode: null, recoveryStatus: null };
 
   static getDerivedStateFromError(error: unknown): Partial<ArtifactRuntimeErrorBoundaryState> {
     return {
       errorMessage: error instanceof Error ? error.message : 'An unexpected render error occurred.',
+      errorCode: error instanceof MotifArtifactRuntimeError ? error.code : null,
       recoveryStatus: null,
     };
   }
@@ -3723,7 +4118,8 @@ export class ArtifactRuntimeErrorBoundary extends Component<{ children: ReactNod
 
   render() {
     if (!this.state.errorMessage) return this.props.children;
-    const hasRecoverySnapshot = Boolean(lastGoodRuntimeRecoveryPayload);
+    const isPreloadFailure = this.state.errorCode === 'MOTIF_INVALID_PRELOAD';
+    const hasRecoverySnapshot = !isPreloadFailure && Boolean(lastGoodRuntimeRecoveryPayload);
     return (
       <main
         className="motif-cs-shell"
@@ -3732,21 +4128,30 @@ export class ArtifactRuntimeErrorBoundary extends Component<{ children: ReactNod
       >
         <section className="motif-cs-panel" role="alert" style={{ width: 'min(560px, 100%)', padding: 24 }}>
           <div className="motif-cs-kicker">Motif recovery</div>
-          <h1>Workspace rendering stopped safely</h1>
-          <p>
-            The artifact kept the last accepted inventory separate from this failed render. Copy its recovery JSON before
-            reloading, then use Add Entry to restore the database JSON.
-          </p>
+          <h1>{isPreloadFailure ? 'Preloaded workspace could not be opened' : 'Workspace rendering stopped safely'}</h1>
+          {isPreloadFailure ? (
+            <p>
+              Motif rejected the embedded data before initialization. No bundled sample data was substituted. Fix or
+              regenerate the payload, then reload the artifact.
+            </p>
+          ) : (
+            <p>
+              The artifact kept the last accepted inventory separate from this failed render. Copy its recovery JSON before
+              reloading, then use Add Entry to restore the database JSON.
+            </p>
+          )}
           <p className="motif-cs-muted">{this.state.errorMessage}</p>
           <div className="motif-cs-inline-actions">
-            <button
-              className="motif-cs-mini-button motif-cs-mini-button-accent"
-              type="button"
-              disabled={!hasRecoverySnapshot}
-              onClick={() => { void this.copyRecoveryJson(); }}
-            >
-              Copy recovery JSON
-            </button>
+            {!isPreloadFailure ? (
+              <button
+                className="motif-cs-mini-button motif-cs-mini-button-accent"
+                type="button"
+                disabled={!hasRecoverySnapshot}
+                onClick={() => { void this.copyRecoveryJson(); }}
+              >
+                Copy recovery JSON
+              </button>
+            ) : null}
             <button className="motif-cs-mini-button" type="button" onClick={() => window.location.reload()}>
               Reload artifact
             </button>
@@ -3754,7 +4159,9 @@ export class ArtifactRuntimeErrorBoundary extends Component<{ children: ReactNod
           <p className="motif-cs-muted" role="status" aria-live="polite">
             {this.state.recoveryStatus ?? (hasRecoverySnapshot
               ? 'A last-good recovery snapshot is ready.'
-              : 'Reload to return to the bundled starting inventory.')}
+              : isPreloadFailure
+                ? 'No workspace was accepted. The embedded source remains unchanged.'
+                : 'No recovery snapshot is available yet.')}
           </p>
         </section>
       </main>
@@ -3765,15 +4172,24 @@ export class ArtifactRuntimeErrorBoundary extends Component<{ children: ReactNod
 function App() {
   const initialWorkspaceLayout = useMemo(() => loadWorkspaceLayoutPrefs(), []);
   const initialMsaViewPreferences = useMemo(() => loadMsaViewPreferences(), []);
-  const [payload, setPayload] = useState(loadInitialArtifactPayload);
+  const [initialWorkspace] = useState(loadInitialArtifactWorkspace);
+  const [payload, setPayload] = useState(initialWorkspace.payload);
   const [selectedRecordId, setSelectedRecordId] = useState(payload.selectedRecordId);
   const payloadRef = useRef(payload);
   const selectedRecordIdRef = useRef(selectedRecordId);
   const describeSnapshotRef = useRef<RecordSummary | null>(null);
-  const [hiddenEnzymesByRecord, setHiddenEnzymesByRecord] = useState<Record<string, readonly string[]>>({});
-  const [enzymeSourcesByRecord, setEnzymeSourcesByRecord] = useState<Record<string, readonly RestrictionEnzymeSourceId[]>>({});
-  const [restrictionLabelsByRecord, setRestrictionLabelsByRecord] = useState<Record<string, boolean>>({});
-  const [motifsByRecord, setMotifsByRecord] = useState<Record<string, string>>({});
+  const [hiddenEnzymesByRecord, setHiddenEnzymesByRecord] = useState<Record<string, readonly string[]>>(
+    initialWorkspace.artifactState.hiddenEnzymesByRecord,
+  );
+  const [enzymeSourcesByRecord, setEnzymeSourcesByRecord] = useState<Record<string, readonly RestrictionEnzymeSourceId[]>>(
+    initialWorkspace.artifactState.enzymeSourcesByRecord,
+  );
+  const [restrictionLabelsByRecord, setRestrictionLabelsByRecord] = useState<Record<string, boolean>>(
+    initialWorkspace.artifactState.restrictionLabelsByRecord,
+  );
+  const [motifsByRecord, setMotifsByRecord] = useState<Record<string, string>>(
+    initialWorkspace.artifactState.motifsByRecord,
+  );
   const [mapViewportsByRecord, setMapViewportsByRecord] = useState<Record<string, MapViewport>>({});
   const [mapRangesByRecord, setMapRangesByRecord] = useState<Record<string, MapSelectionRange | null>>({});
   const [selection, setSelection] = useState<Selection>(null);
@@ -3782,9 +4198,13 @@ function App() {
   // User-added inline translation layers (from a selection). Coding features
   // (CDS/gene/…) auto-translate; these are extra translated regions the user pins
   // to the sequence. Keyed by record.
-  const [translationLayersByRecord, setTranslationLayersByRecord] = useState<Record<string, InlineTranslationTrack[]>>({});
+  const [translationLayersByRecord, setTranslationLayersByRecord] = useState<Record<string, InlineTranslationTrack[]>>(
+    initialWorkspace.artifactState.translationLayersByRecord,
+  );
   const [selectedTranslationLayerByRecord, setSelectedTranslationLayerByRecord] = useState<Record<string, string | null>>({});
-  const [hiddenFeatureTranslationsByRecord, setHiddenFeatureTranslationsByRecord] = useState<Record<string, readonly string[]>>({});
+  const [hiddenFeatureTranslationsByRecord, setHiddenFeatureTranslationsByRecord] = useState<Record<string, readonly string[]>>(
+    initialWorkspace.artifactState.hiddenFeatureTranslationsByRecord,
+  );
   // Show the antiparallel complement strand under each line (dsDNA/RNA view).
   const [showComplement, setShowComplement] = useState(false);
   // Translate-window controls: strand + frame for the current target (a selection,
@@ -3792,7 +4212,9 @@ function App() {
   // changes (see effect below) so the panel updates in place instead of swapping UI.
   const [translateStrand, setTranslateStrand] = useState<'sense' | 'antisense'>('sense');
   const [translateFrame, setTranslateFrame] = useState<0 | 1 | 2>(0);
-  const [customEnzymes, setCustomEnzymes] = useState<RestrictionEnzyme[]>([]);
+  const [customEnzymes, setCustomEnzymes] = useState<RestrictionEnzyme[]>(
+    initialWorkspace.artifactState.customEnzymes,
+  );
   const [copyStatus, setCopyStatus] = useState<string | null>(null);
   const [dropState, setDropState] = useState<{ active: boolean; message: string }>({ active: false, message: '' });
   const [workbenchNotice, setWorkbenchNotice] = useState<WorkbenchNotice | null>(null);
@@ -3837,6 +4259,9 @@ function App() {
   const [showCloningDesign, setShowCloningDesign] = useState(false);
   const [cloningDesignWin, setCloningDesignWin] = useState<WindowRect>(defaultCloningDesignWindowRect);
   const [cloningDesignInitialRecordIds, setCloningDesignInitialRecordIds] = useState<string[]>([]);
+  const cloningDesignWorkspaceRef = useRef<ClaudeScienceCloningDesignWorkspaceHandle>(null);
+  const [showConstructVerification, setShowConstructVerification] = useState(false);
+  const [constructVerificationWin, setConstructVerificationWin] = useState<WindowRect>(defaultConstructVerificationWindowRect);
   const [activeAlignmentId, setActiveAlignmentId] = useState<string | null>(payload.alignments[0]?.id ?? null);
   const [msaViewPreferences, setMsaViewPreferences] = useState<ClaudeScienceMsaViewPreferences>(initialMsaViewPreferences);
   const [lockedTranslateTarget, setLockedTranslateTarget] = useState<{ recordId: string; target: TranslateTarget } | null>(null);
@@ -3908,6 +4333,7 @@ function App() {
   const translationsToggleRef = useRef<HTMLButtonElement | null>(null);
   const alignmentToggleRef = useRef<HTMLElement | null>(null);
   const cloningToggleRef = useRef<HTMLElement | null>(null);
+  const constructVerificationToggleRef = useRef<HTMLElement | null>(null);
   const primerToggleRef = useRef<HTMLElement | null>(null);
   const gelReturnFocusRef = useRef<HTMLElement | null>(null);
   const inventoryColumnRef = useRef<HTMLElement | null>(null);
@@ -3928,6 +4354,94 @@ function App() {
   const recordNamesById = useMemo(() => Object.fromEntries(
     payload.records.map((record) => [record.id, record.name]),
   ), [payload.records]);
+  const constructTraceEvidenceByRecordId = useMemo(() => {
+    const evidence = new Map<string, ArtifactConstructTraceEvidence>();
+    payload.records.forEach((record) => {
+      const current = artifactConstructTraceEvidence(record);
+      if (current) evidence.set(record.id, current);
+    });
+    return evidence;
+  }, [payload.records]);
+  const constructVerificationCandidates = useMemo(() => {
+    const records: ClaudeScienceConstructVerificationRecord[] = [];
+    let excludedCount = 0;
+    payload.records.forEach((record) => {
+      if (!record.active || record.type !== 'dna') return;
+      if (record.id.length > ARTIFACT_CONSTRUCT_VERIFICATION_TEXT_LIMITS.maxIdLength) {
+        excludedCount += 1;
+        return;
+      }
+      const evidence = constructTraceEvidenceByRecordId.get(record.id);
+      if (record.sangerTrace) {
+        if (!evidence || evidence.baseCalls.length > ARTIFACT_CONSTRUCT_VERIFICATION_LIMITS.maxReadLength) {
+          excludedCount += 1;
+          return;
+        }
+      } else if (record.sequence.length > ARTIFACT_CONSTRUCT_VERIFICATION_LIMITS.maxReferenceLength) {
+        excludedCount += 1;
+        return;
+      }
+      records.push({
+        id: record.id,
+        name: boundedArtifactConstructName(record.name),
+        sequence: record.sequence,
+        topology: record.topology,
+        sha256: sha256HexSync(record.sequence),
+        ...(evidence ? {
+          sangerTrace: {
+            baseCalls: evidence.baseCalls,
+            ...(evidence.qualityScores ? { qualityScores: evidence.qualityScores } : {}),
+          },
+          sangerEvidenceSha256: evidence.sha256,
+        } : {}),
+      });
+    });
+    return { records, excludedCount };
+  }, [constructTraceEvidenceByRecordId, payload.records]);
+  const constructVerificationRecords = constructVerificationCandidates.records;
+  const constructVerificationExcludedCount = constructVerificationCandidates.excludedCount;
+  const constructVerificationInitialReferenceId = useMemo(() => {
+    const selected = constructVerificationRecords.find((record) => record.id === selectedRecordId);
+    if (selected && !selected.sangerTrace) return selected.id;
+    return constructVerificationRecords.find((record) => !record.sangerTrace)?.id
+      ?? selected?.id
+      ?? constructVerificationRecords[0]?.id;
+  }, [constructVerificationRecords, selectedRecordId]);
+  const constructVerificationReadCount = useMemo(() => constructVerificationRecords.filter(
+    (record) => Boolean(record.sangerTrace),
+  ).length, [constructVerificationRecords]);
+  const constructVerificationReferenceCount = constructVerificationRecords.length - constructVerificationReadCount;
+  const scientificFreshnessRecordIndex = useMemo(() => createScientificFreshnessRecordIndex(
+    payload.records.map((record) => ({
+      id: record.id,
+      sequence: record.sequence,
+      topology: record.topology,
+      overhang5: record.overhang5,
+      overhang3: record.overhang3,
+      overhang5Type: record.overhang5Type,
+      overhang3Type: record.overhang3Type,
+      ...(constructTraceEvidenceByRecordId.get(record.id)
+        ? { sangerEvidenceSha256: constructTraceEvidenceByRecordId.get(record.id)!.sha256 }
+        : {}),
+    })),
+  ), [constructTraceEvidenceByRecordId, payload.records]);
+  const workflowFreshnessByResultId = useMemo(() => evaluateWorkflowResultsFreshness(
+    payload.workflowResults,
+    scientificFreshnessRecordIndex,
+  ), [payload.workflowResults, scientificFreshnessRecordIndex]);
+  const analysisFreshnessByResultId = useMemo(() => evaluateAnalysisResultsFreshness(
+    payload.analysisResults,
+    scientificFreshnessRecordIndex,
+  ), [payload.analysisResults, scientificFreshnessRecordIndex]);
+  const alignmentFreshnessById = useMemo(() => evaluateAlignmentsFreshness(
+    payload.alignments,
+    scientificFreshnessRecordIndex,
+  ), [payload.alignments, scientificFreshnessRecordIndex]);
+  const alignmentsNeedingReview = useMemo(() => Array.from(alignmentFreshnessById.values()).filter(
+    (evaluation) => evaluation.state !== 'fresh',
+  ), [alignmentFreshnessById]);
+  const representativeAlignmentFreshness = alignmentsNeedingReview.find((evaluation) => evaluation.state === 'stale')
+    ?? alignmentsNeedingReview[0];
   const gelLaneCandidates = useMemo(() => createClaudeScienceGelLaneCandidates(
     payload.records.map((record) => ({
       id: record.id,
@@ -3937,7 +4451,8 @@ function App() {
       sequence: record.sequence,
     })),
     payload.workflowResults,
-  ), [payload.records, payload.workflowResults]);
+    workflowFreshnessByResultId,
+  ), [payload.records, payload.workflowResults, workflowFreshnessByResultId]);
   const assemblyRecords = useMemo(() => payload.records
     .filter((record) => record.active && record.type === 'dna')
     .map((record) => ({
@@ -4258,27 +4773,31 @@ function App() {
   const canUndo = (editHistoryRef.current[recordId]?.undo.length ?? 0) > 0;
   const canRedo = (editHistoryRef.current[recordId]?.redo.length ?? 0) > 0;
 
-  const resetRecordTransientState = useCallback(() => {
+  const resetWorkspaceViewState = useCallback(() => {
     setSelection(null);
     setCaret(null);
     setLockedTranslateTarget(null);
     setTranslateStrand('sense');
     setTranslateFrame(0);
+    setMapViewportsByRecord({});
+    setMapRangesByRecord({});
+    setSelectedTranslationLayerByRecord({});
+    sequenceScrollByRecordRef.current = {};
+    editHistoryRef.current = {};
+    bumpEditHistory();
+  }, []);
+
+  const resetRecordTransientState = useCallback(() => {
+    resetWorkspaceViewState();
     setHiddenEnzymesByRecord({});
     setEnzymeSourcesByRecord({});
     enzymeSourcesByRecordRef.current = {};
     setRestrictionLabelsByRecord({});
     setMotifsByRecord({});
-    setMapViewportsByRecord({});
-    setMapRangesByRecord({});
     setTranslationLayersByRecord({});
-    setSelectedTranslationLayerByRecord({});
     setHiddenFeatureTranslationsByRecord({});
     activeEnzymeSourcesRef.current = DEFAULT_ENZYME_SOURCES;
-    sequenceScrollByRecordRef.current = {};
-    editHistoryRef.current = {};
-    bumpEditHistory();
-  }, []);
+  }, [resetWorkspaceViewState]);
 
   const resetWorkflowWindowState = useCallback(() => {
     setShowPrimerDesign(false);
@@ -4295,6 +4814,7 @@ function App() {
     setAssemblyInitialRecordIds([]);
     setShowCloningDesign(false);
     setCloningDesignInitialRecordIds([]);
+    setShowConstructVerification(false);
   }, []);
 
   const clearWorkspaceData = useCallback(() => {
@@ -4580,25 +5100,28 @@ function App() {
 
   useEffect(() => {
     window.motifRenderInventory = (entriesOrPayload) => {
-      if (isPlainObject(entriesOrPayload) && (
-        Object.prototype.hasOwnProperty.call(entriesOrPayload, 'artifactState')
-        || Object.prototype.hasOwnProperty.call(entriesOrPayload, 'notes')
-        || Object.prototype.hasOwnProperty.call(entriesOrPayload, 'workflowResults')
-        || Object.prototype.hasOwnProperty.call(entriesOrPayload, 'analysisResults')
-        || Object.prototype.hasOwnProperty.call(entriesOrPayload, 'analysisAssets')
-      )) {
-        throw new MotifArtifactRuntimeError(
-          'MOTIF_INVALID_WORKSPACE_INPUT',
-          'motifRenderInventory is records-only and will not discard workspace state silently. Use motifReplaceWorkspace for a complete backup payload.',
-          { operation: 'motifRenderInventory', mutated: false },
-        );
-      }
-      const nextPayload = prepareInventoryReplacement(entriesOrPayload, selectedRecordIdRef.current);
+      const prepared = prepareRecordsOnlyWorkspaceReplacement(
+        payloadRef.current,
+        artifactStateRef.current,
+        entriesOrPayload,
+        selectedRecordIdRef.current,
+      );
+      const nextPayload = prepared.payload;
+      const nextSources = prepared.artifactState.enzymeSourcesByRecord[nextPayload.selectedRecordId]
+        ?? DEFAULT_ENZYME_SOURCES;
       rememberActiveSequenceScroll();
-      resetRecordTransientState();
+      resetWorkspaceViewState();
       payloadRef.current = nextPayload;
       selectedRecordIdRef.current = nextPayload.selectedRecordId;
-      describeSnapshotRef.current = describeRuntimePayloadSnapshot(nextPayload, nextPayload.selectedRecordId, DEFAULT_ENZYME_SOURCES);
+      artifactStateRef.current = prepared.artifactState;
+      enzymeSourcesByRecordRef.current = prepared.artifactState.enzymeSourcesByRecord;
+      customEnzymesRef.current = prepared.artifactState.customEnzymes;
+      activeEnzymeSourcesRef.current = nextSources;
+      describeSnapshotRef.current = describeRuntimePayloadSnapshot(
+        nextPayload,
+        nextPayload.selectedRecordId,
+        nextSources,
+      );
       setSelectedRecordId(nextPayload.selectedRecordId);
       setPayload(nextPayload);
       resetWorkflowWindowState();
@@ -4700,6 +5223,7 @@ function App() {
         payloadRef.current = nextPayload;
         setPayload(nextPayload);
         setShowTranslations(false);
+        setShowConstructVerification(false);
         setShowAlignment(true);
         return raw.length;
       } catch (caught) {
@@ -4902,13 +5426,26 @@ function App() {
       if (ids.length === 0) return 0;
       const current = payloadRef.current;
       try {
-        let nextResults = current.analysisResults;
         const context = {
-          analysisAssets: current.analysisAssets,
           recordLengths: new Map(current.records.map((record) => [record.id, record.sequence.length])),
         };
-        for (const id of ids) nextResults = removeArtifactAnalysisResult(nextResults, id, context);
-        const nextPayload: LoadedPayload = { ...current, analysisResults: nextResults };
+        let workspace = {
+          analysisResults: current.analysisResults,
+          analysisAssets: current.analysisAssets,
+        };
+        const candidateAssetIds = new Set<string>();
+        for (const id of ids) {
+          workspace.analysisResults.find((result) => result.id === id)?.assetIds.forEach((assetId) => {
+            candidateAssetIds.add(assetId);
+          });
+          workspace = removeArtifactAnalysisWorkspaceResult(workspace, id, context);
+        }
+        candidateAssetIds.forEach((assetId) => {
+          const stillUsed = workspace.analysisResults.some((result) => result.assetIds.includes(assetId));
+          const stillPresent = workspace.analysisAssets.some((asset) => asset.id === assetId);
+          if (!stillUsed && stillPresent) workspace = removeArtifactAnalysisAsset(workspace, assetId, context);
+        });
+        const nextPayload: LoadedPayload = { ...current, ...workspace };
         payloadRef.current = nextPayload;
         setPayload(nextPayload);
         return ids.length;
@@ -4964,7 +5501,7 @@ function App() {
       delete window.motifClearWorkspace;
       delete window.motifHelp;
     };
-  }, [applyArtifactDatabaseRestore, clearWorkspaceData, describeRuntimePayloadSnapshot, rememberActiveSequenceScroll, removeRecords, resetRecordTransientState, resetWorkflowWindowState]);
+  }, [applyArtifactDatabaseRestore, clearWorkspaceData, describeRuntimePayloadSnapshot, rememberActiveSequenceScroll, removeRecords, resetWorkflowWindowState, resetWorkspaceViewState]);
 
   useEffect(() => {
     setSelection((current) => {
@@ -5003,6 +5540,12 @@ function App() {
       const targetRecordId = selectedRecordIdRef.current ?? recordId;
       activeEnzymeSourcesRef.current = next;
       enzymeSourcesByRecordRef.current = { ...enzymeSourcesByRecordRef.current, [targetRecordId]: next };
+      artifactStateRef.current = {
+        ...artifactStateRef.current,
+        enzymeSourcesByRecord: Object.fromEntries(
+          Object.entries(enzymeSourcesByRecordRef.current).map(([id, sourcesForRecord]) => [id, [...sourcesForRecord]]),
+        ),
+      };
       setEnzymeSourcesByRecord((current) => ({ ...current, [targetRecordId]: next }));
       unhideRestrictionSourceEnzymes(next, targetRecordId);
       describeSnapshotRef.current = describeRuntimePayloadSnapshot(payloadRef.current, targetRecordId, next);
@@ -6627,11 +7170,20 @@ function App() {
   const removeWorkspaceAnalysisResult = useCallback((resultId: string) => {
     const current = payloadRef.current;
     try {
-      const analysisResults = removeArtifactAnalysisResult(current.analysisResults, resultId, {
-        analysisAssets: current.analysisAssets,
+      const removed = current.analysisResults.find((result) => result.id === resultId);
+      const context = {
         recordLengths: new Map(current.records.map((record) => [record.id, record.sequence.length])),
+      };
+      let workspace = removeArtifactAnalysisWorkspaceResult({
+        analysisResults: current.analysisResults,
+        analysisAssets: current.analysisAssets,
+      }, resultId, context);
+      removed?.assetIds.forEach((assetId) => {
+        const stillUsed = workspace.analysisResults.some((result) => result.assetIds.includes(assetId));
+        const stillPresent = workspace.analysisAssets.some((asset) => asset.id === assetId);
+        if (!stillUsed && stillPresent) workspace = removeArtifactAnalysisAsset(workspace, assetId, context);
       });
-      const nextPayload: LoadedPayload = { ...current, analysisResults };
+      const nextPayload: LoadedPayload = { ...current, ...workspace };
       payloadRef.current = nextPayload;
       setPayload(nextPayload);
       return true;
@@ -6766,27 +7318,60 @@ function App() {
   const simulatePrimerPcr = useCallback((handoff: ClaudeSciencePrimerHandoff) => {
     const primerResult = savePrimerDesignResult(handoff);
     const current = payloadRef.current;
+    const template = current.records.find((record) => record.id === handoff.recordId);
+    if (!template || !template.active || template.type !== 'dna') {
+      throw new Error('PCR simulation requires the active DNA template used for this primer design.');
+    }
+    const simulation = simulateSelectedPrimerPair({
+      id: template.id,
+      name: template.name,
+      sequence: template.sequence,
+      type: 'dna',
+      topology: template.topology,
+      active: template.active,
+      features: template.features,
+      description: template.description,
+      organism: template.organism,
+      source: template.source,
+      group: template.group,
+      tags: template.tags,
+    }, {
+      pair: handoff.pair,
+      pairNumber: handoff.pairNumber,
+      target: handoff.target,
+      parameters: handoff.parameters,
+    });
+    const templateSha256 = sha256HexSync(template.sequence);
+    const productSha256 = sha256HexSync(simulation.product);
     const pcrResult: ArtifactAnalysisResult = {
       id: `pcr-${crypto.randomUUID()}`,
       kind: 'pcr',
       name: `${handoff.recordName} · PCR simulation`,
       status: 'complete',
-      summary: `One ${handoff.pair.productLength.toLocaleString()} bp in-silico amplicon spans the selected primer pair.`,
+      summary: `Simulated one exact ${simulation.productLength.toLocaleString()} bp amplicon, including primer tails. No sequence record was created.`,
       inputRecordIds: [handoff.recordId],
-      inputSha256s: [sha256HexSync(current.records.find((record) => record.id === handoff.recordId)?.sequence ?? '')],
+      inputSha256s: [templateSha256],
       dependsOnResultIds: [primerResult.id],
       assetIds: [],
       parameters: {
         forwardPrimer: handoff.pair.forward.fullSequence,
         reversePrimer: handoff.pair.reverse.fullSequence,
+        forwardBindingStart: simulation.forward.bindStart,
+        forwardBindingEnd: simulation.forward.bindEnd,
+        reverseBindingStart: simulation.reverse.bindStart,
+        reverseBindingEnd: simulation.reverse.bindEnd,
+        topology: template.topology,
+        productSha256,
       },
       data: {
         templateRecordId: handoff.recordId,
         primerDesignResultId: primerResult.id,
         products: [{
           id: `amplicon-${crypto.randomUUID()}`,
-          lengthBp: handoff.pair.productLength,
-          templateRange: { start: handoff.pair.forward.start, end: handoff.pair.reverse.end },
+          lengthBp: simulation.productLength,
+          ...(!simulation.wrapsOrigin ? {
+            templateRange: { start: simulation.forward.bindStart, end: simulation.reverse.bindEnd },
+          } : {}),
         }],
       },
       createdAt: new Date().toISOString(),
@@ -6794,11 +7379,28 @@ function App() {
         source: 'motif-for-claude-science-artifact',
         operation: 'pcr_simulation',
         actor: 'user',
-        engine: 'motif-primer-design',
+        engine: 'motif-pcr',
         engineVersion: '1',
-        parentIds: [primerResult.id],
+        parentIds: [template.id, primerResult.id],
+        metadata: {
+          templateSha256,
+          productSha256,
+          wrapsOrigin: simulation.wrapsOrigin,
+          recordCreated: false,
+        },
       },
     };
+    const duplicate = current.analysisResults.find((result) => (
+      result.kind === 'pcr'
+      && result.inputSha256s?.[0] === templateSha256
+      && result.dependsOnResultIds.includes(primerResult.id)
+      && result.provenance.operation === 'pcr_simulation'
+      && result.provenance.metadata?.productSha256 === productSha256
+    ));
+    if (duplicate) {
+      showWorkbenchNotice(`This exact PCR simulation is already saved as “${duplicate.name}”. No sequence record was created.`);
+      return;
+    }
     const workspace = appendArtifactAnalysisWorkspaceResult({
       analysisResults: current.analysisResults,
       analysisAssets: current.analysisAssets,
@@ -6808,8 +7410,136 @@ function App() {
     const nextPayload: LoadedPayload = { ...current, ...workspace };
     payloadRef.current = nextPayload;
     setPayload(nextPayload);
-    showWorkbenchNotice('PCR simulation saved in Results.');
+    showWorkbenchNotice('PCR simulation saved in Results only. No sequence record was created.');
   }, [savePrimerDesignResult, showWorkbenchNotice]);
+
+  const materializePrimerAmplicon = useCallback((handoff: ClaudeSciencePrimerHandoff) => {
+    const primerResult = savePrimerDesignResult(handoff);
+    const current = payloadRef.current;
+    const template = current.records.find((record) => record.id === handoff.recordId);
+    if (!template || !template.active || template.type !== 'dna') {
+      throw new Error('Amplicon creation requires the active DNA template used for this primer design.');
+    }
+    const sourceRecord: PcrMaterializationSourceRecord = {
+      id: template.id,
+      name: template.name,
+      sequence: template.sequence,
+      type: 'dna',
+      topology: template.topology,
+      active: template.active,
+      features: template.features,
+      ...(template.description ? { description: template.description } : {}),
+      ...(template.organism ? { organism: template.organism } : {}),
+      ...(template.source ? { source: template.source } : {}),
+      ...(template.group ? { group: template.group } : {}),
+      ...(template.tags ? { tags: template.tags } : {}),
+    };
+    const baseName = `${template.name.slice(0, 1_000)} · PCR amplicon`;
+    const usedNames = new Set(current.records.map((record) => record.name.trim().toLocaleLowerCase()));
+    let recordName = baseName;
+    for (let suffix = 2; usedNames.has(recordName.toLocaleLowerCase()); suffix += 1) {
+      recordName = `${baseName} ${suffix}`;
+    }
+    const createdAt = new Date().toISOString();
+    const materialized = materializePcrAmplicon({
+      sourceRecord,
+      selection: {
+        pair: handoff.pair,
+        pairNumber: handoff.pairNumber,
+        target: handoff.target,
+        parameters: handoff.parameters,
+      },
+      identity: {
+        recordId: `pcr-record-${crypto.randomUUID()}`,
+        resultId: `pcr-${crypto.randomUUID()}`,
+        productId: `amplicon-${crypto.randomUUID()}`,
+        createdAt,
+        recordName,
+      },
+      primerDesignResultId: primerResult.id,
+      ...(handoff.preparationContext ? {
+        preparation: {
+          requestSha256: handoff.preparationContext.requestSha256,
+          actionId: handoff.preparationContext.actionId,
+          actionKind: handoff.preparationContext.actionKind,
+          method: handoff.preparationContext.method,
+          orientation: handoff.preparationContext.orientation,
+        },
+      } : {}),
+    });
+
+    const duplicate = findPcrMaterializationDuplicate(current.records, materialized.materializationKey);
+    const replaceInCloningDraft = (productId: string, productName: string): boolean => (
+      Boolean(handoff.preparationContext)
+      && cloningDesignWorkspaceRef.current?.replacePreparedPart({
+        expectedRequestSha256: handoff.preparationContext?.requestSha256 ?? '',
+        actionId: handoff.preparationContext?.actionId ?? '',
+        sourceRecordId: handoff.recordId,
+        productRecordId: productId,
+        productRecordName: productName,
+      }) === true
+    );
+    if (duplicate) {
+      const reusable = current.records.find((record) => (
+        record.id === duplicate.id && record.active && record.type === 'dna'
+      ));
+      const replaced = reusable
+        ? replaceInCloningDraft(reusable.id, reusable.name)
+        : false;
+      if (replaced) {
+        setShowPrimerDesign(false);
+        setCloningPrimerRequest(null);
+        setCompletedCloningPrimerActionIds([]);
+        showWorkbenchNotice(`Reused existing amplicon “${duplicate.name}”, replaced the prepared part, and rechecked the cloning draft.`);
+      } else {
+        showWorkbenchNotice(`This exact amplicon already exists as “${duplicate.name}”. No duplicate record was created.${reusable ? '' : ' Reactivate it before using it in cloning.'}`);
+      }
+      return;
+    }
+    if (current.records.length >= MOTIF_MAX_RECORDS) {
+      throw new Error(`Creating this amplicon would exceed the ${MOTIF_MAX_RECORDS}-record artifact limit.`);
+    }
+
+    const recordInput = omitUndefinedObjectProperties(materialized.record) as ArtifactRecordInput;
+    validateRuntimeRecordInputs([recordInput], 'motifAddRecords');
+    const normalized = normalizeRecord(recordInput, current.records.length);
+    if (!normalized) throw new Error('The exact PCR product could not be normalized.');
+    if (current.records.some((record) => record.id === normalized.id)) {
+      throw new Error(`PCR product id “${normalized.id}” already exists.`);
+    }
+    if (normalized.sequence !== materialized.simulation.product) {
+      throw new Error('PCR product normalization changed the simulated sequence; nothing was saved.');
+    }
+
+    const records = [...current.records, { ...normalized, default: false }];
+    const workspace = appendArtifactAnalysisWorkspaceResult({
+      analysisResults: current.analysisResults,
+      analysisAssets: current.analysisAssets,
+    }, materialized.analysisResult, {
+      recordLengths: new Map(records.map((record) => [record.id, record.sequence.length])),
+    });
+    const replaced = replaceInCloningDraft(normalized.id, normalized.name);
+    const nextPayload: LoadedPayload = { ...current, records, ...workspace };
+    payloadRef.current = nextPayload;
+    setPayload(nextPayload);
+
+    if (replaced) {
+      setShowPrimerDesign(false);
+      setCloningPrimerRequest(null);
+      setCompletedCloningPrimerActionIds([]);
+      showWorkbenchNotice(`Created “${normalized.name}”, replaced the prepared part, and rechecked the cloning draft. The source record is unchanged.`);
+      return;
+    }
+
+    rememberActiveSequenceScroll();
+    selectedRecordIdRef.current = normalized.id;
+    setSelectedRecordId(normalized.id);
+    setSelection(null);
+    setShowPrimerDesign(false);
+    showWorkbenchNotice(handoff.preparationContext
+      ? `Created “${normalized.name}”, but the cloning draft changed and was not replaced. Review the draft before using this record.`
+      : `Created and opened “${normalized.name}”. The source record is unchanged.`);
+  }, [rememberActiveSequenceScroll, savePrimerDesignResult, showWorkbenchNotice]);
 
   const selectTranslationCodonAndReveal = useCallback((start: number, end: number, strand?: 1 | -1) => {
     selectTranslationCodon(start, end, strand);
@@ -6860,6 +7590,7 @@ function App() {
     setShowAssembly(false);
     setShowCloningDesign(false);
     setShowPrimerDesign(false);
+    setShowConstructVerification(false);
     setGelSelectedCandidateIds([`digest:${digestWorkflowResultId}`]);
     setGelWorkflowName(`${result.name} · gel`);
     renewGelDraft();
@@ -6874,6 +7605,7 @@ function App() {
     setShowGel(false);
     setShowAssembly(false);
     setShowCloningDesign(false);
+    setShowConstructVerification(false);
     setCloningPrimerRequest(null);
     setShowPrimerDesign(true);
   }, [closeOpenToolDetails, isEditable]);
@@ -6893,6 +7625,7 @@ function App() {
     setShowAssembly(false);
     setShowCloningDesign(false);
     setShowPrimerDesign(false);
+    setShowConstructVerification(false);
     const firstCandidate = gelLaneCandidates.find((candidate) => candidate.id === `record:${recordId}`)
       ?? gelLaneCandidates[0];
     setGelSelectedCandidateIds(firstCandidate ? [firstCandidate.id] : []);
@@ -6925,6 +7658,7 @@ function App() {
     setShowGel(false);
     setShowCloningDesign(false);
     setShowPrimerDesign(false);
+    setShowConstructVerification(false);
     const active = assemblyRecords.find((record) => record.id === recordId)?.id;
     const preferred = active
       ? [active, ...assemblyRecords.filter((record) => record.id !== active).map((record) => record.id)]
@@ -6940,6 +7674,7 @@ function App() {
     setShowGel(false);
     setShowAssembly(false);
     setShowPrimerDesign(false);
+    setShowConstructVerification(false);
     const active = assemblyRecords.find((record) => record.id === preferredRecordId)?.id;
     setCloningDesignInitialRecordIds(active ? [active] : []);
     setShowCloningDesign(true);
@@ -7014,6 +7749,7 @@ function App() {
     setCloningPrimerRecordIndex(0);
     setCompletedCloningPrimerActionIds([]);
     setCloningPrimerRequest(request);
+    setShowConstructVerification(false);
     setShowPrimerDesign(true);
     showWorkbenchNotice(
       request.actionIds.length > 1
@@ -7302,6 +8038,126 @@ function App() {
     showWorkbenchNotice(shouldCreateProduct ? 'Design and product saved.' : 'Assembly plan saved in Results.');
   }, [showWorkbenchNotice]);
 
+  const runConstructVerification = useCallback((request: ClaudeScienceConstructVerificationRequest) => {
+    return verifyArtifactConstruct({
+      reference: {
+        id: request.reference.id,
+        name: request.reference.name,
+        sequence: request.reference.sequence,
+        topology: request.reference.topology,
+        sha256: request.reference.sha256,
+      },
+      reads: request.reads.map((read) => ({
+        id: read.id,
+        name: read.name,
+        baseCalls: read.sangerTrace.baseCalls,
+        ...(read.sangerTrace.qualityScores && read.sangerTrace.qualityScores.length > 0
+          ? { qualityScores: read.sangerTrace.qualityScores }
+          : {}),
+        sha256: read.sha256,
+      })),
+      requiredRegions: [{
+        id: 'full-reference',
+        name: 'Full predicted construct',
+        start: 0,
+        end: request.reference.sequence.length,
+        minDepth: request.minDepth,
+        requireBothStrands: request.requireBothStrands,
+      }],
+      expectedVariants: [],
+      thresholds: {
+        minCoverageFraction: 1,
+        minDepth: request.minDepth,
+        requireBothStrands: request.requireBothStrands,
+      },
+    });
+  }, []);
+
+  const saveConstructVerification = useCallback((saved: ClaudeScienceConstructVerificationSavePayload) => {
+    const current = payloadRef.current;
+    const reference = current.records.find((record) => record.id === saved.snapshot.reference.id);
+    if (!reference || reference.type !== 'dna') {
+      throw new Error('The predicted reference is no longer available as DNA. Run verification again.');
+    }
+    const referenceSha256 = sha256HexSync(reference.sequence);
+    if (
+      referenceSha256 !== saved.snapshot.reference.sequenceSha256
+      || reference.topology !== saved.snapshot.reference.topology
+      || saved.result.reference.id !== reference.id
+      || saved.result.reference.sha256 !== referenceSha256
+      || saved.result.reference.topology !== reference.topology
+    ) {
+      throw new Error('The predicted reference changed after verification. Run verification again before saving.');
+    }
+    if (
+      saved.result.thresholds.minDepth !== saved.snapshot.minDepth
+      || saved.result.thresholds.requireBothStrands !== saved.snapshot.requireBothStrands
+    ) {
+      throw new Error('The saved acceptance criteria no longer match the reviewed run. Run verification again.');
+    }
+    if (
+      saved.result.reads.length !== saved.snapshot.reads.length
+      || saved.result.reads.some((read, index) => read.id !== saved.snapshot.reads[index]?.id)
+    ) {
+      throw new Error('The reviewed read order no longer matches the verification result. Run verification again.');
+    }
+
+    const evidenceSha256s = saved.snapshot.reads.map((snapshotRead, index) => {
+      const record = current.records.find((candidate) => candidate.id === snapshotRead.id);
+      const evidence = record ? artifactConstructTraceEvidence(record) : null;
+      const sequenceSha256 = record ? sha256HexSync(record.sequence) : null;
+      if (
+        !record
+        || record.type !== 'dna'
+        || !evidence
+        || snapshotRead.sangerEvidenceSha256 === null
+        || sequenceSha256 !== snapshotRead.sequenceSha256
+        || evidence.sha256 !== snapshotRead.sangerEvidenceSha256
+        || saved.result.reads[index]?.sha256 !== sequenceSha256
+      ) {
+        throw new Error(`Sanger evidence “${snapshotRead.id}” changed after verification. Run verification again before saving.`);
+      }
+      return evidence.sha256;
+    });
+
+    const duplicate = findDuplicateArtifactConstructVerificationResult(current.analysisResults, {
+      engine: saved.result.provenance.engine,
+      engineVersion: saved.result.provenance.engineVersion,
+      requestSha256: saved.result.provenance.requestSha256,
+    });
+    if (duplicate) throw new Error(`This exact verification is already saved as “${duplicate.name}”.`);
+
+    const createdAt = new Date().toISOString();
+    const artifacts = buildArtifactConstructVerificationArtifacts(saved.result, evidenceSha256s, {
+      resultId: `construct-verification-${crypto.randomUUID()}`,
+      assetId: `construct-verification-report-${crypto.randomUUID()}`,
+      createdAt,
+    });
+    const context = {
+      recordLengths: new Map(current.records.map((record) => [record.id, record.sequence.length])),
+    };
+    let workspace = appendArtifactAnalysisAsset({
+      analysisResults: current.analysisResults,
+      analysisAssets: current.analysisAssets,
+    }, artifacts.asset, context);
+    workspace = appendArtifactAnalysisWorkspaceResult(workspace, artifacts.result, context);
+    const nextPayload: LoadedPayload = { ...current, ...workspace };
+    payloadRef.current = nextPayload;
+    setPayload(nextPayload);
+    showWorkbenchNotice('Construct verification saved in Results with its compact evidence report.');
+  }, [showWorkbenchNotice]);
+
+  const openConstructVerificationWorkspace = useCallback(() => {
+    closeOpenToolDetails();
+    setShowTranslations(false);
+    setShowAlignment(false);
+    setShowGel(false);
+    setShowAssembly(false);
+    setShowCloningDesign(false);
+    setShowPrimerDesign(false);
+    setShowConstructVerification(true);
+  }, [closeOpenToolDetails]);
+
   const openTranslationsWindow = useCallback(() => {
     closeOpenToolDetails();
     setShowAlignment(false);
@@ -7309,6 +8165,7 @@ function App() {
     setShowAssembly(false);
     setShowCloningDesign(false);
     setShowPrimerDesign(false);
+    setShowConstructVerification(false);
     setShowTranslations(true);
   }, [closeOpenToolDetails]);
 
@@ -7321,6 +8178,7 @@ function App() {
         setShowAssembly(false);
         setShowCloningDesign(false);
         setShowPrimerDesign(false);
+        setShowConstructVerification(false);
       }
       return !current;
     });
@@ -7333,6 +8191,7 @@ function App() {
     setShowAssembly(false);
     setShowCloningDesign(false);
     setShowPrimerDesign(false);
+    setShowConstructVerification(false);
     setShowAlignment(true);
   }, [closeOpenToolDetails]);
 
@@ -9059,6 +9918,33 @@ function App() {
             </div>
           </details>
 
+          <details className="motif-cs-panel" name="motif-cs-tools" data-rail-tool="construct-verification">
+            <summary ref={constructVerificationToggleRef} className="motif-cs-panel-head" data-rail-label="V" title="Construct verification">
+              <ShieldCheck className="motif-cs-panel-icon" size={14} strokeWidth={2.2} aria-hidden="true" />
+              <span>Construct Verification</span>
+              <span className="motif-cs-chip">{constructVerificationReadCount} read{constructVerificationReadCount === 1 ? '' : 's'}</span>
+            </summary>
+            <div className="motif-cs-tool-panel-body motif-cs-cloning-launcher">
+              <RailPopoverTitle title="Construct Verification" meta="predicted vs observed" />
+              <div className="motif-cs-cloning-launcher-copy">
+                <strong>Sanger evidence review</strong>
+                <span>Compare imported trace-backed reads with a predicted DNA construct, review coverage and variants, then save a provenance-linked report.</span>
+              </div>
+              <button
+                className="motif-cs-mini-button motif-cs-mini-button-accent"
+                type="button"
+                onClick={openConstructVerificationWorkspace}
+                disabled={constructVerificationReferenceCount === 0 || constructVerificationReadCount === 0}
+                data-testid="open-construct-verification"
+              >
+                Open verification workspace
+              </button>
+              <p className="motif-cs-form-note">
+                {constructVerificationReferenceCount} predicted reference{constructVerificationReferenceCount === 1 ? '' : 's'} · {constructVerificationReadCount} eligible Sanger read{constructVerificationReadCount === 1 ? '' : 's'}{constructVerificationExcludedCount > 0 ? ` · ${constructVerificationExcludedCount} excluded by verifier limits` : ''}. Verification only runs after explicit review.
+              </p>
+            </div>
+          </details>
+
           <details className="motif-cs-panel" name="motif-cs-tools" data-rail-tool="analysis-results">
             <summary className="motif-cs-panel-head" data-rail-label="R" title="Agent and analysis results">
               <Beaker className="motif-cs-panel-icon" size={14} strokeWidth={2.2} aria-hidden="true" />
@@ -9071,6 +9957,7 @@ function App() {
                 results={payload.analysisResults}
                 assets={payload.analysisAssets}
                 recordNames={recordNamesById}
+                freshnessByResultId={analysisFreshnessByResultId}
                 onRevealRecord={revealWorkspaceRecord}
                 onRemove={removeWorkspaceAnalysisResult}
               />
@@ -9088,6 +9975,7 @@ function App() {
               <ClaudeScienceWorkflowHistoryPanel
                 results={payload.workflowResults}
                 recordNames={recordNamesById}
+                freshnessByResultId={workflowFreshnessByResultId}
                 onRevealRecord={revealWorkspaceRecord}
                 onRemove={removeWorkspaceWorkflowResult}
               />
@@ -9101,10 +9989,25 @@ function App() {
               <span className="motif-cs-chip">{payload.alignments.length ? `${payload.alignments.length} MSA` : 'MSA'}</span>
             </summary>
             <div className="motif-cs-tool-panel-body motif-cs-alignment-tool-body">
-              <RailPopoverTitle title="Alignment" meta={payload.alignments.length ? `${payload.alignments.length} in session` : 'MSA'} />
+              <RailPopoverTitle
+                title="Alignment"
+                meta={payload.alignments.length
+                  ? `${payload.alignments.length} in session${alignmentsNeedingReview.length ? ` · ${alignmentsNeedingReview.length} review` : ''}`
+                  : 'MSA'}
+              />
               <p className="motif-cs-alignment-tool-intro">
                 Compare 2–10 compatible records locally, or review aligned output from MAFFT, MUSCLE, or Clustal Omega.
               </p>
+              {representativeAlignmentFreshness ? (
+                <div className="motif-cs-alignment-freshness-summary" data-testid="alignment-freshness-summary">
+                  <ClaudeScienceFreshnessBadge
+                    evaluation={representativeAlignmentFreshness}
+                    recordNames={recordNamesById}
+                    showReason
+                  />
+                  <span>{alignmentsNeedingReview.length.toLocaleString()} alignment{alignmentsNeedingReview.length === 1 ? '' : 's'} need lineage review.</span>
+                </div>
+              ) : null}
               <button className="motif-cs-mini-button motif-cs-alignment-launch" type="button" data-testid="msa-open-button" aria-label="Open alignment workspace" onClick={openAlignmentWindow}>
                 <AlignCenter size={17} strokeWidth={2.1} aria-hidden="true" />
                 <span className="motif-cs-alignment-launch-copy">
@@ -9315,6 +10218,7 @@ function App() {
               savePrimerDesignResult(handoff);
             }}
             onSimulatePcr={simulatePrimerPcr}
+            onCreateAmplicon={materializePrimerAmplicon}
             onUseForCloning={usePrimerDesignForCloning}
           />
         </FloatingWindow>
@@ -9350,12 +10254,33 @@ function App() {
           inactive={showPrimerDesign && cloningPrimerRequest !== null}
         >
           <ClaudeScienceCloningDesignWorkspace
+            ref={cloningDesignWorkspaceRef}
             embedded
             records={cloningDesignRecords}
             initialRecordIds={cloningDesignInitialRecordIds}
             onClose={() => setShowCloningDesign(false)}
             onDesignPrimers={designCloningPreparationPrimers}
             onSave={saveCloningDesign}
+          />
+        </FloatingWindow>
+      ) : null}
+      {showConstructVerification ? (
+        <FloatingWindow
+          title="Construct Verification"
+          subtitle={`${constructVerificationReadCount} eligible Sanger read${constructVerificationReadCount === 1 ? '' : 's'}`}
+          initial={constructVerificationWin}
+          onClose={() => setShowConstructVerification(false)}
+          onCommit={setConstructVerificationWin}
+          returnFocusRef={constructVerificationToggleRef}
+          maximizable
+        >
+          <ClaudeScienceConstructVerificationWorkspace
+            embedded
+            records={constructVerificationRecords}
+            initialReferenceId={constructVerificationInitialReferenceId}
+            onVerify={runConstructVerification}
+            onSave={saveConstructVerification}
+            onClose={() => setShowConstructVerification(false)}
           />
         </FloatingWindow>
       ) : null}

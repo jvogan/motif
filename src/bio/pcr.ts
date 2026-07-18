@@ -52,6 +52,37 @@ export interface PCRResult {
   gcPercent: number;
   /** Features from template that fall within the amplified region, offset to product coordinates */
   features: Feature[];
+  /** True when a circular-template amplicon crosses coordinate 0. */
+  wrapsOrigin: boolean;
+}
+
+/** Optional exact primer binding coordinates selected by a primer-design UI. */
+export interface PCRBindingSelection {
+  forward: { start: number; end: number };
+  reverse: { start: number; end: number };
+}
+
+function propagateFeature(feature: Feature, offset: number): Feature {
+  return {
+    ...feature,
+    id: crypto.randomUUID(),
+    start: feature.start + offset,
+    end: feature.end + offset,
+    ...(feature.subRanges ? {
+      subRanges: feature.subRanges.map((range) => ({
+        ...range,
+        start: range.start + offset,
+        end: range.end + offset,
+      })),
+    } : {}),
+    metadata: {
+      ...feature.metadata,
+      pcrSourceFeatureId: feature.id,
+      pcrSourceStart: feature.start,
+      pcrSourceEnd: feature.end,
+      generatedBy: 'motif-pcr',
+    },
+  };
 }
 
 /**
@@ -66,8 +97,23 @@ export interface PCRResult {
 function findPrimerOnStrand(
   template: string,
   primer: string,
+  preferredStart?: number,
+  preferredBindLength?: number,
 ): { pos: number; bindLength: number } | null {
   if (primer.length < MIN_BINDING) return null;
+
+  if (preferredStart !== undefined || preferredBindLength !== undefined) {
+    if (
+      preferredStart === undefined
+      || preferredBindLength === undefined
+      || preferredBindLength < MIN_BINDING
+      || preferredBindLength > primer.length
+    ) return null;
+    const binding = primer.slice(primer.length - preferredBindLength);
+    return template.startsWith(binding, preferredStart)
+      ? { pos: preferredStart, bindLength: preferredBindLength }
+      : null;
+  }
 
   // Try full primer first, then progressively remove from 5' end
   for (let trimmed = 0; trimmed <= primer.length - MIN_BINDING; trimmed++) {
@@ -100,6 +146,7 @@ function findPrimerOnStrand(
  * @param reversePrimer  - Reverse primer sequence 5'→3' (any case, non-ACGT stripped)
  * @param features       - Optional template features to propagate into the product
  * @param topology       - Template topology; 'circular' enables origin-wrapping products
+ * @param selectedBinding - Optional exact forward-strand coordinates selected by primer design
  * @returns PCRResult or null if no product would be amplified
  */
 export function simulatePCR(
@@ -108,6 +155,7 @@ export function simulatePCR(
   reversePrimer: string,
   features?: Feature[],
   topology: Topology = 'linear',
+  selectedBinding?: PCRBindingSelection,
 ): PCRResult | null {
   const tmpl = template.toUpperCase().replace(/[^ACGT]/g, '');
   const fwd = forwardPrimer.toUpperCase().replace(/[^ACGT]/g, '');
@@ -115,10 +163,26 @@ export function simulatePCR(
 
   if (fwd.length < MIN_BINDING || rev.length < MIN_BINDING) return null;
   if (tmpl.length === 0) return null;
+  if (selectedBinding) {
+    const validRange = ({ start, end }: { start: number; end: number }) => (
+      Number.isInteger(start)
+      && Number.isInteger(end)
+      && start >= 0
+      && end > start
+      && end <= tmpl.length
+    );
+    if (!validRange(selectedBinding.forward) || !validRange(selectedBinding.reverse)) return null;
+  }
 
   // ── Forward primer ──────────────────────────────────────────────
-  const fwdMatch = findPrimerOnStrand(tmpl, fwd);
+  const fwdMatch = findPrimerOnStrand(
+    tmpl,
+    fwd,
+    selectedBinding?.forward.start,
+    selectedBinding ? selectedBinding.forward.end - selectedBinding.forward.start : undefined,
+  );
   if (!fwdMatch) return null;
+  if (selectedBinding && fwdMatch.pos + fwdMatch.bindLength !== selectedBinding.forward.end) return null;
 
   const fwdTailLen = fwd.length - fwdMatch.bindLength;
   const fwdTail = fwd.slice(0, fwdTailLen);
@@ -126,14 +190,26 @@ export function simulatePCR(
 
   // ── Reverse primer (searches RC strand) ─────────────────────────
   const rcTmpl = reverseComplement(tmpl);
-  const revMatch = findPrimerOnStrand(rcTmpl, rev);
+  const N = tmpl.length;
+  const selectedReverseRcStart = selectedBinding
+    ? N - selectedBinding.reverse.end
+    : undefined;
+  const revMatch = findPrimerOnStrand(
+    rcTmpl,
+    rev,
+    selectedReverseRcStart,
+    selectedBinding ? selectedBinding.reverse.end - selectedBinding.reverse.start : undefined,
+  );
   if (!revMatch) return null;
 
   // Convert RC strand coordinates → template coordinates
   // RC position [pos, pos+len) → template [N-pos-len, N-pos)
-  const N = tmpl.length;
   const revBindEnd = N - revMatch.pos;          // exclusive end on template
   const revBindStart = N - revMatch.pos - revMatch.bindLength; // inclusive start on template
+  if (selectedBinding && (
+    revBindStart !== selectedBinding.reverse.start
+    || revBindEnd !== selectedBinding.reverse.end
+  )) return null;
 
   const revTailLen = rev.length - revMatch.bindLength;
   const revTail = rev.slice(0, revTailLen);
@@ -181,12 +257,7 @@ export function simulatePCR(
       const offset = fwdTailLen - regionStart; // shift: template coord → product coord
       for (const f of features) {
         if (f.start >= regionStart && f.end <= regionEnd) {
-          productFeatures.push({
-            ...f,
-            id: crypto.randomUUID(),
-            start: f.start + offset,
-            end: f.end + offset,
-          });
+          productFeatures.push(propagateFeature(f, offset));
         }
       }
     } else {
@@ -199,19 +270,9 @@ export function simulatePCR(
       const tailOffset = fwdTailLen + (N - fwdMatch.pos); // [0, revBindEnd)
       for (const f of features) {
         if (f.start >= fwdMatch.pos && f.end <= N) {
-          productFeatures.push({
-            ...f,
-            id: crypto.randomUUID(),
-            start: f.start + headOffset,
-            end: f.end + headOffset,
-          });
+          productFeatures.push(propagateFeature(f, headOffset));
         } else if (f.start >= 0 && f.end <= revBindEnd) {
-          productFeatures.push({
-            ...f,
-            id: crypto.randomUUID(),
-            start: f.start + tailOffset,
-            end: f.end + tailOffset,
-          });
+          productFeatures.push(propagateFeature(f, tailOffset));
         }
         // else: feature straddles the origin or lies outside the amplicon — skip.
       }
@@ -244,5 +305,6 @@ export function simulatePCR(
     tmDifference,
     gcPercent: gcContent(product) * 100,
     features: productFeatures,
+    wrapsOrigin: wraps,
   };
 }

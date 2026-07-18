@@ -2267,6 +2267,19 @@ summary.motif-cs-panel-head {
   container-type: inline-size;
 }
 
+.motif-cs-alignment-freshness-summary {
+  display: grid;
+  gap: 4px;
+  margin: 0 12px 10px;
+  padding: 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--panel-bg);
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
 .motif-cs-workflow-history {
   min-width: 0;
 }
@@ -2331,6 +2344,18 @@ summary.motif-cs-panel-head {
   color: var(--text-muted);
   font-size: 10px;
   line-height: 1.35;
+}
+
+.motif-cs-workflow-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+}
+
+.motif-cs-workflow-row-copy .motif-cs-workflow-meta > small {
+  min-width: 0;
 }
 
 .motif-cs-workflow-record-label {
@@ -9514,6 +9539,18 @@ summary.motif-cs-panel-head:focus-visible {
     border-left-color: var(--border-strong);
     background: var(--panel-bg);
     box-shadow: 0 10px 28px color-mix(in srgb, var(--shadow-ink) 20%, transparent);
+  }
+
+  /* The collapsed 48 px tool rail intentionally sits above floating windows.
+     Reserve its hit area so window actions and scientific content remain
+     reachable instead of being painted underneath the rail. */
+  .motif-cs-shell:has(.motif-cs-inspector[data-tools-pinned="false"]) .motif-cs-window-head,
+  .motif-cs-shell:has(.motif-cs-inspector[data-tools-pinned="false"]) .motif-cs-window-body {
+    padding-right: 58px;
+  }
+
+  .motif-cs-shell:has(.motif-cs-inspector[data-tools-pinned="false"]) .motif-cs-window-resize {
+    right: 58px;
   }
 
   .motif-cs-resize-handle[data-pane="tools"] {

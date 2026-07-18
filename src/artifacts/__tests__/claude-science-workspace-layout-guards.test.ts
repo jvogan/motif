@@ -428,6 +428,7 @@ describe('Claude Science workspace layout guards', () => {
     expect(artifactSource).toContain('aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown"');
     expect(artifactCss).toContain('.motif-cs-window-resize:focus-visible');
     expect(artifactCss).toMatch(/\.motif-cs-window-resize\s*\{[\s\S]*?width:\s*28px;[\s\S]*?height:\s*28px/);
+    expect(artifactCss).toContain('.motif-cs-shell:has(.motif-cs-inspector[data-tools-pinned="false"]) .motif-cs-window-resize {\n    right: 58px;');
   });
 
   it('limits floating-window drags to the initiating primary pointer', () => {

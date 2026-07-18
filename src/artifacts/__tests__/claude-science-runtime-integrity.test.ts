@@ -24,6 +24,7 @@ import {
   parseImportedRecords,
   prepareArtifactDatabaseRestore,
   prepareInventoryReplacement,
+  prepareRecordsOnlyWorkspaceReplacement,
   validateRuntimeRecordInputs,
 } from '../motif-artifact';
 
@@ -59,6 +60,9 @@ describe('Claude Science runtime data-integrity behavior', () => {
       { features: [{ start: 0, end: 3, subRanges: { start: 0, end: 2 } }] },
       { sites: { enzyme: 'EcoRI' } },
       { sites: [{ enzyme: 'EcoRI', hits: [null] }] },
+      { type: 'plasmid' },
+      { molecule: 'plasmid' },
+      { topology: 'ring' },
     ];
 
     malformed.forEach((patch) => {
@@ -176,6 +180,316 @@ describe('Claude Science runtime data-integrity behavior', () => {
       records: [{ id: 'last-good', type: 'dna', sequence: 'GAATTC' }],
       artifactState: { customEnzymes: { malformed: true } },
     })).toThrow(/customEnzymes must be an array/i);
+    expect(() => prepareArtifactDatabaseRestore({
+      records: [{ id: 'last-good', type: 'dna', sequence: 'GAATTC' }],
+      artifactState: { motifsByRecord: { missing: 'GAATTC' } },
+    })).toThrow(/motifsByRecord references unknown record id: missing/i);
+    expect(() => prepareArtifactDatabaseRestore({
+      records: 'broken',
+      alignments: [],
+    })).toThrow(/malformed payload envelope/i);
+    try {
+      prepareArtifactDatabaseRestore({
+        schema: 'motif.claude-science.inventory.v99',
+        records: [{ id: 'future', type: 'dna', sequence: 'ATGC' }],
+      });
+      throw new Error('Expected unsupported schema to be rejected.');
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: 'MOTIF_INVALID_INVENTORY_REPLACEMENT',
+        details: expect.objectContaining({
+          issues: expect.arrayContaining([expect.objectContaining({
+            path: 'payload.schema',
+            message: expect.stringMatching(/unsupported motif inventory schema/i),
+          })]),
+        }),
+      });
+    }
+    expect(() => prepareArtifactDatabaseRestore({
+      records: [{ id: 'record-a', type: 'dna', sequence: 'ATGC' }],
+      alignments: [{
+        id: 'orphaned-alignment',
+        molecule: 'dna',
+        rows: [
+          { id: 'a', name: 'A', aligned: 'ATGC', sourceRecordId: 'missing' },
+          { id: 'b', name: 'B', aligned: 'AT-C' },
+        ],
+      }],
+    })).toThrow(/alignment rows reference unknown record id: missing/i);
+    expect(() => prepareArtifactDatabaseRestore({
+      records: [{ id: 'record-a', type: 'dna', sequence: 'ATGC' }],
+      alignment: {
+        id: 'orphaned-alias',
+        molecule: 'dna',
+        sequences: [
+          { id: 'a', name: 'A', sequence: 'ATGC', sourceRecordId: 'missing' },
+          { id: 'b', name: 'B', sequence: 'AT-C' },
+        ],
+      },
+    })).toThrow(/alignment rows reference unknown record id: missing/i);
+    expect(() => prepareArtifactDatabaseRestore({
+      records: [{ id: 'record-a', type: 'dna', sequence: 'ATGC' }],
+      alignments: {
+        id: 'plural-object',
+        molecule: 'dna',
+        rows: [
+          { id: 'a', name: 'A', aligned: 'ATGC' },
+          { id: 'b', name: 'B', aligned: 'AT-C' },
+        ],
+      },
+    })).toThrow(/alignments must be an array/i);
+    expect(prepareArtifactDatabaseRestore({ name: 'Workspace label', notes: [] }).payload.records).toEqual([]);
+  });
+
+  it('preserves compatible workspace state and rejects orphaning records-only replacements atomically', () => {
+    const current = prepareArtifactDatabaseRestore({
+      inventory: { id: 'preserved-inventory', title: 'Preserved inventory', description: 'Keep metadata' },
+      defaultMotif: 'GGCC',
+      records: [{
+        id: 'record-a',
+        name: 'Original A',
+        type: 'dna',
+        sequence: 'ATGGAATTCTAA',
+        features: [{ id: 'a', name: 'Feature A', type: 'cds', start: 0, end: 6 }],
+      }],
+      selectedRecordId: 'record-a',
+      alignments: [{
+        id: 'alignment-a',
+        name: 'Linked alignment',
+        molecule: 'dna',
+        referenceRowId: 'row-a',
+        rows: [
+          { id: 'row-a', name: 'Record A', aligned: 'ATGGAATTCTAA', sourceRecordId: 'record-a' },
+          { id: 'row-b', name: 'Variant', aligned: 'ATGGAA-TCTAA' },
+        ],
+        engine: { id: 'mafft', label: 'MAFFT', version: '7.526', mode: 'local-command' },
+      }],
+      notes: [
+        {
+          id: 'record-note',
+          body: 'Linked note',
+          format: 'plain',
+          scope: 'record',
+          recordId: 'record-a',
+          createdAt: '2026-07-12T12:00:00.000Z',
+          updatedAt: '2026-07-12T12:00:00.000Z',
+        },
+        {
+          id: 'workspace-note',
+          body: 'Workspace note',
+          format: 'plain',
+          scope: 'workspace',
+          createdAt: '2026-07-12T12:00:00.000Z',
+          updatedAt: '2026-07-12T12:00:00.000Z',
+        },
+      ],
+      workflowResults: [{
+        id: 'digest-a',
+        kind: 'digest',
+        name: 'Digest A',
+        inputRecordIds: ['record-a'],
+        outputRecordIds: ['record-a'],
+        parameters: { enzymes: ['EcoRI'] },
+        createdAt: '2026-07-12T12:05:00.000Z',
+        provenance: { source: 'motif-artifact', operation: 'digest' },
+      }],
+      analysisAssets: [{
+        id: 'asset-a',
+        name: 'report.txt',
+        mediaType: 'text/plain',
+        content: 'Inert report evidence.',
+        createdAt: '2026-07-12T12:06:00.000Z',
+        provenance: { source: 'claude-science', operation: 'report' },
+      }],
+      analysisResults: [{
+        id: 'report-a',
+        kind: 'report',
+        name: 'Linked report',
+        status: 'complete',
+        summary: 'A linked report.',
+        inputRecordIds: ['record-a'],
+        dependsOnResultIds: [],
+        assetIds: ['asset-a'],
+        parameters: {},
+        data: { format: 'plain', body: 'Review A.' },
+        createdAt: '2026-07-12T12:06:00.000Z',
+        provenance: { source: 'claude-science', operation: 'report' },
+      }],
+      artifactState: {
+        customEnzymes: [{
+          name: 'KeepI', recognitionSequence: 'GAATTC', cutOffset: 1, complementCutOffset: 5, overhang: '5prime',
+        }],
+        translationLayersByRecord: {
+          'record-a': [{ id: 'layer-a', label: 'Layer A', start: 0, end: 6, strand: 1, frame: 0 }],
+        },
+        enzymeSourcesByRecord: { 'record-a': ['common'] },
+        hiddenEnzymesByRecord: { 'record-a': ['EcoRI'] },
+        hiddenFeatureTranslationsByRecord: { 'record-a': ['feat:a'] },
+        restrictionLabelsByRecord: { 'record-a': true },
+        motifsByRecord: { 'record-a': 'GAATTC' },
+      },
+    });
+    const before = JSON.stringify(current);
+
+    const compatible = prepareRecordsOnlyWorkspaceReplacement(
+      current.payload,
+      current.artifactState,
+      [{
+        id: 'record-a',
+        name: 'Updated A',
+        type: 'dna',
+        sequence: 'ATGGAATTCTAA',
+        features: [{ id: 'a', name: 'Feature A', type: 'cds', start: 0, end: 6 }],
+      }],
+      'record-a',
+    );
+    expect(compatible.payload.records[0].name).toBe('Updated A');
+    expect(compatible.payload.inventory).toEqual(current.payload.inventory);
+    expect(compatible.payload.defaultMotif).toBe('GGCC');
+    expect(compatible.payload.alignments).toEqual(current.payload.alignments);
+    expect(compatible.payload.notes).toEqual(current.payload.notes);
+    expect(compatible.payload.workflowResults).toEqual(current.payload.workflowResults);
+    expect(compatible.payload.analysisResults).toEqual(current.payload.analysisResults);
+    expect(compatible.payload.analysisAssets).toEqual(current.payload.analysisAssets);
+    expect(compatible.artifactState).toEqual(current.artifactState);
+
+    expect(() => prepareRecordsOnlyWorkspaceReplacement(
+      current.payload,
+      current.artifactState,
+      [{ id: 'record-a', name: 'Removed feature A', type: 'dna', sequence: 'ATGGAATTCTAA' }],
+      'record-a',
+    )).toThrowError(expect.objectContaining({
+      code: 'MOTIF_INVALID_INVENTORY_REPLACEMENT',
+      details: expect.objectContaining({
+        issues: expect.arrayContaining([expect.objectContaining({
+          category: 'artifactState',
+          message: expect.stringContaining('feat:a'),
+        })]),
+      }),
+    }));
+
+    try {
+      prepareRecordsOnlyWorkspaceReplacement(
+        current.payload,
+        current.artifactState,
+        [{
+          id: 'record-a',
+          name: 'Changed A',
+          type: 'dna',
+          sequence: 'ATGCAATTCTAA',
+          features: [{ id: 'a', name: 'Feature A', type: 'cds', start: 0, end: 6 }],
+        }],
+        'record-a',
+      );
+      throw new Error('Expected biological identity change to be rejected.');
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: 'MOTIF_INVALID_INVENTORY_REPLACEMENT',
+        details: { operation: 'motifRenderInventory', mutated: false },
+      });
+      const categories = (error as MotifArtifactRuntimeError).details.issues as Array<{ category: string }>;
+      expect(new Set(categories.map((issue) => issue.category))).toEqual(new Set([
+        'alignment', 'note', 'workflowResult', 'analysisResult', 'artifactState',
+      ]));
+    }
+
+    try {
+      prepareRecordsOnlyWorkspaceReplacement(
+        current.payload,
+        current.artifactState,
+        [{ id: 'record-b', name: 'Unrelated B', type: 'dna', sequence: 'ATGGAATTCTAA' }],
+        'record-a',
+      );
+      throw new Error('Expected orphaning replacement to be rejected.');
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: 'MOTIF_INVALID_INVENTORY_REPLACEMENT',
+        details: { operation: 'motifRenderInventory', mutated: false },
+      });
+      const categories = (error as MotifArtifactRuntimeError).details.issues as Array<{ category: string }>;
+      expect(new Set(categories.map((issue) => issue.category))).toEqual(new Set([
+        'alignment', 'note', 'workflowResult', 'analysisResult', 'artifactState',
+      ]));
+    }
+
+    expect(() => prepareRecordsOnlyWorkspaceReplacement(
+      current.payload,
+      current.artifactState,
+      { records: [{ id: 'record-a', type: 'dna', sequence: 'ATGGAATTCTAA' }], alignments: [] },
+    )).toThrowError(expect.objectContaining({ code: 'MOTIF_INVALID_WORKSPACE_INPUT' }));
+    expect(JSON.stringify(current)).toBe(before);
+  });
+
+  it('rejects a records-only replacement that newly orphans a workflow output', () => {
+    const current = prepareArtifactDatabaseRestore({
+      records: [
+        { id: 'input-a', type: 'dna', sequence: 'ATGC' },
+        { id: 'product-b', type: 'dna', sequence: 'ATGC' },
+      ],
+      workflowResults: [{
+        id: 'workflow-a',
+        kind: 'digest',
+        name: 'Saved product',
+        inputRecordIds: ['input-a'],
+        outputRecordIds: ['product-b'],
+        parameters: { enzymes: ['EcoRI'] },
+        createdAt: '2026-07-12T12:00:00.000Z',
+        provenance: { source: 'motif-artifact', operation: 'digest' },
+      }],
+    });
+
+    expect(() => prepareRecordsOnlyWorkspaceReplacement(
+      current.payload,
+      current.artifactState,
+      [{ id: 'input-a', type: 'dna', sequence: 'ATGC' }],
+      'input-a',
+    )).toThrowError(expect.objectContaining({
+      code: 'MOTIF_INVALID_INVENTORY_REPLACEMENT',
+      details: expect.objectContaining({
+        operation: 'motifRenderInventory',
+        mutated: false,
+        issues: expect.arrayContaining([
+          expect.objectContaining({ category: 'workflowResult', message: expect.stringContaining('newly orphaned') }),
+        ]),
+      }),
+    }));
+  });
+
+  it('rejects biological changes referenced only inside typed analysis data', () => {
+    const current = prepareArtifactDatabaseRestore({
+      records: [
+        { id: 'target-a', type: 'dna', sequence: 'ATGC' },
+        { id: 'input-b', type: 'dna', sequence: 'CCCC' },
+      ],
+      analysisResults: [{
+        id: 'primer-a',
+        kind: 'primer_design',
+        name: 'Primer design A',
+        status: 'complete',
+        inputRecordIds: ['input-b'],
+        dependsOnResultIds: [],
+        assetIds: [],
+        parameters: {},
+        data: { targetRecordId: 'target-a', pairs: [] },
+        createdAt: '2026-07-12T12:00:00.000Z',
+        provenance: { source: 'claude-science', operation: 'primer-design' },
+      }],
+    });
+
+    expect(() => prepareRecordsOnlyWorkspaceReplacement(
+      current.payload,
+      current.artifactState,
+      [
+        { id: 'target-a', type: 'dna', sequence: 'TTTT' },
+        { id: 'input-b', type: 'dna', sequence: 'CCCC' },
+      ],
+      'target-a',
+    )).toThrowError(expect.objectContaining({
+      code: 'MOTIF_INVALID_INVENTORY_REPLACEMENT',
+      details: expect.objectContaining({
+        issues: expect.arrayContaining([expect.objectContaining({ category: 'analysisResult' })]),
+      }),
+    }));
   });
 
   it('round-trips a direct motifGetWorkspace-style snapshot without undefined object fields', () => {
@@ -543,14 +857,16 @@ describe('Claude Science runtime data-integrity behavior', () => {
     const addEnd = artifactSource.indexOf('window.motifGetInventory', addStart);
     const addHandler = artifactSource.slice(addStart, addEnd);
 
-    expect(renderHandler.indexOf('prepareInventoryReplacement(')).toBeLessThan(renderHandler.indexOf('resetRecordTransientState();'));
-    expect(renderHandler).toContain('describeRuntimePayloadSnapshot(nextPayload');
+    expect(renderHandler.indexOf('prepareRecordsOnlyWorkspaceReplacement(')).toBeLessThan(renderHandler.indexOf('resetWorkspaceViewState();'));
+    expect(renderHandler).not.toContain('resetRecordTransientState();');
+    expect(renderHandler).toContain('describeRuntimePayloadSnapshot(');
+    expect(renderHandler).toContain('nextPayload.selectedRecordId');
     expect(addHandler).toContain("validateRuntimeRecordInputs(raw, 'motifAddRecords');");
     expect(addHandler).toContain('const traceSampleEntries = [...currentPayload.records, ...additions].reduce');
     expect(addHandler).toContain('traceSampleEntries > ARTIFACT_SANGER_MAX_WORKSPACE_SAMPLE_ENTRIES');
     expect(addHandler).toContain('No records were added.');
     expect(addHandler).toContain('describeRuntimePayloadSnapshot(nextPayload');
-    expect(artifactSource).toContain('useState(loadInitialArtifactPayload)');
+    expect(artifactSource).toContain('useState(loadInitialArtifactWorkspace)');
   });
 
   it('validates UI record batches before one atomic payload commit', () => {

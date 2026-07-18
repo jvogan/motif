@@ -37,6 +37,15 @@ describe('Claude Science Sanger workflow guards', () => {
     expect(artifactSource).toContain('Undo restores the trace.');
   });
 
+  it('adapts construct-verification candidates to the engine bounds before launch', () => {
+    expect(artifactSource).toContain('ARTIFACT_CONSTRUCT_VERIFICATION_TEXT_LIMITS');
+    expect(artifactSource).toContain('record.id.length > ARTIFACT_CONSTRUCT_VERIFICATION_TEXT_LIMITS.maxIdLength');
+    expect(artifactSource).toContain('record.sequence.length > ARTIFACT_CONSTRUCT_VERIFICATION_LIMITS.maxReferenceLength');
+    expect(artifactSource).not.toContain('readCount >= ARTIFACT_CONSTRUCT_VERIFICATION_LIMITS.maxReads');
+    expect(artifactSource).toContain('name: boundedArtifactConstructName(record.name)');
+    expect(artifactSource).toContain('excluded by verifier limits');
+  });
+
   it('offers the trace view only for an alignment row that truly links to the calls', () => {
     expect(msaSource).toContain('const traceAvailable = activeAlignment ? hasLinkedSangerTrace(activeAlignment, records) : false;');
     expect(msaSource).toContain("displayMode === 'trace'");

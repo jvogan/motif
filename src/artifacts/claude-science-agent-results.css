@@ -97,6 +97,13 @@
   overflow-wrap: anywhere;
 }
 
+.motif-cs-agent-result-state {
+  display: grid;
+  justify-items: end;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
 .motif-cs-agent-result-heading strong {
   font-size: 12px;
   line-height: 1.35;
@@ -291,6 +298,10 @@
 
   .motif-cs-agent-result-status {
     width: max-content;
+  }
+
+  .motif-cs-agent-result-state {
+    justify-items: start;
   }
 
   .motif-cs-agent-result-details dl > div {
