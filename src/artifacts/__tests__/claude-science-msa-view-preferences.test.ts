@@ -30,6 +30,7 @@ describe('Claude Science MSA view preferences', () => {
       showConservationHistogram: false,
       showOccupancy: true,
       showConsensus: false,
+      showSequenceLogo: true,
       showTranslation: true,
       showAminoAcidIndices: false,
     })).toEqual({
@@ -51,6 +52,7 @@ describe('Claude Science MSA view preferences', () => {
       showConservationHistogram: false,
       showOccupancy: true,
       showConsensus: false,
+      showSequenceLogo: true,
       showTranslation: true,
       showAminoAcidIndices: false,
     });
