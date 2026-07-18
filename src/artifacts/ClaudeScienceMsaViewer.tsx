@@ -99,6 +99,7 @@ const EMPTY_MSA_SEARCH_RESULT = { matches: [] as MsaMotifMatch[], truncated: fal
 
 type PairwiseRowStats = {
   ungappedLength: number;
+  comparableColumns: number;
   mismatches: number;
   identity: number;
 };
@@ -368,6 +369,7 @@ function pairwiseRowStats(aligned: string, template: string): PairwiseRowStats {
   }
   return {
     ungappedLength,
+    comparableColumns: comparable,
     mismatches,
     identity: comparable > 0 ? Math.round((matches / comparable) * 10_000) / 100 : 0,
   };
@@ -377,17 +379,20 @@ function formatIdentity(identity: number): string {
   return identity < 100 && identity >= 99.9 ? identity.toFixed(2) : identity.toFixed(1);
 }
 
-function mismatchOverviewBins(alignment: ArtifactAlignment, template: string, binCount: number): number[] {
+function mismatchOverviewBins(alignment: ArtifactAlignment, referenceRowId: string, binCount: number): number[] {
   const bins = Array.from({ length: binCount }, () => 0);
   if (alignment.alignmentLength === 0 || binCount === 0) return bins;
-  const templateCoverage = alignmentCoverage(template);
+  const template = alignment.rows.find((row) => row.id === referenceRowId) ?? alignment.rows[0];
+  if (!template) return bins;
+  const templateCoverage = alignmentCoverage(template.aligned);
   const rowCoverage = alignment.rows.map((row) => alignmentCoverage(row.aligned));
   for (let column = 0; column < alignment.alignmentLength; column += 1) {
     if (!coversColumn(templateCoverage, column)) continue;
-    const templateSymbol = template[column] ?? '-';
+    const templateSymbol = template.aligned[column] ?? '-';
     let comparable = 0;
     let mismatches = 0;
     for (const [rowIndex, row] of alignment.rows.entries()) {
+      if (row.id === template.id) continue;
       if (!coversColumn(rowCoverage[rowIndex], column)) continue;
       const symbol = row.aligned[column] ?? '-';
       if (symbol === '-' && templateSymbol === '-') continue;
@@ -452,6 +457,7 @@ function AlignmentMatrix({
   jumpRowId,
   searchMatches,
   activeSearchMatch,
+  searchActive,
   sortMode,
   visibility,
   resetToken,
@@ -473,6 +479,7 @@ function AlignmentMatrix({
   jumpRowId: string | null;
   searchMatches: readonly MsaMotifMatch[];
   activeSearchMatch: MsaMotifMatch | null;
+  searchActive: boolean;
   sortMode: RowSortMode;
   visibility: MsaMatrixVisibility;
   resetToken: number;
@@ -490,6 +497,7 @@ function AlignmentMatrix({
   const overviewDraggingRef = useRef(false);
   const [selection, setSelection] = useState<MatrixSelection | null>(null);
   const [hoverCell, setHoverCell] = useState<HoverCell | null>(null);
+  const [hoverPosition, setHoverPosition] = useState<{ x: number; y: number } | null>(null);
   const [contextMenu, setContextMenu] = useState<MatrixContextMenu | null>(null);
   // The context menu's on-screen position after clamping to the viewport (raw
   // pointer coordinates in `contextMenu` would otherwise overflow near edges).
@@ -599,7 +607,7 @@ function AlignmentMatrix({
   ])), [alignment.rows, allRowNames]);
   const overviewBinCount = Math.min(512, Math.max(1, alignment.alignmentLength));
   const overviewBins = useMemo(
-    () => mismatchOverviewBins(alignment, template?.aligned ?? '', overviewBinCount),
+    () => mismatchOverviewBins(alignment, template?.id ?? referenceRowId, overviewBinCount),
     [alignment, overviewBinCount, template],
   );
   const overviewPath = useMemo(() => overviewBins.map((density, index) => {
@@ -803,6 +811,7 @@ function AlignmentMatrix({
 
   const selectingRef = useRef(false);
   const rulerSelectingRef = useRef(false);
+  const hoverReadoutRef = useRef<HTMLDivElement>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
 
   // The selected rows' ids in displayed order — always explicit (even for a
@@ -1098,6 +1107,33 @@ function AlignmentMatrix({
   }, [sortMode, referenceRowId]);
 
   useEffect(() => {
+    if (!hoverCell) return undefined;
+    const onDismiss = () => setHoverCell(null);
+    window.addEventListener('resize', onDismiss);
+    window.addEventListener('scroll', onDismiss, true);
+    return () => {
+      window.removeEventListener('resize', onDismiss);
+      window.removeEventListener('scroll', onDismiss, true);
+    };
+  }, [hoverCell]);
+
+  useLayoutEffect(() => {
+    if (!hoverCell) { setHoverPosition(null); return; }
+    const x = hoverCell.clientX + 14;
+    const y = hoverCell.clientY + 16;
+    const el = hoverReadoutRef.current;
+    if (!el) { setHoverPosition({ x, y }); return; }
+    const rect = el.getBoundingClientRect();
+    const pad = 8;
+    const maxX = Math.max(pad, window.innerWidth - rect.width - pad);
+    const maxY = Math.max(pad, window.innerHeight - rect.height - pad);
+    setHoverPosition({
+      x: Math.min(Math.max(pad, x), maxX),
+      y: Math.min(Math.max(pad, y), maxY),
+    });
+  }, [hoverCell]);
+
+  useEffect(() => {
     if (!contextMenu) return undefined;
     const onPointerDown = (event: PointerEvent) => {
       if (contextMenuRef.current?.contains(event.target as Node)) return;
@@ -1144,11 +1180,11 @@ function AlignmentMatrix({
   useEffect(() => {
     if (!selection) return undefined;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !contextMenu) clearSelection();
+      if (event.key === 'Escape' && !event.defaultPrevented && !contextMenu && !searchActive) clearSelection();
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [clearSelection, contextMenu, selection]);
+  }, [clearSelection, contextMenu, searchActive, selection]);
 
   const frameStyle = {
     '--motif-cs-msa-label-width': `${labelWidth}px`,
@@ -1675,7 +1711,7 @@ function AlignmentMatrix({
         </div>
       ) : null}
       {hoverCell ? (
-        <div className="motif-cs-msa-hover-readout" style={{ left: hoverCell.clientX + 14, top: hoverCell.clientY + 16 }} aria-hidden="true">
+        <div ref={hoverReadoutRef} className="motif-cs-msa-hover-readout" style={{ left: hoverPosition?.x ?? hoverCell.clientX + 14, top: hoverPosition?.y ?? hoverCell.clientY + 16 }} aria-hidden="true">
           <b>{orderedRows[hoverCell.rowIndex]?.aligned[hoverCell.column] ?? '-'}</b>
           <span>col {hoverCell.column + 1}</span>
           <span>· {templateCoordinates[hoverCell.column] != null ? `tpl ${templateCoordinates[hoverCell.column]}` : 'tpl gap'}</span>
@@ -1803,6 +1839,8 @@ export function ClaudeScienceMsaViewer({
     if (!searchQuery) return undefined;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
         setSearchQuery('');
         setSearchIndex(-1);
       }
@@ -1890,10 +1928,22 @@ export function ClaudeScienceMsaViewer({
     : 0;
   const activeTemplate = activeAlignment?.rows.find((row) => row.id === referenceRowId)
     ?? activeAlignment?.rows[0];
-  const comparisonRows = activeAlignment?.rows.filter((row) => row.id !== activeTemplate?.id) ?? [];
-  const avgIdentity = activeTemplate && comparisonRows.length > 0
-    ? comparisonRows.reduce((sum, row) => sum + pairwiseRowStats(row.aligned, activeTemplate.aligned).identity, 0) / comparisonRows.length
-    : activeTemplate ? 100 : 0;
+  const comparisonStats = activeTemplate
+    ? (activeAlignment?.rows ?? [])
+      .filter((row) => row.id !== activeTemplate.id)
+      .map((row) => pairwiseRowStats(row.aligned, activeTemplate.aligned))
+      .filter((stats) => stats.comparableColumns > 0)
+    : [];
+  const hasComparableRows = comparisonStats.length > 0;
+  const avgIdentity = hasComparableRows
+    ? comparisonStats.reduce((sum, stats) => sum + stats.identity, 0) / comparisonStats.length
+    : null;
+  const differenceNavigationDisabled = !hasComparableRows || differences.length === 0;
+  const differenceNavigationLabel = !hasComparableRows
+    ? 'No comparable rows'
+    : differenceIndex >= 0
+      ? `Difference ${differenceIndex + 1} of ${differences.length}`
+      : `${differences.length} differences`;
   const textContent = activeAlignment ? formatAlignment(activeAlignment, textFormat) : '';
   const selectedExport = formatExtension(textFormat);
   const pickerLabels = useMemo(() => alignmentPickerLabels(alignments), [alignments]);
@@ -2240,7 +2290,7 @@ export function ClaudeScienceMsaViewer({
   };
 
   const jumpDifference = (direction: -1 | 1) => {
-    if (differences.length === 0) return;
+    if (differenceNavigationDisabled) return;
     const nextIndex = differenceIndex < 0
       ? direction > 0 ? 0 : differences.length - 1
       : (differenceIndex + direction + differences.length) % differences.length;
@@ -2806,7 +2856,7 @@ export function ClaudeScienceMsaViewer({
             <span><strong>{activeAlignment.rows.length}</strong> rows</span>
             <span><strong>{activeAlignment.alignmentLength.toLocaleString()}</strong> columns</span>
             <span><strong>{conservedPct}%</strong> conserved</span>
-            <span><strong>{formatIdentity(avgIdentity)}%</strong> avg to template</span>
+            <span><strong>{avgIdentity === null ? 'N/A' : `${formatIdentity(avgIdentity)}%`}</strong> avg to template</span>
             <span><strong>{differences.length.toLocaleString()}</strong> differences in overlap</span>
           </div>
 
@@ -2819,7 +2869,7 @@ export function ClaudeScienceMsaViewer({
                 </div>
                 <label className="motif-cs-msa-reference-picker">
                   <span>Compare against</span>
-                  <select value={referenceRowId} onChange={(event) => selectTemplate(event.target.value)}>
+                  <select value={referenceRowId} disabled={!hasComparableRows} onChange={(event) => selectTemplate(event.target.value)}>
                     {activeAlignment.rows.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}
                   </select>
                 </label>
@@ -2833,9 +2883,9 @@ export function ClaudeScienceMsaViewer({
                   </select>
                 </label>
                 <div className="motif-cs-msa-difference-nav" role="group" aria-label="Variable column navigation">
-                  <button className="motif-cs-mini-button" type="button" disabled={differences.length === 0} onClick={() => jumpDifference(-1)} aria-label="Previous variable column"><ChevronLeft size={13} /></button>
-                  <span>{differenceIndex >= 0 ? `Difference ${differenceIndex + 1} of ${differences.length}` : `${differences.length} differences`}</span>
-                  <button className="motif-cs-mini-button" type="button" disabled={differences.length === 0} onClick={() => jumpDifference(1)} aria-label="Next variable column"><ChevronRight size={13} /></button>
+                  <button className="motif-cs-mini-button" type="button" disabled={differenceNavigationDisabled} onClick={() => jumpDifference(-1)} aria-label="Previous variable column"><ChevronLeft size={13} /></button>
+                  <span>{differenceNavigationLabel}</span>
+                  <button className="motif-cs-mini-button" type="button" disabled={differenceNavigationDisabled} onClick={() => jumpDifference(1)} aria-label="Next variable column"><ChevronRight size={13} /></button>
                 </div>
                 <form
                   className="motif-cs-msa-search"
@@ -2945,6 +2995,7 @@ export function ClaudeScienceMsaViewer({
                 jumpRowId={jumpRowId}
                 searchMatches={searchMatches}
                 activeSearchMatch={activeSearchMatch}
+                searchActive={Boolean(searchQuery)}
                 sortMode={sortMode}
                 visibility={matrixVisibility}
                 resetToken={viewResetToken}
@@ -2958,14 +3009,14 @@ export function ClaudeScienceMsaViewer({
               <div className="motif-cs-msa-view-controls motif-cs-msa-trace-controls">
                 <label className="motif-cs-msa-reference-picker">
                   <span>Compare against</span>
-                  <select value={referenceRowId} onChange={(event) => selectTemplate(event.target.value)}>
+                  <select value={referenceRowId} disabled={!hasComparableRows} onChange={(event) => selectTemplate(event.target.value)}>
                     {activeAlignment.rows.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}
                   </select>
                 </label>
                 <div className="motif-cs-msa-difference-nav" role="group" aria-label="Variable column navigation">
-                  <button className="motif-cs-mini-button" type="button" disabled={differences.length === 0} onClick={() => jumpDifference(-1)} aria-label="Previous variable column"><ChevronLeft size={13} /></button>
-                  <span>{differenceIndex >= 0 ? `Difference ${differenceIndex + 1} of ${differences.length}` : `${differences.length} differences`}</span>
-                  <button className="motif-cs-mini-button" type="button" disabled={differences.length === 0} onClick={() => jumpDifference(1)} aria-label="Next variable column"><ChevronRight size={13} /></button>
+                  <button className="motif-cs-mini-button" type="button" disabled={differenceNavigationDisabled} onClick={() => jumpDifference(-1)} aria-label="Previous variable column"><ChevronLeft size={13} /></button>
+                  <span>{differenceNavigationLabel}</span>
+                  <button className="motif-cs-mini-button" type="button" disabled={differenceNavigationDisabled} onClick={() => jumpDifference(1)} aria-label="Next variable column"><ChevronRight size={13} /></button>
                 </div>
                 <span className="motif-cs-muted">Click a call, drag the position slider, or use arrow keys inside the trace.</span>
               </div>
