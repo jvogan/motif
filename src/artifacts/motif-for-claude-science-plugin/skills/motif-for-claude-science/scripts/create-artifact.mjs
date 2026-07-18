@@ -78,6 +78,9 @@ const SUPPORTED_INVENTORY_SCHEMAS = new Set([
   'motif.claude-science.inventory.v1',
   'motif.claude-science.inventory.v2',
 ]);
+const SUPPORTED_NCBI_TRANSLATION_TABLE_IDS = new Set([
+  1, 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14, 15, 16, 21, 22, 23, 24, 25, 26, 29, 30, 32, 33,
+]);
 
 function isPlainObject(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -859,7 +862,17 @@ export function validatePayload(payload) {
     if (record.topology !== undefined && !['linear', 'circular'].includes(record.topology)) {
       throw new Error(`${recordPath}.topology must be linear or circular`);
     }
-    validateRecordOverhangs(record, recordPath, normalizedRecordType(type, sequence));
+    const recordType = normalizedRecordType(type, sequence);
+    if (record.translationTableId !== undefined) {
+      if (!Number.isInteger(record.translationTableId)
+        || !SUPPORTED_NCBI_TRANSLATION_TABLE_IDS.has(record.translationTableId)) {
+        throw new Error(`${recordPath}.translationTableId must be a supported integer NCBI genetic-code id`);
+      }
+      if (recordType !== 'dna' && recordType !== 'rna') {
+        throw new Error(`${recordPath}.translationTableId is valid on DNA and RNA records only`);
+      }
+    }
+    validateRecordOverhangs(record, recordPath, recordType);
     for (const field of ['id', 'name', 'description', 'organism', 'source', 'group', 'project', 'folder', 'collection', 'dateAdded']) {
       validateOptionalString(
         record,

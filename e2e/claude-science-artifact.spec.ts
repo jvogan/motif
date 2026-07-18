@@ -1264,6 +1264,7 @@ test.describe('Claude Science artifact campaign', () => {
         molecule: 'dna',
         topology: 'linear',
         seq: 'ATGGAATTCTAA',
+        translationTableId: 11,
         annotations: [{ id: 'cds-a', name: 'CDS A', type: 'cds', start: 0, end: 12, strand: 1 }],
       }],
       alignments: [{
@@ -1355,7 +1356,18 @@ test.describe('Claude Science artifact campaign', () => {
     const roundTripped = JSON.parse(await exportPanel.getByLabel('Selected export preview').inputValue());
     expect(roundTripped.selectedRecordId).toBe('restored-record');
     expect(roundTripped.schema).toBe('motif.claude-science.inventory.v2');
-    expect(roundTripped.artifactState).toEqual(restoredDatabase.artifactState);
+    expect(roundTripped.records[0].translationTableId).toBe(11);
+    // Legacy pinned layers predate record-level codes and therefore migrate to
+    // their original Standard-code behavior instead of inheriting the record.
+    expect(roundTripped.artifactState).toEqual({
+      ...restoredDatabase.artifactState,
+      translationLayersByRecord: {
+        'restored-record': [{
+          ...restoredDatabase.artifactState.translationLayersByRecord['restored-record'][0],
+          translationTableId: 1,
+        }],
+      },
+    });
     expect(roundTripped.alignments).toEqual(restoredDatabase.alignments);
     expect(roundTripped.notes).toEqual(restoredDatabase.notes);
     expect(roundTripped.workflowResults).toEqual(restoredDatabase.workflowResults);

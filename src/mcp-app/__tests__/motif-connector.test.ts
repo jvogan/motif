@@ -249,6 +249,18 @@ describe('Motif MCP payload boundary', () => {
     const base = { id: 'record-a', molecule: 'dna' as const, sequence: 'ATGC' };
     expect(() => validateMotifPayload({ records: [{ ...base, overhang5: 'AATT', overhang5Type: '5prime', overhang3: '', overhang3Type: 'blunt' }] }))
       .not.toThrow();
+    expect(() => validateMotifPayload({ records: [{ ...base, translationTableId: 2 }] }))
+      .not.toThrow();
+    expect(() => validateMotifPayload({
+      records: [{ id: 'rna-record', molecule: 'rna', sequence: 'AUGUAG', translationTableId: 32 }],
+    })).not.toThrow();
+    expect(() => validateMotifPayload({ records: [{ ...base, translationTableId: '2' }] }))
+      .toThrow(/translationTableId must be a supported NCBI genetic-code id/i);
+    expect(() => validateMotifPayload({ records: [{ ...base, translationTableId: 27 }] }))
+      .toThrow(/translationTableId must be a supported NCBI genetic-code id/i);
+    expect(() => validateMotifPayload({
+      records: [{ ...base, molecule: 'protein', sequence: 'MPEPTIDE', translationTableId: 2 }],
+    })).toThrow(/translationTableId is only valid on DNA and RNA records/i);
 
     for (const record of [
       { ...base, dateAdded: 42 },

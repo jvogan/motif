@@ -60,6 +60,7 @@ export type DigestWorkflowSourceRecord = {
   sequence: string;
   type: SequenceType;
   topology: Topology;
+  translationTableId?: number;
   active: boolean;
   features?: readonly Feature[];
   description?: string;
@@ -125,6 +126,7 @@ export type DigestDerivedRecordProvenance = ArtifactJsonObject & {
   overhang5Type: 'blunt' | '5prime' | '3prime';
   overhang3Type: 'blunt' | '5prime' | '3prime';
   enzymes: string[];
+  translationTableId?: number;
 };
 
 /** Compatible with the artifact's private ArtifactRecordInput contract. */
@@ -134,6 +136,7 @@ export type DigestDerivedRecordInput = {
   description: string;
   molecule: 'dna';
   topology: 'linear';
+  translationTableId?: number;
   seq: string;
   length: number;
   /** Empty string is an explicit blunt end; omission is reserved for unknown geometry. */
@@ -615,6 +618,9 @@ export function materializeDigestWorkflow(
       overhang5Type: fragment.overhang5Type,
       overhang3Type: fragment.overhang3Type,
       enzymes: [...enzymeNames],
+      ...(input.sourceRecord.translationTableId === undefined
+        ? {}
+        : { translationTableId: input.sourceRecord.translationTableId }),
     };
     return {
       id: identity.id,
@@ -624,6 +630,9 @@ export function materializeDigestWorkflow(
         : `Restriction digest fragment ${index + 1} of ${input.sourceRecord.name}, generated with ${enzymeNames.join(', ')} in Motif.`,
       molecule: 'dna',
       topology: 'linear',
+      ...(input.sourceRecord.translationTableId === undefined
+        ? {}
+        : { translationTableId: input.sourceRecord.translationTableId }),
       seq: fragment.sequence,
       length: fragment.length,
       overhang5: fragment.overhang5,

@@ -40,6 +40,8 @@ backs it, so the list stays honest.
 ## Alignment and MSA
 - Bounded in-browser star alignment, aligned FASTA/CLUSTAL import,
   consensus/conservation, identity, and mismatch navigation.
+- Nucleotide-to-protein alignment overlays currently use the Standard genetic
+  code; record and feature genetic-code settings apply to the sequence workbench.
 - A no-shell helper runs MAFFT, MUSCLE, or Clustal Omega outside the browser and
   records engine, version, argv, and hashes.
 - Source: `src/artifacts/claude-science-msa.ts`, `src/artifacts/ClaudeScienceMsaViewer.tsx`, plugin `scripts/run-msa.mjs`.
@@ -51,9 +53,17 @@ backs it, so the list stays honest.
 - Source: `src/bio/abi-import.ts`, `src/artifacts/ClaudeScienceSangerTraceViewer.tsx`.
 
 ## Analysis
-- ORF detection, GC and composition, Tm, molecular weight, six-frame
-  translation with codon-table selection, literal motif search, and PAM-based
-  CRISPR guide candidates.
+- ORF detection, GC and composition, Tm, molecular weight, and range or coding-
+  feature translation with selectable supported NCBI genetic codes. A CDS/ORF
+  `/transl_table` overrides its record default; unsupported explicit codes are
+  preserved but block translation rather than silently falling back. Derived
+  proteins and pinned amino-acid tracks retain the effective code. Source edits
+  mark linked pinned tracks for review and block protein materialization until
+  their range translation is explicitly confirmed.
+- Literal motif search and PAM-based CRISPR guide candidates.
+- Single-parent nucleotide products retain their record code. Multi-parent
+  assembly products leave the code unset for explicit review instead of
+  inferring expression context from their source fragments.
 - Source: `src/bio/orf-detection.ts`, `src/bio/translate.ts`, `src/artifacts/motif-artifact.tsx`.
 
 ## Provenance, results, and checkpoints

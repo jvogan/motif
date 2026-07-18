@@ -69,11 +69,14 @@ function materialize(
 describe('Claude Science digest workflow materialization', () => {
   it('materializes a linear sticky-end digest as deterministic, validated child records', () => {
     const source = sourceRecord('AAAAGAATTCTTTT');
+    source.translationTableId = 11;
     const recipe = recipeFor(source, 'EcoRI');
 
     const result = materialize(source, recipe);
 
     expect(result.records).toHaveLength(2);
+    expect(result.records.every((record) => record.translationTableId === 11)).toBe(true);
+    expect(result.records.every((record) => record.provenance.translationTableId === 11)).toBe(true);
     expect(result.records.map((record) => ({
       id: record.id,
       name: record.name,

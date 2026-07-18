@@ -22,10 +22,10 @@ export const STANDARD_CODE: CodonTable = {
     AGT: 'S', AGC: 'S', AGA: 'R', AGG: 'R',
     GGT: 'G', GGC: 'G', GGA: 'G', GGG: 'G',
   },
-  // NCBI Table 1 lists only ATG as an initiator. CTG/TTG are Leucine codons
-  // here; they are alternative starts in Table 11 (Bacterial/Plastid) only.
+  // The initiator list is distinct from the residue map: NCBI Table 1 marks
+  // TTG and CTG as alternative starts even though both encode Leu internally.
   // See https://www.ncbi.nlm.nih.gov/Taxonomy/Utils/wprintgc.cgi?mode=t#SG1.
-  starts: ['ATG'],
+  starts: ['TTG', 'CTG', 'ATG'],
   stops: ['TAA', 'TAG', 'TGA'],
 };
 
@@ -200,6 +200,18 @@ export const ALT_FLATWORM_MITO_CODE: CodonTable = {
   stops: ['TAG'],
 };
 
+/** NCBI translation table 15 — Blepharisma Macronuclear. */
+export const BLEPHARISMA_MACRONUCLEAR_CODE: CodonTable = {
+  id: 15,
+  name: 'Blepharisma Macronuclear',
+  codons: {
+    ...STANDARD_CODE.codons,
+    TAG: 'Q',
+  },
+  starts: ['ATG'],
+  stops: ['TAA', 'TGA'],
+};
+
 /** NCBI translation table 16 — Chlorophycean Mitochondrial. */
 export const CHLOROPHYCEAN_MITO_CODE: CodonTable = {
   id: 16,
@@ -296,6 +308,18 @@ export const PERITRICH_NUCLEAR_CODE: CodonTable = {
   stops: ['TGA'],
 };
 
+/** NCBI translation table 32 — Balanophoraceae Plastid. */
+export const BALANOPHORACEAE_PLASTID_CODE: CodonTable = {
+  id: 32,
+  name: 'Balanophoraceae Plastid',
+  codons: {
+    ...STANDARD_CODE.codons,
+    TAG: 'W',
+  },
+  starts: ['TTG', 'CTG', 'ATT', 'ATC', 'ATA', 'ATG', 'GTG'],
+  stops: ['TAA', 'TGA'],
+};
+
 /** NCBI translation table 33 — Cephalodiscidae Mitochondrial UAA-Tyr. */
 export const CEPHALODISCIDAE_MITO_CODE: CodonTable = {
   id: 33,
@@ -322,6 +346,7 @@ export const NCBI_TRANSLATION_TABLES: Record<number, CodonTable> = {
   12: ALT_YEAST_NUCLEAR_CODE,
   13: ASCIDIAN_MITO_CODE,
   14: ALT_FLATWORM_MITO_CODE,
+  15: BLEPHARISMA_MACRONUCLEAR_CODE,
   16: CHLOROPHYCEAN_MITO_CODE,
   21: TREMATODE_MITO_CODE,
   22: SCENEDESMUS_MITO_CODE,
@@ -331,6 +356,7 @@ export const NCBI_TRANSLATION_TABLES: Record<number, CodonTable> = {
   26: PACHYSOLEN_NUCLEAR_CODE,
   29: MESODINIUM_NUCLEAR_CODE,
   30: PERITRICH_NUCLEAR_CODE,
+  32: BALANOPHORACEAE_PLASTID_CODE,
   33: CEPHALODISCIDAE_MITO_CODE,
 };
 

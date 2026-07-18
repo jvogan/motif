@@ -208,6 +208,45 @@ describe('multipart feature interchange exports', () => {
     expect(reparsed.metadata.codon_start).toBe('2');
   });
 
+  it('preserves explicit translation tables and emits a record default on coding features', () => {
+    const explicitUnsupported = record(joinedFeature({ transl_table: '27' }));
+    const explicitGenbank = toGenBankLite(explicitUnsupported, explicitUnsupported.topology);
+    expect(explicitGenbank).toContain('/transl_table=27');
+    expect(parseGenBank(explicitGenbank)[0].features[0].metadata.transl_table).toBe('27');
+
+    const inherited = { ...record(joinedFeature()), translationTableId: 2 };
+    expect(toGenBankLite(inherited, inherited.topology)).toContain('/transl_table=2');
+    expect(toGff3Lite(inherited)).toContain(';transl_table=2');
+
+    const overridden = { ...record(joinedFeature({ transl_table: 15 })), translationTableId: 2 };
+    const overriddenGenbank = toGenBankLite(overridden, overridden.topology);
+    expect(overriddenGenbank).toContain('/transl_table=15');
+    expect(overriddenGenbank).not.toContain('/transl_table=2');
+    expect(toGff3Lite(overridden)).toContain(';transl_table=15');
+  });
+
+  it('does not invent or export translation-table semantics for noncoding features', () => {
+    const noncodingFeature: Feature = {
+      ...joinedFeature({ transl_table: 15 }),
+      id: 'promoter',
+      name: 'promoter',
+      type: 'promoter',
+      subRanges: undefined,
+      start: 0,
+      end: 6,
+    };
+    const source = { ...record(noncodingFeature), translationTableId: 2 };
+
+    expect(toGenBankLite(source, source.topology)).not.toContain('/transl_table=');
+    expect(toGff3Lite(source)).not.toContain(';transl_table=');
+
+    const [headerLine, rowLine] = featuresToCsv([source]).split('\n');
+    const header = headerLine.split(',');
+    const row = rowLine.split(',');
+    expect(row[header.indexOf('feature_translation_table')]).toBe('');
+    expect(row[header.indexOf('effective_translation_table_id')]).toBe('');
+  });
+
   it('round-trips unchanged fuzzy bounds instead of silently making them exact', () => {
     const fuzzy = parseFeatures([
       '     CDS             <1..>3',

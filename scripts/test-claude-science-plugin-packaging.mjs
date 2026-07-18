@@ -296,6 +296,14 @@ check('payload helper applies canonical notes and durable-state validation', () 
     },
   };
   assert.equal(validatePayload(valid), valid);
+  const tableAware = { records: [{ id: 'mito', type: 'dna', sequence: 'ATGATAAGATGA', translationTableId: 2 }] };
+  assert.equal(validatePayload(tableAware), tableAware);
+  assert.throws(() => validatePayload({
+    records: [{ id: 'unsupported-code', type: 'dna', sequence: 'ATG', translationTableId: 27 }],
+  }), /supported integer NCBI genetic-code id/i);
+  assert.throws(() => validatePayload({
+    records: [{ id: 'protein-code', type: 'protein', sequence: 'MKW', translationTableId: 2 }],
+  }), /DNA and RNA records only/i);
   const sidecarOnly = { name: 'Workspace label', notes: [] };
   assert.equal(validatePayload(sidecarOnly), sidecarOnly);
 

@@ -28,6 +28,7 @@ export type PcrMaterializationSourceRecord = {
   sequence: string;
   type: 'dna';
   topology: Topology;
+  translationTableId?: number;
   active: boolean;
   features?: readonly Feature[];
   description?: string;
@@ -73,6 +74,7 @@ export type PcrDerivedRecordProvenance = ArtifactJsonObject & {
   primerDesignSha256: string;
   materializationKey: string;
   wrapsOrigin: boolean;
+  translationTableId?: number;
 };
 
 /** Compatible with the artifact's private ArtifactRecordInput contract. */
@@ -82,6 +84,7 @@ export type PcrDerivedRecordInput = {
   description: string;
   molecule: 'dna';
   topology: 'linear';
+  translationTableId?: number;
   seq: string;
   length: number;
   annotations: Feature[];
@@ -327,6 +330,7 @@ export function materializePcrAmplicon(input: {
     primerDesignSha256,
     materializationKey,
     wrapsOrigin: simulation.wrapsOrigin,
+    ...(sourceRecord.translationTableId === undefined ? {} : { translationTableId: sourceRecord.translationTableId }),
     forwardPrimer5to3: selection.pair.forward.fullSequence,
     reversePrimer5to3: selection.pair.reverse.fullSequence,
     forwardBindStart: simulation.forward.bindStart,
@@ -341,6 +345,7 @@ export function materializePcrAmplicon(input: {
     description: `Exact in-silico PCR product from ${sourceRecord.name}; includes both 5′ primer tails.`,
     molecule: 'dna',
     topology: 'linear',
+    ...(sourceRecord.translationTableId === undefined ? {} : { translationTableId: sourceRecord.translationTableId }),
     seq: simulation.product,
     length: simulation.product.length,
     annotations,

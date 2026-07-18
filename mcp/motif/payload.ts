@@ -1,5 +1,6 @@
 import { basename } from 'node:path';
 
+import { VALID_NCBI_TABLE_IDS } from '../../src/bio/codon-tables.js';
 import { parseFasta } from '../../src/bio/fasta-parser.js';
 import { parseGenBank } from '../../src/bio/genbank-parser.js';
 import type { Feature, SequenceType, Topology } from '../../src/bio/types.js';
@@ -46,6 +47,7 @@ const SUPPORTED_INVENTORY_SCHEMAS = new Set([
 ]);
 const UNSAFE_OBJECT_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 const SEQUENCE_TYPES = new Set<SequenceType>(['dna', 'rna', 'protein', 'misc', 'unknown', 'mixed']);
+const SUPPORTED_TRANSLATION_TABLE_IDS = new Set<number>(VALID_NCBI_TABLE_IDS);
 const NUCLEOTIDE_ALPHABET = /^[ACGTUNRYSWKMBDHV]+$/u;
 const DNA_ALPHABET = /^[ACGTNRYSWKMBDHV]+$/u;
 const RNA_ALPHABET = /^[ACGUNRYSWKMBDHV]+$/u;
@@ -459,6 +461,15 @@ function validateRecord(record: unknown, index: number): { length: number; sange
   boundedOptionalText(record.description, `${path}.description`, MOTIF_MCP_LIMITS.maxTextLength);
   const sequence = cleanSequence(record.seq ?? record.sequence, molecule, `${path}.sequence`);
   const recordType = normalizedRecordType(molecule, sequence);
+  if (record.translationTableId !== undefined) {
+    if (!Number.isInteger(record.translationTableId)
+      || !SUPPORTED_TRANSLATION_TABLE_IDS.has(Number(record.translationTableId))) {
+      throw new Error(`${path}.translationTableId must be a supported NCBI genetic-code id.`);
+    }
+    if (recordType !== 'dna' && recordType !== 'rna') {
+      throw new Error(`${path}.translationTableId is only valid on DNA and RNA records.`);
+    }
+  }
   validateRecordOverhangs(record, path, recordType);
   const features = [
     ...(Array.isArray(record.features) ? record.features : []),

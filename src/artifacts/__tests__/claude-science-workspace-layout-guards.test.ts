@@ -373,7 +373,28 @@ describe('Claude Science workspace layout guards', () => {
     expect(selectTranslationCodon).toContain('setLockedTranslateTarget({ recordId, target });');
     expect(selectTranslationCodon).not.toContain('target: translateTarget');
     expect(selectTranslationCodon).toContain('setSelectedTranslationLayerByRecord');
-    expect(artifactSource).toContain('onTranslationCodonSelect(start, end, track.strand);');
+    expect(artifactSource).toContain('onTranslationCodonSelect(\n                start,\n                end,\n                track.strand,\n                track.translationTableId,\n                track.featureId,\n                track.source,\n              );');
+  });
+
+  it('keeps genetic-code context synchronized across feature, pinned-track, and PCR flows', () => {
+    expect(artifactSource).toContain("const TRANSLATION_CODE_FEATURE_TYPES: ReadonlySet<FeatureType> = new Set<FeatureType>(['cds', 'orf']);");
+    expect(artifactSource).toContain('&& (feature.strand === 1 || feature.strand === -1)');
+    expect(artifactSource).toContain('track.frame,\n      track.completeCds,\n      track.label,');
+    expect(artifactSource).toContain("const translateTargetSemanticFeature = translateTarget.translationSource === 'layer'\n    ? null\n    : translateTargetFeature;");
+    expect(artifactSource).toContain('const resetCapturedFeatureSemantics = track.needsReview || translationAnchorChanged;');
+    expect(artifactSource).toContain('...(resetCapturedFeatureSemantics ? { completeCds: false, featureId: undefined } : {})');
+    expect(artifactSource).toContain("if (track.needsReview) {\n      showWorkbenchNotice('Review and update this pinned translation before creating a protein.', 'error');");
+    expect(artifactSource).toContain('const sourceRecord: PcrMaterializationSourceRecord = {\n      id: template.id,\n      name: template.name,\n      sequence: template.sequence,\n      type: \'dna\',\n      topology: template.topology,\n      translationTableId: template.translationTableId,');
+    expect(artifactSource).toContain("generatedBy: 'reverse_complement_selection'");
+    expect(artifactSource).toContain('metadata: selectedFeatureMetadata ?? {},');
+    expect(artifactSource).toContain('selectedFeatureMetadata.partial = true;');
+    expect(artifactSource).toContain('selectedFeatureMetadata.sourceMotifOriginalLocation = sourceOriginalLocation;');
+    expect(artifactSource).toContain('? { ...layer, translationTableId }');
+    expect(artifactSource).toContain("translationTableSource: translateTarget.translationSource === 'layer'");
+    expect(artifactSource).toContain("translationTablePolicy: singleParentRecord\n            ? 'single-parent-inherited'\n            : 'unset-for-multi-parent-product'");
+    expect(artifactSource).not.toContain("'shared-input-code'");
+    expect(artifactCss).toContain('grid-template-columns: repeat(2, minmax(0, 1fr));');
+    expect(artifactCss).not.toContain('grid-template-columns: minmax(170px, 1fr) minmax(120px, auto);');
   });
 
   it('resets translation controls for record, target, and natural strand changes', () => {

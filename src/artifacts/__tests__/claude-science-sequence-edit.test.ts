@@ -35,6 +35,7 @@ function translationLayer(range = { start: 6, end: 15 }): PortableTranslationTra
     end: range.end,
     strand: 1,
     frame: 0,
+    translationTableId: 1,
     source: 'layer',
   };
 }
