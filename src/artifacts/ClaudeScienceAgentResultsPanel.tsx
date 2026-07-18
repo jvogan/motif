@@ -18,6 +18,7 @@ import {
   ClaudeScienceFreshnessBadge,
   type ScientificFreshnessDisplayEvaluation,
 } from './ClaudeScienceFreshnessBadge';
+import { requestBrowserTextDownload } from './claude-science-download';
 import './claude-science-agent-results.css';
 
 export type ArtifactResultCopyHandler = (
@@ -204,17 +205,6 @@ async function copyTextInBrowser(content: string): Promise<void> {
     textarea.remove();
     activeElement?.focus({ preventScroll: true });
   }
-}
-
-function downloadTextInBrowser(filename: string, content: string, mediaType: string): void {
-  const url = URL.createObjectURL(new Blob([content], { type: `${mediaType};charset=utf-8` }));
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = filename;
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
 }
 
 function PagingControls({
@@ -815,11 +805,14 @@ export function ClaudeScienceAgentResultsPanel({
 
   const downloadText = async (filename: string, content: string, mediaType: string) => {
     try {
-      if (onDownloadText) await onDownloadText(filename, content, mediaType);
-      else downloadTextInBrowser(filename, content, mediaType);
-      setStatus(`${filename} downloaded.`);
+      if (onDownloadText) {
+        await onDownloadText(filename, content, mediaType);
+        setStatus(`Download requested for ${filename}. Verify the file before relying on it.`);
+        return;
+      }
+      setStatus(requestBrowserTextDownload(filename, content, mediaType).message);
     } catch {
-      setStatus(`${filename} could not be downloaded.`);
+      setStatus(`Download could not be requested for ${filename}.`);
     }
   };
 

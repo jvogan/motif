@@ -138,6 +138,14 @@ test.describe('Claude Science typed analysis result runtime', () => {
     expect(await page.evaluate(() => (globalThis as { __MOTIF_ANALYSIS_E2E_PWNED__?: boolean }).__MOTIF_ANALYSIS_E2E_PWNED__))
       .toBeUndefined();
 
+    const reportDownloadPromise = page.waitForEvent('download');
+    await resultRow.getByRole('button', { name: 'Download report Agent safety report' }).click();
+    const reportDownload = await reportDownloadPromise;
+    expect(reportDownload.suggestedFilename()).toBe('Agent safety report.txt');
+    await expect(resultsPanel.locator('.motif-cs-agent-results-live')).toContainText(
+      'Download requested for Agent safety report.txt. Verify the file before relying on it.',
+    );
+
     const settings = page.locator('details[data-rail-tool="settings"]');
     await settings.locator(':scope > summary').click();
     const downloadPromise = page.waitForEvent('download');

@@ -30,7 +30,7 @@ describe('browser download receipts', () => {
       status: 'requested',
       channel: 'browser',
       filename: 'workspace.json',
-      message: 'Download requested for workspace.json. Verify the file before relying on it as a checkpoint.',
+      message: 'Download requested for workspace.json. Verify the file before relying on it.',
     });
     expect(click).toHaveBeenCalledTimes(1);
     expect(document.querySelector('a[download="workspace.json"]')).toBeNull();

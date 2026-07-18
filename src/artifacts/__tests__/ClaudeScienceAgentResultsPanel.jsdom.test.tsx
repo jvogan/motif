@@ -211,6 +211,9 @@ describe('ClaudeScienceAgentResultsPanel', () => {
     expect(onCopyText).toHaveBeenCalledWith('Report Agent safety report', reportText);
     await user.click(within(row).getByRole('button', { name: 'Download report Agent safety report' }));
     expect(onDownloadText).toHaveBeenCalledWith('Agent safety report.md', reportText, 'text/markdown');
+    expect(screen.getByRole('status').textContent).toBe(
+      'Download requested for Agent safety report.md. Verify the file before relying on it.',
+    );
   });
 
   it('resolves a report body asset even when it is not repeated in generic assetIds', async () => {
@@ -318,9 +321,9 @@ describe('ClaudeScienceAgentResultsPanel', () => {
       expect(screen.getByRole('status').textContent).toBe('Report Agent safety report copied.');
     } finally {
       if (clipboardDescriptor) Object.defineProperty(navigator, 'clipboard', clipboardDescriptor);
-      else delete (navigator as Navigator & { clipboard?: Clipboard }).clipboard;
+      else Reflect.deleteProperty(navigator, 'clipboard');
       if (execCommandDescriptor) Object.defineProperty(document, 'execCommand', execCommandDescriptor);
-      else delete (document as Document & { execCommand?: typeof document.execCommand }).execCommand;
+      else Reflect.deleteProperty(document, 'execCommand');
     }
   });
 

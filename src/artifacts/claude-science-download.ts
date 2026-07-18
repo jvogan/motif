@@ -34,7 +34,7 @@ export function requestBrowserBlobDownload(
       status: 'requested',
       channel: 'browser',
       filename,
-      message: `Download requested for ${filename}. Verify the file before relying on it as a checkpoint.`,
+      message: `Download requested for ${filename}. Verify the file before relying on it.`,
     };
   } catch (cause) {
     return {
