@@ -104,7 +104,20 @@ function normalizeTranslationLayers(value, recordLengths) {
       if (frame === null) throw new Error(`${path}.frame must be 0, 1, or 2.`);
       const color = raw.color === void 0 ? void 0 : requiredString(raw.color, `${path}.color`, 32);
       if (color && !/^#[0-9a-f]{6}$/i.test(color)) throw new Error(`${path}.color must be a 6-digit hex color.`);
-      return { id: uniqueId(baseId, usedIds), label, start, end, strand, frame, source: "layer", color };
+      if (raw.needsReview !== void 0 && typeof raw.needsReview !== "boolean") {
+        throw new Error(`${path}.needsReview must be a boolean.`);
+      }
+      return {
+        id: uniqueId(baseId, usedIds),
+        label,
+        start,
+        end,
+        strand,
+        frame,
+        source: "layer",
+        color,
+        ...raw.needsReview ? { needsReview: true } : {}
+      };
     });
   }
   return result;

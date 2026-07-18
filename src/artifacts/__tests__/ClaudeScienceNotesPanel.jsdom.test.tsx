@@ -58,6 +58,7 @@ function props(overrides: Partial<ClaudeScienceNotesPanelProps> = {}): ClaudeSci
     selectedRange: { start: 9, end: 30 },
     onAdd: vi.fn(),
     onUpdate: vi.fn(),
+    onConfirmAnchor: vi.fn(),
     onRemove: vi.fn(),
     onReveal: vi.fn(),
     ...overrides,
@@ -177,5 +178,32 @@ describe('ClaudeScienceNotesPanel', () => {
     await user.click(within(note).getByRole('button', { name: 'Delete note' }));
     expect(onRemove).toHaveBeenCalledWith('record-note');
     expect(screen.getByRole('status').textContent).toContain('Note deleted.');
+  });
+
+  it('surfaces a remapped range for explicit scientific confirmation', async () => {
+    const user = userEvent.setup();
+    const onConfirmAnchor = vi.fn();
+    const reviewNote: ArtifactNote = {
+      ...notes[2],
+      provenance: {
+        source: 'motif-for-claude-science-artifact',
+        operation: 'sequence_edit_anchor_review',
+        metadata: {
+          motifRangeAnchor: {
+            status: 'review',
+            previousRange: { start: 9, end: 30 },
+            currentRange: { start: 9, end: 31 },
+            edit: { start: 20, deletedLength: 0, insertedLength: 1, oldLength: 100 },
+            editedAt: '2026-07-18T18:00:00.000Z',
+          },
+        },
+      },
+    };
+
+    render(<ClaudeScienceNotesPanel {...props({ notes: [reviewNote], onConfirmAnchor })} />);
+    expect(screen.getByText('Review range anchor.')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Confirm anchor' }));
+    expect(onConfirmAnchor).toHaveBeenCalledWith(reviewNote.id);
+    expect(screen.getByRole('status').textContent).toContain('Range anchor confirmed.');
   });
 });

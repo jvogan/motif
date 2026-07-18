@@ -16,7 +16,12 @@ function renderSettings(overrides: Partial<React.ComponentProps<typeof ClaudeSci
     workflowCount: 4,
     sessionOnly: true,
     hasUnsavedChanges: true,
-    onDownloadBackup: vi.fn(),
+    onDownloadBackup: vi.fn(() => ({
+      status: 'requested' as const,
+      channel: 'browser' as const,
+      filename: 'motif-workspace-backup.json',
+      message: 'Download requested. Verify the file before reloading.',
+    })),
     onRestoreFile: vi.fn(),
     onClearWorkspace: vi.fn(),
     onResetDisplayPreferences: vi.fn(),
@@ -27,7 +32,12 @@ function renderSettings(overrides: Partial<React.ComponentProps<typeof ClaudeSci
 
 describe('ClaudeScienceDataSettings', () => {
   it('presents explicit backup/restore controls, counts, and the session privacy boundary', async () => {
-    const onDownloadBackup = vi.fn();
+    const onDownloadBackup = vi.fn(() => ({
+      status: 'requested' as const,
+      channel: 'browser' as const,
+      filename: 'motif-workspace-backup.json',
+      message: 'Download requested. Verify the file before reloading.',
+    }));
     const onRestoreFile = vi.fn();
     const { getByTestId } = renderSettings({ onDownloadBackup, onRestoreFile });
 
@@ -40,7 +50,8 @@ describe('ClaudeScienceDataSettings', () => {
 
     fireEvent.click(getByTestId('download-workspace-backup'));
     await waitFor(() => expect(onDownloadBackup).toHaveBeenCalledTimes(1));
-    expect(getByTestId('data-recovery-status').textContent).toBe('Workspace backup downloaded.');
+    await waitFor(() => expect(getByTestId('data-recovery-status').textContent)
+      .toBe('Download requested. Verify the file before reloading.'));
 
     const backup = new File(['{"schema":"motif"}'], 'workspace.json', { type: 'application/json' });
     const input = getByTestId('restore-workspace-file') as HTMLInputElement;

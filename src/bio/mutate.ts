@@ -40,13 +40,14 @@ function shiftFeatures(
   editPos: number,
   delta: number,
 ): Feature[] {
+  const insertIndex = editPos + 1;
   return features.map((f) => {
     const newStart = f.start > editPos ? f.start + delta : f.start;
-    const newEnd = f.end > editPos ? f.end + delta : f.end;
+    const newEnd = f.end > insertIndex ? f.end + delta : f.end;
     const newSubRanges = f.subRanges?.map((range) => ({
       ...range,
       start: range.start > editPos ? range.start + delta : range.start,
-      end: range.end > editPos ? range.end + delta : range.end,
+      end: range.end > insertIndex ? range.end + delta : range.end,
     }));
     if (newSubRanges && newSubRanges.length > 0) {
       return {
@@ -140,7 +141,8 @@ export function applySubstitution(
  * Insert `bases` AFTER position `pos`.
  *
  * - Shifts all existing scars at positions > pos by +bases.length.
- * - Shifts features: start > pos gets shifted, end > pos gets shifted.
+ * - Uses half-open feature boundaries: insertion at start shifts the feature,
+ *   insertion strictly inside extends it, and insertion at end leaves it unchanged.
  * - Adds an insertion scar on each newly inserted base position.
  *
  * When `pos` is -1 the insertion happens at the very beginning of the

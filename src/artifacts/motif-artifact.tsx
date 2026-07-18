@@ -166,7 +166,21 @@ import {
   parseArtifactDatabaseJson,
   parseArtifactRecordJson,
   type ArtifactDurableState,
+  type PortableTranslationTrack,
 } from './claude-science-session';
+import {
+  applySequenceEditToAnchors,
+  confirmNoteRangeAnchor,
+  restoreNoteAnchors,
+  snapshotNoteAnchors,
+  type NoteAnchorSnapshot,
+  type SequenceCoordinateEdit,
+} from './claude-science-sequence-edit';
+import {
+  requestBrowserBlobDownload,
+  requestBrowserTextDownload,
+  type BrowserDownloadReceipt,
+} from './claude-science-download';
 import './motif-artifact.css';
 
 const MOTIF_ARTIFACT_VERSION = '0.2.1';
@@ -372,6 +386,7 @@ type PreparedArtifactDatabaseRestore = ReturnType<typeof prepareArtifactDatabase
 type PendingArtifactDatabaseRestore = {
   prepared: PreparedArtifactDatabaseRestore;
   sourceLabel: string;
+  durability: 'durable-checkpoint' | 'session-hydration';
   returnFocus: HTMLElement | null;
 };
 
@@ -433,6 +448,7 @@ type MotifArtifactErrorCode =
   | 'MOTIF_INPUT_LIMIT_EXCEEDED'
   | 'MOTIF_INVALID_ALIGNMENT_INPUT'
   | 'MOTIF_INVALID_WORKSPACE_INPUT'
+  | 'MOTIF_UNSAVED_WORKSPACE'
   | 'MOTIF_INVALID_PRELOAD';
 type MotifArtifactErrorDetails = Record<string, unknown>;
 
@@ -908,7 +924,10 @@ declare global {
     motifGetAnalysisWorkspace?: () => { analysisResults: ArtifactAnalysisResult[]; analysisAssets: ArtifactAnalysisAsset[] };
     motifRemoveAnalysisResults?: (resultIdOrIds: string | string[]) => number;
     motifGetWorkspace?: () => Record<string, unknown>;
-    motifReplaceWorkspace?: (payload: ArtifactPayload) => number;
+    motifReplaceWorkspace?: (
+      payload: ArtifactPayload,
+      options?: { discardUnsavedChanges?: boolean },
+    ) => number;
     motifRemoveRecords?: (recordIdOrIds: string | string[]) => number;
     motifClearWorkspace?: () => void;
     motifDescribe?: () => RecordSummary | null;
@@ -970,7 +989,7 @@ const MOTIF_HELP_API: Record<string, string> = {
   'motifGetAnalysisWorkspace()': 'Return defensive snapshots of typed analysis results and their inert assets.',
   'motifRemoveAnalysisResults(resultIdOrIds)': 'Remove analysis results only when no other result depends on them; returns number removed.',
   'motifGetWorkspace()': 'Return a complete defensive workspace snapshot suitable for motifReplaceWorkspace or JSON backup.',
-  'motifReplaceWorkspace(payload)': 'Validate and replace records, alignments, notes, workflow results, and durable state atomically.',
+  'motifReplaceWorkspace(payload, options?)': 'Validate and replace records, alignments, notes, results, and durable state atomically as a session baseline. A dirty workspace is preserved unless options.discardUnsavedChanges is explicitly true.',
   'motifRemoveRecords(recordIdOrIds)': 'Remove records and dependent notes/workflow results transactionally; returns number removed.',
   'motifClearWorkspace()': 'Clear all workspace data while retaining display preferences.',
   'motifDescribe()': 'Return a text summary of the active record + current selection.',
@@ -1003,7 +1022,7 @@ const MOTIF_HELP: MotifHelp = {
     notes: 'Save workspace, record, or selected-range notes in the Tools pane or with motifAddNotes(...). Markdown is stored as inert text.',
     workflowHistory: 'Store digest, gel, Golden Gate, and ligation result summaries with explicit input/output record ids and engine provenance.',
     analysisResults: 'Store typed primer, PCR, assembly, construct-verification, BLAST, structure, report, or table results. The UI renders supplied content as inert text/data only.',
-    backupRecovery: 'motifGetWorkspace() and Settings → Data & recovery produce a complete v2 JSON snapshot; motifReplaceWorkspace(...) restores it transactionally.',
+    backupRecovery: 'motifGetWorkspace() and Settings → Data & recovery produce a complete v2 JSON snapshot. A browser download is only a request until the file is verified; restoring a selected JSON file establishes a durable checkpoint. motifReplaceWorkspace(...) hydrates a session baseline transactionally.',
     exportInventory: 'The export panel can produce database JSON, CSV, FASTA, multi-FASTA, basic GenBank, HTML/Markdown report, PDF via print, and ZIP. Workspace data lives in this artifact session, so export JSON or ZIP before reloading.',
   },
   agentRules: [
@@ -4192,7 +4211,37 @@ type EditSnapshot = {
   features: readonly Feature[];
   sites: readonly RestrictionSite[];
   sangerTrace?: SangerTraceData;
+  noteAnchors: NoteAnchorSnapshot[];
+  hadTranslationLayerEntry: boolean;
+  translationLayers: PortableTranslationTrack[];
+  selectedTranslationLayerId: string | null;
 };
+
+type EditTransaction = {
+  before: EditSnapshot;
+  after: EditSnapshot;
+};
+
+function portableTranslationLayersByRecord(
+  value: Readonly<Record<string, readonly InlineTranslationTrack[]>>,
+): Record<string, PortableTranslationTrack[]> {
+  return Object.fromEntries(
+    Object.entries(value).map(([id, layers]) => [
+      id,
+      layers.map((layer) => ({
+        id: layer.id,
+        label: layer.label,
+        start: layer.start,
+        end: layer.end,
+        strand: layer.strand,
+        frame: layer.frame,
+        source: 'layer' as const,
+        color: layer.color,
+        ...(layer.needsReview ? { needsReview: true } : {}),
+      })),
+    ]),
+  );
+}
 
 // Accepted keystrokes for base editing: canonical bases + IUPAC ambiguity codes.
 const DNA_EDIT_ALPHABET = 'ACGTRYSWKMBDHVN';
@@ -4410,21 +4459,7 @@ function App() {
   const activeThemeLabel = THEME_OPTIONS.find((option) => option.id === theme)?.label ?? 'Light';
   const artifactState = useMemo<ArtifactDurableState>(() => ({
     customEnzymes: customEnzymes.map((enzyme) => ({ ...enzyme })),
-    translationLayersByRecord: Object.fromEntries(
-      Object.entries(translationLayersByRecord).map(([id, layers]) => [
-        id,
-        layers.map((layer) => ({
-          id: layer.id,
-          label: layer.label,
-          start: layer.start,
-          end: layer.end,
-          strand: layer.strand,
-          frame: layer.frame,
-          source: 'layer' as const,
-          color: layer.color,
-        })),
-      ]),
-    ),
+    translationLayersByRecord: portableTranslationLayersByRecord(translationLayersByRecord),
     enzymeSourcesByRecord: Object.fromEntries(
       Object.entries(enzymeSourcesByRecord).map(([id, sources]) => [id, [...sources]]),
     ),
@@ -4449,13 +4484,32 @@ function App() {
   useEffect(() => {
     artifactStateRef.current = artifactState;
   }, [artifactState]);
+  const updateTranslationLayers = useCallback((
+    updater: (current: Record<string, InlineTranslationTrack[]>) => Record<string, InlineTranslationTrack[]>,
+  ) => {
+    setTranslationLayersByRecord((current) => {
+      const next = updater(current);
+      if (next === current) return current;
+      artifactStateRef.current = {
+        ...artifactStateRef.current,
+        translationLayersByRecord: portableTranslationLayersByRecord(next),
+      };
+      return next;
+    });
+  }, []);
   const currentDurableFingerprint = useMemo(
     () => artifactDurableFingerprint(payload, artifactState),
     [artifactState, payload],
   );
   const [savedDurableFingerprint, setSavedDurableFingerprint] = useState(() => currentDurableFingerprint);
+  const savedDurableFingerprintRef = useRef(savedDurableFingerprint);
   const [hasSessionCheckpoint, setHasSessionCheckpoint] = useState(false);
   const hasUnsavedChanges = currentDurableFingerprint !== savedDurableFingerprint;
+  const establishSessionBaseline = useCallback((fingerprint: string, hasDurableCheckpoint: boolean) => {
+    savedDurableFingerprintRef.current = fingerprint;
+    setSavedDurableFingerprint(fingerprint);
+    setHasSessionCheckpoint(hasDurableCheckpoint);
+  }, []);
   const showWorkbenchNotice = useCallback((message: string, tone: WorkbenchNotice['tone'] = 'status') => {
     if (workbenchNoticeTimerRef.current !== null) window.clearTimeout(workbenchNoticeTimerRef.current);
     setWorkbenchNotice({ message, tone });
@@ -4752,6 +4806,12 @@ function App() {
   const selectRecord = useCallback((nextRecordId: string) => {
     rememberActiveSequenceScroll();
     setSelection(null);
+    const current = payloadRef.current;
+    if (current.selectedRecordId !== nextRecordId) {
+      const nextPayload = { ...current, selectedRecordId: nextRecordId };
+      payloadRef.current = nextPayload;
+      setPayload(nextPayload);
+    }
     selectedRecordIdRef.current = nextRecordId;
     setSelectedRecordId(nextRecordId);
   }, [rememberActiveSequenceScroll]);
@@ -4911,7 +4971,7 @@ function App() {
       : { full: 'no active record', compact: 'empty' };
   const [caret, setCaret] = useState<number | null>(null);
   const [insertMode, setInsertMode] = useState(false);
-  const editHistoryRef = useRef<Record<string, { undo: EditSnapshot[]; redo: EditSnapshot[] }>>({});
+  const editHistoryRef = useRef<Record<string, { undo: EditTransaction[]; redo: EditTransaction[] }>>({});
   const [, bumpEditHistory] = useReducer((tick: number) => tick + 1, 0);
   const canUndo = (editHistoryRef.current[recordId]?.undo.length ?? 0) > 0;
   const canRedo = (editHistoryRef.current[recordId]?.redo.length ?? 0) > 0;
@@ -4994,6 +5054,7 @@ function App() {
   const applyArtifactDatabaseRestore = useCallback((
     restored: PreparedArtifactDatabaseRestore,
     sourceLabel = 'Database JSON',
+    durability: 'durable-checkpoint' | 'session-hydration' = 'durable-checkpoint',
   ): number => {
     const restoredSelectedRecord = restored.payload.records.find(
       (record) => record.id === restored.payload.selectedRecordId,
@@ -5034,8 +5095,10 @@ function App() {
       restored.payload.selectedRecordId,
       restoredSources,
     );
-    setSavedDurableFingerprint(artifactDurableFingerprint(restored.payload, restored.artifactState));
-    setHasSessionCheckpoint(true);
+    establishSessionBaseline(
+      artifactDurableFingerprint(restored.payload, restored.artifactState),
+      durability === 'durable-checkpoint',
+    );
     const count = restored.payload.records.length;
     setDropState({
       active: true,
@@ -5043,12 +5106,13 @@ function App() {
     });
     window.setTimeout(() => setDropState({ active: false, message: '' }), 2200);
     return count;
-  }, [describeRuntimePayloadSnapshot, rememberActiveSequenceScroll, resetRecordTransientState, resetWorkflowWindowState]);
+  }, [describeRuntimePayloadSnapshot, establishSessionBaseline, rememberActiveSequenceScroll, resetRecordTransientState, resetWorkflowWindowState]);
 
   const requestArtifactDatabaseRestore = useCallback((
     rawDatabase: Record<string, unknown>,
     sourceLabel = 'Database JSON',
     requestedReturnFocus: HTMLElement | null = null,
+    durability: 'durable-checkpoint' | 'session-hydration' = 'session-hydration',
   ): number => {
     // Fully validate and normalize both halves before showing the destructive
     // confirmation. Confirming therefore performs one prepared, transactional
@@ -5068,6 +5132,7 @@ function App() {
     setPendingDatabaseRestore({
       prepared,
       sourceLabel,
+      durability,
       returnFocus,
     });
     return prepared.payload.records.length;
@@ -5096,9 +5161,9 @@ function App() {
 
   const confirmArtifactDatabaseRestore = useCallback(() => {
     if (!pendingDatabaseRestore) return;
-    const { prepared, sourceLabel } = pendingDatabaseRestore;
+    const { prepared, sourceLabel, durability } = pendingDatabaseRestore;
     setPendingDatabaseRestore(null);
-    applyArtifactDatabaseRestore(prepared, sourceLabel);
+    applyArtifactDatabaseRestore(prepared, sourceLabel, durability);
     bumpConfirmedDatabaseRestoreCount();
     window.requestAnimationFrame(() => {
       document.querySelector<HTMLButtonElement>('.motif-cs-record-tab[data-active="true"]')?.focus({ preventScroll: true });
@@ -5204,11 +5269,6 @@ function App() {
     window.addEventListener('beforeunload', warnBeforeReload);
     return () => window.removeEventListener('beforeunload', warnBeforeReload);
   }, [hasUnsavedChanges]);
-
-  const markSessionSaved = useCallback(() => {
-    setSavedDurableFingerprint(currentDurableFingerprint);
-    setHasSessionCheckpoint(true);
-  }, [currentDurableFingerprint]);
 
   useEffect(() => {
     selectedRecordIdRef.current = selectedRecordId;
@@ -5601,13 +5661,38 @@ function App() {
       }
     };
     window.motifGetWorkspace = () => createArtifactDatabaseSnapshot(payloadRef.current, artifactStateRef.current);
-    window.motifReplaceWorkspace = (rawWorkspace) => {
+    window.motifReplaceWorkspace = (rawWorkspace, options) => {
       try {
+        const prepared = prepareArtifactDatabaseRestore(
+          rawWorkspace as Record<string, unknown>,
+          selectedRecordIdRef.current,
+        );
+        const currentFingerprint = artifactDurableFingerprint(payloadRef.current, artifactStateRef.current);
+        const incomingFingerprint = artifactDurableFingerprint(prepared.payload, prepared.artifactState);
+        if (incomingFingerprint === currentFingerprint) {
+          const requestedRecordId = prepared.payload.selectedRecordId;
+          if (requestedRecordId !== selectedRecordIdRef.current) {
+            selectRecord(requestedRecordId);
+          }
+          return prepared.payload.records.length;
+        }
+        if (
+          currentFingerprint !== savedDurableFingerprintRef.current
+          && options?.discardUnsavedChanges !== true
+        ) {
+          throw new MotifArtifactRuntimeError(
+            'MOTIF_UNSAVED_WORKSPACE',
+            'The current workspace has unsaved changes and was preserved. Export and verify a backup, or retry with { discardUnsavedChanges: true } for an intentional replacement.',
+            { operation: 'motifReplaceWorkspace', mutated: false, hasUnsavedChanges: true },
+          );
+        }
         return applyArtifactDatabaseRestore(
-          prepareArtifactDatabaseRestore(rawWorkspace as Record<string, unknown>, selectedRecordIdRef.current),
+          prepared,
           'Runtime workspace',
+          'session-hydration',
         );
       } catch (cause) {
+        if (cause instanceof MotifArtifactRuntimeError) throw cause;
         throw new MotifArtifactRuntimeError(
           'MOTIF_INVALID_WORKSPACE_INPUT',
           cause instanceof Error ? cause.message : 'The workspace payload is invalid.',
@@ -5644,7 +5729,7 @@ function App() {
       delete window.motifClearWorkspace;
       delete window.motifHelp;
     };
-  }, [applyArtifactDatabaseRestore, clearWorkspaceData, describeRuntimePayloadSnapshot, rememberActiveSequenceScroll, removeRecords, resetWorkflowWindowState, resetWorkspaceViewState]);
+  }, [applyArtifactDatabaseRestore, clearWorkspaceData, describeRuntimePayloadSnapshot, rememberActiveSequenceScroll, removeRecords, resetWorkflowWindowState, resetWorkspaceViewState, selectRecord]);
 
   useEffect(() => {
     setSelection((current) => {
@@ -6321,70 +6406,236 @@ function App() {
 
   // ── Base editing ──────────────────────────────────────────────────────────
   // Mutations run through the real Motif mutate engine (feature/subRange
-  // coordinates shift automatically). Each edit snapshots the record for undo,
-  // and clears pre-baked sites so the live restriction scan recomputes.
-  const commitEdit = useCallback((result: MutationResult, caretAfter: number) => {
+  // coordinates shift automatically). One transaction also remaps range notes
+  // and pinned translations before either React state is committed.
+  const captureEditSnapshot = useCallback((): EditSnapshot | null => {
+    const current = payloadRef.current;
+    const currentRecord = current.records.find((record) => record.id === recordId);
+    if (!currentRecord) return null;
+    return {
+      sequence: currentRecord.sequence,
+      features: currentRecord.features.map((feature) => ({ ...feature })),
+      sites: currentRecord.sites.map((site) => ({ ...site })),
+      sangerTrace: currentRecord.sangerTrace,
+      noteAnchors: snapshotNoteAnchors(current.notes, recordId),
+      hadTranslationLayerEntry: Object.prototype.hasOwnProperty.call(
+        artifactStateRef.current.translationLayersByRecord,
+        recordId,
+      ),
+      translationLayers: (artifactStateRef.current.translationLayersByRecord[recordId] ?? [])
+        .map((layer) => ({ ...layer })),
+      selectedTranslationLayerId: selectedTranslationLayerByRecord[recordId] ?? null,
+    };
+  }, [recordId, selectedTranslationLayerByRecord]);
+
+  const commitEdit = useCallback((
+    result: MutationResult,
+    caretAfter: number,
+    edit: SequenceCoordinateEdit,
+  ) => {
     if (result.raw.length > MOTIF_MAX_RECORD_LENGTH) {
       showWorkbenchNotice(`Records are limited to ${MOTIF_MAX_RECORD_LENGTH.toLocaleString()} residues. Delete bases or split the record before inserting more.`, 'error');
       return;
     }
+    const current = payloadRef.current;
+    const recordIndex = current.records.findIndex((record) => record.id === recordId);
+    const currentRecord = current.records[recordIndex];
+    if (!currentRecord) return;
+    if (
+      edit.oldLength !== currentRecord.sequence.length
+      || result.raw.length !== edit.oldLength - edit.deletedLength + edit.insertedLength
+    ) {
+      showWorkbenchNotice('The edit was rejected because its coordinate transaction did not match the active sequence.', 'error');
+      return;
+    }
+
+    const before = captureEditSnapshot();
+    if (!before) return;
+    const editedAt = new Date().toISOString();
+    const anchors = applySequenceEditToAnchors({
+      recordId,
+      notes: current.notes,
+      translationLayers: artifactStateRef.current.translationLayersByRecord[recordId] ?? [],
+      edit,
+      editedAt,
+    });
+    const records = [...current.records];
+    records[recordIndex] = {
+      ...currentRecord,
+      sequence: result.raw,
+      features: result.features,
+      sites: [],
+      sangerTrace: undefined,
+    };
+    const recordLengths = new Map(records.map((record) => [record.id, record.sequence.length]));
+    const collections = normalizeArtifactWorkspaceCollections({
+      notes: anchors.notes,
+      workflowResults: current.workflowResults,
+    }, {
+      recordLengths,
+      allowMissingWorkflowOutputRecords: true,
+    });
+    const nextPayload: LoadedPayload = {
+      ...current,
+      records,
+      notes: collections.notes,
+      workflowResults: collections.workflowResults,
+    };
+    const nextTranslationLayersByRecord = { ...artifactStateRef.current.translationLayersByRecord };
+    if (before.hadTranslationLayerEntry || anchors.translationLayers.length > 0) {
+      nextTranslationLayersByRecord[recordId] = anchors.translationLayers;
+    } else {
+      delete nextTranslationLayersByRecord[recordId];
+    }
+    const nextArtifactState = normalizeArtifactDurableState({
+      ...artifactStateRef.current,
+      translationLayersByRecord: nextTranslationLayersByRecord,
+    }, recordLengths);
+
+    // Validate the complete checkpoint shape before publishing either half of
+    // the transaction. This prevents recovery effects from observing sidecars
+    // against a sequence length they no longer satisfy.
+    createArtifactDatabaseSnapshot(nextPayload, nextArtifactState);
+    const after: EditSnapshot = {
+      sequence: result.raw,
+      features: result.features.map((feature) => ({ ...feature })),
+      sites: [],
+      sangerTrace: undefined,
+      noteAnchors: snapshotNoteAnchors(nextPayload.notes, recordId),
+      hadTranslationLayerEntry: Object.prototype.hasOwnProperty.call(
+        nextArtifactState.translationLayersByRecord,
+        recordId,
+      ),
+      translationLayers: anchors.translationLayers.map((layer) => ({ ...layer })),
+      selectedTranslationLayerId: before.selectedTranslationLayerId
+        && anchors.translationLayers.some((layer) => layer.id === before.selectedTranslationLayerId)
+        ? before.selectedTranslationLayerId
+        : null,
+    };
     const store = editHistoryRef.current[recordId] ?? { undo: [], redo: [] };
     editHistoryRef.current[recordId] = {
-      undo: [...store.undo, { sequence, features, sites: vector.sites, sangerTrace: vector.sangerTrace }].slice(-200),
+      undo: [...store.undo, { before, after }].slice(-200),
       redo: [],
     };
-    setPayload((current) => {
-      const idx = current.records.findIndex((r) => r.id === recordId);
-      if (idx < 0) return current;
-      const records = [...current.records];
-      records[idx] = { ...records[idx], sequence: result.raw, features: result.features, sites: [], sangerTrace: undefined };
-      return { ...current, records };
+    payloadRef.current = nextPayload;
+    artifactStateRef.current = nextArtifactState;
+    setPayload(nextPayload);
+    setTranslationLayersByRecord(nextArtifactState.translationLayersByRecord);
+    const notices = [
+      ...(currentRecord.sangerTrace
+        ? ['The edited sequence is no longer linked to its original chromatogram. Undo restores the trace.']
+        : []),
+      ...(anchors.detachedNoteCount > 0
+        ? [`${anchors.detachedNoteCount} fully deleted range note${anchors.detachedNoteCount === 1 ? ' was' : 's were'} retained at record level for review.`]
+        : anchors.adjustedNoteCount > 0
+          ? [`${anchors.adjustedNoteCount} range note anchor${anchors.adjustedNoteCount === 1 ? '' : 's'} updated.`]
+          : []),
+      ...(anchors.removedLayerCount > 0
+        ? [`${anchors.removedLayerCount} collapsed translation layer${anchors.removedLayerCount === 1 ? ' was' : 's were'} removed; Undo restores it.`]
+        : anchors.adjustedLayerCount > 0
+          ? [`${anchors.adjustedLayerCount} translation anchor${anchors.adjustedLayerCount === 1 ? '' : 's'} updated.`]
+          : []),
+    ];
+    if (notices.length > 0) showWorkbenchNotice(notices.join(' '), 'status');
+    setSelectedTranslationLayerByRecord((selected) => {
+      const selectedId = selected[recordId];
+      if (!selectedId || anchors.translationLayers.some((layer) => layer.id === selectedId)) return selected;
+      return { ...selected, [recordId]: null };
     });
-    if (vector.sangerTrace) {
-      showWorkbenchNotice('The edited sequence is no longer linked to its original chromatogram. Undo restores the trace.', 'status');
-    }
     setLockedTranslateTarget(null);
     setSelection(null);
     setMapRangesByRecord((cur) => (cur[recordId] ? { ...cur, [recordId]: null } : cur));
     setCaret(clamp(caretAfter, 0, result.raw.length));
     bumpEditHistory();
-  }, [recordId, sequence, features, showWorkbenchNotice, vector.sangerTrace, vector.sites]);
+  }, [captureEditSnapshot, recordId, showWorkbenchNotice]);
 
-  const restoreSnapshot = useCallback((snap: EditSnapshot) => {
-    setPayload((current) => {
-      const idx = current.records.findIndex((r) => r.id === recordId);
-      if (idx < 0) return current;
-      const records = [...current.records];
-      records[idx] = {
-        ...records[idx],
-        sequence: snap.sequence,
-        features: snap.features as Feature[],
-        sites: snap.sites as RestrictionSite[],
-        sangerTrace: snap.sangerTrace,
-      };
-      return { ...current, records };
+  const restoreSnapshot = useCallback((snap: EditSnapshot, expectedCurrent: EditSnapshot) => {
+    const current = payloadRef.current;
+    const recordIndex = current.records.findIndex((record) => record.id === recordId);
+    if (recordIndex < 0) return;
+    const records = [...current.records];
+    records[recordIndex] = {
+      ...records[recordIndex],
+      sequence: snap.sequence,
+      features: snap.features as Feature[],
+      sites: snap.sites as RestrictionSite[],
+      sangerTrace: snap.sangerTrace,
+    };
+    const recordLengths = new Map(records.map((record) => [record.id, record.sequence.length]));
+    const restoredNotes = restoreNoteAnchors(
+      current.notes,
+      recordId,
+      snap.noteAnchors,
+      expectedCurrent.noteAnchors,
+    );
+    const collections = normalizeArtifactWorkspaceCollections({
+      notes: restoredNotes,
+      workflowResults: current.workflowResults,
+    }, {
+      recordLengths,
+      allowMissingWorkflowOutputRecords: true,
     });
+    const nextPayload: LoadedPayload = {
+      ...current,
+      records,
+      notes: collections.notes,
+      workflowResults: collections.workflowResults,
+    };
+    const restoredTranslationLayersByRecord = {
+      ...artifactStateRef.current.translationLayersByRecord,
+    };
+    if (snap.hadTranslationLayerEntry || snap.translationLayers.length > 0) {
+      restoredTranslationLayersByRecord[recordId] = snap.translationLayers;
+    } else {
+      delete restoredTranslationLayersByRecord[recordId];
+    }
+    const nextArtifactState = normalizeArtifactDurableState({
+      ...artifactStateRef.current,
+      translationLayersByRecord: restoredTranslationLayersByRecord,
+    }, recordLengths);
+    createArtifactDatabaseSnapshot(nextPayload, nextArtifactState);
+    payloadRef.current = nextPayload;
+    artifactStateRef.current = nextArtifactState;
+    setPayload(nextPayload);
+    setTranslationLayersByRecord(nextArtifactState.translationLayersByRecord);
+    setSelectedTranslationLayerByRecord((selected) => ({
+      ...selected,
+      [recordId]: snap.selectedTranslationLayerId
+        && snap.translationLayers.some((layer) => layer.id === snap.selectedTranslationLayerId)
+        ? snap.selectedTranslationLayerId
+        : null,
+    }));
   }, [recordId]);
 
   const undoEdit = useCallback(() => {
     const store = editHistoryRef.current[recordId];
     if (!store || store.undo.length === 0) return;
-    const prev = store.undo[store.undo.length - 1];
-    editHistoryRef.current[recordId] = { undo: store.undo.slice(0, -1), redo: [...store.redo, { sequence, features, sites: vector.sites, sangerTrace: vector.sangerTrace }] };
-    restoreSnapshot(prev);
-    setCaret((c) => (c === null ? null : clamp(c, 0, prev.sequence.length)));
+    const transaction = store.undo[store.undo.length - 1];
+    const currentAfter = captureEditSnapshot() ?? transaction.after;
+    const liveTransaction = { ...transaction, after: currentAfter };
+    restoreSnapshot(liveTransaction.before, transaction.after);
+    editHistoryRef.current[recordId] = {
+      undo: store.undo.slice(0, -1),
+      redo: [...store.redo, liveTransaction],
+    };
+    setCaret((c) => (c === null ? null : clamp(c, 0, liveTransaction.before.sequence.length)));
     bumpEditHistory();
-  }, [recordId, sequence, features, vector.sangerTrace, vector.sites, restoreSnapshot]);
+  }, [captureEditSnapshot, recordId, restoreSnapshot]);
 
   const redoEdit = useCallback(() => {
     const store = editHistoryRef.current[recordId];
     if (!store || store.redo.length === 0) return;
-    const next = store.redo[store.redo.length - 1];
-    editHistoryRef.current[recordId] = { undo: [...store.undo, { sequence, features, sites: vector.sites, sangerTrace: vector.sangerTrace }], redo: store.redo.slice(0, -1) };
-    restoreSnapshot(next);
-    setCaret((c) => (c === null ? null : clamp(c, 0, next.sequence.length)));
+    const transaction = store.redo[store.redo.length - 1];
+    const currentBefore = captureEditSnapshot() ?? transaction.before;
+    const liveTransaction = { ...transaction, before: currentBefore };
+    restoreSnapshot(liveTransaction.after, transaction.before);
+    editHistoryRef.current[recordId] = {
+      undo: [...store.undo, liveTransaction],
+      redo: store.redo.slice(0, -1),
+    };
+    setCaret((c) => (c === null ? null : clamp(c, 0, liveTransaction.after.sequence.length)));
     bumpEditHistory();
-  }, [recordId, sequence, features, vector.sangerTrace, vector.sites, restoreSnapshot]);
+  }, [captureEditSnapshot, recordId, restoreSnapshot]);
 
   const handlePlaceCaret = useCallback((index: number) => {
     setLockedTranslateTarget(null);
@@ -6412,8 +6663,8 @@ function App() {
       case 'ArrowRight': event.preventDefault(); setCaret(Math.min(len, c + 1)); return;
       case 'Home': event.preventDefault(); setCaret(0); return;
       case 'End': event.preventDefault(); setCaret(len); return;
-      case 'Backspace': event.preventDefault(); if (c > 0) commitEdit(applyDeletion(sequence, [], featureList, c - 1, 1), c - 1); return;
-      case 'Delete': event.preventDefault(); if (c < len) commitEdit(applyDeletion(sequence, [], featureList, c, 1), c); return;
+      case 'Backspace': event.preventDefault(); if (c > 0) commitEdit(applyDeletion(sequence, [], featureList, c - 1, 1), c - 1, { start: c - 1, deletedLength: 1, insertedLength: 0, oldLength: len }); return;
+      case 'Delete': event.preventDefault(); if (c < len) commitEdit(applyDeletion(sequence, [], featureList, c, 1), c, { start: c, deletedLength: 1, insertedLength: 0, oldLength: len }); return;
       default: break;
     }
     if (event.key.length === 1) {
@@ -6422,9 +6673,13 @@ function App() {
       if (!alphabet.includes(ch)) return;
       event.preventDefault();
       if (insertMode || c >= len) {
-        commitEdit(applyInsertion(sequence, [], featureList, c - 1, ch), c + 1);
+        commitEdit(applyInsertion(sequence, [], featureList, c - 1, ch), c + 1, { start: c, deletedLength: 0, insertedLength: 1, oldLength: len });
       } else {
-        commitEdit(applySubstitution(sequence, [], featureList, c, ch), c + 1);
+        if (sequence[c]?.toUpperCase() === ch) {
+          setCaret(c + 1);
+          return;
+        }
+        commitEdit(applySubstitution(sequence, [], featureList, c, ch), c + 1, { start: c, deletedLength: 1, insertedLength: 1, oldLength: len });
       }
     }
   }, [isEditable, caret, sequence, features, sequenceType, insertMode, commitEdit, undoEdit, redoEdit]);
@@ -6439,7 +6694,11 @@ function App() {
       showWorkbenchNotice(`This paste would exceed the ${MOTIF_MAX_RECORD_LENGTH.toLocaleString()}-residue record limit.`, 'error');
       return;
     }
-    commitEdit(applyInsertion(sequence, [], features as Feature[], caret - 1, pasted), caret + pasted.length);
+    commitEdit(
+      applyInsertion(sequence, [], features as Feature[], caret - 1, pasted),
+      caret + pasted.length,
+      { start: caret, deletedLength: 0, insertedLength: pasted.length, oldLength: sequence.length },
+    );
   }, [caret, commitEdit, features, isEditable, sequence, sequenceType, showWorkbenchNotice]);
 
   const addRecords = useCallback((recordInputs: readonly ArtifactRecordInput[]): number => {
@@ -6718,7 +6977,7 @@ function App() {
       }
       const [{ file, database }] = databaseFiles;
       try {
-        requestArtifactDatabaseRestore(database, file.name);
+        requestArtifactDatabaseRestore(database, file.name, null, 'durable-checkpoint');
         return { records: [], message: `Review the ${file.name} workspace restore.`, tone: 'status' };
       } catch (error) {
         const message = `${file.name}: ${actionableImportError(error)}`;
@@ -7089,7 +7348,7 @@ function App() {
       source: 'layer',
       color: previewTrack.strand === -1 ? '#c6737b' : '#7e9bbf',
     };
-    setTranslationLayersByRecord((current) => {
+    updateTranslationLayers((current) => {
       const existing = current[recordId] ?? [];
       if (existing.some((entry) => entry.id === layer.id)) return current;
       return { ...current, [recordId]: [...existing, layer] };
@@ -7097,25 +7356,25 @@ function App() {
     if (options?.select !== false) {
       setSelectedTranslationLayerByRecord((current) => ({ ...current, [recordId]: layer.id }));
     }
-  }, [inlineTranslationTracks, previewTrack, recordId, showWorkbenchNotice, translateFrame, translateStrand, translateTarget, translationLayers.length]);
+  }, [inlineTranslationTracks, previewTrack, recordId, showWorkbenchNotice, translateFrame, translateStrand, translateTarget, translationLayers.length, updateTranslationLayers]);
   const clearTranslationLayers = useCallback(() => {
-    setTranslationLayersByRecord((current) => (current[recordId]?.length ? { ...current, [recordId]: [] } : current));
+    updateTranslationLayers((current) => (current[recordId]?.length ? { ...current, [recordId]: [] } : current));
     setSelectedTranslationLayerByRecord((current) => (current[recordId] ? { ...current, [recordId]: null } : current));
-  }, [recordId]);
+  }, [recordId, updateTranslationLayers]);
 
   const updateTranslationLayer = useCallback((layerId: string, patch: Partial<Omit<InlineTranslationTrack, 'id' | 'source'>>) => {
-    setTranslationLayersByRecord((current) => {
+    updateTranslationLayers((current) => {
       const layers = current[recordId] ?? [];
       if (!layers.some((layer) => layer.id === layerId)) return current;
       return {
         ...current,
         [recordId]: layers.map((layer) => (
-          layer.id === layerId ? { ...layer, ...patch, source: 'layer' } : layer
+          layer.id === layerId ? { ...layer, ...patch, needsReview: false, source: 'layer' } : layer
         )),
       };
     });
     setSelectedTranslationLayerByRecord((current) => ({ ...current, [recordId]: layerId }));
-  }, [recordId]);
+  }, [recordId, updateTranslationLayers]);
 
   const deleteTranslationLayer = useCallback((layerId: string) => {
     if (layerId.startsWith('feat:')) {
@@ -7125,7 +7384,7 @@ function App() {
         return { ...current, [recordId]: [...hidden, layerId] };
       });
     } else {
-      setTranslationLayersByRecord((current) => {
+      updateTranslationLayers((current) => {
         const layers = current[recordId] ?? [];
         if (!layers.some((layer) => layer.id === layerId)) return current;
         return { ...current, [recordId]: layers.filter((layer) => layer.id !== layerId) };
@@ -7135,7 +7394,7 @@ function App() {
       current[recordId] === layerId ? { ...current, [recordId]: null } : current
     ));
     setLockedTranslateTarget(null);
-  }, [recordId]);
+  }, [recordId, updateTranslationLayers]);
 
   // Selection-bar "Translate": pin the translation inline (sense reads above the
   // selected bases, antisense below). The floating Translations window opens only
@@ -7299,12 +7558,31 @@ function App() {
 
   const updateWorkspaceNote = useCallback((noteId: string, patch: ArtifactNoteTextUpdate) => {
     const current = payloadRef.current;
+    const existing = current.notes.find((note) => note.id === noteId);
     const recordLengths = new Map(current.records.map((record) => [record.id, record.sequence.length]));
     const notes = updateArtifactNote(current.notes, noteId, {
       ...patch,
       updatedAt: new Date().toISOString(),
-      provenance: { source: 'user', operation: 'update_note' },
+      provenance: { ...existing?.provenance, source: 'user', operation: 'update_note' },
     }, { recordLengths });
+    const nextPayload: LoadedPayload = { ...current, notes };
+    payloadRef.current = nextPayload;
+    setPayload(nextPayload);
+  }, []);
+
+  const confirmWorkspaceNoteAnchor = useCallback((noteId: string) => {
+    const current = payloadRef.current;
+    if (!current.notes.some((note) => note.id === noteId)) throw new Error(`Unknown note id: ${noteId}`);
+    const recordLengths = new Map(current.records.map((record) => [record.id, record.sequence.length]));
+    const notes = normalizeArtifactWorkspaceCollections({
+      notes: current.notes.map((note) => (
+        note.id === noteId ? confirmNoteRangeAnchor(note, new Date().toISOString()) : note
+      )),
+      workflowResults: current.workflowResults,
+    }, {
+      recordLengths,
+      allowMissingWorkflowOutputRecords: true,
+    }).notes;
     const nextPayload: LoadedPayload = { ...current, notes };
     payloadRef.current = nextPayload;
     setPayload(nextPayload);
@@ -8467,14 +8745,13 @@ function App() {
 
   const downloadWorkspaceBackup = useCallback(() => {
     const snapshot = createArtifactDatabaseSnapshot(payloadRef.current, artifactStateRef.current);
-    downloadTextFile('motif-workspace-backup.json', JSON.stringify(snapshot, null, 2), 'application/json');
-    markSessionSaved();
-  }, [markSessionSaved]);
+    return downloadTextFile('motif-workspace-backup.json', JSON.stringify(snapshot, null, 2), 'application/json');
+  }, []);
 
   const restoreWorkspaceBackupFile = useCallback(async (file: File, returnFocus: HTMLElement | null = null) => {
     const rawDatabase = parseArtifactDatabaseJson(await file.text());
     if (!rawDatabase) throw new Error('This file is not a Motif Database JSON backup.');
-    requestArtifactDatabaseRestore(rawDatabase, file.name, returnFocus);
+    requestArtifactDatabaseRestore(rawDatabase, file.name, returnFocus, 'durable-checkpoint');
   }, [requestArtifactDatabaseRestore]);
 
   const toggleToolsPinned = useCallback(() => {
@@ -9721,7 +9998,6 @@ function App() {
               onAddReverseComplement={addContextReverseComplementRecord}
               onAnnotateRange={handleAnnotateRange}
               canAnnotateRange={canAnnotateSelectedMapRange}
-              onSessionSaved={markSessionSaved}
             />
             </section>
             <StackedPaneResizeHandle
@@ -9856,6 +10132,7 @@ function App() {
                   : null}
                 onAdd={addWorkspaceNote}
                 onUpdate={updateWorkspaceNote}
+                onConfirmAnchor={confirmWorkspaceNoteAnchor}
                 onRemove={removeWorkspaceNote}
                 onReveal={revealWorkspaceNote}
               />
@@ -11221,6 +11498,7 @@ function FeatureList({
                 >
                   <span className="motif-cs-swatch" style={{ backgroundColor: track.color ?? 'var(--accent)' }} />
                   <span className="motif-cs-row-main" translate="no">{track.label}</span>
+                  {track.needsReview ? <span className="motif-cs-chip">Review anchor</span> : null}
                   <span className="motif-cs-row-meta">{track.strand === -1 ? 'reverse' : 'forward'} · {mapRangeLabel({ start: track.start, end: track.end }, sequenceLength)}</span>
                 </button>
                 {canDelete ? (
@@ -12050,6 +12328,11 @@ function TranslationLayerEditor({
     <div className="motif-cs-annotation-editor">
       <div className="motif-cs-annotation-section-label">Edit translation</div>
       <div className="motif-cs-feature-form motif-cs-tool-panel-body">
+        {track.needsReview ? (
+          <p className="motif-cs-form-note" role="status">
+            The sequence changed inside this pinned translation. Review its range and frame, then choose Update to confirm it.
+          </p>
+        ) : null}
         <label>
           <span>Label</span>
           <div className="motif-cs-name-edit-row">
@@ -12286,28 +12569,12 @@ function digestRows(fragments: readonly DigestFragment[], sequenceLength: number
   ].join('\n');
 }
 
-function downloadTextFile(filename: string, content: string, mime = 'text/plain'): void {
-  try {
-    const blob = new Blob([content], { type: `${mime};charset=utf-8` });
-    downloadBlobFile(filename, blob);
-  } catch {
-    /* download unavailable (e.g. sandboxed) — clipboard copy actions remain */
-  }
+function downloadTextFile(filename: string, content: string, mime = 'text/plain'): BrowserDownloadReceipt {
+  return requestBrowserTextDownload(filename, content, mime);
 }
 
-function downloadBlobFile(filename: string, blob: Blob): void {
-  try {
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = filename;
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-  } catch {
-    /* download unavailable (e.g. sandboxed) — clipboard copy actions remain */
-  }
+function downloadBlobFile(filename: string, blob: Blob): BrowserDownloadReceipt {
+  return requestBrowserBlobDownload(filename, blob);
 }
 
 function printHtmlReport(html: string): void {
@@ -12636,7 +12903,6 @@ function SequenceToolsPanel({
   onAddReverseComplement,
   onAnnotateRange,
   canAnnotateRange,
-  onSessionSaved,
 }: {
   records: readonly ArtifactVector[];
   record: ArtifactVector;
@@ -12664,12 +12930,12 @@ function SequenceToolsPanel({
   onAddReverseComplement: () => void;
   onAnnotateRange: () => void;
   canAnnotateRange: boolean;
-  onSessionSaved: () => void;
 }) {
   const exportPanelRef = useRef<HTMLDetailsElement>(null);
   const [exportPanelOpen, setExportPanelOpen] = useState(false);
   const [exportPanelHeight, setExportPanelHeight] = useState<number | null>(null);
   const [exportChoiceId, setExportChoiceId] = useState('record-sequence');
+  const [downloadStatus, setDownloadStatus] = useState('');
   const hasActiveRecord = records.length > 0 && record.id !== EMPTY_ARTIFACT_VECTOR.id;
   const needsInventoryExport = exportPanelOpen && !exportChoiceId.startsWith('record-');
   const needsZipExport = exportPanelOpen && exportChoiceId === 'inventory-zip';
@@ -12874,7 +13140,7 @@ function SequenceToolsPanel({
     content?: string;
     downloadName?: string;
     mime?: string;
-    download?: () => void;
+    download?: () => BrowserDownloadReceipt;
     print?: () => void;
   };
   const exportChoices = useMemo<ExportChoice[]>(() => [
@@ -12915,15 +13181,15 @@ function SequenceToolsPanel({
   }, [exportChoice, onCopy]);
   const downloadSelectedExport = useCallback(() => {
     if (!exportChoice) return;
+    let receipt: BrowserDownloadReceipt;
     if (exportChoice.download) {
-      exportChoice.download();
-      if (exportChoice.id === 'inventory-zip') onSessionSaved();
-      return;
+      receipt = exportChoice.download();
+    } else {
+      if (!exportChoice.content || !exportChoice.downloadName) return;
+      receipt = downloadTextFile(exportChoice.downloadName, exportChoice.content, exportChoice.mime);
     }
-    if (!exportChoice.content || !exportChoice.downloadName) return;
-    downloadTextFile(exportChoice.downloadName, exportChoice.content, exportChoice.mime);
-    if (exportChoice.id === 'inventory-json') onSessionSaved();
-  }, [exportChoice, onSessionSaved]);
+    setDownloadStatus(receipt.message);
+  }, [exportChoice]);
   const selectedTargetLabel = selectedFeature
     ? selectedFeature.name
     : selectedMapRange
@@ -12932,7 +13198,7 @@ function SequenceToolsPanel({
   const durabilityStatus = hasUnsavedChanges
     ? 'unsaved changes'
     : hasSessionCheckpoint
-      ? 'saved'
+      ? 'restored checkpoint'
       : 'session only';
 
   const exportPanelBounds = exportPanelHeightBounds();
@@ -12958,7 +13224,7 @@ function SequenceToolsPanel({
           title={hasUnsavedChanges
             ? 'This session changed since its last complete Database JSON or ZIP checkpoint.'
             : hasSessionCheckpoint
-              ? 'The current session matches the last restored or downloaded complete checkpoint.'
+              ? 'The current session matches a complete JSON file restored from disk.'
               : 'Records are kept in this artifact session. Export Database JSON or ZIP before reloading.'}
         >
           {copyStatus ?? durabilityStatus}
@@ -13065,6 +13331,9 @@ function SequenceToolsPanel({
             <button className="motif-cs-mini-button motif-cs-mini-button-accent" type="button" onClick={exportChoice?.print} disabled={!exportChoice?.print}>Print / PDF</button>
           </div>
         </div>
+        <p className="motif-cs-form-note" role="status" aria-live="polite" data-empty={!downloadStatus || undefined}>
+          {downloadStatus}
+        </p>
         <textarea className="motif-cs-textarea motif-cs-sequence-preview" name="sequence-preview" autoComplete="off" readOnly value={exportPreview} aria-label="Selected export preview" />
       </div>
       ) : null}
@@ -14054,6 +14323,7 @@ type InlineTranslationTrack = {
   frame: 0 | 1 | 2;
   source: 'feature' | 'layer';
   color?: string;
+  needsReview?: boolean;
 };
 
 // One residue placed in PLUS-STRAND codon coordinates so it aligns to the bases

@@ -34,7 +34,9 @@
 }
 
 .motif-cs-agent-results-toolbar select:focus-visible,
-.motif-cs-agent-result-details > summary:focus-visible {
+.motif-cs-agent-result-details > summary:focus-visible,
+.motif-cs-agent-blast-sort select:focus-visible,
+.motif-cs-agent-asset > summary:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
@@ -255,6 +257,223 @@
   word-break: break-word;
 }
 
+.motif-cs-agent-data-viewer,
+.motif-cs-agent-assets {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  padding-top: 7px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.motif-cs-agent-viewer-head {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.motif-cs-agent-viewer-head > div:first-child {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.motif-cs-agent-viewer-head strong,
+.motif-cs-agent-assets > strong {
+  color: var(--text-primary);
+  font-size: 10px;
+}
+
+.motif-cs-agent-viewer-head small,
+.motif-cs-agent-asset summary small {
+  color: var(--text-muted);
+  font-size: 9px;
+  line-height: 1.35;
+}
+
+.motif-cs-agent-viewer-actions,
+.motif-cs-agent-result-pager,
+.motif-cs-agent-results-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.motif-cs-agent-result-pager,
+.motif-cs-agent-results-pagination {
+  color: var(--text-muted);
+  font: 9.5px/1.3 var(--font-mono);
+}
+
+.motif-cs-agent-results-pagination {
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--panel-bg);
+}
+
+.motif-cs-agent-results-pagination > span {
+  margin-right: auto;
+}
+
+.motif-cs-agent-text-viewer {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.motif-cs-agent-text-viewer pre[data-empty]::before {
+  color: var(--text-muted);
+  content: '(empty report)';
+}
+
+.motif-cs-agent-table-scroll {
+  min-width: 0;
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+}
+
+.motif-cs-agent-table-scroll:focus-visible,
+.motif-cs-agent-result-details pre:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.motif-cs-agent-table-scroll table {
+  width: 100%;
+  min-width: max-content;
+  border-collapse: collapse;
+  color: var(--text-secondary);
+  font-size: 9.5px;
+  line-height: 1.35;
+}
+
+.motif-cs-agent-table-scroll th,
+.motif-cs-agent-table-scroll td {
+  max-width: 320px;
+  padding: 5px 7px;
+  border-right: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+  overflow-wrap: anywhere;
+  text-align: left;
+  vertical-align: top;
+}
+
+.motif-cs-agent-table-scroll th {
+  position: sticky;
+  z-index: 1;
+  top: 0;
+  background: var(--panel-bg);
+  color: var(--text-primary);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.motif-cs-agent-table-scroll tr:last-child td {
+  border-bottom: 0;
+}
+
+.motif-cs-agent-table-scroll th:last-child,
+.motif-cs-agent-table-scroll td:last-child {
+  border-right: 0;
+}
+
+.motif-cs-agent-table-scroll > p,
+.motif-cs-agent-viewer-warning,
+.motif-cs-agent-blast-evidence p,
+.motif-cs-agent-asset > div > p {
+  margin: 0;
+  padding: 7px;
+  color: var(--text-muted);
+  font-size: 9.5px;
+  line-height: 1.4;
+}
+
+.motif-cs-agent-blast-sort {
+  display: grid;
+  gap: 2px;
+  min-width: 160px;
+  color: var(--text-muted);
+  font-size: 9px;
+}
+
+.motif-cs-agent-blast-sort select {
+  min-height: 28px;
+  padding: 3px 22px 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text-primary);
+  font: inherit;
+}
+
+.motif-cs-agent-blast-evidence {
+  display: grid;
+  gap: 5px;
+  min-width: 132px;
+}
+
+.motif-cs-agent-blast-evidence > div {
+  display: grid;
+  gap: 5px;
+  width: min(520px, 72vw);
+  min-width: 0;
+}
+
+.motif-cs-agent-blast-evidence pre {
+  max-height: 220px;
+}
+
+.motif-cs-agent-no-evidence {
+  color: var(--text-muted);
+}
+
+.motif-cs-agent-assets {
+  gap: 5px;
+}
+
+.motif-cs-agent-asset {
+  min-width: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+}
+
+.motif-cs-agent-asset > summary {
+  min-width: 0;
+  padding: 6px 7px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.motif-cs-agent-asset-summary {
+  display: inline-flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  width: calc(100% - 12px);
+  min-width: 0;
+  vertical-align: top;
+}
+
+.motif-cs-agent-asset-summary > span,
+.motif-cs-agent-asset summary small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.motif-cs-agent-asset > div {
+  display: grid;
+  gap: 5px;
+  padding: 0 7px 7px;
+}
+
 .motif-cs-agent-result-actions {
   display: flex;
   align-items: center;
@@ -287,12 +506,18 @@
 
 @container (max-width: 310px) {
   .motif-cs-agent-results-toolbar,
-  .motif-cs-agent-result-heading {
+  .motif-cs-agent-result-heading,
+  .motif-cs-agent-viewer-head,
+  .motif-cs-agent-asset-summary {
     align-items: stretch;
     flex-direction: column;
   }
 
   .motif-cs-agent-results-toolbar select {
+    width: 100%;
+  }
+
+  .motif-cs-agent-blast-sort {
     width: 100%;
   }
 

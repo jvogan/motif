@@ -155,6 +155,8 @@ truth for current functions, schemas, limits, and examples.
 Edits are session-owned until exported. Database JSON and workspace ZIP are
 the complete checkpoint/restore boundary. The portable HTML is not an
 encrypted vault, a compliance system, or a durable shared database.
+A browser download is only a request until the resulting file is verified and
+can be reopened; do that before relying on it as the session checkpoint.
 
 The Motif connector is an ephemeral viewer/export surface. It does not write a
 hidden database or run native analysis tools. Its registration, server, tools,
