@@ -13,6 +13,64 @@ export const ARTIFACT_MSA_MAX_NAME_LENGTH = 1_024;
 export const ARTIFACT_MSA_MAX_IMPORT_CHARACTERS = 2_250_000;
 export const ARTIFACT_MSA_MAX_IMPORT_BYTES = 2_500_000;
 
+export type MsaClientBounds = { left: number; right: number; top: number; bottom: number };
+
+export type MsaColumnHitTestMetrics = {
+  viewportLeft: number;
+  viewportRight: number;
+  labelWidth: number;
+  scrollLeft: number;
+  cellWidth: number;
+  columnCount: number;
+};
+
+const MSA_DRAG_EDGE_MIN_SPEED = 2;
+const MSA_DRAG_EDGE_MAX_SPEED = 32;
+const MSA_DRAG_EDGE_SPEED_SCALE = 0.35;
+
+/** Clamp a drag pointer just inside a client-coordinate rectangle. */
+export function clampMsaClientPoint(
+  clientX: number,
+  clientY: number,
+  bounds: MsaClientBounds,
+): { clientX: number; clientY: number } {
+  const maxX = Math.max(bounds.left, bounds.right - 0.5);
+  const maxY = Math.max(bounds.top, bounds.bottom - 0.5);
+  return {
+    clientX: Math.max(bounds.left, Math.min(maxX, clientX)),
+    clientY: Math.max(bounds.top, Math.min(maxY, clientY)),
+  };
+}
+
+/** Per-frame signed scroll distance for a pointer beyond one viewport axis. */
+export function msaEdgeAutoScrollDelta(pointer: number, start: number, end: number): number {
+  const overshoot = pointer < start ? pointer - start : pointer > end ? pointer - end : 0;
+  if (overshoot === 0) return 0;
+  const speed = Math.min(
+    MSA_DRAG_EDGE_MAX_SPEED,
+    Math.max(MSA_DRAG_EDGE_MIN_SPEED, Math.ceil(Math.abs(overshoot) * MSA_DRAG_EDGE_SPEED_SCALE)),
+  );
+  return overshoot < 0 ? -speed : speed;
+}
+
+/** Map a client X coordinate to an alignment column, optionally clamping drag overflow. */
+export function msaColumnFromClientX(
+  clientX: number,
+  metrics: MsaColumnHitTestMetrics,
+  clampToViewport = false,
+): number | null {
+  if (metrics.columnCount <= 0 || metrics.cellWidth <= 0) return null;
+  const sequenceLeft = metrics.viewportLeft + metrics.labelWidth;
+  const sequenceRight = Math.max(sequenceLeft, metrics.viewportRight);
+  const resolvedX = clampToViewport
+    ? clampMsaClientPoint(clientX, 0, { left: sequenceLeft, right: sequenceRight, top: 0, bottom: 1 }).clientX
+    : clientX;
+  if (!clampToViewport && (resolvedX < sequenceLeft || resolvedX >= sequenceRight)) return null;
+  const column = Math.floor((resolvedX - sequenceLeft + metrics.scrollLeft) / metrics.cellWidth);
+  if (clampToViewport) return Math.max(0, Math.min(metrics.columnCount - 1, column));
+  return column >= 0 && column < metrics.columnCount ? column : null;
+}
+
 export type ArtifactAlignmentMode = 'browser' | 'local-command' | 'imported';
 
 export type ArtifactAlignmentEngineInput = {

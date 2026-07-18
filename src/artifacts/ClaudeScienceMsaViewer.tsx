@@ -24,6 +24,7 @@ import {
   ARTIFACT_MSA_LOCAL_WORK_BUDGET,
   ArtifactAlignmentError,
   MSA_MOTIF_SEARCH_MAX_QUERY_LENGTH,
+  clampMsaClientPoint,
   computeMsaColumnStats,
   computeSequenceLogoColumns,
   createLocalArtifactAlignment,
@@ -33,6 +34,8 @@ import {
   formatClustal,
   formatConsensusFasta,
   moveRowId,
+  msaColumnFromClientX,
+  msaEdgeAutoScrollDelta,
   msaShadeBucket,
   parseAlignmentText,
   residueColorKey,
@@ -577,7 +580,13 @@ type MatrixSelection = { colStart: number; colEnd: number; rowStart: number; row
 type HoverCell = { column: number; rowIndex: number; rowId: string; clientX: number; clientY: number };
 type MatrixContextMenu = { x: number; y: number; column: number; rowId: string | null };
 /** Live state while a row is being drag-reordered by its grip handle. */
-type RowDragState = { id: string; fromIndex: number; overIndex: number; edge: 'before' | 'after' };
+type RowDragState = { id: string; fromIndex: number; overIndex: number | null; edge: 'before' | 'after' };
+type DragAutoScrollAxes = { horizontal: boolean; vertical: boolean };
+type DragAutoScrollState = DragAutoScrollAxes & {
+  clientX: number;
+  clientY: number;
+  resolve: () => void;
+};
 
 // Column density. The font-derived base cell width is scaled by the zoom
 // preference (decoupled from font size); the result is clamped so cells never
@@ -642,6 +651,8 @@ function AlignmentMatrix({
   const initialViewport = useMemo(() => msaMatrixViewportSession.get(alignment.id), [alignment.id]);
   const [scrollLeft, setScrollLeft] = useState(initialViewport?.left ?? 0);
   const scrollFrameRef = useRef<number | null>(null);
+  const dragAutoScrollFrameRef = useRef<number | null>(null);
+  const dragAutoScrollStateRef = useRef<DragAutoScrollState | null>(null);
   const pendingScrollLeftRef = useRef(initialViewport?.left ?? 0);
   const pendingScrollTopRef = useRef(initialViewport?.top ?? 0);
   const lastResetTokenRef = useRef(resetToken);
@@ -871,6 +882,8 @@ function AlignmentMatrix({
 
   useEffect(() => () => {
     if (scrollFrameRef.current !== null) window.cancelAnimationFrame(scrollFrameRef.current);
+    if (dragAutoScrollFrameRef.current !== null) window.cancelAnimationFrame(dragAutoScrollFrameRef.current);
+    dragAutoScrollStateRef.current = null;
   }, []);
 
   const handleScroll = (left: number, top: number) => {
@@ -895,6 +908,77 @@ function AlignmentMatrix({
       behavior,
     });
   }, [maxHorizontalScroll, viewportRef]);
+
+  const stopDragAutoScroll = useCallback(() => {
+    dragAutoScrollStateRef.current = null;
+    if (dragAutoScrollFrameRef.current === null) return;
+    window.cancelAnimationFrame(dragAutoScrollFrameRef.current);
+    dragAutoScrollFrameRef.current = null;
+  }, []);
+
+  const runDragAutoScrollFrame = useCallback(function runDragAutoScrollFrame() {
+    dragAutoScrollFrameRef.current = null;
+    const drag = dragAutoScrollStateRef.current;
+    const viewport = viewportRef.current;
+    if (!drag || !viewport) return;
+    const rect = viewport.getBoundingClientRect();
+    const horizontalDelta = drag.horizontal
+      ? msaEdgeAutoScrollDelta(drag.clientX, rect.left + labelWidth, rect.right)
+      : 0;
+    const verticalDelta = drag.vertical
+      ? msaEdgeAutoScrollDelta(drag.clientY, rect.top, rect.bottom)
+      : 0;
+    const maxVerticalScroll = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+    const canScrollHorizontally = horizontalDelta < 0
+      ? viewport.scrollLeft > 0
+      : horizontalDelta > 0 && viewport.scrollLeft < maxHorizontalScroll;
+    const canScrollVertically = verticalDelta < 0
+      ? viewport.scrollTop > 0
+      : verticalDelta > 0 && viewport.scrollTop < maxVerticalScroll;
+
+    if (horizontalDelta !== 0) setHorizontalScroll(viewport.scrollLeft + horizontalDelta);
+    if (verticalDelta !== 0) {
+      viewport.scrollTop = Math.max(0, Math.min(maxVerticalScroll, viewport.scrollTop + verticalDelta));
+    }
+    drag.resolve();
+
+    if (
+      dragAutoScrollStateRef.current === drag
+      && (canScrollHorizontally || canScrollVertically)
+    ) {
+      dragAutoScrollFrameRef.current = window.requestAnimationFrame(runDragAutoScrollFrame);
+    }
+  }, [labelWidth, maxHorizontalScroll, setHorizontalScroll, viewportRef]);
+
+  const updateDragAutoScroll = useCallback((
+    clientX: number,
+    clientY: number,
+    axes: DragAutoScrollAxes,
+    resolve: () => void,
+  ) => {
+    const drag = { clientX, clientY, ...axes, resolve };
+    dragAutoScrollStateRef.current = drag;
+    resolve();
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const rect = viewport.getBoundingClientRect();
+    const horizontalDelta = axes.horizontal
+      ? msaEdgeAutoScrollDelta(clientX, rect.left + labelWidth, rect.right)
+      : 0;
+    const verticalDelta = axes.vertical
+      ? msaEdgeAutoScrollDelta(clientY, rect.top, rect.bottom)
+      : 0;
+    if (horizontalDelta !== 0 || verticalDelta !== 0) {
+      if (dragAutoScrollFrameRef.current === null) {
+        dragAutoScrollFrameRef.current = window.requestAnimationFrame(runDragAutoScrollFrame);
+      }
+      return;
+    }
+    if (dragAutoScrollFrameRef.current !== null) {
+      window.cancelAnimationFrame(dragAutoScrollFrameRef.current);
+      dragAutoScrollFrameRef.current = null;
+    }
+  }, [labelWidth, runDragAutoScrollFrame, viewportRef]);
 
   const handleMatrixWheel = useCallback((event: WheelEvent) => {
     const viewport = viewportRef.current;
@@ -1005,32 +1089,62 @@ function AlignmentMatrix({
     return { stats, startPosition, endPosition, rows: selectedRows.length };
   }, [orderedRows, selection, templateCoordinates, alignment.molecule]);
 
-  const pointToCell = useCallback((clientX: number, clientY: number): HoverCell | null => {
+  const columnFromClientX = useCallback((clientX: number, clampToViewport = false): number | null => {
     const viewport = viewportRef.current;
     if (!viewport) return null;
     const rect = viewport.getBoundingClientRect();
-    const localX = clientX - rect.left;
-    // The sticky row-label gutter is not part of the sequence area.
-    if (localX < labelWidth || localX > rect.width) return null;
-    const column = Math.floor((localX - labelWidth + viewport.scrollLeft) / cellWidth);
-    if (column < 0 || column >= alignment.alignmentLength) return null;
+    return msaColumnFromClientX(clientX, {
+      viewportLeft: rect.left,
+      viewportRight: rect.right,
+      labelWidth,
+      scrollLeft: viewport.scrollLeft,
+      cellWidth,
+      columnCount: alignment.alignmentLength,
+    }, clampToViewport);
+  }, [alignment.alignmentLength, cellWidth, labelWidth, viewportRef]);
+
+  const rowElementFromPoint = useCallback((clientX: number, clientY: number, nearest = false): HTMLElement | null => {
     const target = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
-    const rowElement = target?.closest<HTMLElement>('[data-msa-row-index]');
+    const direct = target?.closest<HTMLElement>('[data-msa-row-index]') ?? null;
+    if (direct || !nearest) return direct;
+    const viewport = viewportRef.current;
+    if (!viewport) return null;
+    let nearestRow: HTMLElement | null = null;
+    let nearestDistance = Number.POSITIVE_INFINITY;
+    for (const row of viewport.querySelectorAll<HTMLElement>('[data-msa-row-index]')) {
+      const rect = row.getBoundingClientRect();
+      const distance = clientY < rect.top
+        ? rect.top - clientY
+        : clientY >= rect.bottom
+          ? clientY - rect.bottom
+          : 0;
+      if (distance >= nearestDistance) continue;
+      nearestRow = row;
+      nearestDistance = distance;
+    }
+    return nearestRow;
+  }, [viewportRef]);
+
+  const pointToCell = useCallback((clientX: number, clientY: number, clampToViewport = false): HoverCell | null => {
+    const viewport = viewportRef.current;
+    if (!viewport) return null;
+    const rect = viewport.getBoundingClientRect();
+    const point = clampToViewport
+      ? clampMsaClientPoint(clientX, clientY, {
+        left: rect.left + labelWidth,
+        right: rect.right,
+        top: rect.top,
+        bottom: rect.bottom,
+      })
+      : { clientX, clientY };
+    const column = columnFromClientX(point.clientX, clampToViewport);
+    if (column == null) return null;
+    const rowElement = rowElementFromPoint(point.clientX, point.clientY, clampToViewport);
     if (!rowElement) return null;
     const rowIndex = Number(rowElement.dataset.msaRowIndex);
     if (!Number.isInteger(rowIndex) || rowIndex < 0 || rowIndex >= orderedRows.length) return null;
-    return { column, rowIndex, rowId: rowElement.dataset.msaRowId ?? '', clientX, clientY };
-  }, [alignment.alignmentLength, cellWidth, labelWidth, orderedRows.length, viewportRef]);
-
-  const columnFromClientX = useCallback((clientX: number): number | null => {
-    const viewport = viewportRef.current;
-    if (!viewport) return null;
-    const rect = viewport.getBoundingClientRect();
-    const localX = clientX - rect.left;
-    if (localX < labelWidth || localX > rect.width) return null;
-    const column = Math.floor((localX - labelWidth + viewport.scrollLeft) / cellWidth);
-    return column >= 0 && column < alignment.alignmentLength ? column : null;
-  }, [alignment.alignmentLength, cellWidth, labelWidth, viewportRef]);
+    return { column, rowIndex, rowId: rowElement.dataset.msaRowId ?? '', ...point };
+  }, [columnFromClientX, labelWidth, orderedRows.length, rowElementFromPoint, viewportRef]);
 
   const applySelectionTo = useCallback((cell: { column: number; rowIndex: number }) => {
     const anchor = selectionAnchorRef.current;
@@ -1055,20 +1169,30 @@ function AlignmentMatrix({
     }
     applySelectionTo(cell);
     selectingRef.current = true;
+    stopDragAutoScroll();
     try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* capture is best-effort */ }
   };
 
   const handleGridPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
-    const cell = pointToCell(event.clientX, event.clientY);
     if (selectingRef.current) {
-      if (cell) applySelectionTo(cell);
+      const { clientX, clientY } = event;
+      updateDragAutoScroll(clientX, clientY, { horizontal: true, vertical: true }, () => {
+        if (!selectingRef.current) return;
+        const cell = pointToCell(clientX, clientY, true);
+        if (cell) applySelectionTo(cell);
+      });
       return;
     }
-    setHoverCell(cell);
+    setHoverCell(pointToCell(event.clientX, event.clientY));
   };
 
   const endSelectionDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!selectingRef.current) return;
+    stopDragAutoScroll();
+    if (event.type === 'pointerup') {
+      const cell = pointToCell(event.clientX, event.clientY, true);
+      if (cell) applySelectionTo(cell);
+    }
     selectingRef.current = false;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
@@ -1090,22 +1214,40 @@ function AlignmentMatrix({
     setHoverCell(null);
     selectWholeColumn(column);
     rulerSelectingRef.current = true;
+    stopDragAutoScroll();
     try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* capture is best-effort */ }
   };
   const handleRulerPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!rulerSelectingRef.current) return;
-    const column = columnFromClientX(event.clientX);
-    const anchor = selectionAnchorRef.current;
-    if (column == null || !anchor) return;
-    setSelection({
-      colStart: Math.min(anchor.column, column),
-      colEnd: Math.max(anchor.column, column),
-      rowStart: 0,
-      rowEnd: Math.max(0, orderedRows.length - 1),
+    const { clientX, clientY } = event;
+    updateDragAutoScroll(clientX, clientY, { horizontal: true, vertical: false }, () => {
+      if (!rulerSelectingRef.current) return;
+      const column = columnFromClientX(clientX, true);
+      const anchor = selectionAnchorRef.current;
+      if (column == null || !anchor) return;
+      setSelection({
+        colStart: Math.min(anchor.column, column),
+        colEnd: Math.max(anchor.column, column),
+        rowStart: 0,
+        rowEnd: Math.max(0, orderedRows.length - 1),
+      });
     });
   };
   const handleRulerPointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!rulerSelectingRef.current) return;
+    stopDragAutoScroll();
+    if (event.type === 'pointerup') {
+      const column = columnFromClientX(event.clientX, true);
+      const anchor = selectionAnchorRef.current;
+      if (column != null && anchor) {
+        setSelection({
+          colStart: Math.min(anchor.column, column),
+          colEnd: Math.max(anchor.column, column),
+          rowStart: 0,
+          rowEnd: Math.max(0, orderedRows.length - 1),
+        });
+      }
+    }
     rulerSelectingRef.current = false;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
   };
@@ -1165,31 +1307,62 @@ function AlignmentMatrix({
     const state: RowDragState = { id, fromIndex: index, overIndex: index, edge: 'before' };
     rowDragRef.current = state;
     setRowDrag(state);
+    stopDragAutoScroll();
     try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* capture is best-effort */ }
   };
 
-  const updateRowDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    if (!rowDragRef.current) return;
-    const node = document.elementFromPoint(event.clientX, event.clientY);
-    const rowElement = node instanceof HTMLElement ? node.closest<HTMLElement>('[data-msa-row-index]') : null;
-    if (!rowElement) return;
+  const updateRowDragFromPoint = useCallback((clientX: number, clientY: number) => {
+    const prev = rowDragRef.current;
+    const viewport = viewportRef.current;
+    if (!prev || !viewport) return;
+    const viewportRect = viewport.getBoundingClientRect();
+    const outsideViewport = clientX < viewportRect.left
+      || clientX >= viewportRect.right
+      || clientY < viewportRect.top
+      || clientY >= viewportRect.bottom;
+    const point = outsideViewport
+      ? clampMsaClientPoint(clientX, clientY, viewportRect)
+      : { clientX, clientY };
+    const rowElement = rowElementFromPoint(point.clientX, point.clientY, outsideViewport);
+    if (!rowElement) {
+      if (prev.overIndex === null) return;
+      const next = { ...prev, overIndex: null };
+      rowDragRef.current = next;
+      setRowDrag(next);
+      return;
+    }
     const overIndex = Number(rowElement.dataset.msaRowIndex);
     if (!Number.isInteger(overIndex)) return;
     const rect = rowElement.getBoundingClientRect();
-    const edge: 'before' | 'after' = event.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
-    const prev = rowDragRef.current;
+    const edge: 'before' | 'after' = point.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
     if (prev.overIndex === overIndex && prev.edge === edge) return;
     const next = { ...prev, overIndex, edge };
     rowDragRef.current = next;
     setRowDrag(next);
+  }, [rowElementFromPoint, viewportRef]);
+
+  const updateRowDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (!rowDragRef.current) return;
+    const { clientX, clientY } = event;
+    updateDragAutoScroll(clientX, clientY, { horizontal: false, vertical: true }, () => {
+      updateRowDragFromPoint(clientX, clientY);
+    });
   };
 
   const endRowDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    const state = rowDragRef.current;
+    stopDragAutoScroll();
+    const viewportRect = viewportRef.current?.getBoundingClientRect();
+    const releasedOffGrid = !viewportRect
+      || event.clientX < viewportRect.left
+      || event.clientX >= viewportRect.right
+      || event.clientY < viewportRect.top
+      || event.clientY >= viewportRect.bottom;
+    if (!releasedOffGrid) updateRowDragFromPoint(event.clientX, event.clientY);
+    const state = releasedOffGrid ? null : rowDragRef.current;
     rowDragRef.current = null;
     if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     setRowDrag(null);
-    if (!state) return;
+    if (!state || state.overIndex === null) return;
     // Convert the (over-row, edge) drop target into an insertion index against
     // the array with the dragged id removed.
     let insertion = state.overIndex + (state.edge === 'after' ? 1 : 0);
@@ -1205,6 +1378,7 @@ function AlignmentMatrix({
   };
 
   const cancelRowDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    stopDragAutoScroll();
     rowDragRef.current = null;
     if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     setRowDrag(null);
@@ -1240,16 +1414,18 @@ function AlignmentMatrix({
   }, []);
 
   useEffect(() => {
+    stopDragAutoScroll();
     setSelection(null);
     setHoverCell(null);
     setContextMenu(null);
     selectionAnchorRef.current = null;
     selectingRef.current = false;
+    rulerSelectingRef.current = false;
     setManualOrder(null);
     setRowDrag(null);
     rowDragRef.current = null;
     setReorderStatus('');
-  }, [alignment.id, resetToken]);
+  }, [alignment.id, resetToken, stopDragAutoScroll]);
 
   // A change to the persisted sort control supersedes any manual drag order.
   useEffect(() => { setManualOrder(null); }, [sortMode]);
