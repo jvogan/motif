@@ -528,4 +528,22 @@ test.describe('Motif MSA viewer interactions', () => {
     await page.mouse.up();
     await expect(page.getByTestId('msa-selection-readout')).toContainText('Selected');
   });
+
+  test('the zoom controls wrap within the frame at a narrow width', async ({ page }) => {
+    await setupDna(page, 440, 760);
+    // Blocks mode reveals the full control set (100% reset + Blocks chip).
+    await page.getByTestId('msa-zoom-range').fill('35');
+    await expect(page.getByTestId('msa-blocks-chip')).toBeVisible();
+    const frame = await page.locator('.motif-cs-msa-matrix-frame').boundingBox();
+    if (!frame) throw new Error('frame missing');
+    for (const id of ['msa-zoom-range', 'msa-zoom-value', 'msa-zoom-fit', 'msa-zoom-reset', 'msa-blocks-chip']) {
+      const b = await page.getByTestId(id).boundingBox();
+      if (!b) throw new Error(`${id} missing`);
+      // Every control stays inside the frame instead of being clipped by overflow.
+      expect(b.x + b.width).toBeLessThanOrEqual(frame.x + frame.width + 1);
+    }
+    // The crowded set wrapped onto a second line rather than overflowing.
+    const row = await page.getByTestId('msa-zoom-row').boundingBox();
+    expect(row!.height).toBeGreaterThan(40);
+  });
 });
