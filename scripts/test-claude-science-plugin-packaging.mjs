@@ -193,7 +193,7 @@ check('public setup, troubleshooting, and capability docs ship with the plugin',
       const canonical = readFileSync(join(root, 'docs', filename), 'utf8');
       assert.equal(packaged, canonical);
       assert.equal(packaged.toLowerCase().includes(legacyBrand), false);
-      assert.doesNotMatch(packaged, /\/Users\/|github_3/iu);
+      assert.doesNotMatch(packaged, /\/Users\/|github_[0-9]+/iu);
     }
     assert.equal(
       readFileSync(join(fixture, 'examples', 'motif-demo.gb'), 'utf8'),

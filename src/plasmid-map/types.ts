@@ -6,9 +6,6 @@
  * src/components/plasmid-map/* consume the computed layout objects and map them to
  * SVG — they never re-derive biological ranges.
  *
- * Gated behind the default-off USE_PLASMID_MAP flag and lazy-loaded, so compact/
- * detail sequence flows never pay for any of this. See
- * qa-logs/2026-07-02-plasmid-map/NOTES.md for the reversibility charter.
  */
 import type { Feature, RestrictionSite, FeatureStrand, Topology, SequenceType } from '../bio/types';
 
@@ -142,7 +139,7 @@ export interface MapRestrictionRender {
    * cuts outside its recognition window anywhere in this cluster) plus a trailing
    * non-Type-IIS `+N` overflow segment when present. The renderer joins enzyme
    * tokens with "," and the tail with " ", so the concatenation is IDENTICAL to
-   * `label.text` — only the Type IIS tokens get the tan/orange, matching Benchling.
+   * `label.text` — only the Type IIS tokens get the distinct tan/orange treatment.
    * Additive + optional: absent on linear (single compact token), where the label
    * falls back to the aggregate whole-label color.
    */

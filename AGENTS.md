@@ -49,6 +49,9 @@ A passing DOM assertion is not proof that a control is legible or reachable.
   verification, and portable provenance.
 - Do not set raw `innerHTML` from user-controlled data.
 - Do not hardcode visual colors; use the artifact's CSS variables.
+- Use vendor-neutral, behavior-based language in public comments, tests, docs,
+  and commit messages; avoid competitor comparisons and machine-specific or
+  private-repository references.
 - Preserve `data-testid`, keyboard, focus, and ARIA contracts when changing UI.
 - Treat Database JSON and workspace ZIP as portable checkpoints, not encrypted
   durable storage.

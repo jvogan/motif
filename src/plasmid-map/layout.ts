@@ -152,7 +152,7 @@ const LINEAR_LANE_PITCH_MAX = 46; // dock fill cap: comfortable label clearance 
 const LINEAR_ROW_MIN_HEIGHT = 10;
 const LINEAR_ROW_MIN_GAP = 4;
 const LINEAR_BOTTOM_PAD = 10;
-const LINEAR_FEATURE_RADIUS = 0; // Benchling-style flat feature bars
+const LINEAR_FEATURE_RADIUS = 0; // Square-ended feature bars
 const LINEAR_REC_LABEL_MAX_WIDTH_PX = 64;
 const LINEAR_REC_LABEL_GAP_X = 8;
 const LINEAR_REC_SLOT_PX = LINEAR_REC_LABEL_MAX_WIDTH_PX + LINEAR_REC_LABEL_GAP_X;
@@ -198,7 +198,7 @@ export function computeMapLayout(input: MapInput): MapLayout {
 // The plasmid title sits in the middle of the ring. A long name (e.g. "Clone of
 // pACYC184 + eGFP (Enhanced Green Fluorescent Protein)") would otherwise render
 // wider than the whole backbone circle and spill across the feature arcs. We fit
-// it to the ring — Benchling-style — with a DETERMINISTIC width heuristic (no DOM
+// it to the ring with a DETERMINISTIC width heuristic (no DOM
 // measurement / useEffect, so the render stays pure): short names stay on one
 // line unchanged; a long name wraps onto two balanced lines a notch smaller; any
 // line that still cannot fit is ellipsized. The width budget is a fraction of the

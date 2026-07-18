@@ -1,12 +1,9 @@
 /**
- * CAMPAIGN PROBE (not in the suite include; run explicitly with:
- *   npx vitest run qa-logs/2026-07-03-map-benchling-polish/label-collision.probe.test.ts
- * ). Quantifies VISIBLE-label overlaps in the computed MapLayout across dense
- * scenarios — the north-star invariant of the Benchling-polish campaign
- * ("no two visible labels overlap"). It operates on the PUBLIC MapLayout contract
+ * Regression coverage for VISIBLE-label overlaps in the computed MapLayout
+ * across dense scenarios. The invariant is that no two visible labels overlap.
+ * It operates on the PUBLIC MapLayout contract
  * (features[].label / restrictions[].label / coordinates[].label), so it survives
- * the internal label-placement redesign. Reports "before" numbers now; will be
- * promoted to a strict committed gate (overlaps===0) once fixes land.
+ * internal label-placement changes.
  */
 import { describe, it, expect } from 'vitest';
 import { computeMapLayout } from '../layout';
@@ -302,7 +299,7 @@ const base = (over: Partial<MapInput>): MapInput => ({
   features: [], restrictionSites: [], width: 720, height: 720, ...over,
 });
 
-describe('LABEL-COLLISION PROBE (campaign evidence)', () => {
+describe('label collision regression coverage', () => {
   const scenarios: { name: string; input: MapInput }[] = [
     { name: 'circular 40feat/20site @720', input: base({ mode: 'circular', topology: 'circular', features: denseFeatures(40, 6000), restrictionSites: denseSites(20, 6000) }) },
     { name: 'circular 22feat/12site @720', input: base({ mode: 'circular', topology: 'circular', length: 9276, features: denseFeatures(22, 9276), restrictionSites: denseSites(12, 9276) }) },

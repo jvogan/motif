@@ -1957,8 +1957,8 @@ describe('computeMapLayout: linear + protein', () => {
     // Rebaselined after MapLayout gained explicit linearAxis geometry.
     // Rebaselined after inline labels centered on rendered arrow glyphs and
     // linear restriction labels used center-entering callout leaders.
-    // Rebaselined after linear feature bars became square-ended to match the
-    // artifact's Benchling-style feature treatment.
+    // Rebaselined after linear feature bars adopted the artifact's square-ended
+    // feature treatment.
     expect(layoutHash(layout)).toBe(
       '52c8c1aff95c22cace479fb781b544371c6e54ff277bedce586d95ba4dc5ab90',
     );

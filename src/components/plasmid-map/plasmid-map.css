@@ -702,7 +702,7 @@
   fill-opacity: 0.62;
 }
 
-/* Type IIS enzymes get the distinct tan language (Benchling).
+/* Type IIS enzymes get a distinct tan visual language.
    TICK is an aggregate cluster flag: any Type IIS site tints the whole tick
    (both topologies). LABEL colors PER-ENZYME so a mixed cluster like
    "BsaI,HpaII,MspI +7" tans ONLY the Type IIS token. Circular labels render as

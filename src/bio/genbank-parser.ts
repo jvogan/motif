@@ -12,8 +12,8 @@ export const QUALIFIER_TRUNCATED_SUFFIX = '...[truncated]';
  * NCBI strand qualifier from the LOCUS line: `ss-` (single-stranded),
  * `ds-` (double-stranded), or `ms-` (mixed). Absent on most modern records.
  * Preserving the literal token lets a parsed-then-exported record round-trip
- * the strand field that downstream tools (Snapgene, Benchling, BioPython)
- * read from column 22-23. VOG-2000.
+ * the strand field that downstream GenBank consumers read from column 22-23.
+ * VOG-2000.
  */
 export type GenBankStrandedness = 'ss' | 'ds' | 'ms';
 
@@ -438,7 +438,7 @@ export function parseFeatures(featuresText: string): Feature[] {
     // exporter (src/persistence/export.ts) always writes feature.name to /label,
     // so reading /gene first silently reverted a user-renamed feature to its
     // gene/product name on an export→import round-trip. /label-first matches
-    // SnapGene/Benchling; gene-before-product order is preserved for the
+    // common editor behavior; gene-before-product order is preserved for the
     // no-/label case so existing fixtures are unaffected.
     const name =
       (typeof qualifiers['label'] === 'string' && qualifiers['label']) ||
@@ -628,7 +628,7 @@ function parseSingleGenBankRecord(raw: string): GenBankRecord | null {
   let inKeywords = false;
   // VOG-1973: track whether the input ever entered ORIGIN. Combined with
   // `locus.length` (the LOCUS-declared length) we use this to detect
-  // truncation. A NCBI / SnapGene / Geneious export that was cut off
+  // truncation. A GenBank export that was cut off
   // mid-FEATURES (or mid-ORIGIN) shows up here as `originSeen = false`
   // (or as a `parsedSequenceLength` significantly smaller than declared)
   // and the intake pipeline refuses the import instead of materializing
