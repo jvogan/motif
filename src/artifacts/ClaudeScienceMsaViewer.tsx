@@ -757,7 +757,7 @@ function AlignmentMatrix({
     setHorizontalScroll(target);
   };
 
-  const columnStats = useMemo<MsaColumnStats[]>(() => computeMsaColumnStats(alignment.rows), [alignment.rows]);
+  const columnStats = useMemo<MsaColumnStats[]>(() => computeMsaColumnStats(alignment.rows, alignment.molecule), [alignment.rows, alignment.molecule]);
   const explicitScheme = colorMode === 'residue' && colorScheme !== 'auto';
   const shadeByColumn = shadeMode === 'identity' || shadeMode === 'conservation';
   // Colour cells by auto residue tone when the user asked for residue colours,
@@ -789,7 +789,7 @@ function AlignmentMatrix({
     const selectedRows = orderedRows
       .slice(selection.rowStart, selection.rowEnd + 1)
       .map((row) => ({ ...row, aligned: row.aligned.slice(selection.colStart, selection.colEnd + 1) }));
-    const blockStats = computeMsaColumnStats(selectedRows);
+    const blockStats = computeMsaColumnStats(selectedRows, alignment.molecule);
     const stats = summarizeSelectionColumns(blockStats, { start: 0, end: selection.colEnd - selection.colStart });
     // Template coordinates: first/last non-gap position within the range, so a
     // gapped endpoint doesn't hide the whole template range.
@@ -802,7 +802,7 @@ function AlignmentMatrix({
       if (templateCoordinates[column] != null) { endPosition = templateCoordinates[column]!; break; }
     }
     return { stats, startPosition, endPosition, rows: selectedRows.length };
-  }, [orderedRows, selection, templateCoordinates]);
+  }, [orderedRows, selection, templateCoordinates, alignment.molecule]);
 
   const pointToCell = useCallback((clientX: number, clientY: number): HoverCell | null => {
     const viewport = viewportRef.current;

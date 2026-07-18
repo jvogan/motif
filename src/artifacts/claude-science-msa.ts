@@ -652,10 +652,17 @@ export type MsaColumnStats = {
 const LOG2 = Math.log(2);
 
 /** Per-column statistics for an alignment's rows. O(rows × columns), single pass. */
-export function computeMsaColumnStats(rows: ReadonlyArray<{ aligned: string }>): MsaColumnStats[] {
+export function computeMsaColumnStats(
+  rows: ReadonlyArray<{ aligned: string }>,
+  molecule: SequenceType = 'dna',
+): MsaColumnStats[] {
   const rowCount = rows.length;
   const length = rows[0]?.aligned.length ?? 0;
   const stats: MsaColumnStats[] = new Array(length);
+  // Normalise Shannon entropy against the alphabet so conservation measures
+  // residue diversity (1 = a single residue, 0 = maximally diverse) — genuinely
+  // distinct from identity, which only tracks the majority residue's share.
+  const maxEntropy = Math.log2(molecule === 'protein' ? 20 : 4);
   for (let column = 0; column < length; column += 1) {
     const counts = new Map<string, number>();
     let nonGap = 0;
@@ -691,7 +698,7 @@ export function computeMsaColumnStats(rows: ReadonlyArray<{ aligned: string }>):
       consensusCount: winnerCount,
       consensusFraction,
       identity: winnerCount / rowCount,
-      conservation: consensusFraction * occupancy,
+      conservation: occupancy * Math.max(0, Math.min(1, 1 - entropy / maxEntropy)),
       entropy,
       fullyConserved: winnerCount === rowCount,
     };
@@ -842,21 +849,23 @@ export function summarizeSelectionColumns(
   for (let column = start; column <= end && column < length; column += 1) {
     const stat = columnStats[column];
     if (!stat) continue;
+    // An all-gap column has no residues to agree or disagree, so it is neither
+    // conserved nor variable, and must not dilute the mean identity/conservation
+    // — it counts only as a gap column.
+    if (stat.occupancy === 0) { gapColumns += 1; continue; }
     identitySum += stat.identity;
     conservationSum += stat.conservation;
-    // An all-gap column has no residues to agree or disagree, so it is neither
-    // conserved nor variable — only a gap column.
-    if (stat.occupancy === 0) { gapColumns += 1; continue; }
     if (stat.fullyConserved) fullyConserved += 1;
     else if (stat.consensusFraction < 1) variableColumns += 1;
   }
+  const informative = columns - gapColumns;
   return {
     columns,
     variableColumns,
     fullyConserved,
     gapColumns,
-    meanIdentity: columns > 0 ? identitySum / columns : 0,
-    meanConservation: columns > 0 ? conservationSum / columns : 0,
+    meanIdentity: informative > 0 ? identitySum / informative : 0,
+    meanConservation: informative > 0 ? conservationSum / informative : 0,
   };
 }
 

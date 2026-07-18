@@ -58,6 +58,15 @@ describe('computeMsaColumnStats', () => {
     const gapped = computeMsaColumnStats([{ aligned: 'A-' }, { aligned: 'A-' }]);
     expect(gapped[1]).toMatchObject({ occupancy: 0, consensusResidue: '-', conservation: 0, entropy: 0, fullyConserved: false });
   });
+
+  it('scores conservation from entropy so it is distinct from identity in diverse columns', () => {
+    // col 3: T,A,T — identity is winner/rows = 2/3, but conservation discounts the
+    // T/A diversity via Shannon entropy (dna alphabet, max entropy log2 4 = 2), so
+    // the two metrics must diverge. Previously conservation collapsed onto identity.
+    expect(stats[3].identity).toBeCloseTo(2 / 3, 6);
+    expect(stats[3].conservation).toBeCloseTo(1 - 0.9182958 / 2, 5);
+    expect(Math.abs(stats[3].conservation - stats[3].identity)).toBeGreaterThan(0.1);
+  });
 });
 
 describe('msaShadeBucket', () => {
@@ -148,6 +157,17 @@ describe('summarizeSelectionColumns', () => {
     const summary = summarizeSelectionColumns(computeMsaColumnStats(aln.rows), { start: 1, end: 1 });
     expect(summary.gapColumns).toBe(1);
     expect(summary.variableColumns).toBe(0);
+  });
+
+  it('excludes all-gap columns from the mean identity, not just the variable count', () => {
+    // Column 0 is perfectly identical (A/A); column 1 is all-gap. The mean must
+    // reflect only the informative column (1.0), not be halved to 0.5 by the gap.
+    const stats = computeMsaColumnStats([{ aligned: 'A-' }, { aligned: 'A-' }]);
+    const summary = summarizeSelectionColumns(stats, { start: 0, end: 1 });
+    expect(summary.columns).toBe(2);
+    expect(summary.gapColumns).toBe(1);
+    expect(summary.meanIdentity).toBeCloseTo(1, 6);
+    expect(summary.meanConservation).toBeCloseTo(1, 6);
   });
 });
 
