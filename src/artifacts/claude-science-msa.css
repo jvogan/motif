@@ -879,6 +879,24 @@
   }
 }
 
+/* ===== Image export controls (scope selector + PNG/SVG) =====
+ * A grouped unit within the existing export row (which is flex-wrap), separated
+ * from the text-export controls by a subtle rule. The scope <select> inherits
+ * the row's select styling; a tighter column keeps the group from overflowing
+ * the export row on a narrow (~470px) artifact. */
+.motif-cs-msa-workspace .motif-cs-msa-export-image {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding-left: 8px;
+  border-left: 1px solid var(--border-subtle);
+}
+.motif-cs-msa-workspace .motif-cs-msa-export-row .motif-cs-msa-image-scope {
+  grid-template-columns: auto minmax(96px, 140px);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .motif-cs-msa-hover-column,
   .motif-cs-msa-selection-band { transition: none; }
