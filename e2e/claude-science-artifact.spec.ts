@@ -3165,8 +3165,18 @@ test.describe('Claude Science artifact campaign', () => {
     await expect(viewButton).toHaveAttribute('aria-expanded', 'true');
     await page.screenshot({ path: path.join(msaCampaignOutputDir, 'msa-view-menu-1180x820.png') });
 
-    for (const label of ['Overview', 'Alignment axis', 'Template axis', 'Row statistics', 'Conservation', 'Consensus']) {
-      await viewMenu.getByRole('checkbox', { name: label }).uncheck();
+    const defaultVisibleLabels = [
+      'Overview',
+      'Alignment axis',
+      'Template axis',
+      'Row statistics',
+      'Conservation marks',
+      'Conservation histogram',
+      'Consensus',
+    ];
+    const visibilityLabels = [...defaultVisibleLabels, 'Occupancy'];
+    for (const label of visibilityLabels) {
+      await viewMenu.getByRole('checkbox', { name: label, exact: true }).uncheck();
       await expect(viewMenu).toBeVisible();
     }
     const residueColors = viewMenu.getByRole('checkbox', { name: 'Residue colors' });
@@ -3176,6 +3186,7 @@ test.describe('Claude Science artifact campaign', () => {
     await expect(dialog.locator('.motif-cs-msa-template-ruler-row')).toHaveCount(0);
     await expect(dialog.locator('.motif-cs-msa-row-stat')).toHaveCount(0);
     await expect(dialog.locator('.motif-cs-msa-conservation-row')).toHaveCount(0);
+    await expect(dialog.locator('.motif-cs-msa-hist-row')).toHaveCount(0);
     await expect(dialog.locator('.motif-cs-msa-consensus-row')).toHaveCount(0);
 
     await page.keyboard.press('Escape');
@@ -3190,6 +3201,7 @@ test.describe('Claude Science artifact campaign', () => {
 
     await expect(dialog.locator('.motif-cs-msa-overview-row')).toHaveCount(0);
     await expect(dialog.locator('.motif-cs-msa-template-ruler-row')).toHaveCount(0);
+    await expect(dialog.locator('.motif-cs-msa-hist-row')).toHaveCount(0);
     await viewButton.click();
     await viewMenu.getByRole('button', { name: 'Reset alignment view' }).click();
     const viewStatus = viewMenu.getByTestId('msa-view-menu-status');
@@ -3197,12 +3209,14 @@ test.describe('Claude Science artifact campaign', () => {
     await expect(viewStatus).toHaveAttribute('aria-live', 'polite');
     await expect(viewStatus).toContainText(/alignment view reset/i);
     await expect(viewMenu).toBeVisible();
-    for (const label of ['Overview', 'Alignment axis', 'Template axis', 'Row statistics', 'Conservation', 'Consensus']) {
-      await expect(viewMenu.getByRole('checkbox', { name: label })).toBeChecked();
+    for (const label of defaultVisibleLabels) {
+      await expect(viewMenu.getByRole('checkbox', { name: label, exact: true })).toBeChecked();
     }
+    await expect(viewMenu.getByRole('checkbox', { name: 'Occupancy', exact: true })).not.toBeChecked();
     await expect(residueColors).not.toBeChecked();
     await expect(dialog.locator('.motif-cs-msa-overview-row')).toBeVisible();
     await expect(dialog.locator('.motif-cs-msa-template-ruler-row')).toBeVisible();
+    await expect(dialog.locator('.motif-cs-msa-hist-row')).toHaveCount(1);
     await expect(dialog.locator('.motif-cs-msa-row-stat').first()).toBeVisible();
     await expect(dialog.locator('.motif-cs-msa-conservation-row')).toBeVisible();
     await expect(dialog.locator('.motif-cs-msa-consensus-row')).toBeVisible();
