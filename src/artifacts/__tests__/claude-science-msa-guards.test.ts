@@ -130,9 +130,12 @@ describe('Claude Science MSA interaction and rendering guards', () => {
     const coverageHelpers = sliceBetween(viewerSource, 'type AlignmentCoverage =', 'function useObservedWidth');
     expect(coverageHelpers).toContain("const first = aligned.search(/[^-]/);");
     expect(coverageHelpers).toContain('column >= coverage.first && column <= coverage.last');
+    expect(coverageHelpers).toContain('export function classifyMsaCell(');
+    expect(coverageHelpers).toContain("if (rowResidue === '-' && !isColumnCoveredByRow) return 'uncovered';");
     expect(coverageHelpers).toContain('!coversColumn(referenceCoverage, column)');
     expect(coverageHelpers).toContain('coversColumn(rowCoverage.get(row.id) ?? null, column)');
-    expect(coverageHelpers).toContain('!coversColumn(rowCoverage, column) || !coversColumn(templateCoverage, column)');
+    expect(coverageHelpers).toContain('classifyMsaCell(templateSymbol, symbol, coversColumn(rowCoverage, column))');
+    expect(coverageHelpers).toContain('classifyMsaCell(templateSymbol, symbol, coversColumn(rowCoverage[rowIndex], column))');
   });
 
   it('runs browser alignment only from an explicit bounded action', () => {

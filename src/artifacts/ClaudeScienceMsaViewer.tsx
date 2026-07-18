@@ -98,7 +98,7 @@ const INPUT_FASTA_HEADER_MAX_LENGTH = 1_024;
 const msaMatrixViewportSession = new Map<string, { left: number; top: number }>();
 const EMPTY_MSA_SEARCH_RESULT = { matches: [] as MsaMotifMatch[], truncated: false };
 
-type PairwiseRowStats = {
+export type PairwiseRowStats = {
   ungappedLength: number;
   comparableColumns: number;
   mismatches: number;
@@ -106,6 +106,8 @@ type PairwiseRowStats = {
 };
 
 type AlignmentCoverage = { first: number; last: number } | null;
+
+export type MsaCellOutcome = 'match' | 'substitution' | 'deletion' | 'insertion' | 'uncovered' | 'gap';
 
 function alignmentCoverage(aligned: string): AlignmentCoverage {
   const first = aligned.search(/[^-]/);
@@ -118,6 +120,24 @@ function alignmentCoverage(aligned: string): AlignmentCoverage {
 
 function coversColumn(coverage: AlignmentCoverage, column: number): boolean {
   return Boolean(coverage && column >= coverage.first && column <= coverage.last);
+}
+
+// eslint-disable-next-line react-refresh/only-export-components -- pure MSA helper exported for unit tests
+export function classifyMsaCell(
+  referenceResidue: string,
+  rowResidue: string,
+  isColumnCoveredByRow: boolean,
+): MsaCellOutcome {
+  if (referenceResidue === '-' && rowResidue === '-') return 'gap';
+  if (rowResidue === '-' && !isColumnCoveredByRow) return 'uncovered';
+  if (rowResidue === referenceResidue) return 'match';
+  if (referenceResidue === '-') return 'insertion';
+  if (rowResidue === '-') return 'deletion';
+  return 'substitution';
+}
+
+function isMsaCellDifference(outcome: MsaCellOutcome): boolean {
+  return outcome === 'substitution' || outcome === 'deletion' || outcome === 'insertion';
 }
 
 function templatePositionCoordinates(aligned: string): Array<number | null> {
@@ -430,7 +450,8 @@ function ResidueColorLegend({ molecule, colorScheme }: {
   );
 }
 
-function differenceColumns(alignment: ArtifactAlignment, referenceRowId: string): number[] {
+// eslint-disable-next-line react-refresh/only-export-components -- pure MSA helper exported for unit tests
+export function differenceColumns(alignment: ArtifactAlignment, referenceRowId: string): number[] {
   const reference = alignment.rows.find((row) => row.id === referenceRowId) ?? alignment.rows[0];
   if (!reference) return [];
   const referenceCoverage = alignmentCoverage(reference.aligned);
@@ -440,8 +461,11 @@ function differenceColumns(alignment: ArtifactAlignment, referenceRowId: string)
     if (alignment.gapOnly[column] || !coversColumn(referenceCoverage, column)) continue;
     if (alignment.rows.some((row) => (
       row.id !== reference.id
-      && coversColumn(rowCoverage.get(row.id) ?? null, column)
-      && row.aligned[column] !== reference.aligned[column]
+      && isMsaCellDifference(classifyMsaCell(
+        reference.aligned[column] ?? '-',
+        row.aligned[column] ?? '-',
+        coversColumn(rowCoverage.get(row.id) ?? null, column),
+      ))
     ))) columns.push(column);
   }
   return columns;
@@ -469,7 +493,8 @@ function rowNameParts(name: string, allNames: readonly string[]): { leading: str
   return { leading: name, trailing: '' };
 }
 
-function pairwiseRowStats(aligned: string, template: string): PairwiseRowStats {
+// eslint-disable-next-line react-refresh/only-export-components -- pure MSA helper exported for unit tests
+export function pairwiseRowStats(aligned: string, template: string): PairwiseRowStats {
   const rowCoverage = alignmentCoverage(aligned);
   const templateCoverage = alignmentCoverage(template);
   let ungappedLength = 0;
@@ -480,11 +505,15 @@ function pairwiseRowStats(aligned: string, template: string): PairwiseRowStats {
     const symbol = aligned[column] ?? '-';
     const templateSymbol = template[column] ?? '-';
     if (symbol !== '-') ungappedLength += 1;
-    if (!coversColumn(rowCoverage, column) || !coversColumn(templateCoverage, column)) continue;
-    if (symbol === '-' && templateSymbol === '-') continue;
-    comparable += 1;
-    if (symbol === templateSymbol) matches += 1;
-    else mismatches += 1;
+    if (!coversColumn(templateCoverage, column)) continue;
+    const outcome = classifyMsaCell(templateSymbol, symbol, coversColumn(rowCoverage, column));
+    if (outcome === 'match') {
+      comparable += 1;
+      matches += 1;
+    } else if (isMsaCellDifference(outcome)) {
+      comparable += 1;
+      mismatches += 1;
+    }
   }
   return {
     ungappedLength,
@@ -498,7 +527,8 @@ function formatIdentity(identity: number): string {
   return identity < 100 && identity >= 99.9 ? identity.toFixed(2) : identity.toFixed(1);
 }
 
-function mismatchOverviewBins(alignment: ArtifactAlignment, referenceRowId: string, binCount: number): number[] {
+// eslint-disable-next-line react-refresh/only-export-components -- pure MSA helper exported for unit tests
+export function mismatchOverviewBins(alignment: ArtifactAlignment, referenceRowId: string, binCount: number): number[] {
   const bins = Array.from({ length: binCount }, () => 0);
   if (alignment.alignmentLength === 0 || binCount === 0) return bins;
   const template = alignment.rows.find((row) => row.id === referenceRowId) ?? alignment.rows[0];
@@ -512,11 +542,13 @@ function mismatchOverviewBins(alignment: ArtifactAlignment, referenceRowId: stri
     let mismatches = 0;
     for (const [rowIndex, row] of alignment.rows.entries()) {
       if (row.id === template.id) continue;
-      if (!coversColumn(rowCoverage[rowIndex], column)) continue;
       const symbol = row.aligned[column] ?? '-';
-      if (symbol === '-' && templateSymbol === '-') continue;
-      comparable += 1;
-      if (symbol !== templateSymbol) mismatches += 1;
+      const outcome = classifyMsaCell(templateSymbol, symbol, coversColumn(rowCoverage[rowIndex], column));
+      if (outcome === 'match') comparable += 1;
+      else if (isMsaCellDifference(outcome)) {
+        comparable += 1;
+        mismatches += 1;
+      }
     }
     const bin = Math.min(binCount - 1, Math.floor((column / alignment.alignmentLength) * binCount));
     bins[bin] = Math.max(bins[bin], comparable > 0 ? mismatches / comparable : 0);
@@ -664,6 +696,11 @@ function AlignmentMatrix({
     Math.min(sequenceViewportWidth, sequenceViewportWidth * (sequenceViewportWidth / Math.max(sequenceViewportWidth, sequenceWidth))),
   );
   const template = alignment.rows.find((row) => row.id === referenceRowId) ?? alignment.rows[0];
+  const templateCoverage = useMemo(() => alignmentCoverage(template?.aligned ?? ''), [template]);
+  const rowCoverageById = useMemo(() => new Map(alignment.rows.map((row) => [
+    row.id,
+    alignmentCoverage(row.aligned),
+  ])), [alignment.rows]);
   const templateCoordinates = useMemo(
     () => templatePositionCoordinates(template?.aligned ?? ''),
     [template],
@@ -1331,7 +1368,13 @@ function AlignmentMatrix({
         const column = startColumn + offset;
         const templateSymbol = template?.aligned[column] ?? '-';
         const isTemplate = rowId === template?.id;
-        const matchesTemplate = symbol === templateSymbol;
+        const cellOutcome = classifyMsaCell(
+          templateSymbol,
+          symbol,
+          coversColumn(rowCoverageById.get(rowId) ?? null, column),
+        );
+        const matchesTemplate = cellOutcome === 'match';
+        const isDifference = coversColumn(templateCoverage, column) && isMsaCellDifference(cellOutcome);
         const quietMatch = !consensus && emphasis === 'differences' && !isTemplate && matchesTemplate && symbol !== '-';
         const display = quietMatch
           ? '·'
@@ -1342,12 +1385,13 @@ function AlignmentMatrix({
             className="motif-cs-msa-symbol"
             data-alignment-column={column + 1}
             data-residue={symbol}
+            data-cell-outcome={!consensus ? cellOutcome : undefined}
             data-tone={toneColored ? residueTone(symbol, alignment.molecule) : 'mono'}
             data-color-key={explicitScheme ? residueColorKey(symbol, alignment.molecule, colorScheme) || undefined : undefined}
             data-shade-bucket={!consensus && shadeByColumn
               ? msaShadeBucket(shadeMode === 'identity' ? (columnStats[column]?.identity ?? 0) : (columnStats[column]?.conservation ?? 0))
               : undefined}
-            data-difference={!consensus && !matchesTemplate || undefined}
+            data-difference={!consensus && isDifference || undefined}
             data-quiet={quietMatch || undefined}
             data-conserved={alignment.conserved[column] || undefined}
             data-jump={jumpColumn === column || undefined}

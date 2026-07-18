@@ -4,6 +4,10 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ClaudeScienceMsaViewer,
+  classifyMsaCell,
+  differenceColumns,
+  mismatchOverviewBins,
+  pairwiseRowStats,
   type ClaudeScienceMsaViewerProps,
 } from '../ClaudeScienceMsaViewer';
 import { normalizeArtifactAlignment, type ArtifactAlignment } from '../claude-science-msa';
@@ -34,12 +38,15 @@ function singleRowAlignment(): ArtifactAlignment {
   };
 }
 
-function renderViewer(alignment: ArtifactAlignment) {
+function renderViewer(
+  alignment: ArtifactAlignment,
+  viewPreferences = DEFAULT_CLAUDE_SCIENCE_MSA_VIEW_PREFERENCES,
+) {
   const props: ClaudeScienceMsaViewerProps = {
     records: [],
     alignments: [alignment],
     activeAlignmentId: alignment.id,
-    viewPreferences: DEFAULT_CLAUDE_SCIENCE_MSA_VIEW_PREFERENCES,
+    viewPreferences,
     onActiveAlignmentChange: vi.fn(),
     onViewPreferencesChange: vi.fn(),
     onSaveAlignment: (next) => next,
@@ -90,6 +97,76 @@ afterEach(() => {
 });
 
 describe('ClaudeScienceMsaViewer comparison correctness', () => {
+  it.each([
+    { label: 'trailing uncovered gap', reference: 'T', row: '-', covered: false, outcome: 'uncovered' },
+    { label: 'leading uncovered gap', reference: 'A', row: '-', covered: false, outcome: 'uncovered' },
+    { label: 'internal deletion', reference: 'C', row: '-', covered: true, outcome: 'deletion' },
+    { label: 'substitution', reference: 'C', row: 'T', covered: true, outcome: 'substitution' },
+    { label: 'exact match', reference: 'C', row: 'C', covered: true, outcome: 'match' },
+    { label: 'insertion', reference: '-', row: 'T', covered: true, outcome: 'insertion' },
+    { label: 'both-gap padding', reference: '-', row: '-', covered: false, outcome: 'gap' },
+  ])('classifies $label', ({ reference, row, covered, outcome }) => {
+    expect(classifyMsaCell(reference, row, covered)).toBe(outcome);
+  });
+
+  it('keeps a trailing uncovered gap neutral across grid, stats, navigation, and overview', () => {
+    const alignment = alignmentWithRows('trailing-gap', [
+      { id: 'reference', name: 'Reference', aligned: 'ACGT' },
+      { id: 'partial', name: 'Partial', aligned: 'ACG-' },
+    ]);
+
+    expect(pairwiseRowStats('ACG-', 'ACGT')).toEqual({
+      ungappedLength: 3,
+      comparableColumns: 3,
+      mismatches: 0,
+      identity: 100,
+    });
+    expect(differenceColumns(alignment, 'reference')).toEqual([]);
+    expect(mismatchOverviewBins(alignment, 'reference', 4)).toEqual([0, 0, 0, 0]);
+
+    renderViewer(alignment, {
+      ...DEFAULT_CLAUDE_SCIENCE_MSA_VIEW_PREFERENCES,
+      shadeMode: 'mismatch',
+    });
+    const partialRow = document.querySelector<HTMLElement>('[data-msa-row-id="partial"]');
+    const terminalCell = partialRow?.querySelector<HTMLElement>('[data-alignment-column="4"]');
+    expect(partialRow?.getAttribute('aria-label')).toContain('0 mismatches');
+    expect(partialRow?.getAttribute('aria-label')).toContain('100.0 percent identity');
+    expect(terminalCell?.dataset.cellOutcome).toBe('uncovered');
+    expect(terminalCell?.hasAttribute('data-difference')).toBe(false);
+    expect(screen.getByTestId('msa-stats-bar').textContent).toContain('0 differences in overlap');
+    expect(screen.getByText('0 differences')).toBeTruthy();
+    expect((screen.getByLabelText('Next variable column') as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByTestId('msa-overview')
+      .querySelector('.motif-cs-msa-overview-mismatches')?.getAttribute('d')).toBe('');
+  });
+
+  it('keeps an internal deletion counted across grid, stats, navigation, and overview', () => {
+    const alignment = alignmentWithRows('internal-gap', [
+      { id: 'reference', name: 'Reference', aligned: 'ACGT' },
+      { id: 'deletion', name: 'Deletion', aligned: 'A-GT' },
+    ]);
+
+    expect(pairwiseRowStats('A-GT', 'ACGT')).toMatchObject({ comparableColumns: 4, mismatches: 1, identity: 75 });
+    expect(differenceColumns(alignment, 'reference')).toEqual([1]);
+    expect(mismatchOverviewBins(alignment, 'reference', 4)).toEqual([0, 1, 0, 0]);
+
+    renderViewer(alignment, {
+      ...DEFAULT_CLAUDE_SCIENCE_MSA_VIEW_PREFERENCES,
+      shadeMode: 'mismatch',
+    });
+    const deletionRow = document.querySelector<HTMLElement>('[data-msa-row-id="deletion"]');
+    const deletionCell = deletionRow?.querySelector<HTMLElement>('[data-alignment-column="2"]');
+    expect(deletionRow?.getAttribute('aria-label')).toContain('1 mismatches');
+    expect(deletionCell?.dataset.cellOutcome).toBe('deletion');
+    expect(deletionCell?.hasAttribute('data-difference')).toBe(true);
+    expect(screen.getByTestId('msa-stats-bar').textContent).toContain('1 differences in overlap');
+    expect(screen.getByText('1 differences')).toBeTruthy();
+    expect((screen.getByLabelText('Next variable column') as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.getByTestId('msa-overview')
+      .querySelector('.motif-cs-msa-overview-mismatches')?.getAttribute('d')).toContain('M1 22V2H2V22Z');
+  });
+
   it('shows comparison statistics as unavailable for a single row', () => {
     renderViewer(singleRowAlignment());
     expectComparisonUnavailable();
