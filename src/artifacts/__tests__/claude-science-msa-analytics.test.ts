@@ -100,6 +100,14 @@ describe('computeSequenceLogoColumns', () => {
     const cols = computeSequenceLogoColumns([{ aligned: '-' }, { aligned: '-' }]);
     expect(cols[0]).toEqual({ information: 0, stack: [] });
   });
+
+  it('computes only the requested half-open column window', () => {
+    const rows = [{ aligned: 'ACGT' }, { aligned: 'ACGT' }];
+    const cols = computeSequenceLogoColumns(rows, 'dna', { startColumn: 1, endColumn: 3 });
+    expect(cols).toHaveLength(2);
+    expect(cols.map((column) => column.stack[0]?.symbol)).toEqual(['C', 'G']);
+    expect(computeSequenceLogoColumns(rows, 'dna', { startColumn: 99, endColumn: 120 })).toEqual([]);
+  });
 });
 
 describe('msaShadeBucket', () => {
@@ -320,7 +328,9 @@ describe('findMsaMotifMatches', () => {
     expect(matches).toHaveLength(4);
     expect(truncated).toBe(true);
     // A zero/negative cap stores nothing (does not leak one match).
-    expect(findMsaMotifMatches(rows, 'A', { molecule: 'dna', maxMatches: 0 }).matches).toHaveLength(0);
+    const zero = findMsaMotifMatches(rows, 'A', { molecule: 'dna', maxMatches: 0 });
+    expect(zero.matches).toHaveLength(0);
+    expect(zero.truncated).toBe(true);
   });
 
   it('returns the globally-earliest columns when the cap truncates, regardless of row order', () => {
@@ -336,6 +346,40 @@ describe('findMsaMotifMatches', () => {
     expect(matches[0]).toMatchObject({ rowId: 'early', startColumn: 0 });
   });
 
+  it('keeps an exact earliest-K order through multi-node heap replacements and ties', () => {
+    const rows = [
+      { id: 'late', name: 'Same', aligned: '----A-A' },
+      { id: 'tie-b', name: 'Same', aligned: 'A------' },
+      { id: 'tie-a', name: 'Same', aligned: 'A------' },
+      { id: 'middle', name: 'Middle', aligned: '--A----' },
+    ];
+    const { matches, truncated } = findMsaMotifMatches(rows, 'A', { molecule: 'dna', maxMatches: 3 });
+    expect(truncated).toBe(true);
+    expect(matches.map((match) => [match.startColumn, match.rowId])).toEqual([
+      [0, 'tie-a'],
+      [0, 'tie-b'],
+      [2, 'middle'],
+    ]);
+  });
+
+  it('bounds query length and aggregate retained column entries', () => {
+    const rows = [{ id: 'r', name: 'r', aligned: 'AAAAAAAAAAAA' }];
+    const tooLong = findMsaMotifMatches(rows, 'AAAAA', {
+      molecule: 'dna',
+      maxQueryLength: 4,
+    });
+    expect(tooLong).toEqual({ matches: [], truncated: true });
+
+    const retained = findMsaMotifMatches(rows, 'AAAA', {
+      molecule: 'dna',
+      maxMatches: 10,
+      maxRetainedColumns: 8,
+    });
+    expect(retained.truncated).toBe(true);
+    expect(retained.matches).toHaveLength(2);
+    expect(retained.matches.flatMap((match) => match.columns)).toHaveLength(8);
+  });
+
   it('bounds total work and reports truncation for a long, absent query', () => {
     // 200 columns of A searched for a 150-long A…C motif never matches; without a
     // comparison budget this scans every start position. The cap stops it early.
@@ -344,5 +388,19 @@ describe('findMsaMotifMatches', () => {
     const { matches, truncated } = findMsaMotifMatches(rows, query, { molecule: 'dna', maxComparisons: 500 });
     expect(matches).toHaveLength(0);
     expect(truncated).toBe(true);
+  });
+
+  it('preserves matches found before the comparison budget is exhausted', () => {
+    const rows = [
+      { id: 'early', name: 'Early', aligned: 'AAAAC' },
+      { id: 'work', name: 'Work', aligned: 'A'.repeat(100) },
+    ];
+    const { matches, truncated } = findMsaMotifMatches(rows, 'AAAAC', {
+      molecule: 'dna',
+      maxComparisons: 10,
+    });
+    expect(truncated).toBe(true);
+    expect(matches).toHaveLength(1);
+    expect(matches[0]).toMatchObject({ rowId: 'early', columns: [0, 1, 2, 3, 4] });
   });
 });

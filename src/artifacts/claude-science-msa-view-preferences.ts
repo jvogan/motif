@@ -19,6 +19,49 @@ export type ClaudeScienceMsaShadeMode = MsaShadeMode;
 export const MSA_ZOOM_MIN = 0.2;
 export const MSA_ZOOM_MAX = 2;
 
+export type MsaFitZoomInput = {
+  baseCellWidth: number;
+  columnCount: number;
+  viewportWidth: number;
+  minimumCellWidth: number;
+  maximumCellWidth: number;
+};
+
+/**
+ * Select the greatest persisted (0.01-step) zoom whose final, tenth-pixel
+ * rounded cell width fits the available sequence viewport. Keeping the same
+ * quantization as the renderer prevents a nominal "Fit" from leaving a small
+ * overflow lane at rounding boundaries.
+ */
+export function resolveMsaFitZoom({
+  baseCellWidth,
+  columnCount,
+  viewportWidth,
+  minimumCellWidth,
+  maximumCellWidth,
+}: MsaFitZoomInput): { zoom: number; fits: boolean } {
+  const valid = [baseCellWidth, columnCount, viewportWidth, minimumCellWidth, maximumCellWidth]
+    .every((value) => Number.isFinite(value) && value >= 0);
+  if (!valid || baseCellWidth === 0 || maximumCellWidth < minimumCellWidth) {
+    return { zoom: MSA_ZOOM_MIN, fits: false };
+  }
+
+  const renderedWidth = (zoom: number) => {
+    const boundedCellWidth = Math.max(minimumCellWidth, Math.min(maximumCellWidth, baseCellWidth * zoom));
+    return (Math.round(boundedCellWidth * 10) / 10) * columnCount;
+  };
+  const fitsAt = (zoom: number) => renderedWidth(zoom) <= viewportWidth;
+  if (!fitsAt(MSA_ZOOM_MIN)) return { zoom: MSA_ZOOM_MIN, fits: false };
+
+  const minimumStep = Math.ceil(MSA_ZOOM_MIN * 100);
+  const maximumStep = Math.floor(MSA_ZOOM_MAX * 100);
+  for (let step = maximumStep; step >= minimumStep; step -= 1) {
+    const zoom = step / 100;
+    if (fitsAt(zoom)) return { zoom, fits: true };
+  }
+  return { zoom: MSA_ZOOM_MIN, fits: true };
+}
+
 export type ClaudeScienceMsaViewPreferences = {
   displayMode: ClaudeScienceMsaDisplayMode;
   emphasis: ClaudeScienceMsaEmphasisMode;

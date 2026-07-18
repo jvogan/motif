@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_CLAUDE_SCIENCE_MSA_VIEW_PREFERENCES,
   normalizeClaudeScienceMsaViewPreferences,
+  resolveMsaFitZoom,
 } from '../claude-science-msa-view-preferences';
 
 describe('Claude Science MSA view preferences', () => {
@@ -79,6 +80,27 @@ describe('Claude Science MSA view preferences', () => {
     expect(normalizeClaudeScienceMsaViewPreferences({ zoom: 9 }).zoom).toBe(2);
     expect(normalizeClaudeScienceMsaViewPreferences({ zoom: 0 }).zoom).toBe(0.2);
     expect(normalizeClaudeScienceMsaViewPreferences({ zoom: 0.5 }).zoom).toBe(0.5);
+  });
+
+  it('fits using the final persisted zoom and rendered cell-width rounding', () => {
+    const result = resolveMsaFitZoom({
+      baseCellWidth: 10.58,
+      columnCount: 96,
+      viewportWidth: 290,
+      minimumCellWidth: 3,
+      maximumCellWidth: 30,
+    });
+    expect(result).toEqual({ zoom: 0.28, fits: true });
+    const renderedCellWidth = Math.round(Math.max(3, 10.58 * result.zoom) * 10) / 10;
+    expect(renderedCellWidth * 96).toBeLessThanOrEqual(290);
+
+    expect(resolveMsaFitZoom({
+      baseCellWidth: 10.58,
+      columnCount: 1_000,
+      viewportWidth: 900,
+      minimumCellWidth: 3,
+      maximumCellWidth: 30,
+    })).toEqual({ zoom: 0.2, fits: false });
   });
 
   it('keeps the translation track opt-in, indices default-on, and frame strict', () => {

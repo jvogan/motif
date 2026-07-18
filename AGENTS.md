@@ -70,6 +70,7 @@ npm run check:css-tokens
 npm run check:aria-controls
 npm run build:motif
 npm run test:e2e
+npm run test:e2e:msa
 ```
 
 Also run `npm run validate:plugin` when the Claude CLI is available. Report any

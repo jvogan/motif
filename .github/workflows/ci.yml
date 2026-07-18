@@ -61,3 +61,6 @@ jobs:
 
       - name: Browser workflows
         run: npm run test:e2e
+
+      - name: MSA interaction workflows
+        run: npm run test:e2e:msa

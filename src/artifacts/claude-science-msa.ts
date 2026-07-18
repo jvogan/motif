@@ -721,19 +721,26 @@ export type MsaLogoColumn = {
 /**
  * Per-column data for a sequence-logo track: for each column the residues present
  * (sorted most-frequent first, ties alphabetical) and a 0..1 fill height scaled by
- * information content. O(rows × columns), single pass; gaps never count. Mirrors
- * the conservation definition in computeMsaColumnStats so the logo height and the
- * conservation histogram agree.
+ * information content. The optional half-open range keeps UI callers windowed;
+ * work and retained objects are O(rows × requested columns). Gaps never count.
+ * Mirrors the conservation definition in computeMsaColumnStats so the logo
+ * height and the conservation histogram agree.
  */
 export function computeSequenceLogoColumns(
   rows: ReadonlyArray<{ aligned: string }>,
   molecule: SequenceType = 'dna',
+  range: { startColumn?: number; endColumn?: number } = {},
 ): MsaLogoColumn[] {
   const rowCount = rows.length;
   const length = rows[0]?.aligned.length ?? 0;
+  const requestedStart = Number.isFinite(range.startColumn) ? Math.floor(range.startColumn!) : 0;
+  const requestedEnd = Number.isFinite(range.endColumn) ? Math.ceil(range.endColumn!) : length;
+  const startColumn = Math.max(0, Math.min(length, requestedStart));
+  const endColumn = Math.max(startColumn, Math.min(length, requestedEnd));
   const maxEntropy = Math.log2(molecule === 'protein' ? 20 : 4);
-  const columns: MsaLogoColumn[] = new Array(length);
-  for (let column = 0; column < length; column += 1) {
+  const columns: MsaLogoColumn[] = new Array(endColumn - startColumn);
+  for (let column = startColumn; column < endColumn; column += 1) {
+    const outputIndex = column - startColumn;
     const counts = new Map<string, number>();
     let nonGap = 0;
     for (let row = 0; row < rowCount; row += 1) {
@@ -742,7 +749,7 @@ export function computeSequenceLogoColumns(
       nonGap += 1;
       counts.set(symbol, (counts.get(symbol) ?? 0) + 1);
     }
-    if (nonGap === 0) { columns[column] = { information: 0, stack: [] }; continue; }
+    if (nonGap === 0) { columns[outputIndex] = { information: 0, stack: [] }; continue; }
     let entropy = 0;
     const stack: { symbol: string; fraction: number }[] = [];
     for (const [symbol, count] of counts) {
@@ -753,7 +760,7 @@ export function computeSequenceLogoColumns(
     stack.sort((a, b) => b.fraction - a.fraction || (a.symbol < b.symbol ? -1 : 1));
     const occupancy = nonGap / rowCount;
     const information = maxEntropy > 0 ? occupancy * Math.max(0, Math.min(1, 1 - entropy / maxEntropy)) : 0;
-    columns[column] = { information, stack };
+    columns[outputIndex] = { information, stack };
   }
   return columns;
 }
@@ -1002,11 +1009,13 @@ export type MsaMotifMatch = {
 export type MsaMotifSearchResult = { matches: MsaMotifMatch[]; truncated: boolean };
 
 export const MSA_MOTIF_SEARCH_MAX_MATCHES = 5_000;
+export const MSA_MOTIF_SEARCH_MAX_QUERY_LENGTH = 256;
+export const MSA_MOTIF_SEARCH_MAX_RETAINED_COLUMNS = 200_000;
 
 // Upper bound on residue comparisons per search so a long, rare, or absent query
 // on a large alignment cannot block the render thread: once exceeded the scan
 // stops and reports `truncated` instead of running to completion.
-export const MSA_MOTIF_SEARCH_MAX_COMPARISONS = 20_000_000;
+export const MSA_MOTIF_SEARCH_MAX_COMPARISONS = 2_000_000;
 
 // IUPAC nucleotide ambiguity → the concrete bases each code covers.
 const IUPAC_NUCLEOTIDES: Record<string, string> = {
@@ -1032,11 +1041,14 @@ function normalizeMotifResidue(symbol: string, molecule: SequenceType): string {
   return molecule !== 'protein' && upper === 'U' ? 'T' : upper;
 }
 
-/** Total order over matches: earliest alignment column first, then row name. */
-function compareMotifMatches(a: MsaMotifMatch, b: MsaMotifMatch): number {
+type MsaMotifMatchOrder = Pick<MsaMotifMatch, 'rowId' | 'rowName' | 'startColumn' | 'endColumn'>;
+
+/** Total order over matches: earliest alignment column first, then row identity. */
+function compareMotifMatches(a: MsaMotifMatchOrder, b: MsaMotifMatchOrder): number {
   return a.startColumn - b.startColumn
     || a.endColumn - b.endColumn
-    || a.rowName.localeCompare(b.rowName, undefined, { numeric: true });
+    || a.rowName.localeCompare(b.rowName, undefined, { numeric: true })
+    || a.rowId.localeCompare(b.rowId, undefined, { numeric: true });
 }
 
 /**
@@ -1054,17 +1066,22 @@ class BoundedEarliestMatches {
     this.capacity = capacity;
   }
 
-  /** Add a match; returns true when the set was already full (results capped). */
-  push(match: MsaMotifMatch): boolean {
+  /**
+   * Add a match; returns true when the set was already full (results capped).
+   * The columns factory runs only when the candidate is retained, avoiding a
+   * query-length array allocation for every discarded low-complexity hit.
+   */
+  push(order: MsaMotifMatchOrder, columns: () => number[]): boolean {
     if (this.capacity <= 0) return true;
+    const materialize = (): MsaMotifMatch => ({ ...order, columns: columns() });
     if (this.heap.length < this.capacity) {
-      this.heap.push(match);
+      this.heap.push(materialize());
       this.siftUp(this.heap.length - 1);
       return false;
     }
     // Full: keep the new match only if it is earlier than the current worst (root).
-    if (compareMotifMatches(match, this.heap[0]) < 0) {
-      this.heap[0] = match;
+    if (compareMotifMatches(order, this.heap[0]) < 0) {
+      this.heap[0] = materialize();
       this.siftDown(0);
     }
     return true;
@@ -1113,17 +1130,30 @@ class BoundedEarliestMatches {
 export function findMsaMotifMatches(
   rows: readonly { id: string; name: string; aligned: string }[],
   query: string,
-  options: { molecule: SequenceType; maxMatches?: number; maxComparisons?: number },
+  options: {
+    molecule: SequenceType;
+    maxMatches?: number;
+    maxComparisons?: number;
+    maxQueryLength?: number;
+    maxRetainedColumns?: number;
+  },
 ): MsaMotifSearchResult {
   const trimmed = query.trim();
   if (!trimmed || /[-.]/.test(trimmed)) return { matches: [], truncated: false };
   const { molecule } = options;
   const maxMatches = Math.max(0, Math.floor(options.maxMatches ?? MSA_MOTIF_SEARCH_MAX_MATCHES));
   const maxComparisons = Math.max(1, Math.floor(options.maxComparisons ?? MSA_MOTIF_SEARCH_MAX_COMPARISONS));
+  const maxQueryLength = Math.max(1, Math.floor(options.maxQueryLength ?? MSA_MOTIF_SEARCH_MAX_QUERY_LENGTH));
+  const maxRetainedColumns = Math.max(0, Math.floor(options.maxRetainedColumns ?? MSA_MOTIF_SEARCH_MAX_RETAINED_COLUMNS));
   const needle = Array.from(trimmed, (symbol) => normalizeMotifResidue(symbol, molecule));
+  if (needle.length > maxQueryLength) return { matches: [], truncated: true };
+  // Every retained match owns one alignment-column index per query residue.
+  // Bound that aggregate independently of the match count so long motifs cannot
+  // turn a nominally bounded result into millions of array entries.
+  const retainedCapacity = Math.min(maxMatches, Math.floor(maxRetainedColumns / needle.length));
   // Keep only the globally-earliest `maxMatches` regardless of row scan order,
   // and cap total residue comparisons so a rare/absent long query stays bounded.
-  const collector = new BoundedEarliestMatches(maxMatches);
+  const collector = new BoundedEarliestMatches(retainedCapacity);
   let truncated = false;
   let comparisons = 0;
 
@@ -1145,14 +1175,17 @@ export function findMsaMotifMatches(
         if (!residueMatch(needle[offset], residues[start + offset], molecule)) { ok = false; break; }
       }
       if (!ok) continue;
-      const matchColumns = columns.slice(start, start + needle.length);
       if (collector.push({
         rowId: row.id,
         rowName: row.name,
-        startColumn: matchColumns[0],
-        endColumn: matchColumns[matchColumns.length - 1],
-        columns: matchColumns,
-      })) truncated = true;
+        startColumn: columns[start],
+        endColumn: columns[start + needle.length - 1],
+      }, () => columns.slice(start, start + needle.length))) {
+        truncated = true;
+        // With zero retention capacity, the first hit proves truncation and no
+        // later scan can change the intentionally empty result.
+        if (retainedCapacity === 0) break scan;
+      }
     }
   }
 

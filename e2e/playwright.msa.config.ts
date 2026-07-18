@@ -4,10 +4,11 @@ import { fileURLToPath } from 'node:url';
 
 // Isolated Playwright config for the MSA interaction spec. It spins up its own
 // Vite dev server on a dedicated port so it never collides with the shared
-// artifact e2e run or a live dev server. Run with:
-//   MOTIF_MSA_E2E=1 npx playwright test --config e2e/playwright.msa.config.ts
+// artifact e2e run or a live dev server. The opt-in flag is set here rather
+// than through shell syntax so `npm run test:e2e:msa` stays cross-platform.
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const port = Number(process.env.MOTIF_MSA_E2E_PORT ?? 5223);
+process.env.MOTIF_MSA_E2E = '1';
 
 export default defineConfig({
   testDir: resolve(root, 'e2e'),
