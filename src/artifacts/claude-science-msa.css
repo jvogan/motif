@@ -230,6 +230,12 @@
   line-height: 1;
   font-weight: 600;
   color: var(--text-primary, inherit);
+  /* Neutral base so a counted residue that the active scheme can't colour
+   * (e.g. '?' / '.', or a noncanonical residue under Taylor) still reads as
+   * occupied. Without it the block is transparent, which in blocks mode is
+   * indistinguishable from a gap — an occupied column would look empty. The
+   * per-residue scheme fills are more specific and override this. */
+  background: color-mix(in srgb, var(--text-muted, #8b93a1) 26%, var(--bg-primary));
 }
 
 /* ===== Residue colour schemes (letter-cell backgrounds) ===== */

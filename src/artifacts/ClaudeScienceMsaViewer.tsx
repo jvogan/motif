@@ -428,10 +428,10 @@ const MSA_BASE_CELL_MAX = 15;
 const MSA_CELL_MIN = 3;
 const MSA_CELL_MAX = 30;
 const MSA_LETTER_MIN = 6.5;
-// Sequence-logo track: plotting height (must match .motif-cs-msa-logo-window in
-// the CSS) and the smallest residue-segment height that still fits a letter.
+// Sequence-logo track: plotting height (must match .motif-cs-msa-logo-row in
+// the CSS) and the smallest glyph, in px, still worth drawing in a segment.
 const MSA_LOGO_TRACK_HEIGHT = 46;
-const MSA_LOGO_LETTER_MIN_HEIGHT = 9;
+const MSA_LOGO_LETTER_MIN_PX = 7;
 
 function AlignmentMatrix({
   alignment,
@@ -1219,14 +1219,18 @@ function AlignmentMatrix({
             <span className="motif-cs-msa-logo-stack" style={{ height: `${stackFraction * 100}%` }}>
               {col.stack.map((entry) => {
                 const segmentPx = entry.fraction * stackFraction * MSA_LOGO_TRACK_HEIGHT;
-                const showLetter = !blocks && cellWidth >= MSA_LETTER_MIN && segmentPx >= MSA_LOGO_LETTER_MIN_HEIGHT;
+                // Cap the glyph to the segment height so a tall font never
+                // overflows a short block (line-height:1 + overflow:hidden would
+                // clip it); only draw it once the capped glyph is still legible.
+                const letterPx = Math.min(renderFontSize, Math.floor(segmentPx));
+                const showLetter = !blocks && cellWidth >= MSA_LETTER_MIN && letterPx >= MSA_LOGO_LETTER_MIN_PX;
                 return (
                   <span
                     key={entry.symbol}
                     className="motif-cs-msa-logo-block motif-cs-msa-symbol"
                     data-residue={entry.symbol}
                     data-color-key={residueColorKey(entry.symbol, alignment.molecule, logoScheme) || undefined}
-                    style={{ height: `${entry.fraction * 100}%`, fontSize: showLetter ? renderFontSize : 0 }}
+                    style={{ height: `${entry.fraction * 100}%`, fontSize: showLetter ? letterPx : 0 }}
                   >
                     {showLetter ? entry.symbol : ''}
                   </span>

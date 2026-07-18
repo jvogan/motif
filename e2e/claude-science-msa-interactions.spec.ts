@@ -326,6 +326,36 @@ test.describe('Motif MSA viewer interactions', () => {
     await expect(page.getByTestId('msa-logo-row')).toHaveCount(0);
   });
 
+  test('sequence-logo blocks stay coloured for residues the active scheme cannot map', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 980 });
+    await page.addInitScript(() => { window.localStorage.clear(); window.sessionStorage.clear(); });
+    await page.goto('/motif.html');
+    await expect(page.locator('.motif-cs-shell')).toBeVisible();
+    await page.evaluate(() => {
+      // A fully-conserved column of 'X' — a valid residue the Taylor wheel has
+      // no colour for, so it exercises the neutral-base fallback.
+      const fasta = ['ref', 'v1', 'v2', 'v3'].map((n) => `>${n}\nACDEFGXHIKLM`).join('\n') + '\n';
+      const api = (window as unknown as { motifAddAlignments?: (a: unknown) => number }).motifAddAlignments;
+      if (!api) throw new Error('motifAddAlignments unavailable');
+      api({ name: 'E2E X panel', molecule: 'protein', alignedFasta: fasta });
+    });
+    await page.getByTestId('msa-open-button').dispatchEvent('click');
+    await expect(page.getByTestId('msa-alignment-view')).toBeVisible();
+
+    await page.getByTestId('msa-view-menu-button').click();
+    await page.getByRole('checkbox', { name: 'Sequence logo' }).check();
+    await page.getByRole('checkbox', { name: 'Residue colors' }).check();
+    await page.getByLabel('Colour scheme').selectOption('taylor');
+
+    const block = page.locator('.motif-cs-msa-logo-block[data-residue="X"]').first();
+    await expect(block).toBeVisible();
+    // An occupied residue must never be fully transparent — in blocks mode that
+    // would be indistinguishable from a gap, hiding real data.
+    const bg = await block.evaluate((el) => getComputedStyle(el).backgroundColor);
+    expect(bg).not.toBe('rgba(0, 0, 0, 0)');
+    expect(bg).not.toBe('transparent');
+  });
+
   test('sequence search highlights motif matches and navigates them', async ({ page }) => {
     await setup(page);
     const input = page.getByTestId('msa-search-input');
