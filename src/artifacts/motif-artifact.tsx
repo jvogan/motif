@@ -675,7 +675,7 @@ function normalizePaneVisibility(value: unknown): PaneVisibility {
   for (const key of DEFAULT_PANE_ORDER) {
     if (typeof source[key] === 'boolean') next[key] = source[key];
   }
-  // The right rail is a Benchling-style anchor in this artifact; keep it present
+  // The right rail is a persistent workspace anchor; keep it present
   // and let Tools switch between rail and expanded states instead of disappearing.
   next.tools = true;
   // The permanent Tools rail is navigation, not workspace content. Recover old
@@ -14312,7 +14312,7 @@ function RestrictionList({
 }
 
 // An inline amino-acid track: one contiguous translated region shown aligned to
-// the bases (Benchling-style), NOT a whole-entry frame. Forward tracks render
+// the bases, NOT a whole-entry frame. Forward tracks render
 // above the bases, reverse tracks below.
 type InlineTranslationTrack = {
   id: string;

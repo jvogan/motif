@@ -1,13 +1,13 @@
 /**
  * Coordinate helpers for both map projections.
  *
- * Circular convention (matches Benchling / SeqViz): base 0 sits at 12 o'clock
+ * Circular map convention: base 0 sits at 12 o'clock
  * (top) and increasing bp runs CLOCKWISE. Angles are measured in degrees
  * clockwise from top. SVG y grows downward, so the standard trig below produces a
  * clockwise sweep without any sign flips beyond the -90deg "top" shift.
  *
- * Pure functions, reimplemented from SeqViz's MIT geometry (findCoor / genArc /
- * rotateCoor) against Motif's own model — no code copied.
+ * Geometry behavior was reimplemented from SeqViz's MIT-licensed reference
+ * against Motif's own model; no source code copied.
  */
 
 export interface Point {
@@ -213,7 +213,7 @@ export function describeArcLine(
 /**
  * Text anchor + upright hint for an outside label at a given angle, so labels on
  * the right half read start-anchored and the left half end-anchored (leaders point
- * inward). Matches Benchling's outside-label behaviour.
+ * inward). This follows the conventional outside-label behavior.
  */
 export function labelSideForAngle(angleDeg: number): 'start' | 'end' {
   const a = ((angleDeg % 360) + 360) % 360;

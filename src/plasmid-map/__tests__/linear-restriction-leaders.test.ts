@@ -1,9 +1,9 @@
 /**
- * W (map-benchling-polish, linear leaders): the LINEAR restriction-label band must
- * read like Benchling — labels sit close to their ticks so leaders stay SHORT,
+ * The LINEAR restriction-label band keeps labels close to their ticks so leaders
+ * stay SHORT,
  * NEAR-VERTICAL and NON-CROSSING. The old fixed-72px slot de-collision cascaded
  * left-clustered labels far to the right on long shallow (near-horizontal) leaders
- * that fanned across the map — the user-flagged tangle. These tests pin the new
+ * that fanned across the map. These tests pin the
  * width-aware minimum-displacement placement (placeRestrictionRow) and the whole-
  * layout leader geometry so the tangle can't regress.
  */

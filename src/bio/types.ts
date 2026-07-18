@@ -243,11 +243,6 @@ export const BASE_COLORS: Record<string, string> = BASE_COLORS_DARK;
 // 5 classes: Hydrophobic | Polar uncharged | Positive charge | Negative charge | Special
 // AA_COLORS      — dark-mode palette, all colors ≥4.5:1 on #0a0a0a
 // AA_COLORS_LIGHT — light-mode palette, all colors ≥4.5:1 on #ffffff
-//
-// Phase 32 W2-C P0-2: class assignment now derives from `bio/aa-classes.ts`
-// (single source of truth). Notable change vs. pre-Phase-32:
-//   - C (cysteine) was polar/green → now special/gray (Benchling/IMGT consensus
-//     — cysteine forms disulfide bridges; treated as structural, not polar)
 
 /** Amino acid colors for dark backgrounds (#0a0a0a) — WCAG AA ≥4.5:1 */
 export const AA_COLORS: Record<string, string> = {

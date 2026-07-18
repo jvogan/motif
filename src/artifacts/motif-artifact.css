@@ -1435,8 +1435,8 @@ body[data-motif-cs-export-resizing] {
 
 .motif-cs-map-frame {
   position: relative;
-  /* Benchling-style workspace: the map is a primary canvas, so keep the
-     restriction/source panels below it rather than letting them crowd it. */
+  /* Map-first workspace: keep the restriction/source panels below the primary
+     canvas rather than letting them crowd it. */
   height: clamp(560px, 70vh, 820px);
   min-height: 540px;
   padding: 0;
@@ -4590,7 +4590,7 @@ body[data-motif-cs-export-resizing] {
   cursor: pointer;
 }
 
-/* Directional arrowhead (Benchling-style): only the segment holding the true 3'
+/* Directional arrowhead: only the segment holding the true 3'
    terminus is pointed, so a wrapped feature reads as one arrow, not many.
    Strand 0 / none stays a plain rectangular block. */
 .motif-cs-feature-block[data-strand="1"][data-head="true"] {
@@ -9178,7 +9178,7 @@ summary.motif-cs-panel-head:focus-visible {
 
 }
 
-/* Benchling-style split workspace: use the full workbench height for the two
+/* Split workspace: use the full workbench height for the two
    primary canvases. Their compact docks stay at the bottom instead of leaving
    an arbitrary blank band below capped sequence and map viewports. */
 @media (min-width: 768px) {

@@ -72,7 +72,7 @@ export type DigestWorkflowSourceRecord = {
 export type DigestFragmentRecordIdentity = {
   /** Caller-owned durable id. When omitted as a collection, ids derive from workflow.id. */
   id: string;
-  /** Caller-owned display name. Omit for the deterministic Benchling-style default. */
+  /** Caller-owned display name. Omit to use the deterministic fragment name. */
   name?: string;
 };
 
