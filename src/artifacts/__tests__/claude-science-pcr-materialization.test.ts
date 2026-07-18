@@ -144,8 +144,8 @@ describe('PCR engine selected-pair semantics', () => {
 
     expect(result?.features).toHaveLength(1);
     expect(result?.features[0]).toMatchObject({
-      start: 12,
-      end: 18,
+      start: 13,
+      end: 16,
       subRanges: [{ start: 13, end: 16, strand: 1 }],
       metadata: {
         note: 'retain',
@@ -173,6 +173,47 @@ describe('PCR engine selected-pair semantics', () => {
 
     expect(result?.wrapsOrigin).toBe(true);
     expect(result?.product).toBe(template.slice(30) + template.slice(0, 12));
+  });
+
+  it('propagates an origin-spanning multipart feature through circular PCR', () => {
+    const template = 'AAAACCCCGGGGTTTTAAAACCCCGGGGTTTTAAAACCCC';
+    const pair = pairFor(template, 30, 40, 2, 12);
+    const feature: Feature = {
+      id: 'origin-cds',
+      name: 'origin CDS',
+      type: 'cds',
+      start: 2,
+      end: 36,
+      strand: 1,
+      color: '#000000',
+      metadata: {},
+      subRanges: [
+        { start: 32, end: 36, strand: 1 },
+        { start: 2, end: 6, strand: 1 },
+      ],
+    };
+
+    const result = simulatePCR(
+      template,
+      pair.forward.fullSequence,
+      pair.reverse.fullSequence,
+      [feature],
+      'circular',
+      {
+        forward: { start: 30, end: 40 },
+        reverse: { start: 2, end: 12 },
+      },
+    );
+
+    expect(result?.features).toMatchObject([{
+      name: 'origin CDS',
+      start: 2,
+      end: 16,
+      subRanges: [
+        { start: 2, end: 6, strand: 1 },
+        { start: 12, end: 16, strand: 1 },
+      ],
+    }]);
   });
 });
 

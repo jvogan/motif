@@ -135,11 +135,12 @@ describe('Claude Science rail popover regression guards', () => {
     expect(artifactSource).toContain('const addSelectedFeatureRecord = useCallback(() => {');
     expect(artifactSource).toContain("operation: 'extract_feature'");
     expect(artifactSource).toContain('onCreateRecord={addSelectedFeatureRecord}');
-    expect(artifactSource).toContain('title="Extract the selected feature as a new inventory entry"');
+    expect(artifactSource).toContain("'Extract the selected feature as a new inventory entry'");
     expect(artifactSource).toContain('const addTranslationTrackRecord = useCallback((track: InlineTranslationTrack) => {');
     expect(artifactSource).toContain('onAddRecord={() => addTranslationTrackRecord(selectedTranslationLayer)}');
     expect(artifactSource).toMatch(/function TranslationLayerEditor\([\s\S]*?>New protein<\/button>/);
-    expect(artifactSource).toContain("selectedInlineTranslationTrack?.source === 'feature'");
+    expect(artifactSource).toContain('&& CODING_FEATURE_TYPES.has(selectedFeature.type)');
+    expect(artifactSource).toContain('? addSelectionTranslationRecord');
     expect(artifactSource).toContain('onCreateProteinRecord={');
   });
 

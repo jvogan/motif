@@ -625,7 +625,10 @@ function computeCircularLayout(input: MapInput): MapLayout {
     let terminalTipDeltaDeg = 0;
     if (displayStrand !== 0) {
       const forward = displayStrand === 1;
-      terminalIndex = forward ? segs.length - 1 : 0;
+      // Segments are stored in biological 5′→3′ order for both strands, so
+      // the 3′ arrowhead always belongs to the final segment. Strand chooses
+      // which edge of that terminal segment receives the point.
+      terminalIndex = segs.length - 1;
       const term = segs[terminalIndex];
       const termExtentPx = arcExtentPx(
         centerR,
@@ -1315,7 +1318,9 @@ function computeLinearLayout(input: MapInput): MapLayout {
     const yTop = band.top;
     const yMid = band.mid;
     const rowHeight = band.height;
-    const terminalIndex = displayStrand === 1 ? segs.length - 1 : displayStrand === -1 ? 0 : -1;
+    // Biological-order segments terminate at the final stored segment on both
+    // strands; reverse direction points from that segment's left edge.
+    const terminalIndex = displayStrand === 0 ? -1 : segs.length - 1;
     // How far the arrowhead TIP juts past the terminal segment body (0 when
     // directionless — no arrow is drawn). Shared by the glyph path below AND the
     // outside-label side choice, so the label gap clears the arrow tip, not just

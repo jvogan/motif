@@ -313,7 +313,8 @@ describe('Claude Science digest workflow materialization', () => {
       id: 'digest-feature-1',
       name: 'contained feature',
       start: 1,
-      end: 4,
+      end: 3,
+      subRanges: [{ start: 1, end: 3, strand: 1 }],
       metadata: { nested: { source: 'fixture' } },
     }]);
     ((feature.metadata.nested as { source: string }).source) = 'mutated';
@@ -347,6 +348,20 @@ describe('Claude Science digest workflow materialization', () => {
         color: '#bbbbbb',
         metadata: {},
       },
+      {
+        id: 'origin-feature',
+        name: 'origin join',
+        type: 'cds',
+        start: 0,
+        end: 15,
+        strand: 1,
+        color: '#cccccc',
+        metadata: {},
+        subRanges: [
+          { start: 12, end: 15, strand: 1 },
+          { start: 0, end: 1, strand: 1 },
+        ],
+      },
     ];
     const source = sourceRecord('GAATTCAAAAGAATTC', 'circular', features);
     const result = materialize(source, recipeFor(source, 'EcoRI'));
@@ -361,6 +376,11 @@ describe('Claude Science digest workflow materialization', () => {
     }))).toEqual([
       { name: 'tail', start: 1, end: 4, sourceFeatureId: 'tail-feature' },
       { name: 'head', start: 5, end: 6, sourceFeatureId: 'head-feature' },
+      { name: 'origin join', start: 1, end: 6, sourceFeatureId: 'origin-feature' },
+    ]);
+    expect(result.records[1].annotations[2].subRanges).toEqual([
+      { start: 1, end: 4, strand: 1 },
+      { start: 5, end: 6, strand: 1 },
     ]);
   });
 

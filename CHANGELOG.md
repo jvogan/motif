@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- Made discontinuous feature locations authoritative across inspection,
+  translation, exports, maps, mutation, PCR, digestion, Gibson assembly, and
+  Golden Gate assembly instead of silently using their coordinate envelopes.
+- Preserved joined, ordered, reverse, origin-spanning, mixed-strand, and fuzzy
+  INSDC locations in Basic GenBank and emitted one GFF3 row per feature piece.
+- Quarantined unmarked reverse multipart checkpoints from sequence-derived
+  actions when their legacy text order cannot be distinguished safely from
+  biological order; conservative interchange marks them non-materializable,
+  while new and imported locations carry an explicit order marker.
+
 ## 0.2.1 — 2026-07-13
 
 - Added the Motif-owned Claude Science local connector, setup doctor, and

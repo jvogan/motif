@@ -259,7 +259,7 @@ test.describe('Claude Science artifact campaign', () => {
     const featureStart = annotationsPanel.getByLabel('Start');
     const featureEnd = annotationsPanel.getByLabel('End');
     await featureStart.fill('600');
-    await featureEnd.fill('500');
+    await featureEnd.fill('0');
     await expect(featureStart).toHaveAttribute('aria-invalid', 'true');
     await expect(featureStart).toHaveAttribute('aria-describedby', 'motif-cs-feature-range-error');
     await expect(annotationsPanel.locator('#motif-cs-feature-range-error')).toBeVisible();

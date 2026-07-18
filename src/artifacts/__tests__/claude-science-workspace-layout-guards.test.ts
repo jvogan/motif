@@ -164,7 +164,7 @@ describe('Claude Science workspace layout guards', () => {
   });
 
   it('keeps dense sequence annotations out of the sequential tab order', () => {
-    expect(artifactSource).toContain('tabIndex={start === feature.start ? 0 : -1}');
+    expect(artifactSource).toContain('tabIndex={isStart && start === segmentStart ? 0 : -1}');
     expect(artifactSource).toContain('tabIndex={keyboardAnchorOnLine ? 0 : -1}');
     expect(artifactSource).toContain('tabIndex={residue.start === keyboardAnchorStart ? 0 : -1}');
     expect(artifactSource).toContain("if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return false;");
@@ -326,7 +326,7 @@ describe('Claude Science workspace layout guards', () => {
     expect(artifactSource).toContain('className="motif-cs-mini-button motif-cs-display-switch motif-cs-ds-toggle"');
     expect(artifactSource).toContain('<span className="motif-cs-label-full">Complement</span>');
     expect(artifactSource).toContain("{selectedInlineTranslationTrack ? 'Del AA' : 'Add AA'}");
-    expect(artifactSource).toContain('disabled={!selectedInlineTranslationTrack && !selectionActionTranslation}');
+    expect(artifactSource).toContain('disabled={!selectedInlineTranslationTrack && (!selectionActionTranslation || !canPinPreviewTranslation)}');
     expect(artifactSource).toContain('if (selectedInlineTranslationTrack) deleteTranslationLayer(selectedInlineTranslationTrack.id);');
     expect(artifactSource).toContain('addTranslationLayer();');
     expect(artifactSource).toContain('onTranslationTrackSelect={handleTranslationTrackSelectAndReveal}');
@@ -336,11 +336,12 @@ describe('Claude Science workspace layout guards', () => {
     expect(artifactSource).toMatch(/>\s*Protein\s*<\/button>/);
     expect(artifactSource).toContain("onClick={() => setSequenceViewMode('standard')}");
     expect(artifactSource).toContain("onClick={() => setSequenceViewMode('detail')}");
-    expect(artifactSource).toContain('if (hasPartialSequenceSelection) {');
+    expect(artifactSource).toContain('if (selectionSummary) {');
+    expect(artifactSource).toContain('if (hasMaterializableSequenceSelection) addSelectionReverseComplementRecord();');
     expect(artifactSource).toContain('onClick={addContextReverseComplementRecord}');
     expect(artifactSource.match(/onClick=\{addContextReverseComplementRecord\}/g)).toHaveLength(1);
     expect(editToolbar).not.toContain('addContextReverseComplementRecord');
-    expect(artifactSource).toContain('disabled={!isNucleotideRecord} onClick={addContextReverseComplementRecord}');
+    expect(artifactSource).toContain('disabled={!isNucleotideRecord || (!!selectionSummary && !hasMaterializableSequenceSelection)} onClick={addContextReverseComplementRecord}');
     expect(artifactSource).toContain('className="motif-cs-edit-controls"');
     expect(artifactCss).toContain('.motif-cs-switch-track');
     expect(artifactCss).toContain('.motif-cs-view-toggle button[data-active]');
@@ -376,7 +377,7 @@ describe('Claude Science workspace layout guards', () => {
   });
 
   it('resets translation controls for record, target, and natural strand changes', () => {
-    expect(artifactSource).toContain('[recordId, translateTarget.defaultStrand, translateTargetKey]');
+    expect(artifactSource).toContain('[recordId, translateTarget.defaultFrame, translateTarget.defaultStrand, translateTargetKey]');
     expect(artifactSource).not.toContain('// eslint-disable-next-line react-hooks/exhaustive-deps -- reset only on target change');
   });
 
@@ -459,7 +460,7 @@ describe('Claude Science workspace layout guards', () => {
   it('adds fading radial start and end edges without outlining circular selection arcs', () => {
     expect(artifactSource).toContain('function artifactSelectionOverlayPaths(');
     expect(artifactSource).toContain('const radialBoundary = (bp: number) =>');
-    expect(artifactSource).toContain('artifactSelectionOverlayPaths(layout, [visibleMapRange])');
+    expect(artifactSource).toContain('artifactSelectionOverlayPaths(layout, visibleMapRanges)');
     expect(artifactCss).toMatch(/\.motif-cs-map-frame\[data-map-mode="circular"\][\s\S]*?\.motif-pm-selection:nth-child\(3n \+ 2\)/);
     expect(artifactCss).toContain('fill-opacity: 0.9;');
     expect(artifactCss).toContain('stroke: none;');

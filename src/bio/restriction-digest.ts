@@ -2,6 +2,7 @@ import type { Topology, Feature, RestrictionEnzyme } from './types';
 import { findRestrictionSites } from './restriction-sites';
 import { RESTRICTION_ENZYMES_FULL } from './enzyme-data';
 import { reverseComplement } from './reverse-complement';
+import { remapFeatureLocation, type FeatureCoordinateMapSpan } from './feature-location';
 
 type RestrictionOverhangType = 'blunt' | '5prime' | '3prime';
 
@@ -79,45 +80,40 @@ export function restrictionDigest(
   features?: Feature[],
   enzymeCatalog: readonly RestrictionEnzyme[] = RESTRICTION_ENZYMES_FULL,
 ): DigestFragment[] {
+  /** Keep only complete feature products and remap every authoritative piece. */
+  function sliceFeaturesThroughSpans(sourceSpans: readonly FeatureCoordinateMapSpan[]): Feature[] {
+    if (!features || features.length === 0) return [];
+    return features.flatMap((feature) => {
+      const location = remapFeatureLocation(feature, sourceSpans);
+      return location ? [{
+        ...feature,
+        ...location,
+        id: crypto.randomUUID(),
+      }] : [];
+    });
+  }
+
   /** Filter parent features that fall entirely within [fragStart, fragEnd) and offset them. */
   function sliceFeatures(fragStart: number, fragEnd: number): Feature[] {
-    if (!features || features.length === 0) return [];
-    return features
-      .filter((f) => f.start >= fragStart && f.end <= fragEnd)
-      .map((f) => ({
-        ...f,
-        id: crypto.randomUUID(),
-        start: f.start - fragStart,
-        end: f.end - fragStart,
-      }));
+    return sliceFeaturesThroughSpans([{
+      start: fragStart,
+      end: fragEnd,
+      targetStart: 0,
+    }]);
   }
 
   /**
    * Wrap-aware feature slicer for a CIRCULAR fragment that straddles the origin:
    * the fragment sequence is the tail `[tailStart, seq.length)` followed by the
-   * head `[0, headEnd)`. (R11: the single-range `sliceFeatures(tailStart,
-   * headEnd + seq.length)` call dropped every feature on the HEAD/origin side of
-   * such a fragment — `f.start >= tailStart` is false for a head feature — so a
-   * circular digest silently lost those annotations and persisted the loss into
-   * the saved child block, while same-fragment tail features survived.)
+   * head `[0, headEnd)`. Multipart features can span both pieces as long as no
+   * individual authoritative segment crosses a physical cut boundary.
    */
   function sliceFeaturesWrap(tailStart: number, headEnd: number): Feature[] {
-    if (!features || features.length === 0) return [];
     const tailLen = seq.length - tailStart;
-    const out: Feature[] = [];
-    for (const f of features) {
-      if (f.start >= tailStart && f.end <= seq.length) {
-        // Fully within the tail [tailStart, seq.length).
-        out.push({ ...f, id: crypto.randomUUID(), start: f.start - tailStart, end: f.end - tailStart });
-      } else if (f.start >= 0 && f.end <= headEnd) {
-        // Fully within the head [0, headEnd) — placed after the tail in the
-        // fragment sequence, so shift by the tail length.
-        out.push({ ...f, id: crypto.randomUUID(), start: tailLen + f.start, end: tailLen + f.end });
-      }
-      // Else: the feature spans a cut boundary or crosses the origin seam —
-      // dropped, consistent with the linear cut-boundary-spanner rule.
-    }
-    return out;
+    return sliceFeaturesThroughSpans([
+      { start: tailStart, end: seq.length, targetStart: 0 },
+      { start: 0, end: headEnd, targetStart: tailLen },
+    ]);
   }
 
   const requestedNames = new Set(enzymeNames.map((name) => name.toLowerCase()));

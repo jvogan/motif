@@ -161,6 +161,16 @@ describe('ranges: featureSpans / featureSegments', () => {
       { start: 0, end: 5 },
     ]);
   });
+  it('orders a reverse aggregate origin wrap from biological 5′ to 3′', () => {
+    expect(featureSpans({ start: 95, end: 5, strand: -1 }, 100, 'circular')).toEqual([
+      { start: 0, end: 5 },
+      { start: 95, end: 100 },
+    ]);
+    expect(featureSegments({ start: 95, end: 5, strand: -1 }, 100, 'circular')).toEqual([
+      { start: 0, end: 5, isStart: true, isEnd: false },
+      { start: 95, end: 100, isStart: false, isEnd: true },
+    ]);
+  });
   it('marks first/last segments for arrowhead placement', () => {
     const segs = featureSegments({ start: 95, end: 5 }, 100, 'circular');
     expect(segs[0]).toMatchObject({ start: 95, end: 100, isStart: true, isEnd: false });
@@ -181,6 +191,14 @@ describe('ranges: featureSelectionRanges', () => {
     );
     expect(sel.ranges).toEqual([{ start: 2499, end: 2578 }, { start: 0, end: 100 }]);
     expect(sel.primary).toEqual({ start: 2499, end: 2578 });
+  });
+  it('uses the biological head span as primary for a reverse aggregate wrap', () => {
+    const sel = featureSelectionRanges({ start: 95, end: 5, strand: -1 }, 100, 'circular');
+    expect(sel.ranges).toEqual([
+      { start: 0, end: 5 },
+      { start: 95, end: 100 },
+    ]);
+    expect(sel.primary).toEqual({ start: 0, end: 5 });
   });
   it('single span -> primary equals the span', () => {
     const sel = featureSelectionRanges({ start: 10, end: 40 }, 100, 'linear');

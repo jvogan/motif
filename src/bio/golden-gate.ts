@@ -225,6 +225,47 @@ function hammingDistance(a: string, b: string): number {
   return d;
 }
 
+/**
+ * Keep the portions of a feature that fall inside one source span and place
+ * them in product coordinates. Multipart locations are authoritative: their
+ * stored biological order is preserved, empty pieces are removed, and the
+ * aggregate bounds are rebuilt from the surviving pieces.
+ */
+function clipFeatureToSpan(
+  feature: Feature,
+  sourceStart: number,
+  sourceEnd: number,
+  destinationStart: number,
+  rekey = false,
+): Feature | null {
+  if (sourceEnd <= sourceStart) return null;
+
+  const hasSubRanges = feature.subRanges !== undefined;
+  const sourceRanges = hasSubRanges
+    ? feature.subRanges!
+    : [{ start: feature.start, end: feature.end, strand: feature.strand }];
+  const mappedRanges = sourceRanges.flatMap((range) => {
+    const clippedStart = Math.max(range.start, sourceStart);
+    const clippedEnd = Math.min(range.end, sourceEnd);
+    if (clippedEnd <= clippedStart) return [];
+    return [{
+      ...range,
+      start: destinationStart + clippedStart - sourceStart,
+      end: destinationStart + clippedEnd - sourceStart,
+    }];
+  });
+  if (mappedRanges.length === 0) return null;
+
+  const { subRanges: _subRanges, ...featureWithoutSubRanges } = feature;
+  return {
+    ...featureWithoutSubRanges,
+    ...(rekey ? { id: crypto.randomUUID() } : {}),
+    start: Math.min(...mappedRanges.map((range) => range.start)),
+    end: Math.max(...mappedRanges.map((range) => range.end)),
+    ...(hasSubRanges ? { subRanges: mappedRanges } : {}),
+  };
+}
+
 function createProductFeature(
   name: string,
   type: Feature['type'],
@@ -281,18 +322,29 @@ function createJunctionFeature(
   options: { circular?: boolean; sequenceLength?: number; overhangLength?: number } = {},
 ): Feature | null {
   const overhangLength = options.overhangLength ?? overhang.length;
-  const subRanges = options.circular && options.sequenceLength !== undefined
+  const circularRanges = options.circular && options.sequenceLength !== undefined
     ? [
       { start, end, strand: 1 },
       { start: 0, end: Math.min(overhangLength, options.sequenceLength), strand: 1 },
-    ].filter((range) => range.end > range.start)
-    : undefined;
+    ]
+      .filter((range) => range.end > range.start)
+      .filter((range, index, ranges) => ranges.findIndex((candidate) => (
+        candidate.start === range.start && candidate.end === range.end
+      )) === index)
+    : [];
+  const subRanges = circularRanges.length > 1 ? circularRanges : undefined;
+  const featureStart = subRanges
+    ? Math.min(...subRanges.map((range) => range.start))
+    : start;
+  const featureEnd = subRanges
+    ? Math.max(...subRanges.map((range) => range.end))
+    : end;
 
   return createProductFeature(
     `Junction ${leftPartName} -> ${rightPartName} (${overhang})`,
     'restriction_site',
-    start,
-    end,
+    featureStart,
+    featureEnd,
     PRODUCT_JUNCTION_COLOR,
     {
       source: 'golden_gate_assembly',
@@ -307,25 +359,7 @@ function createJunctionFeature(
 }
 
 function clampFeatureToLength(feature: Feature, length: number): Feature | null {
-  const start = Math.max(0, Math.min(feature.start, length));
-  const end = Math.max(start, Math.min(feature.end, length));
-  if (end <= start) return null;
-  const { subRanges: _subRanges, ...featureWithoutSubRanges } = feature;
-
-  const subRanges = feature.subRanges
-    ?.map((range) => ({
-      ...range,
-      start: Math.max(0, Math.min(range.start, length)),
-      end: Math.max(0, Math.min(range.end, length)),
-    }))
-    .filter((range) => range.end > range.start);
-
-  return {
-    ...featureWithoutSubRanges,
-    start,
-    end,
-    ...(subRanges && subRanges.length > 0 ? { subRanges } : {}),
-  };
+  return clipFeatureToSpan(feature, 0, length, 0);
 }
 
 function clampFeaturesToLength(features: Feature[], length: number): Feature[] {
@@ -414,23 +448,8 @@ function digestGoldenGateParts(
     const insertLength = insert.length;
     const shiftedFeatures: Feature[] = [];
     for (const feat of part.features ?? []) {
-      const clampedStart = Math.max(feat.start, leftCut);
-      const clampedEnd = Math.min(feat.end, leftCut + insertLength);
-      if (clampedEnd > clampedStart) {
-        shiftedFeatures.push({
-          ...feat,
-          id: crypto.randomUUID(),
-          start: clampedStart - leftCut,
-          end: clampedEnd - leftCut,
-          subRanges: feat.subRanges
-            ?.map((sr) => ({
-              ...sr,
-              start: Math.max(sr.start, leftCut) - leftCut,
-              end: Math.min(sr.end, leftCut + insertLength) - leftCut,
-            }))
-            .filter((sr) => sr.end > sr.start),
-        });
-      }
+      const shifted = clipFeatureToSpan(feat, leftCut, leftCut + insertLength, 0, true);
+      if (shifted) shiftedFeatures.push(shifted);
     }
 
     digested.push({ id: part.id, name: part.name, insert, oh5, oh3, rightOverhang, features: shiftedFeatures, insertStart: leftCut });
@@ -987,25 +1006,8 @@ export function goldenGateAssemble(
     if (partSpan) productFeatures.push(partSpan);
 
     for (const feat of curr.features) {
-      const shiftedStart = feat.start - overhangLength + offset;
-      const shiftedEnd = feat.end - overhangLength + offset;
-      const newStart = Math.max(offset, shiftedStart);
-      const newEnd = Math.min(sequence.length, shiftedEnd);
-      if (newEnd > newStart) {
-        features.push({
-          ...feat,
-          id: crypto.randomUUID(),
-          start: newStart,
-          end: newEnd,
-          subRanges: feat.subRanges
-            ?.map((sr) => ({
-              ...sr,
-              start: Math.max(offset, sr.start - overhangLength + offset),
-              end: Math.min(sequence.length, sr.end - overhangLength + offset),
-            }))
-            .filter((sr) => sr.end > sr.start),
-        });
-      }
+      const shifted = clipFeatureToSpan(feat, overhangLength, curr.insert.length, offset, true);
+      if (shifted) features.push(shifted);
     }
   }
 
