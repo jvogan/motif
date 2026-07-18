@@ -15795,32 +15795,36 @@ function SequenceText({
                     return restrictionEnzymeIsTypeIIS(enzyme);
                   });
                   return (
-                    <button
+                    <span
                       key={label.key}
-                      type="button"
-                      className="motif-cs-restriction-label"
-                      data-selected={selected || undefined}
-                      aria-pressed={selected}
-                      aria-label={`${label.label}, restriction ${label.sites.length === 1 ? 'site' : 'cluster'} at ${primary.position + 1} bp, ${primaryCutLabel}, ${primary.overhang === 'blunt' ? 'blunt' : `${primary.overhang === '5prime' ? "5 prime" : "3 prime"} overhang`}, ${primary.strand === -1 ? 'reverse' : 'forward'} strand`}
-                      data-type-iis={typeIIS || undefined}
-                      data-site-position={primary.position}
-                      data-recognition-length={primary.recognitionSequence.length}
-                      data-site-strand={primary.strand === -1 ? -1 : 1}
+                      className="motif-cs-restriction-label-anchor"
                       style={{ left: `${label.start - lineStart}ch` }}
-                      onPointerDown={(event) => event.stopPropagation()}
-                      onPointerEnter={() => setHoveredRestrictionTickIds(label.sites.map(restrictionSiteTickId))}
-                      onPointerLeave={() => setHoveredRestrictionTickIds([])}
-                      onFocus={() => setHoveredRestrictionTickIds(label.sites.map(restrictionSiteTickId))}
-                      onBlur={() => setHoveredRestrictionTickIds([])}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        suppressNextFocusScrollRef.current = true;
-                        onRestrictionSelect(primary);
-                      }}
-                      title={`${label.label} · ${primary.recognitionSequence} · ${primary.overhang === 'blunt' ? 'blunt' : `${primary.overhang === '5prime' ? "5′" : "3′"} overhang`}`}
                     >
-                      <span translate="no">{label.label}</span>
-                    </button>
+                      <button
+                        type="button"
+                        className="motif-cs-restriction-label"
+                        data-selected={selected || undefined}
+                        aria-pressed={selected}
+                        aria-label={`${label.label}, restriction ${label.sites.length === 1 ? 'site' : 'cluster'} at ${primary.position + 1} bp, ${primaryCutLabel}, ${primary.overhang === 'blunt' ? 'blunt' : `${primary.overhang === '5prime' ? "5 prime" : "3 prime"} overhang`}, ${primary.strand === -1 ? 'reverse' : 'forward'} strand`}
+                        data-type-iis={typeIIS || undefined}
+                        data-site-position={primary.position}
+                        data-recognition-length={primary.recognitionSequence.length}
+                        data-site-strand={primary.strand === -1 ? -1 : 1}
+                        onPointerDown={(event) => event.stopPropagation()}
+                        onPointerEnter={() => setHoveredRestrictionTickIds(label.sites.map(restrictionSiteTickId))}
+                        onPointerLeave={() => setHoveredRestrictionTickIds([])}
+                        onFocus={() => setHoveredRestrictionTickIds(label.sites.map(restrictionSiteTickId))}
+                        onBlur={() => setHoveredRestrictionTickIds([])}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          suppressNextFocusScrollRef.current = true;
+                          onRestrictionSelect(primary);
+                        }}
+                        title={`${label.label} · ${primary.recognitionSequence} · ${primary.overhang === 'blunt' ? 'blunt' : `${primary.overhang === '5prime' ? "5′" : "3′"} overhang`}`}
+                      >
+                        <span translate="no">{label.label}</span>
+                      </button>
+                    </span>
                   );
                 })}
               </div>

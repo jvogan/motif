@@ -4516,9 +4516,18 @@ body[data-motif-cs-export-resizing] {
   min-width: 0;
 }
 
-.motif-cs-restriction-label {
+.motif-cs-restriction-label-anchor {
   position: absolute;
   top: 0;
+  /* This element owns the `left: …ch` coordinate and therefore stays on the
+     same character grid as the sequence bases. The button inside can use
+     smaller label typography without changing that coordinate unit. */
+  font: 12px/13px var(--font-mono);
+}
+
+.motif-cs-restriction-label {
+  position: relative;
+  display: block;
   max-width: 18ch;
   overflow: hidden;
   padding: 0 3px 1px;

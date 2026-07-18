@@ -93,6 +93,58 @@ test.describe('Claude Science artifact campaign', () => {
     await page.screenshot({ path: path.join(outputDir, 'restriction-detail-light.png'), fullPage: true });
   });
 
+  test('late-column restriction labels share the recognition and cut-bond grid', async ({ page }) => {
+    await openArtifact(page);
+    await ensureDetailMode(page);
+
+    const label = page.locator('.motif-cs-restriction-label').filter({ hasText: /^HindIII$/ }).first();
+    await expect(label).toBeVisible();
+    await label.scrollIntoViewIfNeeded();
+    await label.hover();
+
+    const block = label.locator('xpath=ancestor::*[contains(concat(" ", normalize-space(@class), " "), " motif-cs-seq-block ")]');
+    const bases = block.locator('.motif-cs-seq-bases');
+    const recognition = block.locator('.motif-cs-seq-hl-restriction');
+    const ruler = page.locator('.motif-cs-seq-ruler');
+    await expect(recognition).toHaveCount(1);
+
+    const sitePosition = Number(await label.getAttribute('data-site-position'));
+    const lineStart = Number(await bases.getAttribute('data-line-start'));
+    const lineOffset = sitePosition - lineStart;
+    const recognitionLength = Number(await label.getAttribute('data-recognition-length'));
+    const charWidth = (await ruler.evaluate((node) => node.getBoundingClientRect().width)) / 100;
+    const labelBox = (await label.boundingBox())!;
+    const basesBox = (await bases.boundingBox())!;
+    const recognitionBox = (await recognition.boundingBox())!;
+
+    expect(lineOffset).toBeGreaterThan(30);
+    expect(recognitionLength).toBe(6);
+    expect(Math.abs(labelBox.x - recognitionBox.x)).toBeLessThan(0.75);
+    expect(Math.abs(recognitionBox.x - (basesBox.x + lineOffset * charWidth))).toBeLessThan(0.75);
+    expect(Math.abs(recognitionBox.width - recognitionLength * charWidth)).toBeLessThan(0.75);
+
+    const cuts = block.locator('.motif-cs-seq-cut[data-enzyme="HindIII"]');
+    await expect(cuts).toHaveCount(2);
+    const cutGeometry = await cuts.evaluateAll((nodes) => nodes.map((node) => {
+      const element = node as HTMLElement;
+      return {
+        bond: Number(element.dataset.cutBond),
+        strand: element.dataset.strand,
+        x: element.getBoundingClientRect().x,
+      };
+    }));
+    expect(cutGeometry
+      .map(({ bond, strand }) => ({ bond, strand }))
+      .sort((a, b) => a.bond - b.bond)).toEqual([
+      { bond: sitePosition + 1, strand: 'sense' },
+      { bond: sitePosition + 5, strand: 'antisense' },
+    ]);
+    for (const cut of cutGeometry) {
+      const expectedX = basesBox.x + (cut.bond - lineStart) * charWidth;
+      expect(Math.abs(cut.x - expectedX)).toBeLessThan(0.75);
+    }
+  });
+
   test('Type IIS labels reveal the correct staggered cut bonds on hover and selection', async ({ page }) => {
     await openArtifact(page);
     await ensureDetailMode(page);
