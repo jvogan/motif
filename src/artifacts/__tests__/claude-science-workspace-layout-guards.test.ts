@@ -203,7 +203,11 @@ describe('Claude Science workspace layout guards', () => {
     expect(artifactSource).toContain('[neighbor]: startWidths[neighbor] - appliedDelta');
     expect(artifactSource).toContain('if (moveEvent.pointerId !== pointerId) return;');
     expect(artifactSource).toContain('if (endEvent.pointerId !== pointerId) return;');
-    expect(artifactSource).toContain("window.addEventListener('pointercancel', handlePointerUp);");
+    expect(artifactSource).toContain("window.addEventListener('pointercancel', handlePointerEnd);");
+    expect(artifactSource).toContain("window.addEventListener('blur', handleWindowBlur);");
+    expect(artifactSource).toContain("resizeHandle.addEventListener('lostpointercapture', handleLostPointerCapture);");
+    expect(artifactSource).toContain('stopPaneResize();');
+    expect(artifactSource).toContain('stopStackedPaneResize();');
     expect(artifactCss).toContain('var(--motif-cs-tools-pane-width, 280px)');
     expect(artifactCss).toMatch(/@media \(min-width: 640px\) and \(max-width: 1535px\)[\s\S]*?\.motif-cs-resize-handle\[data-pane="sequence"\]\s*\{[\s\S]*?display:\s*none/);
   });
@@ -451,7 +455,7 @@ describe('Claude Science workspace layout guards', () => {
     expect(artifactSource).toContain('aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown"');
     expect(artifactCss).toContain('.motif-cs-window-resize:focus-visible');
     expect(artifactCss).toMatch(/\.motif-cs-window-resize\s*\{[\s\S]*?width:\s*28px;[\s\S]*?height:\s*28px/);
-    expect(artifactSource).toContain('rightInset={toolsPinned ? 0 : TOOLS_RAIL_WIDTH}');
+    expect(artifactSource).toContain('rightInset={toolsRail ? TOOLS_RAIL_WIDTH : 0}');
     expect(artifactSource).toContain('clampWindowRect(raw, vw, vh, rightInset)');
     expect(artifactSource).toContain('vw - rightInset - drag.base.x - 8');
     expect(artifactCss).not.toContain('.motif-cs-window-resize {\n    right: 58px;');

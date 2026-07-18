@@ -1255,10 +1255,8 @@ body[data-motif-cs-rail-popover-resizing] {
 }
 
 .motif-cs-inspector[data-tools-pinned="false"] .motif-cs-panel[open] > .motif-cs-tool-panel-body > .motif-cs-rail-popover-resize {
-  position: sticky;
-  z-index: 3;
-  bottom: 0;
-  left: 0;
+  position: fixed;
+  z-index: 72;
   display: block;
   width: 28px;
   height: 28px;
@@ -1268,10 +1266,6 @@ body[data-motif-cs-rail-popover-resizing] {
   background: transparent;
   cursor: nesw-resize;
   touch-action: none;
-  transform: translate(
-    calc(var(--rail-popover-title-offset-x, 0px) * -1),
-    var(--rail-popover-title-offset-y, 0px)
-  );
 }
 
 .motif-cs-rail-popover-resize::after {
@@ -10050,10 +10044,10 @@ summary.motif-cs-panel-head:focus-visible {
 
 .motif-cs-main > .motif-cs-pane[data-pane-placement="floating"] {
   position: fixed !important;
-  top: var(--motif-cs-floating-pane-top) !important;
-  left: var(--motif-cs-floating-pane-left) !important;
-  width: var(--motif-cs-floating-pane-width) !important;
-  height: var(--motif-cs-floating-pane-height) !important;
+  top: var(--motif-cs-floating-pane-top, 8px) !important;
+  left: var(--motif-cs-floating-pane-left, 8px) !important;
+  width: var(--motif-cs-floating-pane-width, 340px) !important;
+  height: var(--motif-cs-floating-pane-height, 520px) !important;
   grid-column: auto !important;
   grid-row: auto !important;
   align-self: auto !important;
@@ -10122,10 +10116,10 @@ summary.motif-cs-panel-head:focus-visible {
 }
 
 .motif-cs-floating-pane-resize {
-  position: absolute;
+  position: fixed;
   z-index: 8;
-  right: 0;
-  bottom: 0;
+  top: calc(var(--motif-cs-floating-pane-top, 8px) + var(--motif-cs-floating-pane-height, 520px) - 28px);
+  left: calc(var(--motif-cs-floating-pane-left, 8px) + var(--motif-cs-floating-pane-width, 340px) - 28px);
   width: 28px;
   height: 28px;
   padding: 0;

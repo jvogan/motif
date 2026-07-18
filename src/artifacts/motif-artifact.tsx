@@ -799,12 +799,17 @@ function normalizeFloatingPaneRects(value: unknown): FloatingPaneRects {
 
 function normalizeWorkspaceLayout(value: unknown): WorkspaceLayoutPrefs {
   const source = value && typeof value === 'object' ? value as Partial<Record<keyof WorkspaceLayoutPrefs, unknown>> : {};
-  const panePlacements = normalizePanePlacements(source.panePlacements);
+  const paneVisibility = normalizePaneVisibility(source.paneVisibility);
+  let panePlacements = normalizePanePlacements(source.panePlacements);
+  if (!CONTENT_PANE_KEYS.some((pane) => paneVisibility[pane] && panePlacements[pane] === 'docked')) {
+    const fallbackPane = CONTENT_PANE_KEYS.find((pane) => paneVisibility[pane]) ?? 'sequence';
+    panePlacements = { ...panePlacements, [fallbackPane]: 'docked' };
+  }
   return {
     theme: normalizeArtifactThemeName(source.theme),
     paneWidths: normalizePaneWidths(source.paneWidths),
     stackedPaneHeights: normalizeStackedPaneHeights(source.stackedPaneHeights),
-    paneVisibility: normalizePaneVisibility(source.paneVisibility),
+    paneVisibility,
     paneOrder: normalizePaneOrder(source.paneOrder),
     toolsPinned: panePlacements.tools === 'floating'
       ? true
@@ -4765,6 +4770,8 @@ function App() {
     base: FloatingSurfaceRect;
   } | null>(null);
   const floatingPaneInteractionCleanupRef = useRef<(() => void) | null>(null);
+  const paneResizeCleanupRef = useRef<(() => void) | null>(null);
+  const stackedPaneResizeCleanupRef = useRef<(() => void) | null>(null);
   const sequenceScrollByRecordRef = useRef<Record<string, number>>({});
   const mapDragRef = useRef<MapDragState | null>(null);
   const mapPointerIdRef = useRef<number | null>(null);
@@ -8063,7 +8070,23 @@ function App() {
     delete document.body.dataset.motifCsPaneFloatingAction;
   }, []);
 
-  useEffect(() => () => stopFloatingPaneInteraction(), [stopFloatingPaneInteraction]);
+  const stopPaneResize = useCallback(() => {
+    paneResizeCleanupRef.current?.();
+    paneResizeCleanupRef.current = null;
+    delete document.body.dataset.motifCsResizing;
+  }, []);
+
+  const stopStackedPaneResize = useCallback(() => {
+    stackedPaneResizeCleanupRef.current?.();
+    stackedPaneResizeCleanupRef.current = null;
+    delete document.body.dataset.motifCsStackedResizing;
+  }, []);
+
+  useEffect(() => () => {
+    stopFloatingPaneInteraction();
+    stopPaneResize();
+    stopStackedPaneResize();
+  }, [stopFloatingPaneInteraction, stopPaneResize, stopStackedPaneResize]);
 
   const setFloatingPaneRect = useCallback((pane: PaneKey, rect: FloatingSurfaceRect) => {
     floatingPaneRectsRef.current = { ...floatingPaneRectsRef.current, [pane]: rect };
@@ -8187,11 +8210,12 @@ function App() {
       if (!pane || !DEFAULT_PANE_ORDER.includes(pane)) return;
       event.preventDefault();
       event.stopPropagation();
+      stopFloatingPaneInteraction();
       dockPane(pane);
     };
     window.addEventListener('keydown', dockFocusedFloatingPane);
     return () => window.removeEventListener('keydown', dockFocusedFloatingPane);
-  }, [dockPane]);
+  }, [dockPane, stopFloatingPaneInteraction]);
 
   const scrollPaneIntoView = useCallback((pane: PaneKey) => {
     if (typeof document === 'undefined') return;
@@ -9530,6 +9554,10 @@ function App() {
     setPaneVisibility((current) => {
       const openContentCount = CONTENT_PANE_KEYS.filter((key) => current[key]).length;
       if (pane !== 'tools' && current[pane] && openContentCount <= 1) return current;
+      const dockedContentCount = CONTENT_PANE_KEYS.filter((key) => (
+        current[key] && panePlacements[key] === 'docked'
+      )).length;
+      if (pane !== 'tools' && current[pane] && panePlacements[pane] === 'docked' && dockedContentCount <= 1) return current;
       return { ...current, [pane]: !current[pane] };
     });
     if ((isStacked || panePlacements[pane] === 'floating') && !paneVisibility[pane]) {
@@ -9781,7 +9809,7 @@ function App() {
       ? visibleResizablePanes.filter((pane) => pane !== 'tools')
       : visibleResizablePanes;
     if (fittedPanes.length === 0) return widths;
-    const mainWidth = document.querySelector<HTMLElement>('.motif-cs-main')?.clientWidth ?? window.innerWidth;
+    const mainWidth = Math.max(1, workspaceMainSize.width);
     const effectiveHandleCount = twoRowLayout
       ? Number(fittedPanes.includes('inventory') && fittedPanes.includes('sequence'))
       : resizeHandleCount - (overlayTools && showToolsResizeHandle ? 1 : 0);
@@ -9813,7 +9841,7 @@ function App() {
       deficit -= consumed;
     }
     return next;
-  }, [compactPinnedLayout, paneWidthLimitsForCurrentLayout, resizeHandleCount, showToolsResizeHandle, stableCompactTopology, toolsRailWidth, visibleContentPanes.length, visibleResizablePanes]);
+  }, [compactPinnedLayout, paneWidthLimitsForCurrentLayout, resizeHandleCount, showToolsResizeHandle, stableCompactTopology, toolsRailWidth, visibleContentPanes.length, visibleResizablePanes, workspaceMainSize.width]);
 
   useEffect(() => {
     const clampForCurrentViewport = () => {
@@ -9891,7 +9919,7 @@ function App() {
       .reduce((sum, key) => sum + paneWidths[key], effectiveToolsRailWidth);
     const effectiveHandleCount = resizeHandleCount - (overlayLayout && showToolsResizeHandle ? 1 : 0);
     const resizeHandleSpace = Math.max(0, effectiveHandleCount) * resizeHandleWidth;
-    const mainWidth = document.querySelector<HTMLElement>('.motif-cs-main')?.clientWidth ?? window.innerWidth;
+    const mainWidth = Math.max(1, workspaceMainSize.width);
     const overlayTools = pane === 'tools' && overlayLayout;
     const compactRowMaxWidth = compactPinnedLayout && pane === 'inventory'
       ? mainWidth - resizeHandleWidth - PANE_WIDTH_LIMITS.sequence.min
@@ -9906,10 +9934,9 @@ function App() {
             limits.min,
             Math.min(limits.max, mainWidth - otherPaneWidth - resizeHandleSpace),
           );
-    document.body.dataset.motifCsResizing = pane;
+    stopPaneResize();
     const resizeHandle = event.currentTarget;
     const pointerId = event.pointerId;
-    resizeHandle.setPointerCapture?.(pointerId);
 
     const handlePointerMove = (moveEvent: PointerEvent) => {
       if (moveEvent.pointerId !== pointerId) return;
@@ -9927,26 +9954,49 @@ function App() {
         return;
       }
       const nextWidth = clamp(startWidth + delta, limits.min, maxWidthForViewport);
-      setPreferredPaneWidths((current) => {
-        const nextPreferred = { ...current, [pane]: nextWidth };
-        setPaneWidths(clampPaneWidthsForViewport(nextPreferred));
-        return nextPreferred;
-      });
+      const nextPreferred = { ...startPreferredWidths, [pane]: nextWidth };
+      setPreferredPaneWidths(nextPreferred);
+      setPaneWidths(clampPaneWidthsForViewport(nextPreferred));
     };
 
-    const handlePointerUp = (endEvent: PointerEvent) => {
-      if (endEvent.pointerId !== pointerId) return;
-      delete document.body.dataset.motifCsResizing;
+    const removeListeners = () => {
       window.removeEventListener('pointermove', handlePointerMove);
-      window.removeEventListener('pointerup', handlePointerUp);
-      window.removeEventListener('pointercancel', handlePointerUp);
-      if (resizeHandle.hasPointerCapture?.(pointerId)) resizeHandle.releasePointerCapture?.(pointerId);
+      window.removeEventListener('pointerup', handlePointerEnd);
+      window.removeEventListener('pointercancel', handlePointerEnd);
+      window.removeEventListener('blur', handleWindowBlur);
+      resizeHandle.removeEventListener('lostpointercapture', handleLostPointerCapture);
+      if (paneResizeCleanupRef.current === removeListeners) paneResizeCleanupRef.current = null;
+      try {
+        if (resizeHandle.hasPointerCapture?.(pointerId)) resizeHandle.releasePointerCapture?.(pointerId);
+      } catch {
+        /* Capture may already be gone after blur or DOM removal. */
+      }
     };
+    function handlePointerEnd(endEvent: PointerEvent) {
+      if (endEvent.pointerId !== pointerId) return;
+      stopPaneResize();
+    }
+    function handleLostPointerCapture(lostEvent: PointerEvent) {
+      if (lostEvent.pointerId !== pointerId) return;
+      stopPaneResize();
+    }
+    function handleWindowBlur() {
+      stopPaneResize();
+    }
 
+    paneResizeCleanupRef.current = removeListeners;
+    document.body.dataset.motifCsResizing = pane;
     window.addEventListener('pointermove', handlePointerMove);
-    window.addEventListener('pointerup', handlePointerUp);
-    window.addEventListener('pointercancel', handlePointerUp);
-  }, [clampPaneWidthsForViewport, compactPinnedLayout, paneResizeNeighbor, paneWidthLimitsForCurrentLayout, paneWidths, preferredPaneWidths, resizeHandleCount, resizePanePair, showToolsResizeHandle, toolsRailWidth, visibleResizablePanes]);
+    window.addEventListener('pointerup', handlePointerEnd);
+    window.addEventListener('pointercancel', handlePointerEnd);
+    window.addEventListener('blur', handleWindowBlur);
+    resizeHandle.addEventListener('lostpointercapture', handleLostPointerCapture);
+    try {
+      resizeHandle.setPointerCapture?.(pointerId);
+    } catch {
+      /* Window listeners keep resizing active when capture is unavailable. */
+    }
+  }, [clampPaneWidthsForViewport, compactPinnedLayout, paneResizeNeighbor, paneWidthLimitsForCurrentLayout, paneWidths, preferredPaneWidths, resizeHandleCount, resizePanePair, showToolsResizeHandle, stopPaneResize, toolsRailWidth, visibleResizablePanes, workspaceMainSize.width]);
   const resizePaneFromKeyboard = useCallback((pane: ResizablePaneKey, event: ReactKeyboardEvent<HTMLDivElement>, edge: ResizeEdge = 'after') => {
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
     event.preventDefault();
@@ -9965,14 +10015,12 @@ function App() {
       setPaneWidths(nextWidths);
       return;
     }
-    setPreferredPaneWidths((current) => {
-      const limits = paneWidthLimitsForCurrentLayout(pane);
-      const requested = clamp(current[pane] + screenDirection * direction * step, limits.min, limits.max);
-      const nextPreferred = { ...current, [pane]: requested };
-      setPaneWidths(clampPaneWidthsForViewport(nextPreferred));
-      return nextPreferred;
-    });
-  }, [clampPaneWidthsForViewport, paneResizeNeighbor, paneWidthLimitsForCurrentLayout, paneWidths, resizePanePair]);
+    const limits = paneWidthLimitsForCurrentLayout(pane);
+    const requested = clamp(preferredPaneWidths[pane] + screenDirection * direction * step, limits.min, limits.max);
+    const nextPreferred = { ...preferredPaneWidths, [pane]: requested };
+    setPreferredPaneWidths(nextPreferred);
+    setPaneWidths(clampPaneWidthsForViewport(nextPreferred));
+  }, [clampPaneWidthsForViewport, paneResizeNeighbor, paneWidthLimitsForCurrentLayout, paneWidths, preferredPaneWidths, resizePanePair]);
 
   const resizeStackedPaneTo = useCallback((pane: StackedResizablePaneKey, height: number) => {
     const bounds = stackedPaneBoundsForCurrentLayout(pane);
@@ -9995,27 +10043,51 @@ function App() {
     const startHeight = paneElement.getBoundingClientRect().height;
     const resizeHandle = event.currentTarget;
     const pointerId = event.pointerId;
-    resizeHandle.setPointerCapture?.(pointerId);
-    document.body.dataset.motifCsStackedResizing = pane;
+    stopStackedPaneResize();
 
     const handlePointerMove = (moveEvent: PointerEvent) => {
       if (moveEvent.pointerId !== pointerId) return;
       moveEvent.preventDefault();
       resizeStackedPaneTo(pane, startHeight + moveEvent.clientY - startY);
     };
-    const stopResize = (endEvent: PointerEvent) => {
-      if (endEvent.pointerId !== pointerId) return;
-      delete document.body.dataset.motifCsStackedResizing;
+    const removeListeners = () => {
       window.removeEventListener('pointermove', handlePointerMove);
-      window.removeEventListener('pointerup', stopResize);
-      window.removeEventListener('pointercancel', stopResize);
-      if (resizeHandle.hasPointerCapture?.(pointerId)) resizeHandle.releasePointerCapture?.(pointerId);
+      window.removeEventListener('pointerup', handlePointerEnd);
+      window.removeEventListener('pointercancel', handlePointerEnd);
+      window.removeEventListener('blur', handleWindowBlur);
+      resizeHandle.removeEventListener('lostpointercapture', handleLostPointerCapture);
+      if (stackedPaneResizeCleanupRef.current === removeListeners) stackedPaneResizeCleanupRef.current = null;
+      try {
+        if (resizeHandle.hasPointerCapture?.(pointerId)) resizeHandle.releasePointerCapture?.(pointerId);
+      } catch {
+        /* Capture may already be gone after blur or DOM removal. */
+      }
     };
+    function handlePointerEnd(endEvent: PointerEvent) {
+      if (endEvent.pointerId !== pointerId) return;
+      stopStackedPaneResize();
+    }
+    function handleLostPointerCapture(lostEvent: PointerEvent) {
+      if (lostEvent.pointerId !== pointerId) return;
+      stopStackedPaneResize();
+    }
+    function handleWindowBlur() {
+      stopStackedPaneResize();
+    }
 
+    stackedPaneResizeCleanupRef.current = removeListeners;
+    document.body.dataset.motifCsStackedResizing = pane;
     window.addEventListener('pointermove', handlePointerMove);
-    window.addEventListener('pointerup', stopResize);
-    window.addEventListener('pointercancel', stopResize);
-  }, [resizeStackedPaneTo, toolsDocked]);
+    window.addEventListener('pointerup', handlePointerEnd);
+    window.addEventListener('pointercancel', handlePointerEnd);
+    window.addEventListener('blur', handleWindowBlur);
+    resizeHandle.addEventListener('lostpointercapture', handleLostPointerCapture);
+    try {
+      resizeHandle.setPointerCapture?.(pointerId);
+    } catch {
+      /* Window listeners keep resizing active when capture is unavailable. */
+    }
+  }, [resizeStackedPaneTo, stopStackedPaneResize, toolsDocked]);
 
   const resizeStackedPaneFromKeyboard = useCallback((pane: StackedResizablePaneKey, event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
@@ -10033,7 +10105,17 @@ function App() {
     paneVisibility[pane] && panePlacements[pane] === 'docked'
   )).length;
   const dockedPaneCount = dockedContentPaneCount + Number(paneVisibility.tools && toolsDocked);
-  const canCollapseContentPane = visibleContentPaneCount > 1;
+  const canHideContentPane = (pane: Exclude<PaneKey, 'tools'>) => (
+    visibleContentPaneCount > 1
+    && (panePlacements[pane] !== 'docked' || dockedContentPaneCount > 1)
+  );
+  const contentPaneHideBlockReason = (pane: Exclude<PaneKey, 'tools'>) => (
+    visibleContentPaneCount <= 1
+      ? 'At least one content pane must stay visible'
+      : panePlacements[pane] === 'docked' && dockedContentPaneCount <= 1
+        ? 'Keep one content pane docked in the workspace'
+        : ''
+  );
   const stackedInventoryBounds = stackedPaneBoundsForCurrentLayout('inventory');
   const effectiveStackedInventoryHeight = stackedPaneHeights.inventory === null
     ? null
@@ -10135,7 +10217,8 @@ function App() {
             {paneOrder.map((pane) => {
               const PaneIcon = PANE_ICONS[pane];
               const paneOn = pane === 'tools' ? true : paneVisibility[pane];
-              const isLastVisiblePane = pane !== 'tools' && paneOn && visibleContentPaneCount <= 1;
+              const paneHideBlocked = pane !== 'tools' && paneOn && !canHideContentPane(pane);
+              const paneHideBlockReason = pane === 'tools' ? '' : contentPaneHideBlockReason(pane);
               const paneFloating = panePlacements[pane] === 'floating';
               return (
                 <button
@@ -10147,7 +10230,7 @@ function App() {
                   data-dragging={paneDragUi?.dragged === pane || undefined}
                   data-drop-target={paneDragUi?.target === pane && paneDragUi.dragged !== pane || undefined}
                   draggable={paneReorderAvailable}
-                  disabled={pane !== 'tools' && isLastVisiblePane}
+                  disabled={paneHideBlocked}
                   onClick={() => handlePaneToggleClick(pane)}
                   onKeyDown={(event) => handlePaneToggleKeyDown(pane, event)}
                   onDragStart={(event) => handlePaneDragStart(pane, event)}
@@ -10158,11 +10241,11 @@ function App() {
                   aria-keyshortcuts={paneReorderAvailable ? 'Alt+Shift+ArrowLeft Alt+Shift+ArrowRight' : undefined}
                   aria-label={pane === 'tools'
                     ? `Tools ${toolsFloating ? 'floating' : toolsDocked ? 'expanded' : 'rail'}${paneReorderAvailable ? '; drag or use Alt+Shift+Left/Right Arrow to reorder' : ''}`
-                    : `${PANE_LABELS[pane]} pane ${paneOn ? paneFloating ? 'floating' : 'on' : 'off'}${isLastVisiblePane ? '; at least one pane must stay visible' : paneReorderAvailable ? '; drag or use Alt+Shift+Left/Right Arrow to reorder' : ''}`}
+                    : `${PANE_LABELS[pane]} pane ${paneOn ? paneFloating ? 'floating' : 'on' : 'off'}${paneHideBlocked ? `; ${paneHideBlockReason.toLowerCase()}` : paneReorderAvailable ? '; drag or use Alt+Shift+Left/Right Arrow to reorder' : ''}`}
                   title={pane === 'tools'
                     ? `${toolsFloating || toolsDocked ? 'Minimize tools to the right rail' : 'Expand tools panel'}${paneReorderAvailable ? '; drag to reorder' : ''}`
-                    : isLastVisiblePane
-                      ? 'At least one pane must stay visible'
+                    : paneHideBlocked
+                      ? paneHideBlockReason
                       : `${paneOn ? 'Hide' : 'Show'} ${PANE_LABELS[pane]} pane${paneReorderAvailable ? '; drag to reorder' : ''}`}
                 >
                   <PaneIcon className="motif-cs-nav-icon" aria-hidden="true" />
@@ -10310,10 +10393,10 @@ function App() {
                 <button
                   className="motif-cs-pane-collapse"
                   type="button"
-                  disabled={!canCollapseContentPane}
+                  disabled={!canHideContentPane('inventory')}
                   onClick={() => collapsePaneAndRestoreFocus('inventory')}
-                  aria-label={canCollapseContentPane ? 'Collapse inventory pane' : 'Inventory pane cannot be collapsed; at least one content pane must stay visible'}
-                  title={canCollapseContentPane ? 'Collapse inventory pane' : 'At least one content pane must stay visible'}
+                  aria-label={canHideContentPane('inventory') ? 'Collapse inventory pane' : `Inventory pane cannot be collapsed; ${contentPaneHideBlockReason('inventory').toLowerCase()}`}
+                  title={canHideContentPane('inventory') ? 'Collapse inventory pane' : contentPaneHideBlockReason('inventory')}
                 >
                   {paneCollapsePointsRight('inventory') ? (
                     <ChevronRight size={14} strokeWidth={2.2} aria-hidden="true" />
@@ -10395,10 +10478,10 @@ function App() {
                 <button
                   className="motif-cs-pane-collapse"
                   type="button"
-                  disabled={!canCollapseContentPane}
+                  disabled={!canHideContentPane('map')}
                   onClick={() => collapsePaneAndRestoreFocus('map')}
-                  aria-label={canCollapseContentPane ? 'Collapse map pane' : 'Map pane cannot be collapsed; at least one content pane must stay visible'}
-                  title={canCollapseContentPane ? 'Collapse map pane' : 'At least one content pane must stay visible'}
+                  aria-label={canHideContentPane('map') ? 'Collapse map pane' : `Map pane cannot be collapsed; ${contentPaneHideBlockReason('map').toLowerCase()}`}
+                  title={canHideContentPane('map') ? 'Collapse map pane' : contentPaneHideBlockReason('map')}
                 >
                   {paneCollapsePointsRight('map') ? (
                     <ChevronRight size={14} strokeWidth={2.2} aria-hidden="true" />
@@ -10648,10 +10731,10 @@ function App() {
                 <button
                   className="motif-cs-pane-collapse"
                   type="button"
-                  disabled={!canCollapseContentPane}
+                  disabled={!canHideContentPane('sequence')}
                   onClick={() => collapsePaneAndRestoreFocus('sequence')}
-                  aria-label={canCollapseContentPane ? 'Collapse sequence pane' : 'Sequence pane cannot be collapsed; at least one content pane must stay visible'}
-                  title={canCollapseContentPane ? 'Collapse sequence pane' : 'At least one content pane must stay visible'}
+                  aria-label={canHideContentPane('sequence') ? 'Collapse sequence pane' : `Sequence pane cannot be collapsed; ${contentPaneHideBlockReason('sequence').toLowerCase()}`}
+                  title={canHideContentPane('sequence') ? 'Collapse sequence pane' : contentPaneHideBlockReason('sequence')}
                 >
                   {paneCollapsePointsRight('sequence') ? (
                     <ChevronRight size={14} strokeWidth={2.2} aria-hidden="true" />
@@ -11477,7 +11560,7 @@ function App() {
           title="Translations"
           subtitle={vector.name}
           initial={translationsWin}
-          rightInset={toolsPinned ? 0 : TOOLS_RAIL_WIDTH}
+          rightInset={toolsRail ? TOOLS_RAIL_WIDTH : 0}
           onClose={() => setShowTranslations(false)}
           onCommit={setTranslationsWin}
           returnFocusRef={translationsToggleRef}
@@ -11517,7 +11600,7 @@ function App() {
           title="Gel Preview"
           subtitle="qualitative agarose"
           initial={gelWin}
-          rightInset={toolsPinned ? 0 : TOOLS_RAIL_WIDTH}
+          rightInset={toolsRail ? TOOLS_RAIL_WIDTH : 0}
           onClose={() => setShowGel(false)}
           onCommit={setGelWin}
           returnFocusRef={gelReturnFocusRef}
@@ -11560,7 +11643,7 @@ function App() {
           title="Primer Design"
           subtitle={cloningPrimerRequest ? `${vector.name} · cloning preparation` : vector.name}
           initial={primerWin}
-          rightInset={toolsPinned ? 0 : TOOLS_RAIL_WIDTH}
+          rightInset={toolsRail ? TOOLS_RAIL_WIDTH : 0}
           onClose={closePrimerWorkspace}
           onCommit={setPrimerWin}
           returnFocusRef={primerToggleRef}
@@ -11620,7 +11703,7 @@ function App() {
           title="Cloning Workspace"
           subtitle="Golden Gate + ligation"
           initial={assemblyWin}
-          rightInset={toolsPinned ? 0 : TOOLS_RAIL_WIDTH}
+          rightInset={toolsRail ? TOOLS_RAIL_WIDTH : 0}
           onClose={() => setShowAssembly(false)}
           onCommit={setAssemblyWin}
           returnFocusRef={cloningToggleRef}
@@ -11640,7 +11723,7 @@ function App() {
           title="Cloning Design"
           subtitle="Golden Gate profiles + Gibson"
           initial={cloningDesignWin}
-          rightInset={toolsPinned ? 0 : TOOLS_RAIL_WIDTH}
+          rightInset={toolsRail ? TOOLS_RAIL_WIDTH : 0}
           onClose={() => setShowCloningDesign(false)}
           onCommit={setCloningDesignWin}
           returnFocusRef={cloningToggleRef}
@@ -11663,7 +11746,7 @@ function App() {
           title="Construct Verification"
           subtitle={`${constructVerificationReadCount} eligible Sanger read${constructVerificationReadCount === 1 ? '' : 's'}`}
           initial={constructVerificationWin}
-          rightInset={toolsPinned ? 0 : TOOLS_RAIL_WIDTH}
+          rightInset={toolsRail ? TOOLS_RAIL_WIDTH : 0}
           onClose={() => setShowConstructVerification(false)}
           onCommit={setConstructVerificationWin}
           returnFocusRef={constructVerificationToggleRef}
@@ -11684,7 +11767,7 @@ function App() {
           title="Multiple Sequence Alignment"
           subtitle={payload.alignments.length ? `${payload.alignments.length} in session` : 'local + imported'}
           initial={alignmentWin}
-          rightInset={toolsPinned ? 0 : TOOLS_RAIL_WIDTH}
+          rightInset={toolsRail ? TOOLS_RAIL_WIDTH : 0}
           onClose={() => setShowAlignment(false)}
           onCommit={setAlignmentWin}
           returnFocusRef={alignmentToggleRef}
@@ -12547,6 +12630,7 @@ function FeatureList({
 }
 
 type RailPopoverSize = { width: number; height: number };
+type RailPopoverCorner = { left: number; top: number };
 
 function cssPixelValue(value: string, fallback: number): number {
   const parsed = Number.parseFloat(value);
@@ -12556,6 +12640,7 @@ function cssPixelValue(value: string, fallback: number): number {
 function RailPopoverTitle({ title, meta }: { title: string; meta?: string }) {
   const [size, setSize] = useState<RailPopoverSize | null>(null);
   const [panelBody, setPanelBody] = useState<HTMLElement | null>(null);
+  const [resizeCorner, setResizeCorner] = useState<RailPopoverCorner | null>(null);
   const titleRef = useRef<HTMLDivElement>(null);
   const resizeHandleRef = useRef<HTMLButtonElement>(null);
   const panelBodyRef = useRef<HTMLElement | null>(null);
@@ -12593,6 +12678,28 @@ function RailPopoverTitle({ title, meta }: { title: string; meta?: string }) {
     panelBody.style.setProperty('--rail-popover-height', `${size.height}px`);
     panelBody.dataset.railPopoverResized = 'true';
   }, [size]);
+
+  useLayoutEffect(() => {
+    if (!panelBody) {
+      setResizeCorner(null);
+      return undefined;
+    }
+    const updateCorner = () => {
+      const rect = panelBody.getBoundingClientRect();
+      const next = rect.width > 0 && rect.height > 0
+        ? { left: rect.left, top: rect.bottom - 28 }
+        : null;
+      setResizeCorner((current) => current?.left === next?.left && current?.top === next?.top ? current : next);
+    };
+    updateCorner();
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(updateCorner);
+    observer?.observe(panelBody);
+    window.addEventListener('resize', updateCorner);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', updateCorner);
+    };
+  }, [panelBody, size]);
 
   const stopResize = useCallback(() => {
     resizeCleanupRef.current?.();
@@ -12726,7 +12833,7 @@ function RailPopoverTitle({ title, meta }: { title: string; meta?: string }) {
           </button>
         </div>
       </div>
-      {panelBody ? createPortal(
+      {panelBody && resizeCorner ? createPortal(
         <button
           ref={resizeHandleRef}
           className="motif-cs-rail-popover-resize"
@@ -12738,6 +12845,7 @@ function RailPopoverTitle({ title, meta }: { title: string; meta?: string }) {
           aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown"
           title={`Resize ${title}; double-click to reset`}
           data-testid="rail-popover-resize"
+          style={{ left: resizeCorner.left, top: resizeCorner.top }}
         />,
         panelBody,
       ) : null}
@@ -14764,6 +14872,7 @@ function FloatingWindow({
     if (!event.isPrimary || event.button !== 0) return;
     event.preventDefault();
     stopActiveDrag(false);
+    const dragSurface = event.currentTarget as HTMLElement;
     // Set drag state first; pointer capture is best-effort (it can throw for
     // synthetic/invalid pointer ids) and must never abort the drag.
     dragRef.current = {
@@ -14775,7 +14884,7 @@ function FloatingWindow({
     };
     document.body.dataset.motifCsWindowDragging = mode;
     try {
-      (event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId);
+      dragSurface.setPointerCapture?.(event.pointerId);
     } catch {
       /* capture unavailable — window listeners below still keep the drag alive */
     }
@@ -14805,7 +14914,14 @@ function FloatingWindow({
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', endDrag);
       window.removeEventListener('pointercancel', endDrag);
+      window.removeEventListener('blur', endDragFromBlur);
+      dragSurface.removeEventListener('lostpointercapture', endLostPointerCapture);
       if (dragCleanupRef.current === removeDragListeners) dragCleanupRef.current = null;
+      try {
+        if (dragSurface.hasPointerCapture?.(event.pointerId)) dragSurface.releasePointerCapture?.(event.pointerId);
+      } catch {
+        /* Capture may already be gone after blur or DOM removal. */
+      }
     };
 
     function handlePointerMove(moveEvent: PointerEvent) {
@@ -14819,10 +14935,21 @@ function FloatingWindow({
       stopActiveDrag(true);
     }
 
+    function endLostPointerCapture(lostEvent: PointerEvent) {
+      if (lostEvent.pointerId !== dragRef.current?.pointerId) return;
+      stopActiveDrag(true);
+    }
+
+    function endDragFromBlur() {
+      stopActiveDrag(true);
+    }
+
     dragCleanupRef.current = removeDragListeners;
     window.addEventListener('pointermove', handlePointerMove);
     window.addEventListener('pointerup', endDrag);
     window.addEventListener('pointercancel', endDrag);
+    window.addEventListener('blur', endDragFromBlur);
+    dragSurface.addEventListener('lostpointercapture', endLostPointerCapture);
   };
 
   const commitKeyboardRect = useCallback((next: WindowRect) => {

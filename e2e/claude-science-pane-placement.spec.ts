@@ -1,12 +1,14 @@
 import { expect, test, type Page } from '@playwright/test';
 
+const artifactUrl = process.env.MOTIF_ARTIFACT_URL ?? '/motif.html';
+
 async function openArtifact(page: Page, width: number, height: number) {
   await page.setViewportSize({ width, height });
   await page.addInitScript(() => {
     window.localStorage.clear();
     window.sessionStorage.clear();
   });
-  await page.goto('/motif.html');
+  await page.goto(artifactUrl);
   await expect(page.locator('.motif-cs-shell')).toBeVisible();
 }
 
@@ -55,6 +57,18 @@ test.describe('state-preserving pane placement', () => {
     expect(resized!.width).toBeGreaterThan(moved!.width);
     expect(resized!.height).toBeGreaterThan(moved!.height);
 
+    await tools.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+    await expect.poll(() => tools.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+    const scrolledTools = await tools.boundingBox();
+    const scrolledResize = await resize.boundingBox();
+    expect(scrolledTools).not.toBeNull();
+    expect(scrolledResize).not.toBeNull();
+    expect(Math.abs((scrolledResize!.x + scrolledResize!.width) - (scrolledTools!.x + scrolledTools!.width))).toBeLessThan(2);
+    expect(Math.abs((scrolledResize!.y + scrolledResize!.height) - (scrolledTools!.y + scrolledTools!.height))).toBeLessThan(2);
+    expect(await page.evaluate(({ x, y }) => (
+      document.elementFromPoint(x, y)?.closest('.motif-cs-floating-pane-resize') !== null
+    ), { x: scrolledTools!.x + scrolledTools!.width - 5, y: scrolledTools!.y + scrolledTools!.height - 5 })).toBe(true);
+
     await tools.getByRole('button', { name: 'Dock Tools pane' }).click();
     await expect(tools).toHaveAttribute('data-pane-placement', 'docked');
     await expect(draftTitle).toHaveValue('Uncommitted pane draft');
@@ -90,5 +104,20 @@ test.describe('state-preserving pane placement', () => {
     await page.keyboard.press('Escape');
     await expect(inventory).toHaveAttribute('data-pane-placement', 'docked');
     await expect(inventory.getByRole('button', { name: 'Pop out Inventory pane' })).toBeFocused();
+  });
+
+  test('visibility controls keep one content pane docked while other panes float', async ({ page }) => {
+    await openArtifact(page, 1180, 820);
+    const map = page.locator('[data-pane-key="map"]');
+    await map.getByRole('button', { name: 'Pop out Map pane' }).click();
+    await page.locator('[data-pane-toggle="inventory"]').click();
+
+    const sequenceToggle = page.locator('[data-pane-toggle="sequence"]');
+    await expect(sequenceToggle).toBeDisabled();
+    await expect(sequenceToggle).toHaveAttribute('title', 'Keep one content pane docked in the workspace');
+    const sequenceCollapse = page.locator('[data-pane-key="sequence"]').getByRole('button', { name: /Sequence pane cannot be collapsed/ });
+    await expect(sequenceCollapse).toBeDisabled();
+    await expect(sequenceCollapse).toHaveAttribute('title', 'Keep one content pane docked in the workspace');
+    await expect(page.locator('.motif-cs-main')).toHaveAttribute('data-content-pane-count', '1');
   });
 });

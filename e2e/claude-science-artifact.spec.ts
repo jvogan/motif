@@ -788,7 +788,9 @@ test.describe('Claude Science artifact campaign', () => {
     await assemblyWindow.getByRole('button', { name: 'Maximize Cloning Workspace' }).click();
     await expect(assemblyWindow).toHaveAttribute('data-maximized', 'true');
     const maximized = (await assemblyWindow.boundingBox())!;
-    expect(maximized.width).toBeGreaterThanOrEqual(1420);
+    const toolsRail = (await page.locator('.motif-cs-inspector[data-tools-pinned="false"]').boundingBox())!;
+    expect(maximized.x).toBeLessThanOrEqual(12);
+    expect(toolsRail.x - (maximized.x + maximized.width)).toBeLessThanOrEqual(12);
     expect(maximized.height).toBeGreaterThanOrEqual(880);
     await assemblyWindow.getByRole('button', { name: 'Restore Cloning Workspace' }).click();
     await expect(assemblyWindow).not.toHaveAttribute('data-maximized', 'true');
@@ -1339,6 +1341,34 @@ test.describe('Claude Science artifact campaign', () => {
 
     await toolsToggle.click();
     await expect(primerPanel).not.toHaveAttribute('open', '');
+  });
+
+  test('a short Tools rail popover keeps its resize grip on the visible corner after growing', async ({ page }) => {
+    await openArtifact(page, 1180, 820);
+    const toolsToggle = page.getByRole('button', { name: /Tools/ }).first();
+    if ((await toolsToggle.getAttribute('aria-pressed')) === 'true') await toolsToggle.click();
+
+    const workflows = page.locator('details[data-rail-tool="workflows"]');
+    await workflows.locator(':scope > summary').click();
+    const panelBody = workflows.locator('.motif-cs-tool-panel-body');
+    const resizeHandle = panelBody.getByTestId('rail-popover-resize');
+    await expect(resizeHandle).toBeVisible();
+    const before = (await panelBody.boundingBox())!;
+    const handle = (await resizeHandle.boundingBox())!;
+    await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2 + 150, { steps: 6 });
+    await page.mouse.up();
+
+    const grown = (await panelBody.boundingBox())!;
+    const grownHandle = (await resizeHandle.boundingBox())!;
+    expect(grown.height).toBeGreaterThan(before.height + 120);
+    expect(await panelBody.evaluate((element) => element.scrollHeight - element.clientHeight)).toBeLessThanOrEqual(1);
+    expect(Math.abs(grownHandle.x - grown.x)).toBeLessThan(2);
+    expect(Math.abs((grownHandle.y + grownHandle.height) - (grown.y + grown.height))).toBeLessThan(2);
+    expect(await page.evaluate(({ x, y }) => (
+      document.elementFromPoint(x, y)?.closest('.motif-cs-rail-popover-resize') !== null
+    ), { x: grown.x + 5, y: grown.y + grown.height - 5 })).toBe(true);
   });
 
   test('runtime APIs reject destructive invalid input and expose fresh biology synchronously', async ({ page }) => {
@@ -1912,6 +1942,20 @@ test.describe('Claude Science artifact campaign', () => {
     expect(Math.abs(afterBoundaryResize.x - beforeBoundaryResize.x)).toBeLessThan(2);
     expect(afterBoundaryResize.x + afterBoundaryResize.width).toBeLessThanOrEqual(1180 - 48 - 7);
 
+    const blurHandle = (await resizeHandle.boundingBox())!;
+    await page.mouse.move(blurHandle.x + blurHandle.width / 2, blurHandle.y + blurHandle.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(blurHandle.x + blurHandle.width / 2 - 20, blurHandle.y + blurHandle.height / 2 - 20);
+    await expect(page.locator('body')).toHaveAttribute('data-motif-cs-window-dragging', 'resize');
+    await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+    await expect(page.locator('body')).not.toHaveAttribute('data-motif-cs-window-dragging');
+    const afterBlur = (await dialog.boundingBox())!;
+    await page.mouse.move(blurHandle.x + blurHandle.width / 2 - 80, blurHandle.y + blurHandle.height / 2 - 80);
+    const afterPostBlurMove = (await dialog.boundingBox())!;
+    expect(Math.abs(afterPostBlurMove.width - afterBlur.width)).toBeLessThan(1);
+    expect(Math.abs(afterPostBlurMove.height - afterBlur.height)).toBeLessThan(1);
+    await page.mouse.up();
+
     await page.keyboard.press('Escape');
     await expect(dialog).toBeHidden();
     await expect(toggle).toBeFocused();
@@ -2140,6 +2184,58 @@ test.describe('Claude Science artifact campaign', () => {
     const main = page.locator('.motif-cs-main');
     const dimensions = await main.evaluate((element) => ({ clientWidth: element.clientWidth, scrollWidth: element.scrollWidth }));
     expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.clientWidth + 2);
+  });
+
+  test('pane resize modes clean up on blur and Escape docking', async ({ page }) => {
+    await openArtifact(page, 640, 500);
+    const toolsToggle = page.getByRole('button', { name: /Tools/ }).first();
+    if ((await toolsToggle.getAttribute('aria-pressed')) !== 'true') await toolsToggle.click();
+
+    const inventory = page.locator('[data-pane-key="inventory"]');
+    const inventoryResize = page.getByRole('separator', { name: 'Resize inventory pane' });
+    const inventoryHandle = (await inventoryResize.boundingBox())!;
+    await page.mouse.move(inventoryHandle.x + inventoryHandle.width / 2, inventoryHandle.y + inventoryHandle.height / 2);
+    await page.mouse.down();
+    await expect(page.locator('body')).toHaveAttribute('data-motif-cs-resizing', 'inventory');
+    await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+    await expect(page.locator('body')).not.toHaveAttribute('data-motif-cs-resizing');
+    const widthAfterBlur = (await inventory.boundingBox())!.width;
+    await page.mouse.move(inventoryHandle.x + inventoryHandle.width / 2 + 80, inventoryHandle.y + inventoryHandle.height / 2);
+    expect(Math.abs((await inventory.boundingBox())!.width - widthAfterBlur)).toBeLessThan(1);
+    await page.mouse.up();
+
+    await inventoryResize.evaluate((element) => {
+      element.setPointerCapture = () => { throw new DOMException('capture unavailable', 'NotFoundError'); };
+    });
+    const fallbackHandle = (await inventoryResize.boundingBox())!;
+    await page.mouse.move(fallbackHandle.x + fallbackHandle.width / 2, fallbackHandle.y + fallbackHandle.height / 2);
+    await page.mouse.down();
+    await expect(page.locator('body')).toHaveAttribute('data-motif-cs-resizing', 'inventory');
+    await page.mouse.move(fallbackHandle.x + fallbackHandle.width / 2 + 24, fallbackHandle.y + fallbackHandle.height / 2);
+    await page.mouse.up();
+    await expect(page.locator('body')).not.toHaveAttribute('data-motif-cs-resizing');
+
+    const rowResize = page.getByRole('separator', { name: 'Resize stacked sequence pane' });
+    const rowHandle = (await rowResize.boundingBox())!;
+    await page.mouse.move(rowHandle.x + rowHandle.width / 2, rowHandle.y + rowHandle.height / 2);
+    await page.mouse.down();
+    await expect(page.locator('body')).toHaveAttribute('data-motif-cs-stacked-resizing', 'sequence');
+    await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+    await expect(page.locator('body')).not.toHaveAttribute('data-motif-cs-stacked-resizing');
+    await page.mouse.up();
+
+    await inventory.getByRole('button', { name: 'Pop out Inventory pane' }).click();
+    const floatingHeader = inventory.locator(':scope > .motif-cs-pane-title');
+    await floatingHeader.focus();
+    const floatingHeaderBox = (await floatingHeader.boundingBox())!;
+    await page.mouse.move(floatingHeaderBox.x + 60, floatingHeaderBox.y + floatingHeaderBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(floatingHeaderBox.x + 85, floatingHeaderBox.y + 20);
+    await expect(page.locator('body')).toHaveAttribute('data-motif-cs-pane-floating-action', 'move');
+    await page.keyboard.press('Escape');
+    await expect(inventory).toHaveAttribute('data-pane-placement', 'docked');
+    await expect(page.locator('body')).not.toHaveAttribute('data-motif-cs-pane-floating-action');
+    await page.mouse.up();
   });
 
   test('640px two-row layout exposes only the resize axes rendered on screen', async ({ page }) => {
@@ -3215,18 +3311,20 @@ test.describe('Claude Science artifact campaign', () => {
     await expect(restore).toBeVisible();
 
     const maximizedAt1180 = (await dialog.boundingBox())!;
+    const toolsRailAt1180 = (await page.locator('.motif-cs-inspector[data-tools-pinned="false"]').boundingBox())!;
     expect(maximizedAt1180.x).toBeLessThanOrEqual(12);
     expect(maximizedAt1180.y).toBeLessThanOrEqual(12);
-    expect(1180 - (maximizedAt1180.x + maximizedAt1180.width)).toBeLessThanOrEqual(12);
+    expect(toolsRailAt1180.x - (maximizedAt1180.x + maximizedAt1180.width)).toBeLessThanOrEqual(12);
     expect(820 - (maximizedAt1180.y + maximizedAt1180.height)).toBeLessThanOrEqual(12);
 
     await page.setViewportSize({ width: 1440, height: 1000 });
     await expect.poll(async () => {
       const box = (await dialog.boundingBox())!;
+      const rail = (await page.locator('.motif-cs-inspector[data-tools-pinned="false"]').boundingBox())!;
       return {
         left: Math.round(box.x),
         top: Math.round(box.y),
-        rightGap: Math.round(1440 - box.x - box.width),
+        rightGap: Math.round(rail.x - box.x - box.width),
         bottomGap: Math.round(1000 - box.y - box.height),
       };
     }).toEqual({ left: 8, top: 8, rightGap: 8, bottomGap: 8 });
@@ -4007,7 +4105,7 @@ test.describe('Claude Science artifact campaign', () => {
   });
 
   test('MSA 100-row density preserves suffixes, semantics, and chained scrolling', async ({ page }) => {
-    test.slow();
+    test.setTimeout(120_000);
     await openArtifact(page, 1180, 820);
     await page.evaluate(() => {
       const reference = 'ACGT'.repeat(375);

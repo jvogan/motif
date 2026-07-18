@@ -16,11 +16,13 @@ describe('workspace pane placement guards', () => {
   });
 
   it('excludes floating panes from docked topology and resets every pane to docked', () => {
-    expect(artifactSource).toContain("paneVisibility[pane] && panePlacements[pane] === 'docked'");
+    expect(artifactSource).toContain("panePlacements[pane] === 'docked' && dockedContentCount <= 1");
     expect(artifactSource).toContain('data-content-pane-count={dockedContentPaneCount}');
     expect(artifactSource).toContain("panePlacements.sequence === 'docked' && panePlacements.map === 'docked'");
     expect(artifactSource).toContain('setPanePlacements({ ...DEFAULT_WORKSPACE_LAYOUT.panePlacements });');
     expect(artifactSource).toContain("disabled={dockedContentPaneCount <= 1}");
+    expect(artifactSource).toContain("paneVisibility[pane] && panePlacements[pane] === 'docked'");
+    expect(artifactSource).toContain("panePlacements = { ...panePlacements, [fallbackPane]: 'docked' };");
   });
 
   it('uses bounded geometry and cleans every pointer termination path', () => {
@@ -38,6 +40,7 @@ describe('workspace pane placement guards', () => {
     expect(placementBlock).toBeGreaterThan(0);
     expect(lastResponsiveRule).toBeGreaterThan(placementBlock);
     expect(artifactCss.slice(placementBlock)).toContain('.motif-cs-main > .motif-cs-pane[data-pane-placement="floating"]');
+    expect(artifactCss.slice(placementBlock)).toMatch(/\.motif-cs-floating-pane-resize\s*\{[\s\S]*?position:\s*fixed;/);
     expect(artifactCss.slice(lastResponsiveRule)).toContain('width: auto !important;');
     expect(artifactCss.slice(lastResponsiveRule)).toContain('.motif-cs-floating-pane-resize');
     expect(artifactCss.slice(lastResponsiveRule)).toContain('display: none;');
