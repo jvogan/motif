@@ -727,7 +727,7 @@ function AlignmentMatrix({
   const overviewBinCount = Math.min(512, Math.max(1, alignment.alignmentLength));
   const overviewBins = useMemo(
     () => mismatchOverviewBins(alignment, template?.id ?? referenceRowId, overviewBinCount),
-    [alignment, overviewBinCount, template],
+    [alignment, overviewBinCount, template, referenceRowId],
   );
   const overviewPath = useMemo(() => overviewBins.map((density, index) => {
     if (density <= 0) return '';
