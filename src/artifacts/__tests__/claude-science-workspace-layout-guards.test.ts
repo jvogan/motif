@@ -450,7 +450,9 @@ describe('Claude Science workspace layout guards', () => {
     expect(artifactSource).toContain('aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown"');
     expect(artifactCss).toContain('.motif-cs-window-resize:focus-visible');
     expect(artifactCss).toMatch(/\.motif-cs-window-resize\s*\{[\s\S]*?width:\s*28px;[\s\S]*?height:\s*28px/);
-    expect(artifactCss).toContain('.motif-cs-shell:has(.motif-cs-inspector[data-tools-pinned="false"]) .motif-cs-window-resize {\n    right: 58px;');
+    expect(artifactSource).toContain('rightInset={toolsPinned ? 0 : TOOLS_RAIL_WIDTH}');
+    expect(artifactSource).toContain('clampWindowRect(raw, vw, vh, rightInset)');
+    expect(artifactCss).not.toContain('.motif-cs-window-resize {\n    right: 58px;');
   });
 
   it('limits floating-window drags to the initiating primary pointer', () => {
@@ -493,7 +495,7 @@ describe('Claude Science workspace layout guards', () => {
     expect(artifactSource).toContain('w: clamp(drag.base.w + dx, 280');
     expect(artifactSource).toContain('h: clamp(drag.base.h + dy, 180');
     expect(artifactCss).toMatch(/@media \(max-width: 840px\)[\s\S]*?\.motif-cs-window\s*\{\s*border-color:/);
-    expect(artifactCss).toMatch(/@media \(max-width: 840px\)[\s\S]*?\.motif-cs-window\[data-collapsed\]\s*\{[\s\S]*?left:\s*8px !important;[\s\S]*?width:\s*calc\(100vw - 16px\) !important/);
+    expect(artifactCss).toMatch(/@media \(max-width: 840px\)[\s\S]*?\.motif-cs-window\[data-collapsed\]\s*\{[\s\S]*?left:\s*8px !important;[\s\S]*?width:\s*calc\(100vw - 16px - var\(--motif-cs-floating-right-inset, 0px\)\) !important/);
     expect(artifactCss).not.toMatch(/@media \(max-width: 840px\)[\s\S]*?\.motif-cs-window\s*\{[\s\S]*?height:\s*min\(30vh, 240px\) !important/);
   });
 

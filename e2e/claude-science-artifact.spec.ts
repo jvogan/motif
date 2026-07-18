@@ -1264,6 +1264,68 @@ test.describe('Claude Science artifact campaign', () => {
     await expect(exportPanel).toHaveAttribute('open', '');
   });
 
+  test('a Tools rail popover grows leftward, shrinks rightward, and docks without stale dimensions', async ({ page }) => {
+    await openArtifact(page, 1180, 820);
+    const toolsToggle = page.getByRole('button', { name: /Tools/ }).first();
+    if ((await toolsToggle.getAttribute('aria-pressed')) === 'true') await toolsToggle.click();
+
+    const primerPanel = page.locator('details[data-rail-tool="primer-design"]');
+    if (!(await primerPanel.getAttribute('open'))) await primerPanel.locator(':scope > summary').click();
+    const panelBody = primerPanel.locator('.motif-cs-tool-panel-body');
+    const resizeHandle = panelBody.getByTestId('rail-popover-resize');
+    await expect(resizeHandle).toBeVisible();
+
+    const before = (await panelBody.boundingBox())!;
+    const growHandleBox = (await resizeHandle.boundingBox())!;
+    await page.mouse.move(growHandleBox.x + growHandleBox.width / 2, growHandleBox.y + growHandleBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(growHandleBox.x + growHandleBox.width / 2 - 96, growHandleBox.y + growHandleBox.height / 2 + 52, { steps: 6 });
+    await page.mouse.up();
+
+    const grown = (await panelBody.boundingBox())!;
+    expect(grown.width).toBeGreaterThan(before.width + 75);
+    expect(grown.height).toBeGreaterThan(before.height + 35);
+    expect(grown.x).toBeLessThan(before.x - 75);
+    expect(Math.abs((grown.x + grown.width) - (before.x + before.width))).toBeLessThan(2);
+
+    const shrinkHandleBox = (await resizeHandle.boundingBox())!;
+    await page.mouse.move(shrinkHandleBox.x + shrinkHandleBox.width / 2, shrinkHandleBox.y + shrinkHandleBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(shrinkHandleBox.x + shrinkHandleBox.width / 2 + 64, shrinkHandleBox.y + shrinkHandleBox.height / 2 - 24, { steps: 5 });
+    await page.mouse.up();
+
+    const shrunk = (await panelBody.boundingBox())!;
+    expect(shrunk.width).toBeLessThan(grown.width - 45);
+    expect(shrunk.height).toBeLessThan(grown.height - 12);
+    expect(Math.abs((shrunk.x + shrunk.width) - (grown.x + grown.width))).toBeLessThan(2);
+
+    await resizeHandle.focus();
+    await page.keyboard.press('ArrowLeft');
+    expect((await panelBody.boundingBox())!.width).toBeGreaterThan(shrunk.width + 7);
+
+    await toolsToggle.click();
+    await expect(page.locator('.motif-cs-main')).toHaveAttribute('data-tools-pinned', 'true');
+    await expect(resizeHandle).toBeHidden();
+    const docked = await panelBody.evaluate((element) => {
+      const body = element as HTMLElement;
+      const computed = getComputedStyle(body);
+      return {
+        inlineWidth: body.style.width,
+        inlineHeight: body.style.height,
+        position: computed.position,
+        width: body.getBoundingClientRect().width,
+        inspectorWidth: body.closest('.motif-cs-inspector')?.getBoundingClientRect().width ?? 0,
+      };
+    });
+    expect(docked.inlineWidth).toBe('');
+    expect(docked.inlineHeight).toBe('');
+    expect(docked.position).not.toBe('fixed');
+    expect(docked.width).toBeLessThanOrEqual(docked.inspectorWidth + 1);
+
+    await toolsToggle.click();
+    await expect(primerPanel).not.toHaveAttribute('open', '');
+  });
+
   test('runtime APIs reject destructive invalid input and expose fresh biology synchronously', async ({ page }) => {
     await openArtifact(page, 1180, 900);
     const result = await page.evaluate(() => {
@@ -1792,6 +1854,14 @@ test.describe('Claude Science artifact campaign', () => {
     const header = dialog.locator('.motif-cs-window-head');
     const resizeHandle = dialog.getByRole('button', { name: /Resize Translations window in 2 dimensions/ });
     const beforeMove = (await dialog.boundingBox())!;
+    const cornerHandleBox = (await resizeHandle.boundingBox())!;
+    expect(Math.abs((cornerHandleBox.x + cornerHandleBox.width) - (beforeMove.x + beforeMove.width))).toBeLessThan(2);
+    expect(Math.abs((cornerHandleBox.y + cornerHandleBox.height) - (beforeMove.y + beforeMove.height))).toBeLessThan(2);
+    const ownsVisibleCorner = await page.evaluate(({ x, y }) => (
+      document.elementFromPoint(x, y)?.closest('.motif-cs-window-resize') !== null
+    ), { x: beforeMove.x + beforeMove.width - 4, y: beforeMove.y + beforeMove.height - 4 });
+    expect(ownsVisibleCorner).toBe(true);
+    expect(beforeMove.x + beforeMove.width).toBeLessThanOrEqual(1180 - 48 - 7);
     const headerBox = (await header.boundingBox())!;
     await page.mouse.move(headerBox.x + headerBox.width / 2, headerBox.y + headerBox.height / 2);
     await page.mouse.down();

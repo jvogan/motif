@@ -805,14 +805,21 @@ type MapDragState = {
 
 type WindowRect = { x: number; y: number; w: number; h: number };
 
-function clampWindowRect(rect: WindowRect, viewportWidth = window.innerWidth, viewportHeight = window.innerHeight): WindowRect {
-  const minW = Math.min(280, Math.max(1, viewportWidth - 16));
+function clampWindowRect(
+  rect: WindowRect,
+  viewportWidth = window.innerWidth,
+  viewportHeight = window.innerHeight,
+  rightInset = 0,
+): WindowRect {
+  const safeRightInset = clamp(rightInset, 0, Math.max(0, viewportWidth - 17));
+  const availableWidth = Math.max(1, viewportWidth - safeRightInset);
+  const minW = Math.min(280, Math.max(1, availableWidth - 16));
   const minH = Math.min(180, Math.max(1, viewportHeight - 16));
-  const maxW = Math.max(minW, viewportWidth - 16);
+  const maxW = Math.max(minW, availableWidth - 16);
   const maxH = Math.max(minH, viewportHeight - 16);
   const w = clamp(rect.w, minW, maxW);
   const h = clamp(rect.h, minH, maxH);
-  const x = clamp(rect.x, 8, Math.max(8, viewportWidth - w - 8));
+  const x = clamp(rect.x, 8, Math.max(8, viewportWidth - safeRightInset - w - 8));
   const y = clamp(rect.y, 8, Math.max(8, viewportHeight - Math.min(h, viewportHeight - 16) - 8));
   return { x, y, w, h };
 }
@@ -11006,6 +11013,7 @@ function App() {
           title="Translations"
           subtitle={vector.name}
           initial={translationsWin}
+          rightInset={toolsPinned ? 0 : TOOLS_RAIL_WIDTH}
           onClose={() => setShowTranslations(false)}
           onCommit={setTranslationsWin}
           returnFocusRef={translationsToggleRef}
@@ -11045,6 +11053,7 @@ function App() {
           title="Gel Preview"
           subtitle="qualitative agarose"
           initial={gelWin}
+          rightInset={toolsPinned ? 0 : TOOLS_RAIL_WIDTH}
           onClose={() => setShowGel(false)}
           onCommit={setGelWin}
           returnFocusRef={gelReturnFocusRef}
@@ -11087,6 +11096,7 @@ function App() {
           title="Primer Design"
           subtitle={cloningPrimerRequest ? `${vector.name} · cloning preparation` : vector.name}
           initial={primerWin}
+          rightInset={toolsPinned ? 0 : TOOLS_RAIL_WIDTH}
           onClose={closePrimerWorkspace}
           onCommit={setPrimerWin}
           returnFocusRef={primerToggleRef}
@@ -11146,6 +11156,7 @@ function App() {
           title="Cloning Workspace"
           subtitle="Golden Gate + ligation"
           initial={assemblyWin}
+          rightInset={toolsPinned ? 0 : TOOLS_RAIL_WIDTH}
           onClose={() => setShowAssembly(false)}
           onCommit={setAssemblyWin}
           returnFocusRef={cloningToggleRef}
@@ -11165,6 +11176,7 @@ function App() {
           title="Cloning Design"
           subtitle="Golden Gate profiles + Gibson"
           initial={cloningDesignWin}
+          rightInset={toolsPinned ? 0 : TOOLS_RAIL_WIDTH}
           onClose={() => setShowCloningDesign(false)}
           onCommit={setCloningDesignWin}
           returnFocusRef={cloningToggleRef}
@@ -11187,6 +11199,7 @@ function App() {
           title="Construct Verification"
           subtitle={`${constructVerificationReadCount} eligible Sanger read${constructVerificationReadCount === 1 ? '' : 's'}`}
           initial={constructVerificationWin}
+          rightInset={toolsPinned ? 0 : TOOLS_RAIL_WIDTH}
           onClose={() => setShowConstructVerification(false)}
           onCommit={setConstructVerificationWin}
           returnFocusRef={constructVerificationToggleRef}
@@ -11207,6 +11220,7 @@ function App() {
           title="Multiple Sequence Alignment"
           subtitle={payload.alignments.length ? `${payload.alignments.length} in session` : 'local + imported'}
           initial={alignmentWin}
+          rightInset={toolsPinned ? 0 : TOOLS_RAIL_WIDTH}
           onClose={() => setShowAlignment(false)}
           onCommit={setAlignmentWin}
           returnFocusRef={alignmentToggleRef}
@@ -12008,7 +12022,154 @@ function FeatureList({
   );
 }
 
+type RailPopoverSize = { width: number; height: number };
+
+function cssPixelValue(value: string, fallback: number): number {
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 function RailPopoverTitle({ title, meta }: { title: string; meta?: string }) {
+  const [size, setSize] = useState<RailPopoverSize | null>(null);
+  const resizeHandleRef = useRef<HTMLButtonElement>(null);
+  const panelBodyRef = useRef<HTMLElement | null>(null);
+  const resizeRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    base: RailPopoverSize;
+    limits: { minWidth: number; maxWidth: number; minHeight: number; maxHeight: number };
+  } | null>(null);
+  const resizeCleanupRef = useRef<(() => void) | null>(null);
+
+  useLayoutEffect(() => {
+    const panelBody = resizeHandleRef.current?.closest<HTMLElement>('.motif-cs-tool-panel-body') ?? null;
+    panelBodyRef.current = panelBody;
+    return () => {
+      panelBody?.style.removeProperty('--rail-popover-width');
+      panelBody?.style.removeProperty('--rail-popover-height');
+      delete panelBody?.dataset.railPopoverResized;
+      panelBodyRef.current = null;
+    };
+  }, []);
+
+  useLayoutEffect(() => {
+    const panelBody = panelBodyRef.current;
+    if (!panelBody) return;
+    if (!size) {
+      panelBody.style.removeProperty('--rail-popover-width');
+      panelBody.style.removeProperty('--rail-popover-height');
+      delete panelBody.dataset.railPopoverResized;
+      return;
+    }
+    panelBody.style.setProperty('--rail-popover-width', `${size.width}px`);
+    panelBody.style.setProperty('--rail-popover-height', `${size.height}px`);
+    panelBody.dataset.railPopoverResized = 'true';
+  }, [size]);
+
+  const stopResize = useCallback(() => {
+    resizeCleanupRef.current?.();
+    resizeCleanupRef.current = null;
+    resizeRef.current = null;
+    delete document.body.dataset.motifCsRailPopoverResizing;
+  }, []);
+
+  useEffect(() => () => stopResize(), [stopResize]);
+
+  const resizeLimits = useCallback((panelBody: HTMLElement) => {
+    const computed = window.getComputedStyle(panelBody);
+    const rect = panelBody.getBoundingClientRect();
+    return {
+      minWidth: cssPixelValue(computed.minWidth, Math.min(280, window.innerWidth - 16)),
+      maxWidth: cssPixelValue(computed.maxWidth, Math.max(rect.width, window.innerWidth - 16)),
+      minHeight: cssPixelValue(computed.minHeight, 96),
+      maxHeight: cssPixelValue(computed.maxHeight, Math.max(rect.height, window.innerHeight - 16)),
+    };
+  }, []);
+
+  const beginResize = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (!event.isPrimary || event.button !== 0) return;
+    const panelBody = panelBodyRef.current;
+    if (!panelBody) return;
+    event.preventDefault();
+    event.stopPropagation();
+    stopResize();
+
+    const rect = panelBody.getBoundingClientRect();
+    resizeRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      base: { width: rect.width, height: rect.height },
+      limits: resizeLimits(panelBody),
+    };
+    document.body.dataset.motifCsRailPopoverResizing = 'true';
+
+    const handle = event.currentTarget;
+    try {
+      handle.setPointerCapture?.(event.pointerId);
+    } catch {
+      /* Window listeners keep the resize usable when capture is unavailable. */
+    }
+
+    const removeListeners = () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', endPointerResize);
+      window.removeEventListener('pointercancel', endPointerResize);
+      window.removeEventListener('blur', endResizeFromBlur);
+      handle.removeEventListener('lostpointercapture', endLostPointerCapture);
+      if (resizeCleanupRef.current === removeListeners) resizeCleanupRef.current = null;
+    };
+
+    function handlePointerMove(moveEvent: PointerEvent) {
+      const active = resizeRef.current;
+      if (!active || moveEvent.pointerId !== active.pointerId) return;
+      moveEvent.preventDefault();
+      setSize({
+        width: clamp(active.base.width - (moveEvent.clientX - active.startX), active.limits.minWidth, active.limits.maxWidth),
+        height: clamp(active.base.height + (moveEvent.clientY - active.startY), active.limits.minHeight, active.limits.maxHeight),
+      });
+    }
+
+    function endPointerResize(endEvent: PointerEvent) {
+      if (endEvent.pointerId !== resizeRef.current?.pointerId) return;
+      stopResize();
+    }
+
+    function endLostPointerCapture(lostEvent: PointerEvent) {
+      if (lostEvent.pointerId !== resizeRef.current?.pointerId) return;
+      stopResize();
+    }
+
+    function endResizeFromBlur() {
+      stopResize();
+    }
+
+    resizeCleanupRef.current = removeListeners;
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', endPointerResize);
+    window.addEventListener('pointercancel', endPointerResize);
+    window.addEventListener('blur', endResizeFromBlur);
+    handle.addEventListener('lostpointercapture', endLostPointerCapture);
+  }, [resizeLimits, stopResize]);
+
+  const resizeFromKeyboard = useCallback((event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
+    const panelBody = panelBodyRef.current;
+    if (!panelBody) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const rect = panelBody.getBoundingClientRect();
+    const limits = resizeLimits(panelBody);
+    const step = event.shiftKey ? 24 : 10;
+    const widthDelta = event.key === 'ArrowLeft' ? step : event.key === 'ArrowRight' ? -step : 0;
+    const heightDelta = event.key === 'ArrowUp' ? -step : event.key === 'ArrowDown' ? step : 0;
+    setSize({
+      width: clamp(rect.width + widthDelta, limits.minWidth, limits.maxWidth),
+      height: clamp(rect.height + heightDelta, limits.minHeight, limits.maxHeight),
+    });
+  }, [resizeLimits]);
+
   const closePopover = (event: ReactMouseEvent<HTMLButtonElement>) => {
     event.preventDefault();
     event.stopPropagation();
@@ -12021,22 +12182,36 @@ function RailPopoverTitle({ title, meta }: { title: string; meta?: string }) {
   };
 
   return (
-    <div className="motif-cs-rail-popover-title">
-      <strong>{title}</strong>
-      <div className="motif-cs-rail-popover-actions">
-        {meta ? <span>{meta}</span> : null}
-        <button
-          className="motif-cs-rail-popover-close"
-          type="button"
-          onClick={closePopover}
-          aria-label={`Close ${title}`}
-          title={`Close ${title}`}
-          data-testid="rail-popover-close"
-        >
-          <X size={14} strokeWidth={2.2} aria-hidden="true" />
-        </button>
+    <>
+      <div className="motif-cs-rail-popover-title">
+        <strong>{title}</strong>
+        <div className="motif-cs-rail-popover-actions">
+          {meta ? <span>{meta}</span> : null}
+          <button
+            className="motif-cs-rail-popover-close"
+            type="button"
+            onClick={closePopover}
+            aria-label={`Close ${title}`}
+            title={`Close ${title}`}
+            data-testid="rail-popover-close"
+          >
+            <X size={14} strokeWidth={2.2} aria-hidden="true" />
+          </button>
+        </div>
       </div>
-    </div>
+      <button
+        ref={resizeHandleRef}
+        className="motif-cs-rail-popover-resize"
+        type="button"
+        onPointerDown={beginResize}
+        onKeyDown={resizeFromKeyboard}
+        onDoubleClick={() => setSize(null)}
+        aria-label={`Resize ${title} panel. Left Arrow grows width; Right Arrow shrinks width; Up and Down Arrow change height.`}
+        aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown"
+        title={`Resize ${title}; double-click to reset`}
+        data-testid="rail-popover-resize"
+      />
+    </>
   );
 }
 
@@ -13913,6 +14088,7 @@ function FloatingWindow({
   title,
   subtitle,
   initial,
+  rightInset = 0,
   onClose,
   onCommit,
   returnFocusRef,
@@ -13923,6 +14099,8 @@ function FloatingWindow({
   title: string;
   subtitle?: string;
   initial: WindowRect;
+  /** Keeps the permanent right rail outside the movable window's geometry. */
+  rightInset?: number;
   onClose: () => void;
   onCommit?: (rect: WindowRect) => void;
   returnFocusRef?: RefObject<HTMLElement | null>;
@@ -13931,7 +14109,7 @@ function FloatingWindow({
   inactive?: boolean;
   children: ReactNode;
 }) {
-  const [rect, setRect] = useState<WindowRect>(() => clampWindowRect(initial));
+  const [rect, setRect] = useState<WindowRect>(() => clampWindowRect(initial, window.innerWidth, window.innerHeight, rightInset));
   const [collapsed, setCollapsed] = useState(false);
   const [maximized, setMaximized] = useState(false);
   const dragRef = useRef<{
@@ -14005,22 +14183,22 @@ function FloatingWindow({
   useEffect(() => {
     const handleResize = () => setRect(() => {
       const next = maximized
-        ? clampWindowRect({ x: 8, y: 8, w: window.innerWidth - 16, h: window.innerHeight - 16 })
-        : clampWindowRect(restoreRectRef.current);
+        ? clampWindowRect({ x: 8, y: 8, w: window.innerWidth - rightInset - 16, h: window.innerHeight - 16 }, window.innerWidth, window.innerHeight, rightInset)
+        : clampWindowRect(restoreRectRef.current, window.innerWidth, window.innerHeight, rightInset);
       rectRef.current = next;
       return next;
     });
     handleResize();
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
-  }, [maximized]);
+  }, [maximized, rightInset]);
 
   const restoreWindow = useCallback(() => {
-    const next = clampWindowRect(restoreRectRef.current);
+    const next = clampWindowRect(restoreRectRef.current, window.innerWidth, window.innerHeight, rightInset);
     rectRef.current = next;
     setRect(next);
     setMaximized(false);
-  }, []);
+  }, [rightInset]);
 
   const toggleMaximized = useCallback(() => {
     stopActiveDrag(false);
@@ -14028,16 +14206,16 @@ function FloatingWindow({
       restoreWindow();
       return;
     }
-    const next = clampWindowRect({ x: 8, y: 8, w: window.innerWidth - 16, h: window.innerHeight - 16 });
+    const next = clampWindowRect({ x: 8, y: 8, w: window.innerWidth - rightInset - 16, h: window.innerHeight - 16 }, window.innerWidth, window.innerHeight, rightInset);
     rectRef.current = next;
     setCollapsed(false);
     setMaximized(true);
     setRect(next);
-  }, [maximized, restoreWindow, stopActiveDrag]);
+  }, [maximized, restoreWindow, rightInset, stopActiveDrag]);
 
   const toggleCollapsed = useCallback(() => {
     if (maximized) {
-      const next = clampWindowRect(restoreRectRef.current);
+      const next = clampWindowRect(restoreRectRef.current, window.innerWidth, window.innerHeight, rightInset);
       rectRef.current = next;
       setRect(next);
       setMaximized(false);
@@ -14045,7 +14223,7 @@ function FloatingWindow({
       return;
     }
     setCollapsed((value) => !value);
-  }, [maximized]);
+  }, [maximized, rightInset]);
 
   const beginDrag = (mode: 'move' | 'resize') => (event: ReactPointerEvent) => {
     // Ignore drags that start on the header buttons (collapse / close) so a single
@@ -14088,7 +14266,7 @@ function FloatingWindow({
         w: clamp(drag.base.w + dx, 280, Math.max(280, vw - drag.base.x - 8)),
         h: clamp(drag.base.h + dy, 180, Math.max(180, vh - drag.base.y - 8)),
       };
-      const next = clampWindowRect(raw, vw, vh);
+      const next = clampWindowRect(raw, vw, vh, rightInset);
       rectRef.current = next;
       setRect(next);
     };
@@ -14119,12 +14297,12 @@ function FloatingWindow({
 
   const commitKeyboardRect = useCallback((next: WindowRect) => {
     if (maximized) return;
-    const clamped = clampWindowRect(next);
+    const clamped = clampWindowRect(next, window.innerWidth, window.innerHeight, rightInset);
     rectRef.current = clamped;
     restoreRectRef.current = clamped;
     setRect(clamped);
     onCommit?.(clamped);
-  }, [maximized, onCommit]);
+  }, [maximized, onCommit, rightInset]);
 
   const moveFromKeyboard = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (!event.altKey || !['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
@@ -14156,7 +14334,13 @@ function FloatingWindow({
       data-collapsed={collapsed || undefined}
       data-maximized={maximized || undefined}
       data-inactive={inactive || undefined}
-      style={{ left: rect.x, top: rect.y, width: rect.w, height: collapsed ? undefined : rect.h }}
+      style={{
+        left: rect.x,
+        top: rect.y,
+        width: rect.w,
+        height: collapsed ? undefined : rect.h,
+        '--motif-cs-floating-right-inset': `${rightInset}px`,
+      } as CSSProperties}
     >
       <div
         className="motif-cs-window-head"

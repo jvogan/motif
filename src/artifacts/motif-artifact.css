@@ -994,8 +994,13 @@ body[data-motif-cs-resizing] {
 
 body[data-motif-cs-pane-dragging],
 body[data-motif-cs-window-dragging],
-body[data-motif-cs-export-resizing] {
+body[data-motif-cs-export-resizing],
+body[data-motif-cs-rail-popover-resizing] {
   user-select: none;
+}
+
+body[data-motif-cs-rail-popover-resizing] {
+  cursor: nesw-resize;
 }
 
 .motif-cs-stacked-resize-handle {
@@ -1136,22 +1141,18 @@ body[data-motif-cs-export-resizing] {
   top: var(--rail-popover-fixed-top);
   right: 58px;
   z-index: 70;
-  width: min(344px, calc(100vw - 104px));
+  width: min(var(--rail-popover-width, 344px), calc(100vw - 104px));
   min-width: min(280px, calc(100vw - 104px));
   max-width: min(620px, calc(100vw - 104px));
+  height: var(--rail-popover-height, auto);
   min-height: 96px;
   max-height: min(calc(100vh - var(--rail-popover-fixed-top) - 22px), 600px);
   overflow: auto;
   overscroll-behavior: contain;
-  resize: both;
   scrollbar-gutter: stable;
   border: 1px solid var(--border-strong);
   border-radius: 2px;
   background-color: var(--bg-primary);
-  background-image: linear-gradient(135deg, transparent 0 52%, var(--border-strong) 53% 59%, transparent 60% 68%, var(--border-strong) 69% 75%, transparent 76%);
-  background-repeat: no-repeat;
-  background-position: right 3px bottom 3px;
-  background-size: 12px 12px;
   box-shadow: var(--elevation-popover);
 }
 
@@ -1168,7 +1169,7 @@ body[data-motif-cs-export-resizing] {
 @media (max-width: 520px) {
   .motif-cs-inspector[data-tools-pinned="false"] .motif-cs-panel[open] > .motif-cs-tool-panel-body {
     right: 50px;
-    width: min(344px, calc(100vw - 62px));
+    width: min(var(--rail-popover-width, 344px), calc(100vw - 62px));
   }
 }
 
@@ -1247,6 +1248,48 @@ body[data-motif-cs-export-resizing] {
   background: var(--control-hover);
   color: var(--text-primary);
   outline: none;
+}
+
+.motif-cs-rail-popover-resize {
+  display: none;
+}
+
+.motif-cs-inspector[data-tools-pinned="false"] .motif-cs-panel[open] > .motif-cs-tool-panel-body > .motif-cs-rail-popover-resize {
+  position: absolute;
+  z-index: 3;
+  bottom: 0;
+  left: 0;
+  display: block;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 0 var(--radius-sm) 0 0;
+  background: transparent;
+  cursor: nesw-resize;
+  touch-action: none;
+}
+
+.motif-cs-rail-popover-resize::after {
+  position: absolute;
+  bottom: 2px;
+  left: 2px;
+  width: 13px;
+  height: 13px;
+  background: linear-gradient(45deg, transparent 0 46%, var(--border) 46% 54%, transparent 54% 100%);
+  content: '';
+  pointer-events: none;
+}
+
+.motif-cs-rail-popover-resize:hover::after,
+.motif-cs-rail-popover-resize:focus-visible::after,
+body[data-motif-cs-rail-popover-resizing] .motif-cs-rail-popover-resize::after {
+  background: linear-gradient(45deg, transparent 0 46%, var(--accent) 46% 54%, transparent 54% 100%);
+}
+
+.motif-cs-rail-popover-resize:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
 }
 
 .motif-cs-inspector[data-tools-pinned="true"] {
@@ -5142,6 +5185,7 @@ body[data-motif-cs-export-resizing] {
 .motif-cs-restriction-select:focus-visible,
 .motif-cs-orf-select:focus-visible,
 .motif-cs-rail-popover-close:focus-visible,
+.motif-cs-rail-popover-resize:focus-visible,
 .motif-cs-segmented button:focus-visible,
 .motif-cs-window-icon:focus-visible,
 summary.motif-cs-panel-head:focus-visible {
@@ -5163,22 +5207,13 @@ summary.motif-cs-panel-head:focus-visible {
     left: 8px !important;
     top: auto !important;
     bottom: 8px;
-    width: calc(100vw - 16px) !important;
+    width: calc(100vw - 16px - var(--motif-cs-floating-right-inset, 0px)) !important;
     height: auto !important;
     min-height: 0;
   }
 
   .motif-cs-window-body {
     padding: 8px 10px 10px;
-  }
-
-  /* A compact MSA window can extend beneath the persistent 48px Tools rail.
-     Reserve its body gutter so Viewer/Text/View controls and matrix content
-     remain visible and hit-testable while the rail itself stays available. */
-  .motif-cs-shell:has(.motif-cs-inspector[data-tools-pinned="false"])
-    .motif-cs-window:has(.motif-cs-msa-workspace)
-    .motif-cs-window-body {
-    padding-right: 58px;
   }
 
   .motif-cs-protein-readout {
@@ -9582,18 +9617,6 @@ summary.motif-cs-panel-head:focus-visible {
     border-left-color: var(--border-strong);
     background: var(--panel-bg);
     box-shadow: 0 10px 28px color-mix(in srgb, var(--shadow-ink) 20%, transparent);
-  }
-
-  /* The collapsed 48 px tool rail intentionally sits above floating windows.
-     Reserve its hit area so window actions and scientific content remain
-     reachable instead of being painted underneath the rail. */
-  .motif-cs-shell:has(.motif-cs-inspector[data-tools-pinned="false"]) .motif-cs-window-head,
-  .motif-cs-shell:has(.motif-cs-inspector[data-tools-pinned="false"]) .motif-cs-window-body {
-    padding-right: 58px;
-  }
-
-  .motif-cs-shell:has(.motif-cs-inspector[data-tools-pinned="false"]) .motif-cs-window-resize {
-    right: 58px;
   }
 
   .motif-cs-resize-handle[data-pane="tools"] {
