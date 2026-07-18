@@ -942,6 +942,11 @@ export type MsaMotifSearchResult = { matches: MsaMotifMatch[]; truncated: boolea
 
 export const MSA_MOTIF_SEARCH_MAX_MATCHES = 5_000;
 
+// Upper bound on residue comparisons per search so a long, rare, or absent query
+// on a large alignment cannot block the render thread: once exceeded the scan
+// stops and reports `truncated` instead of running to completion.
+export const MSA_MOTIF_SEARCH_MAX_COMPARISONS = 20_000_000;
+
 // IUPAC nucleotide ambiguity → the concrete bases each code covers.
 const IUPAC_NUCLEOTIDES: Record<string, string> = {
   A: 'A', C: 'C', G: 'G', T: 'T', U: 'T',
@@ -966,6 +971,74 @@ function normalizeMotifResidue(symbol: string, molecule: SequenceType): string {
   return molecule !== 'protein' && upper === 'U' ? 'T' : upper;
 }
 
+/** Total order over matches: earliest alignment column first, then row name. */
+function compareMotifMatches(a: MsaMotifMatch, b: MsaMotifMatch): number {
+  return a.startColumn - b.startColumn
+    || a.endColumn - b.endColumn
+    || a.rowName.localeCompare(b.rowName, undefined, { numeric: true });
+}
+
+/**
+ * Retains only the `capacity` globally-earliest matches (by compareMotifMatches)
+ * using a binary max-heap, so a low-complexity query stays O(total × log capacity)
+ * in time and O(capacity) in memory no matter how many raw hits it produces —
+ * instead of collecting every hit and sorting (which the row-order cap got wrong,
+ * and which could exhaust memory before the count cap ever tripped).
+ */
+class BoundedEarliestMatches {
+  private heap: MsaMotifMatch[] = [];
+  private readonly capacity: number;
+
+  constructor(capacity: number) {
+    this.capacity = capacity;
+  }
+
+  /** Add a match; returns true when the set was already full (results capped). */
+  push(match: MsaMotifMatch): boolean {
+    if (this.capacity <= 0) return true;
+    if (this.heap.length < this.capacity) {
+      this.heap.push(match);
+      this.siftUp(this.heap.length - 1);
+      return false;
+    }
+    // Full: keep the new match only if it is earlier than the current worst (root).
+    if (compareMotifMatches(match, this.heap[0]) < 0) {
+      this.heap[0] = match;
+      this.siftDown(0);
+    }
+    return true;
+  }
+
+  toSortedArray(): MsaMotifMatch[] {
+    return this.heap.slice().sort(compareMotifMatches);
+  }
+
+  private siftUp(index: number): void {
+    let i = index;
+    while (i > 0) {
+      const parent = (i - 1) >> 1;
+      if (compareMotifMatches(this.heap[i], this.heap[parent]) <= 0) break;
+      [this.heap[i], this.heap[parent]] = [this.heap[parent], this.heap[i]];
+      i = parent;
+    }
+  }
+
+  private siftDown(index: number): void {
+    let i = index;
+    const size = this.heap.length;
+    for (;;) {
+      let largest = i;
+      const left = 2 * i + 1;
+      const right = 2 * i + 2;
+      if (left < size && compareMotifMatches(this.heap[left], this.heap[largest]) > 0) largest = left;
+      if (right < size && compareMotifMatches(this.heap[right], this.heap[largest]) > 0) largest = right;
+      if (largest === i) break;
+      [this.heap[i], this.heap[largest]] = [this.heap[largest], this.heap[i]];
+      i = largest;
+    }
+  }
+}
+
 /**
  * Find every occurrence of `query` across the ungapped residues of each row,
  * mapping each hit back to the alignment columns it covers (gap columns between
@@ -979,17 +1052,21 @@ function normalizeMotifResidue(symbol: string, molecule: SequenceType): string {
 export function findMsaMotifMatches(
   rows: readonly { id: string; name: string; aligned: string }[],
   query: string,
-  options: { molecule: SequenceType; maxMatches?: number },
+  options: { molecule: SequenceType; maxMatches?: number; maxComparisons?: number },
 ): MsaMotifSearchResult {
   const trimmed = query.trim();
   if (!trimmed || /[-.]/.test(trimmed)) return { matches: [], truncated: false };
   const { molecule } = options;
   const maxMatches = Math.max(0, Math.floor(options.maxMatches ?? MSA_MOTIF_SEARCH_MAX_MATCHES));
+  const maxComparisons = Math.max(1, Math.floor(options.maxComparisons ?? MSA_MOTIF_SEARCH_MAX_COMPARISONS));
   const needle = Array.from(trimmed, (symbol) => normalizeMotifResidue(symbol, molecule));
-  const matches: MsaMotifMatch[] = [];
+  // Keep only the globally-earliest `maxMatches` regardless of row scan order,
+  // and cap total residue comparisons so a rare/absent long query stays bounded.
+  const collector = new BoundedEarliestMatches(maxMatches);
   let truncated = false;
+  let comparisons = 0;
 
-  outer: for (const row of rows) {
+  scan: for (const row of rows) {
     const residues: string[] = [];
     const columns: number[] = [];
     for (let column = 0; column < row.aligned.length; column += 1) {
@@ -1002,25 +1079,21 @@ export function findMsaMotifMatches(
     for (let start = 0; start <= limit; start += 1) {
       let ok = true;
       for (let offset = 0; offset < needle.length; offset += 1) {
+        comparisons += 1;
+        if (comparisons > maxComparisons) { truncated = true; break scan; }
         if (!residueMatch(needle[offset], residues[start + offset], molecule)) { ok = false; break; }
       }
       if (!ok) continue;
-      if (matches.length >= maxMatches) { truncated = true; break outer; }
       const matchColumns = columns.slice(start, start + needle.length);
-      matches.push({
+      if (collector.push({
         rowId: row.id,
         rowName: row.name,
         startColumn: matchColumns[0],
         endColumn: matchColumns[matchColumns.length - 1],
         columns: matchColumns,
-      });
+      })) truncated = true;
     }
   }
 
-  matches.sort((left, right) => (
-    left.startColumn - right.startColumn
-    || left.endColumn - right.endColumn
-    || left.rowName.localeCompare(right.rowName, undefined, { numeric: true })
-  ));
-  return { matches, truncated };
+  return { matches: collector.toSortedArray(), truncated };
 }

@@ -269,4 +269,27 @@ describe('findMsaMotifMatches', () => {
     // A zero/negative cap stores nothing (does not leak one match).
     expect(findMsaMotifMatches(rows, 'A', { molecule: 'dna', maxMatches: 0 }).matches).toHaveLength(0);
   });
+
+  it('returns the globally-earliest columns when the cap truncates, regardless of row order', () => {
+    // The row holding the earlier column is scanned LAST, yet must win the cap —
+    // the previous implementation kept whichever hit it happened to reach first.
+    const rows = [
+      { id: 'late', name: 'Late', aligned: '--A' }, // A at column 2, scanned first
+      { id: 'early', name: 'Early', aligned: 'A--' }, // A at column 0, scanned second
+    ];
+    const { matches, truncated } = findMsaMotifMatches(rows, 'A', { molecule: 'dna', maxMatches: 1 });
+    expect(truncated).toBe(true);
+    expect(matches).toHaveLength(1);
+    expect(matches[0]).toMatchObject({ rowId: 'early', startColumn: 0 });
+  });
+
+  it('bounds total work and reports truncation for a long, absent query', () => {
+    // 200 columns of A searched for a 150-long A…C motif never matches; without a
+    // comparison budget this scans every start position. The cap stops it early.
+    const rows = [{ id: 'r', name: 'r', aligned: 'A'.repeat(200) }];
+    const query = `${'A'.repeat(149)}C`;
+    const { matches, truncated } = findMsaMotifMatches(rows, query, { molecule: 'dna', maxComparisons: 500 });
+    expect(matches).toHaveLength(0);
+    expect(truncated).toBe(true);
+  });
 });
