@@ -111,7 +111,12 @@
 .motif-cs-msa-context-menu {
   position: fixed;
   z-index: 70;
-  min-width: 200px;
+  /* Shrink below the 200px ideal on a tiny/zoomed viewport so the JS clamp can
+     always keep the whole menu on-screen; scroll if it is taller than the view. */
+  min-width: min(200px, calc(100vw - 16px));
+  max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   padding: 4px;

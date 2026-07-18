@@ -181,6 +181,16 @@ test.describe('Motif MSA viewer interactions', () => {
     await expect(menu).toHaveCount(0);
   });
 
+  test('context menu dismisses on window resize', async ({ page }) => {
+    await setup(page);
+    const spot = await center(page, 0, 12);
+    await page.mouse.click(spot.x, spot.y, { button: 'right' });
+    const menu = page.getByRole('menu', { name: 'Alignment selection actions' });
+    await expect(menu).toBeVisible();
+    await page.setViewportSize({ width: 1024, height: 760 });
+    await expect(menu).toHaveCount(0);
+  });
+
   test('a near-vertical wheel gesture is not hijacked into horizontal scroll', async ({ page }) => {
     await setupDna(page);
     const scroll = page.locator('.motif-cs-msa-matrix-scroll');
@@ -196,6 +206,10 @@ test.describe('Motif MSA viewer interactions', () => {
     await page.mouse.wheel(6, 160);
     await page.waitForTimeout(80);
     expect(await scroll.evaluate((el) => el.scrollLeft)).toBe(afterHorizontal);
+    // ...and the vertical delta actually scrolled (the matrix has no vertical
+    // overflow here, so it delegates to the scrollable window body).
+    const bodyTop = await page.locator('.motif-cs-window-body').evaluate((el) => el.scrollTop);
+    expect(bodyTop).toBeGreaterThan(0);
   });
 
   test('the hover readout clears when the matrix scrolls', async ({ page }) => {
