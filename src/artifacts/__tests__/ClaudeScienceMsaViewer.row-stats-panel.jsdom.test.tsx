@@ -28,7 +28,7 @@ const alignment = normalizeArtifactAlignment({
 
 function StatefulViewer({
   sourceAlignment = alignment,
-  initialPreferences = DEFAULT_CLAUDE_SCIENCE_MSA_VIEW_PREFERENCES,
+  initialPreferences = { ...DEFAULT_CLAUDE_SCIENCE_MSA_VIEW_PREFERENCES, showRowStatsPanel: true },
 }: {
   sourceAlignment?: ArtifactAlignment;
   initialPreferences?: ClaudeScienceMsaViewPreferences;
@@ -136,11 +136,11 @@ describe('ClaudeScienceMsaViewer row statistics panel', () => {
     expect(viewport.scrollTop).toBe(110);
   });
 
-  it('hides the panel when the existing row-statistics visibility toggle is off', () => {
+  it('hides the panel when its visibility toggle is off', () => {
     render(<StatefulViewer />);
     expect(screen.getByTestId('msa-row-stats-panel')).toBeTruthy();
 
-    fireEvent.click(screen.getByLabelText('Row statistics'));
+    fireEvent.click(screen.getByLabelText('Row statistics table'));
 
     expect(screen.queryByTestId('msa-row-stats-panel')).toBeNull();
   });

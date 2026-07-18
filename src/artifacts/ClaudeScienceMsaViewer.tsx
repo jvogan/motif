@@ -652,7 +652,9 @@ function MsaRowStatsPanel({
   onSortModeChange: (sortMode: RowSortMode) => void;
   onJump: (rowId: string, column: number) => void;
 }) {
-  const [open, setOpen] = useState(true);
+  // Collapsed by default: an open panel of every row would consume the MSA
+  // window's bounded height and push the matrix out of its clipped viewport.
+  const [open, setOpen] = useState(false);
   const template = alignment.rows.find((row) => row.id === referenceRowId) ?? alignment.rows[0];
   const statsByRow = useMemo(() => new Map(alignment.rows.map((row) => [
     row.id,
@@ -3211,6 +3213,7 @@ export function ClaudeScienceMsaViewer({
                   ['showAlignmentAxis', 'Alignment axis'],
                   ['showTemplateAxis', 'Template axis'],
                   ['showRowStats', 'Row statistics'],
+                  ['showRowStatsPanel', 'Row statistics table'],
                   ['showConservation', 'Conservation marks'],
                   ['showConservationHistogram', 'Conservation histogram'],
                   ['showOccupancy', 'Occupancy'],
@@ -3483,7 +3486,7 @@ export function ClaudeScienceMsaViewer({
                   <span className="motif-cs-visually-hidden" role="status" aria-live="polite">{columnStatus}</span>
                 </form>
               </div>
-              {viewPreferences.showRowStats ? (
+              {viewPreferences.showRowStatsPanel ? (
                 <MsaRowStatsPanel
                   alignment={activeAlignment}
                   referenceRowId={referenceRowId}

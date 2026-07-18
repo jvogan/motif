@@ -661,7 +661,10 @@
   min-width: 0;
   max-width: 100%;
   margin: 0 0 8px;
-  overflow: hidden;
+  /* Anchor the open table as a floating popover (below) so expanding the panel
+     never consumes the MSA window's bounded height and pushes the matrix out. */
+  position: relative;
+  overflow: visible;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
   background: var(--control-bg);
@@ -713,10 +716,20 @@
 }
 .motif-cs-msa-workspace .motif-cs-msa-row-stats-scroll {
   box-sizing: border-box;
-  max-width: 100%;
-  overflow-x: auto;
-  overscroll-behavior-x: contain;
-  border-top: 1px solid var(--border-subtle);
+  /* Float the open table over the alignment instead of pushing it down, and
+     bound the height so a tall alignment scrolls the table internally. */
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  right: 0;
+  z-index: 30;
+  max-height: 210px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  background: var(--control-bg);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
 }
 .motif-cs-msa-workspace .motif-cs-msa-row-stats-scroll table {
   width: 100%;
