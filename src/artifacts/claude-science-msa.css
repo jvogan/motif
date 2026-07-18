@@ -67,6 +67,18 @@
   user-select: none;
 }
 
+/* Roving keyboard focus stays independent of hover, selection, search, and
+   jump overlays so every combination remains visible. */
+.motif-cs-msa-symbol[data-active-cell='true'] {
+  position: relative;
+  z-index: 5;
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.motif-cs-msa-symbol[data-active-cell='true']:focus-visible {
+  outline-width: 3px;
+}
+
 .motif-cs-msa-hover-readout {
   position: fixed;
   z-index: 60;

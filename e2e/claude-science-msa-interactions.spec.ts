@@ -81,6 +81,76 @@ test.describe('Motif MSA viewer interactions', () => {
     };
   }
 
+  function activeGridCell(page: Page) {
+    return page.locator('[data-msa-grid-cell="true"][data-active-cell="true"]');
+  }
+
+  test('keyboard arrows move the active gridcell and announce its residue', async ({ page }) => {
+    await setup(page);
+    const initial = activeGridCell(page);
+    await expect(initial).toHaveAttribute('data-alignment-column', '1');
+    await initial.focus();
+    await page.keyboard.press('ArrowRight');
+
+    const moved = activeGridCell(page);
+    await expect(moved).toBeFocused();
+    await expect(moved).toHaveAttribute('data-alignment-column', '2');
+    await expect(moved).toHaveAttribute('aria-label', 'Residue I, alignment column 2, row ref');
+  });
+
+  test('Shift plus Arrow extends the keyboard selection from its anchor', async ({ page }) => {
+    await setup(page);
+    await activeGridCell(page).focus();
+    await page.keyboard.press('Shift+ArrowRight');
+
+    await expect(activeGridCell(page)).toHaveAttribute('data-alignment-column', '2');
+    const readout = page.getByTestId('msa-selection-readout');
+    await expect(readout).toContainText('cols 1–2');
+    await expect(readout).toContainText('1 row');
+  });
+
+  test('Home End and Control Home navigate row and grid boundaries', async ({ page }) => {
+    await setup(page);
+    await activeGridCell(page).focus();
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('End');
+    await expect(activeGridCell(page)).toHaveAttribute('data-alignment-column', '120');
+    await expect(activeGridCell(page).locator('xpath=..').locator('xpath=..')).toHaveAttribute('data-msa-row-index', '1');
+
+    await page.keyboard.press('Home');
+    await expect(activeGridCell(page)).toHaveAttribute('data-alignment-column', '1');
+    await expect(activeGridCell(page).locator('xpath=..').locator('xpath=..')).toHaveAttribute('data-msa-row-index', '1');
+
+    await page.keyboard.press('End');
+    await page.keyboard.press('Control+Home');
+    await expect(activeGridCell(page)).toBeFocused();
+    await expect(activeGridCell(page)).toHaveAttribute('data-alignment-column', '1');
+    await expect(activeGridCell(page).locator('xpath=..').locator('xpath=..')).toHaveAttribute('data-msa-row-index', '0');
+  });
+
+  test('Shift F10 opens selection actions at the active gridcell', async ({ page }) => {
+    await setup(page);
+    await activeGridCell(page).focus();
+    await page.keyboard.press('Shift+F10');
+
+    const menu = page.getByRole('menu', { name: 'Alignment selection actions' });
+    await expect(menu).toBeVisible();
+    await expect(menu.getByRole('menuitem', { name: /Copy selection \(FASTA\)/ })).toBeVisible();
+    await expect(page.getByTestId('msa-selection-readout')).toContainText('cols 1–1');
+  });
+
+  test('sequence search transfers focus to the matched gridcell', async ({ page }) => {
+    await setup(page);
+    const input = page.getByTestId('msa-search-input');
+    await input.fill('AIRCK');
+    await input.press('Enter');
+
+    const active = activeGridCell(page);
+    await expect(active).toBeFocused();
+    await expect(active).toHaveAttribute('data-search-active', 'true');
+    await expect(active).toHaveAttribute('aria-label', /Residue R, alignment column 3, row ref/);
+  });
+
   test('drag selects a rectangular block and reports selection stats', async ({ page }) => {
     await setup(page);
     const start = await center(page, 0, 8);

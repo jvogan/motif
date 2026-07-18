@@ -211,8 +211,10 @@ describe('Claude Science MSA interaction and rendering guards', () => {
     expect(viewerSource).toContain('aria-label={`Use ${row.name} as template`}');
     expect(viewerSource).toContain('aria-pressed={isTemplate}');
     expect(viewerSource).toContain('role="region"');
-    expect(viewerSource).toContain('aria-label={`Alignment matrix, ${alignment.rows.length} rows by ${alignment.alignmentLength} columns. Scroll horizontally to inspect columns.`}');
-    expect(viewerSource).toContain('Use the Columns slider, Shift plus wheel, or Left and Right arrow keys to pan.');
+    expect(viewerSource).toContain('role="grid"');
+    expect(viewerSource).toContain('aria-label={`Alignment matrix, ${alignment.rows.length} rows by ${alignment.alignmentLength} columns`}');
+    expect(viewerSource).toContain('Shift plus Arrow keys to extend a selection');
+    expect(viewerSource).toContain('The Columns slider and Shift plus wheel also pan the alignment.');
     expect(viewerSource).toContain('Switch to Text to read or copy the complete aligned sequences with assistive technology.');
     expect(viewerSource).toContain('aria-live="polite"');
   });

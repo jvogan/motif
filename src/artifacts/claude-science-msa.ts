@@ -24,6 +24,15 @@ export type MsaColumnHitTestMetrics = {
   columnCount: number;
 };
 
+export type MsaGridCellPosition = { rowIndex: number; column: number };
+
+export type MsaGridNavigationOptions = {
+  rowCount: number;
+  columnCount: number;
+  pageColumnCount: number;
+  toGridBoundary?: boolean;
+};
+
 const MSA_DRAG_EDGE_MIN_SPEED = 2;
 const MSA_DRAG_EDGE_MAX_SPEED = 32;
 const MSA_DRAG_EDGE_SPEED_SCALE = 0.35;
@@ -69,6 +78,37 @@ export function msaColumnFromClientX(
   const column = Math.floor((resolvedX - sequenceLeft + metrics.scrollLeft) / metrics.cellWidth);
   if (clampToViewport) return Math.max(0, Math.min(metrics.columnCount - 1, column));
   return column >= 0 && column < metrics.columnCount ? column : null;
+}
+
+/** Resolve a keyboard navigation key to a clamped cell in the sequence grid. */
+export function navigateMsaGridCell(
+  current: MsaGridCellPosition,
+  key: string,
+  options: MsaGridNavigationOptions,
+): MsaGridCellPosition | null {
+  const rowCount = Math.max(0, Math.floor(options.rowCount));
+  const columnCount = Math.max(0, Math.floor(options.columnCount));
+  if (rowCount === 0 || columnCount === 0) return null;
+
+  const lastRow = rowCount - 1;
+  const lastColumn = columnCount - 1;
+  const rowIndex = Math.max(0, Math.min(lastRow, Math.floor(current.rowIndex)));
+  const column = Math.max(0, Math.min(lastColumn, Math.floor(current.column)));
+  const page = Math.max(1, Math.floor(options.pageColumnCount));
+
+  if (key === 'ArrowLeft') return { rowIndex, column: Math.max(0, column - 1) };
+  if (key === 'ArrowRight') return { rowIndex, column: Math.min(lastColumn, column + 1) };
+  if (key === 'ArrowUp') return { rowIndex: Math.max(0, rowIndex - 1), column };
+  if (key === 'ArrowDown') return { rowIndex: Math.min(lastRow, rowIndex + 1), column };
+  if (key === 'PageUp') return { rowIndex, column: Math.max(0, column - page) };
+  if (key === 'PageDown') return { rowIndex, column: Math.min(lastColumn, column + page) };
+  if (key === 'Home') return options.toGridBoundary ? { rowIndex: 0, column: 0 } : { rowIndex, column: 0 };
+  if (key === 'End') {
+    return options.toGridBoundary
+      ? { rowIndex: lastRow, column: lastColumn }
+      : { rowIndex, column: lastColumn };
+  }
+  return null;
 }
 
 export type ArtifactAlignmentMode = 'browser' | 'local-command' | 'imported';
