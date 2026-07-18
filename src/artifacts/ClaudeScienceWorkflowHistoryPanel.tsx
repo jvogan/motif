@@ -1,9 +1,14 @@
 import { useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import type { ArtifactWorkflowResult } from './claude-science-workspace-collections';
+import {
+  ClaudeScienceFreshnessBadge,
+  type ScientificFreshnessDisplayEvaluation,
+} from './ClaudeScienceFreshnessBadge';
 
 export type ClaudeScienceWorkflowHistoryPanelProps = {
   results: readonly ArtifactWorkflowResult[];
   recordNames: Readonly<Record<string, string>>;
+  freshnessByResultId?: ReadonlyMap<string, ScientificFreshnessDisplayEvaluation>;
   onRevealRecord: (recordId: string) => void;
   onRemove: (resultId: string) => boolean | void;
 };
@@ -122,6 +127,7 @@ function provenanceText(result: ArtifactWorkflowResult, names: Readonly<Record<s
 export function ClaudeScienceWorkflowHistoryPanel({
   results,
   recordNames,
+  freshnessByResultId,
   onRevealRecord,
   onRemove,
 }: ClaudeScienceWorkflowHistoryPanelProps) {
@@ -175,6 +181,7 @@ export function ClaudeScienceWorkflowHistoryPanel({
               : result.provenance.source;
             const parametersPreview = structuredPreview(result.parameters);
             const resultPreview = result.result ? structuredPreview(result.result) : null;
+            const freshness = freshnessByResultId?.get(result.id);
             return (
               <article className="motif-cs-workflow-row" key={result.id} data-testid={`workflow-result-${result.id}`}>
                 <div className="motif-cs-workflow-row-copy">
@@ -184,7 +191,10 @@ export function ClaudeScienceWorkflowHistoryPanel({
                   {result.outputRecordIds.length > 0 ? (
                     <span><span className="motif-cs-workflow-record-label">Outputs:</span> {recordList(result.outputRecordIds, recordNames)}</span>
                   ) : null}
-                  <small><time dateTime={result.createdAt}>{resultTimestamp(result.createdAt)}</time> · {engine}</small>
+                  <span className="motif-cs-workflow-meta">
+                    <small><time dateTime={result.createdAt}>{resultTimestamp(result.createdAt)}</time> · {engine}</small>
+                    {freshness ? <ClaudeScienceFreshnessBadge evaluation={freshness} recordNames={recordNames} /> : null}
+                  </span>
                   <details className="motif-cs-workflow-details">
                     <summary>Details</summary>
                     <div className="motif-cs-workflow-details-body">
@@ -205,6 +215,12 @@ export function ClaudeScienceWorkflowHistoryPanel({
                                 <code key={`${hash}-${index}`} title={hash}>{hash.slice(0, 12)}…</code>
                               ))}
                             </dd>
+                          </div>
+                        ) : null}
+                        {freshness ? (
+                          <div>
+                            <dt>Freshness</dt>
+                            <dd><ClaudeScienceFreshnessBadge evaluation={freshness} recordNames={recordNames} showReason /></dd>
                           </div>
                         ) : null}
                         <div>

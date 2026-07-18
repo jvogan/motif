@@ -1,4 +1,5 @@
 import { computeMSA, isMSAError, MSA_MAX_SEQ_LEN, type MSAResult } from '../bio/msa';
+import { STANDARD_CODE } from '../bio/codon-tables';
 import type { SequenceType } from '../bio/types';
 
 export const ARTIFACT_MSA_MAX_ALIGNMENTS = 50;
@@ -620,4 +621,406 @@ export function formatClustal(alignment: ArtifactAlignment, blockWidth = 60): st
 export function safeAlignmentFilename(alignment: ArtifactAlignment, extension: string): string {
   const slug = alignment.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 80) || 'alignment';
   return `${slug}.${extension.replace(/^\./, '')}`;
+}
+
+// ===== Viewer analytics: per-column statistics (pure, derived) =====
+//
+// These read only the aligned rows already stored on an ArtifactAlignment, so
+// they add no persisted state and never touch the alignment engine. The viewer
+// uses them to draw conservation/occupancy histograms, shade columns, and
+// summarize a selection.
+
+export type MsaColumnStats = {
+  /** Non-gap fraction of rows at this column (0..1). */
+  occupancy: number;
+  /** Majority non-gap residue; '-' when the whole column is gaps. */
+  consensusResidue: string;
+  /** Count of the majority residue among non-gap rows. */
+  consensusCount: number;
+  /** consensusCount / non-gap rows (0..1); 0 when the column is all gaps. */
+  consensusFraction: number;
+  /** consensusCount / total rows (0..1) — identity gated by occupancy. */
+  identity: number;
+  /** Blended 0..1 conservation score (majority dominance × occupancy). */
+  conservation: number;
+  /** Shannon entropy in bits over non-gap residues (0 = single residue). */
+  entropy: number;
+  /** True when every row carries the same non-gap residue here. */
+  fullyConserved: boolean;
+};
+
+const LOG2 = Math.log(2);
+
+/** Per-column statistics for an alignment's rows. O(rows × columns), single pass. */
+export function computeMsaColumnStats(rows: ReadonlyArray<{ aligned: string }>): MsaColumnStats[] {
+  const rowCount = rows.length;
+  const length = rows[0]?.aligned.length ?? 0;
+  const stats: MsaColumnStats[] = new Array(length);
+  for (let column = 0; column < length; column += 1) {
+    const counts = new Map<string, number>();
+    let nonGap = 0;
+    for (let row = 0; row < rowCount; row += 1) {
+      const symbol = rows[row].aligned[column] ?? '-';
+      if (symbol === '-') continue;
+      nonGap += 1;
+      counts.set(symbol, (counts.get(symbol) ?? 0) + 1);
+    }
+    if (nonGap === 0) {
+      stats[column] = {
+        occupancy: 0, consensusResidue: '-', consensusCount: 0,
+        consensusFraction: 0, identity: 0, conservation: 0, entropy: 0, fullyConserved: false,
+      };
+      continue;
+    }
+    let winner = '';
+    let winnerCount = 0;
+    let entropy = 0;
+    for (const [symbol, count] of counts) {
+      if (count > winnerCount || (count === winnerCount && (winner === '' || symbol < winner))) {
+        winner = symbol;
+        winnerCount = count;
+      }
+      const probability = count / nonGap;
+      entropy -= probability * (Math.log(probability) / LOG2);
+    }
+    const occupancy = nonGap / rowCount;
+    const consensusFraction = winnerCount / nonGap;
+    stats[column] = {
+      occupancy,
+      consensusResidue: winner,
+      consensusCount: winnerCount,
+      consensusFraction,
+      identity: winnerCount / rowCount,
+      conservation: consensusFraction * occupancy,
+      entropy,
+      fullyConserved: winnerCount === rowCount,
+    };
+  }
+  return stats;
+}
+
+/** Bucket a 0..1 score into 0..4 for CSS-driven shading intensity. */
+export function msaShadeBucket(value: number): 0 | 1 | 2 | 3 | 4 {
+  if (!(value > 0)) return 0;
+  if (value >= 0.999) return 4;
+  if (value >= 0.8) return 3;
+  if (value >= 0.6) return 2;
+  if (value >= 0.4) return 1;
+  return 0;
+}
+
+// ===== Residue colour schemes =====
+//
+// residueColorKey returns a stable class-like token consumed as a data-attribute
+// and coloured in claude-science-msa.css (so palettes stay theme-aware in light
+// and dark). 'auto' keeps the viewer's existing residueTone behaviour and is
+// handled there, so this function is only called for explicit schemes.
+
+export type MsaColorScheme = 'auto' | 'nucleotide' | 'clustal' | 'hydrophobicity' | 'taylor';
+export type MsaShadeMode = 'none' | 'mismatch' | 'identity' | 'conservation';
+
+export const MSA_COLOR_SCHEMES: readonly MsaColorScheme[] = ['auto', 'nucleotide', 'clustal', 'hydrophobicity', 'taylor'];
+export const MSA_SHADE_MODES: readonly MsaShadeMode[] = ['none', 'mismatch', 'identity', 'conservation'];
+
+// ClustalX-style amino-acid chemistry groups.
+const CLUSTAL_GROUP: Record<string, string> = {
+  A: 'hydrophobic', I: 'hydrophobic', L: 'hydrophobic', M: 'hydrophobic', F: 'hydrophobic', W: 'hydrophobic', V: 'hydrophobic',
+  K: 'positive', R: 'positive',
+  E: 'negative', D: 'negative',
+  N: 'polar', Q: 'polar', S: 'polar', T: 'polar',
+  C: 'cysteine', G: 'glycine', P: 'proline', H: 'aromatic', Y: 'aromatic',
+};
+
+// Kyte-Doolittle hydropathy, bucketed 0 (hydrophilic) .. 4 (hydrophobic).
+const KYTE_DOOLITTLE: Record<string, number> = {
+  I: 4.5, V: 4.2, L: 3.8, F: 2.8, C: 2.5, M: 1.9, A: 1.8, G: -0.4, T: -0.7, S: -0.8,
+  W: -0.9, Y: -1.3, P: -1.6, H: -3.2, E: -3.5, Q: -3.5, D: -3.5, N: -3.5, K: -3.9, R: -4.5,
+};
+
+function hydropathyBucket(symbol: string): 0 | 1 | 2 | 3 | 4 {
+  const value = KYTE_DOOLITTLE[symbol];
+  if (value === undefined) return 2;
+  if (value >= 3) return 4;
+  if (value >= 1) return 3;
+  if (value >= -1) return 2;
+  if (value >= -3.4) return 1;
+  return 0;
+}
+
+/** Palette token for a residue under a given scheme; '' means "no colour". */
+export function residueColorKey(symbol: string, molecule: SequenceType, scheme: MsaColorScheme): string {
+  const residue = symbol.toUpperCase();
+  if (residue === '-' || residue === '.' || residue === '' || residue === '?') return '';
+  if (scheme === 'nucleotide' || (scheme === 'auto' && molecule !== 'protein')) {
+    if (residue === 'A') return 'nt-a';
+    if (residue === 'C') return 'nt-c';
+    if (residue === 'G') return 'nt-g';
+    if (residue === 'T' || residue === 'U') return 'nt-t';
+    return 'nt-other';
+  }
+  if (scheme === 'taylor') return 'taylor';
+  if (scheme === 'hydrophobicity') return `hyd-${hydropathyBucket(residue)}`;
+  const group = CLUSTAL_GROUP[residue];
+  return group ? `cl-${group}` : 'cl-other';
+}
+
+// ===== Selection helpers =====
+//
+// A selection is an inclusive column range plus an optional row-id subset (all
+// rows when omitted). These produce copy payloads for the viewer's context menu
+// without mutating the workspace.
+
+export type MsaColumnRange = { start: number; end: number };
+
+export type MsaSelection = {
+  columns: MsaColumnRange;
+  rowIds?: readonly string[];
+};
+
+function selectionRows(alignment: ArtifactAlignment, selection: MsaSelection): ArtifactAlignmentRow[] {
+  if (!selection.rowIds || selection.rowIds.length === 0) return alignment.rows;
+  // Resolve ids in the order the caller supplied them (the displayed/sorted/
+  // reordered order), not the alignment's stored order.
+  const byId = new Map(alignment.rows.map((row) => [row.id, row]));
+  return selection.rowIds
+    .map((id) => byId.get(id))
+    .filter((row): row is ArtifactAlignmentRow => row !== undefined);
+}
+
+function clampRange(range: MsaColumnRange, length: number): MsaColumnRange {
+  const start = Math.max(0, Math.min(length - 1, Math.min(range.start, range.end)));
+  const end = Math.max(0, Math.min(length - 1, Math.max(range.start, range.end)));
+  return { start, end };
+}
+
+/** Aligned (gapped) slice of the selected block, one entry per selected row. */
+export function sliceSelectionRows(
+  alignment: ArtifactAlignment,
+  selection: MsaSelection,
+): Array<{ id: string; name: string; aligned: string }> {
+  const { start, end } = clampRange(selection.columns, alignment.alignmentLength);
+  return selectionRows(alignment, selection).map((row) => ({
+    id: row.id,
+    name: row.name,
+    aligned: row.aligned.slice(start, end + 1),
+  }));
+}
+
+/** Selected block as aligned (gap-preserving) FASTA. */
+export function selectionToFasta(alignment: ArtifactAlignment, selection: MsaSelection): string {
+  return `${sliceSelectionRows(alignment, selection)
+    .map((row) => `>${row.name}\n${wrapSequence(row.aligned)}`)
+    .join('\n')}\n`;
+}
+
+/** Selected block as ungapped (residues-only) FASTA, dropping rows left empty. */
+export function selectionToUngappedFasta(alignment: ArtifactAlignment, selection: MsaSelection): string {
+  const rows = sliceSelectionRows(alignment, selection)
+    .map((row) => ({ ...row, residues: row.aligned.replace(/-/g, '') }))
+    .filter((row) => row.residues.length > 0);
+  return `${rows.map((row) => `>${row.name}\n${wrapSequence(row.residues)}`).join('\n')}\n`;
+}
+
+/** Selected block as plain aligned rows (one line per row, no headers). */
+export function selectionToColumnsText(alignment: ArtifactAlignment, selection: MsaSelection): string {
+  return sliceSelectionRows(alignment, selection).map((row) => row.aligned).join('\n');
+}
+
+/** Aggregate stats over a column range, for the selection readout. */
+export function summarizeSelectionColumns(
+  columnStats: readonly MsaColumnStats[],
+  range: MsaColumnRange,
+): { columns: number; variableColumns: number; fullyConserved: number; meanIdentity: number; meanConservation: number; gapColumns: number } {
+  const length = columnStats.length;
+  const { start, end } = clampRange(range, length);
+  let variableColumns = 0;
+  let fullyConserved = 0;
+  let gapColumns = 0;
+  let identitySum = 0;
+  let conservationSum = 0;
+  const columns = length > 0 ? end - start + 1 : 0;
+  for (let column = start; column <= end && column < length; column += 1) {
+    const stat = columnStats[column];
+    if (!stat) continue;
+    identitySum += stat.identity;
+    conservationSum += stat.conservation;
+    // An all-gap column has no residues to agree or disagree, so it is neither
+    // conserved nor variable — only a gap column.
+    if (stat.occupancy === 0) { gapColumns += 1; continue; }
+    if (stat.fullyConserved) fullyConserved += 1;
+    else if (stat.consensusFraction < 1) variableColumns += 1;
+  }
+  return {
+    columns,
+    variableColumns,
+    fullyConserved,
+    gapColumns,
+    meanIdentity: columns > 0 ? identitySum / columns : 0,
+    meanConservation: columns > 0 ? conservationSum / columns : 0,
+  };
+}
+
+/**
+ * Return a new ordering with `id` moved to `targetIndex`. The item is removed
+ * first, then reinserted, so `targetIndex` is interpreted against the array
+ * without the moved id and clamped to its bounds. Used by the viewer's manual
+ * row drag-reorder (pointer drop and keyboard step both funnel through here so
+ * the reorder logic stays pure and unit-testable). Ids absent from `order`, or
+ * a target equal to the current slot, yield an equivalent order.
+ */
+export function moveRowId(order: readonly string[], id: string, targetIndex: number): string[] {
+  const from = order.indexOf(id);
+  if (from < 0) return order.slice();
+  const without = order.filter((value) => value !== id);
+  const clamped = Math.max(0, Math.min(without.length, targetIndex));
+  without.splice(clamped, 0, id);
+  return without;
+}
+
+/** One translated amino-acid cell, positioned against alignment columns. */
+export type MsaTranslationCodon = {
+  aminoAcid: string;      // single-letter AA; 'X' unknown/ambiguous, '*' stop
+  position: number;       // 1-based amino-acid index within this row's frame
+  codon: string;          // 3-letter DNA codon (U normalized to T), uppercase
+  startColumn: number;    // alignment column of the codon's first nucleotide
+  endColumn: number;      // alignment column of the codon's third nucleotide
+  gapSpanning: boolean;   // alignment gaps fall between the codon's nucleotides
+};
+
+/**
+ * Translate a gapped, aligned nucleotide row into amino-acid cells positioned
+ * against the alignment columns. Ungapped nucleotides are read starting at
+ * `frame`, grouped into codons; each returned cell spans the columns of its
+ * codon's first and third nucleotide (wider than three columns when alignment
+ * gaps interrupt the codon — flagged via `gapSpanning`). The `frame` offset and
+ * any trailing 1-2 nucleotide remainder produce no cell. Unknown/ambiguous
+ * codons yield 'X'; stop codons yield '*'. Gaps never consume the reading frame,
+ * so a gap alone is not treated as a frameshift. Callers should restrict this to
+ * nucleotide molecules (DNA/RNA).
+ */
+export function translateAlignedRow(aligned: string, frame: 0 | 1 | 2 = 0): MsaTranslationCodon[] {
+  const codons: MsaTranslationCodon[] = [];
+  let seenNonGap = 0;
+  let bases = '';
+  let columns: number[] = [];
+  let position = 0;
+  for (let column = 0; column < aligned.length; column += 1) {
+    const raw = aligned[column];
+    if (raw === '-' || raw === '.') continue;
+    seenNonGap += 1;
+    if (seenNonGap <= frame) continue;
+    const upper = raw.toUpperCase();
+    bases += upper === 'U' ? 'T' : upper;
+    columns.push(column);
+    if (bases.length === 3) {
+      position += 1;
+      codons.push({
+        aminoAcid: STANDARD_CODE.codons[bases] ?? 'X',
+        position,
+        codon: bases,
+        startColumn: columns[0],
+        endColumn: columns[2],
+        gapSpanning: columns[2] - columns[0] !== 2,
+      });
+      bases = '';
+      columns = [];
+    }
+  }
+  return codons;
+}
+
+/** A motif hit within one row, mapped back to alignment columns. */
+export type MsaMotifMatch = {
+  rowId: string;
+  rowName: string;
+  startColumn: number;      // alignment column of the first matched residue
+  endColumn: number;        // alignment column of the last matched residue
+  columns: number[];        // alignment columns of every matched residue (gaps skipped)
+};
+
+export type MsaMotifSearchResult = { matches: MsaMotifMatch[]; truncated: boolean };
+
+export const MSA_MOTIF_SEARCH_MAX_MATCHES = 5_000;
+
+// IUPAC nucleotide ambiguity → the concrete bases each code covers.
+const IUPAC_NUCLEOTIDES: Record<string, string> = {
+  A: 'A', C: 'C', G: 'G', T: 'T', U: 'T',
+  R: 'AG', Y: 'CT', S: 'CG', W: 'AT', K: 'GT', M: 'AC',
+  B: 'CGT', D: 'AGT', H: 'ACT', V: 'ACG', N: 'ACGT',
+};
+
+function nucleotidesMatch(query: string, target: string): boolean {
+  const querySet = IUPAC_NUCLEOTIDES[query] ?? query;
+  const targetSet = IUPAC_NUCLEOTIDES[target] ?? target;
+  for (const base of querySet) if (targetSet.includes(base)) return true;
+  return false;
+}
+
+function residueMatch(query: string, target: string, molecule: SequenceType): boolean {
+  if (molecule === 'protein') return query === target || query === 'X' || target === 'X';
+  return nucleotidesMatch(query, target);
+}
+
+function normalizeMotifResidue(symbol: string, molecule: SequenceType): string {
+  const upper = symbol.toUpperCase();
+  return molecule !== 'protein' && upper === 'U' ? 'T' : upper;
+}
+
+/**
+ * Find every occurrence of `query` across the ungapped residues of each row,
+ * mapping each hit back to the alignment columns it covers (gap columns between
+ * matched residues are skipped, never counted as part of the motif). Matching is
+ * case-insensitive, treats U/T as equivalent for nucleotides, and honours IUPAC
+ * ambiguity in both the query and the target (protein uses X as a wildcard).
+ * Overlapping hits are returned. A query containing a gap, or empty, yields no
+ * matches. Results are capped at `maxMatches` (sorted by column then row) with a
+ * `truncated` flag so a low-complexity query stays bounded.
+ */
+export function findMsaMotifMatches(
+  rows: readonly { id: string; name: string; aligned: string }[],
+  query: string,
+  options: { molecule: SequenceType; maxMatches?: number },
+): MsaMotifSearchResult {
+  const trimmed = query.trim();
+  if (!trimmed || /[-.]/.test(trimmed)) return { matches: [], truncated: false };
+  const { molecule } = options;
+  const maxMatches = Math.max(0, Math.floor(options.maxMatches ?? MSA_MOTIF_SEARCH_MAX_MATCHES));
+  const needle = Array.from(trimmed, (symbol) => normalizeMotifResidue(symbol, molecule));
+  const matches: MsaMotifMatch[] = [];
+  let truncated = false;
+
+  outer: for (const row of rows) {
+    const residues: string[] = [];
+    const columns: number[] = [];
+    for (let column = 0; column < row.aligned.length; column += 1) {
+      const symbol = row.aligned[column];
+      if (symbol === '-' || symbol === '.') continue;
+      residues.push(normalizeMotifResidue(symbol, molecule));
+      columns.push(column);
+    }
+    const limit = residues.length - needle.length;
+    for (let start = 0; start <= limit; start += 1) {
+      let ok = true;
+      for (let offset = 0; offset < needle.length; offset += 1) {
+        if (!residueMatch(needle[offset], residues[start + offset], molecule)) { ok = false; break; }
+      }
+      if (!ok) continue;
+      if (matches.length >= maxMatches) { truncated = true; break outer; }
+      const matchColumns = columns.slice(start, start + needle.length);
+      matches.push({
+        rowId: row.id,
+        rowName: row.name,
+        startColumn: matchColumns[0],
+        endColumn: matchColumns[matchColumns.length - 1],
+        columns: matchColumns,
+      });
+    }
+  }
+
+  matches.sort((left, right) => (
+    left.startColumn - right.startColumn
+    || left.endColumn - right.endColumn
+    || left.rowName.localeCompare(right.rowName, undefined, { numeric: true })
+  ));
+  return { matches, truncated };
 }

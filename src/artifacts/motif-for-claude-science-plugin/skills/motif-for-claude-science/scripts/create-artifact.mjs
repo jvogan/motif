@@ -19,6 +19,7 @@ import {
   MAX_ARTIFACT_ANALYSIS_TOTAL_ASSET_BYTES,
   normalizeArtifactAnalysisWorkspace,
 } from './analysis-validator.mjs';
+import { normalizeArtifactWorkspaceEnvelope } from './workspace-validator.mjs';
 
 const scriptPath = fileURLToPath(import.meta.url);
 const skillDirectory = resolve(dirname(scriptPath), '..');
@@ -38,6 +39,7 @@ export const MAX_TAGS_PER_RECORD = 100;
 export const MAX_SHORT_TEXT_LENGTH = 1_024;
 export const MAX_DESCRIPTION_LENGTH = 16_384;
 export const MAX_TAG_LENGTH = 256;
+export const MAX_OVERHANG_LENGTH = 64;
 export const MAX_RAW_SEQUENCE_CHARACTERS = 1_000_000;
 export const MAX_METADATA_JSON_DEPTH = 16;
 export const MAX_METADATA_JSON_NODES = 10_000;
@@ -72,6 +74,10 @@ const FEATURE_TYPES = new Set([
 const SAFE_FEATURE_COLOR = /^(?:#[0-9a-f]{3,8}|(?:rgb|hsl)a?\([\d\s.,%+\-/]+\)|[a-z]+)$/i;
 const UNSAFE_OBJECT_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 const ALIGNMENT_MODES = new Set(['browser', 'local-command', 'imported']);
+const SUPPORTED_INVENTORY_SCHEMAS = new Set([
+  'motif.claude-science.inventory.v1',
+  'motif.claude-science.inventory.v2',
+]);
 
 function isPlainObject(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -143,6 +149,53 @@ function validateOptionalString(object, field, path, maxLength = MAX_SHORT_TEXT_
   }
   if (typeof object[field] === 'string' && object[field].length > maxLength) {
     throw new Error(`${path}.${field} cannot exceed ${maxLength.toLocaleString()} characters`);
+  }
+}
+
+function normalizedRecordType(value, sequence) {
+  if (['dna', 'rna', 'protein', 'misc', 'unknown', 'mixed'].includes(value)) return value;
+  const normalized = typeof sequence === 'string' ? sequence.toUpperCase().replace(/[^A-Z*]/g, '') : '';
+  if (normalized.includes('*')) return 'protein';
+  if (/^[ACGTUNRYSWKMBDHV]+$/.test(normalized)) {
+    return normalized.includes('U') && !normalized.includes('T') ? 'rna' : 'dna';
+  }
+  return 'protein';
+}
+
+function validateRecordOverhangs(record, path, recordType) {
+  for (const field of ['overhang5', 'overhang3']) {
+    const value = record[field];
+    if (value === undefined) continue;
+    if (typeof value !== 'string') throw new Error(`${path}.${field} must be a DNA string when provided`);
+    if (value.length > MAX_OVERHANG_LENGTH) {
+      throw new Error(`${path}.${field} cannot exceed ${MAX_OVERHANG_LENGTH.toLocaleString()} bases`);
+    }
+    if (!/^[ACGTRYSWKMBDHVN]*$/.test(value.toUpperCase().replace(/\s+/g, ''))) {
+      throw new Error(`${path}.${field} must contain DNA IUPAC bases only`);
+    }
+    if (recordType !== 'dna') throw new Error(`${path}.${field} is valid on DNA records only`);
+  }
+  for (const [sequenceField, typeField] of [
+    ['overhang5', 'overhang5Type'],
+    ['overhang3', 'overhang3Type'],
+  ]) {
+    const type = record[typeField];
+    if (type === undefined) continue;
+    if (!['blunt', '5prime', '3prime'].includes(type)) {
+      throw new Error(`${path}.${typeField} must be blunt, 5prime, or 3prime`);
+    }
+    if (recordType !== 'dna') throw new Error(`${path}.${typeField} is valid on DNA records only`);
+    const sequence = record[sequenceField];
+    if (typeof sequence !== 'string') {
+      throw new Error(`${path}.${typeField} requires a matching ${sequenceField} string`);
+    }
+    const compact = sequence.replace(/\s+/g, '');
+    if (type === 'blunt' && compact.length > 0) {
+      throw new Error(`${path}.${typeField} cannot be blunt when ${sequenceField} contains a sticky sequence`);
+    }
+    if (type !== 'blunt' && compact.length === 0) {
+      throw new Error(`${path}.${typeField} must be blunt when ${sequenceField} is empty`);
+    }
   }
 }
 
@@ -400,8 +453,36 @@ function isValidSequence(sequence, sequenceTypeHint) {
     && looksLikeImplicitProteinSequence(sequence);
 }
 
-function normalizedSequenceLength(sequence) {
-  return typeof sequence === 'string' ? sequence.toUpperCase().replace(/[^A-Z*]/g, '').length : 0;
+function normalizedSequenceLength(sequence, sequenceTypeHint) {
+  if (typeof sequence !== 'string') return 0;
+  const normalized = sequence.toUpperCase().replace(/[^A-Z*]/g, '');
+  return sequenceTypeHint === 'dna' || sequenceTypeHint === 'rna'
+    ? normalized.replace(/\*/g, '').length
+    : normalized.length;
+}
+
+function normalizedRecordIdText(value) {
+  if (typeof value !== 'string') return null;
+  const normalized = Array.from(value).filter((character) => {
+    const code = character.charCodeAt(0);
+    return code === 9 || code === 10 || code === 13 || (code >= 32 && code !== 127);
+  }).join('').trim();
+  return normalized || null;
+}
+
+function uniqueRuntimeRecordId(base, usedIds) {
+  if (!usedIds.has(base)) {
+    usedIds.add(base);
+    return base;
+  }
+  for (let suffix = 2; suffix < 100_000; suffix += 1) {
+    const candidate = `${base}-${suffix}`;
+    if (!usedIds.has(candidate)) {
+      usedIds.add(candidate);
+      return candidate;
+    }
+  }
+  throw new Error(`Payload record id ${base} has too many collisions`);
 }
 
 function payloadRecords(payload) {
@@ -409,6 +490,7 @@ function payloadRecords(payload) {
   if (Array.isArray(payload.entries)) return payload.entries;
   if (Array.isArray(payload.vectors)) return payload.vectors;
   if (payload.record && typeof payload.record === 'object' && !Array.isArray(payload.record)) return [payload.record];
+  if (typeof payload.seq === 'string' || typeof payload.sequence === 'string') return [payload];
   return [];
 }
 
@@ -423,6 +505,13 @@ function omitTraceArraysForGenericJsonValidation(payload) {
     };
   };
   const projected = { ...payload };
+  const hasRecordContainer = ['records', 'entries', 'vectors', 'record'].some((field) => (
+    Object.prototype.hasOwnProperty.call(projected, field)
+  ));
+  if (!hasRecordContainer
+    && (typeof projected.seq === 'string' || typeof projected.sequence === 'string')) {
+    return stripRecord(projected);
+  }
   for (const field of ['records', 'entries', 'vectors']) {
     if (Array.isArray(projected[field])) projected[field] = projected[field].map(stripRecord);
   }
@@ -648,16 +737,36 @@ function validateAlignments(payload) {
   });
 }
 
-function validateAnalysisCollections(payload) {
+function activeExplicitRecordLengths(payload) {
   const records = payloadRecords(payload);
-  const hasAnalysisResults = Array.isArray(payload.analysisResults) && payload.analysisResults.length > 0;
   const recordLengths = new Map();
+  const explicitIds = new Set();
+  const usedIds = new Set();
   records.forEach((record, index) => {
-    if (!isPlainObject(record) || typeof record.id !== 'string' || !record.id.trim()) return;
-    const id = record.id.trim();
-    if (hasAnalysisResults && recordLengths.has(id)) throw new Error(`Payload records contain duplicate id ${id}`);
-    recordLengths.set(id, normalizedSequenceLength(record.seq ?? record.sequence));
+    if (!isPlainObject(record)) return;
+    const explicitId = normalizedRecordIdText(record.id);
+    if (explicitId && explicitIds.has(explicitId)) throw new Error(`Payload records contain duplicate id ${explicitId}`);
+    if (explicitId) explicitIds.add(explicitId);
+    const id = uniqueRuntimeRecordId(
+      explicitId ?? normalizedRecordIdText(record.name) ?? `record-${index + 1}`,
+      usedIds,
+    );
+    if (record.active === false) return;
+    recordLengths.set(id, normalizedSequenceLength(record.seq ?? record.sequence, record.molecule ?? record.type));
   });
+  return recordLengths;
+}
+
+function validateWorkspaceEnvelope(payload, recordLengths) {
+  try {
+    normalizeArtifactWorkspaceEnvelope(payload, recordLengths);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`Payload workspace is invalid: ${detail}`);
+  }
+}
+
+function validateAnalysisCollections(payload, recordLengths) {
   try {
     normalizeArtifactAnalysisWorkspace({
       analysisResults: payload.analysisResults ?? [],
@@ -682,8 +791,24 @@ export function validatePayload(payload) {
   if ('record' in payload && (!payload.record || typeof payload.record !== 'object' || Array.isArray(payload.record))) {
     throw new Error('Payload record must be an object');
   }
+  const recordContainers = ['records', 'entries', 'vectors', 'record'].filter((field) => field in payload);
+  const isBareRecord = recordContainers.length === 0
+    && (typeof payload.seq === 'string' || typeof payload.sequence === 'string');
+  const hasWorkspaceSidecar = ['alignment', 'alignments', 'notes', 'workflowResults', 'analysisResults', 'analysisAssets', 'artifactState']
+    .some((field) => field in payload);
+  if (recordContainers.length === 0 && !isBareRecord && !hasWorkspaceSidecar) {
+    throw new Error('Payload must contain records, a bare sequence record, or a supported workspace sidecar');
+  }
+  if (recordContainers.length > 1) {
+    throw new Error(`Payload has ambiguous record containers: ${recordContainers.join(', ')}`);
+  }
   for (const field of ['schema', 'selectedRecordId', 'selectedName', 'defaultMotif', 'motif']) {
     validateOptionalString(payload, field, 'Payload');
+  }
+  if (typeof payload.schema === 'string'
+    && payload.schema.startsWith('motif.claude-science.inventory.')
+    && !SUPPORTED_INVENTORY_SCHEMAS.has(payload.schema)) {
+    throw new Error(`Unsupported Motif inventory schema: ${payload.schema}`);
   }
   if (payload.selectedIndex !== undefined && !Number.isInteger(payload.selectedIndex)) {
     throw new Error('Payload.selectedIndex must be an integer when provided');
@@ -721,7 +846,7 @@ export function validatePayload(payload) {
     if (!isValidSequence(sequence, type)) {
       throw new Error(`Payload record ${index + 1} does not contain a valid DNA, RNA, or sequence-like protein value`);
     }
-    const length = normalizedSequenceLength(sequence);
+    const length = normalizedSequenceLength(sequence, type);
     if (length > MAX_RECORD_LENGTH) {
       throw new Error(`${recordPath} contains ${length.toLocaleString()} residues; the artifact supports at most ${MAX_RECORD_LENGTH.toLocaleString()} per record`);
     }
@@ -734,6 +859,7 @@ export function validatePayload(payload) {
     if (record.topology !== undefined && !['linear', 'circular'].includes(record.topology)) {
       throw new Error(`${recordPath}.topology must be linear or circular`);
     }
+    validateRecordOverhangs(record, recordPath, normalizedRecordType(type, sequence));
     for (const field of ['id', 'name', 'description', 'organism', 'source', 'group', 'project', 'folder', 'collection', 'dateAdded']) {
       validateOptionalString(
         record,
@@ -781,16 +907,21 @@ export function validatePayload(payload) {
         record.sangerTrace,
         `${recordPath}.sangerTrace`,
         sequence,
-        type,
+        normalizedRecordType(type, sequence),
       );
       if (totalSangerTraceSamples > MAX_SANGER_TRACE_SAMPLES_PER_WORKSPACE) {
         throw new Error(`Payload chromatograms cannot contain more than ${MAX_SANGER_TRACE_SAMPLES_PER_WORKSPACE.toLocaleString()} channel sample entries in total`);
       }
     }
   });
+  if (records.length > 0 && records.every((record) => record.active === false)) {
+    throw new Error('A non-empty payload must contain at least one active record');
+  }
 
+  const recordLengths = activeExplicitRecordLengths(payload);
   validateAlignments(payload);
-  validateAnalysisCollections(payload);
+  validateWorkspaceEnvelope(payload, recordLengths);
+  validateAnalysisCollections(payload, recordLengths);
 
   // Trace arrays have their own stricter cardinality/range validation above.
   // Exclude those already-bounded numeric leaves from the generic metadata node

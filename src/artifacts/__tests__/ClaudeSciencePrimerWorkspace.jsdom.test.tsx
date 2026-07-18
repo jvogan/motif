@@ -23,6 +23,7 @@ function props(overrides: Partial<ClaudeSciencePrimerWorkspaceProps> = {}): Clau
     onSaveDesign: vi.fn(),
     onAddAnnotations: vi.fn(),
     onSimulatePcr: vi.fn(),
+    onCreateAmplicon: vi.fn(),
     onUseForCloning: vi.fn(),
     ...overrides,
   };
@@ -172,6 +173,7 @@ describe('ClaudeSciencePrimerWorkspace', () => {
       onSaveDesign: vi.fn(),
       onAddAnnotations: vi.fn(),
       onSimulatePcr: vi.fn(),
+      onCreateAmplicon: vi.fn(),
       onUseForCloning: vi.fn(),
     };
     render(<ClaudeSciencePrimerWorkspace {...props(callbacks)} />);
@@ -186,6 +188,8 @@ describe('ClaudeSciencePrimerWorkspace', () => {
     await waitFor(() => expect(callbacks.onAddAnnotations).toHaveBeenCalledTimes(1));
     await user.click(screen.getByRole('button', { name: 'Simulate PCR' }));
     await waitFor(() => expect(callbacks.onSimulatePcr).toHaveBeenCalledTimes(1));
+    await user.click(screen.getByRole('button', { name: 'Create amplicon record' }));
+    await waitFor(() => expect(callbacks.onCreateAmplicon).toHaveBeenCalledTimes(1));
     await user.click(screen.getByRole('button', { name: 'Use in cloning' }));
 
     await waitFor(() => expect(callbacks.onUseForCloning).toHaveBeenCalledTimes(1));
@@ -200,19 +204,22 @@ describe('ClaudeSciencePrimerWorkspace', () => {
     expect(callbacks.onUseForCloning.mock.calls[0][0].recordName).toBe('Example insert');
   });
 
-  it('retains cloning action provenance in the handoff and labels save without claiming an amplicon', async () => {
+  it('retains cloning provenance and keeps plan-only, simulation, and create-and-use actions explicit', async () => {
     const user = userEvent.setup();
     const onUseForCloning = vi.fn();
+    const onCreateAmplicon = vi.fn();
     render(<ClaudeSciencePrimerWorkspace {...props({
       record: { id: 'record-1', name: 'Example insert', molecule: 'dna', sequence: sequence.slice(150, 550) },
       initialIntent: 'cloning',
       preparationContext: preparationContext(),
       onUseForCloning,
+      onCreateAmplicon,
     })} />);
 
-    expect(screen.getByRole('note', { name: 'Cloning preparation context' }).textContent).toContain('does not create an amplicon');
-    expect(screen.getByRole('note', { name: 'Cloning preparation context' }).textContent).toContain('add or import the prepared DNA record');
-    await user.click(screen.getByRole('button', { name: 'Save primer plan' }));
+    const context = screen.getByRole('note', { name: 'Cloning preparation context' });
+    expect(context.textContent).toContain('Simulate PCR saves a result only');
+    expect(context.textContent).toContain('keeps the source record unchanged');
+    await user.click(screen.getByRole('button', { name: 'Save primer plan only' }));
     await waitFor(() => expect(onUseForCloning).toHaveBeenCalledTimes(1));
     expect(onUseForCloning.mock.calls[0][0]).toMatchObject({
       target: { start: 0, end: 400 },
@@ -226,6 +233,9 @@ describe('ClaudeSciencePrimerWorkspace', () => {
         fusionSites: { left: 'AATG', right: 'GCTT' },
       },
     });
+    await user.click(screen.getByRole('button', { name: 'Create & use amplicon' }));
+    await waitFor(() => expect(onCreateAmplicon).toHaveBeenCalledTimes(1));
+    expect(onCreateAmplicon.mock.calls[0][0].preparationContext.actionId).toBe('flanks:record-1');
   });
 
   it('explains the manual 5′-tail step when a Gibson overlap cannot be inferred', () => {
@@ -247,7 +257,8 @@ describe('ClaudeSciencePrimerWorkspace', () => {
     const context = screen.getByRole('note', { name: 'Cloning preparation context' });
     expect(context.textContent).toContain('No homology tail was inferred');
     expect(context.textContent).toContain('Advanced constraints');
-    expect(screen.getByRole('button', { name: 'Save primer plan' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Save primer plan only' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Create & use amplicon' })).toBeTruthy();
   });
 
   it('uses an existing selection and reports invalid targets accessibly', async () => {

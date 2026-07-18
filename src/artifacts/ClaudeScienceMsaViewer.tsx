@@ -8,8 +8,11 @@ import {
   type CSSProperties,
   type DragEvent as ReactDragEvent,
   type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
 } from 'react';
-import { ChevronDown, ChevronLeft, ChevronRight, Play, SlidersHorizontal, Trash2, UploadCloud } from 'lucide-react';
+import './claude-science-msa.css';
+import { ChevronDown, ChevronLeft, ChevronRight, GripVertical, Play, Search, SlidersHorizontal, Trash2, UploadCloud } from 'lucide-react';
 import { MSA_MAX_SEQ_LEN } from '../bio/msa';
 import type { SangerTraceData } from '../bio/abi-import';
 import { reverseComplement } from '../bio/reverse-complement';
@@ -19,16 +22,31 @@ import {
   ARTIFACT_MSA_MAX_IMPORT_BYTES,
   ARTIFACT_MSA_LOCAL_WORK_BUDGET,
   ArtifactAlignmentError,
+  computeMsaColumnStats,
   createLocalArtifactAlignment,
   estimateLocalAlignmentWork,
+  findMsaMotifMatches,
   formatAlignedFasta,
   formatClustal,
   formatConsensusFasta,
+  moveRowId,
+  msaShadeBucket,
   parseAlignmentText,
+  residueColorKey,
   safeAlignmentFilename,
+  selectionToColumnsText,
+  selectionToFasta,
+  selectionToUngappedFasta,
   serializeArtifactAlignment,
+  summarizeSelectionColumns,
+  translateAlignedRow,
   type ArtifactAlignment,
   type ArtifactMsaRecord,
+  type MsaColorScheme,
+  type MsaColumnStats,
+  type MsaMotifMatch,
+  type MsaSelection,
+  type MsaShadeMode,
 } from './claude-science-msa';
 import {
   ClaudeScienceSangerTraceViewer,
@@ -37,6 +55,8 @@ import {
 import { preferredTraceOrientation } from './claude-science-sanger';
 import {
   DEFAULT_CLAUDE_SCIENCE_MSA_VIEW_PREFERENCES,
+  MSA_ZOOM_MIN,
+  MSA_ZOOM_MAX,
   normalizeClaudeScienceMsaViewPreferences,
   type ClaudeScienceMsaColorMode,
   type ClaudeScienceMsaEmphasisMode,
@@ -63,7 +83,8 @@ type EmphasisMode = ClaudeScienceMsaEmphasisMode;
 type ColorMode = ClaudeScienceMsaColorMode;
 type RowSortMode = ClaudeScienceMsaRowSortMode;
 type MsaMatrixVisibility = Pick<ClaudeScienceMsaViewPreferences,
-  'showOverview' | 'showAlignmentAxis' | 'showTemplateAxis' | 'showRowStats' | 'showConservation' | 'showConsensus'>;
+  'showOverview' | 'showAlignmentAxis' | 'showTemplateAxis' | 'showRowStats' | 'showConservation'
+  | 'showConservationHistogram' | 'showOccupancy' | 'showConsensus' | 'showTranslation' | 'showAminoAcidIndices'>;
 type CoordinateSystem = 'alignment' | 'template';
 
 const INPUT_FASTA_HEADER_MAX_LENGTH = 1_024;
@@ -387,30 +408,66 @@ function useObservedWidth<T extends HTMLElement>(fallback = 720) {
   return [ref, width] as const;
 }
 
+/** Inclusive rectangular block: column and (ordered-row) index ranges. */
+type MatrixSelection = { colStart: number; colEnd: number; rowStart: number; rowEnd: number };
+/** Cell currently under the pointer, with client coords for the floating readout. */
+type HoverCell = { column: number; rowIndex: number; rowId: string; clientX: number; clientY: number };
+type MatrixContextMenu = { x: number; y: number; column: number; rowId: string | null };
+/** Live state while a row is being drag-reordered by its grip handle. */
+type RowDragState = { id: string; fromIndex: number; overIndex: number; edge: 'before' | 'after' };
+
+// Column density. The font-derived base cell width is scaled by the zoom
+// preference (decoupled from font size); the result is clamped so cells never
+// collapse to nothing or grow unreasonably. Below the legibility floor the
+// viewer drops letters for a birdseye "blocks" rendering.
+const MSA_BASE_CELL_MIN = 8;
+const MSA_BASE_CELL_MAX = 15;
+const MSA_CELL_MIN = 3;
+const MSA_CELL_MAX = 30;
+const MSA_LETTER_MIN = 6.5;
+
 function AlignmentMatrix({
   alignment,
   referenceRowId,
   emphasis,
   colorMode,
+  colorScheme,
+  shadeMode,
   fontSize,
+  zoom,
+  translationFrame,
   jumpColumn,
   jumpToken,
+  jumpRowId,
+  searchMatches,
+  activeSearchMatch,
   sortMode,
   visibility,
   resetToken,
   onTemplateChange,
+  onCopy,
+  onZoomChange,
 }: {
   alignment: ArtifactAlignment;
   referenceRowId: string;
   emphasis: EmphasisMode;
   colorMode: ColorMode;
+  colorScheme: MsaColorScheme;
+  shadeMode: MsaShadeMode;
   fontSize: number;
+  zoom: number;
+  translationFrame: 0 | 1 | 2;
   jumpColumn: number | null;
   jumpToken: number;
+  jumpRowId: string | null;
+  searchMatches: readonly MsaMotifMatch[];
+  activeSearchMatch: MsaMotifMatch | null;
   sortMode: RowSortMode;
   visibility: MsaMatrixVisibility;
   resetToken: number;
   onTemplateChange: (rowId: string) => void;
+  onCopy: (label: string, content: string) => Promise<boolean>;
+  onZoomChange: (zoom: number) => void;
 }) {
   const [viewportRef, viewportWidth] = useObservedWidth<HTMLDivElement>();
   const initialViewport = useMemo(() => msaMatrixViewportSession.get(alignment.id), [alignment.id]);
@@ -420,7 +477,25 @@ function AlignmentMatrix({
   const pendingScrollTopRef = useRef(initialViewport?.top ?? 0);
   const lastResetTokenRef = useRef(resetToken);
   const overviewDraggingRef = useRef(false);
-  const cellWidth = Math.round(Math.max(8, Math.min(15, fontSize * 0.78 + 2)) * 10) / 10;
+  const [selection, setSelection] = useState<MatrixSelection | null>(null);
+  const [hoverCell, setHoverCell] = useState<HoverCell | null>(null);
+  const [contextMenu, setContextMenu] = useState<MatrixContextMenu | null>(null);
+  // Ephemeral, per-alignment manual row order (ids). Null falls back to the
+  // template-pinned sortMode ordering; set once the user drags or key-moves a row.
+  const [manualOrder, setManualOrder] = useState<string[] | null>(null);
+  const [rowDrag, setRowDrag] = useState<RowDragState | null>(null);
+  const rowDragRef = useRef<RowDragState | null>(null);
+  const [reorderStatus, setReorderStatus] = useState('');
+  const selectionAnchorRef = useRef<{ column: number; rowIndex: number } | null>(null);
+  const frameRef = useRef<HTMLDivElement>(null);
+  const baseCellWidth = Math.max(MSA_BASE_CELL_MIN, Math.min(MSA_BASE_CELL_MAX, fontSize * 0.78 + 2));
+  const cellWidth = Math.round(Math.max(MSA_CELL_MIN, Math.min(MSA_CELL_MAX, baseCellWidth * zoom)) * 10) / 10;
+  const blocks = cellWidth < MSA_LETTER_MIN;
+  // Shrink glyphs to fit narrowing cells as the user zooms out, so letters stay
+  // legible (not overlapping) right down to the blocks threshold; never exceed
+  // the chosen font size when zooming in.
+  const renderFontSize = blocks ? fontSize : Math.min(fontSize, Math.max(7, Math.round(cellWidth * 1.32)));
+  const prevCellWidthRef = useRef(cellWidth);
   const labelWidth = Math.max(150, Math.min(260, Math.round(viewportWidth * 0.3)));
   const sequenceViewportWidth = Math.max(120, viewportWidth - labelWidth);
   const overscan = 24;
@@ -444,11 +519,45 @@ function AlignmentMatrix({
     () => templatePositionCoordinates(template?.aligned ?? ''),
     [template],
   );
+  // Amino-acid translation of the reference row (nucleotide alignments only),
+  // codons positioned against alignment columns; empty when the track is off.
+  const translationCodons = useMemo(
+    () => (visibility.showTranslation && alignment.molecule !== 'protein' && template
+      ? translateAlignedRow(template.aligned, translationFrame)
+      : []),
+    [alignment.molecule, template, translationFrame, visibility.showTranslation],
+  );
+  const translationVisible = translationCodons.length > 0;
+
+  // Per-row matched columns for search highlighting, and the active hit.
+  const searchColumnsByRow = useMemo(() => {
+    const map = new Map<string, Set<number>>();
+    for (const match of searchMatches) {
+      let columns = map.get(match.rowId);
+      if (!columns) { columns = new Set<number>(); map.set(match.rowId, columns); }
+      for (const column of match.columns) columns.add(column);
+    }
+    return map;
+  }, [searchMatches]);
+  const activeSearchColumns = useMemo(() => new Set(activeSearchMatch?.columns ?? []), [activeSearchMatch]);
+  const activeSearchRowId = activeSearchMatch?.rowId ?? null;
   const statsByRow = useMemo(() => new Map(alignment.rows.map((row) => [
     row.id,
     pairwiseRowStats(row.aligned, template?.aligned ?? ''),
   ])), [alignment.rows, template]);
   const orderedRows = useMemo(() => {
+    if (manualOrder) {
+      const byId = new Map(alignment.rows.map((row) => [row.id, row] as const));
+      const manual = manualOrder
+        .map((id) => byId.get(id))
+        .filter((row): row is ArtifactAlignment['rows'][number] => row !== undefined);
+      // Only honour a manual order that still covers exactly the current rows;
+      // anything else falls through to the template-pinned sort below. The
+      // reference/template row always stays pinned at the top.
+      if (manual.length === alignment.rows.length) {
+        return template ? [template, ...manual.filter((row) => row.id !== template.id)] : manual;
+      }
+    }
     const originalIndex = new Map(alignment.rows.map((row, index) => [row.id, index]));
     const nonTemplateRows = alignment.rows.filter((row) => row.id !== template?.id);
     nonTemplateRows.sort((left, right) => {
@@ -460,7 +569,7 @@ function AlignmentMatrix({
       return (originalIndex.get(left.id) ?? 0) - (originalIndex.get(right.id) ?? 0);
     });
     return template ? [template, ...nonTemplateRows] : nonTemplateRows;
-  }, [alignment.rows, sortMode, statsByRow, template]);
+  }, [alignment.rows, manualOrder, sortMode, statsByRow, template]);
   const allRowNames = useMemo(() => alignment.rows.map((row) => row.name), [alignment.rows]);
   const rowLabelsById = useMemo(() => new Map(alignment.rows.map((row) => [
     row.id,
@@ -492,15 +601,30 @@ function AlignmentMatrix({
   const tableRowCount = axisRows
     + orderedRows.length
     + Number(visibility.showConservation)
-    + Number(visibility.showConsensus);
+    + Number(visibility.showConservationHistogram)
+    + Number(visibility.showOccupancy)
+    + Number(visibility.showConsensus)
+    + Number(translationVisible);
 
   const scrollToColumn = useCallback((column: number, behavior: ScrollBehavior = 'auto') => {
     const viewport = viewportRef.current;
     if (!viewport) return;
     const boundedColumn = Math.max(0, Math.min(Math.max(0, alignment.alignmentLength - 1), column));
-    const target = Math.max(0, Math.min(maxHorizontalScroll, (boundedColumn * cellWidth) - (sequenceViewportWidth / 2)));
+    // Centre the cell's middle, not its left edge.
+    const target = Math.max(0, Math.min(maxHorizontalScroll, ((boundedColumn + 0.5) * cellWidth) - (sequenceViewportWidth / 2)));
     viewport.scrollTo({ left: target, behavior });
   }, [alignment.alignmentLength, cellWidth, maxHorizontalScroll, sequenceViewportWidth, viewportRef]);
+
+  const setZoom = useCallback((next: number) => {
+    onZoomChange(Math.max(MSA_ZOOM_MIN, Math.min(MSA_ZOOM_MAX, Math.round(next * 100) / 100)));
+  }, [onZoomChange]);
+
+  // Fit the whole alignment across the sequence viewport by solving for the zoom
+  // that makes every column's base-width cell span the available width.
+  const fitZoom = useCallback(() => {
+    if (alignment.alignmentLength === 0) return;
+    setZoom(sequenceViewportWidth / (alignment.alignmentLength * baseCellWidth));
+  }, [alignment.alignmentLength, baseCellWidth, sequenceViewportWidth, setZoom]);
 
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
@@ -513,11 +637,38 @@ function AlignmentMatrix({
     setScrollLeft(viewport.scrollLeft);
   }, [alignment.id, viewportRef]);
 
+  // Keep the same biological column centred when the cell width changes (zoom or
+  // font size), rather than letting the retained pixel scroll shift the view.
+  useLayoutEffect(() => {
+    const viewport = viewportRef.current;
+    const previous = prevCellWidthRef.current;
+    prevCellWidthRef.current = cellWidth;
+    if (!viewport || previous === cellWidth || previous <= 0) return;
+    const centerColumn = (viewport.scrollLeft + sequenceViewportWidth / 2) / previous;
+    const target = Math.max(0, Math.min(maxHorizontalScroll, (centerColumn * cellWidth) - (sequenceViewportWidth / 2)));
+    viewport.scrollLeft = target;
+    pendingScrollLeftRef.current = target;
+    setScrollLeft(target);
+  }, [cellWidth, maxHorizontalScroll, sequenceViewportWidth, viewportRef]);
+
   useEffect(() => {
     if (jumpColumn === null || !viewportRef.current) return;
     const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
     scrollToColumn(jumpColumn, reducedMotion ? 'auto' : 'smooth');
   }, [jumpColumn, jumpToken, scrollToColumn, viewportRef]);
+
+  // Bring a search hit's row into vertical view (horizontal is handled above).
+  useEffect(() => {
+    if (!jumpRowId) return;
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const rowElement = viewport.querySelector<HTMLElement>(`[data-msa-row-id="${CSS.escape(jumpRowId)}"]`);
+    if (!rowElement) return;
+    const viewportRect = viewport.getBoundingClientRect();
+    const rowRect = rowElement.getBoundingClientRect();
+    const delta = (rowRect.top + rowRect.bottom) / 2 - (viewportRect.top + viewportRect.bottom) / 2;
+    if (Math.abs(delta) > 4) viewport.scrollTop += delta;
+  }, [jumpRowId, jumpToken, viewportRef]);
 
   useEffect(() => {
     if (lastResetTokenRef.current === resetToken) return;
@@ -606,10 +757,324 @@ function AlignmentMatrix({
     setHorizontalScroll(target);
   };
 
+  const columnStats = useMemo<MsaColumnStats[]>(() => computeMsaColumnStats(alignment.rows), [alignment.rows]);
+  const explicitScheme = colorMode === 'residue' && colorScheme !== 'auto';
+  const shadeByColumn = shadeMode === 'identity' || shadeMode === 'conservation';
+  // Colour cells by auto residue tone when the user asked for residue colours,
+  // or whenever letters are hidden in blocks view (so the mosaic stays legible).
+  // An explicit scheme keeps its own data-color-key fills instead.
+  const toneColored = !explicitScheme && (colorMode === 'residue' || blocks);
+
+  const selectingRef = useRef(false);
+  const rulerSelectingRef = useRef(false);
+  const contextMenuRef = useRef<HTMLDivElement>(null);
+
+  // The selected rows' ids in displayed order — always explicit (even for a
+  // whole-height selection) so copy actions follow the visible order.
+  const selectionRowIds = useMemo<string[]>(() => {
+    if (!selection) return [];
+    const ids: string[] = [];
+    for (let index = selection.rowStart; index <= selection.rowEnd; index += 1) {
+      const row = orderedRows[index];
+      if (row) ids.push(row.id);
+    }
+    return ids;
+  }, [orderedRows, selection]);
+
+  const selectionSummary = useMemo(() => {
+    if (!selection) return null;
+    // Stats describe the SELECTED block only — slice each selected row to the
+    // selected columns so unselected rows never skew the readout. Bounded by the
+    // selection size, so it stays cheap even mid-drag on a wide alignment.
+    const selectedRows = orderedRows
+      .slice(selection.rowStart, selection.rowEnd + 1)
+      .map((row) => ({ ...row, aligned: row.aligned.slice(selection.colStart, selection.colEnd + 1) }));
+    const blockStats = computeMsaColumnStats(selectedRows);
+    const stats = summarizeSelectionColumns(blockStats, { start: 0, end: selection.colEnd - selection.colStart });
+    // Template coordinates: first/last non-gap position within the range, so a
+    // gapped endpoint doesn't hide the whole template range.
+    let startPosition: number | null = null;
+    let endPosition: number | null = null;
+    for (let column = selection.colStart; column <= selection.colEnd; column += 1) {
+      if (templateCoordinates[column] != null) { startPosition = templateCoordinates[column]!; break; }
+    }
+    for (let column = selection.colEnd; column >= selection.colStart; column -= 1) {
+      if (templateCoordinates[column] != null) { endPosition = templateCoordinates[column]!; break; }
+    }
+    return { stats, startPosition, endPosition, rows: selectedRows.length };
+  }, [orderedRows, selection, templateCoordinates]);
+
+  const pointToCell = useCallback((clientX: number, clientY: number): HoverCell | null => {
+    const viewport = viewportRef.current;
+    if (!viewport) return null;
+    const rect = viewport.getBoundingClientRect();
+    const localX = clientX - rect.left;
+    // The sticky row-label gutter is not part of the sequence area.
+    if (localX < labelWidth || localX > rect.width) return null;
+    const column = Math.floor((localX - labelWidth + viewport.scrollLeft) / cellWidth);
+    if (column < 0 || column >= alignment.alignmentLength) return null;
+    const target = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
+    const rowElement = target?.closest<HTMLElement>('[data-msa-row-index]');
+    if (!rowElement) return null;
+    const rowIndex = Number(rowElement.dataset.msaRowIndex);
+    if (!Number.isInteger(rowIndex) || rowIndex < 0 || rowIndex >= orderedRows.length) return null;
+    return { column, rowIndex, rowId: rowElement.dataset.msaRowId ?? '', clientX, clientY };
+  }, [alignment.alignmentLength, cellWidth, labelWidth, orderedRows.length, viewportRef]);
+
+  const columnFromClientX = useCallback((clientX: number): number | null => {
+    const viewport = viewportRef.current;
+    if (!viewport) return null;
+    const rect = viewport.getBoundingClientRect();
+    const localX = clientX - rect.left;
+    if (localX < labelWidth || localX > rect.width) return null;
+    const column = Math.floor((localX - labelWidth + viewport.scrollLeft) / cellWidth);
+    return column >= 0 && column < alignment.alignmentLength ? column : null;
+  }, [alignment.alignmentLength, cellWidth, labelWidth, viewportRef]);
+
+  const applySelectionTo = useCallback((cell: { column: number; rowIndex: number }) => {
+    const anchor = selectionAnchorRef.current;
+    if (!anchor) return;
+    setSelection({
+      colStart: Math.min(anchor.column, cell.column),
+      colEnd: Math.max(anchor.column, cell.column),
+      rowStart: Math.min(anchor.rowIndex, cell.rowIndex),
+      rowEnd: Math.max(anchor.rowIndex, cell.rowIndex),
+    });
+  }, []);
+
+  const handleGridPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    const cell = pointToCell(event.clientX, event.clientY);
+    if (!cell) return;
+    event.preventDefault();
+    setContextMenu(null);
+    setHoverCell(null);
+    if (!(event.shiftKey && selectionAnchorRef.current)) {
+      selectionAnchorRef.current = { column: cell.column, rowIndex: cell.rowIndex };
+    }
+    applySelectionTo(cell);
+    selectingRef.current = true;
+    try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* capture is best-effort */ }
+  };
+
+  const handleGridPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const cell = pointToCell(event.clientX, event.clientY);
+    if (selectingRef.current) {
+      if (cell) applySelectionTo(cell);
+      return;
+    }
+    setHoverCell(cell);
+  };
+
+  const endSelectionDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!selectingRef.current) return;
+    selectingRef.current = false;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
+
+  const selectWholeColumn = (column: number) => {
+    if (column < 0 || column >= alignment.alignmentLength) return;
+    setContextMenu(null);
+    selectionAnchorRef.current = { column, rowIndex: 0 };
+    setSelection({ colStart: column, colEnd: column, rowStart: 0, rowEnd: Math.max(0, orderedRows.length - 1) });
+  };
+
+  const handleRulerPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    const column = columnFromClientX(event.clientX);
+    if (column == null) return;
+    event.preventDefault();
+    setHoverCell(null);
+    selectWholeColumn(column);
+    rulerSelectingRef.current = true;
+    try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* capture is best-effort */ }
+  };
+  const handleRulerPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!rulerSelectingRef.current) return;
+    const column = columnFromClientX(event.clientX);
+    const anchor = selectionAnchorRef.current;
+    if (column == null || !anchor) return;
+    setSelection({
+      colStart: Math.min(anchor.column, column),
+      colEnd: Math.max(anchor.column, column),
+      rowStart: 0,
+      rowEnd: Math.max(0, orderedRows.length - 1),
+    });
+  };
+  const handleRulerPointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!rulerSelectingRef.current) return;
+    rulerSelectingRef.current = false;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+  };
+
+  const clearSelection = useCallback(() => {
+    setSelection(null);
+    selectionAnchorRef.current = null;
+    setContextMenu(null);
+  }, []);
+
+  const handleGridContextMenu = (event: ReactMouseEvent<HTMLDivElement>) => {
+    const cell = pointToCell(event.clientX, event.clientY);
+    if (!cell) { setContextMenu(null); return; }
+    event.preventDefault();
+    const insideSelection = selection
+      && cell.column >= selection.colStart && cell.column <= selection.colEnd
+      && cell.rowIndex >= selection.rowStart && cell.rowIndex <= selection.rowEnd;
+    if (!insideSelection) {
+      selectionAnchorRef.current = { column: cell.column, rowIndex: 0 };
+      setSelection({ colStart: cell.column, colEnd: cell.column, rowStart: 0, rowEnd: Math.max(0, orderedRows.length - 1) });
+    }
+    setHoverCell(null);
+    setContextMenu({ x: event.clientX, y: event.clientY, column: cell.column, rowId: cell.rowId });
+  };
+
+  const copySelection = useCallback((mode: 'fasta' | 'ungapped' | 'columns') => {
+    if (!selection) return;
+    const payload: MsaSelection = { columns: { start: selection.colStart, end: selection.colEnd }, rowIds: selectionRowIds };
+    const content = mode === 'fasta'
+      ? selectionToFasta(alignment, payload)
+      : mode === 'ungapped'
+        ? selectionToUngappedFasta(alignment, payload)
+        : selectionToColumnsText(alignment, payload);
+    const label = mode === 'columns' ? 'Selected columns' : mode === 'ungapped' ? 'Selection ungapped FASTA' : 'Selection FASTA';
+    void onCopy(label, content);
+    setContextMenu(null);
+  }, [alignment, onCopy, selection, selectionRowIds]);
+
+  // ===== Row drag-reorder (grip handle) =====
+  // Commit a new manual order and drop any active selection, whose row indices
+  // would otherwise point at the wrong rows after the move.
+  const commitRowOrder = useCallback((nextIds: string[], movedId: string, movedName: string) => {
+    setManualOrder(nextIds);
+    setSelection(null);
+    selectionAnchorRef.current = null;
+    // Announce the DISPLAY position, which keeps the template pinned first.
+    const displayIds = template ? [template.id, ...nextIds.filter((id) => id !== template.id)] : nextIds;
+    setReorderStatus(`Moved ${movedName} to position ${displayIds.indexOf(movedId) + 1} of ${displayIds.length}.`);
+  }, [template]);
+
+  const beginRowDrag = (event: ReactPointerEvent<HTMLButtonElement>, id: string, index: number) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setContextMenu(null);
+    setHoverCell(null);
+    setSelection(null);
+    selectionAnchorRef.current = null;
+    const state: RowDragState = { id, fromIndex: index, overIndex: index, edge: 'before' };
+    rowDragRef.current = state;
+    setRowDrag(state);
+    try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* capture is best-effort */ }
+  };
+
+  const updateRowDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (!rowDragRef.current) return;
+    const node = document.elementFromPoint(event.clientX, event.clientY);
+    const rowElement = node instanceof HTMLElement ? node.closest<HTMLElement>('[data-msa-row-index]') : null;
+    if (!rowElement) return;
+    const overIndex = Number(rowElement.dataset.msaRowIndex);
+    if (!Number.isInteger(overIndex)) return;
+    const rect = rowElement.getBoundingClientRect();
+    const edge: 'before' | 'after' = event.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
+    const prev = rowDragRef.current;
+    if (prev.overIndex === overIndex && prev.edge === edge) return;
+    const next = { ...prev, overIndex, edge };
+    rowDragRef.current = next;
+    setRowDrag(next);
+  };
+
+  const endRowDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const state = rowDragRef.current;
+    rowDragRef.current = null;
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    setRowDrag(null);
+    if (!state) return;
+    // Convert the (over-row, edge) drop target into an insertion index against
+    // the array with the dragged id removed.
+    let insertion = state.overIndex + (state.edge === 'after' ? 1 : 0);
+    if (state.fromIndex < insertion) insertion -= 1;
+    if (insertion === state.fromIndex) return; // a plain click, or dropped in place
+    const ids = orderedRows.map((row) => row.id);
+    commitRowOrder(moveRowId(ids, state.id, insertion), state.id, orderedRows[state.fromIndex]?.name ?? 'Row');
+  };
+
+  const cancelRowDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    rowDragRef.current = null;
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    setRowDrag(null);
+  };
+
+  const handleGripKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>, id: string) => {
+    const delta = event.key === 'ArrowUp' ? -1 : event.key === 'ArrowDown' ? 1 : 0;
+    if (delta === 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const ids = orderedRows.map((row) => row.id);
+    const from = ids.indexOf(id);
+    if (from < 0) return;
+    const target = Math.max(0, Math.min(ids.length - 1, from + delta));
+    if (target === from) return;
+    commitRowOrder(moveRowId(ids, id, target), id, orderedRows[from]?.name ?? 'Row');
+  };
+
+  const resetRowOrder = useCallback(() => {
+    setManualOrder(null);
+    setReorderStatus('Row order reset to the current sort.');
+  }, []);
+
+  useEffect(() => {
+    setSelection(null);
+    setHoverCell(null);
+    setContextMenu(null);
+    selectionAnchorRef.current = null;
+    selectingRef.current = false;
+    setManualOrder(null);
+    setRowDrag(null);
+    rowDragRef.current = null;
+    setReorderStatus('');
+  }, [alignment.id, resetToken]);
+
+  // A change to the persisted sort control supersedes any manual drag order.
+  useEffect(() => { setManualOrder(null); }, [sortMode]);
+
+  // A change in display order (sort or the pinned template) invalidates the
+  // index-based selection, which would otherwise silently point at other rows.
+  useEffect(() => {
+    setSelection(null);
+    selectionAnchorRef.current = null;
+    setContextMenu(null);
+  }, [sortMode, referenceRowId]);
+
+  useEffect(() => {
+    if (!contextMenu) return undefined;
+    const onPointerDown = (event: PointerEvent) => {
+      if (contextMenuRef.current?.contains(event.target as Node)) return;
+      setContextMenu(null);
+    };
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') setContextMenu(null); };
+    window.addEventListener('pointerdown', onPointerDown, true);
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown, true);
+      window.removeEventListener('keydown', onKeyDown, true);
+    };
+  }, [contextMenu]);
+
+  useEffect(() => {
+    if (!selection) return undefined;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !contextMenu) clearSelection();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [clearSelection, contextMenu, selection]);
+
   const frameStyle = {
     '--motif-cs-msa-label-width': `${labelWidth}px`,
     '--motif-cs-msa-cell-width': `${cellWidth}px`,
-    '--motif-cs-msa-font-size': `${fontSize}px`,
+    '--motif-cs-msa-font-size': `${renderFontSize}px`,
   } as CSSProperties;
 
   const matrixStyle = {
@@ -642,11 +1107,18 @@ function AlignmentMatrix({
             key={column}
             className="motif-cs-msa-symbol"
             data-alignment-column={column + 1}
-            data-tone={colorMode === 'residue' ? residueTone(symbol, alignment.molecule) : 'mono'}
+            data-residue={symbol}
+            data-tone={toneColored ? residueTone(symbol, alignment.molecule) : 'mono'}
+            data-color-key={explicitScheme ? residueColorKey(symbol, alignment.molecule, colorScheme) || undefined : undefined}
+            data-shade-bucket={!consensus && shadeByColumn
+              ? msaShadeBucket(shadeMode === 'identity' ? (columnStats[column]?.identity ?? 0) : (columnStats[column]?.conservation ?? 0))
+              : undefined}
             data-difference={!consensus && !matchesTemplate || undefined}
             data-quiet={quietMatch || undefined}
             data-conserved={alignment.conserved[column] || undefined}
             data-jump={jumpColumn === column || undefined}
+            data-search-match={searchColumnsByRow.get(rowId)?.has(column) || undefined}
+            data-search-active={(activeSearchRowId === rowId && activeSearchColumns.has(column)) || undefined}
           >
             {display}
           </span>
@@ -655,8 +1127,66 @@ function AlignmentMatrix({
     </div>
   );
 
+  const renderHistogram = (metric: (stat: MsaColumnStats) => number, kind: 'conservation' | 'occupancy') => (
+    <div className="motif-cs-msa-hist-window" style={{ left: labelWidth + (startColumn * cellWidth) }} aria-hidden="true">
+      {columnStats.slice(startColumn, endColumn).map((stat, offset) => {
+        const column = startColumn + offset;
+        const value = Math.max(0, Math.min(1, metric(stat)));
+        return (
+          <span key={column} className="motif-cs-msa-hist-cell" data-alignment-column={column + 1} data-jump={jumpColumn === column || undefined}>
+            <span
+              className={`motif-cs-msa-hist-bar motif-cs-msa-hist-bar-${kind}`}
+              data-bucket={msaShadeBucket(value)}
+              style={{ height: `${Math.round(value * 100)}%` }}
+            />
+          </span>
+        );
+      })}
+    </div>
+  );
+
+  const renderTranslationTrack = () => (
+    <div className="motif-cs-msa-translation-window" style={{ left: labelWidth, width: sequenceWidth }} aria-hidden="true">
+      {translationCodons
+        .filter((codon) => codon.endColumn >= startColumn && codon.startColumn < endColumn)
+        .map((codon) => {
+          const width = (codon.endColumn - codon.startColumn + 1) * cellWidth;
+          const label = codon.aminoAcid === '*' ? 'Stop' : codon.aminoAcid === 'X' ? 'Unknown' : codon.aminoAcid;
+          const showIndex = visibility.showAminoAcidIndices && (codon.position === 1 || codon.position % 10 === 0);
+          return (
+            <span
+              key={codon.startColumn}
+              className="motif-cs-msa-aa"
+              style={{ left: codon.startColumn * cellWidth, width }}
+              data-aa={codon.aminoAcid}
+              data-color-key={residueColorKey(codon.aminoAcid, 'protein', 'clustal') || undefined}
+              data-stop={codon.aminoAcid === '*' || undefined}
+              data-unknown={codon.aminoAcid === 'X' || undefined}
+              data-gap-spanning={codon.gapSpanning || undefined}
+              data-jump={(jumpColumn !== null && jumpColumn >= codon.startColumn && jumpColumn <= codon.endColumn) || undefined}
+              title={`${label} · residue ${codon.position} · codon ${codon.codon}`}
+            >
+              {showIndex ? <span className="motif-cs-msa-aa-index">{codon.position}</span> : null}
+              <span className="motif-cs-msa-aa-letter">{width >= 7 ? codon.aminoAcid : ''}</span>
+            </span>
+          );
+        })}
+    </div>
+  );
+
+  const selectionColumnLeft = selection ? labelWidth + (selection.colStart * cellWidth) : 0;
+  const selectionColumnWidth = selection ? (selection.colEnd - selection.colStart + 1) * cellWidth : 0;
+  const hoverColumnLeft = hoverCell ? labelWidth + (hoverCell.column * cellWidth) : 0;
+
   return (
-    <div className="motif-cs-msa-matrix-frame" data-testid="msa-alignment-view" style={frameStyle}>
+    <div
+      ref={frameRef}
+      className="motif-cs-msa-matrix-frame"
+      data-testid="msa-alignment-view"
+      style={frameStyle}
+      data-has-selection={selection ? true : undefined}
+      data-motif-cs-escape-scope={selection ? 'true' : undefined}
+    >
       {visibility.showOverview ? <div className="motif-cs-msa-overview-row">
         <span className="motif-cs-msa-overview-label">Overview</span>
         <div
@@ -713,15 +1243,46 @@ function AlignmentMatrix({
         className="motif-cs-msa-matrix-scroll"
         onScroll={(event) => handleScroll(event.currentTarget.scrollLeft, event.currentTarget.scrollTop)}
         onKeyDown={handleMatrixKeyDown}
+        onPointerDown={handleGridPointerDown}
+        onPointerMove={handleGridPointerMove}
+        onPointerUp={endSelectionDrag}
+        onPointerCancel={endSelectionDrag}
+        onPointerLeave={() => setHoverCell(null)}
+        onContextMenu={handleGridContextMenu}
         tabIndex={0}
         role="region"
         aria-label={`Alignment matrix, ${alignment.rows.length} rows by ${alignment.alignmentLength} columns. Scroll horizontally to inspect columns.`}
         aria-describedby="motif-cs-msa-matrix-help"
+        data-selecting={selection ? true : undefined}
       >
-        <div className="motif-cs-msa-matrix" style={matrixStyle} role="table" aria-rowcount={tableRowCount} aria-colcount={alignment.alignmentLength}>
+        <div
+          className="motif-cs-msa-matrix"
+          style={matrixStyle}
+          role="table"
+          aria-rowcount={tableRowCount}
+          aria-colcount={alignment.alignmentLength}
+          data-color-scheme={explicitScheme ? colorScheme : undefined}
+          data-shade={shadeMode !== 'none' ? shadeMode : undefined}
+          data-reordering={rowDrag ? true : undefined}
+          data-blocks={blocks ? true : undefined}
+        >
+          {selection ? (
+            <div className="motif-cs-msa-selection-band" style={{ left: selectionColumnLeft, width: selectionColumnWidth }} aria-hidden="true" />
+          ) : null}
+          {hoverCell ? (
+            <div className="motif-cs-msa-hover-column" style={{ left: hoverColumnLeft, width: cellWidth }} aria-hidden="true" />
+          ) : null}
           {visibility.showAlignmentAxis ? <div className="motif-cs-msa-ruler-row" role="row" aria-rowindex={1}>
             <div className="motif-cs-msa-sticky-label motif-cs-msa-ruler-label" role="columnheader">Alignment position</div>
-            <div className="motif-cs-msa-ruler-window" style={{ left: labelWidth + (startColumn * cellWidth) }} aria-hidden="true">
+            <div
+              className="motif-cs-msa-ruler-window motif-cs-msa-ruler-window-clickable"
+              style={{ left: labelWidth + (startColumn * cellWidth) }}
+              aria-hidden="true"
+              onPointerDown={handleRulerPointerDown}
+              onPointerMove={handleRulerPointerMove}
+              onPointerUp={handleRulerPointerUp}
+              onPointerCancel={handleRulerPointerUp}
+            >
               {Array.from({ length: endColumn - startColumn }, (_, offset) => {
                 const column = startColumn + offset;
                 const position = column + 1;
@@ -781,13 +1342,36 @@ function AlignmentMatrix({
                 key={row.id}
                 className="motif-cs-msa-matrix-row"
                 data-template={isTemplate || undefined}
+                data-msa-row-index={rowIndex}
+                data-msa-row-id={row.id}
+                data-hover={hoverCell?.rowIndex === rowIndex || undefined}
+                data-selected={(selection && rowIndex >= selection.rowStart && rowIndex <= selection.rowEnd) || undefined}
+                data-dragging={rowDrag?.id === row.id || undefined}
+                data-drop-before={(rowDrag && rowDrag.id !== row.id && rowDrag.overIndex === rowIndex && rowDrag.edge === 'before') || undefined}
+                data-drop-after={(rowDrag && rowDrag.id !== row.id && rowDrag.overIndex === rowIndex && rowDrag.edge === 'after') || undefined}
                 role="row"
                 aria-rowindex={firstSequenceRow + rowIndex}
                 aria-label={visibility.showRowStats
                   ? `${row.name}; ${stats.mismatches} mismatches; ${stats.ungappedLength} ungapped ${sequenceUnit(alignment.molecule)}; ${formatIdentity(stats.identity)} percent identity to template; ${isTemplate ? 'template row' : 'alignment row'}`
                   : `${row.name}; ${isTemplate ? 'template row' : 'alignment row'}`}
               >
-                <div className="motif-cs-msa-sticky-label motif-cs-msa-row-label" role="rowheader">
+                <div className="motif-cs-msa-sticky-label motif-cs-msa-row-label motif-cs-msa-row-label-draggable" role="rowheader">
+                  {isTemplate ? null : (
+                    <button
+                      type="button"
+                      className="motif-cs-msa-row-grip"
+                      data-testid="msa-row-grip"
+                      aria-label={`Reorder ${row.name}. Drag, or press Up and Down arrows.`}
+                      title={`Drag to reorder ${row.name}`}
+                      onPointerDown={(event) => beginRowDrag(event, row.id, rowIndex)}
+                      onPointerMove={updateRowDrag}
+                      onPointerUp={endRowDrag}
+                      onPointerCancel={cancelRowDrag}
+                      onKeyDown={(event) => handleGripKeyDown(event, row.id)}
+                    >
+                      <GripVertical size={13} aria-hidden="true" />
+                    </button>
+                  )}
                   <button
                     type="button"
                     className="motif-cs-msa-row-select"
@@ -832,7 +1416,62 @@ function AlignmentMatrix({
             <div className="motif-cs-msa-sticky-label motif-cs-msa-row-label" role="rowheader"><span>Consensus</span></div>
             {renderSymbols(alignment.consensus, '__consensus__', true)}
           </div> : null}
+
+          {visibility.showConservationHistogram ? <div
+            className="motif-cs-msa-hist-row"
+            role="row"
+            aria-rowindex={firstSequenceRow + orderedRows.length + Number(visibility.showConservation) + Number(visibility.showConsensus)}
+            aria-label="Per-column conservation histogram"
+          >
+            <div className="motif-cs-msa-sticky-label motif-cs-msa-row-label motif-cs-msa-hist-label" role="rowheader"><span>Conservation</span></div>
+            {renderHistogram((stat) => stat.conservation, 'conservation')}
+          </div> : null}
+
+          {visibility.showOccupancy ? <div
+            className="motif-cs-msa-hist-row"
+            role="row"
+            aria-rowindex={firstSequenceRow + orderedRows.length + Number(visibility.showConservation) + Number(visibility.showConsensus) + Number(visibility.showConservationHistogram)}
+            aria-label="Per-column occupancy histogram"
+          >
+            <div className="motif-cs-msa-sticky-label motif-cs-msa-row-label motif-cs-msa-hist-label" role="rowheader"><span>Occupancy</span></div>
+            {renderHistogram((stat) => stat.occupancy, 'occupancy')}
+          </div> : null}
+
+          {translationVisible ? <div
+            className="motif-cs-msa-translation-row"
+            role="row"
+            aria-rowindex={firstSequenceRow + orderedRows.length + Number(visibility.showConservation) + Number(visibility.showConsensus) + Number(visibility.showConservationHistogram) + Number(visibility.showOccupancy)}
+            aria-label={`Amino-acid translation of ${template?.name ?? 'reference'}, reading frame ${translationFrame + 1}`}
+          >
+            <div className="motif-cs-msa-sticky-label motif-cs-msa-row-label motif-cs-msa-hist-label motif-cs-msa-translation-label" role="rowheader">
+              <span>Translation</span>
+              <small translate="no">frame +{translationFrame + 1}</small>
+            </div>
+            {renderTranslationTrack()}
+          </div> : null}
         </div>
+      </div>
+      <div className="motif-cs-msa-zoom-row" data-testid="msa-zoom-row">
+        <span className="motif-cs-msa-zoom-label" aria-hidden="true">Zoom</span>
+        <input
+          className="motif-cs-msa-zoom-range"
+          data-testid="msa-zoom-range"
+          type="range"
+          min={Math.round(MSA_ZOOM_MIN * 100)}
+          max={Math.round(MSA_ZOOM_MAX * 100)}
+          step={5}
+          value={Math.round(zoom * 100)}
+          onChange={(event) => setZoom(Number(event.target.value) / 100)}
+          aria-label="Alignment column zoom"
+          aria-valuetext={`${Math.round(zoom * 100)} percent${blocks ? ', blocks view' : ''}`}
+          title="Compress or expand alignment columns"
+        />
+        <span className="motif-cs-msa-zoom-value" data-testid="msa-zoom-value">{Math.round(zoom * 100)}%</span>
+        <button type="button" className="motif-cs-mini-button" data-testid="msa-zoom-fit" onClick={fitZoom} title="Fit the whole alignment to the window width">Fit</button>
+        {Math.round(zoom * 100) !== 100 ? (
+          <button type="button" className="motif-cs-mini-button" data-testid="msa-zoom-reset" onClick={() => setZoom(1)} title="Reset zoom to 100%">100%</button>
+        ) : null}
+        {blocks ? <span className="motif-cs-chip motif-cs-msa-blocks-chip" data-testid="msa-blocks-chip" title="Columns are compressed past letter legibility; residues render as coloured blocks">Blocks</span> : null}
       </div>
       {maxHorizontalScroll > 0 ? (
         <div className="motif-cs-msa-pan-row" data-testid="msa-horizontal-scroll-row">
@@ -857,6 +1496,47 @@ function AlignmentMatrix({
       <div className="motif-cs-msa-window-note" aria-live="polite">
         Alignment columns {visibleStartColumn + 1}–{Math.max(visibleStartColumn + 1, visibleEndColumn)} of {alignment.alignmentLength.toLocaleString()}
       </div>
+      {manualOrder ? (
+        <div className="motif-cs-msa-order-note" data-testid="msa-order-note">
+          <GripVertical size={12} aria-hidden="true" />
+          <span>Custom row order</span>
+          <button type="button" className="motif-cs-mini-button" onClick={resetRowOrder}>Reset order</button>
+        </div>
+      ) : null}
+      <span className="motif-cs-visually-hidden" data-testid="msa-reorder-status" role="status" aria-live="polite">{reorderStatus}</span>
+      {selection && selectionSummary ? (
+        <div className="motif-cs-msa-selection-readout" data-testid="msa-selection-readout" role="status" aria-live="polite">
+          <strong>Selected</strong>
+          <span>cols {selection.colStart + 1}–{selection.colEnd + 1} ({selectionSummary.stats.columns.toLocaleString()})</span>
+          {selectionSummary.startPosition != null && selectionSummary.endPosition != null
+            ? <span>· template {selectionSummary.startPosition}–{selectionSummary.endPosition}</span>
+            : null}
+          <span>· {selectionSummary.rows} row{selectionSummary.rows === 1 ? '' : 's'}</span>
+          <span>· {selectionSummary.stats.variableColumns.toLocaleString()} variable</span>
+          <span>· {Math.round(selectionSummary.stats.meanIdentity * 100)}% mean id</span>
+          <button type="button" className="motif-cs-mini-button" onClick={clearSelection}>Clear</button>
+        </div>
+      ) : null}
+      {hoverCell ? (
+        <div className="motif-cs-msa-hover-readout" style={{ left: hoverCell.clientX + 14, top: hoverCell.clientY + 16 }} aria-hidden="true">
+          <b>{orderedRows[hoverCell.rowIndex]?.aligned[hoverCell.column] ?? '-'}</b>
+          <span>col {hoverCell.column + 1}</span>
+          <span>· {templateCoordinates[hoverCell.column] != null ? `tpl ${templateCoordinates[hoverCell.column]}` : 'tpl gap'}</span>
+          <span className="motif-cs-msa-hover-readout-name">{orderedRows[hoverCell.rowIndex]?.name}</span>
+        </div>
+      ) : null}
+      {contextMenu ? (
+        <div ref={contextMenuRef} className="motif-cs-msa-context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} role="menu" aria-label="Alignment selection actions">
+          <button type="button" role="menuitem" onClick={() => copySelection('fasta')}>Copy selection (FASTA)</button>
+          <button type="button" role="menuitem" onClick={() => copySelection('ungapped')}>Copy without gaps</button>
+          <button type="button" role="menuitem" onClick={() => copySelection('columns')}>Copy columns</button>
+          {contextMenu.rowId ? (
+            <button type="button" role="menuitem" onClick={() => { onTemplateChange(contextMenu.rowId!); setContextMenu(null); }}>Set row as reference</button>
+          ) : null}
+          <button type="button" role="menuitem" onClick={() => { scrollToColumn(contextMenu.column); setContextMenu(null); }}>Center this column</button>
+          <button type="button" role="menuitem" onClick={clearSelection}>Clear selection</button>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -894,11 +1574,14 @@ export function ClaudeScienceMsaViewer({
   const [importMolecule, setImportMolecule] = useState<SequenceType>('dna');
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
-  const { displayMode, emphasis, colorMode, sortMode, fontSize, textFormat } = viewPreferences;
+  const { displayMode, emphasis, colorMode, colorScheme, shadeMode, sortMode, fontSize, zoom, translationFrame, textFormat } = viewPreferences;
   const [referenceRowId, setReferenceRowId] = useState(activeAlignment?.referenceRowId ?? '');
   const [differenceIndex, setDifferenceIndex] = useState(-1);
   const [jumpColumn, setJumpColumn] = useState<number | null>(null);
   const [jumpToken, setJumpToken] = useState(0);
+  const [jumpRowId, setJumpRowId] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchIndex, setSearchIndex] = useState(-1);
   const [viewResetToken, setViewResetToken] = useState(0);
   const [coordinateSystem, setCoordinateSystem] = useState<CoordinateSystem>('alignment');
   const [columnDraft, setColumnDraft] = useState('');
@@ -936,11 +1619,20 @@ export function ClaudeScienceMsaViewer({
     setReferenceRowId(activeAlignment?.referenceRowId ?? activeAlignment?.rows[0]?.id ?? '');
     setDifferenceIndex(-1);
     setJumpColumn(null);
+    setJumpRowId(null);
     setColumnDraft('');
     setColumnError(null);
     setColumnStatus('');
     setPendingDeleteId(null);
   }, [activeAlignment]);
+
+  // Reset the sequence search only when switching to a different alignment, not
+  // when the same alignment yields a new object (e.g. a template change), so a
+  // template switch keeps the active search.
+  useEffect(() => {
+    setSearchQuery('');
+    setSearchIndex(-1);
+  }, [activeAlignment?.id]);
 
   const traceAvailable = activeAlignment ? hasLinkedSangerTrace(activeAlignment, records) : false;
 
@@ -998,6 +1690,19 @@ export function ClaudeScienceMsaViewer({
     () => activeAlignment ? differenceColumns(activeAlignment, referenceRowId) : [],
     [activeAlignment, referenceRowId],
   );
+  const searchResult = useMemo(
+    () => (activeAlignment && searchQuery.trim()
+      ? findMsaMotifMatches(activeAlignment.rows, searchQuery, { molecule: activeAlignment.molecule })
+      : { matches: [], truncated: false }),
+    [activeAlignment, searchQuery],
+  );
+  const searchMatches = searchResult.matches;
+  const activeSearchMatch = searchIndex >= 0 && searchMatches.length > 0
+    ? searchMatches[Math.min(searchIndex, searchMatches.length - 1)] ?? null
+    : null;
+  // A new query starts unnavigated: matches highlight, but nothing is focused
+  // until the user steps with Enter or the prev/next controls.
+  useEffect(() => { setSearchIndex(-1); }, [searchQuery]);
   const conservedCount = activeAlignment?.conserved.filter(Boolean).length ?? 0;
   const conservedPct = activeAlignment && activeAlignment.alignmentLength > 0
     ? Math.round((conservedCount / activeAlignment.alignmentLength) * 100)
@@ -1017,14 +1722,22 @@ export function ClaudeScienceMsaViewer({
     showTemplateAxis: viewPreferences.showTemplateAxis,
     showRowStats: viewPreferences.showRowStats,
     showConservation: viewPreferences.showConservation,
+    showConservationHistogram: viewPreferences.showConservationHistogram,
+    showOccupancy: viewPreferences.showOccupancy,
     showConsensus: viewPreferences.showConsensus,
+    showTranslation: viewPreferences.showTranslation,
+    showAminoAcidIndices: viewPreferences.showAminoAcidIndices,
   }), [
     viewPreferences.showAlignmentAxis,
+    viewPreferences.showAminoAcidIndices,
     viewPreferences.showConsensus,
     viewPreferences.showConservation,
+    viewPreferences.showConservationHistogram,
+    viewPreferences.showOccupancy,
     viewPreferences.showOverview,
     viewPreferences.showRowStats,
     viewPreferences.showTemplateAxis,
+    viewPreferences.showTranslation,
   ]);
 
   const copyFromViewer = useCallback(async (label: string, content: string) => {
@@ -1350,8 +2063,29 @@ export function ClaudeScienceMsaViewer({
       : (differenceIndex + direction + differences.length) % differences.length;
     setDifferenceIndex(nextIndex);
     setJumpColumn(differences[nextIndex]);
+    setJumpRowId(null);
     setJumpToken((token) => token + 1);
   };
+
+  const goToSearchMatch = useCallback((index: number) => {
+    const count = searchMatches.length;
+    if (count === 0) return;
+    const next = ((index % count) + count) % count;
+    const match = searchMatches[next];
+    setSearchIndex(next);
+    setDifferenceIndex(-1);
+    // Centre on an actual matched residue column, not the midpoint between the
+    // endpoints — a gap-spanning match's midpoint can be an unrelated column.
+    setJumpColumn(match.columns[Math.floor(match.columns.length / 2)] ?? match.startColumn);
+    setJumpRowId(match.rowId);
+    setJumpToken((token) => token + 1);
+  }, [searchMatches]);
+
+  const stepSearch = useCallback((direction: 1 | -1) => {
+    if (searchMatches.length === 0) return;
+    if (searchIndex < 0) goToSearchMatch(direction === 1 ? 0 : searchMatches.length - 1);
+    else goToSearchMatch(searchIndex + direction);
+  }, [goToSearchMatch, searchIndex, searchMatches.length]);
 
   const goToCoordinate = () => {
     if (!activeAlignment) return;
@@ -1377,6 +2111,7 @@ export function ClaudeScienceMsaViewer({
     setColumnError(null);
     setDifferenceIndex(-1);
     setJumpColumn(column);
+    setJumpRowId(null);
     setJumpToken((token) => token + 1);
     setColumnStatus(coordinateSystem === 'alignment'
       ? `Alignment column ${requested.toLocaleString()} shown.`
@@ -1742,7 +2477,9 @@ export function ClaudeScienceMsaViewer({
                   ['showAlignmentAxis', 'Alignment axis'],
                   ['showTemplateAxis', 'Template axis'],
                   ['showRowStats', 'Row statistics'],
-                  ['showConservation', 'Conservation'],
+                  ['showConservation', 'Conservation marks'],
+                  ['showConservationHistogram', 'Conservation histogram'],
+                  ['showOccupancy', 'Occupancy'],
                   ['showConsensus', 'Consensus'],
                 ] as const).map(([key, label]) => (
                   <label key={key}>
@@ -1754,6 +2491,42 @@ export function ClaudeScienceMsaViewer({
                     <span>{label}</span>
                   </label>
                 ))}
+                {activeAlignment.molecule !== 'protein' ? (
+                  <>
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={viewPreferences.showTranslation}
+                        onChange={(event) => updateViewPreferences({ showTranslation: event.target.checked })}
+                      />
+                      <span>Translation (amino acids)</span>
+                    </label>
+                    {viewPreferences.showTranslation ? (
+                      <>
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={viewPreferences.showAminoAcidIndices}
+                            onChange={(event) => updateViewPreferences({ showAminoAcidIndices: event.target.checked })}
+                          />
+                          <span>Amino-acid indices</span>
+                        </label>
+                        <label className="motif-cs-msa-view-select">
+                          <span>Reading frame</span>
+                          <select
+                            value={translationFrame}
+                            aria-label="Translation reading frame"
+                            onChange={(event) => updateViewPreferences({ translationFrame: Number(event.target.value) as 0 | 1 | 2 })}
+                          >
+                            <option value={0}>+1</option>
+                            <option value={1}>+2</option>
+                            <option value={2}>+3</option>
+                          </select>
+                        </label>
+                      </>
+                    ) : null}
+                  </>
+                ) : null}
                 <label>
                   <input
                     type="checkbox"
@@ -1761,6 +2534,32 @@ export function ClaudeScienceMsaViewer({
                     onChange={(event) => updateViewPreferences({ colorMode: event.target.checked ? 'residue' : 'mono' })}
                   />
                   <span>Residue colors</span>
+                </label>
+                <label className="motif-cs-msa-view-select">
+                  <span>Colour scheme</span>
+                  <select
+                    value={colorScheme}
+                    disabled={colorMode !== 'residue'}
+                    onChange={(event) => updateViewPreferences({ colorScheme: event.target.value as MsaColorScheme })}
+                  >
+                    <option value="auto">Auto (by molecule)</option>
+                    <option value="nucleotide">Nucleotide</option>
+                    <option value="clustal">Clustal (protein)</option>
+                    <option value="hydrophobicity">Hydrophobicity</option>
+                    <option value="taylor">Taylor</option>
+                  </select>
+                </label>
+                <label className="motif-cs-msa-view-select">
+                  <span>Shade columns</span>
+                  <select
+                    value={shadeMode}
+                    onChange={(event) => updateViewPreferences({ shadeMode: event.target.value as MsaShadeMode })}
+                  >
+                    <option value="none">None</option>
+                    <option value="mismatch">Mismatches</option>
+                    <option value="identity">By identity</option>
+                    <option value="conservation">By conservation</option>
+                  </select>
                 </label>
                 <div className="motif-cs-msa-view-font-row">
                   <span>Aa {fontSize} px</span>
@@ -1854,6 +2653,40 @@ export function ClaudeScienceMsaViewer({
                   <button className="motif-cs-mini-button" type="button" disabled={differences.length === 0} onClick={() => jumpDifference(1)} aria-label="Next variable column"><ChevronRight size={13} /></button>
                 </div>
                 <form
+                  className="motif-cs-msa-search"
+                  data-testid="msa-search"
+                  role="search"
+                  data-motif-cs-escape-scope={searchQuery ? 'true' : undefined}
+                  onSubmit={(event) => { event.preventDefault(); stepSearch(1); }}
+                >
+                  <Search size={13} aria-hidden="true" className="motif-cs-msa-search-icon" />
+                  <input
+                    className="motif-cs-input motif-cs-msa-search-input"
+                    data-testid="msa-search-input"
+                    type="search"
+                    name="alignment-search"
+                    autoComplete="off"
+                    spellCheck={false}
+                    value={searchQuery}
+                    placeholder="Find sequence…"
+                    aria-label="Find a sequence motif in the alignment"
+                    onChange={(event) => setSearchQuery(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') { event.preventDefault(); stepSearch(event.shiftKey ? -1 : 1); }
+                      else if (event.key === 'Escape' && searchQuery) { event.preventDefault(); event.stopPropagation(); setSearchQuery(''); }
+                    }}
+                  />
+                  <span className="motif-cs-msa-search-count" data-testid="msa-search-count" role="status" aria-live="polite">
+                    {searchQuery.trim()
+                      ? searchMatches.length === 0
+                        ? 'No matches'
+                        : `${searchIndex >= 0 ? `${Math.min(searchIndex, searchMatches.length - 1) + 1} of ` : ''}${searchMatches.length.toLocaleString()}${searchResult.truncated ? '+' : ''}`
+                      : ''}
+                  </span>
+                  <button type="button" className="motif-cs-mini-button" data-testid="msa-search-prev" disabled={searchMatches.length === 0} onClick={() => stepSearch(-1)} aria-label="Previous match"><ChevronLeft size={13} /></button>
+                  <button type="submit" className="motif-cs-mini-button" data-testid="msa-search-next" disabled={searchMatches.length === 0} aria-label="Next match"><ChevronRight size={13} /></button>
+                </form>
+                <form
                   className="motif-cs-msa-column-jump"
                   data-invalid={columnError ? true : undefined}
                   noValidate
@@ -1913,13 +2746,22 @@ export function ClaudeScienceMsaViewer({
                 referenceRowId={referenceRowId}
                 emphasis={emphasis}
                 colorMode={colorMode}
+                colorScheme={colorScheme}
+                shadeMode={shadeMode}
                 fontSize={fontSize}
+                zoom={zoom}
+                translationFrame={translationFrame}
                 jumpColumn={jumpColumn}
                 jumpToken={jumpToken}
+                jumpRowId={jumpRowId}
+                searchMatches={searchMatches}
+                activeSearchMatch={activeSearchMatch}
                 sortMode={sortMode}
                 visibility={matrixVisibility}
                 resetToken={viewResetToken}
                 onTemplateChange={selectTemplate}
+                onCopy={copyFromViewer}
+                onZoomChange={(next) => updateViewPreferences({ zoom: next })}
               />
             </>
           ) : displayMode === 'trace' ? (

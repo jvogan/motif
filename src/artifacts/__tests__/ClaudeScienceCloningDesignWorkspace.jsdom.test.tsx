@@ -1,11 +1,13 @@
 /** @vitest-environment jsdom */
 
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { createRef } from 'react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ClaudeScienceCloningDesignWorkspace,
   type ClaudeScienceCloningDesignRecord,
+  type ClaudeScienceCloningDesignWorkspaceHandle,
   type ClaudeScienceCloningDesignWorkspaceProps,
 } from '../ClaudeScienceCloningDesignWorkspace';
 
@@ -257,6 +259,73 @@ describe('ClaudeScienceCloningDesignWorkspace', () => {
       },
     });
     expect(screen.getByRole('status').textContent).toContain('Primer workspace opened');
+  });
+
+  it('replaces only the verified prepared part, preserves live draft choices, and replans against the amplicon', async () => {
+    const user = userEvent.setup();
+    const workspaceRef = createRef<ClaudeScienceCloningDesignWorkspaceHandle>();
+    const onDesignPrimers = vi.fn().mockResolvedValue(undefined);
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const view = render(<ClaudeScienceCloningDesignWorkspace
+      ref={workspaceRef}
+      {...props({ onDesignPrimers, onSave })}
+    />);
+
+    await user.click(screen.getByRole('button', { name: 'Use Destination vector in reverse complement orientation' }));
+    await user.click(screen.getAllByText('Set primer fusion sites')[0]);
+    await user.type(screen.getByLabelText('Left fusion site for Destination vector'), 'GGAG');
+    await user.type(screen.getByLabelText('Right fusion site for Destination vector'), 'GCTT');
+    await user.click(screen.getByRole('button', { name: 'Open primer workspace' }));
+    await waitFor(() => expect(onDesignPrimers).toHaveBeenCalledTimes(1));
+    const request = onDesignPrimers.mock.calls[0][0];
+    const actionId = request.actionIds[0] as string;
+    const expectedRequestSha256 = request.plan.provenance.requestSha256 as string;
+    const amplicon = bsaIPart('amplicon', 'GGAG', plainRecords[0].sequence, 'GCTT');
+    amplicon.name = 'Destination vector · PCR amplicon';
+
+    let replaced = false;
+    act(() => {
+      replaced = workspaceRef.current?.replacePreparedPart({
+        expectedRequestSha256,
+        actionId,
+        sourceRecordId: 'vector',
+        productRecordId: 'amplicon',
+        productRecordName: amplicon.name,
+      }) ?? false;
+      view.rerender(<ClaudeScienceCloningDesignWorkspace
+        ref={workspaceRef}
+        {...props({ records: [...plainRecords, amplicon], onDesignPrimers, onSave })}
+      />);
+    });
+
+    expect(replaced).toBe(true);
+    expect(partNames()).toEqual(['Destination vector · PCR amplicon', 'Reporter insert']);
+    expect(screen.getByRole('button', { name: 'Use Destination vector · PCR amplicon in reverse complement orientation' }).getAttribute('aria-pressed')).toBe('true');
+    expect((screen.getByLabelText('Left fusion site for Destination vector · PCR amplicon') as HTMLInputElement).value).toBe('GGAG');
+    expect((screen.getByLabelText('Right fusion site for Destination vector · PCR amplicon') as HTMLInputElement).value).toBe('GCTT');
+    expect(screen.getByRole('status').textContent).toContain('rechecked');
+
+    await user.click(screen.getByRole('button', { name: 'Save Plan' }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    expect(onSave.mock.calls[0][0]).toMatchObject({
+      requestedRecordIds: ['amplicon', 'insert'],
+      requestedOrientations: ['reverse', 'forward'],
+      provenance: { inputRecordIds: ['amplicon', 'insert'] },
+    });
+
+    let staleReplacement = true;
+    act(() => {
+      staleReplacement = workspaceRef.current?.replacePreparedPart({
+        expectedRequestSha256,
+        actionId,
+        sourceRecordId: 'vector',
+        productRecordId: 'another-product',
+        productRecordName: 'Another product',
+      }) ?? false;
+    });
+    expect(staleReplacement).toBe(false);
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('draft changed'));
+    expect(partNames()[0]).toBe('Destination vector · PCR amplicon');
   });
 
   it('previews and saves a provenance-linked Gibson plan and product', async () => {

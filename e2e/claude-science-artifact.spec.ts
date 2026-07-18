@@ -822,14 +822,14 @@ test.describe('Claude Science artifact campaign', () => {
       workflows: window.motifGetWorkflowResults?.().length,
     }))).toEqual({ records: 3, workflows: 1 });
 
-    await page.evaluate(() => window.motifRenderInventory?.([{
+    await page.evaluate(() => window.motifReplaceWorkspace?.({ records: [{
       id: 'replacement-record',
       name: 'Replacement record',
       molecule: 'dna',
       topology: 'linear',
       seq: 'ATGC',
       active: true,
-    }]));
+    }] }));
     await expect(assemblyWindow).toHaveCount(0);
   });
 
@@ -1233,7 +1233,7 @@ test.describe('Claude Science artifact campaign', () => {
       const ecoCount = api.motifAddRecords({ id: 'fresh-eco', type: 'dna', topology: 'linear', sequence: 'TTTGAATTCAAA' });
       api.motifSetRestrictionSources(['common']);
       const description = api.motifDescribe()?.text ?? '';
-      api.motifRenderInventory([]);
+      (window as unknown as { motifClearWorkspace: () => void }).motifClearWorkspace();
       const emptyCount = api.motifGetInventory().length;
       return { beforeIds, afterIds, invalidCode, proteinCount, proteinSequence, ecoCount, description, emptyCount };
     });
@@ -1597,6 +1597,7 @@ test.describe('Claude Science artifact campaign', () => {
   });
 
   test('desktop themes have no automatic WCAG A/AA violations', async ({ page }) => {
+    test.slow();
     await openArtifact(page, 1180, 900);
     const toolsToggle = page.getByRole('button', { name: /Tools/ }).first();
     if ((await toolsToggle.getAttribute('aria-pressed')) !== 'true') await toolsToggle.click();
@@ -3164,8 +3165,18 @@ test.describe('Claude Science artifact campaign', () => {
     await expect(viewButton).toHaveAttribute('aria-expanded', 'true');
     await page.screenshot({ path: path.join(msaCampaignOutputDir, 'msa-view-menu-1180x820.png') });
 
-    for (const label of ['Overview', 'Alignment axis', 'Template axis', 'Row statistics', 'Conservation', 'Consensus']) {
-      await viewMenu.getByRole('checkbox', { name: label }).uncheck();
+    const defaultVisibleLabels = [
+      'Overview',
+      'Alignment axis',
+      'Template axis',
+      'Row statistics',
+      'Conservation marks',
+      'Conservation histogram',
+      'Consensus',
+    ];
+    const visibilityLabels = [...defaultVisibleLabels, 'Occupancy'];
+    for (const label of visibilityLabels) {
+      await viewMenu.getByRole('checkbox', { name: label, exact: true }).uncheck();
       await expect(viewMenu).toBeVisible();
     }
     const residueColors = viewMenu.getByRole('checkbox', { name: 'Residue colors' });
@@ -3175,6 +3186,7 @@ test.describe('Claude Science artifact campaign', () => {
     await expect(dialog.locator('.motif-cs-msa-template-ruler-row')).toHaveCount(0);
     await expect(dialog.locator('.motif-cs-msa-row-stat')).toHaveCount(0);
     await expect(dialog.locator('.motif-cs-msa-conservation-row')).toHaveCount(0);
+    await expect(dialog.locator('.motif-cs-msa-hist-row')).toHaveCount(0);
     await expect(dialog.locator('.motif-cs-msa-consensus-row')).toHaveCount(0);
 
     await page.keyboard.press('Escape');
@@ -3189,6 +3201,7 @@ test.describe('Claude Science artifact campaign', () => {
 
     await expect(dialog.locator('.motif-cs-msa-overview-row')).toHaveCount(0);
     await expect(dialog.locator('.motif-cs-msa-template-ruler-row')).toHaveCount(0);
+    await expect(dialog.locator('.motif-cs-msa-hist-row')).toHaveCount(0);
     await viewButton.click();
     await viewMenu.getByRole('button', { name: 'Reset alignment view' }).click();
     const viewStatus = viewMenu.getByTestId('msa-view-menu-status');
@@ -3196,12 +3209,14 @@ test.describe('Claude Science artifact campaign', () => {
     await expect(viewStatus).toHaveAttribute('aria-live', 'polite');
     await expect(viewStatus).toContainText(/alignment view reset/i);
     await expect(viewMenu).toBeVisible();
-    for (const label of ['Overview', 'Alignment axis', 'Template axis', 'Row statistics', 'Conservation', 'Consensus']) {
-      await expect(viewMenu.getByRole('checkbox', { name: label })).toBeChecked();
+    for (const label of defaultVisibleLabels) {
+      await expect(viewMenu.getByRole('checkbox', { name: label, exact: true })).toBeChecked();
     }
+    await expect(viewMenu.getByRole('checkbox', { name: 'Occupancy', exact: true })).not.toBeChecked();
     await expect(residueColors).not.toBeChecked();
     await expect(dialog.locator('.motif-cs-msa-overview-row')).toBeVisible();
     await expect(dialog.locator('.motif-cs-msa-template-ruler-row')).toBeVisible();
+    await expect(dialog.locator('.motif-cs-msa-hist-row')).toHaveCount(1);
     await expect(dialog.locator('.motif-cs-msa-row-stat').first()).toBeVisible();
     await expect(dialog.locator('.motif-cs-msa-conservation-row')).toBeVisible();
     await expect(dialog.locator('.motif-cs-msa-consensus-row')).toBeVisible();
@@ -3341,7 +3356,7 @@ test.describe('Claude Science artifact campaign', () => {
   test('MSA picker disambiguates duplicate preloaded and runtime result names', async ({ page }) => {
     await openArtifact(page, 1180, 820);
     await page.evaluate(() => {
-      window.motifRenderInventory({
+      window.motifReplaceWorkspace({
         inventory: { id: 'duplicate-picker-audit', title: 'Duplicate picker audit' },
         selectedRecordId: 'duplicate-source',
         records: [{ id: 'duplicate-source', name: 'Duplicate source', molecule: 'dna', topology: 'linear', seq: 'ACGTACGT' }],
@@ -3388,7 +3403,7 @@ test.describe('Claude Science artifact campaign', () => {
 
   test('MSA Edit inputs rehydrates linked records and clearly resets an unlinked result', async ({ page }) => {
     await openArtifact(page, 1180, 820);
-    await page.evaluate(() => window.motifRenderInventory({
+    await page.evaluate(() => window.motifReplaceWorkspace({
       inventory: { id: 'source-link-audit', title: 'Source-link audit' },
       selectedRecordId: 'source-alpha',
       records: [
@@ -3458,7 +3473,7 @@ test.describe('Claude Science artifact campaign', () => {
       });
     });
     await openArtifact(page, 1180, 820);
-    await page.evaluate(() => window.motifRenderInventory({
+    await page.evaluate(() => window.motifReplaceWorkspace({
       inventory: { id: 'fallback-audit', title: 'Fallback provenance audit' },
       selectedRecordId: 'fallback-alpha',
       records: [

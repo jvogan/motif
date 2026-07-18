@@ -49,6 +49,25 @@ describe('ClaudeScienceWorkflowHistoryPanel', () => {
     expect(onRevealRecord).toHaveBeenLastCalledWith('source');
   });
 
+  it('surfaces unverified lineage in both the row and workflow details', async () => {
+    const user = userEvent.setup();
+    render(
+      <ClaudeScienceWorkflowHistoryPanel
+        results={[result]}
+        recordNames={{ source: 'Source', fragment: 'Fragment 1' }}
+        freshnessByResultId={new Map([[
+          result.id,
+          { state: 'unverified', reasons: [{ code: 'missing_input_hash', recordId: 'source' }] },
+        ]])}
+        onRevealRecord={vi.fn()}
+        onRemove={vi.fn()}
+      />,
+    );
+    expect(screen.getAllByText('Unverified')).toHaveLength(2);
+    await user.click(screen.getByText('Details'));
+    expect(screen.getByText(/Source was saved without a sequence fingerprint/)).toBeTruthy();
+  });
+
   it('summarizes large record sets and exposes bounded, inert workflow details', async () => {
     const user = userEvent.setup();
     const outputRecordIds = Array.from({ length: 18 }, (_, index) => `output-${index + 1}`);

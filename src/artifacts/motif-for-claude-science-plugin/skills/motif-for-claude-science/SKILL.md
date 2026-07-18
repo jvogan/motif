@@ -217,11 +217,20 @@ alignment actually produced by an external executable.
 
 Use top-level `analysisResults` and `analysisAssets` when Claude has computed
 evidence that should remain visible beside the sequences. Supported result
-kinds are `primer_design`, `pcr`, `assembly_plan`, `blast_search`,
-`structure_model`, `report`, and `table`. Results require stable ids, ISO
+kinds are `primer_design`, `pcr`, `assembly_plan`, `construct_verification`,
+`blast_search`, `structure_model`, `report`, and `table`. Results require stable ids, ISO
 timestamps, explicit provenance, input record ids, dependency ids, asset ids,
 parameters, and kind-specific `data`. Any referenced record id must match an
 explicit record id in the same workspace.
+
+For `construct_verification`, list the predicted reference first in
+`inputRecordIds`, followed by the Sanger read records in the same order as
+`data.readRecordIds`; align `inputSha256s` to that order. The compact `data`
+summary records `referenceRecordId`, state, reference/coverage counts, mapped
+read and required-region counts, variant counts, stable `reasonCodes`, and an
+optional `verificationReportAssetId`. Put bounded read, reason, and variant
+detail in that inert `application/json` asset; do not persist raw AB1 bytes or
+unbounded per-base coordinate maps in the result.
 
 Assets are UTF-8 data, never executable content. Accepted media types are
 `application/json`, `text/plain`, `text/markdown`, `text/csv`,

@@ -174,12 +174,14 @@ function digestInputSha256(result: ArtifactWorkflowResult, recordId: string): st
 export function createClaudeScienceGelLaneCandidates(
   records: readonly ClaudeScienceGelRecord[],
   workflowResults: readonly ArtifactWorkflowResult[],
+  freshnessByResultId?: ReadonlyMap<string, { state: 'fresh' | 'stale' | 'unverified' }>,
 ): ClaudeScienceGelLaneCandidate[] {
   const recordById = new Map(records.map((record) => [record.id, record]));
   const candidates: ClaudeScienceGelLaneCandidate[] = [];
 
   for (const result of workflowResults) {
     if (result.kind !== 'digest') continue;
+    if (freshnessByResultId && freshnessByResultId.get(result.id)?.state !== 'fresh') continue;
     const outcome = digestOutcome(result);
     if (outcome === 'uncut') continue;
     const fragmentLengthsBp = digestFragmentLengths(result);

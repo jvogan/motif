@@ -1,0 +1,618 @@
+.motif-cs-verification-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: color-mix(in srgb, var(--app-bg) 66%, transparent);
+}
+
+.motif-cs-verification-workspace {
+  container-type: inline-size;
+  width: min(1120px, calc(100vw - 32px));
+  height: min(780px, calc(100dvh - 32px));
+  min-width: min(640px, calc(100vw - 16px));
+  min-height: min(500px, calc(100dvh - 16px));
+  max-width: calc(100vw - 16px);
+  max-height: calc(100dvh - 16px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  resize: both;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  box-shadow: var(--elevation-popover);
+  font: 11px/1.45 var(--font-ui);
+}
+
+.motif-cs-verification-workspace[data-embedded] {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  max-width: none;
+  max-height: none;
+  resize: none;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.motif-cs-verification-workspace button,
+.motif-cs-verification-workspace input,
+.motif-cs-verification-workspace select {
+  font: inherit;
+}
+
+.motif-cs-verification-workspace button:focus-visible,
+.motif-cs-verification-workspace input:focus-visible,
+.motif-cs-verification-workspace select:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.motif-cs-verification-workspace-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 72px;
+  padding: 14px 16px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-primary);
+}
+
+.motif-cs-verification-workspace-header > div {
+  min-width: 0;
+}
+
+.motif-cs-verification-workspace-header span,
+.motif-cs-verification-intro > span,
+.motif-cs-verification-section-index {
+  color: var(--text-muted);
+  font-size: 9px;
+  font-weight: 740;
+  letter-spacing: 0.085em;
+  text-transform: uppercase;
+}
+
+.motif-cs-verification-workspace-header h2 {
+  margin: 1px 0 0;
+  font-size: 19px;
+  line-height: 1.2;
+  letter-spacing: -0.015em;
+}
+
+.motif-cs-verification-workspace-header p {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.motif-cs-verification-icon-button {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 21px !important;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.motif-cs-verification-icon-button:hover {
+  border-color: var(--border);
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.motif-cs-verification-workspace-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(278px, 330px) minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.motif-cs-verification-setup,
+.motif-cs-verification-output {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  scrollbar-gutter: stable;
+}
+
+.motif-cs-verification-setup {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  border-right: 1px solid var(--border-subtle);
+  background: var(--panel-bg);
+}
+
+.motif-cs-verification-intro {
+  display: grid;
+  gap: 3px;
+  padding: 13px 14px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--accent) 3%, var(--bg-primary));
+}
+
+.motif-cs-verification-intro > strong {
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.motif-cs-verification-intro > p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.motif-cs-verification-form-section {
+  position: relative;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.motif-cs-verification-section-index {
+  display: grid;
+  place-items: start center;
+  padding-top: 13px;
+  border-right: 1px solid var(--border-subtle);
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.motif-cs-verification-section-content {
+  min-width: 0;
+  padding: 12px 13px 13px;
+}
+
+.motif-cs-verification-field {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.motif-cs-verification-field > span,
+.motif-cs-verification-read-heading strong,
+.motif-cs-verification-acceptance-heading strong {
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 680;
+}
+
+.motif-cs-verification-field select,
+.motif-cs-verification-field input[type="number"] {
+  width: 100%;
+  min-width: 0;
+  min-height: 30px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text-primary);
+}
+
+.motif-cs-verification-field select:hover,
+.motif-cs-verification-field input[type="number"]:hover {
+  border-color: var(--border-strong);
+}
+
+.motif-cs-verification-field select:disabled,
+.motif-cs-verification-field input:disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.motif-cs-verification-record-detail {
+  margin: 6px 0 0;
+  color: var(--text-muted);
+  font: 9.5px/1.45 var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+.motif-cs-verification-read-fieldset > legend,
+.motif-cs-verification-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.motif-cs-verification-read-heading,
+.motif-cs-verification-acceptance-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.motif-cs-verification-read-heading > div:first-child,
+.motif-cs-verification-acceptance-heading {
+  min-width: 0;
+}
+
+.motif-cs-verification-read-heading > div:first-child {
+  display: grid;
+  gap: 1px;
+}
+
+.motif-cs-verification-read-heading span,
+.motif-cs-verification-acceptance-heading span {
+  color: var(--text-muted);
+  font-size: 9px;
+}
+
+.motif-cs-verification-read-actions {
+  display: flex;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.motif-cs-verification-read-actions button {
+  min-height: 24px;
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text-secondary);
+  font-size: 9.5px;
+  cursor: pointer;
+}
+
+.motif-cs-verification-read-actions button:hover:not(:disabled) {
+  background: var(--control-hover);
+  color: var(--text-primary);
+}
+
+.motif-cs-verification-read-actions button:disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.motif-cs-verification-read-list {
+  max-height: 216px;
+  margin-top: 8px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+}
+
+.motif-cs-verification-read-option {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: start;
+  gap: 7px;
+  min-width: 0;
+  padding: 8px 9px;
+  border-bottom: 1px solid var(--border-subtle);
+  cursor: pointer;
+}
+
+.motif-cs-verification-read-option:last-child {
+  border-bottom: 0;
+}
+
+.motif-cs-verification-read-option:hover {
+  background: var(--bg-hover);
+}
+
+.motif-cs-verification-read-option input {
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+
+.motif-cs-verification-read-option > span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.motif-cs-verification-read-option strong,
+.motif-cs-verification-read-option small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.motif-cs-verification-read-option strong {
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.motif-cs-verification-read-option small {
+  color: var(--text-muted);
+  font: 9px/1.35 var(--font-mono);
+}
+
+.motif-cs-verification-empty-evidence {
+  margin: 8px 0 0;
+  padding: 9px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: 9.5px;
+  line-height: 1.5;
+}
+
+.motif-cs-verification-acceptance-heading {
+  display: grid;
+  justify-content: stretch;
+  gap: 1px;
+}
+
+.motif-cs-verification-criteria-grid {
+  display: grid;
+  gap: 10px;
+  margin-top: 9px;
+}
+
+.motif-cs-verification-strand-toggle {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: start;
+  gap: 7px;
+  cursor: pointer;
+}
+
+.motif-cs-verification-strand-toggle input {
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+
+.motif-cs-verification-strand-toggle > span {
+  display: grid;
+  gap: 1px;
+}
+
+.motif-cs-verification-strand-toggle strong {
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+
+.motif-cs-verification-strand-toggle small {
+  color: var(--text-muted);
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+.motif-cs-verification-action-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  display: grid;
+  gap: 9px;
+  margin-top: auto;
+  padding: 11px 13px 12px;
+  border-top: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--panel-bg) 92%, var(--bg-primary));
+}
+
+.motif-cs-verification-messages {
+  min-height: 28px;
+  color: var(--text-muted);
+  font-size: 9.5px;
+  line-height: 1.45;
+}
+
+.motif-cs-verification-messages p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.motif-cs-verification-error {
+  color: var(--red);
+}
+
+.motif-cs-verification-status {
+  color: var(--text-secondary);
+}
+
+.motif-cs-verification-buttons {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 7px;
+}
+
+.motif-cs-verification-primary-button,
+.motif-cs-verification-secondary-button {
+  min-height: 32px;
+  padding: 5px 9px;
+  border-radius: var(--radius-sm);
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.motif-cs-verification-primary-button {
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--text-on-accent);
+}
+
+.motif-cs-verification-secondary-button {
+  border: 1px solid var(--border);
+  background: var(--control-bg);
+  color: var(--text-secondary);
+}
+
+.motif-cs-verification-primary-button:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.motif-cs-verification-secondary-button:hover:not(:disabled) {
+  background: var(--control-hover);
+  color: var(--text-primary);
+}
+
+.motif-cs-verification-primary-button:disabled,
+.motif-cs-verification-secondary-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
+.motif-cs-verification-output {
+  padding: 12px;
+  background: var(--bg-primary);
+}
+
+.motif-cs-verification-awaiting {
+  position: relative;
+  min-height: 100%;
+  display: grid;
+  align-content: center;
+  justify-items: start;
+  gap: 5px;
+  padding: clamp(18px, 6cqi, 52px);
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background:
+    linear-gradient(var(--border-subtle) 1px, transparent 1px),
+    linear-gradient(90deg, var(--border-subtle) 1px, transparent 1px),
+    var(--panel-bg);
+  background-size: 28px 28px;
+}
+
+.motif-cs-verification-awaiting::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 4px;
+  background: var(--accent);
+}
+
+.motif-cs-verification-awaiting > span {
+  color: var(--accent);
+  font: 700 9px/1.3 var(--font-mono);
+  letter-spacing: 0.08em;
+}
+
+.motif-cs-verification-awaiting > strong {
+  max-width: 28ch;
+  font-size: clamp(17px, 3.5cqi, 25px);
+  line-height: 1.16;
+  letter-spacing: -0.02em;
+}
+
+.motif-cs-verification-awaiting > p {
+  max-width: 56ch;
+  margin: 2px 0 12px;
+  color: var(--text-muted);
+  font-size: 10.5px;
+  line-height: 1.55;
+}
+
+.motif-cs-verification-awaiting dl {
+  width: min(100%, 520px);
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+  border: 1px solid var(--border);
+  background: var(--bg-primary);
+}
+
+.motif-cs-verification-awaiting dl > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 8px 9px;
+  border-right: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.motif-cs-verification-awaiting dt,
+.motif-cs-verification-awaiting dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.motif-cs-verification-awaiting dt {
+  color: var(--text-muted);
+  font-size: 8.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.055em;
+}
+
+.motif-cs-verification-awaiting dd {
+  color: var(--text-primary);
+  font: 650 10px/1.35 var(--font-mono);
+}
+
+@container (max-width: 700px) {
+  .motif-cs-verification-workspace-body {
+    display: block;
+    overflow: auto;
+  }
+
+  .motif-cs-verification-setup,
+  .motif-cs-verification-output {
+    overflow: visible;
+  }
+
+  .motif-cs-verification-setup {
+    border-right: 0;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .motif-cs-verification-action-bar {
+    position: static;
+  }
+
+  .motif-cs-verification-output {
+    min-height: 360px;
+  }
+}
+
+@container (max-width: 420px) {
+  .motif-cs-verification-section-content {
+    padding-inline: 10px;
+  }
+
+  .motif-cs-verification-read-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .motif-cs-verification-read-actions button {
+    flex: 1 1 0;
+  }
+
+  .motif-cs-verification-buttons {
+    grid-template-columns: 1fr;
+  }
+
+  .motif-cs-verification-awaiting dl {
+    grid-template-columns: 1fr;
+  }
+}

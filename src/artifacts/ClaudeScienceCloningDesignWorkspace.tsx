@@ -1,7 +1,9 @@
 import {
+  forwardRef,
   useCallback,
   useEffect,
   useId,
+  useImperativeHandle,
   useMemo,
   useRef,
   useState,
@@ -72,6 +74,21 @@ export type ClaudeScienceCloningDesignWorkspaceProps = {
   initialMethod?: ClaudeScienceCloningDesignMethod;
   initialRecordIds?: readonly string[];
   embedded?: boolean;
+};
+
+export type ClaudeSciencePreparedPartReplacement = {
+  /** The reviewed plan identity captured when primer preparation opened. */
+  expectedRequestSha256: string;
+  /** The exact reviewed preparation action being satisfied. */
+  actionId: string;
+  sourceRecordId: string;
+  productRecordId: string;
+  productRecordName: string;
+};
+
+export type ClaudeScienceCloningDesignWorkspaceHandle = {
+  /** Replaces a reviewed source part while retaining all other live draft choices. */
+  replacePreparedPart: (replacement: ClaudeSciencePreparedPartReplacement) => boolean;
 };
 
 type PartOrientation = NonNullable<ArtifactCloningInput['orientation']>;
@@ -228,7 +245,10 @@ function excerpt(sequence: string): string {
   return `${sequence.slice(0, 36)}…${sequence.slice(-36)}`;
 }
 
-export function ClaudeScienceCloningDesignWorkspace({
+export const ClaudeScienceCloningDesignWorkspace = forwardRef<
+  ClaudeScienceCloningDesignWorkspaceHandle,
+  ClaudeScienceCloningDesignWorkspaceProps
+>(function ClaudeScienceCloningDesignWorkspace({
   records,
   onClose,
   onDesignPrimers,
@@ -236,7 +256,7 @@ export function ClaudeScienceCloningDesignWorkspace({
   initialMethod = 'golden_gate',
   initialRecordIds,
   embedded = false,
-}: ClaudeScienceCloningDesignWorkspaceProps) {
+}, forwardedRef) {
   const titleId = useId();
   const tabPanelId = useId();
   const partHelpId = useId();
@@ -387,6 +407,33 @@ export function ClaudeScienceCloningDesignWorkspace({
   const primerActions = plan.preparation.filter(isPrimerPreparation);
   const readyPrimerActions = primerActions.filter((action) => primerPreparationBlocker(plan, action) === null);
   const goldenGateNeedsAnotherInput = plan.kind === 'golden_gate_design' && plan.inputs.length < 2;
+
+  useImperativeHandle(forwardedRef, () => ({
+    replacePreparedPart(replacement) {
+      const action = plan.preparation.find((item) => item.id === replacement.actionId);
+      const requestMatches = plan.provenance?.requestSha256 === replacement.expectedRequestSha256;
+      const actionMatches = action?.recordIds.includes(replacement.sourceRecordId) === true;
+      const sourcePartExists = parts.some((part) => part.recordId === replacement.sourceRecordId);
+      const sourceIsDestination = destinationRecordId === replacement.sourceRecordId;
+      if (!requestMatches || !actionMatches || (!sourcePartExists && !sourceIsDestination)) {
+        setError('The cloning draft changed after primer preparation opened. The amplicon was not inserted into this draft.');
+        setStatus('');
+        return false;
+      }
+      if (sourcePartExists) {
+        setParts((current) => current.map((part) => (
+          part.recordId === replacement.sourceRecordId
+            ? { ...part, recordId: replacement.productRecordId }
+            : part
+        )));
+      }
+      if (sourceIsDestination) setDestinationRecordId(replacement.productRecordId);
+      setSavedSignatures({ plan: '', product: '' });
+      setError('');
+      setStatus(`${replacement.productRecordName} replaced the prepared source; the cloning draft was rechecked.`);
+      return true;
+    },
+  }), [destinationRecordId, parts, plan]);
 
   const movePart = useCallback((index: number, destination: number) => {
     if (destination < 0 || destination >= parts.length || destination === index) return;
@@ -1250,4 +1297,4 @@ export function ClaudeScienceCloningDesignWorkspace({
       </section>
     </div>
   );
-}
+});

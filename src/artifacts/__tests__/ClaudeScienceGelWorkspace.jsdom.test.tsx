@@ -164,6 +164,26 @@ describe('createClaudeScienceGelLaneCandidates', () => {
     expect(digestCandidate?.lane).not.toHaveProperty('recordSha256');
   });
 
+  it('omits stale and unverified workflow history when a scientific freshness map is supplied', () => {
+    const source = record('source-plasmid', { topology: 'linear', sequence: 'ACGT' });
+    const fresh = digestResult('fresh', {
+      inputSha256s: [sha256HexSync(source.sequence)],
+      parameters: { topology: 'linear', outcome: 'fragmented' },
+      result: { outcome: 'fragmented', fragments: [{ length: 2 }, { length: 2 }] },
+    });
+    const stale = { ...fresh, id: 'stale' };
+    const unverified = { ...fresh, id: 'unverified', inputSha256s: undefined };
+    const freshness = new Map([
+      ['fresh', { state: 'fresh' as const }],
+      ['stale', { state: 'stale' as const }],
+      ['unverified', { state: 'unverified' as const }],
+    ]);
+
+    expect(createClaudeScienceGelLaneCandidates([source], [fresh, stale, unverified], freshness)
+      .filter((candidate) => candidate.sourceKind === 'digest')
+      .map((candidate) => candidate.id)).toEqual(['digest:fresh']);
+  });
+
   it('omits records whose declared digest is malformed or does not match their current sequence', () => {
     const mismatched = record('mismatched', {
       sequence: 'AAAA',

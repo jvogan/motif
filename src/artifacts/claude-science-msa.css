@@ -1,0 +1,493 @@
+/*
+ * Motif — Claude Science MSA viewer enhancements.
+ *
+ * New styles only. The base `.motif-cs-msa-*` rules live in motif-artifact.css
+ * and are intentionally left untouched here; this sheet layers selection,
+ * hover, histogram, colour-scheme, and shading affordances on top and is
+ * imported by ClaudeScienceMsaViewer.tsx. Palette fills use color-mix against
+ * --bg-primary so every scheme stays legible in both light and dark themes.
+ */
+
+/* The matrix hosts absolutely-positioned selection/hover overlays. */
+.motif-cs-msa-matrix {
+  position: relative;
+}
+
+/* ===== Selection band + row emphasis ===== */
+.motif-cs-msa-selection-band {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 3;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  border-left: 2px solid var(--accent);
+  border-right: 2px solid var(--accent);
+  box-sizing: border-box;
+}
+.motif-cs-msa-selection-band::before,
+.motif-cs-msa-selection-band::after {
+  content: '';
+  position: absolute;
+  top: -1px;
+  width: 0;
+  height: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 6px solid var(--accent);
+}
+.motif-cs-msa-selection-band::before { left: -6px; }
+.motif-cs-msa-selection-band::after { right: -6px; }
+
+.motif-cs-msa-matrix-row[data-selected='true'] {
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+.motif-cs-msa-matrix-row[data-hover='true'] {
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+}
+
+/* ===== Hover crosshair + floating readout ===== */
+.motif-cs-msa-hover-column {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 2;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  outline: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.motif-cs-msa-matrix-scroll[data-selecting='true'] {
+  cursor: crosshair;
+  user-select: none;
+}
+
+.motif-cs-msa-hover-readout {
+  position: fixed;
+  z-index: 60;
+  pointer-events: none;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  line-height: 1.3;
+  white-space: nowrap;
+  background: var(--bg-elevated, var(--bg-primary, #fff));
+  color: var(--text-primary, #16130f);
+  border: 1px solid var(--border, color-mix(in srgb, currentColor 18%, transparent));
+  box-shadow: 0 6px 20px color-mix(in srgb, var(--shadow-ink, #000) 22%, transparent);
+}
+.motif-cs-msa-hover-readout b {
+  font-size: 13px;
+  font-variant-ligatures: none;
+}
+.motif-cs-msa-hover-readout span { color: var(--text-secondary, color-mix(in srgb, currentColor 65%, transparent)); }
+.motif-cs-msa-hover-readout-name {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ===== Selection readout bar ===== */
+.motif-cs-msa-selection-readout {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  margin-top: 6px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-primary));
+  border: 1px solid color-mix(in srgb, var(--accent) 26%, transparent);
+  color: var(--text-primary, inherit);
+}
+.motif-cs-msa-selection-readout strong { color: var(--accent); }
+.motif-cs-msa-selection-readout span { color: var(--text-secondary, inherit); }
+.motif-cs-msa-selection-readout .motif-cs-mini-button { margin-left: auto; }
+
+/* ===== Right-click context menu ===== */
+.motif-cs-msa-context-menu {
+  position: fixed;
+  z-index: 70;
+  min-width: 200px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  border-radius: 8px;
+  background: var(--bg-elevated, var(--bg-primary, #fff));
+  border: 1px solid var(--border, color-mix(in srgb, currentColor 18%, transparent));
+  box-shadow: 0 10px 30px color-mix(in srgb, var(--shadow-ink, #000) 28%, transparent);
+}
+.motif-cs-msa-context-menu button {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  padding: 7px 10px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  color: var(--text-primary, inherit);
+  cursor: pointer;
+}
+.motif-cs-msa-context-menu button:hover,
+.motif-cs-msa-context-menu button:focus-visible {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  outline: none;
+}
+
+/* ===== Histogram tracks (conservation + occupancy) ===== */
+.motif-cs-msa-hist-row {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  height: 30px;
+}
+.motif-cs-msa-hist-label {
+  align-items: center;
+  color: var(--text-secondary, inherit);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.motif-cs-msa-hist-window {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: flex-end;
+}
+.motif-cs-msa-hist-cell {
+  width: var(--motif-cs-msa-cell-width, 10px);
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding-bottom: 2px;
+}
+.motif-cs-msa-hist-bar {
+  width: 68%;
+  min-height: 1px;
+  border-radius: 1px 1px 0 0;
+  background: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.motif-cs-msa-hist-cell[data-jump='true'] {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+/* Conservation: greener as it climbs; occupancy: neutral accent. */
+.motif-cs-msa-hist-bar-conservation[data-bucket='0'] { background: color-mix(in srgb, #d64545 60%, transparent); }
+.motif-cs-msa-hist-bar-conservation[data-bucket='1'] { background: color-mix(in srgb, #e08a3c 60%, transparent); }
+.motif-cs-msa-hist-bar-conservation[data-bucket='2'] { background: color-mix(in srgb, #d6c23c 62%, transparent); }
+.motif-cs-msa-hist-bar-conservation[data-bucket='3'] { background: color-mix(in srgb, #79b155 66%, transparent); }
+.motif-cs-msa-hist-bar-conservation[data-bucket='4'] { background: color-mix(in srgb, #2ea043 72%, transparent); }
+.motif-cs-msa-hist-bar-occupancy { background: color-mix(in srgb, var(--accent) 50%, transparent); }
+
+/* ===== Residue colour schemes (letter-cell backgrounds) ===== */
+.motif-cs-msa-matrix[data-color-scheme] .motif-cs-msa-symbol[data-color-key] {
+  border-radius: 2px;
+}
+/* Nucleotide */
+.motif-cs-msa-symbol[data-color-key='nt-a'] { background: color-mix(in srgb, #2ea043 34%, var(--bg-primary)); }
+.motif-cs-msa-symbol[data-color-key='nt-c'] { background: color-mix(in srgb, #4c8dff 34%, var(--bg-primary)); }
+.motif-cs-msa-symbol[data-color-key='nt-g'] { background: color-mix(in srgb, #f0a020 36%, var(--bg-primary)); }
+.motif-cs-msa-symbol[data-color-key='nt-t'] { background: color-mix(in srgb, #f0553f 34%, var(--bg-primary)); }
+.motif-cs-msa-symbol[data-color-key='nt-other'] { background: color-mix(in srgb, #8b93a1 30%, var(--bg-primary)); }
+/* ClustalX chemistry groups */
+.motif-cs-msa-symbol[data-color-key='cl-hydrophobic'] { background: color-mix(in srgb, #5b8def 34%, var(--bg-primary)); }
+.motif-cs-msa-symbol[data-color-key='cl-positive'] { background: color-mix(in srgb, #e0533f 34%, var(--bg-primary)); }
+.motif-cs-msa-symbol[data-color-key='cl-negative'] { background: color-mix(in srgb, #b657c4 34%, var(--bg-primary)); }
+.motif-cs-msa-symbol[data-color-key='cl-polar'] { background: color-mix(in srgb, #3fae6b 34%, var(--bg-primary)); }
+.motif-cs-msa-symbol[data-color-key='cl-cysteine'] { background: color-mix(in srgb, #e58fa8 36%, var(--bg-primary)); }
+.motif-cs-msa-symbol[data-color-key='cl-glycine'] { background: color-mix(in srgb, #e08a3c 36%, var(--bg-primary)); }
+.motif-cs-msa-symbol[data-color-key='cl-proline'] { background: color-mix(in srgb, #cdbb3a 40%, var(--bg-primary)); }
+.motif-cs-msa-symbol[data-color-key='cl-aromatic'] { background: color-mix(in srgb, #2fb0b8 34%, var(--bg-primary)); }
+.motif-cs-msa-symbol[data-color-key='cl-other'] { background: color-mix(in srgb, #8b93a1 26%, var(--bg-primary)); }
+/* Hydrophobicity diverging (0 hydrophilic .. 4 hydrophobic) */
+.motif-cs-msa-symbol[data-color-key='hyd-0'] { background: color-mix(in srgb, #4c8dff 34%, var(--bg-primary)); }
+.motif-cs-msa-symbol[data-color-key='hyd-1'] { background: color-mix(in srgb, #86b6f0 32%, var(--bg-primary)); }
+.motif-cs-msa-symbol[data-color-key='hyd-2'] { background: color-mix(in srgb, #cfd3da 28%, var(--bg-primary)); }
+.motif-cs-msa-symbol[data-color-key='hyd-3'] { background: color-mix(in srgb, #f0a86a 34%, var(--bg-primary)); }
+.motif-cs-msa-symbol[data-color-key='hyd-4'] { background: color-mix(in srgb, #f0553f 36%, var(--bg-primary)); }
+/* Taylor per-residue wheel */
+.motif-cs-msa-matrix[data-color-scheme='taylor'] .motif-cs-msa-symbol[data-residue='A'] { background: color-mix(in srgb, #ccff00 40%, var(--bg-primary)); }
+.motif-cs-msa-matrix[data-color-scheme='taylor'] .motif-cs-msa-symbol[data-residue='R'] { background: color-mix(in srgb, #0000ff 34%, var(--bg-primary)); }
+.motif-cs-msa-matrix[data-color-scheme='taylor'] .motif-cs-msa-symbol[data-residue='N'] { background: color-mix(in srgb, #cc00ff 34%, var(--bg-primary)); }
+.motif-cs-msa-matrix[data-color-scheme='taylor'] .motif-cs-msa-symbol[data-residue='D'] { background: color-mix(in srgb, #ff0000 34%, var(--bg-primary)); }
+.motif-cs-msa-matrix[data-color-scheme='taylor'] .motif-cs-msa-symbol[data-residue='C'] { background: color-mix(in srgb, #ffff00 40%, var(--bg-primary)); }
+.motif-cs-msa-matrix[data-color-scheme='taylor'] .motif-cs-msa-symbol[data-residue='Q'] { background: color-mix(in srgb, #ff00cc 34%, var(--bg-primary)); }
+.motif-cs-msa-matrix[data-color-scheme='taylor'] .motif-cs-msa-symbol[data-residue='E'] { background: color-mix(in srgb, #ff0066 34%, var(--bg-primary)); }
+.motif-cs-msa-matrix[data-color-scheme='taylor'] .motif-cs-msa-symbol[data-residue='G'] { background: color-mix(in srgb, #ff9900 38%, var(--bg-primary)); }
+.motif-cs-msa-matrix[data-color-scheme='taylor'] .motif-cs-msa-symbol[data-residue='H'] { background: color-mix(in srgb, #0066ff 34%, var(--bg-primary)); }
+.motif-cs-msa-matrix[data-color-scheme='taylor'] .motif-cs-msa-symbol[data-residue='I'] { background: color-mix(in srgb, #66ff00 40%, var(--bg-primary)); }
+.motif-cs-msa-matrix[data-color-scheme='taylor'] .motif-cs-msa-symbol[data-residue='L'] { background: color-mix(in srgb, #33ff00 40%, var(--bg-primary)); }
+.motif-cs-msa-matrix[data-color-scheme='taylor'] .motif-cs-msa-symbol[data-residue='K'] { background: color-mix(in srgb, #6600ff 34%, var(--bg-primary)); }
+.motif-cs-msa-matrix[data-color-scheme='taylor'] .motif-cs-msa-symbol[data-residue='M'] { background: color-mix(in srgb, #00ff00 40%, var(--bg-primary)); }
+.motif-cs-msa-matrix[data-color-scheme='taylor'] .motif-cs-msa-symbol[data-residue='F'] { background: color-mix(in srgb, #00ff66 40%, var(--bg-primary)); }
+.motif-cs-msa-matrix[data-color-scheme='taylor'] .motif-cs-msa-symbol[data-residue='P'] { background: color-mix(in srgb, #ffcc00 40%, var(--bg-primary)); }
+.motif-cs-msa-matrix[data-color-scheme='taylor'] .motif-cs-msa-symbol[data-residue='S'] { background: color-mix(in srgb, #ff3300 36%, var(--bg-primary)); }
+.motif-cs-msa-matrix[data-color-scheme='taylor'] .motif-cs-msa-symbol[data-residue='T'] { background: color-mix(in srgb, #ff6600 38%, var(--bg-primary)); }
+.motif-cs-msa-matrix[data-color-scheme='taylor'] .motif-cs-msa-symbol[data-residue='W'] { background: color-mix(in srgb, #00ccff 36%, var(--bg-primary)); }
+.motif-cs-msa-matrix[data-color-scheme='taylor'] .motif-cs-msa-symbol[data-residue='Y'] { background: color-mix(in srgb, #00ffcc 40%, var(--bg-primary)); }
+.motif-cs-msa-matrix[data-color-scheme='taylor'] .motif-cs-msa-symbol[data-residue='V'] { background: color-mix(in srgb, #99ff00 40%, var(--bg-primary)); }
+
+/* ===== Column shading modes ===== */
+.motif-cs-msa-matrix[data-shade='mismatch'] .motif-cs-msa-symbol[data-difference] {
+  background: color-mix(in srgb, #ff7a6b 30%, var(--bg-primary));
+}
+.motif-cs-msa-matrix[data-shade='identity'] .motif-cs-msa-symbol[data-shade-bucket='4'],
+.motif-cs-msa-matrix[data-shade='conservation'] .motif-cs-msa-symbol[data-shade-bucket='4'] {
+  background: color-mix(in srgb, var(--accent) 30%, var(--bg-primary));
+}
+.motif-cs-msa-matrix[data-shade='identity'] .motif-cs-msa-symbol[data-shade-bucket='3'],
+.motif-cs-msa-matrix[data-shade='conservation'] .motif-cs-msa-symbol[data-shade-bucket='3'] {
+  background: color-mix(in srgb, var(--accent) 21%, var(--bg-primary));
+}
+.motif-cs-msa-matrix[data-shade='identity'] .motif-cs-msa-symbol[data-shade-bucket='2'],
+.motif-cs-msa-matrix[data-shade='conservation'] .motif-cs-msa-symbol[data-shade-bucket='2'] {
+  background: color-mix(in srgb, var(--accent) 13%, var(--bg-primary));
+}
+.motif-cs-msa-matrix[data-shade='identity'] .motif-cs-msa-symbol[data-shade-bucket='1'],
+.motif-cs-msa-matrix[data-shade='conservation'] .motif-cs-msa-symbol[data-shade-bucket='1'] {
+  background: color-mix(in srgb, var(--accent) 7%, var(--bg-primary));
+}
+
+/* ===== View-menu select rows ===== */
+.motif-cs-msa-view-select {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+}
+.motif-cs-msa-view-select select {
+  flex: 0 1 148px;
+  min-width: 0;
+}
+.motif-cs-msa-view-select select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.motif-cs-msa-ruler-window-clickable .motif-cs-msa-ruler-cell { cursor: pointer; }
+.motif-cs-msa-ruler-window-clickable:hover .motif-cs-msa-ruler-cell {
+  color: var(--accent);
+}
+
+/* ===== Row drag-reorder (grip handle, drop indicator, custom-order note) ===== */
+/* Reserve a left gutter for the grip so it never overlaps the row name. The
+   grip anchors to the sticky label (position: sticky) and so stays pinned at
+   the left edge while the alignment scrolls horizontally. */
+.motif-cs-msa-matrix-row .motif-cs-msa-row-label-draggable {
+  padding-left: 18px;
+}
+.motif-cs-msa-row-grip {
+  position: absolute;
+  left: 1px;
+  top: 0;
+  bottom: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-muted, color-mix(in srgb, currentColor 55%, transparent));
+  opacity: 0;
+  cursor: grab;
+  touch-action: none;
+  transition: opacity 120ms ease, color 120ms ease;
+}
+.motif-cs-msa-matrix-row:hover .motif-cs-msa-row-grip,
+.motif-cs-msa-row-grip:focus-visible {
+  opacity: 0.72;
+}
+.motif-cs-msa-row-grip:hover { opacity: 1; color: var(--accent); }
+.motif-cs-msa-row-grip:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; opacity: 1; }
+.motif-cs-msa-row-grip:active { cursor: grabbing; }
+
+/* The dragged row is dimmed; drop target draws an accent rule on the near edge.
+   The row is already position: relative, so these pseudo-elements need no extra
+   positioning context and span the full alignment width. */
+.motif-cs-msa-matrix-row[data-dragging='true'] {
+  opacity: 0.55;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.motif-cs-msa-matrix-row[data-drop-before='true']::before,
+.motif-cs-msa-matrix-row[data-drop-after='true']::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  z-index: 6;
+  background: var(--accent);
+  pointer-events: none;
+}
+.motif-cs-msa-matrix-row[data-drop-before='true']::before { top: -1px; }
+.motif-cs-msa-matrix-row[data-drop-after='true']::after { bottom: -1px; }
+.motif-cs-msa-matrix[data-reordering='true'] { cursor: grabbing; }
+
+.motif-cs-msa-order-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-secondary, inherit);
+}
+.motif-cs-msa-order-note > svg { color: var(--text-muted, inherit); }
+.motif-cs-msa-order-note .motif-cs-mini-button { margin-left: 2px; }
+
+/* ===== Zoom control + birdseye blocks ===== */
+.motif-cs-msa-zoom-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-secondary, inherit);
+}
+.motif-cs-msa-zoom-label {
+  font-weight: 600;
+  color: var(--text-muted, inherit);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 10.5px;
+}
+.motif-cs-msa-zoom-range {
+  flex: 0 1 220px;
+  min-width: 120px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.motif-cs-msa-zoom-value {
+  min-width: 40px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary, inherit);
+}
+.motif-cs-msa-blocks-chip {
+  background: color-mix(in srgb, var(--accent) 16%, var(--bg-primary));
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, transparent);
+  color: var(--accent);
+}
+
+/* Birdseye blocks: past the legibility floor, hide glyphs and render each
+   residue as a solid tile so wide alignments read as a conservation mosaic.
+   Gaps stay empty; an explicit colour scheme keeps its own data-color-key
+   fills, otherwise the auto residue tone becomes the tile colour. */
+.motif-cs-msa-matrix[data-blocks='true'] .motif-cs-msa-symbol {
+  color: transparent;
+  font-size: 0;
+}
+.motif-cs-msa-matrix[data-blocks='true'] .motif-cs-msa-symbol[data-tone='gap'] { background: transparent; }
+.motif-cs-msa-matrix[data-blocks='true'] .motif-cs-msa-symbol[data-tone='a'],
+.motif-cs-msa-matrix[data-blocks='true'] .motif-cs-msa-symbol[data-tone='polar'] { background: color-mix(in srgb, var(--green) 52%, var(--bg-primary)); }
+.motif-cs-msa-matrix[data-blocks='true'] .motif-cs-msa-symbol[data-tone='c'],
+.motif-cs-msa-matrix[data-blocks='true'] .motif-cs-msa-symbol[data-tone='hydrophobic'] { background: color-mix(in srgb, var(--accent) 52%, var(--bg-primary)); }
+.motif-cs-msa-matrix[data-blocks='true'] .motif-cs-msa-symbol[data-tone='g'],
+.motif-cs-msa-matrix[data-blocks='true'] .motif-cs-msa-symbol[data-tone='special'] { background: color-mix(in srgb, var(--amber) 55%, var(--bg-primary)); }
+.motif-cs-msa-matrix[data-blocks='true'] .motif-cs-msa-symbol[data-tone='t'],
+.motif-cs-msa-matrix[data-blocks='true'] .motif-cs-msa-symbol[data-tone='negative'] { background: color-mix(in srgb, var(--red) 52%, var(--bg-primary)); }
+.motif-cs-msa-matrix[data-blocks='true'] .motif-cs-msa-symbol[data-tone='positive'] { background: color-mix(in srgb, var(--purple) 50%, var(--bg-primary)); }
+.motif-cs-msa-matrix[data-blocks='true'] .motif-cs-msa-symbol[data-tone='ambiguous'] { background: color-mix(in srgb, var(--text-secondary) 34%, var(--bg-primary)); }
+/* Keep a jumped column findable even as a tile. */
+.motif-cs-msa-matrix[data-blocks='true'] .motif-cs-msa-symbol[data-jump='true'] { outline: 1px solid var(--accent); outline-offset: -1px; }
+
+/* ===== Amino-acid translation track ===== */
+.motif-cs-msa-translation-row {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  height: 28px;
+}
+.motif-cs-msa-translation-label small {
+  color: var(--text-muted, inherit);
+  font: 8px/1 var(--font-mono, monospace);
+  letter-spacing: 0;
+  text-transform: none;
+}
+.motif-cs-msa-translation-window {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+}
+.motif-cs-msa-aa {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  border-right: 1px solid var(--bg-primary);
+  font: 600 11px/1 var(--font-mono, monospace);
+  color: var(--text-primary, inherit);
+  overflow: hidden;
+  background: color-mix(in srgb, var(--text-secondary) 12%, var(--bg-primary));
+}
+.motif-cs-msa-aa-letter { pointer-events: none; }
+.motif-cs-msa-aa-index {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  font: 7px/1 var(--font-mono, monospace);
+  color: var(--text-muted, inherit);
+  pointer-events: none;
+}
+/* Clustal chemistry fills, matching the residue colour scheme. */
+.motif-cs-msa-aa[data-color-key='cl-hydrophobic'] { background: color-mix(in srgb, #5b8def 34%, var(--bg-primary)); }
+.motif-cs-msa-aa[data-color-key='cl-positive'] { background: color-mix(in srgb, #e0533f 34%, var(--bg-primary)); }
+.motif-cs-msa-aa[data-color-key='cl-negative'] { background: color-mix(in srgb, #b657c4 34%, var(--bg-primary)); }
+.motif-cs-msa-aa[data-color-key='cl-polar'] { background: color-mix(in srgb, #3fae6b 34%, var(--bg-primary)); }
+.motif-cs-msa-aa[data-color-key='cl-cysteine'] { background: color-mix(in srgb, #e58fa8 36%, var(--bg-primary)); }
+.motif-cs-msa-aa[data-color-key='cl-glycine'] { background: color-mix(in srgb, #e08a3c 36%, var(--bg-primary)); }
+.motif-cs-msa-aa[data-color-key='cl-proline'] { background: color-mix(in srgb, #cdbb3a 40%, var(--bg-primary)); }
+.motif-cs-msa-aa[data-color-key='cl-aromatic'] { background: color-mix(in srgb, #2fb0b8 34%, var(--bg-primary)); }
+.motif-cs-msa-aa[data-color-key='cl-other'] { background: color-mix(in srgb, #8b93a1 26%, var(--bg-primary)); }
+/* State overrides (after fills so they win). */
+.motif-cs-msa-aa[data-stop='true'] {
+  background: color-mix(in srgb, var(--red, #d64545) 42%, var(--bg-primary));
+  color: var(--text-primary, inherit);
+  font-weight: 800;
+}
+.motif-cs-msa-aa[data-unknown='true'] { color: var(--text-muted, inherit); }
+.motif-cs-msa-aa[data-gap-spanning='true'] { border-left: 1px dashed color-mix(in srgb, var(--text-muted, currentColor) 55%, transparent); }
+.motif-cs-msa-aa[data-jump='true'] { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* ===== Sequence search ===== */
+.motif-cs-msa-search {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.motif-cs-msa-search-icon { color: var(--text-muted, inherit); flex: 0 0 auto; }
+.motif-cs-msa-search-input { width: 150px; min-width: 90px; }
+.motif-cs-msa-search-count {
+  min-width: 52px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary, inherit);
+  white-space: nowrap;
+}
+/* Match highlight via an inset fill so it reads over residue/shade/blocks
+   backgrounds without a specificity fight; the letter stays on top. */
+.motif-cs-msa-symbol[data-search-match] {
+  box-shadow: inset 0 0 0 100px color-mix(in srgb, #f2c14e 55%, transparent);
+  color: var(--text-primary, inherit);
+}
+.motif-cs-msa-symbol[data-search-active] {
+  box-shadow: inset 0 0 0 100px color-mix(in srgb, #f2a10a 62%, transparent);
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .motif-cs-msa-hover-column,
+  .motif-cs-msa-selection-band { transition: none; }
+  .motif-cs-msa-row-grip { transition: none; }
+}

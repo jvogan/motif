@@ -13,6 +13,7 @@ import {
 } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { buildSync } from 'esbuild';
 import { validatePayload as validateArtifactPayload } from '../src/artifacts/motif-for-claude-science-plugin/skills/motif-for-claude-science/scripts/create-artifact.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -307,6 +308,36 @@ export function validatePluginSource(pluginPath = pluginSourcePath) {
   }
   if (!existsSync(join(skillDirectory, 'scripts/run-msa.mjs'))) {
     throw new Error('Plugin is missing its external MSA runner');
+  }
+  const generatedValidators = [
+    {
+      filename: 'analysis-validator.mjs',
+      source: 'src/artifacts/claude-science-analysis-results.ts',
+    },
+    {
+      filename: 'workspace-validator.mjs',
+      source: 'src/artifacts/claude-science-workspace-envelope.ts',
+    },
+  ];
+  for (const validator of generatedValidators) {
+    const generatedPath = join(skillDirectory, 'scripts', validator.filename);
+    if (!existsSync(generatedPath)) {
+      throw new Error(`Plugin is missing its generated ${validator.filename}`);
+    }
+    const regenerated = buildSync({
+      entryPoints: [join(root, validator.source)],
+      bundle: true,
+      platform: 'node',
+      format: 'esm',
+      target: 'node20',
+      write: false,
+      banner: {
+        js: `// Generated from ${validator.source}. Regenerate with the documented esbuild command; do not edit by hand.`,
+      },
+    }).outputFiles[0].text;
+    if (readFileSync(generatedPath, 'utf8') !== regenerated) {
+      throw new Error(`Plugin generated validator ${validator.filename} is stale; regenerate it from ${validator.source}`);
+    }
   }
   const mcpConfig = JSON.parse(readFileSync(join(pluginPath, '.mcp.json'), 'utf8'));
   if (mcpConfig?.motif?.command !== 'node') {

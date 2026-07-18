@@ -164,6 +164,7 @@ check('plugin source has a matching, bounded manifest and skill', () => {
   assert.match(changelog, new RegExp(`^## ${manifest.version.replace(/\./g, '\\.')}(?:\\s|$)`, 'm'));
   assert.ok(existsSync(join(pluginSource, runnerRelativePath)));
   assert.ok(existsSync(join(pluginSource, 'skills/motif-for-claude-science/scripts/analysis-validator.mjs')));
+  assert.ok(existsSync(join(pluginSource, 'skills/motif-for-claude-science/scripts/workspace-validator.mjs')));
 });
 
 check('release versions stay aligned across package, runtime, bridge, and plugin', () => {
@@ -258,6 +259,95 @@ check('bundled analysis validator is generated from the canonical artifact norma
     },
   }).outputFiles[0].text;
   assert.equal(readFileSync(generatedPath, 'utf8'), regenerated);
+});
+
+check('bundled workspace validator is generated from the canonical artifact normalizer', () => {
+  const generatedPath = join(pluginSource, 'skills/motif-for-claude-science/scripts/workspace-validator.mjs');
+  const regenerated = buildSync({
+    entryPoints: [join(root, 'src/artifacts/claude-science-workspace-envelope.ts')],
+    bundle: true,
+    platform: 'node',
+    format: 'esm',
+    target: 'node20',
+    write: false,
+    banner: {
+      js: '// Generated from src/artifacts/claude-science-workspace-envelope.ts. Regenerate with the documented esbuild command; do not edit by hand.',
+    },
+  }).outputFiles[0].text;
+  assert.equal(readFileSync(generatedPath, 'utf8'), regenerated);
+});
+
+check('payload helper applies canonical notes and durable-state validation', () => {
+  const createdAt = '2026-07-12T12:00:00.000Z';
+  const base = { records: [{ id: 'record-a', type: 'dna', sequence: 'ATGGAATTCTAA' }] };
+  const valid = {
+    ...base,
+    notes: [{
+      id: 'note-a', body: 'Review A.', format: 'plain', scope: 'record', recordId: 'record-a', createdAt, updatedAt: createdAt,
+    }],
+    artifactState: {
+      customEnzymes: [{
+        name: 'HelperI', recognitionSequence: 'GAATTC', cutOffset: 1, complementCutOffset: 5, overhang: '5prime',
+      }],
+      translationLayersByRecord: {
+        'record-a': [{ id: 'layer-a', label: 'Layer A', start: 0, end: 6, strand: 1, frame: 0 }],
+      },
+      enzymeSourcesByRecord: { 'record-a': ['common'] },
+    },
+  };
+  assert.equal(validatePayload(valid), valid);
+  const sidecarOnly = { name: 'Workspace label', notes: [] };
+  assert.equal(validatePayload(sidecarOnly), sidecarOnly);
+
+  const malformed = [
+    { notes: { malformed: true } },
+    { notes: [{ id: 'bad', body: 'Bad', format: 'plain', scope: 'elsewhere', createdAt, updatedAt: createdAt }] },
+    { artifactState: null },
+    { artifactState: { customEnzymes: { malformed: true } } },
+    { artifactState: { translationLayersByRecord: {
+      'record-a': [{ id: 'bad', label: 'Bad', start: 0, end: 99, strand: 1, frame: 0 }],
+    } } },
+    { alignments: [{
+      id: 'orphaned', molecule: 'dna', rows: [
+        { id: 'a', name: 'A', aligned: 'ATGC', sourceRecordId: 'missing' },
+        { id: 'b', name: 'B', aligned: 'AT-C' },
+      ],
+    }] },
+  ];
+  for (const patch of malformed) {
+    assert.throws(() => validatePayload({ ...base, ...patch }), /Payload workspace is invalid/i);
+  }
+  assert.throws(() => validatePayload({
+    records: [
+      { id: 'record-a', type: 'dna', sequence: 'ATGC', active: false },
+      { id: 'record-a', type: 'dna', sequence: 'ATGC', active: true },
+    ],
+    notes: [{
+      id: 'note-a', body: 'Ambiguous record link.', format: 'plain', scope: 'record', recordId: 'record-a', createdAt, updatedAt: createdAt,
+    }],
+  }), /duplicate id record-a/i);
+  assert.throws(() => validatePayload({
+    records: [
+      { name: 'record-a', type: 'dna', sequence: 'ATGC', active: false },
+      { id: 'record-a', type: 'dna', sequence: 'ATGC', active: true },
+    ],
+    notes: [{
+      id: 'note-a', body: 'Must not relink after id allocation.', format: 'plain', scope: 'record', recordId: 'record-a', createdAt, updatedAt: createdAt,
+    }],
+  }), /Payload workspace is invalid/i);
+  assert.throws(() => validatePayload({
+    records: [{ id: 'record-a', type: 'dna', sequence: 'AT*GC' }],
+    notes: [{
+      id: 'note-a', body: 'Range uses normalized DNA length.', format: 'plain', scope: 'range', recordId: 'record-a', range: { start: 0, end: 5 }, createdAt, updatedAt: createdAt,
+    }],
+  }), /Payload workspace is invalid/i);
+  assert.throws(() => validatePayload({
+    records: [{ id: 'inactive-only', type: 'dna', sequence: 'ATGC', active: false }],
+  }), /at least one active record/i);
+  assert.throws(() => validatePayload({
+    schema: 'motif.claude-science.inventory.v99',
+    records: [{ id: 'future', type: 'dna', sequence: 'ATGC' }],
+  }), /unsupported Motif inventory schema/i);
 });
 
 check('payload helper bounds typed analysis results and forbids executable assets', () => {
@@ -492,6 +582,13 @@ check('bundled helper safely injects payloads and refuses accidental overwrite',
 
 check('bundled helper rejects malformed nested shapes and oversized records', () => {
   const base = { id: 'safe', type: 'dna', sequence: 'GAATTCAAAAAA' };
+  assert.doesNotThrow(() => validatePayload({ records: [{
+    ...base,
+    overhang5: 'AATT',
+    overhang5Type: '5prime',
+    overhang3: '',
+    overhang3Type: 'blunt',
+  }] }));
   for (const record of [
     { ...base, tags: 42 },
     { ...base, features: { start: 0, end: 3 } },
@@ -500,6 +597,10 @@ check('bundled helper rejects malformed nested shapes and oversized records', ()
     { ...base, sites: { enzyme: 'EcoRI' } },
     { ...base, sites: [{ enzyme: 'EcoRI', hits: [null] }] },
     { ...base, features: [{ start: 0, end: 3, type: '<script>alert(1)</script>' }] },
+    { ...base, overhang5: 'AATT', overhang5Type: 'blunt' },
+    { ...base, overhang5Type: '5prime' },
+    { ...base, overhang3: 'AX' },
+    { ...base, type: 'protein', sequence: 'MPEPTIDE', overhang5: 'AATT', overhang5Type: '5prime' },
   ]) {
     assert.throws(() => validatePayload({ records: [record] }), /Payload record 1/);
   }
@@ -590,8 +691,22 @@ check('bundled helper accepts linked Sanger traces and rejects detached or malfo
     () => validatePayload({ records: [{ id: 'read-01', type: 'dna', sequence: 'ACGT', sangerTrace: { ...sangerTrace, channels: { ...sangerTrace.channels, C: 'not-an-array' } } }] }),
     /channels\.C must be an array/,
   );
+  assert.throws(
+    () => validatePayload({ records: [{
+      id: 'protein-like-trace',
+      sequence: 'ATG*',
+      sangerTrace: {
+        ...sangerTrace,
+        baseCalls: 'ATG',
+        sequence: 'ATG',
+        qualityScores: [12, 24, 36],
+        peakPositions: [1, 3, 5],
+      },
+    }] }),
+    /can only belong to a DNA record/,
+  );
   const channel = Array(63_000).fill(0);
-  assert.doesNotThrow(() => validatePayload({ records: [{
+  const boundedLargeTraceRecord = {
     id: 'bounded-large-trace',
     type: 'dna',
     sequence: 'A',
@@ -604,7 +719,9 @@ check('bundled helper accepts linked Sanger traces and rejects detached or malfo
       channels: { A: channel, C: channel, G: channel, T: channel },
       sampleCount: channel.length,
     },
-  }] }));
+  };
+  assert.doesNotThrow(() => validatePayload({ records: [boundedLargeTraceRecord] }));
+  assert.doesNotThrow(() => validatePayload(boundedLargeTraceRecord));
 });
 
 check('external MSA runner validates CLI bounds and unique FASTA headers', () => {

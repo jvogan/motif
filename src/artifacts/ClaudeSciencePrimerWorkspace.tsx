@@ -83,6 +83,8 @@ export type ClaudeSciencePrimerWorkspaceProps = {
   onSaveDesign?: (handoff: ClaudeSciencePrimerHandoff) => void | Promise<void>;
   onAddAnnotations?: (features: readonly Feature[], handoff: ClaudeSciencePrimerHandoff) => void | Promise<void>;
   onSimulatePcr?: (handoff: ClaudeSciencePrimerHandoff) => void | Promise<void>;
+  /** Creates an exact linear amplicon record; distinct from result-only simulation. */
+  onCreateAmplicon?: (handoff: ClaudeSciencePrimerHandoff) => void | Promise<void>;
   onUseForCloning?: (handoff: ClaudeSciencePrimerHandoff) => void | Promise<void>;
   initialIntent?: ClaudeSciencePrimerIntent;
   /** Verified preparation context supplied by the owning cloning workflow. */
@@ -270,6 +272,7 @@ export function ClaudeSciencePrimerWorkspace({
   onSaveDesign,
   onAddAnnotations,
   onSimulatePcr,
+  onCreateAmplicon,
   onUseForCloning,
   initialIntent = 'pcr',
   preparationContext = null,
@@ -565,7 +568,7 @@ export function ClaudeSciencePrimerWorkspace({
               {preparationContext.method === 'gibson' && !initialForwardTail && !initialReverseTail ? (
                 <small>No homology tail was inferred. Enter the intended 5′ tail in Advanced constraints before saving.</small>
               ) : null}
-              <small>Saving returns this primer plan to the cloning draft. It does not create an amplicon or modify the source record; add or import the prepared DNA record, replace the source part, then recheck the assembly.</small>
+              <small>Simulate PCR saves a result only. Create &amp; use amplicon creates the exact linear PCR product, keeps the source record unchanged, replaces this prepared part, and rechecks the live cloning draft. Save primer plan only records the oligos without creating DNA.</small>
               {preparationProgress ? (
                 <div className="motif-cs-primer-preparation-navigation" aria-label="Primer preparation worklist">
                   <span>
@@ -775,17 +778,36 @@ export function ClaudeSciencePrimerWorkspace({
           <button type="button" disabled={!handoff || !onSaveDesign || !!busyAction} onClick={() => { if (handoff) void runAction('Save design', () => onSaveDesign?.(handoff)); }}>Save design</button>
           <button type="button" disabled={!handoff || !onAddAnnotations || !!busyAction} onClick={addAnnotations}>Add annotations</button>
           <button type="button" disabled={!handoff || !onSimulatePcr || !!busyAction} onClick={() => { if (handoff) void runAction('PCR simulation', () => onSimulatePcr?.(handoff)); }}>Simulate PCR</button>
+          {preparationContext ? (
+            <button
+              type="button"
+              disabled={!handoff || !onUseForCloning || !!busyAction}
+              onClick={() => {
+                if (handoff) void runAction('Save primer plan only', () => onUseForCloning?.(handoff));
+              }}
+            >Save primer plan only</button>
+          ) : (
+            <button
+              type="button"
+              disabled={!handoff || !onCreateAmplicon || !!busyAction}
+              onClick={() => {
+                if (handoff) void runAction('Create amplicon record', () => onCreateAmplicon?.(handoff));
+              }}
+            >Create amplicon record</button>
+          )}
           <button
             className="motif-cs-primer-primary-action"
             type="button"
-            disabled={!handoff || !onUseForCloning || !!busyAction}
+            disabled={!handoff || !(preparationContext ? onCreateAmplicon : onUseForCloning) || !!busyAction}
             onClick={() => {
-              if (handoff) void runAction(
-                preparationContext ? 'Save primer plan' : 'Cloning handoff',
-                () => onUseForCloning?.(handoff),
-              );
+              if (!handoff) return;
+              if (preparationContext) {
+                void runAction('Create & use amplicon', () => onCreateAmplicon?.(handoff));
+              } else {
+                void runAction('Cloning handoff', () => onUseForCloning?.(handoff));
+              }
             }}
-          >{preparationContext ? 'Save primer plan' : 'Use in cloning'}</button>
+          >{preparationContext ? 'Create & use amplicon' : 'Use in cloning'}</button>
         </div>
       </footer>
     </section>
