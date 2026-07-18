@@ -254,10 +254,14 @@ describe('Claude Science rail popover regression guards', () => {
   });
 
   it('resizes rail popovers from an explicit bottom-left handle without leaking native dimensions', () => {
+    const railBodyStart = artifactCss.indexOf('.motif-cs-inspector[data-tools-pinned="false"] .motif-cs-panel[open] > .motif-cs-tool-panel-body {');
+    const railBodyEnd = artifactCss.indexOf('@media (max-width: 1280px)', railBodyStart);
+    const railBody = artifactCss.slice(railBodyStart, railBodyEnd);
     expect(artifactCss).toMatch(/\.motif-cs-inspector\[data-tools-pinned="false"\] \.motif-cs-panel\[open\] > \.motif-cs-tool-panel-body\s*\{[\s\S]*?width:\s*min\(var\(--rail-popover-width,[\s\S]*?height:\s*var\(--rail-popover-height, auto\)/);
-    expect(artifactCss).not.toContain('resize: both');
-    expect(artifactCss).toMatch(/\.motif-cs-inspector\[data-tools-pinned="false"\][\s\S]*?\.motif-cs-rail-popover-resize\s*\{[\s\S]*?bottom:\s*0;[\s\S]*?left:\s*0;/);
+    expect(railBody).not.toContain('resize: both');
+    expect(artifactCss).toMatch(/\.motif-cs-inspector\[data-tools-pinned="false"\][\s\S]*?\.motif-cs-rail-popover-resize\s*\{[\s\S]*?position:\s*sticky;[\s\S]*?bottom:\s*0;[\s\S]*?left:\s*0;/);
     expect(artifactSource).toContain('data-testid="rail-popover-resize"');
+    expect(artifactSource).toContain('createPortal(');
     expect(artifactSource).toContain('active.base.width - (moveEvent.clientX - active.startX)');
     expect(artifactSource).toContain("window.addEventListener('pointercancel', endPointerResize);");
     expect(artifactSource).toContain("handle.addEventListener('lostpointercapture', endLostPointerCapture);");

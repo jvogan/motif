@@ -452,6 +452,7 @@ describe('Claude Science workspace layout guards', () => {
     expect(artifactCss).toMatch(/\.motif-cs-window-resize\s*\{[\s\S]*?width:\s*28px;[\s\S]*?height:\s*28px/);
     expect(artifactSource).toContain('rightInset={toolsPinned ? 0 : TOOLS_RAIL_WIDTH}');
     expect(artifactSource).toContain('clampWindowRect(raw, vw, vh, rightInset)');
+    expect(artifactSource).toContain('vw - rightInset - drag.base.x - 8');
     expect(artifactCss).not.toContain('.motif-cs-window-resize {\n    right: 58px;');
   });
 

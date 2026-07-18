@@ -1255,7 +1255,7 @@ body[data-motif-cs-rail-popover-resizing] {
 }
 
 .motif-cs-inspector[data-tools-pinned="false"] .motif-cs-panel[open] > .motif-cs-tool-panel-body > .motif-cs-rail-popover-resize {
-  position: absolute;
+  position: sticky;
   z-index: 3;
   bottom: 0;
   left: 0;
@@ -1268,6 +1268,10 @@ body[data-motif-cs-rail-popover-resizing] {
   background: transparent;
   cursor: nesw-resize;
   touch-action: none;
+  transform: translate(
+    calc(var(--rail-popover-title-offset-x, 0px) * -1),
+    var(--rail-popover-title-offset-y, 0px)
+  );
 }
 
 .motif-cs-rail-popover-resize::after {

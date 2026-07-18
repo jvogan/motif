@@ -1,5 +1,6 @@
 /* eslint-disable react-refresh/only-export-components -- artifact entry exports pure runtime test seams */
 import { Component, useCallback, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from 'react';
+import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import { Activity, AlignCenter, Beaker, ChevronDown, ChevronLeft, ChevronRight, Crosshair, Dna, FileText, History, Info, Languages, LayoutGrid, List, Map as MapIcon, Maximize2, Minimize2, NotebookPen, Plus, Redo2, Search, Settings, ShieldCheck, Tag, Trash2, Undo2, Workflow, Wrench, X, type LucideIcon } from 'lucide-react';
 import vectorsRaw from '../../public/data/vectors.json?raw';
@@ -12031,6 +12032,8 @@ function cssPixelValue(value: string, fallback: number): number {
 
 function RailPopoverTitle({ title, meta }: { title: string; meta?: string }) {
   const [size, setSize] = useState<RailPopoverSize | null>(null);
+  const [panelBody, setPanelBody] = useState<HTMLElement | null>(null);
+  const titleRef = useRef<HTMLDivElement>(null);
   const resizeHandleRef = useRef<HTMLButtonElement>(null);
   const panelBodyRef = useRef<HTMLElement | null>(null);
   const resizeRef = useRef<{
@@ -12043,12 +12046,13 @@ function RailPopoverTitle({ title, meta }: { title: string; meta?: string }) {
   const resizeCleanupRef = useRef<(() => void) | null>(null);
 
   useLayoutEffect(() => {
-    const panelBody = resizeHandleRef.current?.closest<HTMLElement>('.motif-cs-tool-panel-body') ?? null;
-    panelBodyRef.current = panelBody;
+    const owner = titleRef.current?.closest<HTMLElement>('.motif-cs-tool-panel-body') ?? null;
+    panelBodyRef.current = owner;
+    setPanelBody(owner);
     return () => {
-      panelBody?.style.removeProperty('--rail-popover-width');
-      panelBody?.style.removeProperty('--rail-popover-height');
-      delete panelBody?.dataset.railPopoverResized;
+      owner?.style.removeProperty('--rail-popover-width');
+      owner?.style.removeProperty('--rail-popover-height');
+      delete owner?.dataset.railPopoverResized;
       panelBodyRef.current = null;
     };
   }, []);
@@ -12183,7 +12187,7 @@ function RailPopoverTitle({ title, meta }: { title: string; meta?: string }) {
 
   return (
     <>
-      <div className="motif-cs-rail-popover-title">
+      <div ref={titleRef} className="motif-cs-rail-popover-title">
         <strong>{title}</strong>
         <div className="motif-cs-rail-popover-actions">
           {meta ? <span>{meta}</span> : null}
@@ -12199,18 +12203,21 @@ function RailPopoverTitle({ title, meta }: { title: string; meta?: string }) {
           </button>
         </div>
       </div>
-      <button
-        ref={resizeHandleRef}
-        className="motif-cs-rail-popover-resize"
-        type="button"
-        onPointerDown={beginResize}
-        onKeyDown={resizeFromKeyboard}
-        onDoubleClick={() => setSize(null)}
-        aria-label={`Resize ${title} panel. Left Arrow grows width; Right Arrow shrinks width; Up and Down Arrow change height.`}
-        aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown"
-        title={`Resize ${title}; double-click to reset`}
-        data-testid="rail-popover-resize"
-      />
+      {panelBody ? createPortal(
+        <button
+          ref={resizeHandleRef}
+          className="motif-cs-rail-popover-resize"
+          type="button"
+          onPointerDown={beginResize}
+          onKeyDown={resizeFromKeyboard}
+          onDoubleClick={() => setSize(null)}
+          aria-label={`Resize ${title} panel. Left Arrow grows width; Right Arrow shrinks width; Up and Down Arrow change height.`}
+          aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown"
+          title={`Resize ${title}; double-click to reset`}
+          data-testid="rail-popover-resize"
+        />,
+        panelBody,
+      ) : null}
     </>
   );
 }
@@ -14263,7 +14270,7 @@ function FloatingWindow({
         y: drag.base.y + dy,
       } : {
         ...drag.base,
-        w: clamp(drag.base.w + dx, 280, Math.max(280, vw - drag.base.x - 8)),
+        w: clamp(drag.base.w + dx, 280, Math.max(280, vw - rightInset - drag.base.x - 8)),
         h: clamp(drag.base.h + dy, 180, Math.max(180, vh - drag.base.y - 8)),
       };
       const next = clampWindowRect(raw, vw, vh, rightInset);

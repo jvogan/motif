@@ -1303,6 +1303,21 @@ test.describe('Claude Science artifact campaign', () => {
     await page.keyboard.press('ArrowLeft');
     expect((await panelBody.boundingBox())!.width).toBeGreaterThan(shrunk.width + 7);
 
+    const compactHandleBox = (await resizeHandle.boundingBox())!;
+    await page.mouse.move(compactHandleBox.x + compactHandleBox.width / 2, compactHandleBox.y + compactHandleBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(compactHandleBox.x + compactHandleBox.width / 2, compactHandleBox.y + compactHandleBox.height / 2 - 180, { steps: 6 });
+    await page.mouse.up();
+    await panelBody.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+    await expect.poll(() => panelBody.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+    const scrolledBody = (await panelBody.boundingBox())!;
+    const scrolledHandle = (await resizeHandle.boundingBox())!;
+    expect(Math.abs(scrolledHandle.x - scrolledBody.x)).toBeLessThan(2);
+    expect(Math.abs((scrolledHandle.y + scrolledHandle.height) - (scrolledBody.y + scrolledBody.height))).toBeLessThan(2);
+    expect(await page.evaluate(({ x, y }) => (
+      document.elementFromPoint(x, y)?.closest('.motif-cs-rail-popover-resize') !== null
+    ), { x: scrolledBody.x + 5, y: scrolledBody.y + scrolledBody.height - 5 })).toBe(true);
+
     await toolsToggle.click();
     await expect(page.locator('.motif-cs-main')).toHaveAttribute('data-tools-pinned', 'true');
     await expect(resizeHandle).toBeHidden();
@@ -1886,6 +1901,16 @@ test.describe('Claude Science artifact campaign', () => {
     await resizeHandle.focus();
     await page.keyboard.press('Shift+ArrowRight');
     expect((await dialog.boundingBox())!.width).toBeGreaterThan(afterResize.width + 15);
+
+    const beforeBoundaryResize = (await dialog.boundingBox())!;
+    const boundaryHandleBox = (await resizeHandle.boundingBox())!;
+    await page.mouse.move(boundaryHandleBox.x + boundaryHandleBox.width / 2, boundaryHandleBox.y + boundaryHandleBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(boundaryHandleBox.x + boundaryHandleBox.width / 2 + 1_000, boundaryHandleBox.y + boundaryHandleBox.height / 2, { steps: 8 });
+    await page.mouse.up();
+    const afterBoundaryResize = (await dialog.boundingBox())!;
+    expect(Math.abs(afterBoundaryResize.x - beforeBoundaryResize.x)).toBeLessThan(2);
+    expect(afterBoundaryResize.x + afterBoundaryResize.width).toBeLessThanOrEqual(1180 - 48 - 7);
 
     await page.keyboard.press('Escape');
     await expect(dialog).toBeHidden();
