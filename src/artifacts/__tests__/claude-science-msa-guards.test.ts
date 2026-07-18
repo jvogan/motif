@@ -35,7 +35,9 @@ describe('Claude Science MSA integration guards', () => {
     expect(artifactSource).toContain('aria-label={maximized ? `Restore ${title}` : `Maximize ${title}`}');
     expect(artifactSource).toContain('data-maximized={maximized || undefined}');
     expect(artifactSource).toContain('const restoreRectRef = useRef(initial);');
-    expect(artifactSource).toContain(': clampWindowRect(restoreRectRef.current);');
+    expect(artifactSource).toContain(
+      ': clampWindowRect(restoreRectRef.current, window.innerWidth, window.innerHeight, rightInset);',
+    );
     expect(artifactSource).toContain('<ClaudeScienceMsaViewer');
     expect(artifactCss).toMatch(/\.motif-cs-alignment-tool-body\s*\{[\s\S]*?display:\s*grid;[\s\S]*?gap:\s*10px;[\s\S]*?padding:\s*12px;/);
     expect(artifactCss).toMatch(/\.motif-cs-alignment-launch\s*\{[\s\S]*?width:\s*100%;[\s\S]*?white-space:\s*normal;/);
