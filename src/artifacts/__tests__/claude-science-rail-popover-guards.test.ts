@@ -71,9 +71,9 @@ describe('Claude Science rail popover regression guards', () => {
     expect(compactLayout).toMatch(
       /\.motif-cs-inspector\[data-tools-pinned="false"\]\s*\{[\s\S]*?z-index:\s*70;/,
     );
-    expect(artifactCss).toMatch(
-      /\.motif-cs-window:has\(\.motif-cs-msa-workspace\)[\s\S]*?\.motif-cs-window-body\s*\{[\s\S]*?padding-right:\s*58px;/,
-    );
+    expect(artifactSource).toContain('rightInset={toolsRail ? TOOLS_RAIL_WIDTH : 0}');
+    expect(artifactSource).toContain('viewportWidth - safeRightInset - w - 8');
+    expect(artifactCss).not.toContain('.motif-cs-window-resize {\n    right: 58px;');
   });
 
   it('requires an explicit second action in the detailed annotation editors', () => {
@@ -253,9 +253,20 @@ describe('Claude Science rail popover regression guards', () => {
     expect(artifactCss).toContain('.motif-cs-theme-grid');
   });
 
-  it('lets dense rail popovers open taller and resize from a visible corner', () => {
-    expect(artifactCss).toMatch(/\.motif-cs-inspector\[data-tools-pinned="false"\] \.motif-cs-panel\[open\] > \.motif-cs-tool-panel-body\s*\{[\s\S]*?max-width:\s*min\(620px,[\s\S]*?resize:\s*both/);
-    expect(artifactCss).toContain('background-image: linear-gradient(135deg');
+  it('resizes rail popovers from an explicit bottom-left handle without leaking native dimensions', () => {
+    const railBodyStart = artifactCss.indexOf('.motif-cs-inspector[data-tools-pinned="false"] .motif-cs-panel[open] > .motif-cs-tool-panel-body {');
+    const railBodyEnd = artifactCss.indexOf('@media (max-width: 1280px)', railBodyStart);
+    const railBody = artifactCss.slice(railBodyStart, railBodyEnd);
+    expect(artifactCss).toMatch(/\.motif-cs-inspector\[data-tools-pinned="false"\] \.motif-cs-panel\[open\] > \.motif-cs-tool-panel-body\s*\{[\s\S]*?width:\s*min\(var\(--rail-popover-width,[\s\S]*?height:\s*var\(--rail-popover-height, auto\)/);
+    expect(railBody).not.toContain('resize: both');
+    expect(artifactCss).toMatch(/\.motif-cs-inspector\[data-tools-pinned="false"\][\s\S]*?\.motif-cs-rail-popover-resize\s*\{[\s\S]*?position:\s*fixed;/);
+    expect(artifactSource).toContain('data-testid="rail-popover-resize"');
+    expect(artifactSource).toContain('style={{ left: resizeCorner.left, top: resizeCorner.top }}');
+    expect(artifactSource).toContain('createPortal(');
+    expect(artifactSource).toContain('active.base.width - (moveEvent.clientX - active.startX)');
+    expect(artifactSource).toContain("window.addEventListener('pointercancel', endPointerResize);");
+    expect(artifactSource).toContain("handle.addEventListener('lostpointercapture', endLostPointerCapture);");
+    expect(artifactSource).toContain('widthDelta = event.key === \'ArrowLeft\' ? step');
     expect(artifactCss).toMatch(/@media \(max-width: 1280px\)[\s\S]*?max-height:\s*min\(calc\(100vh - var\(--rail-popover-fixed-top\) - 22px\), 600px\)/);
   });
 

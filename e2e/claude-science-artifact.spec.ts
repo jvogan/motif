@@ -93,6 +93,58 @@ test.describe('Claude Science artifact campaign', () => {
     await page.screenshot({ path: path.join(outputDir, 'restriction-detail-light.png'), fullPage: true });
   });
 
+  test('late-column restriction labels share the recognition and cut-bond grid', async ({ page }) => {
+    await openArtifact(page);
+    await ensureDetailMode(page);
+
+    const label = page.locator('.motif-cs-restriction-label').filter({ hasText: /^HindIII$/ }).first();
+    await expect(label).toBeVisible();
+    await label.scrollIntoViewIfNeeded();
+    await label.hover();
+
+    const block = label.locator('xpath=ancestor::*[contains(concat(" ", normalize-space(@class), " "), " motif-cs-seq-block ")]');
+    const bases = block.locator('.motif-cs-seq-bases');
+    const recognition = block.locator('.motif-cs-seq-hl-restriction');
+    const ruler = page.locator('.motif-cs-seq-ruler');
+    await expect(recognition).toHaveCount(1);
+
+    const sitePosition = Number(await label.getAttribute('data-site-position'));
+    const lineStart = Number(await bases.getAttribute('data-line-start'));
+    const lineOffset = sitePosition - lineStart;
+    const recognitionLength = Number(await label.getAttribute('data-recognition-length'));
+    const charWidth = (await ruler.evaluate((node) => node.getBoundingClientRect().width)) / 100;
+    const labelBox = (await label.boundingBox())!;
+    const basesBox = (await bases.boundingBox())!;
+    const recognitionBox = (await recognition.boundingBox())!;
+
+    expect(lineOffset).toBeGreaterThan(30);
+    expect(recognitionLength).toBe(6);
+    expect(Math.abs(labelBox.x - recognitionBox.x)).toBeLessThan(0.75);
+    expect(Math.abs(recognitionBox.x - (basesBox.x + lineOffset * charWidth))).toBeLessThan(0.75);
+    expect(Math.abs(recognitionBox.width - recognitionLength * charWidth)).toBeLessThan(0.75);
+
+    const cuts = block.locator('.motif-cs-seq-cut[data-enzyme="HindIII"]');
+    await expect(cuts).toHaveCount(2);
+    const cutGeometry = await cuts.evaluateAll((nodes) => nodes.map((node) => {
+      const element = node as HTMLElement;
+      return {
+        bond: Number(element.dataset.cutBond),
+        strand: element.dataset.strand,
+        x: element.getBoundingClientRect().x,
+      };
+    }));
+    expect(cutGeometry
+      .map(({ bond, strand }) => ({ bond, strand }))
+      .sort((a, b) => a.bond - b.bond)).toEqual([
+      { bond: sitePosition + 1, strand: 'sense' },
+      { bond: sitePosition + 5, strand: 'antisense' },
+    ]);
+    for (const cut of cutGeometry) {
+      const expectedX = basesBox.x + (cut.bond - lineStart) * charWidth;
+      expect(Math.abs(cut.x - expectedX)).toBeLessThan(0.75);
+    }
+  });
+
   test('Type IIS labels reveal the correct staggered cut bonds on hover and selection', async ({ page }) => {
     await openArtifact(page);
     await ensureDetailMode(page);
@@ -736,7 +788,9 @@ test.describe('Claude Science artifact campaign', () => {
     await assemblyWindow.getByRole('button', { name: 'Maximize Cloning Workspace' }).click();
     await expect(assemblyWindow).toHaveAttribute('data-maximized', 'true');
     const maximized = (await assemblyWindow.boundingBox())!;
-    expect(maximized.width).toBeGreaterThanOrEqual(1420);
+    const toolsRail = (await page.locator('.motif-cs-inspector[data-tools-pinned="false"]').boundingBox())!;
+    expect(maximized.x).toBeLessThanOrEqual(12);
+    expect(toolsRail.x - (maximized.x + maximized.width)).toBeLessThanOrEqual(12);
     expect(maximized.height).toBeGreaterThanOrEqual(880);
     await assemblyWindow.getByRole('button', { name: 'Restore Cloning Workspace' }).click();
     await expect(assemblyWindow).not.toHaveAttribute('data-maximized', 'true');
@@ -1210,6 +1264,111 @@ test.describe('Claude Science artifact campaign', () => {
     await exportSummary.scrollIntoViewIfNeeded();
     await exportSummary.click();
     await expect(exportPanel).toHaveAttribute('open', '');
+  });
+
+  test('a Tools rail popover grows leftward, shrinks rightward, and docks without stale dimensions', async ({ page }) => {
+    await openArtifact(page, 1180, 820);
+    const toolsToggle = page.getByRole('button', { name: /Tools/ }).first();
+    if ((await toolsToggle.getAttribute('aria-pressed')) === 'true') await toolsToggle.click();
+
+    const primerPanel = page.locator('details[data-rail-tool="primer-design"]');
+    if (!(await primerPanel.getAttribute('open'))) await primerPanel.locator(':scope > summary').click();
+    const panelBody = primerPanel.locator('.motif-cs-tool-panel-body');
+    const resizeHandle = panelBody.getByTestId('rail-popover-resize');
+    await expect(resizeHandle).toBeVisible();
+
+    const before = (await panelBody.boundingBox())!;
+    const growHandleBox = (await resizeHandle.boundingBox())!;
+    await page.mouse.move(growHandleBox.x + growHandleBox.width / 2, growHandleBox.y + growHandleBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(growHandleBox.x + growHandleBox.width / 2 - 96, growHandleBox.y + growHandleBox.height / 2 + 52, { steps: 6 });
+    await page.mouse.up();
+
+    const grown = (await panelBody.boundingBox())!;
+    expect(grown.width).toBeGreaterThan(before.width + 75);
+    expect(grown.height).toBeGreaterThan(before.height + 35);
+    expect(grown.x).toBeLessThan(before.x - 75);
+    expect(Math.abs((grown.x + grown.width) - (before.x + before.width))).toBeLessThan(2);
+
+    const shrinkHandleBox = (await resizeHandle.boundingBox())!;
+    await page.mouse.move(shrinkHandleBox.x + shrinkHandleBox.width / 2, shrinkHandleBox.y + shrinkHandleBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(shrinkHandleBox.x + shrinkHandleBox.width / 2 + 64, shrinkHandleBox.y + shrinkHandleBox.height / 2 - 24, { steps: 5 });
+    await page.mouse.up();
+
+    const shrunk = (await panelBody.boundingBox())!;
+    expect(shrunk.width).toBeLessThan(grown.width - 45);
+    expect(shrunk.height).toBeLessThan(grown.height - 12);
+    expect(Math.abs((shrunk.x + shrunk.width) - (grown.x + grown.width))).toBeLessThan(2);
+
+    await resizeHandle.focus();
+    await page.keyboard.press('ArrowLeft');
+    expect((await panelBody.boundingBox())!.width).toBeGreaterThan(shrunk.width + 7);
+
+    const compactHandleBox = (await resizeHandle.boundingBox())!;
+    await page.mouse.move(compactHandleBox.x + compactHandleBox.width / 2, compactHandleBox.y + compactHandleBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(compactHandleBox.x + compactHandleBox.width / 2, compactHandleBox.y + compactHandleBox.height / 2 - 180, { steps: 6 });
+    await page.mouse.up();
+    await panelBody.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+    await expect.poll(() => panelBody.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+    const scrolledBody = (await panelBody.boundingBox())!;
+    const scrolledHandle = (await resizeHandle.boundingBox())!;
+    expect(Math.abs(scrolledHandle.x - scrolledBody.x)).toBeLessThan(2);
+    expect(Math.abs((scrolledHandle.y + scrolledHandle.height) - (scrolledBody.y + scrolledBody.height))).toBeLessThan(2);
+    expect(await page.evaluate(({ x, y }) => (
+      document.elementFromPoint(x, y)?.closest('.motif-cs-rail-popover-resize') !== null
+    ), { x: scrolledBody.x + 5, y: scrolledBody.y + scrolledBody.height - 5 })).toBe(true);
+
+    await toolsToggle.click();
+    await expect(page.locator('.motif-cs-main')).toHaveAttribute('data-tools-pinned', 'true');
+    await expect(resizeHandle).toBeHidden();
+    const docked = await panelBody.evaluate((element) => {
+      const body = element as HTMLElement;
+      const computed = getComputedStyle(body);
+      return {
+        inlineWidth: body.style.width,
+        inlineHeight: body.style.height,
+        position: computed.position,
+        width: body.getBoundingClientRect().width,
+        inspectorWidth: body.closest('.motif-cs-inspector')?.getBoundingClientRect().width ?? 0,
+      };
+    });
+    expect(docked.inlineWidth).toBe('');
+    expect(docked.inlineHeight).toBe('');
+    expect(docked.position).not.toBe('fixed');
+    expect(docked.width).toBeLessThanOrEqual(docked.inspectorWidth + 1);
+
+    await toolsToggle.click();
+    await expect(primerPanel).not.toHaveAttribute('open', '');
+  });
+
+  test('a short Tools rail popover keeps its resize grip on the visible corner after growing', async ({ page }) => {
+    await openArtifact(page, 1180, 820);
+    const toolsToggle = page.getByRole('button', { name: /Tools/ }).first();
+    if ((await toolsToggle.getAttribute('aria-pressed')) === 'true') await toolsToggle.click();
+
+    const workflows = page.locator('details[data-rail-tool="workflows"]');
+    await workflows.locator(':scope > summary').click();
+    const panelBody = workflows.locator('.motif-cs-tool-panel-body');
+    const resizeHandle = panelBody.getByTestId('rail-popover-resize');
+    await expect(resizeHandle).toBeVisible();
+    const before = (await panelBody.boundingBox())!;
+    const handle = (await resizeHandle.boundingBox())!;
+    await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2 + 150, { steps: 6 });
+    await page.mouse.up();
+
+    const grown = (await panelBody.boundingBox())!;
+    const grownHandle = (await resizeHandle.boundingBox())!;
+    expect(grown.height).toBeGreaterThan(before.height + 120);
+    expect(await panelBody.evaluate((element) => element.scrollHeight - element.clientHeight)).toBeLessThanOrEqual(1);
+    expect(Math.abs(grownHandle.x - grown.x)).toBeLessThan(2);
+    expect(Math.abs((grownHandle.y + grownHandle.height) - (grown.y + grown.height))).toBeLessThan(2);
+    expect(await page.evaluate(({ x, y }) => (
+      document.elementFromPoint(x, y)?.closest('.motif-cs-rail-popover-resize') !== null
+    ), { x: grown.x + 5, y: grown.y + grown.height - 5 })).toBe(true);
   });
 
   test('runtime APIs reject destructive invalid input and expose fresh biology synchronously', async ({ page }) => {
@@ -1740,6 +1899,14 @@ test.describe('Claude Science artifact campaign', () => {
     const header = dialog.locator('.motif-cs-window-head');
     const resizeHandle = dialog.getByRole('button', { name: /Resize Translations window in 2 dimensions/ });
     const beforeMove = (await dialog.boundingBox())!;
+    const cornerHandleBox = (await resizeHandle.boundingBox())!;
+    expect(Math.abs((cornerHandleBox.x + cornerHandleBox.width) - (beforeMove.x + beforeMove.width))).toBeLessThan(2);
+    expect(Math.abs((cornerHandleBox.y + cornerHandleBox.height) - (beforeMove.y + beforeMove.height))).toBeLessThan(2);
+    const ownsVisibleCorner = await page.evaluate(({ x, y }) => (
+      document.elementFromPoint(x, y)?.closest('.motif-cs-window-resize') !== null
+    ), { x: beforeMove.x + beforeMove.width - 4, y: beforeMove.y + beforeMove.height - 4 });
+    expect(ownsVisibleCorner).toBe(true);
+    expect(beforeMove.x + beforeMove.width).toBeLessThanOrEqual(1180 - 48 - 7);
     const headerBox = (await header.boundingBox())!;
     await page.mouse.move(headerBox.x + headerBox.width / 2, headerBox.y + headerBox.height / 2);
     await page.mouse.down();
@@ -1764,6 +1931,30 @@ test.describe('Claude Science artifact campaign', () => {
     await resizeHandle.focus();
     await page.keyboard.press('Shift+ArrowRight');
     expect((await dialog.boundingBox())!.width).toBeGreaterThan(afterResize.width + 15);
+
+    const beforeBoundaryResize = (await dialog.boundingBox())!;
+    const boundaryHandleBox = (await resizeHandle.boundingBox())!;
+    await page.mouse.move(boundaryHandleBox.x + boundaryHandleBox.width / 2, boundaryHandleBox.y + boundaryHandleBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(boundaryHandleBox.x + boundaryHandleBox.width / 2 + 1_000, boundaryHandleBox.y + boundaryHandleBox.height / 2, { steps: 8 });
+    await page.mouse.up();
+    const afterBoundaryResize = (await dialog.boundingBox())!;
+    expect(Math.abs(afterBoundaryResize.x - beforeBoundaryResize.x)).toBeLessThan(2);
+    expect(afterBoundaryResize.x + afterBoundaryResize.width).toBeLessThanOrEqual(1180 - 48 - 7);
+
+    const blurHandle = (await resizeHandle.boundingBox())!;
+    await page.mouse.move(blurHandle.x + blurHandle.width / 2, blurHandle.y + blurHandle.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(blurHandle.x + blurHandle.width / 2 - 20, blurHandle.y + blurHandle.height / 2 - 20);
+    await expect(page.locator('body')).toHaveAttribute('data-motif-cs-window-dragging', 'resize');
+    await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+    await expect(page.locator('body')).not.toHaveAttribute('data-motif-cs-window-dragging');
+    const afterBlur = (await dialog.boundingBox())!;
+    await page.mouse.move(blurHandle.x + blurHandle.width / 2 - 80, blurHandle.y + blurHandle.height / 2 - 80);
+    const afterPostBlurMove = (await dialog.boundingBox())!;
+    expect(Math.abs(afterPostBlurMove.width - afterBlur.width)).toBeLessThan(1);
+    expect(Math.abs(afterPostBlurMove.height - afterBlur.height)).toBeLessThan(1);
+    await page.mouse.up();
 
     await page.keyboard.press('Escape');
     await expect(dialog).toBeHidden();
@@ -1993,6 +2184,58 @@ test.describe('Claude Science artifact campaign', () => {
     const main = page.locator('.motif-cs-main');
     const dimensions = await main.evaluate((element) => ({ clientWidth: element.clientWidth, scrollWidth: element.scrollWidth }));
     expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.clientWidth + 2);
+  });
+
+  test('pane resize modes clean up on blur and Escape docking', async ({ page }) => {
+    await openArtifact(page, 640, 500);
+    const toolsToggle = page.getByRole('button', { name: /Tools/ }).first();
+    if ((await toolsToggle.getAttribute('aria-pressed')) !== 'true') await toolsToggle.click();
+
+    const inventory = page.locator('[data-pane-key="inventory"]');
+    const inventoryResize = page.getByRole('separator', { name: 'Resize inventory pane' });
+    const inventoryHandle = (await inventoryResize.boundingBox())!;
+    await page.mouse.move(inventoryHandle.x + inventoryHandle.width / 2, inventoryHandle.y + inventoryHandle.height / 2);
+    await page.mouse.down();
+    await expect(page.locator('body')).toHaveAttribute('data-motif-cs-resizing', 'inventory');
+    await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+    await expect(page.locator('body')).not.toHaveAttribute('data-motif-cs-resizing');
+    const widthAfterBlur = (await inventory.boundingBox())!.width;
+    await page.mouse.move(inventoryHandle.x + inventoryHandle.width / 2 + 80, inventoryHandle.y + inventoryHandle.height / 2);
+    expect(Math.abs((await inventory.boundingBox())!.width - widthAfterBlur)).toBeLessThan(1);
+    await page.mouse.up();
+
+    await inventoryResize.evaluate((element) => {
+      element.setPointerCapture = () => { throw new DOMException('capture unavailable', 'NotFoundError'); };
+    });
+    const fallbackHandle = (await inventoryResize.boundingBox())!;
+    await page.mouse.move(fallbackHandle.x + fallbackHandle.width / 2, fallbackHandle.y + fallbackHandle.height / 2);
+    await page.mouse.down();
+    await expect(page.locator('body')).toHaveAttribute('data-motif-cs-resizing', 'inventory');
+    await page.mouse.move(fallbackHandle.x + fallbackHandle.width / 2 + 24, fallbackHandle.y + fallbackHandle.height / 2);
+    await page.mouse.up();
+    await expect(page.locator('body')).not.toHaveAttribute('data-motif-cs-resizing');
+
+    const rowResize = page.getByRole('separator', { name: 'Resize stacked sequence pane' });
+    const rowHandle = (await rowResize.boundingBox())!;
+    await page.mouse.move(rowHandle.x + rowHandle.width / 2, rowHandle.y + rowHandle.height / 2);
+    await page.mouse.down();
+    await expect(page.locator('body')).toHaveAttribute('data-motif-cs-stacked-resizing', 'sequence');
+    await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+    await expect(page.locator('body')).not.toHaveAttribute('data-motif-cs-stacked-resizing');
+    await page.mouse.up();
+
+    await inventory.getByRole('button', { name: 'Pop out Inventory pane' }).click();
+    const floatingHeader = inventory.locator(':scope > .motif-cs-pane-title');
+    await floatingHeader.focus();
+    const floatingHeaderBox = (await floatingHeader.boundingBox())!;
+    await page.mouse.move(floatingHeaderBox.x + 60, floatingHeaderBox.y + floatingHeaderBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(floatingHeaderBox.x + 85, floatingHeaderBox.y + 20);
+    await expect(page.locator('body')).toHaveAttribute('data-motif-cs-pane-floating-action', 'move');
+    await page.keyboard.press('Escape');
+    await expect(inventory).toHaveAttribute('data-pane-placement', 'docked');
+    await expect(page.locator('body')).not.toHaveAttribute('data-motif-cs-pane-floating-action');
+    await page.mouse.up();
   });
 
   test('640px two-row layout exposes only the resize axes rendered on screen', async ({ page }) => {
@@ -3068,18 +3311,20 @@ test.describe('Claude Science artifact campaign', () => {
     await expect(restore).toBeVisible();
 
     const maximizedAt1180 = (await dialog.boundingBox())!;
+    const toolsRailAt1180 = (await page.locator('.motif-cs-inspector[data-tools-pinned="false"]').boundingBox())!;
     expect(maximizedAt1180.x).toBeLessThanOrEqual(12);
     expect(maximizedAt1180.y).toBeLessThanOrEqual(12);
-    expect(1180 - (maximizedAt1180.x + maximizedAt1180.width)).toBeLessThanOrEqual(12);
+    expect(toolsRailAt1180.x - (maximizedAt1180.x + maximizedAt1180.width)).toBeLessThanOrEqual(12);
     expect(820 - (maximizedAt1180.y + maximizedAt1180.height)).toBeLessThanOrEqual(12);
 
     await page.setViewportSize({ width: 1440, height: 1000 });
     await expect.poll(async () => {
       const box = (await dialog.boundingBox())!;
+      const rail = (await page.locator('.motif-cs-inspector[data-tools-pinned="false"]').boundingBox())!;
       return {
         left: Math.round(box.x),
         top: Math.round(box.y),
-        rightGap: Math.round(1440 - box.x - box.width),
+        rightGap: Math.round(rail.x - box.x - box.width),
         bottomGap: Math.round(1000 - box.y - box.height),
       };
     }).toEqual({ left: 8, top: 8, rightGap: 8, bottomGap: 8 });
@@ -3860,7 +4105,7 @@ test.describe('Claude Science artifact campaign', () => {
   });
 
   test('MSA 100-row density preserves suffixes, semantics, and chained scrolling', async ({ page }) => {
-    test.slow();
+    test.setTimeout(120_000);
     await openArtifact(page, 1180, 820);
     await page.evaluate(() => {
       const reference = 'ACGT'.repeat(375);

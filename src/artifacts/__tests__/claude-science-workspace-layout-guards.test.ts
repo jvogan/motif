@@ -190,7 +190,8 @@ describe('Claude Science workspace layout guards', () => {
     expect(artifactSource).toContain("const overlayTools = pane === 'tools' && overlayLayout;");
     expect(artifactSource).toContain("visibleResizablePanes.filter((pane) => pane !== 'tools')");
     expect(artifactSource).toContain("visibleResizablePanes.filter((pane) => pane === 'inventory' || pane === 'sequence')");
-    expect(artifactSource).toContain('saveWorkspaceLayoutPrefs({ theme, paneWidths: preferredPaneWidths');
+    expect(artifactSource).toContain('saveWorkspaceLayoutPrefs({');
+    expect(artifactSource).toContain('floatingPaneRects,');
     expect(artifactSource).toContain('const next = clampPaneWidthsForViewport(preferredPaneWidths);');
     expect(artifactSource).toContain("'--motif-cs-inventory-pane-width': `${paneWidths.inventory}px`");
     expect(artifactSource).toContain("'--motif-cs-sequence-pane-width': `${paneWidths.sequence}px`");
@@ -202,13 +203,17 @@ describe('Claude Science workspace layout guards', () => {
     expect(artifactSource).toContain('[neighbor]: startWidths[neighbor] - appliedDelta');
     expect(artifactSource).toContain('if (moveEvent.pointerId !== pointerId) return;');
     expect(artifactSource).toContain('if (endEvent.pointerId !== pointerId) return;');
-    expect(artifactSource).toContain("window.addEventListener('pointercancel', handlePointerUp);");
+    expect(artifactSource).toContain("window.addEventListener('pointercancel', handlePointerEnd);");
+    expect(artifactSource).toContain("window.addEventListener('blur', handleWindowBlur);");
+    expect(artifactSource).toContain("resizeHandle.addEventListener('lostpointercapture', handleLostPointerCapture);");
+    expect(artifactSource).toContain('stopPaneResize();');
+    expect(artifactSource).toContain('stopStackedPaneResize();');
     expect(artifactCss).toContain('var(--motif-cs-tools-pane-width, 280px)');
     expect(artifactCss).toMatch(/@media \(min-width: 640px\) and \(max-width: 1535px\)[\s\S]*?\.motif-cs-resize-handle\[data-pane="sequence"\]\s*\{[\s\S]*?display:\s*none/);
   });
 
   it('reflows a pinned compact workspace without overlaying or reserving a hidden map lane', () => {
-    expect(artifactSource).toContain('data-tools-pinned={toolsPinned || undefined}');
+    expect(artifactSource).toContain('data-tools-pinned={toolsDocked || undefined}');
     expect(artifactCss).toMatch(/@media \(min-width: 640px\) and \(max-width: 1535px\)[\s\S]*?\.motif-cs-main\[data-tools-pinned="true"\]\s*\{[\s\S]*?display:\s*grid/);
     expect(artifactCss).toContain('.motif-cs-main[data-tools-pinned="true"] > .motif-cs-stacked-resize-handle[data-pane="sequence"]');
     expect(artifactSource).toContain('COMPACT_PINNED_LAYOUT_MEDIA');
@@ -450,7 +455,10 @@ describe('Claude Science workspace layout guards', () => {
     expect(artifactSource).toContain('aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown"');
     expect(artifactCss).toContain('.motif-cs-window-resize:focus-visible');
     expect(artifactCss).toMatch(/\.motif-cs-window-resize\s*\{[\s\S]*?width:\s*28px;[\s\S]*?height:\s*28px/);
-    expect(artifactCss).toContain('.motif-cs-shell:has(.motif-cs-inspector[data-tools-pinned="false"]) .motif-cs-window-resize {\n    right: 58px;');
+    expect(artifactSource).toContain('rightInset={toolsRail ? TOOLS_RAIL_WIDTH : 0}');
+    expect(artifactSource).toContain('clampWindowRect(raw, vw, vh, rightInset)');
+    expect(artifactSource).toContain('vw - rightInset - drag.base.x - 8');
+    expect(artifactCss).not.toContain('.motif-cs-window-resize {\n    right: 58px;');
   });
 
   it('limits floating-window drags to the initiating primary pointer', () => {
@@ -493,7 +501,7 @@ describe('Claude Science workspace layout guards', () => {
     expect(artifactSource).toContain('w: clamp(drag.base.w + dx, 280');
     expect(artifactSource).toContain('h: clamp(drag.base.h + dy, 180');
     expect(artifactCss).toMatch(/@media \(max-width: 840px\)[\s\S]*?\.motif-cs-window\s*\{\s*border-color:/);
-    expect(artifactCss).toMatch(/@media \(max-width: 840px\)[\s\S]*?\.motif-cs-window\[data-collapsed\]\s*\{[\s\S]*?left:\s*8px !important;[\s\S]*?width:\s*calc\(100vw - 16px\) !important/);
+    expect(artifactCss).toMatch(/@media \(max-width: 840px\)[\s\S]*?\.motif-cs-window\[data-collapsed\]\s*\{[\s\S]*?left:\s*8px !important;[\s\S]*?width:\s*calc\(100vw - 16px - var\(--motif-cs-floating-right-inset, 0px\)\) !important/);
     expect(artifactCss).not.toMatch(/@media \(max-width: 840px\)[\s\S]*?\.motif-cs-window\s*\{[\s\S]*?height:\s*min\(30vh, 240px\) !important/);
   });
 
@@ -536,7 +544,7 @@ describe('Claude Science workspace layout guards', () => {
   });
 
   it('collapses absent intermediate-width pane tracks and preserves wider-layout preferences', () => {
-    expect(artifactSource).toContain('data-content-pane-count={visibleContentPaneCount}');
+    expect(artifactSource).toContain('data-content-pane-count={dockedContentPaneCount}');
     expect(artifactSource).toContain("&& visibleContentPanes.length === 3");
     expect(artifactSource).toContain("if (twoRowLayout && pane === 'inventory') return 'sequence';");
     expect(artifactSource).toContain('const startPreferredWidths = { ...preferredPaneWidths };');

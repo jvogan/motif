@@ -44,10 +44,10 @@ describe('Claude Science accessibility and interaction guards', () => {
     expect(artifactSource).toContain("collapsePaneAndRestoreFocus('tools')");
   });
 
-  it('announces and disables pane-local collapse controls for the last content pane', () => {
-    expect(artifactSource).toContain('const canCollapseContentPane = visibleContentPaneCount > 1;');
-    expect(artifactSource.match(/disabled=\{!canCollapseContentPane\}/g)).toHaveLength(3);
-    expect(artifactSource.match(/at least one content pane must stay visible/g)?.length ?? 0).toBeGreaterThanOrEqual(3);
+  it('announces and disables pane-local collapse controls for the last visible or docked content pane', () => {
+    expect(artifactSource).toContain('const canHideContentPane = (pane:');
+    expect(artifactSource.match(/disabled=\{!canHideContentPane\('/g)).toHaveLength(3);
+    expect(artifactSource).toContain('Keep one content pane docked in the workspace');
     expect(artifactCss).toContain('.motif-cs-pane-collapse:disabled');
   });
 
@@ -93,6 +93,8 @@ describe('Claude Science accessibility and interaction guards', () => {
     expect(floatingWindow).toContain('Resize ${title} window in 2 dimensions');
     expect(floatingWindow).toContain('aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown"');
     expect(floatingWindow).not.toContain('aria-orientation="horizontal"');
+    expect(floatingWindow).toContain("window.addEventListener('blur', endDragFromBlur)");
+    expect(floatingWindow).toContain("dragSurface.addEventListener('lostpointercapture', endLostPointerCapture)");
   });
 
   it('keeps a background workflow mounted but inert while a child workflow is active', () => {

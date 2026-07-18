@@ -994,8 +994,13 @@ body[data-motif-cs-resizing] {
 
 body[data-motif-cs-pane-dragging],
 body[data-motif-cs-window-dragging],
-body[data-motif-cs-export-resizing] {
+body[data-motif-cs-export-resizing],
+body[data-motif-cs-rail-popover-resizing] {
   user-select: none;
+}
+
+body[data-motif-cs-rail-popover-resizing] {
+  cursor: nesw-resize;
 }
 
 .motif-cs-stacked-resize-handle {
@@ -1136,22 +1141,18 @@ body[data-motif-cs-export-resizing] {
   top: var(--rail-popover-fixed-top);
   right: 58px;
   z-index: 70;
-  width: min(344px, calc(100vw - 104px));
+  width: min(var(--rail-popover-width, 344px), calc(100vw - 104px));
   min-width: min(280px, calc(100vw - 104px));
   max-width: min(620px, calc(100vw - 104px));
+  height: var(--rail-popover-height, auto);
   min-height: 96px;
   max-height: min(calc(100vh - var(--rail-popover-fixed-top) - 22px), 600px);
   overflow: auto;
   overscroll-behavior: contain;
-  resize: both;
   scrollbar-gutter: stable;
   border: 1px solid var(--border-strong);
   border-radius: 2px;
   background-color: var(--bg-primary);
-  background-image: linear-gradient(135deg, transparent 0 52%, var(--border-strong) 53% 59%, transparent 60% 68%, var(--border-strong) 69% 75%, transparent 76%);
-  background-repeat: no-repeat;
-  background-position: right 3px bottom 3px;
-  background-size: 12px 12px;
   box-shadow: var(--elevation-popover);
 }
 
@@ -1168,7 +1169,7 @@ body[data-motif-cs-export-resizing] {
 @media (max-width: 520px) {
   .motif-cs-inspector[data-tools-pinned="false"] .motif-cs-panel[open] > .motif-cs-tool-panel-body {
     right: 50px;
-    width: min(344px, calc(100vw - 62px));
+    width: min(var(--rail-popover-width, 344px), calc(100vw - 62px));
   }
 }
 
@@ -1247,6 +1248,46 @@ body[data-motif-cs-export-resizing] {
   background: var(--control-hover);
   color: var(--text-primary);
   outline: none;
+}
+
+.motif-cs-rail-popover-resize {
+  display: none;
+}
+
+.motif-cs-inspector[data-tools-pinned="false"] .motif-cs-panel[open] > .motif-cs-tool-panel-body > .motif-cs-rail-popover-resize {
+  position: fixed;
+  z-index: 72;
+  display: block;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 0 var(--radius-sm) 0 0;
+  background: transparent;
+  cursor: nesw-resize;
+  touch-action: none;
+}
+
+.motif-cs-rail-popover-resize::after {
+  position: absolute;
+  bottom: 2px;
+  left: 2px;
+  width: 13px;
+  height: 13px;
+  background: linear-gradient(45deg, transparent 0 46%, var(--border) 46% 54%, transparent 54% 100%);
+  content: '';
+  pointer-events: none;
+}
+
+.motif-cs-rail-popover-resize:hover::after,
+.motif-cs-rail-popover-resize:focus-visible::after,
+body[data-motif-cs-rail-popover-resizing] .motif-cs-rail-popover-resize::after {
+  background: linear-gradient(45deg, transparent 0 46%, var(--accent) 46% 54%, transparent 54% 100%);
+}
+
+.motif-cs-rail-popover-resize:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
 }
 
 .motif-cs-inspector[data-tools-pinned="true"] {
@@ -4516,9 +4557,18 @@ body[data-motif-cs-export-resizing] {
   min-width: 0;
 }
 
-.motif-cs-restriction-label {
+.motif-cs-restriction-label-anchor {
   position: absolute;
   top: 0;
+  /* This element owns the `left: …ch` coordinate and therefore stays on the
+     same character grid as the sequence bases. The button inside can use
+     smaller label typography without changing that coordinate unit. */
+  font: 12px/13px var(--font-mono);
+}
+
+.motif-cs-restriction-label {
+  position: relative;
+  display: block;
   max-width: 18ch;
   overflow: hidden;
   padding: 0 3px 1px;
@@ -5133,6 +5183,7 @@ body[data-motif-cs-export-resizing] {
 .motif-cs-restriction-select:focus-visible,
 .motif-cs-orf-select:focus-visible,
 .motif-cs-rail-popover-close:focus-visible,
+.motif-cs-rail-popover-resize:focus-visible,
 .motif-cs-segmented button:focus-visible,
 .motif-cs-window-icon:focus-visible,
 summary.motif-cs-panel-head:focus-visible {
@@ -5154,22 +5205,13 @@ summary.motif-cs-panel-head:focus-visible {
     left: 8px !important;
     top: auto !important;
     bottom: 8px;
-    width: calc(100vw - 16px) !important;
+    width: calc(100vw - 16px - var(--motif-cs-floating-right-inset, 0px)) !important;
     height: auto !important;
     min-height: 0;
   }
 
   .motif-cs-window-body {
     padding: 8px 10px 10px;
-  }
-
-  /* A compact MSA window can extend beneath the persistent 48px Tools rail.
-     Reserve its body gutter so Viewer/Text/View controls and matrix content
-     remain visible and hit-testable while the rail itself stays available. */
-  .motif-cs-shell:has(.motif-cs-inspector[data-tools-pinned="false"])
-    .motif-cs-window:has(.motif-cs-msa-workspace)
-    .motif-cs-window-body {
-    padding-right: 58px;
   }
 
   .motif-cs-protein-readout {
@@ -9575,18 +9617,6 @@ summary.motif-cs-panel-head:focus-visible {
     box-shadow: 0 10px 28px color-mix(in srgb, var(--shadow-ink) 20%, transparent);
   }
 
-  /* The collapsed 48 px tool rail intentionally sits above floating windows.
-     Reserve its hit area so window actions and scientific content remain
-     reachable instead of being painted underneath the rail. */
-  .motif-cs-shell:has(.motif-cs-inspector[data-tools-pinned="false"]) .motif-cs-window-head,
-  .motif-cs-shell:has(.motif-cs-inspector[data-tools-pinned="false"]) .motif-cs-window-body {
-    padding-right: 58px;
-  }
-
-  .motif-cs-shell:has(.motif-cs-inspector[data-tools-pinned="false"]) .motif-cs-window-resize {
-    right: 58px;
-  }
-
   .motif-cs-resize-handle[data-pane="tools"] {
     position: absolute;
     z-index: 19;
@@ -9973,5 +10003,175 @@ summary.motif-cs-panel-head:focus-visible {
     overflow-y: auto;
     overscroll-behavior: contain;
     scrollbar-gutter: stable;
+  }
+}
+
+/* Pane placement ---------------------------------------------------------
+   A pane keeps one React/DOM identity while moving between the workspace and
+   a floating surface. These overrides intentionally follow every responsive
+   layout rule so old grid tracks cannot pull a floating pane back into flow. */
+.motif-cs-pane-placement-button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.motif-cs-pane-placement-button:hover,
+.motif-cs-pane-placement-button:focus-visible {
+  border-color: var(--border-subtle);
+  background: var(--control-hover);
+  color: var(--text-primary);
+  outline: none;
+}
+
+.motif-cs-pane-placement-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.motif-cs-pane-placement-button svg {
+  display: block;
+}
+
+.motif-cs-main > .motif-cs-pane[data-pane-placement="floating"] {
+  position: fixed !important;
+  top: var(--motif-cs-floating-pane-top, 8px) !important;
+  left: var(--motif-cs-floating-pane-left, 8px) !important;
+  width: var(--motif-cs-floating-pane-width, 340px) !important;
+  height: var(--motif-cs-floating-pane-height, 520px) !important;
+  grid-column: auto !important;
+  grid-row: auto !important;
+  align-self: auto !important;
+  flex: none !important;
+  max-width: none !important;
+  max-height: none !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  overflow: auto !important;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  border: 1px solid var(--border-strong) !important;
+  border-radius: 4px;
+  background-color: var(--bg-primary);
+  box-shadow: var(--elevation-popover);
+  isolation: isolate;
+}
+
+.motif-cs-main > .motif-cs-sidebar[data-pane-placement="floating"] {
+  overflow: hidden !important;
+  background-color: var(--panel-bg);
+}
+
+.motif-cs-main > .motif-cs-pane[data-pane-placement="floating"] > .motif-cs-pane-title,
+.motif-cs-main > .motif-cs-pane[data-pane-placement="floating"] > .motif-cs-sequence-title {
+  position: sticky;
+  z-index: 4;
+  top: 0;
+  min-height: 34px;
+  cursor: grab;
+  touch-action: none;
+  border-bottom: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--bg-primary) 90%, var(--bg-secondary));
+}
+
+.motif-cs-main > .motif-cs-pane[data-pane-placement="floating"] > .motif-cs-pane-title:active,
+.motif-cs-main > .motif-cs-pane[data-pane-placement="floating"] > .motif-cs-sequence-title:active {
+  cursor: grabbing;
+}
+
+.motif-cs-main > .motif-cs-sidebar[data-pane-placement="floating"] > .motif-cs-pane-title {
+  padding-inline: 10px 8px;
+}
+
+.motif-cs-main > .motif-cs-map-column[data-pane-placement="floating"] > .motif-cs-pane-title {
+  padding: 5px 7px 5px 10px;
+}
+
+.motif-cs-main > .motif-cs-sequence-column[data-pane-placement="floating"] > .motif-cs-sequence-title {
+  padding: 6px 8px 7px 10px;
+}
+
+.motif-cs-main > .motif-cs-inspector[data-pane-placement="floating"] {
+  gap: 0;
+  padding-block: 8px;
+}
+
+.motif-cs-sidebar[data-pane-placement="floating"] .motif-cs-import-panel[open] {
+  position: absolute;
+  z-index: 6;
+  top: 38px;
+  right: 8px;
+  left: 8px;
+  width: auto;
+  max-height: calc(100% - 46px);
+}
+
+.motif-cs-floating-pane-resize {
+  position: fixed;
+  z-index: 8;
+  top: calc(var(--motif-cs-floating-pane-top, 8px) + var(--motif-cs-floating-pane-height, 520px) - 28px);
+  left: calc(var(--motif-cs-floating-pane-left, 8px) + var(--motif-cs-floating-pane-width, 340px) - 28px);
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px 0 3px;
+  background:
+    linear-gradient(135deg, transparent 0 48%, var(--border-strong) 49% 55%, transparent 56% 65%, var(--border-strong) 66% 72%, transparent 73%);
+  color: transparent;
+  cursor: nwse-resize;
+  touch-action: none;
+}
+
+.motif-cs-floating-pane-resize:hover,
+.motif-cs-floating-pane-resize:focus-visible {
+  background:
+    linear-gradient(135deg, transparent 0 48%, var(--accent) 49% 55%, transparent 56% 65%, var(--accent) 66% 72%, transparent 73%);
+  outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent);
+  outline-offset: -3px;
+}
+
+body[data-motif-cs-pane-floating-action="move"] {
+  cursor: grabbing;
+  user-select: none;
+}
+
+body[data-motif-cs-pane-floating-action="resize"] {
+  cursor: nwse-resize;
+  user-select: none;
+}
+
+@media (max-width: 520px) {
+  .motif-cs-main > .motif-cs-pane[data-pane-placement="floating"] {
+    top: calc(var(--motif-cs-topbar-height, 38px) + 8px) !important;
+    right: 8px !important;
+    bottom: 8px !important;
+    left: 8px !important;
+    width: auto !important;
+    height: auto !important;
+    border-radius: 8px 8px 3px 3px;
+  }
+
+  .motif-cs-main:has(> .motif-cs-inspector[data-tools-pinned="false"]) > .motif-cs-pane[data-pane-placement="floating"]:not(.motif-cs-inspector) {
+    right: 56px !important;
+  }
+
+  .motif-cs-main > .motif-cs-pane[data-pane-placement="floating"] > .motif-cs-pane-title,
+  .motif-cs-main > .motif-cs-pane[data-pane-placement="floating"] > .motif-cs-sequence-title {
+    cursor: default;
+    touch-action: auto;
+  }
+
+  .motif-cs-floating-pane-resize {
+    display: none;
   }
 }
