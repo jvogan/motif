@@ -779,14 +779,22 @@ export function msaShadeBucket(value: number): 0 | 1 | 2 | 3 | 4 {
 //
 // residueColorKey returns a stable class-like token consumed as a data-attribute
 // and coloured in claude-science-msa.css (so palettes stay theme-aware in light
-// and dark). 'auto' keeps the viewer's existing residueTone behaviour and is
-// handled there, so this function is only called for explicit schemes.
+// and dark). The viewer keeps its existing residueTone rendering for 'auto';
+// resolveMsaColorScheme exposes the matching molecule-aware scheme semantics.
 
 export type MsaColorScheme = 'auto' | 'nucleotide' | 'clustal' | 'hydrophobicity' | 'taylor';
 export type MsaShadeMode = 'none' | 'mismatch' | 'identity' | 'conservation';
 
 export const MSA_COLOR_SCHEMES: readonly MsaColorScheme[] = ['auto', 'nucleotide', 'clustal', 'hydrophobicity', 'taylor'];
 export const MSA_SHADE_MODES: readonly MsaShadeMode[] = ['none', 'mismatch', 'identity', 'conservation'];
+
+export function resolveMsaColorScheme(
+  molecule: SequenceType,
+  scheme: MsaColorScheme,
+): Exclude<MsaColorScheme, 'auto'> {
+  if (scheme !== 'auto') return scheme;
+  return molecule === 'protein' ? 'clustal' : 'nucleotide';
+}
 
 // ClustalX-style amino-acid chemistry groups.
 const CLUSTAL_GROUP: Record<string, string> = {
@@ -817,15 +825,16 @@ function hydropathyBucket(symbol: string): 0 | 1 | 2 | 3 | 4 {
 export function residueColorKey(symbol: string, molecule: SequenceType, scheme: MsaColorScheme): string {
   const residue = symbol.toUpperCase();
   if (residue === '-' || residue === '.' || residue === '' || residue === '?') return '';
-  if (scheme === 'nucleotide' || (scheme === 'auto' && molecule !== 'protein')) {
+  const resolvedScheme = resolveMsaColorScheme(molecule, scheme);
+  if (resolvedScheme === 'nucleotide') {
     if (residue === 'A') return 'nt-a';
     if (residue === 'C') return 'nt-c';
     if (residue === 'G') return 'nt-g';
     if (residue === 'T' || residue === 'U') return 'nt-t';
     return 'nt-other';
   }
-  if (scheme === 'taylor') return 'taylor';
-  if (scheme === 'hydrophobicity') return `hyd-${hydropathyBucket(residue)}`;
+  if (resolvedScheme === 'taylor') return 'taylor';
+  if (resolvedScheme === 'hydrophobicity') return `hyd-${hydropathyBucket(residue)}`;
   const group = CLUSTAL_GROUP[residue];
   return group ? `cl-${group}` : 'cl-other';
 }

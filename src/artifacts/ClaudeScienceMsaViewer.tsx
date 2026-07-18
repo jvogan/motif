@@ -36,6 +36,7 @@ import {
   msaShadeBucket,
   parseAlignmentText,
   residueColorKey,
+  resolveMsaColorScheme,
   safeAlignmentFilename,
   selectionToColumnsText,
   selectionToFasta,
@@ -309,6 +310,124 @@ function residueTone(symbol: string, molecule: SequenceType): string {
   if ('STNQ'.includes(symbol)) return 'polar';
   if ('GPC'.includes(symbol)) return 'special';
   return 'ambiguous';
+}
+
+type ResidueColorLegendItem = {
+  residue: string;
+  label: string;
+};
+
+const NUCLEOTIDE_LEGEND_ITEMS: readonly ResidueColorLegendItem[] = [
+  { residue: 'A', label: 'A' },
+  { residue: 'C', label: 'C' },
+  { residue: 'G', label: 'G' },
+  { residue: 'T', label: 'T' },
+  { residue: 'N', label: 'Other / ambiguous' },
+];
+
+const CLUSTAL_LEGEND_ITEMS: readonly ResidueColorLegendItem[] = [
+  { residue: 'A', label: 'Hydrophobic' },
+  { residue: 'K', label: 'Positive' },
+  { residue: 'D', label: 'Negative' },
+  { residue: 'S', label: 'Polar' },
+  { residue: 'H', label: 'Aromatic' },
+  { residue: 'G', label: 'Glycine' },
+  { residue: 'P', label: 'Proline' },
+  { residue: 'C', label: 'Cysteine' },
+  { residue: 'X', label: 'Other / ambiguous' },
+];
+
+const AUTO_PROTEIN_LEGEND_ITEMS: readonly ResidueColorLegendItem[] = [
+  { residue: 'A', label: 'Hydrophobic' },
+  { residue: 'K', label: 'Positive' },
+  { residue: 'D', label: 'Negative' },
+  { residue: 'S', label: 'Polar' },
+  { residue: 'G', label: 'Special' },
+  { residue: 'X', label: 'Other / ambiguous' },
+];
+
+const HYDROPHOBICITY_LEGEND_RESIDUES = ['R', 'P', 'G', 'A', 'I'] as const;
+
+function ResidueColorLegend({ molecule, colorScheme }: {
+  molecule: SequenceType;
+  colorScheme: MsaColorScheme;
+}) {
+  const resolvedScheme = resolveMsaColorScheme(molecule, colorScheme);
+  const schemeLabel = colorScheme === 'auto'
+    ? molecule === 'protein' ? 'Automatic protein' : 'Automatic nucleotide'
+    : resolvedScheme === 'nucleotide'
+      ? 'Nucleotide'
+      : resolvedScheme === 'clustal'
+        ? 'Clustal protein'
+        : resolvedScheme === 'hydrophobicity'
+          ? 'Hydrophobicity'
+          : 'Taylor';
+  const legendItems = resolvedScheme === 'nucleotide'
+    ? molecule === 'rna'
+      ? [...NUCLEOTIDE_LEGEND_ITEMS.slice(0, 4), { residue: 'U', label: 'U' }, NUCLEOTIDE_LEGEND_ITEMS[4]]
+      : NUCLEOTIDE_LEGEND_ITEMS
+    : resolvedScheme === 'clustal'
+      ? colorScheme === 'auto'
+        ? AUTO_PROTEIN_LEGEND_ITEMS
+        : CLUSTAL_LEGEND_ITEMS
+      : [];
+
+  return (
+    <div
+      className="motif-cs-msa-color-legend"
+      data-testid="msa-color-legend"
+      data-color-scheme={resolvedScheme}
+      role="group"
+      aria-label={`${schemeLabel} residue colour key`}
+    >
+      <div className="motif-cs-msa-color-legend-heading">
+        <strong>Colour key</strong>
+        <span>{schemeLabel}</span>
+      </div>
+      {resolvedScheme === 'taylor' ? (
+        <p className="motif-cs-msa-color-legend-note">
+          {molecule === 'protein'
+            ? 'Each amino acid has its own colour.'
+            : 'Residue colours vary by symbol.'}
+        </p>
+      ) : null}
+      {resolvedScheme === 'hydrophobicity' ? (
+        <div className="motif-cs-msa-color-legend-scale">
+          <div className="motif-cs-msa-color-legend-scale-stops">
+            {HYDROPHOBICITY_LEGEND_RESIDUES.map((residue, index) => (
+              <span key={residue} className="motif-cs-msa-color-legend-scale-stop">
+                <span
+                  className="motif-cs-msa-symbol motif-cs-msa-color-legend-swatch"
+                  data-color-key={residueColorKey(residue, molecule, colorScheme)}
+                  aria-hidden="true"
+                />
+                <span>{index + 1}</span>
+              </span>
+            ))}
+          </div>
+          <div className="motif-cs-msa-color-legend-scale-labels">
+            <span>Hydrophilic</span>
+            <span>Hydrophobic</span>
+          </div>
+        </div>
+      ) : null}
+      {legendItems.length > 0 ? (
+        <div className="motif-cs-msa-color-legend-items">
+          {legendItems.map((item) => (
+            <span key={`${item.residue}-${item.label}`} className="motif-cs-msa-color-legend-item">
+              <span
+                className="motif-cs-msa-symbol motif-cs-msa-color-legend-swatch"
+                data-tone={colorScheme === 'auto' ? residueTone(item.residue, molecule) : undefined}
+                data-color-key={colorScheme !== 'auto' ? residueColorKey(item.residue, molecule, colorScheme) : undefined}
+                aria-hidden="true"
+              />
+              <span>{item.label}</span>
+            </span>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function differenceColumns(alignment: ArtifactAlignment, referenceRowId: string): number[] {
@@ -2784,6 +2903,9 @@ export function ClaudeScienceMsaViewer({
                     <option value="taylor">Taylor</option>
                   </select>
                 </label>
+                {colorMode === 'residue' ? (
+                  <ResidueColorLegend molecule={activeAlignment.molecule} colorScheme={colorScheme} />
+                ) : null}
                 <label className="motif-cs-msa-view-select">
                   <span>Shade columns</span>
                   <select
