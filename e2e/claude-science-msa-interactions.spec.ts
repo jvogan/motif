@@ -229,6 +229,27 @@ test.describe('Motif MSA viewer interactions', () => {
     await expect(page.getByTestId('msa-order-note')).toHaveCount(0);
   });
 
+  test('changing the template after a manual reorder re-pins the new template to the top', async ({ page }) => {
+    await setup(page);
+    // Establish a manual order: step the first movable row down one slot.
+    const movedId = await rowIdAt(page, 1);
+    if (!movedId) throw new Error('no row id');
+    await gripForId(page, movedId).focus();
+    await page.keyboard.press('ArrowDown');
+    await expect(page.getByTestId('msa-order-note')).toBeVisible();
+    expect(await rowIdAt(page, 2)).toBe(movedId); // manual order is in effect
+
+    // Promote a different, currently non-template row to be the template.
+    const newTemplateId = await rowIdAt(page, 3);
+    if (!newTemplateId || newTemplateId === movedId) throw new Error('unexpected row layout');
+    await page.locator('.motif-cs-msa-matrix-row[data-msa-row-index="3"] .motif-cs-msa-row-select').click();
+
+    // Even with a manual order active, the new template is re-pinned to the top
+    // and loses its grip — it is not left stranded at its old manual position.
+    expect(await rowIdAt(page, 0)).toBe(newTemplateId);
+    await expect(page.locator('.motif-cs-msa-matrix-row[data-msa-row-index="0"] .motif-cs-msa-row-grip')).toHaveCount(0);
+  });
+
   async function setZoomPercent(page: Page, percent: number) {
     await page.getByTestId('msa-zoom-range').evaluate((element, value) => {
       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
