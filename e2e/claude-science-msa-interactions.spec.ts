@@ -264,6 +264,50 @@ test.describe('Motif MSA viewer interactions', () => {
     expect(await rowIdAt(page, 0)).toBe(templateId);
   });
 
+  test('resetting the row order clears a selection it would otherwise misalign', async ({ page }) => {
+    await setup(page);
+    // Establish a manual order so the reset affordance appears.
+    const gripBox = await page.locator('.motif-cs-msa-matrix-row[data-msa-row-index="3"] .motif-cs-msa-row-grip').boundingBox();
+    const targetGrip = await page.locator('.motif-cs-msa-matrix-row[data-msa-row-index="1"] .motif-cs-msa-row-grip').boundingBox();
+    if (!gripBox || !targetGrip) throw new Error('row grips not found');
+    await page.mouse.move(gripBox.x + gripBox.width / 2, gripBox.y + gripBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(targetGrip.x + targetGrip.width / 2, targetGrip.y + 3, { steps: 12 });
+    await page.mouse.up();
+    await expect(page.getByTestId('msa-order-note')).toBeVisible();
+    // Select a block spanning several rows.
+    const start = await center(page, 1, 6);
+    const end = await center(page, 3, 22);
+    await page.mouse.move(start.x, start.y);
+    await page.mouse.down();
+    await page.mouse.move(end.x, end.y, { steps: 8 });
+    await page.mouse.up();
+    await expect(page.getByTestId('msa-selection-readout')).toBeVisible();
+    // Resetting re-indexes the rows; a stale index-based selection must not linger.
+    await page.getByTestId('msa-order-note').getByRole('button', { name: /reset order/i }).click();
+    await expect(page.getByTestId('msa-selection-readout')).toHaveCount(0);
+    await expect(page.locator('.motif-cs-msa-selection-band')).toHaveCount(0);
+  });
+
+  test('the overview navigates only on a primary-button press', async ({ page }) => {
+    await setup(page);
+    const box = await page.getByTestId('msa-overview').boundingBox();
+    if (!box) throw new Error('overview not found');
+    const scroll = page.locator('.motif-cs-msa-matrix-scroll');
+    const target = { x: box.x + box.width * 0.8, y: box.y + box.height / 2 };
+    expect(await scroll.evaluate((el) => el.scrollLeft)).toBe(0);
+    // A secondary-button press must not move the alignment. (The overview has no
+    // app context menu, so nothing to dismiss — and a stray Escape would close
+    // the host window.)
+    await page.mouse.click(target.x, target.y, { button: 'right' });
+    await page.waitForTimeout(80);
+    expect(await scroll.evaluate((el) => el.scrollLeft)).toBe(0);
+    // A primary-button press does navigate.
+    await page.mouse.click(target.x, target.y, { button: 'left' });
+    await page.waitForTimeout(150);
+    expect(await scroll.evaluate((el) => el.scrollLeft)).toBeGreaterThan(0);
+  });
+
   test('arrow keys on a focused row grip reorder and announce the move', async ({ page }) => {
     await setup(page);
     const movingId = await rowIdAt(page, 1); // a non-template row

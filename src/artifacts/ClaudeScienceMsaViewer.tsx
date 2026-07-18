@@ -1048,6 +1048,12 @@ function AlignmentMatrix({
 
   const resetRowOrder = useCallback(() => {
     setManualOrder(null);
+    // Reordering rows re-indexes them, so an index-based selection would now
+    // point at different rows (silently changing what copy actions yield).
+    // Drop it, matching commitRowOrder.
+    setSelection(null);
+    selectionAnchorRef.current = null;
+    setContextMenu(null);
     setReorderStatus('Row order reset to the current sort.');
   }, []);
 
@@ -1302,6 +1308,7 @@ function AlignmentMatrix({
           aria-valuenow={overviewCenter + 1}
           aria-valuetext={`Alignment columns ${visibleStartColumn + 1}–${Math.max(visibleStartColumn + 1, visibleEndColumn)} of ${alignment.alignmentLength}`}
           onPointerDown={(event) => {
+            if (event.button !== 0) return;
             overviewDraggingRef.current = true;
             event.currentTarget.setPointerCapture(event.pointerId);
             navigateOverviewPointer(event.currentTarget, event.clientX);
