@@ -35,6 +35,7 @@ describe('Claude Science MSA view preferences', () => {
       showSequenceLogo: true,
       showTranslation: true,
       showAminoAcidIndices: false,
+      strictDifferences: true,
     })).toEqual({
       displayMode: 'text',
       emphasis: 'letters',
@@ -58,6 +59,7 @@ describe('Claude Science MSA view preferences', () => {
       showSequenceLogo: true,
       showTranslation: true,
       showAminoAcidIndices: false,
+      strictDifferences: true,
     });
   });
 
@@ -115,6 +117,12 @@ describe('Claude Science MSA view preferences', () => {
     expect(normalizeClaudeScienceMsaViewPreferences({ showAminoAcidIndices: false }).showAminoAcidIndices).toBe(false);
     expect(normalizeClaudeScienceMsaViewPreferences({ translationFrame: 2 }).translationFrame).toBe(2);
     expect(normalizeClaudeScienceMsaViewPreferences({ translationFrame: 5 }).translationFrame).toBe(0);
+  });
+
+  it('keeps strict differences opt-in so IUPAC-aware highlighting is the default', () => {
+    expect(normalizeClaudeScienceMsaViewPreferences({}).strictDifferences).toBe(false);
+    expect(normalizeClaudeScienceMsaViewPreferences({ strictDifferences: 'yes' }).strictDifferences).toBe(false);
+    expect(normalizeClaudeScienceMsaViewPreferences({ strictDifferences: true }).strictDifferences).toBe(true);
   });
 
   it('falls back to safe colour/shade defaults and keeps occupancy opt-in', () => {

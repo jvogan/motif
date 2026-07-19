@@ -84,16 +84,34 @@ describe('ClaudeScienceMsaViewer row statistics panel', () => {
     expect(screen.getAllByTestId('msa-row-stats-row')).toHaveLength(alignment.rows.length);
 
     const expected = {
-      template: ['0', '5 bp', '100.0%'],
-      zulu: ['2', '6 bp', '66.7%'],
-      alpha: ['0', '4 bp', '100.0%'],
-      middle: ['1', '5 bp', '80.0%'],
+      template: ['0', '5 bp', '100.0%', '0'],
+      zulu: ['2', '6 bp', '66.7%', '0'],
+      alpha: ['0', '4 bp', '100.0%', '0'],
+      middle: ['1', '5 bp', '80.0%', '0'],
     };
     for (const [rowId, values] of Object.entries(expected)) {
       const cells = panelRow(rowId).querySelectorAll('td');
       expect(Array.from(cells).slice(1).map((cell) => cell.textContent)).toEqual(values);
     }
     expect(panelRow('template').textContent).toContain('Template');
+  });
+
+  it('reports compatible ambiguity calls separately from hard differences', () => {
+    const sourceAlignment = normalizeArtifactAlignment({
+      id: 'compatible-row-statistics',
+      name: 'Compatible row statistics',
+      molecule: 'dna',
+      referenceRowId: 'template',
+      rows: [
+        { id: 'template', name: 'Template', aligned: 'ACGT' },
+        { id: 'compatible', name: 'Compatible', aligned: 'RCGT' },
+      ],
+    });
+    render(<StatefulViewer sourceAlignment={sourceAlignment} />);
+
+    expect(Array.from(panelRow('compatible').querySelectorAll('td')).slice(1).map((cell) => cell.textContent)).toEqual([
+      '0', '4 bp', '75.0%', '1',
+    ]);
   });
 
   it('uses the persisted sort mode for both the panel and matrix', () => {

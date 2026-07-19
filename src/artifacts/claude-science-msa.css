@@ -10,6 +10,27 @@
 
 /* The matrix hosts absolutely-positioned selection/hover overlays. Each state
    owns a separate visual channel so stacked states remain readable. */
+.motif-cs-msa-workspace .motif-cs-msa-alphabet-warning {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  margin: 6px 0;
+  padding: 7px 10px;
+  border: 1px solid color-mix(in srgb, var(--amber) 48%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--amber) 10%, var(--bg-primary));
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.motif-cs-msa-workspace .motif-cs-msa-alphabet-warning > span {
+  min-width: 0;
+  flex: 1 1 320px;
+}
+.motif-cs-msa-workspace .motif-cs-msa-alphabet-warning strong { color: var(--text-primary); }
+.motif-cs-msa-workspace .motif-cs-msa-alphabet-warning .motif-cs-mini-button { margin-left: auto; }
+
 .motif-cs-msa-matrix {
   position: relative;
   --motif-cs-msa-selection-rule: color-mix(in srgb, var(--accent) 86%, var(--text-primary));
@@ -172,6 +193,15 @@
 }
 .motif-cs-msa-symbol[data-jump='true'][data-difference='true'] {
   background: color-mix(in srgb, var(--amber) 10%, transparent);
+}
+
+.motif-cs-msa-symbol[data-cell-outcome='ambiguous']:not([data-active-cell='true']) {
+  outline: 1px dashed color-mix(in srgb, var(--text-secondary) 55%, transparent);
+  outline-offset: -2px;
+}
+
+.motif-cs-msa-stats-ambiguous {
+  color: var(--text-secondary);
 }
 
 /* ===== Histogram tracks (conservation + occupancy) ===== */
@@ -354,6 +384,86 @@
 .motif-cs-msa-view-select select:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* ===== Alignment-owned reference numbering editor ===== */
+.motif-cs-msa-reference-numbering {
+  display: grid;
+  gap: 6px;
+  margin-top: 4px;
+  padding: 7px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+.motif-cs-msa-reference-numbering[data-active='true'] {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border-subtle));
+}
+.motif-cs-msa-reference-numbering-heading,
+.motif-cs-msa-reference-numbering-position,
+.motif-cs-msa-reference-numbering-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.motif-cs-msa-reference-numbering-heading > span {
+  color: var(--text-muted);
+  font: 9px/1 var(--font-mono);
+}
+.motif-cs-msa-reference-numbering-position .motif-cs-input {
+  width: 96px;
+  min-width: 0;
+  min-height: 26px;
+  padding: 3px 5px;
+  font: 10px/1 var(--font-mono);
+}
+.motif-cs-msa-reference-numbering > small {
+  color: var(--text-muted);
+  font-size: 9px;
+  line-height: 1.35;
+}
+.motif-cs-msa-reference-numbering-actions {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+}
+.motif-cs-msa-reference-numbering-error {
+  color: var(--red);
+  font-size: 9px;
+  line-height: 1.3;
+}
+.motif-cs-msa-reference-numbering-status {
+  min-height: 12px;
+  color: var(--text-muted);
+  font-size: 9px;
+  line-height: 1.3;
+}
+.motif-cs-msa-reference-numbering-status[data-empty='true'] {
+  display: none;
+}
+
+.motif-cs-msa-column-jump input[type='text'] {
+  width: 82px;
+}
+
+.motif-cs-msa-ruler-cell[data-reference-coordinate] {
+  font-family: var(--font-mono);
+  font-size: 8px;
+}
+.motif-cs-msa-ruler-cell[data-reference-insertion] {
+  box-sizing: border-box;
+  align-items: flex-start;
+  padding-top: 1px;
+  font-size: 7.5px;
+  line-height: 1;
+}
+.motif-cs-msa-ruler-cell[data-reference-insertion][data-reference-label-lane='1'] {
+  padding-top: 9px;
+}
+.motif-cs-msa-ruler-cell[data-reference-insertion][data-reference-label-lane='2'] {
+  padding-top: 17px;
 }
 
 /* ===== Contextual residue colour key ===== */

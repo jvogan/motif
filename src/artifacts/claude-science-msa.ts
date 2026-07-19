@@ -131,12 +131,18 @@ export type ArtifactAlignmentRowInput = {
   inputSha256?: string;
 };
 
+export type ArtifactAlignmentReferenceNumbering = {
+  rowId: string;
+  firstResiduePosition: number;
+};
+
 export type ArtifactAlignmentInput = {
   id?: string;
   name?: string;
   molecule?: SequenceType;
   type?: SequenceType;
   referenceRowId?: string;
+  referenceNumbering?: ArtifactAlignmentReferenceNumbering;
   rows?: ArtifactAlignmentRowInput[];
   sequences?: ArtifactAlignmentRowInput[];
   alignedFasta?: string;
@@ -169,6 +175,7 @@ export type ArtifactAlignment = {
   name: string;
   molecule: SequenceType;
   referenceRowId: string;
+  referenceNumbering?: ArtifactAlignmentReferenceNumbering;
   rows: ArtifactAlignmentRow[];
   engine: ArtifactAlignmentEngine;
   createdAt?: string;
@@ -256,8 +263,44 @@ function cleanAlignedSequence(value: unknown, field: string): string {
   return value.toUpperCase().replace(/\./g, '-').replace(/\s+/g, '');
 }
 
+const IUPAC_PROTEINS: Record<string, string> = {
+  B: 'DN', Z: 'EQ', J: 'IL', X: 'ACDEFGHIKLMNPQRSTVWY',
+};
+
+function proteinResiduesMatch(left: string, right: string): boolean {
+  const leftSet = IUPAC_PROTEINS[left] ?? left;
+  const rightSet = IUPAC_PROTEINS[right] ?? right;
+  for (const residue of leftSet) if (rightSet.includes(residue)) return true;
+  return false;
+}
+
+export type MsaAlphabetAnomaly = {
+  rowId: string;
+  label?: string;
+  reason: string;
+};
+
+const PROTEIN_NUCLEOTIDE_WARNING_MIN_RESIDUES = 10;
+
+export function detectAlphabetAnomalies(
+  rows: readonly { id: string; name?: string; aligned: string }[],
+  molecule: SequenceType,
+): MsaAlphabetAnomaly[] {
+  if (molecule !== 'protein') return [];
+  return rows.flatMap((row) => {
+    const residues = row.aligned.toUpperCase().replace(/[-.?]/g, '');
+    if (residues.length < PROTEIN_NUCLEOTIDE_WARNING_MIN_RESIDUES || !/^[ACGTUN]+$/.test(residues)) return [];
+    return [{
+      rowId: row.id,
+      label: row.name,
+      reason: 'only nucleotide letters (A/C/G/T/U/N)',
+    }];
+  });
+}
+
 function summarizeRows(
   rows: Array<Omit<ArtifactAlignmentRow, 'identity'>>,
+  molecule: SequenceType = 'dna',
 ): Pick<ArtifactAlignment, 'rows' | 'consensus' | 'conserved' | 'gapOnly' | 'alignmentLength'> {
   const alignmentLength = rows[0]?.aligned.length ?? 0;
   let consensus = '';
@@ -287,7 +330,9 @@ function summarizeRows(
     for (let column = 0; column < alignmentLength; column += 1) {
       if (consensus[column] === '-') continue;
       total += 1;
-      if (row.aligned[column] === consensus[column]) matches += 1;
+      if (molecule === 'protein'
+        ? proteinResiduesMatch(row.aligned[column], consensus[column])
+        : row.aligned[column] === consensus[column]) matches += 1;
     }
     return {
       ...row,
@@ -498,7 +543,7 @@ export function normalizeArtifactAlignment(
     }
   }
 
-  const summary = summarizeRows(rows);
+  const summary = summarizeRows(rows, molecule);
   const id = safeId(raw.id, `alignment-${index + 1}`, `alignments[${index}].id`);
   let referenceRowId = rows[0].id;
   if (raw.referenceRowId !== undefined) {
@@ -508,11 +553,36 @@ export function normalizeArtifactAlignment(
     }
     referenceRowId = requestedReference;
   }
+  let referenceNumbering: ArtifactAlignmentReferenceNumbering | undefined;
+  if (raw.referenceNumbering !== undefined) {
+    if (!plainObject(raw.referenceNumbering)) {
+      throw new ArtifactAlignmentError('invalid_alignment', `alignments[${index}].referenceNumbering must be an object.`);
+    }
+    const numberingRowId = safeId(
+      raw.referenceNumbering.rowId,
+      '',
+      `alignments[${index}].referenceNumbering.rowId`,
+    );
+    const numberingRow = rows.find((row) => row.id === numberingRowId);
+    if (!numberingRow) {
+      throw new ArtifactAlignmentError('invalid_alignment', `Alignment referenceNumbering rowId “${numberingRowId}” does not match a row id.`);
+    }
+    const firstResiduePosition = raw.referenceNumbering.firstResiduePosition;
+    if (!Number.isSafeInteger(firstResiduePosition) || firstResiduePosition < 1) {
+      throw new ArtifactAlignmentError('invalid_alignment', `alignments[${index}].referenceNumbering.firstResiduePosition must be a positive safe integer.`);
+    }
+    const residueCount = numberingRow.aligned.replace(/-/g, '').length;
+    if (!Number.isSafeInteger(firstResiduePosition + residueCount - 1)) {
+      throw new ArtifactAlignmentError('invalid_alignment', `alignments[${index}].referenceNumbering exceeds the safe integer coordinate range.`);
+    }
+    referenceNumbering = { rowId: numberingRowId, firstResiduePosition };
+  }
   return {
     id,
     name: normalizedHeaderText(raw.name, `Alignment ${index + 1}`, `alignments[${index}].name`),
     molecule,
     referenceRowId,
+    ...(referenceNumbering ? { referenceNumbering } : {}),
     ...summary,
     engine: normalizeEngine(raw.engine),
     createdAt: raw.createdAt === undefined ? undefined : normalizedText(raw.createdAt, '', `alignments[${index}].createdAt`) || undefined,
@@ -650,6 +720,9 @@ export function serializeArtifactAlignment(alignment: ArtifactAlignment): Artifa
     name: alignment.name,
     molecule: alignment.molecule,
     referenceRowId: alignment.referenceRowId,
+    ...(alignment.referenceNumbering
+      ? { referenceNumbering: { ...alignment.referenceNumbering } }
+      : {}),
     rows: alignment.rows.map((row) => ({
       id: row.id,
       name: row.name,
@@ -1139,8 +1212,27 @@ function nucleotidesMatch(query: string, target: string): boolean {
 }
 
 function residueMatch(query: string, target: string, molecule: SequenceType): boolean {
-  if (molecule === 'protein') return query === target || query === 'X' || target === 'X';
+  if (molecule === 'protein') return proteinResiduesMatch(query, target);
   return nucleotidesMatch(query, target);
+}
+
+function isWildcardResidue(symbol: string, molecule: SequenceType): boolean {
+  return symbol === '?' || symbol === (molecule === 'protein' ? 'X' : 'N');
+}
+
+/** Compare two present residues for difference highlighting without conflating
+ * compatible ambiguity codes with literal identity or hard substitutions. */
+export function classifyResidueDifference(
+  referenceResidue: string,
+  rowResidue: string,
+  molecule: SequenceType,
+): 'match' | 'ambiguous' | 'substitution' {
+  const reference = molecule !== 'protein' && referenceResidue === 'U' ? 'T' : referenceResidue;
+  const row = molecule !== 'protein' && rowResidue === 'U' ? 'T' : rowResidue;
+  if (reference === row && !isWildcardResidue(reference, molecule)) return 'match';
+  if (reference === '?' || row === '?') return 'ambiguous';
+  if (!residueMatch(reference, row, molecule)) return 'substitution';
+  return 'ambiguous';
 }
 
 function normalizeMotifResidue(symbol: string, molecule: SequenceType): string {

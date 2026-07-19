@@ -85,6 +85,8 @@ export type ClaudeScienceMsaViewPreferences = {
   showSequenceLogo: boolean;
   showTranslation: boolean;
   showAminoAcidIndices: boolean;
+  /** Treat every non-identical residue symbol as a hard difference. */
+  strictDifferences: boolean;
 };
 
 export const DEFAULT_CLAUDE_SCIENCE_MSA_VIEW_PREFERENCES: ClaudeScienceMsaViewPreferences = {
@@ -110,6 +112,7 @@ export const DEFAULT_CLAUDE_SCIENCE_MSA_VIEW_PREFERENCES: ClaudeScienceMsaViewPr
   showSequenceLogo: false,
   showTranslation: false,
   showAminoAcidIndices: true,
+  strictDifferences: false,
 };
 
 export function normalizeClaudeScienceMsaViewPreferences(value: unknown): ClaudeScienceMsaViewPreferences {
@@ -124,7 +127,7 @@ export function normalizeClaudeScienceMsaViewPreferences(value: unknown): Claude
     typeof source[key] === 'boolean' ? source[key] as boolean : true
   );
   // Toggles that default to off unless explicitly enabled.
-  const optional = (key: keyof Pick<ClaudeScienceMsaViewPreferences, 'showOccupancy' | 'showSequenceLogo' | 'showTranslation' | 'showRowStatsPanel'>) => (
+  const optional = (key: keyof Pick<ClaudeScienceMsaViewPreferences, 'showOccupancy' | 'showSequenceLogo' | 'showTranslation' | 'showRowStatsPanel' | 'strictDifferences'>) => (
     source[key] === true
   );
   return {
@@ -162,5 +165,6 @@ export function normalizeClaudeScienceMsaViewPreferences(value: unknown): Claude
     showSequenceLogo: optional('showSequenceLogo'),
     showTranslation: optional('showTranslation'),
     showAminoAcidIndices: visible('showAminoAcidIndices'),
+    strictDifferences: optional('strictDifferences'),
   };
 }

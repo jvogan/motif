@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   computeMsaColumnStats,
   computeSequenceLogoColumns,
+  detectAlphabetAnomalies,
   msaShadeBucket,
   residueColorKey,
   sliceSelectionRows,
@@ -15,6 +16,62 @@ import {
   normalizeArtifactAlignment,
   type ArtifactAlignment,
 } from '../claude-science-msa';
+
+describe('detectAlphabetAnomalies', () => {
+  it('flags meaningful protein-declared rows containing only nucleotide letters', () => {
+    expect(detectAlphabetAnomalies([
+      { id: 'nucleotide-like', name: 'Nucleotide-like row', aligned: 'ACGTUNACGTUN' },
+      { id: 'protein', name: 'Protein row', aligned: 'MKWVTFISLLFL' },
+    ], 'protein')).toEqual([{
+      rowId: 'nucleotide-like',
+      label: 'Nucleotide-like row',
+      reason: 'only nucleotide letters (A/C/G/T/U/N)',
+    }]);
+  });
+
+  it('ignores gaps and unknowns but not short or non-protein inputs', () => {
+    expect(detectAlphabetAnomalies([{ id: 'gapped', aligned: 'AC-GT?UNAC.GT' }], 'protein'))
+      .toHaveLength(1);
+    expect(detectAlphabetAnomalies([{ id: 'short', aligned: 'ACGTUN' }], 'protein')).toEqual([]);
+    expect(detectAlphabetAnomalies([{ id: 'dna', aligned: 'ACGTUNACGTUN' }], 'dna')).toEqual([]);
+  });
+});
+
+describe('protein ambiguity matching', () => {
+  it('uses B, Z, J, and X consistently in motif search', () => {
+    const rows = [{ id: 'protein', name: 'Protein', aligned: 'DNEQILAFW' }];
+    const startsFor = (query: string) => findMsaMotifMatches(rows, query, { molecule: 'protein' })
+      .matches.map((match) => match.startColumn);
+
+    expect(startsFor('B')).toEqual([0, 1]);
+    expect(startsFor('Z')).toEqual([2, 3]);
+    expect(startsFor('J')).toEqual([4, 5]);
+    expect(startsFor('X')).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(startsFor('A')).toEqual([6]);
+  });
+
+  it.each([
+    { ambiguity: 'B', residue: 'D' },
+    { ambiguity: 'B', residue: 'N' },
+    { ambiguity: 'Z', residue: 'E' },
+    { ambiguity: 'Z', residue: 'Q' },
+    { ambiguity: 'J', residue: 'I' },
+    { ambiguity: 'J', residue: 'L' },
+    { ambiguity: 'X', residue: 'W' },
+  ])('keeps protein identity and search aligned for $ambiguity and $residue', ({ ambiguity, residue }) => {
+    const alignment = normalizeArtifactAlignment({
+      molecule: 'protein',
+      rows: [
+        { id: 'ambiguity', name: 'Ambiguity', aligned: ambiguity },
+        { id: 'residue', name: 'Residue', aligned: residue },
+      ],
+    });
+    expect(alignment.rows.map((row) => row.identity)).toEqual([100, 100]);
+    expect(findMsaMotifMatches([
+      { id: 'residue', name: 'Residue', aligned: residue },
+    ], ambiguity, { molecule: 'protein' }).matches).toHaveLength(1);
+  });
+});
 
 function dnaAlignment(): ArtifactAlignment {
   return normalizeArtifactAlignment({

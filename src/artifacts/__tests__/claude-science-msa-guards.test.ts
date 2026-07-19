@@ -136,8 +136,9 @@ describe('Claude Science MSA interaction and rendering guards', () => {
     expect(coverageHelpers).toContain("if (rowResidue === '-' && !isColumnCoveredByRow) return 'uncovered';");
     expect(coverageHelpers).toContain('!coversColumn(referenceCoverage, column)');
     expect(coverageHelpers).toContain('coversColumn(rowCoverage.get(row.id) ?? null, column)');
-    expect(coverageHelpers).toContain('classifyMsaCell(templateSymbol, symbol, coversColumn(rowCoverage, column))');
-    expect(coverageHelpers).toContain('classifyMsaCell(templateSymbol, symbol, coversColumn(rowCoverage[rowIndex], column))');
+    expect(coverageHelpers).toContain('const outcome = classifyMsaCell(');
+    expect(coverageHelpers).toContain('coversColumn(rowCoverage[rowIndex], column),');
+    expect(coverageHelpers).toContain('alignment.molecule,');
   });
 
   it('runs browser alignment only from an explicit bounded action', () => {
@@ -237,7 +238,7 @@ describe('Claude Science MSA interaction and rendering guards', () => {
     expect(viewerSource).toContain('return template ? [template, ...nonTemplateRows] : nonTemplateRows;');
     expect(viewPreferencesSource).toContain("export type ClaudeScienceMsaRowSortMode = 'original' | 'name' | 'identity' | 'mismatches' | 'length';");
     expect(viewerSource).toContain('<option value="mismatches">Mismatches</option>');
-    expect(viewerSource).toContain('pairwiseRowStats(row.aligned, template?.aligned ?? \'\')');
+    expect(viewerSource).toContain("pairwiseRowStats(row.aligned, template?.aligned ?? '', alignment.molecule, strictDifferences)");
     expect(viewerSource).toContain('{stats.mismatches.toLocaleString()}Δ');
     expect(viewerSource).toContain('{stats.ungappedLength.toLocaleString()} {sequenceUnit(alignment.molecule)}');
     expect(viewerSource).toContain("Array.from(name.matchAll(/[^\\s_./-]+/g))");
@@ -246,7 +247,7 @@ describe('Claude Science MSA interaction and rendering guards', () => {
     expect(artifactCss).toMatch(/\.motif-cs-msa-row-name-trailing\s*\{[\s\S]*?flex:\s*0 0 auto/);
   });
 
-  it('adds exact dual-coordinate navigation and a gap-correct virtualized template axis', () => {
+  it('adds exact alignment, template, and optional reference navigation with a gap-correct virtualized axis', () => {
     const matrix = sliceBetween(viewerSource, 'function AlignmentMatrix({', 'export function ClaudeScienceMsaViewer({');
     expect(viewerSource).toContain('function templatePositionCoordinates(aligned: string): Array<number | null>');
     expect(viewerSource).toContain("if (aligned[column] === '-') coordinates[column] = null;");
@@ -259,9 +260,12 @@ describe('Claude Science MSA interaction and rendering guards', () => {
     expect(matrix).toContain('Alignment positions count gapped columns. Template positions count non-gap residues');
     expect(viewerSource).toContain('data-testid="msa-coordinate-system"');
     expect(viewerSource).toContain('data-testid="msa-coordinate-input"');
-    expect(viewerSource).toContain("coordinateSystem === 'alignment' ? 'Go to alignment column' : 'Go to template position'");
-    expect(viewerSource).toContain('min={1}');
+    expect(viewerSource).toContain("activeReferenceCoordinates ? 'Go to reference position' : 'Go to template position'");
+    expect(viewerSource).toContain("min={coordinateSystem === 'template' && activeReferenceCoordinates ? undefined : 1}");
     expect(viewerSource).toContain("templatePositionCoordinates(template?.aligned ?? '').findIndex((position) => position === requested)");
+    expect(viewerSource).toContain('parseReferenceCoordinateColumn(normalized, activeReferenceCoordinates)');
+    expect(matrix).toContain('data-reference-coordinate={referenceCoordinate?.label}');
+    expect(viewerSource).toContain('data-testid="msa-reference-numbering-editor"');
     expect(viewerSource).toContain('setJumpColumn(column);');
     expect(viewerSource).toContain('setJumpToken((token) => token + 1);');
     expect(viewerSource).toContain('role="status" aria-live="polite"');
