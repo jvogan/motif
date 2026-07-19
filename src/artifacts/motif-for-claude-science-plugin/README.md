@@ -152,9 +152,11 @@ other agents may use page APIs only through a verified browser bridge and must
 confirm the visible result. `window.motifHelp()` is the runtime source of
 truth for current functions, schemas, limits, and examples.
 
-Edits are session-owned until exported. Database JSON and workspace ZIP are
-the complete checkpoint/restore boundary. The portable HTML is not an
-encrypted vault, a compliance system, or a durable shared database.
+Edits are session-owned until exported. Database JSON is directly restorable.
+The workspace ZIP is a portable handoff containing `inventory.json` plus
+interchange exports; extract and restore `inventory.json` when recovering from
+a ZIP. The portable HTML is not an encrypted vault, a compliance system, or a
+durable shared database.
 A browser download is only a request until the resulting file is verified and
 can be reopened; do that before relying on it as the session checkpoint.
 
@@ -170,7 +172,11 @@ npm run typecheck
 npm test
 npm run test:plugin
 npm run test:connector
+npm run check:css-tokens
+npm run check:aria-controls
+npm run build:motif
 npm run test:e2e
+npm run test:e2e:msa
 npm run validate:plugin
 ```
 

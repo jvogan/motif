@@ -44,6 +44,13 @@ const publicPluginDocs = [
   'CLAUDE_SCIENCE_QUICKSTART.md',
   'CLAUDE_SCIENCE_TROUBLESHOOTING.md',
 ];
+const publicPluginExamples = [
+  'README.md',
+  'motif-demo.gb',
+  'synthetic-proteins.fasta',
+  'synthetic-proteins.aln',
+  'synthetic-alignment-workspace.json',
+];
 const bundledConnectorLicenses = [
   { packagePath: ['@modelcontextprotocol', 'ext-apps'], filename: 'mcp-ext-apps-LICENSE.txt' },
   { packagePath: ['@modelcontextprotocol', 'sdk'], filename: 'mcp-sdk-LICENSE.txt' },
@@ -356,10 +363,9 @@ export function copyPublicPluginDocs(pluginPath) {
   }
   const pluginExamplesPath = join(pluginPath, 'examples');
   mkdirSync(pluginExamplesPath, { recursive: true });
-  copyFileSync(
-    join(root, 'examples', 'motif-demo.gb'),
-    join(pluginExamplesPath, 'motif-demo.gb'),
-  );
+  for (const filename of publicPluginExamples) {
+    copyFileSync(join(root, 'examples', filename), join(pluginExamplesPath, filename));
+  }
 }
 
 export function copyBundledConnectorLicenses(pluginPath) {

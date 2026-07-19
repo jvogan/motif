@@ -1,0 +1,125 @@
+{
+  "schema": "motif.claude-science.inventory.v2",
+  "inventory": {
+    "id": "synthetic-alignment-example",
+    "title": "Synthetic protein alignment",
+    "description": "Public-safe example for Motif workspace restore and review."
+  },
+  "selectedRecordId": "synthetic-protein-a",
+  "records": [
+    {
+      "id": "synthetic-protein-a",
+      "name": "synthetic_protein_a",
+      "molecule": "protein",
+      "topology": "linear",
+      "seq": "ACDEFGHIKLMNPQRSTVWYACDEFGHIKLMNPQRSTVWYACDEFGHIKLMNPQRSTVWY",
+      "description": "Synthetic public example; not a biological reference.",
+      "active": true
+    },
+    {
+      "id": "synthetic-protein-b",
+      "name": "synthetic_protein_b",
+      "molecule": "protein",
+      "topology": "linear",
+      "seq": "ACDEYGHIKLMNPQRSTVWYACDEFGHIKLMNPQKSTVWYACDEFGHIKLMNPQRSTVWY",
+      "description": "Synthetic public example; not a biological reference.",
+      "active": true
+    },
+    {
+      "id": "synthetic-protein-c",
+      "name": "synthetic_protein_c",
+      "molecule": "protein",
+      "topology": "linear",
+      "seq": "ACDEFGHIKLMNPQRSTVWYACDEGHIKLMNPQRSTVWYACDEFGHIKLMNPQRSTVWF",
+      "description": "Synthetic public example; not a biological reference.",
+      "active": true
+    }
+  ],
+  "alignments": [
+    {
+      "id": "synthetic-alignment",
+      "name": "Synthetic protein alignment",
+      "molecule": "protein",
+      "referenceRowId": "synthetic-row-a",
+      "rows": [
+        {
+          "id": "synthetic-row-a",
+          "name": "synthetic_protein_a",
+          "aligned": "ACDEFGHIKLMNPQRSTVWYACDEFGHIKLMNPQRSTVWYACDEFGHIKLMNPQRSTVWY",
+          "sourceRecordId": "synthetic-protein-a"
+        },
+        {
+          "id": "synthetic-row-b",
+          "name": "synthetic_protein_b",
+          "aligned": "ACDEYGHIKLMNPQRSTVWYACDEFGHIKLMNPQKSTVWYACDEFGHIKLMNPQRSTVWY",
+          "sourceRecordId": "synthetic-protein-b"
+        },
+        {
+          "id": "synthetic-row-c",
+          "name": "synthetic_protein_c",
+          "aligned": "ACDEFGHIKLMNPQRSTVWYACDE-GHIKLMNPQRSTVWYACDEFGHIKLMNPQRSTVWF",
+          "sourceRecordId": "synthetic-protein-c"
+        }
+      ],
+      "engine": {
+        "id": "example-import",
+        "label": "Public synthetic example",
+        "version": "1",
+        "mode": "imported"
+      }
+    }
+  ],
+  "notes": [
+    {
+      "id": "synthetic-workspace-note",
+      "body": "Review the two substitutions and the single alignment gap. This is synthetic demonstration data.",
+      "format": "plain",
+      "scope": "workspace",
+      "createdAt": "2026-07-19T12:00:00.000Z",
+      "updatedAt": "2026-07-19T12:00:00.000Z"
+    }
+  ],
+  "analysisAssets": [
+    {
+      "id": "synthetic-summary-asset",
+      "name": "synthetic-alignment-summary.txt",
+      "mediaType": "text/plain",
+      "content": "Synthetic alignment example: three protein rows, 60 columns, one gap. Not a biological reference.",
+      "createdAt": "2026-07-19T12:05:00.000Z",
+      "provenance": {
+        "source": "motif-public-example",
+        "operation": "synthetic-example"
+      }
+    }
+  ],
+  "analysisResults": [
+    {
+      "id": "synthetic-alignment-report",
+      "kind": "report",
+      "name": "Synthetic alignment review",
+      "status": "complete",
+      "summary": "Public-safe inert report for Results Workbench verification.",
+      "inputRecordIds": [
+        "synthetic-protein-a",
+        "synthetic-protein-b",
+        "synthetic-protein-c"
+      ],
+      "dependsOnResultIds": [],
+      "assetIds": [
+        "synthetic-summary-asset"
+      ],
+      "parameters": {
+        "dataClass": "synthetic"
+      },
+      "data": {
+        "format": "plain",
+        "bodyAssetId": "synthetic-summary-asset"
+      },
+      "createdAt": "2026-07-19T12:05:00.000Z",
+      "provenance": {
+        "source": "motif-public-example",
+        "operation": "synthetic-example"
+      }
+    }
+  ]
+}

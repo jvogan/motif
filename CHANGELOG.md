@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Preserved range-note and pinned-translation anchors across sequence edits,
+  separated session hydration from durable checkpoints, and made browser
+  download receipts honest about unverified saves.
+- Added full inert report/table readers, sortable BLAST evidence, bounded
+  result and asset pagination, and safe copy/download actions in the Results
+  Workbench.
+- Expanded MSA correctness, accessibility, search, navigation, statistics,
+  image export, and real-browser coverage.
+- Added state-preserving floating workspace panes and hardened pane placement,
+  resizing, focus, and restriction-label geometry.
 - Added record-level and feature-level NCBI genetic-code selection across
   translation, ORF discovery, pinned amino-acid tracks, GenBank interchange,
   and derived-protein provenance. Unsupported explicit feature codes now fail
@@ -18,6 +28,8 @@
   actions when their legacy text order cannot be distinguished safely from
   biological order; conservative interchange marks them non-materializable,
   while new and imported locations carry an explicit order marker.
+- Added public-safe FASTA, CLUSTAL, and workspace JSON examples, clarified ZIP
+  recovery, and aligned public installation and validation guidance.
 
 ## 0.2.1 — 2026-07-13
 

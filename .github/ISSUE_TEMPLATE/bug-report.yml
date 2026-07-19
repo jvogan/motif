@@ -1,0 +1,65 @@
+name: Public-safe bug report
+description: Report a reproducible Motif problem using synthetic or public data.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Motif. Do not include unpublished sequences, credentials, connector configuration, full filesystem paths, workspace exports, or unredacted logs. Use `examples/motif-demo.gb` or another small public-safe input whenever possible.
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Public-safe reproduction
+      options:
+        - label: I removed private data, credentials, full local paths, and unredacted logs.
+          required: true
+        - label: This is not a security vulnerability.
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: Motif version or commit
+      placeholder: v0.2.1 or a commit hash
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Include operating system, Node.js version, and Claude Science version when relevant.
+    validations:
+      required: true
+  - type: dropdown
+    id: route
+    attributes:
+      label: Surface
+      options:
+        - Standalone preview or generated HTML
+        - Claude Science connector-created HTML
+        - Optional live MCP App
+        - Plugin or build tooling
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Use synthetic or public inputs and list the smallest exact sequence of actions.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior and public-safe diagnostics
+      description: Redact private paths, payloads, connector configuration, and unrelated log content.
+    validations:
+      required: true

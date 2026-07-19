@@ -4,6 +4,12 @@
 
 # Motif for Claude Science
 
+[Website](https://jvogan.github.io/motif-site/) ·
+[Installation](docs/CLAUDE_SCIENCE_QUICKSTART.md) ·
+[Capabilities](docs/CAPABILITIES.md) ·
+[Examples](examples/README.md) ·
+[Security](SECURITY.md)
+
 Motif is a portable molecular-biology workbench built for the Claude Science
 hackathon. It turns sequence records and analysis results into one
 self-contained HTML workspace that can be opened locally or in Claude
@@ -26,19 +32,22 @@ an official Claude Science integration.
 - bounded browser MSA plus import and review of aligned FASTA/CLUSTAL
 - no-shell MAFFT, MUSCLE, and Clustal Omega helper with provenance hashes
 - AB1/ABI Sanger import and chromatogram review
-- restriction digest, qualitative gel, primer, Gibson, Golden Gate,
+- restriction digest, qualitative gel, primer/PCR, Gibson, Golden Gate,
   GoldenBraid, and traditional ligation workspaces
+- ORF/translation analysis and PAM-based CRISPR guide candidates
 - notes, workflow history, typed analysis results, and inert text/JSON assets
-- Database JSON and workspace ZIP checkpoint/restore
+- Database JSON checkpoint/restore and workspace ZIP handoff export
 - deterministic Claude plugin bundle and standalone skill
 - Motif-owned MCP connector with a full-workbench `ui://` App and embedded HTML
   fallback for Claude Science
 
 ## Quick start
 
-Requires Node.js 22.12 or newer.
+Requires Git and Node.js 22.12 or newer. From a source checkout:
 
 ```bash
+git clone https://github.com/jvogan/motif.git
+cd motif
 npm ci
 npm run preview:motif
 ```
@@ -77,6 +86,9 @@ Clicking the generated HTML once is normal. It opens the full interactive
 workbench as an immutable snapshot. See the
 [Claude Science quickstart](docs/CLAUDE_SCIENCE_QUICKSTART.md) for permission,
 verification, and optional live-App steps.
+
+The [public examples](examples/README.md) also include synthetic FASTA,
+aligned CLUSTAL, and complete workspace JSON inputs with expected identities.
 
 ## Build the distributable
 
@@ -129,7 +141,9 @@ npm run test:plugin
 npm run test:connector
 npm run check:css-tokens
 npm run check:aria-controls
+npm run build:motif
 npm run test:e2e
+npm run test:e2e:msa
 ```
 
 `npm run validate:plugin` adds strict validation through the Claude CLI when it
