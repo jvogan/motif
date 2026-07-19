@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Installation and troubleshooting
+    url: https://github.com/jvogan/motif/blob/main/docs/CLAUDE_SCIENCE_TROUBLESHOOTING.md
+    about: Start here for connector setup, sandbox, relaunch, and artifact-opening problems.
+  - name: Private security report
+    url: https://github.com/jvogan/motif/security/advisories/new
+    about: Report suspected vulnerabilities privately; do not include security details in a public issue.

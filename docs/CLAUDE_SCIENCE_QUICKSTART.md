@@ -16,11 +16,17 @@ the folder later, rerun setup and update the sandbox grant.
 
 ## 1. Obtain Motif
 
-Use a tagged Motif source checkout or versioned source archive from the
-project's published distribution. Verify any checksum supplied with that
-release, then keep the checkout in a fixed local folder. The connector is
-built from this source; the Claude Code plugin ZIP alone does not register a
-Claude Science connector.
+Use the latest published [Motif release](https://github.com/jvogan/motif/releases)
+or clone its tagged source into a fixed local folder:
+
+```bash
+git clone --branch v0.2.1 --depth 1 https://github.com/jvogan/motif.git
+cd motif
+```
+
+Verify the release checksum before using a downloaded plugin bundle. The
+connector is built from the source checkout; the Claude plugin ZIP alone does
+not register a Claude Science connector.
 
 ## 2. Install and build
 

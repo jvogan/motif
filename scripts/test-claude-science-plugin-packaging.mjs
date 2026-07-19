@@ -195,13 +195,40 @@ check('public setup, troubleshooting, and capability docs ship with the plugin',
       assert.equal(packaged.toLowerCase().includes(legacyBrand), false);
       assert.doesNotMatch(packaged, /\/Users\/|github_[0-9]+/iu);
     }
-    assert.equal(
-      readFileSync(join(fixture, 'examples', 'motif-demo.gb'), 'utf8'),
-      readFileSync(join(root, 'examples', 'motif-demo.gb'), 'utf8'),
-    );
+    for (const filename of [
+      'README.md',
+      'motif-demo.gb',
+      'synthetic-proteins.fasta',
+      'synthetic-proteins.aln',
+      'synthetic-alignment-workspace.json',
+    ]) {
+      assert.equal(
+        readFileSync(join(fixture, 'examples', filename), 'utf8'),
+        readFileSync(join(root, 'examples', filename), 'utf8'),
+      );
+    }
   } finally {
     rmSync(fixture, { recursive: true, force: true });
   }
+});
+
+check('public synthetic examples parse and validate with the shipped contracts', () => {
+  const fastaRecords = parseUnalignedFasta(
+    readFileSync(join(root, 'examples', 'synthetic-proteins.fasta'), 'utf8'),
+    'protein',
+  );
+  assert.deepEqual(fastaRecords.map((record) => record.sequence.length), [60, 60, 59]);
+
+  const workspaceSource = readFileSync(
+    join(root, 'examples', 'synthetic-alignment-workspace.json'),
+    'utf8',
+  );
+  const workspace = readAndValidatePayload(workspaceSource);
+  assert.equal(workspace.records.length, 3);
+  assert.equal(workspace.alignments.length, 1);
+  assert.equal(workspace.notes.length, 1);
+  assert.equal(workspace.analysisResults.length, 1);
+  assert.equal(workspace.analysisAssets.length, 1);
 });
 
 check('all bundled connector dependency licenses ship with the plugin', () => {
