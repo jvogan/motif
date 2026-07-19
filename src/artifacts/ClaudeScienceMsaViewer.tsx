@@ -25,10 +25,12 @@ import {
   ArtifactAlignmentError,
   MSA_MOTIF_SEARCH_MAX_QUERY_LENGTH,
   clampMsaClientPoint,
+  classifyResidueDifference,
   computeAlignmentImageLayout,
   computeMsaColumnStats,
   computeSequenceLogoColumns,
   createLocalArtifactAlignment,
+  detectAlphabetAnomalies,
   estimateLocalAlignmentWork,
   findMsaMotifMatches,
   formatAlignedFasta,
@@ -110,6 +112,7 @@ export type PairwiseRowStats = {
   ungappedLength: number;
   comparableColumns: number;
   mismatches: number;
+  ambiguities: number;
   identity: number;
 };
 
@@ -117,7 +120,7 @@ type ArtifactAlignmentRow = ArtifactAlignment['rows'][number];
 
 type AlignmentCoverage = { first: number; last: number } | null;
 
-export type MsaCellOutcome = 'match' | 'substitution' | 'deletion' | 'insertion' | 'uncovered' | 'gap';
+export type MsaCellOutcome = 'match' | 'substitution' | 'deletion' | 'insertion' | 'uncovered' | 'gap' | 'ambiguous';
 
 function alignmentCoverage(aligned: string): AlignmentCoverage {
   const first = aligned.search(/[^-]/);
@@ -137,13 +140,15 @@ export function classifyMsaCell(
   referenceResidue: string,
   rowResidue: string,
   isColumnCoveredByRow: boolean,
+  molecule: SequenceType = 'dna',
+  strictDifferences = false,
 ): MsaCellOutcome {
   if (referenceResidue === '-' && rowResidue === '-') return 'gap';
   if (rowResidue === '-' && !isColumnCoveredByRow) return 'uncovered';
-  if (rowResidue === referenceResidue) return 'match';
   if (referenceResidue === '-') return 'insertion';
   if (rowResidue === '-') return 'deletion';
-  return 'substitution';
+  if (strictDifferences) return referenceResidue === rowResidue ? 'match' : 'substitution';
+  return classifyResidueDifference(referenceResidue, rowResidue, molecule);
 }
 
 function isMsaCellDifference(outcome: MsaCellOutcome): boolean {
@@ -161,6 +166,68 @@ function templatePositionCoordinates(aligned: string): Array<number | null> {
     }
   }
   return coordinates;
+}
+
+export type MsaReferenceCoordinateLabel = {
+  referencePosition: number;
+  insertionCode: string;
+  label: string;
+};
+
+function referenceInsertionCode(ordinal: number): string {
+  let value = ordinal + 1;
+  let code = '';
+  while (value > 0) {
+    value -= 1;
+    code = String.fromCharCode(65 + (value % 26)) + code;
+    value = Math.floor(value / 26);
+  }
+  return code;
+}
+
+// eslint-disable-next-line react-refresh/only-export-components -- pure MSA helper exported for unit tests
+export function referenceCoordinateLabels(
+  referenceAligned: string,
+  firstResiduePosition: number,
+): MsaReferenceCoordinateLabel[] {
+  if (!Number.isSafeInteger(firstResiduePosition) || firstResiduePosition < 1) {
+    throw new RangeError('firstResiduePosition must be a positive safe integer.');
+  }
+  const labels = new Array<MsaReferenceCoordinateLabel>(referenceAligned.length);
+  let referencePosition = firstResiduePosition - 1;
+  let insertionOrdinal = 0;
+  for (let column = 0; column < referenceAligned.length; column += 1) {
+    const isGap = referenceAligned[column] === '-' || referenceAligned[column] === '.';
+    if (isGap) {
+      const insertionCode = referenceInsertionCode(insertionOrdinal);
+      labels[column] = { referencePosition, insertionCode, label: `${referencePosition}${insertionCode}` };
+      insertionOrdinal += 1;
+      continue;
+    }
+    referencePosition += 1;
+    if (!Number.isSafeInteger(referencePosition)) throw new RangeError('Reference coordinates exceed the safe integer range.');
+    insertionOrdinal = 0;
+    labels[column] = { referencePosition, insertionCode: '', label: String(referencePosition) };
+  }
+  return labels;
+}
+
+const REFERENCE_COORDINATE_PATTERN = /^(0|[1-9]\d*)([A-Z]*)$/;
+
+// eslint-disable-next-line react-refresh/only-export-components -- pure MSA helper exported for unit tests
+export function parseReferenceCoordinateColumn(
+  input: string,
+  coordinates: readonly MsaReferenceCoordinateLabel[],
+): number | null {
+  const match = REFERENCE_COORDINATE_PATTERN.exec(input.trim().toUpperCase());
+  if (!match) return null;
+  const referencePosition = Number(match[1]);
+  if (!Number.isSafeInteger(referencePosition)) return null;
+  const insertionCode = match[2];
+  const column = coordinates.findIndex((coordinate) => (
+    coordinate.referencePosition === referencePosition && coordinate.insertionCode === insertionCode
+  ));
+  return column < 0 ? null : column;
 }
 
 export type ClaudeScienceMsaViewerProps = {
@@ -688,7 +755,11 @@ function ResidueColorLegend({ molecule, colorScheme }: {
 }
 
 // eslint-disable-next-line react-refresh/only-export-components -- pure MSA helper exported for unit tests
-export function differenceColumns(alignment: ArtifactAlignment, referenceRowId: string): number[] {
+export function differenceColumns(
+  alignment: ArtifactAlignment,
+  referenceRowId: string,
+  strictDifferences = false,
+): number[] {
   const reference = alignment.rows.find((row) => row.id === referenceRowId) ?? alignment.rows[0];
   if (!reference) return [];
   const referenceCoverage = alignmentCoverage(reference.aligned);
@@ -702,8 +773,43 @@ export function differenceColumns(alignment: ArtifactAlignment, referenceRowId: 
         reference.aligned[column] ?? '-',
         row.aligned[column] ?? '-',
         coversColumn(rowCoverage.get(row.id) ?? null, column),
+        alignment.molecule,
+        strictDifferences,
       ))
     ))) columns.push(column);
+  }
+  return columns;
+}
+
+// eslint-disable-next-line react-refresh/only-export-components -- pure MSA helper exported for unit tests
+export function ambiguousColumns(
+  alignment: ArtifactAlignment,
+  referenceRowId: string,
+  strictDifferences = false,
+): number[] {
+  if (strictDifferences) return [];
+  const reference = alignment.rows.find((row) => row.id === referenceRowId) ?? alignment.rows[0];
+  if (!reference) return [];
+  const referenceCoverage = alignmentCoverage(reference.aligned);
+  const rowCoverage = new Map(alignment.rows.map((row) => [row.id, alignmentCoverage(row.aligned)]));
+  const columns: number[] = [];
+  for (let column = 0; column < alignment.alignmentLength; column += 1) {
+    if (alignment.gapOnly[column] || !coversColumn(referenceCoverage, column)) continue;
+    let hasAmbiguity = false;
+    let hasDifference = false;
+    for (const row of alignment.rows) {
+      if (row.id === reference.id) continue;
+      const outcome = classifyMsaCell(
+        reference.aligned[column] ?? '-',
+        row.aligned[column] ?? '-',
+        coversColumn(rowCoverage.get(row.id) ?? null, column),
+        alignment.molecule,
+        false,
+      );
+      if (isMsaCellDifference(outcome)) { hasDifference = true; break; }
+      if (outcome === 'ambiguous') hasAmbiguity = true;
+    }
+    if (!hasDifference && hasAmbiguity) columns.push(column);
   }
   return columns;
 }
@@ -731,22 +837,31 @@ function rowNameParts(name: string, allNames: readonly string[]): { leading: str
 }
 
 // eslint-disable-next-line react-refresh/only-export-components -- pure MSA helper exported for unit tests
-export function pairwiseRowStats(aligned: string, template: string): PairwiseRowStats {
+export function pairwiseRowStats(
+  aligned: string,
+  template: string,
+  molecule: SequenceType = 'dna',
+  strictDifferences = false,
+): PairwiseRowStats {
   const rowCoverage = alignmentCoverage(aligned);
   const templateCoverage = alignmentCoverage(template);
   let ungappedLength = 0;
   let comparable = 0;
   let matches = 0;
   let mismatches = 0;
+  let ambiguities = 0;
   for (let column = 0; column < Math.max(aligned.length, template.length); column += 1) {
     const symbol = aligned[column] ?? '-';
     const templateSymbol = template[column] ?? '-';
     if (symbol !== '-') ungappedLength += 1;
     if (!coversColumn(templateCoverage, column)) continue;
-    const outcome = classifyMsaCell(templateSymbol, symbol, coversColumn(rowCoverage, column));
+    const outcome = classifyMsaCell(templateSymbol, symbol, coversColumn(rowCoverage, column), molecule, strictDifferences);
     if (outcome === 'match') {
       comparable += 1;
       matches += 1;
+    } else if (outcome === 'ambiguous') {
+      comparable += 1;
+      ambiguities += 1;
     } else if (isMsaCellDifference(outcome)) {
       comparable += 1;
       mismatches += 1;
@@ -756,6 +871,7 @@ export function pairwiseRowStats(aligned: string, template: string): PairwiseRow
     ungappedLength,
     comparableColumns: comparable,
     mismatches,
+    ambiguities,
     identity: comparable > 0 ? Math.round((matches / comparable) * 10_000) / 100 : 0,
   };
 }
@@ -764,7 +880,12 @@ function formatIdentity(identity: number): string {
   return identity < 100 && identity >= 99.9 ? identity.toFixed(2) : identity.toFixed(1);
 }
 
-function firstRowDifferenceColumn(aligned: string, template: string): number | null {
+function firstRowDifferenceColumn(
+  aligned: string,
+  template: string,
+  molecule: SequenceType,
+  strictDifferences = false,
+): number | null {
   const rowCoverage = alignmentCoverage(aligned);
   const templateCoverage = alignmentCoverage(template);
   for (let column = 0; column < Math.max(aligned.length, template.length); column += 1) {
@@ -773,6 +894,8 @@ function firstRowDifferenceColumn(aligned: string, template: string): number | n
       template[column] ?? '-',
       aligned[column] ?? '-',
       coversColumn(rowCoverage, column),
+      molecule,
+      strictDifferences,
     );
     if (isMsaCellDifference(outcome)) return column;
   }
@@ -800,7 +923,12 @@ function sortedMsaRows(
 }
 
 // eslint-disable-next-line react-refresh/only-export-components -- pure MSA helper exported for unit tests
-export function mismatchOverviewBins(alignment: ArtifactAlignment, referenceRowId: string, binCount: number): number[] {
+export function mismatchOverviewBins(
+  alignment: ArtifactAlignment,
+  referenceRowId: string,
+  binCount: number,
+  strictDifferences = false,
+): number[] {
   const bins = Array.from({ length: binCount }, () => 0);
   if (alignment.alignmentLength === 0 || binCount === 0) return bins;
   const template = alignment.rows.find((row) => row.id === referenceRowId) ?? alignment.rows[0];
@@ -815,8 +943,15 @@ export function mismatchOverviewBins(alignment: ArtifactAlignment, referenceRowI
     for (const [rowIndex, row] of alignment.rows.entries()) {
       if (row.id === template.id) continue;
       const symbol = row.aligned[column] ?? '-';
-      const outcome = classifyMsaCell(templateSymbol, symbol, coversColumn(rowCoverage[rowIndex], column));
+      const outcome = classifyMsaCell(
+        templateSymbol,
+        symbol,
+        coversColumn(rowCoverage[rowIndex], column),
+        alignment.molecule,
+        strictDifferences,
+      );
       if (outcome === 'match') comparable += 1;
+      else if (outcome === 'ambiguous') comparable += 1;
       else if (isMsaCellDifference(outcome)) {
         comparable += 1;
         mismatches += 1;
@@ -880,12 +1015,14 @@ function MsaRowStatsPanel({
   alignment,
   referenceRowId,
   sortMode,
+  strictDifferences,
   onSortModeChange,
   onJump,
 }: {
   alignment: ArtifactAlignment;
   referenceRowId: string;
   sortMode: RowSortMode;
+  strictDifferences: boolean;
   onSortModeChange: (sortMode: RowSortMode) => void;
   onJump: (rowId: string, column: number) => void;
 }) {
@@ -895,16 +1032,16 @@ function MsaRowStatsPanel({
   const template = alignment.rows.find((row) => row.id === referenceRowId) ?? alignment.rows[0];
   const statsByRow = useMemo(() => new Map(alignment.rows.map((row) => [
     row.id,
-    pairwiseRowStats(row.aligned, template?.aligned ?? ''),
-  ])), [alignment.rows, template]);
+    pairwiseRowStats(row.aligned, template?.aligned ?? '', alignment.molecule, strictDifferences),
+  ])), [alignment.molecule, alignment.rows, strictDifferences, template]);
   const orderedRows = useMemo(
     () => sortedMsaRows(alignment.rows, template, sortMode, statsByRow),
     [alignment.rows, sortMode, statsByRow, template],
   );
   const firstDifferenceByRow = useMemo(() => new Map(alignment.rows.map((row) => [
     row.id,
-    firstRowDifferenceColumn(row.aligned, template?.aligned ?? ''),
-  ])), [alignment.rows, template]);
+    firstRowDifferenceColumn(row.aligned, template?.aligned ?? '', alignment.molecule, strictDifferences),
+  ])), [alignment.molecule, alignment.rows, strictDifferences, template]);
   const activeSortLabel = sortMode === 'original'
     ? 'Original order'
     : sortMode === 'name'
@@ -964,11 +1101,14 @@ function MsaRowStatsPanel({
                   </button>
                 </th>
               ))}
+              <th scope="col" aria-label="Compatible ambiguity-code calls">
+                <span title="Compatible ambiguity-code calls (not counted as differences)">≈</span>
+              </th>
             </tr>
           </thead>
           <tbody>
             {orderedRows.map((row) => {
-              const stats = statsByRow.get(row.id) ?? pairwiseRowStats(row.aligned, template?.aligned ?? '');
+              const stats = statsByRow.get(row.id) ?? pairwiseRowStats(row.aligned, template?.aligned ?? '', alignment.molecule, strictDifferences);
               const isTemplate = row.id === template?.id;
               const firstDifference = firstDifferenceByRow.get(row.id) ?? null;
               const jump = firstDifference === null ? null : () => onJump(row.id, firstDifference);
@@ -995,6 +1135,7 @@ function MsaRowStatsPanel({
                   <td className="motif-cs-msa-row-stats-number">{stats.mismatches.toLocaleString()}</td>
                   <td className="motif-cs-msa-row-stats-number">{stats.ungappedLength.toLocaleString()} {sequenceUnit(alignment.molecule)}</td>
                   <td className="motif-cs-msa-row-stats-number">{formatIdentity(stats.identity)}%</td>
+                  <td className="motif-cs-msa-row-stats-number">{stats.ambiguities.toLocaleString()}</td>
                 </tr>
               );
             })}
@@ -1008,6 +1149,7 @@ function MsaRowStatsPanel({
 function AlignmentMatrix({
   alignment,
   referenceRowId,
+  referenceCoordinates,
   emphasis,
   colorMode,
   colorScheme,
@@ -1023,6 +1165,7 @@ function AlignmentMatrix({
   focusRequest,
   searchActive,
   sortMode,
+  strictDifferences,
   visibility,
   resetToken,
   onTemplateChange,
@@ -1032,6 +1175,7 @@ function AlignmentMatrix({
 }: {
   alignment: ArtifactAlignment;
   referenceRowId: string;
+  referenceCoordinates: readonly MsaReferenceCoordinateLabel[] | null;
   emphasis: EmphasisMode;
   colorMode: ColorMode;
   colorScheme: MsaColorScheme;
@@ -1047,6 +1191,7 @@ function AlignmentMatrix({
   focusRequest: MatrixFocusRequest | null;
   searchActive: boolean;
   sortMode: RowSortMode;
+  strictDifferences: boolean;
   visibility: MsaMatrixVisibility;
   resetToken: number;
   onTemplateChange: (rowId: string) => void;
@@ -1065,6 +1210,7 @@ function AlignmentMatrix({
   const lastResetTokenRef = useRef(resetToken);
   const overviewDraggingRef = useRef(false);
   const [selection, setSelection] = useState<MatrixSelection | null>(null);
+  const [isSelecting, setIsSelecting] = useState(false);
   const [hoverCell, setHoverCell] = useState<HoverCell | null>(null);
   const [hoverPosition, setHoverPosition] = useState<{ x: number; y: number } | null>(null);
   const [contextMenu, setContextMenu] = useState<MatrixContextMenu | null>(null);
@@ -1114,6 +1260,10 @@ function AlignmentMatrix({
     Math.min(sequenceViewportWidth, sequenceViewportWidth * (sequenceViewportWidth / Math.max(sequenceViewportWidth, sequenceWidth))),
   );
   const template = alignment.rows.find((row) => row.id === referenceRowId) ?? alignment.rows[0];
+  const referenceNumbering = alignment.referenceNumbering;
+  const numberingReference = referenceNumbering
+    ? alignment.rows.find((row) => row.id === referenceNumbering.rowId)
+    : undefined;
   const templateCoverage = useMemo(() => alignmentCoverage(template?.aligned ?? ''), [template]);
   const rowCoverageById = useMemo(() => new Map(alignment.rows.map((row) => [
     row.id,
@@ -1147,8 +1297,8 @@ function AlignmentMatrix({
   const activeSearchRowId = activeSearchMatch?.rowId ?? null;
   const statsByRow = useMemo(() => new Map(alignment.rows.map((row) => [
     row.id,
-    pairwiseRowStats(row.aligned, template?.aligned ?? ''),
-  ])), [alignment.rows, template]);
+    pairwiseRowStats(row.aligned, template?.aligned ?? '', alignment.molecule, strictDifferences),
+  ])), [alignment.molecule, alignment.rows, strictDifferences, template]);
   const orderedRows = useMemo(() => {
     if (manualOrder) {
       const byId = new Map(alignment.rows.map((row) => [row.id, row] as const));
@@ -1188,8 +1338,8 @@ function AlignmentMatrix({
   ])), [alignment.rows, allRowNames]);
   const overviewBinCount = Math.min(512, Math.max(1, alignment.alignmentLength));
   const overviewBins = useMemo(
-    () => mismatchOverviewBins(alignment, template?.id ?? referenceRowId, overviewBinCount),
-    [alignment, overviewBinCount, template, referenceRowId],
+    () => mismatchOverviewBins(alignment, template?.id ?? referenceRowId, overviewBinCount, strictDifferences),
+    [alignment, overviewBinCount, template, referenceRowId, strictDifferences],
   );
   const overviewPath = useMemo(() => overviewBins.map((density, index) => {
     if (density <= 0) return '';
@@ -1470,16 +1620,8 @@ function AlignmentMatrix({
     return ids;
   }, [orderedRows, selection]);
 
-  const selectionSummary = useMemo(() => {
+  const selectionCoordinates = useMemo(() => {
     if (!selection) return null;
-    // Stats describe the SELECTED block only — slice each selected row to the
-    // selected columns so unselected rows never skew the readout. Bounded by the
-    // selection size, so it stays cheap even mid-drag on a wide alignment.
-    const selectedRows = orderedRows
-      .slice(selection.rowStart, selection.rowEnd + 1)
-      .map((row) => ({ ...row, aligned: row.aligned.slice(selection.colStart, selection.colEnd + 1) }));
-    const blockStats = computeMsaColumnStats(selectedRows, alignment.molecule);
-    const stats = summarizeSelectionColumns(blockStats, { start: 0, end: selection.colEnd - selection.colStart });
     // Template coordinates: first/last non-gap position within the range, so a
     // gapped endpoint doesn't hide the whole template range.
     let startPosition: number | null = null;
@@ -1490,8 +1632,31 @@ function AlignmentMatrix({
     for (let column = selection.colEnd; column >= selection.colStart; column -= 1) {
       if (templateCoordinates[column] != null) { endPosition = templateCoordinates[column]!; break; }
     }
-    return { stats, startPosition, endPosition, rows: selectedRows.length };
-  }, [orderedRows, selection, templateCoordinates, alignment.molecule]);
+    return {
+      columns: selection.colEnd - selection.colStart + 1,
+      startPosition,
+      endPosition,
+      rows: selection.rowEnd - selection.rowStart + 1,
+    };
+  }, [selection, templateCoordinates]);
+
+  const selectionSummary = useMemo(() => {
+    if (!selection || isSelecting) return null;
+    // Stats describe the selected block only. Pointer drags keep the cheap
+    // coordinate summary live, then pay this block-sized cost at settle.
+    const selectedRows = orderedRows
+      .slice(selection.rowStart, selection.rowEnd + 1)
+      .map((row) => ({ ...row, aligned: row.aligned.slice(selection.colStart, selection.colEnd + 1) }));
+    const blockStats = computeMsaColumnStats(selectedRows, alignment.molecule);
+    return summarizeSelectionColumns(blockStats, { start: 0, end: selection.colEnd - selection.colStart });
+  }, [orderedRows, selection, alignment.molecule, isSelecting]);
+
+  const selectionReferenceRange = useMemo(() => {
+    if (!selection || !referenceCoordinates) return null;
+    const start = referenceCoordinates[selection.colStart];
+    const end = referenceCoordinates[selection.colEnd];
+    return start && end ? { start: start.label, end: end.label } : null;
+  }, [referenceCoordinates, selection]);
 
   const columnFromClientX = useCallback((clientX: number, clampToViewport = false): number | null => {
     const viewport = viewportRef.current;
@@ -1632,8 +1797,9 @@ function AlignmentMatrix({
     if (!(event.shiftKey && selectionAnchorRef.current)) {
       selectionAnchorRef.current = { column: cell.column, rowIndex: cell.rowIndex };
     }
-    applySelectionTo(cell);
     selectingRef.current = true;
+    setIsSelecting(true);
+    applySelectionTo(cell);
     stopDragAutoScroll();
     try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* capture is best-effort */ }
   };
@@ -1659,6 +1825,7 @@ function AlignmentMatrix({
       if (cell) applySelectionTo(cell);
     }
     selectingRef.current = false;
+    setIsSelecting(false);
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
@@ -1719,6 +1886,7 @@ function AlignmentMatrix({
 
   const clearSelection = useCallback(() => {
     setSelection(null);
+    setIsSelecting(false);
     selectionAnchorRef.current = null;
     setContextMenu(null);
   }, []);
@@ -1963,6 +2131,7 @@ function AlignmentMatrix({
     setContextMenu(null);
     selectionAnchorRef.current = null;
     selectingRef.current = false;
+    setIsSelecting(false);
     rulerSelectingRef.current = false;
     setManualOrder(null);
     setRowDrag(null);
@@ -2093,12 +2262,15 @@ function AlignmentMatrix({
           && resolvedRowIndex >= selection.rowStart && resolvedRowIndex <= selection.rowEnd;
         const rowName = rowIndex === null ? '' : orderedRows[resolvedRowIndex]?.name ?? '';
         const residueLabel = symbol === '-' || symbol === '.' ? 'Gap' : `Residue ${symbol}`;
+        const referenceCoordinate = referenceCoordinates?.[column];
         const templateSymbol = template?.aligned[column] ?? '-';
         const isTemplate = rowId === template?.id;
         const cellOutcome = classifyMsaCell(
           templateSymbol,
           symbol,
           coversColumn(rowCoverageById.get(rowId) ?? null, column),
+          alignment.molecule,
+          strictDifferences,
         );
         const matchesTemplate = cellOutcome === 'match';
         const isDifference = coversColumn(templateCoverage, column) && isMsaCellDifference(cellOutcome);
@@ -2130,7 +2302,9 @@ function AlignmentMatrix({
             tabIndex={isGridCell ? (isActive ? 0 : -1) : undefined}
             aria-colindex={isGridCell ? column + 1 : undefined}
             aria-selected={isGridCell ? Boolean(isSelected) : undefined}
-            aria-label={isGridCell ? `${residueLabel}, alignment column ${column + 1}, row ${rowName}` : undefined}
+            aria-label={isGridCell
+              ? `${residueLabel}, alignment column ${column + 1}${referenceCoordinate ? `, reference position ${referenceCoordinate.label}` : ''}, row ${rowName}`
+              : undefined}
           >
             {display}
           </span>
@@ -2402,28 +2576,41 @@ function AlignmentMatrix({
             data-alignment-axis={visibility.showAlignmentAxis || undefined}
             role="row"
             aria-rowindex={visibility.showAlignmentAxis ? 2 : 1}
-            aria-label={`Template positions for ${template?.name ?? 'template'}`}
+            aria-label={referenceCoordinates
+              ? `Reference positions for ${numberingReference?.name ?? 'reference'}`
+              : `Template positions for ${template?.name ?? 'template'}`}
           >
             <div
               className="motif-cs-msa-sticky-label motif-cs-msa-ruler-label motif-cs-msa-template-ruler-label"
               role="columnheader"
-              title={`Template position · ${template?.name ?? 'Template'} · ungapped template-row coordinates`}
+              title={referenceCoordinates
+                ? `Reference position · ${numberingReference?.name ?? 'Reference'} · first residue ${referenceNumbering?.firstResiduePosition}`
+                : `Template position · ${template?.name ?? 'Template'} · ungapped template-row coordinates`}
             >
-              <span>Template position</span>
-              <small translate="no">{template?.name ?? 'Template'}</small>
+              <span>{referenceCoordinates ? 'Reference position' : 'Template position'}</span>
+              <small translate="no">{referenceCoordinates ? numberingReference?.name ?? 'Reference' : template?.name ?? 'Template'}</small>
             </div>
             <div className="motif-cs-msa-ruler-window" style={{ left: labelWidth + (startColumn * cellWidth) }} aria-hidden="true">
               {templateCoordinates.slice(startColumn, endColumn).map((position, offset) => {
                 const column = startColumn + offset;
-                const show = position !== null && (position === 1 || position % 10 === 0);
+                const referenceCoordinate = referenceCoordinates?.[column];
+                const show = referenceCoordinate
+                  ? referenceCoordinate.insertionCode !== ''
+                    || referenceCoordinate.referencePosition === referenceNumbering?.firstResiduePosition
+                    || referenceCoordinate.referencePosition % 10 === 0
+                  : position !== null && (position === 1 || position % 10 === 0);
                 return (
                   <span
                     key={column}
                     className="motif-cs-msa-ruler-cell"
                     data-alignment-column={String(column + 1)}
                     data-template-position={position === null ? 'gap' : String(position)}
+                    data-reference-coordinate={referenceCoordinate?.label}
+                    data-reference-insertion={referenceCoordinate?.insertionCode || undefined}
+                    data-reference-label-lane={referenceCoordinate?.insertionCode ? String(column % 3) : undefined}
+                    title={referenceCoordinate?.label}
                   >
-                    {show ? position : ''}
+                    {show ? referenceCoordinate?.label ?? position : ''}
                   </span>
                 );
               })}
@@ -2432,7 +2619,7 @@ function AlignmentMatrix({
 
           {orderedRows.map((row, rowIndex) => {
             const label = rowLabelsById.get(row.id) ?? { leading: row.name, trailing: '' };
-            const stats = statsByRow.get(row.id) ?? pairwiseRowStats(row.aligned, template?.aligned ?? '');
+            const stats = statsByRow.get(row.id) ?? pairwiseRowStats(row.aligned, template?.aligned ?? '', alignment.molecule, strictDifferences);
             const isTemplate = row.id === template?.id;
             return (
               <div
@@ -2449,7 +2636,7 @@ function AlignmentMatrix({
                 role="row"
                 aria-rowindex={firstSequenceRow + rowIndex}
                 aria-label={visibility.showRowStats
-                  ? `${row.name}; ${stats.mismatches} mismatches; ${stats.ungappedLength} ungapped ${sequenceUnit(alignment.molecule)}; ${formatIdentity(stats.identity)} percent identity to template; ${isTemplate ? 'template row' : 'alignment row'}`
+                  ? `${row.name}; ${stats.mismatches} mismatches; ${stats.ambiguities > 0 ? `${stats.ambiguities} compatible ambiguity ${stats.ambiguities === 1 ? 'call' : 'calls'}; ` : ''}${stats.ungappedLength} ungapped ${sequenceUnit(alignment.molecule)}; ${formatIdentity(stats.identity)} percent identity to template; ${isTemplate ? 'template row' : 'alignment row'}`
                   : `${row.name}; ${isTemplate ? 'template row' : 'alignment row'}`}
               >
                 <div className="motif-cs-msa-sticky-label motif-cs-msa-row-label motif-cs-msa-row-label-draggable" role="rowheader">
@@ -2487,6 +2674,9 @@ function AlignmentMatrix({
                     {visibility.showRowStats ? (
                       <>
                         <small className="motif-cs-msa-row-stat motif-cs-msa-row-stat-mismatch">{stats.mismatches.toLocaleString()}Δ</small>
+                        {stats.ambiguities > 0 ? (
+                          <small className="motif-cs-msa-row-stat motif-cs-msa-row-stat-ambiguous" title="Compatible ambiguity-code calls (not counted as differences)">{stats.ambiguities.toLocaleString()}≈</small>
+                        ) : null}
                         <small className="motif-cs-msa-row-stat motif-cs-msa-row-stat-length">{stats.ungappedLength.toLocaleString()} {sequenceUnit(alignment.molecule)}</small>
                         <small className="motif-cs-msa-row-stat">{formatIdentity(stats.identity)}%</small>
                       </>
@@ -2612,7 +2802,9 @@ function AlignmentMatrix({
           />
         </div>
       ) : null}
-      <span id="motif-cs-msa-matrix-help" className="motif-cs-visually-hidden">Alignment positions count gapped columns. Template positions count non-gap residues in the chosen template; blank template-axis cells are gaps. Choose any row header button to make that row the template. In the grid, use Arrow keys to move the active residue, Shift plus Arrow keys to extend a selection, Home and End for row boundaries, Control or Command plus Home or End for grid boundaries, Page Up and Page Down to move by a viewport, Space to select a column, and Shift plus F10 or the Context Menu key for selection actions. The Columns slider and Shift plus wheel also pan the alignment. Switch to Text to read or copy the complete aligned sequences with assistive technology.</span>
+      <span id="motif-cs-msa-matrix-help" className="motif-cs-visually-hidden">{referenceCoordinates
+        ? 'Alignment positions count gapped columns. Reference positions use the saved first-residue coordinate; reference-gap columns append stable insertion letters, and leading gaps use the preceding coordinate. Choose any row header button to make that row the comparison template. In the grid, use Arrow keys to move the active residue, Shift plus Arrow keys to extend a selection, Home and End for row boundaries, Control or Command plus Home or End for grid boundaries, Page Up and Page Down to move by a viewport, Space to select a column, and Shift plus F10 or the Context Menu key for selection actions. The Columns slider and Shift plus wheel also pan the alignment. Switch to Text to read or copy the complete aligned sequences with assistive technology.'
+        : 'Alignment positions count gapped columns. Template positions count non-gap residues in the chosen template; blank template-axis cells are gaps. Choose any row header button to make that row the template. In the grid, use Arrow keys to move the active residue, Shift plus Arrow keys to extend a selection, Home and End for row boundaries, Control or Command plus Home or End for grid boundaries, Page Up and Page Down to move by a viewport, Space to select a column, and Shift plus F10 or the Context Menu key for selection actions. The Columns slider and Shift plus wheel also pan the alignment. Switch to Text to read or copy the complete aligned sequences with assistive technology.'}</span>
       <div className="motif-cs-msa-window-note" aria-live="polite">
         Alignment columns {visibleStartColumn + 1}–{Math.max(visibleStartColumn + 1, visibleEndColumn)} of {alignment.alignmentLength.toLocaleString()}
       </div>
@@ -2624,16 +2816,18 @@ function AlignmentMatrix({
         </div>
       ) : null}
       <span className="motif-cs-visually-hidden" data-testid="msa-reorder-status" role="status" aria-live="polite">{reorderStatus}</span>
-      {selection && selectionSummary ? (
+      {selection && selectionCoordinates ? (
         <div className="motif-cs-msa-selection-readout" data-testid="msa-selection-readout" role="status" aria-live="polite">
           <strong>Selected</strong>
-          <span>cols {selection.colStart + 1}–{selection.colEnd + 1} ({selectionSummary.stats.columns.toLocaleString()})</span>
-          {selectionSummary.startPosition != null && selectionSummary.endPosition != null
-            ? <span>· template {selectionSummary.startPosition}–{selectionSummary.endPosition}</span>
+          <span>cols {selection.colStart + 1}–{selection.colEnd + 1} ({selectionCoordinates.columns.toLocaleString()})</span>
+          {selectionReferenceRange
+            ? <span>· reference {selectionReferenceRange.start}–{selectionReferenceRange.end}</span>
+            : selectionCoordinates.startPosition != null && selectionCoordinates.endPosition != null
+            ? <span>· template {selectionCoordinates.startPosition}–{selectionCoordinates.endPosition}</span>
             : null}
-          <span>· {selectionSummary.rows} row{selectionSummary.rows === 1 ? '' : 's'}</span>
-          <span>· {selectionSummary.stats.variableColumns.toLocaleString()} variable</span>
-          <span>· {Math.round(selectionSummary.stats.meanIdentity * 100)}% mean id</span>
+          <span>· {selectionCoordinates.rows} row{selectionCoordinates.rows === 1 ? '' : 's'}</span>
+          <span data-testid="msa-selection-variable">· {selectionSummary ? selectionSummary.variableColumns.toLocaleString() : '…'} variable</span>
+          <span data-testid="msa-selection-identity">· {selectionSummary ? `${Math.round(selectionSummary.meanIdentity * 100)}%` : '…'} mean id</span>
           <button type="button" className="motif-cs-mini-button" onClick={clearSelection}>Clear</button>
         </div>
       ) : null}
@@ -2641,7 +2835,11 @@ function AlignmentMatrix({
         <div ref={hoverReadoutRef} className="motif-cs-msa-hover-readout" style={{ left: hoverPosition?.x ?? hoverCell.clientX + 14, top: hoverPosition?.y ?? hoverCell.clientY + 16 }} aria-hidden="true">
           <b>{orderedRows[hoverCell.rowIndex]?.aligned[hoverCell.column] ?? '-'}</b>
           <span>col {hoverCell.column + 1}</span>
-          <span>· {templateCoordinates[hoverCell.column] != null ? `tpl ${templateCoordinates[hoverCell.column]}` : 'tpl gap'}</span>
+          <span>· {referenceCoordinates?.[hoverCell.column]
+            ? `ref ${referenceCoordinates[hoverCell.column].label}`
+            : templateCoordinates[hoverCell.column] != null
+              ? `tpl ${templateCoordinates[hoverCell.column]}`
+              : 'tpl gap'}</span>
           <span className="motif-cs-msa-hover-readout-name">{orderedRows[hoverCell.rowIndex]?.name}</span>
         </div>
       ) : null}
@@ -2694,7 +2892,7 @@ export function ClaudeScienceMsaViewer({
   const [importMolecule, setImportMolecule] = useState<SequenceType>('dna');
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
-  const { displayMode, emphasis, colorMode, colorScheme, shadeMode, sortMode, fontSize, zoom, translationFrame, textFormat } = viewPreferences;
+  const { displayMode, emphasis, colorMode, colorScheme, shadeMode, sortMode, fontSize, zoom, translationFrame, textFormat, strictDifferences } = viewPreferences;
   const [referenceRowId, setReferenceRowId] = useState(activeAlignment?.referenceRowId ?? '');
   const [differenceIndex, setDifferenceIndex] = useState(-1);
   const [jumpColumn, setJumpColumn] = useState<number | null>(null);
@@ -2709,7 +2907,16 @@ export function ClaudeScienceMsaViewer({
   const [columnDraft, setColumnDraft] = useState('');
   const [columnError, setColumnError] = useState<string | null>(null);
   const [columnStatus, setColumnStatus] = useState('');
+  const [referenceNumberingRowDraft, setReferenceNumberingRowDraft] = useState(
+    activeAlignment?.referenceNumbering?.rowId ?? activeAlignment?.referenceRowId ?? '',
+  );
+  const [firstResiduePositionDraft, setFirstResiduePositionDraft] = useState(
+    String(activeAlignment?.referenceNumbering?.firstResiduePosition ?? 1),
+  );
+  const [referenceNumberingError, setReferenceNumberingError] = useState<string | null>(null);
+  const [referenceNumberingStatus, setReferenceNumberingStatus] = useState('');
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [dismissedAlphabetWarningId, setDismissedAlphabetWarningId] = useState<string | null>(null);
   const [dropActive, setDropActive] = useState(false);
   const [intakeStatus, setIntakeStatus] = useState<{ message: string; tone: 'status' | 'error' } | null>(null);
   const [copyStatus, setCopyStatus] = useState<{ label: string; message: string; tone: 'status' | 'error' } | null>(null);
@@ -2726,6 +2933,7 @@ export function ClaudeScienceMsaViewer({
   const copyStatusTimerRef = useRef<number | null>(null);
   const viewMenuRef = useRef<HTMLDetailsElement>(null);
   const viewMenuButtonRef = useRef<HTMLElement>(null);
+  const pendingReferenceNumberingStatusRef = useRef<{ alignmentId: string; message: string } | null>(null);
   const explicitlySelectedTemplateIdRef = useRef<string | null>(null);
   // Latest visible column window reported by the matrix, for "Visible view" export.
   const visibleColumnsRef = useRef<{ start: number; end: number } | null>(null);
@@ -2751,6 +2959,16 @@ export function ClaudeScienceMsaViewer({
     setColumnDraft('');
     setColumnError(null);
     setColumnStatus('');
+    setReferenceNumberingRowDraft(activeAlignment?.referenceNumbering?.rowId ?? activeAlignment?.referenceRowId ?? activeAlignment?.rows[0]?.id ?? '');
+    setFirstResiduePositionDraft(String(activeAlignment?.referenceNumbering?.firstResiduePosition ?? 1));
+    setReferenceNumberingError(null);
+    const pendingNumberingStatus = pendingReferenceNumberingStatusRef.current;
+    setReferenceNumberingStatus(
+      pendingNumberingStatus && activeAlignment && pendingNumberingStatus.alignmentId === activeAlignment.id
+        ? pendingNumberingStatus.message
+        : '',
+    );
+    pendingReferenceNumberingStatusRef.current = null;
     setPendingDeleteId(null);
     // Drop any stale visible window from the previous alignment; the matrix
     // reports a fresh range on mount (undefined until then falls back to whole).
@@ -2840,8 +3058,16 @@ export function ClaudeScienceMsaViewer({
   const workEstimate = useMemo(() => estimateLocalAlignmentWork(selectedRecords), [selectedRecords]);
   const exceedsLocalBudget = workEstimate > ARTIFACT_MSA_LOCAL_WORK_BUDGET;
   const differences = useMemo(
-    () => activeAlignment ? differenceColumns(activeAlignment, referenceRowId) : [],
-    [activeAlignment, referenceRowId],
+    () => activeAlignment ? differenceColumns(activeAlignment, referenceRowId, strictDifferences) : [],
+    [activeAlignment, referenceRowId, strictDifferences],
+  );
+  const ambiguities = useMemo(
+    () => activeAlignment ? ambiguousColumns(activeAlignment, referenceRowId, strictDifferences) : [],
+    [activeAlignment, referenceRowId, strictDifferences],
+  );
+  const alphabetAnomalies = useMemo(
+    () => (activeAlignment ? detectAlphabetAnomalies(activeAlignment.rows, activeAlignment.molecule) : []),
+    [activeAlignment],
   );
   const computedSearchResult = useMemo(
     () => (activeAlignment && deferredSearchQuery.trim()
@@ -2866,10 +3092,20 @@ export function ClaudeScienceMsaViewer({
     : 0;
   const activeTemplate = activeAlignment?.rows.find((row) => row.id === referenceRowId)
     ?? activeAlignment?.rows[0];
+  const activeReferenceNumbering = activeAlignment?.referenceNumbering;
+  const activeNumberingReference = activeReferenceNumbering
+    ? activeAlignment?.rows.find((row) => row.id === activeReferenceNumbering.rowId)
+    : undefined;
+  const activeReferenceCoordinates = useMemo(
+    () => (activeReferenceNumbering && activeNumberingReference
+      ? referenceCoordinateLabels(activeNumberingReference.aligned, activeReferenceNumbering.firstResiduePosition)
+      : null),
+    [activeNumberingReference, activeReferenceNumbering],
+  );
   const comparisonStats = activeTemplate
     ? (activeAlignment?.rows ?? [])
       .filter((row) => row.id !== activeTemplate.id)
-      .map((row) => pairwiseRowStats(row.aligned, activeTemplate.aligned))
+      .map((row) => pairwiseRowStats(row.aligned, activeTemplate.aligned, activeAlignment?.molecule ?? 'dna', strictDifferences))
       .filter((stats) => stats.comparableColumns > 0)
     : [];
   const hasComparableRows = comparisonStats.length > 0;
@@ -3143,6 +3379,11 @@ export function ClaudeScienceMsaViewer({
     setColumnDraft('');
     setColumnError(null);
     setColumnStatus('');
+    if (!activeAlignment.referenceNumbering) {
+      setReferenceNumberingRowDraft(rowId);
+      setReferenceNumberingError(null);
+      setReferenceNumberingStatus('');
+    }
     if (activeAlignment.referenceRowId === rowId) return;
     onUpdateAlignmentTemplate(activeAlignment.id, rowId);
   }, [activeAlignment, onUpdateAlignmentTemplate]);
@@ -3322,20 +3563,34 @@ export function ClaudeScienceMsaViewer({
   const goToCoordinate = () => {
     if (!activeAlignment) return;
     const normalized = columnDraft.trim();
-    const requested = /^\d+$/.test(normalized) ? Number(normalized) : Number.NaN;
     const template = activeAlignment.rows.find((row) => row.id === referenceRowId) ?? activeAlignment.rows[0];
-    const maximum = coordinateSystem === 'alignment'
-      ? activeAlignment.alignmentLength
-      : template?.aligned.replace(/-/g, '').length ?? 0;
-    if (!Number.isInteger(requested) || requested < 1 || requested > maximum) {
-      setColumnError(`Enter a whole ${coordinateSystem === 'alignment' ? 'column' : 'template position'} from 1 to ${maximum.toLocaleString()}.`);
-      setColumnStatus('');
-      return;
+    const requested = /^\d+$/.test(normalized) ? Number(normalized) : Number.NaN;
+    let column: number | null;
+    if (coordinateSystem === 'alignment') {
+      const maximum = activeAlignment.alignmentLength;
+      if (!Number.isInteger(requested) || requested < 1 || requested > maximum) {
+        setColumnError(`Enter a whole column from 1 to ${maximum.toLocaleString()}.`);
+        setColumnStatus('');
+        return;
+      }
+      column = requested - 1;
+    } else if (activeReferenceCoordinates) {
+      column = parseReferenceCoordinateColumn(normalized, activeReferenceCoordinates);
+      if (column === null) {
+        setColumnError('Enter a reference position present in this alignment, such as 101 or 101A.');
+        setColumnStatus('');
+        return;
+      }
+    } else {
+      const maximum = template?.aligned.replace(/-/g, '').length ?? 0;
+      if (!Number.isInteger(requested) || requested < 1 || requested > maximum) {
+        setColumnError(`Enter a whole template position from 1 to ${maximum.toLocaleString()}.`);
+        setColumnStatus('');
+        return;
+      }
+      column = templatePositionCoordinates(template?.aligned ?? '').findIndex((position) => position === requested);
     }
-    const column = coordinateSystem === 'alignment'
-      ? requested - 1
-      : templatePositionCoordinates(template?.aligned ?? '').findIndex((position) => position === requested);
-    if (column < 0) {
+    if (column === null || column < 0) {
       setColumnError(`Template position ${requested.toLocaleString()} could not be mapped in this alignment.`);
       setColumnStatus('');
       return;
@@ -3347,7 +3602,72 @@ export function ClaudeScienceMsaViewer({
     setJumpToken((token) => token + 1);
     setColumnStatus(coordinateSystem === 'alignment'
       ? `Alignment column ${requested.toLocaleString()} shown.`
-      : `Template position ${requested.toLocaleString()} in ${template?.name ?? 'template'} shown at alignment column ${(column + 1).toLocaleString()}.`);
+      : activeReferenceCoordinates
+        ? `Reference position ${activeReferenceCoordinates[column].label} in ${activeNumberingReference?.name ?? 'reference'} shown at alignment column ${(column + 1).toLocaleString()}.`
+        : `Template position ${requested.toLocaleString()} in ${template?.name ?? 'template'} shown at alignment column ${(column + 1).toLocaleString()}.`);
+  };
+
+  const applyReferenceNumbering = () => {
+    if (!activeAlignment) return;
+    const numberingRow = activeAlignment.rows.find((row) => row.id === referenceNumberingRowDraft);
+    const normalizedPosition = firstResiduePositionDraft.trim();
+    const firstResiduePosition = /^[1-9]\d*$/.test(normalizedPosition)
+      ? Number(normalizedPosition)
+      : Number.NaN;
+    if (!numberingRow) {
+      setReferenceNumberingError('Choose a reference row from this alignment.');
+      setReferenceNumberingStatus('');
+      return;
+    }
+    const residueCount = numberingRow.aligned.replace(/[-.]/g, '').length;
+    if (
+      !Number.isSafeInteger(firstResiduePosition)
+      || firstResiduePosition < 1
+      || !Number.isSafeInteger(firstResiduePosition + residueCount - 1)
+    ) {
+      setReferenceNumberingError('First residue position must be a positive whole number in the safe coordinate range.');
+      setReferenceNumberingStatus('');
+      return;
+    }
+    if (
+      activeAlignment.referenceNumbering?.rowId === numberingRow.id
+      && activeAlignment.referenceNumbering.firstResiduePosition === firstResiduePosition
+    ) {
+      setReferenceNumberingError(null);
+      setReferenceNumberingStatus('Reference numbering is already applied.');
+      return;
+    }
+    const successMessage = 'Reference numbering saved as a new session result and opened.';
+    try {
+      const saved = onSaveAlignment({
+        ...activeAlignment,
+        referenceNumbering: { rowId: numberingRow.id, firstResiduePosition },
+      });
+      pendingReferenceNumberingStatusRef.current = { alignmentId: saved.id, message: successMessage };
+      setReferenceNumberingError(null);
+      setReferenceNumberingStatus(successMessage);
+      onActiveAlignmentChange(saved.id);
+    } catch (caught) {
+      setReferenceNumberingError(caught instanceof Error ? caught.message : 'Reference numbering could not be saved.');
+      setReferenceNumberingStatus('');
+    }
+  };
+
+  const clearReferenceNumbering = () => {
+    if (!activeAlignment?.referenceNumbering) return;
+    const plainAlignment = { ...activeAlignment };
+    delete plainAlignment.referenceNumbering;
+    const successMessage = 'Plain 1-based numbering saved as a new session result and opened.';
+    try {
+      const saved = onSaveAlignment(plainAlignment);
+      pendingReferenceNumberingStatusRef.current = { alignmentId: saved.id, message: successMessage };
+      setReferenceNumberingError(null);
+      setReferenceNumberingStatus(successMessage);
+      onActiveAlignmentChange(saved.id);
+    } catch (caught) {
+      setReferenceNumberingError(caught instanceof Error ? caught.message : 'Plain numbering could not be saved.');
+      setReferenceNumberingStatus('');
+    }
   };
 
   const resetAlignmentView = useCallback(() => {
@@ -3708,7 +4028,7 @@ export function ClaudeScienceMsaViewer({
                 {([
                   ['showOverview', 'Overview'],
                   ['showAlignmentAxis', 'Alignment axis'],
-                  ['showTemplateAxis', 'Template axis'],
+                  ['showTemplateAxis', activeReferenceCoordinates ? 'Reference axis' : 'Template axis'],
                   ['showRowStats', 'Row statistics'],
                   ['showRowStatsPanel', 'Row statistics table'],
                   ['showConservation', 'Conservation marks'],
@@ -3784,6 +4104,60 @@ export function ClaudeScienceMsaViewer({
                     <option value="taylor">Taylor</option>
                   </select>
                 </label>
+                <label title="When off, compatible IUPAC ambiguity codes are shown separately from hard differences.">
+                  <input
+                    type="checkbox"
+                    checked={strictDifferences}
+                    onChange={(event) => updateViewPreferences({ strictDifferences: event.target.checked })}
+                  />
+                  <span>Strict differences</span>
+                </label>
+                <div className="motif-cs-msa-reference-numbering" data-testid="msa-reference-numbering-editor" data-active={activeReferenceCoordinates ? true : undefined}>
+                  <div className="motif-cs-msa-reference-numbering-heading">
+                    <strong>Reference numbering</strong>
+                    <span>{activeReferenceCoordinates ? 'On' : 'Plain 1-based'}</span>
+                  </div>
+                  <label className="motif-cs-msa-view-select">
+                    <span>Reference row</span>
+                    <select
+                      value={referenceNumberingRowDraft}
+                      aria-label="Numbering reference row"
+                      onChange={(event) => {
+                        setReferenceNumberingRowDraft(event.target.value);
+                        setReferenceNumberingError(null);
+                        setReferenceNumberingStatus('');
+                      }}
+                    >
+                      {activeAlignment.rows.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}
+                    </select>
+                  </label>
+                  <label className="motif-cs-msa-reference-numbering-position">
+                    <span>First residue position</span>
+                    <input
+                      className="motif-cs-input"
+                      data-testid="msa-reference-numbering-position"
+                      type="number"
+                      inputMode="numeric"
+                      min={1}
+                      step={1}
+                      value={firstResiduePositionDraft}
+                      aria-invalid={referenceNumberingError ? true : undefined}
+                      aria-describedby="motif-cs-msa-reference-numbering-convention"
+                      onChange={(event) => {
+                        setFirstResiduePositionDraft(event.target.value);
+                        setReferenceNumberingError(null);
+                        setReferenceNumberingStatus('');
+                      }}
+                    />
+                  </label>
+                  <small id="motif-cs-msa-reference-numbering-convention">Gap columns append A…Z, AA… to the preceding position; leading gaps use one less than the first residue. Changes save as a new session result.</small>
+                  <div className="motif-cs-msa-reference-numbering-actions">
+                    <button className="motif-cs-mini-button" data-testid="msa-apply-reference-numbering" type="button" onClick={applyReferenceNumbering}>Apply to saved result</button>
+                    <button className="motif-cs-mini-button" data-testid="msa-clear-reference-numbering" type="button" disabled={!activeAlignment.referenceNumbering} onClick={clearReferenceNumbering}>Use plain 1-based</button>
+                  </div>
+                  {referenceNumberingError ? <span className="motif-cs-msa-reference-numbering-error" role="alert">{referenceNumberingError}</span> : null}
+                  <span className="motif-cs-msa-reference-numbering-status" data-empty={!referenceNumberingStatus || undefined} role="status" aria-live="polite">{referenceNumberingStatus}</span>
+                </div>
                 {colorMode === 'residue' ? (
                   <ResidueColorLegend molecule={activeAlignment.molecule} colorScheme={colorScheme} />
                 ) : null}
@@ -3820,6 +4194,28 @@ export function ClaudeScienceMsaViewer({
               <button ref={deleteButtonRef} className="motif-cs-mini-button motif-cs-msa-delete" type="button" onClick={() => setPendingDeleteId(activeAlignment.id)} title="Delete this alignment from the session" aria-label="Delete this alignment from the session"><Trash2 size={13} aria-hidden="true" /></button>
             )}
           </div>
+
+          {alphabetAnomalies.length > 0 && dismissedAlphabetWarningId !== activeAlignment.id ? (
+            <div
+              className="motif-cs-msa-alphabet-warning"
+              data-testid="msa-alphabet-warning"
+              role="status"
+              aria-live="polite"
+            >
+              <span>
+                <strong>Check molecule type.</strong>{' '}
+                {alphabetAnomalies.length} of {activeAlignment.rows.length} sequences contain only nucleotide letters but are displayed as protein.
+              </span>
+              <button
+                className="motif-cs-mini-button"
+                type="button"
+                aria-label="Dismiss molecule type warning"
+                onClick={() => setDismissedAlphabetWarningId(activeAlignment.id)}
+              >
+                Dismiss
+              </button>
+            </div>
+          ) : null}
 
           <details
             className="motif-cs-msa-provenance"
@@ -3861,6 +4257,11 @@ export function ClaudeScienceMsaViewer({
             <span><strong>{conservedPct}%</strong> conserved</span>
             <span><strong>{avgIdentity === null ? 'N/A' : `${formatIdentity(avgIdentity)}%`}</strong> avg to template</span>
             <span><strong>{differences.length.toLocaleString()}</strong> differences in overlap</span>
+            {ambiguities.length > 0 ? (
+              <span className="motif-cs-msa-stats-ambiguous" data-testid="msa-ambiguous-count" title="Columns with compatible ambiguity-code calls, counted separately from hard differences">
+                <strong>{ambiguities.length.toLocaleString()}</strong> compatible
+              </span>
+            ) : null}
           </div>
 
           {displayMode === 'viewer' ? (
@@ -3953,27 +4354,33 @@ export function ClaudeScienceMsaViewer({
                       }}
                     >
                       <option value="alignment">Alignment column</option>
-                      <option value="template">Template position</option>
+                      <option value="template">{activeReferenceCoordinates ? 'Reference position' : 'Template position'}</option>
                     </select>
                   </label>
                   <label>
-                    <span className="motif-cs-visually-hidden">{coordinateSystem === 'alignment' ? 'Alignment column' : 'Template position'}</span>
+                    <span className="motif-cs-visually-hidden">{coordinateSystem === 'alignment' ? 'Alignment column' : activeReferenceCoordinates ? 'Reference position' : 'Template position'}</span>
                     <input
                       data-testid="msa-coordinate-input"
-                      type="number"
+                      type={coordinateSystem === 'template' && activeReferenceCoordinates ? 'text' : 'number'}
                       name="alignment-coordinate"
                       autoComplete="off"
-                      inputMode="numeric"
-                      min={1}
-                      max={coordinateSystem === 'alignment' ? activeAlignment.alignmentLength : activeTemplate?.aligned.replace(/-/g, '').length ?? 0}
-                      step={1}
+                      inputMode={coordinateSystem === 'template' && activeReferenceCoordinates ? 'text' : 'numeric'}
+                      min={coordinateSystem === 'template' && activeReferenceCoordinates ? undefined : 1}
+                      max={coordinateSystem === 'template' && activeReferenceCoordinates
+                        ? undefined
+                        : coordinateSystem === 'alignment'
+                          ? activeAlignment.alignmentLength
+                          : activeTemplate?.aligned.replace(/-/g, '').length ?? 0}
+                      step={coordinateSystem === 'template' && activeReferenceCoordinates ? undefined : 1}
+                      pattern={coordinateSystem === 'template' && activeReferenceCoordinates ? '[0-9]+[A-Za-z]*' : undefined}
+                      placeholder={coordinateSystem === 'template' && activeReferenceCoordinates ? '101 or 101A' : undefined}
                       value={columnDraft}
                       onChange={(event) => {
                         setColumnDraft(event.target.value);
                         setColumnError(null);
                         setColumnStatus('');
                       }}
-                      aria-label={coordinateSystem === 'alignment' ? 'Go to alignment column' : 'Go to template position'}
+                      aria-label={coordinateSystem === 'alignment' ? 'Go to alignment column' : activeReferenceCoordinates ? 'Go to reference position' : 'Go to template position'}
                       aria-invalid={columnError ? true : undefined}
                       aria-describedby={columnError ? 'motif-cs-msa-column-error' : undefined}
                     />
@@ -3988,6 +4395,7 @@ export function ClaudeScienceMsaViewer({
                   alignment={activeAlignment}
                   referenceRowId={referenceRowId}
                   sortMode={sortMode}
+                  strictDifferences={strictDifferences}
                   onSortModeChange={(nextSortMode) => updateViewPreferences({ sortMode: nextSortMode })}
                   onJump={jumpToRowDifference}
                 />
@@ -3996,6 +4404,7 @@ export function ClaudeScienceMsaViewer({
                 key={activeAlignment.id}
                 alignment={activeAlignment}
                 referenceRowId={referenceRowId}
+                referenceCoordinates={activeReferenceCoordinates}
                 emphasis={emphasis}
                 colorMode={colorMode}
                 colorScheme={colorScheme}
@@ -4011,6 +4420,7 @@ export function ClaudeScienceMsaViewer({
                 focusRequest={matrixFocusRequest}
                 searchActive={Boolean(searchQuery)}
                 sortMode={sortMode}
+                strictDifferences={strictDifferences}
                 visibility={matrixVisibility}
                 resetToken={viewResetToken}
                 onTemplateChange={selectTemplate}

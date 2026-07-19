@@ -85,6 +85,53 @@ test.describe('Motif MSA viewer interactions', () => {
     return page.locator('[data-msa-grid-cell="true"][data-active-cell="true"]');
   }
 
+  test('reference coordinates and strict ambiguity mode work through the saved-result UI', async ({ page }) => {
+    await page.setViewportSize({ width: 1180, height: 820 });
+    await page.addInitScript(() => { window.localStorage.clear(); window.sessionStorage.clear(); });
+    await page.goto('/motif.html');
+    await expect(page.locator('.motif-cs-shell')).toBeVisible();
+    await page.evaluate(() => {
+      const api = (window as unknown as { motifAddAlignments?: (a: unknown) => number }).motifAddAlignments;
+      if (!api) throw new Error('motifAddAlignments unavailable');
+      api({
+        id: 'reference-coordinate-e2e',
+        name: 'Reference coordinate E2E',
+        molecule: 'dna',
+        referenceRowId: 'reference',
+        referenceNumbering: { rowId: 'reference', firstResiduePosition: 100 },
+        rows: [
+          { id: 'reference', name: 'Reference', aligned: 'AC--GTACGTAC' },
+          { id: 'read', name: 'Read', aligned: 'RCTTGTACGTAC' },
+        ],
+      });
+    });
+    await page.getByTestId('msa-open-button').dispatchEvent('click');
+    await expect(page.getByTestId('msa-alignment-view')).toBeVisible();
+
+    const referenceAxis = page.getByRole('row', { name: 'Reference positions for Reference' });
+    await expect(referenceAxis).toBeVisible();
+    await expect(referenceAxis.locator('[data-reference-coordinate="101B"]')).toBeVisible();
+    const compatibleCell = page.locator('[data-msa-row-id="read"] [data-alignment-column="1"]');
+    await expect(compatibleCell).toHaveAttribute('data-cell-outcome', 'ambiguous');
+    await expect(compatibleCell).toHaveAttribute('aria-label', /reference position 100/);
+
+    await page.getByTestId('msa-coordinate-system').selectOption('template');
+    const coordinateInput = page.getByTestId('msa-coordinate-input');
+    await expect(coordinateInput).toHaveAttribute('type', 'text');
+    await coordinateInput.fill('101b');
+    await page.getByRole('button', { name: 'Go', exact: true }).click();
+    await expect(page.locator('[data-msa-row-id="reference"] [data-alignment-column="4"]')).toHaveAttribute('data-jump', 'true');
+
+    await page.getByTestId('msa-view-menu-button').click();
+    await expect(page.getByTestId('msa-reference-numbering-editor')).toContainText('On');
+    await page.getByRole('checkbox', { name: 'Strict differences' }).check();
+    await expect(compatibleCell).toHaveAttribute('data-cell-outcome', 'substitution');
+
+    await page.getByTestId('msa-clear-reference-numbering').click();
+    await expect(page.getByRole('row', { name: 'Template positions for Reference' })).toBeVisible();
+    await expect(page.getByTestId('msa-reference-numbering-editor')).toContainText('Plain 1-based');
+  });
+
   test('keyboard arrows move the active gridcell and announce its residue', async ({ page }) => {
     await setup(page);
     const initial = activeGridCell(page);

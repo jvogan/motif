@@ -169,6 +169,40 @@ describe('Claude Science alignment normalization', () => {
     }), 'invalid_alignment');
   });
 
+  it('validates optional reference-numbering metadata against its pinned row and coordinate range', () => {
+    const base = {
+      molecule: 'dna' as const,
+      rows: [
+        { id: 'alpha', name: 'Alpha', aligned: 'A-CG' },
+        { id: 'beta', name: 'Beta', aligned: 'ATCG' },
+      ],
+    };
+    const invalidReferenceNumbering: unknown[] = [
+      null,
+      [],
+      'alpha:100',
+      {},
+      { rowId: '', firstResiduePosition: 100 },
+      { rowId: 'missing', firstResiduePosition: 100 },
+      { rowId: 'alpha', firstResiduePosition: '100' },
+      { rowId: 'alpha', firstResiduePosition: 0 },
+      { rowId: 'alpha', firstResiduePosition: 1.5 },
+      { rowId: 'alpha', firstResiduePosition: Number.MAX_SAFE_INTEGER },
+    ];
+    for (const referenceNumbering of invalidReferenceNumbering) {
+      expectAlignmentError(
+        () => normalizeArtifactAlignment({ ...base, referenceNumbering } as unknown),
+        'invalid_alignment',
+      );
+    }
+
+    expect(normalizeArtifactAlignment({
+      ...base,
+      referenceNumbering: { rowId: 'alpha', firstResiduePosition: 1 },
+    }).referenceNumbering).toEqual({ rowId: 'alpha', firstResiduePosition: 1 });
+    expect(normalizeArtifactAlignment(base)).not.toHaveProperty('referenceNumbering');
+  });
+
   it('rejects row and alignment names that could inject extra FASTA records', () => {
     expectAlignmentError(() => normalizeArtifactAlignment({
       name: 'review\n>forged-alignment',
@@ -448,6 +482,25 @@ describe('Claude Science alignment handoff formats', () => {
 
     if (typeof serialized.engine !== 'string' && serialized.engine?.parameters) serialized.engine.parameters[0] = '--changed';
     expect(alignment.engine.parameters).toEqual(['--auto']);
+  });
+
+  it('round-trips reference numbering defensively without changing FASTA or CLUSTAL bytes', () => {
+    const numbered = normalizeArtifactAlignment({
+      ...serializeArtifactAlignment(alignment),
+      referenceNumbering: { rowId: 'alpha', firstResiduePosition: 100 },
+    });
+    const serialized = serializeArtifactAlignment(numbered);
+
+    expect(serialized.referenceNumbering).toEqual({ rowId: 'alpha', firstResiduePosition: 100 });
+    expect(normalizeArtifactAlignment(serialized).referenceNumbering).toEqual({
+      rowId: 'alpha',
+      firstResiduePosition: 100,
+    });
+    expect(formatAlignedFasta(numbered)).toBe(formatAlignedFasta(alignment));
+    expect(formatClustal(numbered)).toBe(formatClustal(alignment));
+
+    if (serialized.referenceNumbering) serialized.referenceNumbering.firstResiduePosition = 250;
+    expect(numbered.referenceNumbering?.firstResiduePosition).toBe(100);
   });
 
   it('creates defensive MSA results and safe download names', () => {
