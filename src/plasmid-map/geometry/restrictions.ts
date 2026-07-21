@@ -32,9 +32,14 @@ export interface MapRestrictionCluster {
   /** Representative bp for the label anchor + leader (a real tick position). */
   anchorBp: number;
   ticks: readonly MapRestrictionTick[];
-  /** Distinct enzyme names, first-occurrence (position) order (deduped). */
+  /**
+   * Distinct enzyme names in DISPLAY order: Type IIS first, then first-occurrence
+   * (position) order. This is the order the drawn label reads in, and the order the
+   * cluster's tooltip must list, or the name the user clicked is not the name the
+   * tooltip opens with — "Nt.BstNBI +38" against a tooltip starting "HindIII, AluI".
+   */
   enzymes: readonly string[];
-  /** Names actually shown before overflow. */
+  /** Names actually shown before overflow — always a PREFIX of `enzymes`. */
   shownEnzymes: readonly string[];
   /** Count folded into the "+N" suffix. */
   overflow: number;
@@ -150,16 +155,22 @@ function buildCluster(
 ): MapRestrictionCluster {
   // Display/name lists are DISTINCT enzyme names — an enzyme that cuts several
   // times inside one cluster becomes a single name, never "BsmFI,BsmFI". Set
-  // preserves first-occurrence (position) order; ticks[] below keeps every real
-  // cut site, so tick counts / overflow-site banners are unaffected.
-  const enzymes = [...new Set(group.map((t) => t.enzyme))];
-  // Show Type IIS names first, still DISTINCT, before capping to maxNames.
-  const shownEnzymes = [
+  // preserves first-occurrence order; ticks[] below keeps every real cut site, so
+  // tick counts / overflow-site banners are unaffected.
+  //
+  // Type IIS names sort first because the label leads with them. The FULL list is
+  // ordered here, not just the capped one, so that `shownEnzymes` is a prefix of
+  // `enzymes` by construction rather than by coincidence — that is what lets the
+  // cluster's tooltip enumerate `enzymes` and still open on the name the label drew.
+  // Ordering only the shown slice is what produced a label reading "Nt.BstNBI +38"
+  // over a tooltip reading "HindIII, AluI, ...", with the clicked name 14th of 39.
+  const enzymes = [
     ...new Set([
       ...group.filter((t) => t.isTypeIIS).map((t) => t.enzyme),
       ...group.filter((t) => !t.isTypeIIS).map((t) => t.enzyme),
     ]),
-  ].slice(0, Math.max(1, maxNames));
+  ];
+  const shownEnzymes = enzymes.slice(0, Math.max(1, maxNames));
   // "+N" counts DISTINCT enzymes not shown (not raw ticks).
   const overflow = enzymes.length - shownEnzymes.length;
   // Anchor on a real middle tick so wrap-merged clusters still get a sane bp.

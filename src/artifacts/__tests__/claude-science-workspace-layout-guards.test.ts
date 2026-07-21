@@ -54,6 +54,66 @@ describe('Claude Science workspace layout guards', () => {
     expect(dataSettingsSource).toContain('Reset display');
   });
 
+  it('lets "Reset display" reach every floating tool window, including one already open', () => {
+    // The seven tool windows keep their geometry in plain state, deliberately: a
+    // size dragged onto a corner survives closing and reopening that window. What
+    // was missing is the way back — the button reset the panes and left every
+    // window exactly as small as it found it, which is the state a user presses
+    // it in.
+    const resetRects = sliceBetween(
+      artifactSource,
+      'const resetToolWindowRects = useCallback',
+      'const resetDisplayPreferences = useCallback',
+    );
+    const resetDisplay = sliceBetween(
+      artifactSource,
+      'const resetDisplayPreferences = useCallback',
+      'const downloadWorkspaceBackup',
+    );
+    expect(resetDisplay).toContain('resetToolWindowRects();');
+
+    // Named one at a time. A window left off this list is not reset and says
+    // nothing about it; the entire failure mode here is a silent omission.
+    for (const tool of ['Translations', 'Primer', 'Alignment', 'Gel', 'Assembly', 'CloningDesign', 'ConstructVerification']) {
+      expect(resetRects, `the ${tool} window is not restored by "Reset display"`)
+        .toContain(`set${tool}Win(default${tool}WindowRect());`);
+    }
+    expect(resetRects).toContain('setWindowResetSignal((value) => value + 1);');
+
+    // Resetting that state is only half of it. `initial` is read once, in a
+    // useState initialiser, so a window that is already open when the button is
+    // pressed never sees the new rect — measured on the live app, it sat at
+    // 280x180 while only the NEXT open came up correct, which is the one moment
+    // the user is guaranteed not to be watching. Every window must be handed the
+    // signal or it is one of the ones that does not move.
+    const windowElements = artifactSource.split('<FloatingWindow').slice(1)
+      .map((chunk) => chunk.slice(0, chunk.search(/\n\s*>\n/)));
+    expect(windowElements, 'expected seven floating tool windows').toHaveLength(7);
+    for (const element of windowElements) {
+      const rect = /initial=\{(\w+)\}/.exec(element)?.[1];
+      expect(rect, 'a FloatingWindow is rendered without an initial rect').toBeTruthy();
+      expect(element, `the ${rect} window is never told that a display reset happened`)
+        .toContain('resetSignal={windowResetSignal}');
+    }
+
+    // And the receiving end adopts it. Keyed on the counter rather than on
+    // `initial` changing identity, because `onCommit` writes every finished drag
+    // back into that same prop: adopting on identity would fire against the very
+    // gesture that produced it.
+    const adopt = sliceBetween(
+      artifactSource,
+      'const lastResetSignalRef = useRef(resetSignal);',
+      'const restoreWindow = useCallback',
+    );
+    expect(adopt).toContain('if (resetSignal === lastResetSignalRef.current) return;');
+    expect(adopt).toContain('clampWindowRect(initial, window.innerWidth, window.innerHeight, rightInset)');
+    expect(adopt).toContain('setRect(next);');
+    // A reset that restored the size but left the window maximized would not
+    // show the user the thing it had just fixed.
+    expect(adopt).toContain('setMaximized(false);');
+    expect(adopt).toContain('setCollapsed(false);');
+  });
+
   it('does not count the permanent Tools rail as workspace content', () => {
     expect(artifactSource).toContain(
       "const CONTENT_PANE_KEYS: readonly Exclude<PaneKey, 'tools'>[] = ['inventory', 'sequence', 'map'];",
@@ -86,6 +146,123 @@ describe('Claude Science workspace layout guards', () => {
     expect(artifactSource).toContain('ref={recordTabsRef}');
     expect(artifactSource).toContain("tabs?.querySelector<HTMLElement>('.motif-cs-record-tab[data-active=\"true\"]')");
     expect(artifactSource).toContain("tabs.scrollTo({ left: tabRight - tabs.clientWidth, behavior: 'auto' })");
+  });
+
+  it('makes every ORF count name the population it counted', () => {
+    // Measured on the app's own pUC19 (2,578 bp, circular) with the real
+    // detector. "221 ORFs" is true and points the wrong way: it is 221
+    // start-to-stop intervals at a 10 aa floor over six frames, counting the
+    // standard table's ATG/TTG/CTG starts — only 76 of the 221 begin ATG — and
+    // findORFs emits one entry per START, so the 221 sit on just 159 distinct
+    // (strand, stop) reading frames. Four of the eight rows the panel lists are
+    // the same reverse-strand frame entered at four different starts.
+    //
+    // The sharper defect the filing did not have: the record summary reports
+    // the SAME word for a 30 aa population — 96 on this record — so the app
+    // published 221 and 96 as "ORFs" with nothing to tell them apart, because
+    // only the summary's EMPTY branch named its floor. Both are legitimate
+    // populations, so both now say which they are; unifying them would have
+    // moved a number somebody may already be quoting.
+    expect(artifactSource).toContain('const ANALYSIS_ORF_MIN_AA = 10;');
+    expect(artifactSource).toContain('const SUMMARY_ORF_MIN_AA = 30;');
+
+    // The floor in the label must be the floor that was scanned, so the two
+    // cannot drift: both call sites take the constant, not a literal.
+    expect(artifactSource).toContain('findORFs(record.sequence, ANALYSIS_ORF_MIN_AA, translationCode.table, { topology })');
+    expect(artifactSource).toContain('findORFs(record.sequence, SUMMARY_ORF_MIN_AA, translationCode.table, { topology })');
+    expect(artifactSource).not.toMatch(/findORFs\(record\.sequence,\s*\d/);
+
+    // Chip and rail-popover meta both carry the floor.
+    expect(
+      artifactSource.match(/\$\{allOrfs\.length\} ORFs ≥\$\{ANALYSIS_ORF_MIN_AA\} aa/g),
+      'both the summary chip and the popover meta must name the floor',
+    ).toHaveLength(2);
+
+    // The record summary names its floor in the non-empty branch too, not only
+    // when the count is zero.
+    expect(artifactSource).toContain('`ORFs: ${orfs.length} ≥${SUMMARY_ORF_MIN_AA} aa (longest ');
+    expect(artifactSource).toContain('`ORFs: none ≥${SUMMARY_ORF_MIN_AA} aa`');
+    // ...and the machine-readable copy carries it as data.
+    expect(artifactSource).toContain('minAminoAcids: SUMMARY_ORF_MIN_AA,');
+
+    // The panel states the definition next to the count, including the
+    // denominator that explains the inflation. Derived from the SAME array the
+    // rows render from so the two cannot disagree about one quantity.
+    expect(artifactSource).toContain('new Set(allOrfs.map((orf) => `${orf.strand}:${orf.end}`)).size');
+    expect(artifactSource).toContain('start-to-stop intervals ≥{ANALYSIS_ORF_MIN_AA} aa');
+    expect(artifactSource).toContain('across {orfReadingFrameCount} distinct reading frames');
+    // The start set comes from the table the scan used, because the panel has a
+    // "Record genetic code" select and the tables disagree — standard initiates
+    // at ATG/TTG/CTG, vertebrate mitochondrial at ATT/ATC/ATA/ATG/GTG. A fixed
+    // list here would be one more readout true of some other configuration.
+    expect(artifactSource).toContain('translationCode.table.starts');
+    expect(artifactSource).toContain('starting at {orfStartCodons}');
+    // The bare noun is what misled; it must not come back.
+    expect(artifactSource).not.toContain('detected ORFs.');
+  });
+
+  it('renders no chip that the stylesheet unconditionally hides', () => {
+    // Four chips — a record count and a length in the topbar, a type and a
+    // length in the sequence title — were rendered on every load and hidden by
+    // BASE-block rules, so no viewport, record type, pane placement or media
+    // mode could reveal them. Measured at 225 widths from 320 to 2560 and across
+    // 0/1/13 records, protein records, every pane toggled and print /
+    // forced-colors / prefers-contrast / dark: `display: none`, 0x0, every time.
+    // Deleting them changed 0 of 462 element rects across 7 widths.
+    //
+    // The filing supposed the base rule had been added later and the
+    // media-query one left behind as redundant; `git log -S` refutes that —
+    // both, and the sequence-title rule, arrived in the initial commit.
+    const topbarMeta = sliceBetween(
+      artifactSource,
+      '<div className="motif-cs-topbar-meta">',
+      '</header>',
+    );
+    expect(topbarMeta, 'topbar chip is hidden by the stylesheet; do not render it').not.toContain('motif-cs-chip');
+
+    const titleActions = sliceBetween(
+      artifactSource,
+      '<div className="motif-cs-title-actions">',
+      '</div>',
+    );
+    expect(titleActions, 'sequence-title chip is hidden by the stylesheet; do not render it').not.toContain('motif-cs-chip');
+
+    // ...and the rules that hid them are gone rather than left to hide markup
+    // that no longer exists.
+    expect(artifactCss).not.toContain('.motif-cs-topbar-meta > .motif-cs-chip');
+    expect(artifactCss).not.toContain('.motif-cs-sequence-title .motif-cs-title-actions .motif-cs-chip');
+    // This one never matched anything: the topbar's only children are
+    // .motif-cs-brand and .motif-cs-topbar-meta, so a direct-child chip
+    // selector had nothing to style even before the chips were removed.
+    expect(artifactCss).not.toContain('.motif-cs-topbar > .motif-cs-chip');
+  });
+
+  it('gives the record tab strip a themed scrollbar and no inert webkit rules', () => {
+    // Thirteen records need 1137px, so the strip scrolls from 1024 down: at
+    // 1024 pCDFDuet-1 is entirely off-strip, at 900 pRSFDuet-1 goes with it.
+    // The edge fades work (measured headed: 1.15:1 against the field, and the
+    // shadow swaps ends with scroll position), but the bar is what says how
+    // much is left, and with no colour it fell through to the platform default
+    // at 1.72:1 in BOTH light themes and 2.66:1 in both dark ones — identical
+    // rgb across themes, the tell that it was never themed at all. Now 4.30,
+    // 5.38, 4.59 and 4.50, measured HEADED because headless Chromium paints no
+    // scrollbar for a non-root scroller and would show nothing to measure.
+    const strip = sliceBetween(artifactCss, '.motif-cs-record-tabs {', '}');
+    expect(strip).toContain('overflow-x: auto');
+    expect(strip, 'record tab strip left on the platform default scrollbar').toContain('scrollbar-color:');
+
+    // One scrollbar for the app: the same two tokens the inventory list and the
+    // alignment matrix already use.
+    const inventory = sliceBetween(artifactCss, '.motif-cs-inventory-groups {', '}');
+    const colourOf = (rule: string) => /scrollbar-color:\s*([^;]+);/.exec(rule)?.[1].replace(/\s+/g, ' ').trim();
+    expect(colourOf(strip)).toBeTruthy();
+    expect(colourOf(strip)).toBe(colourOf(inventory));
+
+    // `scrollbar-width` above is a standard property, so Chromium ignores these
+    // pseudo-elements entirely. The pair that used to sit here declared a 5px
+    // bar and a border-strong thumb and delivered neither — 11px, Chromium's
+    // own thumb. Dead text that reads like live styling is worse than none.
+    expect(artifactCss).not.toContain('.motif-cs-record-tabs::-webkit-scrollbar');
   });
 
   it('only advertises pane reordering where the rendered layout can honor it', () => {
@@ -182,7 +359,7 @@ describe('Claude Science workspace layout guards', () => {
     expect(artifactSource).toContain("const STACKED_LAYOUT_MEDIA = '(max-width: 767px)';");
     expect(artifactSource).toContain("const TWO_ROW_LAYOUT_MEDIA = '(min-width: 640px) and (max-width: 1535px)';");
     expect(artifactSource).toContain("const OVERLAY_TOOLS_LAYOUT_MEDIA = '(max-width: 1535px)';");
-    expect(artifactSource).toContain("sequence: { min: 240, max: 760 }");
+    expect(artifactSource).toContain("sequence: { min: 240, max: 2000 }");
     expect(artifactSource).toContain("map: { min: 300, max: 900 }");
     expect(artifactCss).toMatch(/\.motif-cs-resize-handle\[data-pane="sequence"\]\s*\{[\s\S]*?display:\s*block/);
     expect(artifactCss).toMatch(/@media \(min-width: 768px\) and \(max-width: 1535px\)[\s\S]*?\.motif-cs-resize-handle\[data-pane="inventory"\],[\s\S]*?\.motif-cs-resize-handle\[data-pane="sequence"\][\s\S]*?display:\s*block/);
@@ -336,9 +513,24 @@ describe('Claude Science workspace layout guards', () => {
     expect(artifactSource).toContain('addTranslationLayer();');
     expect(artifactSource).toContain('onTranslationTrackSelect={handleTranslationTrackSelectAndReveal}');
     expect(artifactSource).toMatch(/>\s*\+ Feature\s*<\/button>/);
-    expect(artifactSource).toContain('<span className="motif-cs-label-full">Rev comp</span>');
-    expect(artifactSource).toContain('<span className="motif-cs-label-short">RC</span>');
-    expect(artifactSource).toMatch(/>\s*Protein\s*<\/button>/);
+
+    // Both controls in this bar that add a record to the inventory say so. They
+    // used to be spelled like the "Copy" beside them, so pressing "Rev comp"
+    // took a session from 13 records to 14 and opened a new Derived group with
+    // nothing in the label to warn of it — and with no selection it is the only
+    // enabled control here, so it was the one thing the resting bar invited.
+    // "New" is the word the Export panel already uses to tell "Copy rev comp"
+    // from "New rev comp"; reusing it keeps the two surfaces agreeing.
+    expect(artifactSource).toContain('<span className="motif-cs-label-full">New rev comp</span>');
+    expect(artifactSource).toContain('<span className="motif-cs-label-short">+ RC</span>');
+    expect(artifactSource).toContain('<span className="motif-cs-label-full">New protein</span>');
+    expect(artifactSource).toContain('<span className="motif-cs-label-short">+ Prot</span>');
+    expect(artifactSource).toContain('aria-label="New rev comp record"');
+    expect(artifactSource).toContain('aria-label="New protein record"');
+    // The rule is decoration; the labels carry the meaning, so it stays hidden
+    // from assistive tech and must never become the only signal.
+    expect(artifactSource).toContain('<span className="motif-cs-selection-action-rule" aria-hidden="true" />');
+    expect(artifactCss).toMatch(/\.motif-cs-selection-actions \.motif-cs-selection-action-rule\s*\{[\s\S]*?width:\s*1px/);
     expect(artifactSource).toContain("onClick={() => setSequenceViewMode('standard')}");
     expect(artifactSource).toContain("onClick={() => setSequenceViewMode('detail')}");
     expect(artifactSource).toContain('if (selectionSummary) {');
@@ -461,6 +653,29 @@ describe('Claude Science workspace layout guards', () => {
     expect(artifactCss).not.toContain('.motif-cs-window-resize {\n    right: 58px;');
   });
 
+  it('keeps the window corner grip above anything the window body stacks', () => {
+    // The grip used to declare no z-index, so it lost to the MSA toolbar's
+    // sticky z-index: 10 wherever the two overlapped — which is the whole
+    // bottom-right corner once the toolbar wraps taller than a short body. The
+    // press then went to the toolbar and the window could not be mouse-resized.
+    const declared = (selector: string) => {
+      const rule = artifactCss.match(new RegExp(`\\n${selector.replace('.', '\\.')}\\s*\\{([\\s\\S]*?)\\n\\}`));
+      const found = rule?.[1].match(/\n\s*z-index:\s*(\d+);/);
+      return found ? Number(found[1]) : null;
+    };
+    const grip = declared('.motif-cs-window-resize');
+    const toolbar = declared('.motif-cs-msa-toolbar');
+    const dropOverlay = declared('.motif-cs-msa-drop-overlay');
+    // Absolute floors as well as the comparison: a guard that only checks
+    // "higher than the others" still passes if every number drifts together.
+    expect(grip).toBe(20);
+    expect(toolbar).toBe(10);
+    expect(dropOverlay).toBe(12);
+    expect(grip!).toBeGreaterThan(Math.max(toolbar!, dropOverlay!));
+    // Scoped to the window, so the raised value cannot reorder anything outside it.
+    expect(artifactCss).toMatch(/\.motif-cs-window\s*\{[\s\S]*?isolation:\s*isolate;/);
+  });
+
   it('limits floating-window drags to the initiating primary pointer', () => {
     expect(artifactSource).toContain('if (!event.isPrimary || event.button !== 0) return;');
     expect(artifactSource).toContain('pointerId: event.pointerId,');
@@ -538,9 +753,15 @@ describe('Claude Science workspace layout guards', () => {
 
   it('exports each record with its own restriction-enzyme source settings', () => {
     expect(artifactSource).toContain('const itemSources = enzymeSourcesByRecord[item.id] ?? DEFAULT_ENZYME_SOURCES;');
-    expect(artifactSource).toContain('resolveEnzymeUnion(itemSources)');
+    expect(artifactSource).toContain('restrictionEnzymesForSources(itemSources, customEnzymes)');
     expect(artifactSource).toContain('[customEnzymes, enzymeSourcesByRecord, exportRecords, needsInventoryExport]');
     expect(artifactSource).not.toContain('recordSitesForExport(item, scanEnzymes)');
+    // Resolve through the shared helper, never a second inline union. Calling
+    // resolveEnzymeUnion directly skips the empty-source check the helper
+    // carries, and it answers an empty list with the Common working set — so
+    // the export listed sites for enzymes every other surface reported as not
+    // selected.
+    expect(artifactSource).not.toContain('resolveEnzymeUnion(itemSources)');
   });
 
   it('collapses absent intermediate-width pane tracks and preserves wider-layout preferences', () => {
@@ -552,5 +773,44 @@ describe('Claude Science workspace layout guards', () => {
     expect(artifactCss).toContain('.motif-cs-main[data-content-pane-count="1"]');
     expect(artifactCss).toMatch(/\.motif-cs-sidebar \.motif-cs-import-slot\s*\{\s*min-height:\s*0/);
     expect(artifactCss).toContain('clamp(160px, var(--motif-cs-inventory-pane-width, 210px), 38vw)');
+  });
+
+  it('lets the collapsed Tools rail scroll once its fifteen tools stop fitting', () => {
+    // Below 695px of viewport the rail's tools do not fit and used to simply
+    // leave the screen -- Settings and Alignment unreachable, with wheel,
+    // touch-drag and 120 presses of Tab all measured as no-ops. Only page zoom
+    // under 100% recovered them.
+    const rule = sliceBetween(
+      artifactCss,
+      '@media (max-height: 694px) {',
+      '\n}',
+    );
+    expect(rule).toContain('.motif-cs-inspector[data-tools-pinned="false"]');
+    expect(rule).toContain('overflow-y: auto');
+    // pointer-events must be restored INSIDE the query. Without it the wheel
+    // targets whatever sits beneath the rail, so scrolling works only while the
+    // pointer is over an icon and is dead in the 3px gaps between them, and the
+    // thumb cannot be dragged at all. Measured: 103 over an icon, 0 in a gap.
+    expect(rule, 'scroll without pointer-events is a mirage -- dead in the gaps').toContain('pointer-events: auto');
+    // One scrollbar for the app: same pair as the matrix and the inventory.
+    expect(rule).toMatch(/scrollbar-color:\s*color-mix\(in srgb, var\(--text-muted\) 68%, var\(--border-strong\)\)\s*color-mix\(in srgb, var\(--bg-secondary\) 78%, var\(--bg-primary\)\)/);
+
+    // The rail must stay pointer-events:none OUTSIDE the query, because above
+    // this height there IS empty rail space and it must keep passing clicks
+    // through to a floating workspace underneath (measured empty space: 205px
+    // at 900, 65px at 760, 5px at 700, 0px at 694 and below).
+    const collapsed = sliceBetween(artifactCss, '.motif-cs-inspector[data-tools-pinned="false"] {', '}');
+    expect(collapsed).toContain('pointer-events: none');
+
+    // 694 is derived, not chosen: 15 heads x 34px + 14 gaps x 3px + title and
+    // 8px padding = 625px of content under a 70px top bar, so 695 is the last
+    // height that fits. These are the inputs -- if any moves, re-derive.
+    expect(collapsed).toContain('padding: 8px 5px');
+    expect(collapsed).toContain('gap: 3px');
+    expect(artifactCss).toMatch(/\.motif-cs-inspector\[data-tools-pinned="false"\] \.motif-cs-panel-head\s*\{[\s\S]*?min-height:\s*34px/);
+    // Tool count is the other input. 16 rail labels exist in the artifact, 15 of
+    // them in this rail; adding one moves the breakpoint and must fail here.
+    expect((artifactSource.match(/data-rail-label="/g) ?? []).length,
+      'rail tool count changed -- re-derive the 694px breakpoint').toBe(16);
   });
 });

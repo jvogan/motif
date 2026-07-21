@@ -31,9 +31,110 @@
 .motif-cs-msa-workspace .motif-cs-msa-alphabet-warning strong { color: var(--text-primary); }
 .motif-cs-msa-workspace .motif-cs-msa-alphabet-warning .motif-cs-mini-button { margin-left: auto; }
 
+/* The cursor channel is declared on the frame rather than the matrix because the
+   overview viewport is the matrix's sibling and draws on this same channel: "the
+   window you are looking at" and "the cell the keyboard is on" are one statement
+   about where the system is pointing, made by two widgets that never abut.
+   Accent is left to mean one thing only — the region you committed to. */
+.motif-cs-msa-matrix-frame {
+  /* The cursor has to stay legible ON TOP of the selection rule, because its
+     default position is the selection's own corner: a drag-select leaves it
+     there, and a single click makes a 1x1 band pixel-coincident with it. Accent
+     cannot do that — every accent variant lands within 1.3:1 of the rule. Ink
+     puts the cursor on the luminance axis, which no other overlay uses and which
+     red-green colour vision deficiency does not compress. */
+  --motif-cs-msa-cursor-rule: var(--text-primary);
+  --motif-cs-msa-cursor-keyline: var(--bg-primary);
+}
+
+/* ===== Matrix shell: the frame's clip boundary is not the visible box =====
+   The frame clips, so anything it cannot fit disappears with no scrollbar leading
+   to it. Only the overview and the residue viewport belong in a box like that.
+   The pan slider, status line, order note and selection readout are siblings held
+   by this shell, so they keep their height while the frame absorbs the shrink.
+
+   The shell also carries the enclosure the frame used to draw, so moving those
+   rows out of the clipped box does not move them out of the bordered one — the
+   assembly looks exactly as it did, and the rows' own border-tops still read as
+   dividers within it. */
+.motif-cs-msa-matrix-shell {
+  position: relative; /* containing block for the mid-drag selection readout */
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  /* The shell must never be shorter than what it holds, because a border wraps the
+     BORDER BOX and not the overflow. At `min-height: 0` this box measured 97px
+     against 233px of content on a 300px panel, so its bottom border painted a
+     hairline across the residue grid, 8px into row 2 — reading as a row divider that
+     is not one. MSA_MATRIX_SHELL_MIN_HEIGHT derives the floor from the frame's floor,
+     the rows below it, and this border.
+
+     NOT `min-height: auto`, and not min-content or fit-content: measured, all three
+     resolve identically to 469px, because the frame contributes its whole matrix
+     height to a content-based minimum rather than its own floor. All three bind at
+     1024x768 and take body overflow from 0 to 40px, introducing whole-interface
+     scrolling. */
+  min-height: var(--motif-cs-msa-shell-min-height, 234px);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+}
+
+.motif-cs-msa-matrix-shell > .motif-cs-msa-matrix-frame {
+  /* The floor is what makes the body scroll again. At 0 the frame collapses and
+     nothing ever overflows, so the residue viewport just vanishes on a short panel;
+     with a floor the shell outgrows the workspace, the workspace does not clip, and
+     the body's overflow:auto finally has something to scroll.
+
+     The value is DERIVED, not chosen: MSA_MATRIX_FRAME_MIN_HEIGHT in the viewer sums
+     the floors this frame's own two children already declare — the overview row's
+     30px and .motif-cs-msa-matrix-scroll's 142px — for 172px today. A frame shorter
+     than that clips content that has refused to shrink one box further in;
+     deriving it as ruler + 3 rows instead gave 147 and measurably
+     lost 25px to the clip. The literal below is only the fallback for a render that
+     somehow arrives without the variable.
+
+     Not `min-height: min-content`, which computes to ~469px and forces whole-UI
+     scrolling at 1024x768.
+
+     This rule out-specifies (0,2,0 vs 0,1,0) the bare .motif-cs-msa-matrix-frame in
+     motif-artifact.css that still sets min-height:0 and the old enclosure, so the
+     outcome does not depend on which stylesheet loads first. Verified by measurement,
+     not by arithmetic: computed min-height 172px, border-top-width 0px, background
+     rgba(0,0,0,0) on the frame; 1px / rgb(231,231,231) / rgb(255,255,255) on the
+     shell — one border, painted once, on the outer box. */
+  min-height: var(--motif-cs-msa-frame-min-height, 172px);
+  /* flex-shrink stays at 1. Setting it to 0 does fix S2 outright — the residue
+     viewport holds 377px and 9/9 rows through a whole drag — but the frame then
+     demands its full content height everywhere, and 1024x768 goes to 39px of body
+     overflow: whole-UI scrolling, the same regression `min-height: min-content`
+     was reverted for (40px), reached by a different route. Measured, not assumed. */
+  /* The enclosure moved to the shell; drawing it twice would double the border. */
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
 .motif-cs-msa-matrix {
   position: relative;
-  --motif-cs-msa-selection-rule: color-mix(in srgb, var(--accent) 86%, var(--text-primary));
+  /* Undiluted accent, NOT `color-mix(... var(--accent) 86%, var(--text-primary))`.
+     `--text-primary` is by definition the maximum-contrast colour against the
+     background, so mixing any mark toward it buys contrast against the mark's own
+     backdrop — a quantity this design already holds in surplus — and spends it on
+     the scarce one: separation from the CURSOR, which IS ink
+     (`--motif-cs-msa-cursor-rule`, ~line 46), and which sits pixel-coincident with
+     the band's own corner after a drag-select. Self-defeating for the one pair that
+     has to stay apart.
+
+     Read out of Chrome (not recomputed from source), band-vs-cursor WCAG,
+     mixed -> undiluted:
+       light 2.94 -> 3.60 (crosses 3:1)   dark 2.41 -> 2.79
+       claude-light 2.20 -> 2.52          claude-dark 1.95 -> 2.19
+     Nothing is given up for it: band-vs-`--bg-primary` goes 5.98-6.66 -> 5.29-5.76,
+     still nearly double the 3:1 floor a region boundary owes.
+     `claude-science-msa-colour-guards.test.ts` pins both the shape and that floor. */
+  --motif-cs-msa-selection-rule: var(--accent);
   --motif-cs-msa-hover-rule: color-mix(in srgb, var(--text-primary) 42%, var(--border-strong));
   --motif-cs-msa-jump-rule: var(--purple);
 }
@@ -89,12 +190,28 @@
 }
 
 /* Roving keyboard focus stays independent of hover, selection, search, and
-   jump overlays so every combination remains visible. */
+   jump overlays so every combination remains visible. It cannot share the
+   selection's hue: the cursor's default position IS the selection's own corner,
+   and a single click makes the two pixel-coincident, where the cursor (z 5)
+   covers the band (z 3) entirely. Ink plus a surface keyline instead. The
+   channels are disjoint on purpose — outline + ::before here, box-shadow for
+   search, ::after for the jump tick — so one cell can carry all three at once. */
 .motif-cs-msa-symbol[data-active-cell='true'] {
   position: relative;
   z-index: 5;
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--motif-cs-msa-cursor-rule);
   outline-offset: -2px;
+}
+/* Keeps the ink ring off any saturated cell fill — blocks mode reaches accent
+   52%. Collapses to nothing below ~4px cells, which is correct: at that zoom
+   the cursor should read as a solid tile. */
+.motif-cs-msa-symbol[data-active-cell='true']::before {
+  content: '';
+  position: absolute;
+  inset: 2px;
+  z-index: 1;
+  border: 1px solid var(--motif-cs-msa-cursor-keyline);
+  pointer-events: none;
 }
 .motif-cs-msa-symbol[data-active-cell='true']:focus-visible {
   outline-width: 3px;
@@ -145,6 +262,31 @@
   border: 1px solid color-mix(in srgb, var(--accent) 26%, transparent);
   color: var(--text-primary, inherit);
 }
+/* Mid-drag the readout floats over the shell's bottom chrome instead of claiming a row
+   of its own. Taking a row while the pointer is down shrinks the residue viewport by
+   46px and cuts 1-2 rows off the bottom — moving the rows being dragged toward.
+
+   The viewer only raises data-live when that chrome strip is measurably tall enough to
+   hold it (see readoutPlacement). The float is anchored to the shell's bottom and grows
+   upward, so where the strip is a lone status line — which is whenever the alignment
+   fits horizontally and no pan row mounts — it overhangs into the last residue row.
+   Measured at 7px of opaque panel across the rows the pointer is aiming at, which is
+   worse than the shrink the float exists to avoid, so that case stays in flow.
+
+   For the length of the drag it covers the status line and pan slider, neither of which
+   can be operated while a pointer is captured on the grid. That is NOT a claim they do
+   not matter: on a short panel the whole strip is below the fold, so the float is
+   off-screen there too and provides no feedback at all. Where mid-drag feedback should
+   actually live is a separate question, filed rather than answered here. */
+.motif-cs-msa-selection-readout[data-live] {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 3;
+  margin-top: 0;
+}
+
 .motif-cs-msa-selection-readout strong { color: var(--accent); }
 .motif-cs-msa-selection-readout span { color: var(--text-secondary, inherit); }
 .motif-cs-msa-selection-readout .motif-cs-mini-button { margin-left: auto; }
@@ -184,8 +326,11 @@
   outline: none;
 }
 
-/* Remove the legacy jump wash before later residue, shade, and blocks rules
-   restore their own backgrounds. The marker itself is drawn near search. */
+/* position:relative is load-bearing: it anchors the edge tick drawn further
+   down. The background/shadow resets are only a baseline saying "being the jump
+   target is not itself a fill" — later residue, shade, difference, and search
+   rules deliberately override them, so a marked cell still shows its own
+   colouring. Do not raise this rule's specificity to make them stick. */
 .motif-cs-msa-symbol[data-jump='true'] {
   position: relative;
   background: transparent;
@@ -770,21 +915,81 @@
   top: 25%;
   bottom: 25%;
   left: 1px;
-  width: 3px;
+  /* Zooming out shrinks cells to ~3px, where a fixed 3px tick is wider than the
+     column it marks and bleeds into its neighbour. Cap it against cell width. */
+  width: min(3px, max(1px, calc(var(--motif-cs-msa-cell-width, 10px) * 0.5)));
   border-radius: 999px;
   background: var(--motif-cs-msa-jump-rule);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--bg-primary) 78%, transparent);
   pointer-events: none;
 }
 
+/* Where the tick sits on a saturated fill, the translucent halo above is not
+   enough separation — purple on the dark conservation bar measures 1.5:1, and
+   in blocks mode a "positive" cell is purple under a purple tick. An opaque
+   ring gives the marker its own edge to be read by, independent of the fill.
+   Must stay above the forced-colors block below: equal specificity, so a later
+   rule would silently reinstate a shadow there. */
+.motif-cs-msa-hist-cell[data-jump='true']::after,
+.motif-cs-msa-logo-col[data-jump='true']::after,
+.motif-cs-msa-matrix[data-blocks='true'] .motif-cs-msa-symbol[data-jump='true']::after {
+  box-shadow: 0 0 0 1px var(--bg-primary);
+}
+
+/* Forced-colors neutralises background and box-shadow, which would erase the
+   tick entirely. Re-express it as a system-coloured bar so the jump target
+   stays findable in high-contrast mode. */
+@media (forced-colors: active) {
+  .motif-cs-msa-hist-cell[data-jump='true']::after,
+  .motif-cs-msa-logo-col[data-jump='true']::after,
+  .motif-cs-msa-aa[data-jump='true']::after,
+  .motif-cs-msa-symbol[data-jump='true']::after {
+    /* Not Highlight: it resolves near-CanvasText, so the tick reads as one more
+       black bar among the letters, and it is semantically the selection colour. */
+    background: LinkText;
+    forced-color-adjust: none;
+    box-shadow: none;
+  }
+  /* Forced-colors collapses every border and outline onto one system ink, which
+     would re-merge the cursor and the selection rule that the cursor token above
+     exists to separate. Highlight is right here, unlike for the jump tick: this
+     one IS the selection. */
+  .motif-cs-msa-selection-band {
+    border-color: Highlight;
+    forced-color-adjust: none;
+  }
+}
+
 /* ===== Sequence search ===== */
+/* The elastic member of the control row. With one item that can give width back,
+   the row cannot be forced to wrap by the others — that is a property, not a
+   coincidence that happens to hold at one window size. */
 .motif-cs-msa-search {
   display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
   align-items: center;
   gap: 4px;
 }
 .motif-cs-msa-search-icon { color: var(--text-muted, inherit); flex: 0 0 auto; }
-.motif-cs-msa-search-input { width: 150px; min-width: 90px; }
+
+/* The shared .motif-cs-input is sized for stacked form panels: 36px tall with
+   12px/6px block margins. Inline in a control row that is ~28px of dead
+   height. This sheet loads before motif-artifact.css, so an equal-specificity
+   override would lose on order — hence the parent-scoped selector. */
+.motif-cs-msa-search .motif-cs-msa-search-input {
+  width: auto;
+  min-width: 90px;
+  max-width: 190px;
+  flex: 1 1 150px;
+  height: 26px;
+  margin: 0;
+}
+/* React renders an empty string as no child at all, so this matches whenever no
+   query is typed — the row gets 52px back for free while idle. */
+.motif-cs-msa-search-count:empty {
+  min-width: 0;
+}
 .motif-cs-msa-search-count {
   min-width: 52px;
   font-size: 11px;

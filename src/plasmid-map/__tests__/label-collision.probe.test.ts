@@ -306,6 +306,13 @@ describe('label collision regression coverage', () => {
     { name: 'circular 40feat/20site @320(dock)', input: base({ mode: 'circular', topology: 'circular', width: 320, height: 320, features: denseFeatures(40, 6000), restrictionSites: denseSites(20, 6000) }) },
     { name: 'linear 24feat/28site @1000', input: base({ mode: 'linear', topology: 'linear', length: 9276, width: 1000, height: 420, features: denseFeatures(24, 9276), restrictionSites: denseSites(28, 9276) }) },
     { name: 'linear 40feat/20site @1000', input: base({ mode: 'linear', topology: 'linear', width: 1000, height: 420, features: denseFeatures(40, 6000), restrictionSites: denseSites(20, 6000) }) },
+    // The circular ruler WRAPS, so a length barely over a nice-step multiple leaves the
+    // last tick a few bp short of the origin and prints its number on top of "0". 4008
+    // on a 1000 step leaves 8 bp — about 3px of arc — and "4000" is four times wider
+    // than "0", so "0" vanishes and the map reads as starting at 4000. Every other
+    // fixture here has a comfortable remainder (6000→1000, 9276→1276, 4000→500), which
+    // is exactly why this shipped unnoticed.
+    { name: 'circular 4008bp origin seam @720', input: base({ mode: 'circular', topology: 'circular', length: 4008, features: denseFeatures(6, 4008), restrictionSites: denseSites(8, 4008) }) },
   ];
 
   for (const s of scenarios) {

@@ -133,10 +133,38 @@ const DEFAULT_ANGLE_STEP_DEG = 1.5;
  *
  * It never changes WHICH spots exist — every tier/shift combination is still attempted —
  * only the ORDER they are tried in. A single label therefore still places iff some spot
- * fits, exactly as before, so this can never drop a label; it only steers each label
- * toward a spot nearer its own tick.
+ * fits, exactly as before. That does NOT make the label COUNT invariant — see point 2
+ * below, which is precisely the mistake this sentence used to invite.
+ *
+ * Set to one DEFAULT_ANGLE_STEP_DEG: stepping out one tier costs exactly what the
+ * smallest sideways step costs. That is the right exchange rate because a tier bump
+ * adds NO tangential displacement while even the smallest slide adds several units
+ * of it, and tangential displacement is what actually breaks a leader (see the
+ * 'pointing at their own tick' test in plasmid-map/__tests__/layout.test.ts).
+ *
+ * Chosen by measurement, not taste. Worst-case sideways offset of a label from its own
+ * tick's spoke, in ring-radius %, on the bundled plasmids at 1920x1080:
+ *   value 4 (previous): 26%   <- one leader ran 86 degrees off radial, unreadable
+ *   value 1.5:           5%
+ *   value <= 1:          0%   but stacks far enough out to shrink the drawn ring.
+ *
+ * Two measured constraints matter when changing this value:
+ *
+ * 1. "Ring size is unchanged at 1.5" holds only on the SPARSE bundled fixtures. On a
+ *    crowded ring WITH features the drawn ring (radius / bg.width) goes 77.0% -> 71.4%
+ *    at 1920x1080 and 67.8% -> 66.2% at 1440x900. The ring does shrink here, so the
+ *    value may still be affordable. Re-measure both on a crowded-with-features map
+ *    before changing it.
+ *
+ * 2. The label COUNT is not invariant. The pack is sequential, and this same constant
+ *    also governs the FEATURE label pass, which runs first and whose output becomes the
+ *    obstacle set for the restriction pass. Measured on a crowded ring, totals move both
+ *    ways: 32 -> 31 on one seed (the casualty was a feature label, "M13-rev primer") and
+ *    24 -> 25 on another. A sweep with `features: []` cannot see this at all — with no
+ *    features the outer tiers are empty, the packer stacks freely, and the effect very
+ *    nearly vanishes. Any future sweep here MUST vary features.
  */
-const TIER_ESCALATION_ANGLE_EQUIV_DEG = 4;
+const TIER_ESCALATION_ANGLE_EQUIV_DEG = 1.5;
 const CENTERED_LABEL_RING_CLEARANCE_PX = 1;
 const CENTERED_LABEL_COLLISION_PAD_PX = 0;
 /**

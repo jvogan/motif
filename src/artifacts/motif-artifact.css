@@ -381,14 +381,30 @@ summary,
   background-repeat: no-repeat;
   background-size: 34px 100%, 34px 100%, 16px 100%, 16px 100%, 100% 100%;
   scrollbar-width: thin;
-}
+  /* Thirteen records need 1137px, so this strip scrolls from 1024 down and is
+     the only place the tab for a hidden record can be reached. The edge fades
+     above do work — measured headed, the right fade reads 1.15:1 against the
+     field at scrollLeft 0 and swaps to the left edge at the end — but the bar
+     is the affordance that says how much is left, and it had no colour, so it
+     fell through to the platform default at 1.72:1 in BOTH light themes and
+     2.66:1 in both dark ones, under the 3.0 non-text floor. Identical rgb
+     across light/claude-light and dark/claude-dark is the tell that it was
+     never themed rather than themed badly — the same signature the inventory
+     list had before it was given these tokens.
 
-.motif-cs-record-tabs::-webkit-scrollbar {
-  height: 5px;
-}
+     The two ::-webkit-scrollbar rules that used to sit here were dead text and
+     are gone: `scrollbar-width` above is a standard property, and naming
+     either standard property makes Chromium ignore the pseudo-elements
+     entirely. They declared a 5px bar and a border-strong thumb; the bar
+     measured 11px with Chromium's own thumb, and forcing scrollbar-width back
+     to `auto` snapped it to the declared 5px, which is what proves they were
+     being suppressed rather than simply losing to something else.
 
-.motif-cs-record-tabs::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--border-strong) 45%, transparent);
+     Same two tokens as the alignment matrix, the inventory list and the tools
+     rail, so the app has one scrollbar and not four. */
+  scrollbar-color:
+    color-mix(in srgb, var(--text-muted) 68%, var(--border-strong))
+    color-mix(in srgb, var(--bg-secondary) 78%, var(--bg-primary));
 }
 
 .motif-cs-record-tab {
@@ -488,10 +504,6 @@ summary,
   white-space: nowrap;
 }
 
-.motif-cs-topbar > .motif-cs-chip {
-  margin-left: auto;
-}
-
 .motif-cs-panel-meta {
   flex: 0 0 auto;
   color: var(--text-muted);
@@ -508,10 +520,6 @@ summary,
   gap: 8px;
   margin-left: auto;
   min-width: 0;
-}
-
-.motif-cs-topbar-meta > .motif-cs-chip {
-  display: none;
 }
 
 .motif-cs-pane-switcher {
@@ -842,7 +850,13 @@ summary,
   .motif-cs-sequence-column {
     flex-grow: 0.55;
     flex-shrink: 1;
-    max-width: min(760px, 52vw);
+    /* Raised from min(760px, 52vw), which clipped a drag the script had already
+       allowed and so silently overrode PANE_WIDTH_LIMITS.sequence. Both terms are
+       now set to clear the physical ceiling (main - inventory - toolsRail - handles
+       - map.min) everywhere this rule applies: 80vw is 1025px at 1281 against a
+       ~709px ceiling, and 2048px at 2560 against a ~1988px one. This stays a
+       backstop against runaway flex-grow, not the thing that stops the pointer. */
+    max-width: min(2000px, 80vw);
   }
 }
 
@@ -1038,6 +1052,42 @@ body[data-motif-cs-rail-popover-resizing] {
   pointer-events: auto;
 }
 
+/* Below this height the rail's fifteen tools do not fit, and until now they
+   simply left the screen: Settings — theme, backup, Clear workspace — and
+   Alignment, the 14th icon, became unreachable with no way back. Measured at
+   1440x600: content 625 against 530 of room, and wheel, touch-drag and 120
+   presses of Tab all left it exactly where it was. Only page zoom under 100%
+   recovered them, which is a workaround a stuck user has to already know.
+
+   694px is not a chosen number. The rail holds 15 heads at 34px with 3px
+   between them plus its title and 8px padding, which is 625px of content under
+   a 70px top bar — so 695 is the last height where the last icon fits, and 694
+   is the first where something is hidden. It is exactly the boundary the
+   advisor observed independently. A 16th tool moves it; the guard test ties
+   this constant to the tool count so it cannot drift silently.
+
+   `pointer-events: auto` here does NOT weaken the rule above it. That rule
+   protects EMPTY rail space, and empty rail space is what has just run out:
+   measured 205px at 900, 65px at 760, 5px at 700 and 0px at 694 and below. The
+   passthrough is restored in full the moment there is anything to pass through.
+   Scoping it this way was not caution — with the rail left `pointer-events:
+   none`, `overflow-y: auto` alone is a mirage. The wheel then targets whatever
+   sits BENEATH the rail, so it scrolls only while the pointer is over an icon
+   and is dead in the 3px gaps between them (measured: 103 over an icon, 0 in a
+   gap, at the same height), and the thumb cannot be dragged at all. */
+@media (max-height: 694px) {
+  .motif-cs-inspector[data-tools-pinned="false"] {
+    overflow-y: auto;
+    overflow-x: hidden;
+    pointer-events: auto;
+    /* Same two tokens as the alignment matrix and the inventory list, so the
+       app has one scrollbar and not three. */
+    scrollbar-color:
+      color-mix(in srgb, var(--text-muted) 68%, var(--border-strong))
+      color-mix(in srgb, var(--bg-secondary) 78%, var(--bg-primary));
+  }
+}
+
 .motif-cs-inspector[data-tools-pinned="false"] .motif-cs-pane-title {
   justify-content: center;
   min-height: 32px;
@@ -1105,6 +1155,46 @@ body[data-motif-cs-rail-popover-resizing] {
   display: none;
 }
 
+/* The collapsed rail is the default state, and it hides the chip that sits
+   beside each tool's name. For fourteen of the fifteen tools that costs nothing
+   — their chips are fixed labels ("record", "PCR", "Light") or counts that are
+   already there at load. The Alignment chip is the only one that changes when
+   session content arrives, going from "MSA" to "3 MSA", so suppressing it left
+   the rail looking the same whether the session held no alignments or twenty.
+   This restores that one signal at rail scale. It re-uses the disclosure
+   marker's ::after, which the rule above switches off, rather than adding a
+   node, and it renders only when the attribute is present — a session with no
+   alignments is unmarked, exactly as before. */
+.motif-cs-inspector[data-tools-pinned="false"] summary.motif-cs-panel-head[data-rail-count]::after {
+  position: absolute;
+  top: 5px;
+  right: 6px;
+  display: block;
+  width: 7px;
+  height: 7px;
+  border: 1.5px solid var(--bg-secondary);
+  border-radius: 999px;
+  background: var(--accent);
+  /* A dot, not the number. The rail is deliberately icon-only — it sets every
+     panel label and chip to display:none — so a numeric badge reintroduces text
+     to the one surface that has none, and at two digits it grew wide enough to
+     cover the icon that identifies the tool. What this has to answer is whether
+     the feature has anything in it, not how much; the count itself stays one
+     hover away in the title and spelled out in the panel behind it.
+
+     The `/ ""` is load-bearing rather than decoration. Chrome folds ::after
+     generated content into the accessible name, and an earlier revision that
+     printed the count here REPLACED the head's name outright: measured over
+     CDP, it went from "Multiple sequence alignment" — sourced from the title,
+     since the rail hides the label and chip — to bare "1". */
+  content: "" / "";
+  pointer-events: none;
+}
+
+.motif-cs-inspector[data-tools-pinned="false"] .motif-cs-panel-head[data-rail-count] {
+  position: relative;
+}
+
 .motif-cs-inspector[data-tools-pinned="false"] .motif-cs-panel-head:hover,
 .motif-cs-inspector[data-tools-pinned="false"] .motif-cs-panel-head:focus-visible {
   border-color: color-mix(in srgb, var(--border-strong) 58%, var(--border-subtle));
@@ -1146,7 +1236,17 @@ body[data-motif-cs-rail-popover-resizing] {
   max-width: min(620px, calc(100vw - 104px));
   height: var(--rail-popover-height, auto);
   min-height: 96px;
-  max-height: min(calc(100vh - var(--rail-popover-fixed-top) - 22px), 600px);
+  /* The viewport bound is the only real constraint. A flat 600px used to sit
+     below it at every size we lay out for — including 2560x1400, where this
+     resolves to ~1300px — and because the drag reads its limit straight off the
+     computed max-height, that constant was literally what stopped the pointer.
+     Measured at 1440x980, across the panels that were all cut to 598px visible:
+     translation 811 and analysis 686 now fit whole, settings goes from 341px
+     hidden to 67px, and guide RNA — 1344px, more than any viewport here can
+     hold — shows 872px instead of 598px. Same shape as the sequence pane's old
+     760px cap: a constant below the physical ceiling stops being a backstop and
+     becomes the governor. */
+  max-height: calc(100vh - var(--rail-popover-fixed-top) - 22px);
   overflow: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
@@ -1157,12 +1257,12 @@ body[data-motif-cs-rail-popover-resizing] {
 }
 
 @media (max-width: 1280px) {
+  /* Only the offset changes here. The base rule's max-height reads this custom
+     property through var(), so it re-resolves on its own — the copy of the
+     declaration that used to live here was byte-identical and did nothing. Two
+     copies of one cap is how the sequence pane ended up needing two fixes. */
   .motif-cs-inspector[data-tools-pinned="false"] .motif-cs-panel {
     --rail-popover-fixed-top: 132px;
-  }
-
-  .motif-cs-inspector[data-tools-pinned="false"] .motif-cs-panel[open] > .motif-cs-tool-panel-body {
-    max-height: min(calc(100vh - var(--rail-popover-fixed-top) - 22px), 600px);
   }
 }
 
@@ -1178,7 +1278,6 @@ body[data-motif-cs-rail-popover-resizing] {
   gap: 9px;
   padding: 12px;
   --rail-popover-title-offset-x: 12px;
-  --rail-popover-title-offset-y: 12px;
 }
 
 .motif-cs-inspector[data-tools-pinned="false"] .motif-cs-tool-panel-body > .motif-cs-muted:only-child {
@@ -1186,8 +1285,21 @@ body[data-motif-cs-rail-popover-resizing] {
   padding: 12px;
 }
 
+/* The heading spans the popover edge to edge, which means escaping the body's own
+   padding. A negative top margin does that in a block body but NOT in a grid one:
+   grid subtracts the margin from the row track rather than moving the item, so the
+   heading renders `padding - gap` past the bottom of its own track and its opaque
+   sticky background paints over the panel's first line. Measured before this
+   change: 8px of a 20px line in the Inspector — 39% of the glyph height — plus
+   1-4px in five other grid panels. Cancel the body's top padding instead; the
+   heading already carries its own. The horizontal bleed keeps its negative margin,
+   where widening the item past its track is exactly what grid does. */
+.motif-cs-inspector[data-tools-pinned="false"] .motif-cs-tool-panel-body:has(> .motif-cs-rail-popover-title:first-child) {
+  padding-top: 0;
+}
+
 .motif-cs-inspector[data-tools-pinned="false"] .motif-cs-tool-panel-body > .motif-cs-rail-popover-title:first-child {
-  margin: calc(var(--rail-popover-title-offset-y, 0px) * -1) calc(var(--rail-popover-title-offset-x, 0px) * -1) 0;
+  margin: 0 calc(var(--rail-popover-title-offset-x, 0px) * -1) 0;
 }
 
 .motif-cs-inspector[data-tools-pinned="false"] .motif-cs-rail-popover-title {
@@ -1385,10 +1497,6 @@ body[data-motif-cs-rail-popover-resizing] .motif-cs-rail-popover-resize::after {
   gap: 6px;
 }
 
-.motif-cs-sequence-title .motif-cs-title-actions .motif-cs-chip {
-  display: none;
-}
-
 .motif-cs-title-row h1 {
   margin: 0;
   font-size: 15px;
@@ -1476,6 +1584,15 @@ body[data-motif-cs-rail-popover-resizing] .motif-cs-rail-popover-resize::after {
 
 .motif-cs-map-frame {
   position: relative;
+  /* How much of a row the zoom toolbar occupies, declared on the frame because
+     the toolbar and the status readout are SIBLINGS and in linear mode they
+     share the bottom edge from opposite ends — the readout subtracts this to
+     stay clear. It used to be a bare 126px written into the readout's own
+     max-width, which meant every control added to the toolbar had to remember
+     to go and re-guess a number living somewhere else. Protein and RNA records
+     get no Labels chip, so their toolbar is the original three zoom buttons
+     wide: 28 + 34 + 28, two 2px gaps, and the 12px inset at each end. */
+  --map-toolbar-reserve: 126px;
   /* Map-first workspace: keep the restriction/source panels below the primary
      canvas rather than letting them crowd it. */
   height: clamp(560px, 70vh, 820px);
@@ -1486,6 +1603,14 @@ body[data-motif-cs-rail-popover-resizing] .motif-cs-rail-popover-resize::after {
   border-bottom: 1px solid color-mix(in srgb, var(--border-subtle) 72%, transparent);
   border-radius: 0;
   overflow: hidden;
+}
+
+/* DNA records add the Labels chip, so their toolbar runs 163px rather than 94px
+   and the readout has to start further in. Keyed off the chip being present so
+   the reserve follows what is actually rendered instead of restating the gate
+   that renders it. */
+.motif-cs-map-frame:has(.motif-cs-map-labels-toggle) {
+  --map-toolbar-reserve: 200px;
 }
 
 /* A linear map is short and wide — don't reserve a tall square frame for it,
@@ -1555,13 +1680,18 @@ body[data-motif-cs-rail-popover-resizing] .motif-cs-rail-popover-resize::after {
   stroke: none;
 }
 
+/* Crosshair unconditionally, because background drag is range selection and that
+   is true at every zoom. There used to be a second rule here keyed on
+   `data-pannable='true'` setting the identical cursor — it existed to beat the
+   `grab` that the map's own stylesheet applied once the viewport was
+   transformed. So the map advertised a drag-to-pan that no host ever wired, and
+   this override quietly hid the evidence: the cursor a user saw was always
+   crosshair. The attribute and the `grab` are both gone now, and a rule that
+   overrides something no longer declared is just a place for the next reader to
+   lose ten minutes. */
 .motif-cs-map-frame .motif-pm-bg {
   cursor: crosshair;
   touch-action: none;
-}
-
-.motif-cs-map-frame .motif-pm-bg[data-pannable='true'] {
-  cursor: crosshair;
 }
 
 /* The painted backbone is map geometry, not a control. Let pointer starts fall
@@ -1616,6 +1746,27 @@ body[data-motif-cs-rail-popover-resizing] .motif-cs-rail-popover-resize::after {
   font-weight: 700;
 }
 
+/* Puts restriction-label state on the map instead of only in a panel whose own
+   heading is below the fold at every laptop size. Sized for the wider of its
+   two captions so the zoom buttons beside it do not shift when it is pressed —
+   a control that moves when you use it reads as two controls. */
+.motif-cs-map-labels-toggle {
+  width: auto;
+  min-width: 62px;
+  padding-inline: 7px;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+/* Labels default on, so this is the resting look: a filled chip is both the
+   state and what makes the caption legible over map ink. */
+.motif-cs-map-labels-toggle[data-active] {
+  border-color: color-mix(in srgb, var(--border-strong) 55%, transparent);
+  background: color-mix(in srgb, var(--bg-primary) 82%, transparent);
+  color: var(--text-primary);
+}
+
 .motif-cs-map-button:hover,
 .motif-cs-map-button:focus-visible {
   border-color: color-mix(in srgb, var(--border-strong) 55%, transparent);
@@ -1654,8 +1805,30 @@ body[data-motif-cs-rail-popover-resizing] .motif-cs-rail-popover-resize::after {
 .motif-cs-map-frame[data-map-mode="linear"] .motif-cs-map-hint {
   right: 12px;
   left: auto;
-  max-width: min(320px, calc(100% - 126px));
+  max-width: min(320px, calc(100% - var(--map-toolbar-reserve)));
   text-align: right;
+}
+
+/* Between 768px and 1535px a circular frame is floored taller than its column
+   can show — measured 504px of frame in a 442px column at 1440x900, with 141px
+   scrolled away — so the frame's BOTTOM edge is off-screen in every state. That
+   is not a zoom artefact: the readout's top sits at the same y at rest and at
+   244%, because the clip is static. The zoom controls survive only by being
+   anchored to `top`, so anchor the readout to the same edge it is safe on,
+   opposite the controls for the reason written above. Deliberately not applied
+   from 1536px up, where the column does fit its frame and the quiet lower-left
+   corner is both reachable and less noisy. The structural half — that a 410px
+   map floor plus a 26px title plus a 33px dock cannot fit a 442px column — is
+   filed separately; this rule stops the readout paying for it. */
+@media (min-width: 768px) and (max-width: 1535px) {
+  .motif-cs-map-frame[data-map-mode="circular"] .motif-cs-map-hint {
+    top: 12px;
+    right: 12px;
+    bottom: auto;
+    left: auto;
+    max-width: min(320px, calc(100% - 126px));
+    text-align: right;
+  }
 }
 
 .motif-cs-panel {
@@ -1742,6 +1915,38 @@ body[data-motif-cs-rail-popover-resizing] .motif-cs-rail-popover-resize::after {
 .motif-cs-map-dock-strip:has(> details[open]) {
   display: block;
   border-bottom: 0;
+}
+
+/* A column footer, because these two heads are the end of the map workflow and
+   they were reliably off-screen: measured below the column's visible edge by
+   138px at 900x700, 133px at 1024x768, 131px at 1280x900 and at 1440x900, and
+   85px at 1440x1200 — every desktop size below 1536 except 1920x1080, where the
+   column does not overflow at all.
+
+   This is the app's first sticky FOOTER; the ten that already exist are headers
+   at `top: 0`, so this mirrors their idiom rather than inventing one. It needs no
+   breakpoint: `bottom` only engages while an ancestor actually scrolls, so at
+   1920 — where the column hides 0px — the strip stays exactly where it is today,
+   in flow at the end of the content.
+
+   Only while both panels are COLLAPSED. Open one and this element becomes the
+   whole panel body, and pinning that to the bottom would cover the map rather
+   than finish it; open is also the state the column already scrolls into view.
+
+   `bottom: -10px` cancels the column's own 10px padding so the strip lands flush
+   on the scrollport edge rather than floating a gap above it. Opaque
+   `--bg-primary` matches the map frame it now overlaps, so the map cannot show
+   through it, and the top border supplies the separation the bottom border gave
+   while this sat at the end of the flow.
+
+   It cannot collide with the map's status readout: e69d11e anchors that to the
+   frame's TOP edge across 768–1535, which is this rule's entire working range. */
+.motif-cs-map-dock-strip:not(:has(> details[open])) {
+  position: sticky;
+  bottom: -10px;
+  z-index: 4;
+  border-top: 1px solid color-mix(in srgb, var(--border-subtle) 78%, transparent);
+  background: var(--bg-primary);
 }
 
 .motif-cs-map-dock-strip > .motif-cs-panel {
@@ -1942,7 +2147,6 @@ details:not([open]) > .motif-cs-panel-head {
   gap: 4px;
   padding: 12px;
   --rail-popover-title-offset-x: 12px;
-  --rail-popover-title-offset-y: 12px;
   /* Reserve the tallest state (title + meta + stats) so selecting a feature
      never grows the Inspector and shoves Motif / Features / editor down. */
   min-height: 98px;
@@ -2025,6 +2229,18 @@ details:not([open]) > .motif-cs-panel-head {
   overflow: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
+  /* This list is the only place a laptop-sized session meets its whole vector
+     inventory, and it hides 237px of it at 1440x900 and 303px at 1024x768. The
+     gutter above reserves the lane, but with no colour the bar fell through to
+     the platform default and measured 1.72:1 against its own track in BOTH
+     light themes and 2.66:1 in both dark ones — under the 3.0 non-text floor.
+     Identical rgb in all four themes is how you can tell it was never themed
+     rather than themed badly. At that contrast the list appears to end, leaving
+     the rows below it undiscoverable. Same two tokens as the alignment matrix's
+     scroller, so the app has one scrollbar and not two. */
+  scrollbar-color:
+    color-mix(in srgb, var(--text-muted) 68%, var(--border-strong))
+    color-mix(in srgb, var(--bg-secondary) 78%, var(--bg-primary));
   border-top: 0;
 }
 
@@ -2220,14 +2436,65 @@ summary.motif-cs-panel-head {
   border-top: 1px solid color-mix(in srgb, var(--border-subtle) 72%, transparent);
 }
 
+/* No height cap, because nothing here needs one: every container this list can
+   appear in already scrolls. Measured in all three — the unpinned rail popover's
+   body is overflow-y: auto with a definite height, and in BOTH the pinned docked
+   column and the floated Tools pane the inspector itself is overflow-y: auto and
+   already scrolling, so the extra height is absorbed by a scroller that exists.
+
+   It used to read `max-height: min(24vh, 190px)`, which resolves to a flat 190px
+   at every viewport height above 792px. `c999493` fixed that — but only inside
+   `.motif-cs-inspector[data-tools-pinned="false"]`, so the two states that
+   selector does not match kept the whole defect, and nothing looked wrong because
+   a fix was on record. Measured in the pinned state: clientHeight 189 against
+   scrollHeight 288, 3 of 8 rows unreachable while the panel's own header said "8
+   features" — identically at 1440x900, 1440x980, 1920x1080 and 2560x1400, which
+   is the constant winning rather than any viewport effect. Those are the same
+   numbers that comment below records as already fixed.
+
+   Fixed at the BASE rule rather than with a third higher-specificity override:
+   an override leaves the original in force for every state it does not match,
+   which is exactly how this survived the first fix. `overflow: auto` stays — it
+   is live in the popover, where the list can be squeezed below its content. */
 .motif-cs-feature-annotation-list {
-  max-height: min(24vh, 190px);
   overflow: auto;
 }
 
 .motif-cs-translation-annotation-list {
   max-height: 96px;
   overflow: auto;
+}
+
+/* As a rail popover this panel has a definite height — dragged, or the viewport
+   bound — so the features list takes what is left instead of capping itself at a
+   constant. min(24vh, 190px) resolves to 190 at every viewport height above
+   792px, so the list sat at clientHeight 189 against scrollHeight 288 with 3 of
+   8 features unreachable, identically at 1440x980 and 2560x1400, while the
+   panel's own header said "8 features". Dragging the popover from 391px to
+   598px moved none of them: 207px of new height went to a list that had already
+   decided how tall it was.
+
+   Only the features list flexes. Giving both lists flex-shrink weights the
+   shrink by flex-basis, so a long features list would crush the translations
+   list from the 95px it needs to about 7px — the two lists are not peers, and
+   the small one has no reason to yield. The popover keeps overflow: auto, so if
+   a panel is dragged shorter than the floor below, it scrolls as one surface
+   rather than clipping. */
+.motif-cs-inspector[data-tools-pinned="false"] .motif-cs-panel[open] > .motif-cs-annotation-panel-body {
+  display: flex;
+  flex-direction: column;
+}
+
+.motif-cs-inspector[data-tools-pinned="false"] .motif-cs-panel[open] > .motif-cs-annotation-panel-body > .motif-cs-feature-annotation-list {
+  flex: 1 1 auto;
+  min-height: 72px; /* two rows; the popover scrolls rather than go below this */
+  max-height: none;
+}
+
+.motif-cs-inspector[data-tools-pinned="false"] .motif-cs-panel[open] > .motif-cs-annotation-panel-body > .motif-cs-rail-popover-title,
+.motif-cs-inspector[data-tools-pinned="false"] .motif-cs-panel[open] > .motif-cs-annotation-panel-body > .motif-cs-annotation-section-label,
+.motif-cs-inspector[data-tools-pinned="false"] .motif-cs-panel[open] > .motif-cs-annotation-panel-body > .motif-cs-translation-annotation-list {
+  flex: 0 0 auto;
 }
 
 .motif-cs-annotation-list .motif-cs-muted {
@@ -3548,7 +3815,6 @@ summary.motif-cs-panel-head {
 
 .motif-cs-entry-form {
   --rail-popover-title-offset-x: 12px;
-  --rail-popover-title-offset-y: 10px;
 }
 
 .motif-cs-form-body label,
@@ -4820,6 +5086,19 @@ body[data-motif-cs-export-resizing] {
   white-space: nowrap;
 }
 
+/* Marks where this bar stops editing the open record and starts adding new ones
+   to the inventory. Decoration only — the "New" in the two labels after it is
+   what actually carries the meaning, so this is aria-hidden and never the sole
+   signal. Kept to a hairline because the cluster already clips below ~720px. */
+.motif-cs-selection-actions .motif-cs-selection-action-rule {
+  flex: 0 0 auto;
+  align-self: center;
+  width: 1px;
+  height: 16px;
+  margin-inline: 1px;
+  background: color-mix(in srgb, var(--border-strong) 70%, transparent);
+}
+
 .motif-cs-selection-actions .motif-cs-label-short {
   display: none;
 }
@@ -5129,8 +5408,18 @@ body[data-motif-cs-export-resizing] {
   background: linear-gradient(to bottom, var(--bg-primary), color-mix(in srgb, var(--bg-primary) 96%, var(--workspace-bg)));
 }
 
+/* The corner grip is window chrome, so it has to paint above whatever the body
+   happens to contain. Without a z-index it only beat content that stacks at
+   auto: a sticky toolbar (z-index 10) that wraps taller than a short body ends
+   up drawn over the bottom-right corner, and then the grip is not the element
+   under the pointer — press, drag, release all go to the toolbar and the window
+   can no longer be resized by mouse at all. 20 clears every layer a body can
+   raise today (sticky toolbar 10, drag-drop overlay 12) and is scoped to this
+   window by the `isolation: isolate` above, so it cannot reorder anything else.
+   The floating-pane grip already does the same thing with its own z-index: 8. */
 .motif-cs-window-resize {
   position: absolute;
+  z-index: 20;
   right: 0;
   bottom: 0;
   width: 28px;
@@ -5236,7 +5525,6 @@ summary.motif-cs-panel-head:focus-visible {
   gap: 8px;
   padding: 12px;
   --rail-popover-title-offset-x: 12px;
-  --rail-popover-title-offset-y: 12px;
 }
 
 .motif-cs-cloning-launcher-copy {
@@ -6130,7 +6418,6 @@ summary.motif-cs-panel-head:focus-visible {
   gap: 10px;
   padding: 12px;
   --rail-popover-title-offset-x: 12px;
-  --rail-popover-title-offset-y: 12px;
 }
 
 .motif-cs-alignment-tool-intro {
@@ -6233,9 +6520,26 @@ summary.motif-cs-panel-head:focus-visible {
 .motif-cs-msa-workspace {
   position: relative;
   display: flex;
+  flex: 1 1 auto;
   min-width: 0;
+  min-height: 0;
   flex-direction: column;
   gap: 9px;
+}
+
+/* Let the workspace claim the panel's height so the matrix can flex into it.
+   Scoped with :has() so other windows keep their plain block body.
+
+   The matrix frame, not the workspace, is the condition. Only the Viewer has a
+   matrix, and only the Viewer wants this: it flexes into the panel and owns its
+   own scrolling, so the body must not scroll. Traces and Text have no matrix and
+   are naturally taller than the panel — they need the body to scroll as it
+   always did. Keying this on the workspace alone made the body a flex column in
+   every mode, which stopped the trace stack's window scrolling entirely. */
+.motif-cs-window-body:has(> .motif-cs-msa-workspace .motif-cs-msa-matrix-frame),
+.motif-cs-pane:has(> .motif-cs-msa-workspace .motif-cs-msa-matrix-frame) {
+  display: flex;
+  flex-direction: column;
 }
 
 .motif-cs-msa-drop-overlay {
@@ -6312,6 +6616,11 @@ summary.motif-cs-panel-head:focus-visible {
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--bg-secondary) 60%, var(--bg-primary));
+}
+
+/* Reclaim the banner's row once a result exists — "Edit inputs" reopens it. */
+.motif-cs-msa-source[data-redundant="true"] {
+  display: none;
 }
 
 .motif-cs-msa-source > summary {
@@ -6426,8 +6735,7 @@ summary.motif-cs-panel-head:focus-visible {
 
 .motif-cs-msa-source-fields label,
 .motif-cs-msa-export-row label,
-.motif-cs-msa-reference-picker,
-.motif-cs-msa-sort-picker {
+.motif-cs-msa-reference-picker {
   display: grid;
   min-width: 0;
   gap: 3px;
@@ -6719,12 +7027,22 @@ summary.motif-cs-panel-head:focus-visible {
   gap: 5px;
 }
 
-.motif-cs-msa-view-menu {
-  position: relative;
+/* The toolbar's disclosure menus share one trigger treatment. `:is()` keeps the
+   specificity at a single class, so these still lose to anything more specific
+   exactly as the single-selector rules did.
+
+   They are deliberately NOT positioned. The panels are right-anchored, so
+   anchoring to the trigger meant any panel wider than the gap between the
+   trigger and the left edge hung off-screen — at a 760px window the view menu's
+   panel began 106px past the left edge, unreachable. Left static, the panels
+   resolve against .motif-cs-msa-toolbar, which is already a containing block
+   (position: sticky); `right: 0` then means the toolbar's right edge, and a
+   panel narrower than the toolbar cannot overflow at any width. */
+:is(.motif-cs-msa-view-menu, .motif-cs-msa-export-menu, .motif-cs-msa-goto-menu) {
   flex: 0 0 auto;
 }
 
-.motif-cs-msa-view-menu > summary {
+:is(.motif-cs-msa-view-menu, .motif-cs-msa-export-menu, .motif-cs-msa-goto-menu) > summary {
   display: inline-flex;
   min-height: 28px;
   align-items: center;
@@ -6742,29 +7060,121 @@ summary.motif-cs-panel-head:focus-visible {
   white-space: nowrap;
 }
 
-.motif-cs-msa-view-menu > summary::-webkit-details-marker {
+:is(.motif-cs-msa-view-menu, .motif-cs-msa-export-menu, .motif-cs-msa-goto-menu) > summary::-webkit-details-marker {
   display: none;
 }
 
-.motif-cs-msa-view-menu > summary:hover,
-.motif-cs-msa-view-menu > summary:focus-visible,
-.motif-cs-msa-view-menu[open] > summary {
+:is(.motif-cs-msa-view-menu, .motif-cs-msa-export-menu, .motif-cs-msa-goto-menu) > summary:hover,
+:is(.motif-cs-msa-view-menu, .motif-cs-msa-export-menu, .motif-cs-msa-goto-menu) > summary:focus-visible,
+:is(.motif-cs-msa-view-menu, .motif-cs-msa-export-menu, .motif-cs-msa-goto-menu)[open] > summary {
   border-color: color-mix(in srgb, var(--accent) 45%, var(--border-subtle));
   background: var(--control-hover);
   color: var(--text-primary);
 }
 
-.motif-cs-msa-view-menu > summary:focus-visible {
+:is(.motif-cs-msa-view-menu, .motif-cs-msa-export-menu, .motif-cs-msa-goto-menu) > summary:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
-.motif-cs-msa-view-menu > summary > svg:last-child {
+:is(.motif-cs-msa-view-menu, .motif-cs-msa-export-menu, .motif-cs-msa-goto-menu) > summary > svg:last-child {
   transition: transform var(--duration-fast) ease;
 }
 
-.motif-cs-msa-view-menu[open] > summary > svg:last-child {
+:is(.motif-cs-msa-view-menu, .motif-cs-msa-export-menu, .motif-cs-msa-goto-menu)[open] > summary > svg:last-child {
   transform: rotate(180deg);
+}
+
+/* The export panel is a small stack of grouped controls rather than the view
+   menu's checkbox grid, so it gets its own box. Width is capped against the
+   panel it lives in, not the viewport, so a narrow host cannot push it off the
+   left edge. */
+.motif-cs-msa-export-menu > .motif-cs-msa-export-menu-panel {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 5px);
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  /* The panel keeps .motif-cs-msa-export-row, whose `flex-wrap: wrap` is right
+     for a horizontal strip and wrong here: in a column box, wrapping breaks
+     overflow into a SECOND COLUMN instead of a scroll, so `overflow: auto` below
+     could never fire vertically and a tall panel grew sideways into its own
+     max-width clip. */
+  flex-wrap: nowrap;
+  align-items: stretch;
+  gap: 7px;
+  width: max-content;
+  max-width: min(300px, calc(100cqw - 20px));
+  /* Bounded by the WINDOW, not the viewport. The panel is absolutely positioned
+     against the toolbar, which is sticky inside a scrolling body — so a panel
+     taller than the body is clipped and scrolling reveals nothing, because the
+     sticky toolbar carries its own child along. `100vh` measured the wrong box
+     entirely: on a large display it never binds, and a window dragged down to
+     its 180px floor put Save PNG and Save SVG out of reach. */
+  max-height: max(120px, min(430px, calc(var(--motif-cs-window-height, 100vh) - 110px)));
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+}
+
+.motif-cs-msa-export-menu > .motif-cs-msa-export-menu-panel > .motif-cs-msa-export-image {
+  padding-top: 7px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.motif-cs-msa-export-menu > .motif-cs-msa-export-menu-panel > .motif-cs-muted {
+  /* The panel keeps the export-row class, so `flex: 1 1 220px` from the old
+     horizontal strip still matches — but this box is a column, where a
+     flex-basis is a HEIGHT. Unreset it added 220px of empty space under 150px
+     of controls. */
+  flex: 0 0 auto;
+  max-width: 260px;
+  white-space: normal;
+  font-size: 9.5px;
+  line-height: 1.35;
+}
+
+/* One small form rather than the export panel's stack, but the same box so the
+   three toolbar menus read as one family. Anchored to the toolbar, not the
+   trigger, for the same reason given above the shared trigger rules. */
+.motif-cs-msa-goto-menu > .motif-cs-msa-goto-menu-panel {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 5px);
+  right: 0;
+  width: max-content;
+  max-width: min(300px, calc(100cqw - 20px));
+  /* Same window-relative bound as the export panel. This one had no cap at all,
+     so a short window took the Go button and the coordinate error message with
+     it and offered nothing to scroll. */
+  max-height: max(120px, min(430px, calc(var(--motif-cs-window-height, 100vh) - 110px)));
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+}
+
+.motif-cs-msa-goto-menu-panel > .motif-cs-msa-column-jump {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+}
+
+.motif-cs-msa-goto-menu-panel .motif-cs-msa-coordinate-system {
+  grid-column: 1 / -1;
+}
+
+/* Ties on specificity with claude-science-msa.css's fixed-width input rule, and
+   this file loads second, so these win. That is why they live here. */
+.motif-cs-msa-goto-menu-panel .motif-cs-msa-coordinate-system select,
+.motif-cs-msa-goto-menu-panel .motif-cs-msa-column-jump input {
+  width: 100%;
 }
 
 .motif-cs-msa-view-menu-panel {
@@ -6773,10 +7183,49 @@ summary.motif-cs-panel-head:focus-visible {
   top: calc(100% + 5px);
   right: 0;
   display: grid;
-  width: min(244px, calc(100vw - 36px));
-  max-height: min(430px, calc(100vh - 110px));
+  /* An auto column takes the widest child's min-content width, which here is 5px
+     wider than the panel's content box — enough for a horizontal scrollbar under
+     a vertical one in a 244px menu. minmax(0, 1fr) lets the rows shrink to the
+     panel instead of the panel reporting overflow it cannot show. */
+  grid-template-columns: minmax(0, 1fr);
+  /* 242px of content plus the 15px the scroll gutter below takes out of the
+     content box, so the rows keep the width they had before the gutter was
+     reserved. On a system that already drew a classic scrollbar this panel was
+     227px of content and "Colour scheme" wrapped onto two lines with its select
+     truncated to "Auto (by mo…"; that is now 242 everywhere. */
+  width: min(259px, calc(100vw - 36px));
+  /* Window-relative, for the reason spelled out above the export panel — and now
+     window-relative all the way down. The `min(430px, …)` this used to carry was
+     a constant wearing responsive clothing: the window has to be shorter than
+     540px before the calc() term wins, so every ordinary window got a flat 430px
+     of an 807px list, 379px hidden. Dragging the window taller changed nothing —
+     at a 1384px window the menu still showed 428px and hid 379, leaving 852px of
+     window unused. The subtraction is measured rather than guessed: this panel
+     hangs off the toolbar, which sits 102px below the window top while the
+     toolbar is one row and 184px once it has wrapped to three, so 184 plus 8px
+     of clearance is what fits at every window width. Fitting is not optional:
+     .motif-cs-window is overflow: hidden, so a panel past its bottom edge is
+     gone rather than scrolled to. */
+  max-height: max(120px, calc(var(--motif-cs-window-height, 100vh) - 192px));
   overflow: auto;
   overscroll-behavior: contain;
+  /* The list still outgrows most windows, so the scrollbar is the only thing that
+     says so — and on a system using overlay scrollbars nothing was drawn at rest,
+     which left the menu ending flush against its own border looking complete.
+     Naming a `scrollbar-color` is what forces the classic painted bar there; the
+     gutter is then reserved even when nothing overflows, while the track paints
+     only when there is something to scroll, so it stays a truthful signal.
+     Deliberately NOT the ::-webkit-scrollbar route: setting either standard
+     property makes Chromium ignore those pseudo-elements entirely, so a
+     ::-webkit-scrollbar width beside a scrollbar-color is dead text that
+     silently reverts to the platform's 15px. The alignment matrix carried
+     exactly that pair until it was measured headed and the dead half deleted;
+     a guard now keeps the two from being recombined on any element. */
+  scrollbar-gutter: stable;
+  scrollbar-color:
+    color-mix(in srgb, var(--text-muted) 68%, var(--border-strong))
+    color-mix(in srgb, var(--bg-secondary) 78%, var(--bg-primary));
+  scrollbar-width: auto;
   padding: 8px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
@@ -6853,9 +7302,13 @@ summary.motif-cs-panel-head:focus-visible {
   max-width: min(320px, 46%);
 }
 
+/* .motif-cs-msa-view-select is here because Sort moved into the View menu and
+   left this shared box behind, rendering as a bare browser control next to the
+   app's own. The other three selects in that menu had never picked it up
+   either, so all four were unstyled and two of them disagreed on height. */
 .motif-cs-msa-alignment-picker select,
 .motif-cs-msa-reference-picker select,
-.motif-cs-msa-sort-picker select,
+.motif-cs-msa-view-select select,
 .motif-cs-msa-export-row select {
   min-width: 0;
   height: 28px;
@@ -6870,6 +7323,17 @@ summary.motif-cs-panel-head:focus-visible {
 .motif-cs-msa-alignment-picker select {
   width: 100%;
 }
+
+/* Row names in one alignment often differ only in their tail ("PAL — Prunus
+   avium" vs "PAL — Pisum sativum"), so a clipped value hides the only part that
+   identifies it. Reserve room for the chevron and ellipsize rather than slicing
+   a glyph in half. */
+.motif-cs-msa-reference-picker select,
+.motif-cs-msa-view-select select {
+  padding-right: 26px;
+  text-overflow: ellipsis;
+}
+
 
 .motif-cs-msa-engine-chip[data-fallback="true"] {
   border-color: color-mix(in srgb, var(--amber) 58%, var(--border-strong));
@@ -7024,6 +7488,35 @@ summary.motif-cs-panel-head:focus-visible {
   background: color-mix(in srgb, var(--red) 9%, var(--control-bg));
 }
 
+/* Counts and provenance share one row: both are read-once metadata, and each
+   previously cost a full strip of the height the residues need. */
+.motif-cs-msa-meta-row {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.motif-cs-msa-meta-row > .motif-cs-msa-stats {
+  flex: 1 1 320px;
+}
+
+/* The toolbar above is sticky and opaque. Should any state ever reintroduce
+   overflow in the window body, a transparent row here would read through it. */
+.motif-cs-msa-meta-row {
+  background: var(--bg-primary);
+}
+
+.motif-cs-msa-meta-row > .motif-cs-msa-provenance {
+  flex: 0 1 auto;
+}
+
+/* Expanded provenance needs the full width for its definition list. */
+.motif-cs-msa-meta-row > .motif-cs-msa-provenance[open] {
+  flex: 1 0 100%;
+}
+
 .motif-cs-msa-stats {
   display: flex;
   min-width: 0;
@@ -7047,16 +7540,65 @@ summary.motif-cs-panel-head:focus-visible {
 .motif-cs-msa-view-controls {
   color: var(--text-muted);
   font-size: 10px;
+  /* The container goes HERE, not on .motif-cs-msa-workspace: container-type
+     implies contain: layout, which would make the workspace a containing block
+     for its position: fixed descendants — the hover readout and the context
+     menu, both of which are clamped against the viewport in JS. This row has no
+     fixed descendants. */
+  container-name: motif-cs-msa-controls;
+  container-type: inline-size;
 }
+
+/* The row is left wrappable on purpose. Forcing nowrap here cannot be done with
+   a container query — an element cannot query its own container — and a
+   viewport media query is the wrong axis for a panel that floats inside one.
+   Instead the row is made to FIT: the coordinate form moved to a toolbar menu,
+   the comparison select is narrower, and search is elastic, so it compresses
+   before it ever reaches the point of wrapping. A wrapped row at genuinely
+   narrow widths is the honest outcome anyway — better than hiding controls in a
+   horizontal scroller nobody scrolls. */
 
 .motif-cs-msa-reference-picker {
-  grid-template-columns: auto minmax(90px, 170px);
+  /* The comparison row is pinned to the top of the matrix and tinted, so this
+     select is a secondary path to a value already on screen. It can afford to
+     truncate; every option carries the full name as its title. */
+  grid-template-columns: auto minmax(84px, 132px);
   align-items: center;
 }
 
-.motif-cs-msa-sort-picker {
-  grid-template-columns: auto minmax(84px, 130px);
-  align-items: center;
+/* Under real width pressure the label shortens rather than the row wrapping.
+   Clip-rect, NOT display: none — that would take the select's accessible name
+   with it, and no jsdom test would catch it, because jsdom has no container
+   queries. */
+@container motif-cs-msa-controls (max-width: 820px) {
+  /* Must stay `position: absolute`: out of flow is what keeps the label from
+     becoming a third item in a two-column grid and dropping the select onto a
+     second row. A clip-path variant without it would silently re-wrap the row. */
+  .motif-cs-msa-view-controls .motif-cs-msa-reference-picker > span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+
+  .motif-cs-msa-view-controls .motif-cs-msa-reference-picker::before {
+    /* The `/ ''` is the alternative text, and it is load-bearing: generated
+       content counts toward a control's accessible name, and this pseudo-element
+       precedes the clipped label inside it. Without the empty alt the select is
+       announced as "vs Compare against" below 820px and as "Compare against"
+       above it — the same control renaming itself on resize. */
+    content: 'vs' / '';
+    color: var(--text-muted);
+    font-size: 10px;
+    font-weight: 700;
+  }
+
+  .motif-cs-msa-view-controls .motif-cs-msa-reference-picker {
+    grid-template-columns: auto minmax(72px, 118px);
+  }
 }
 
 .motif-cs-msa-difference-nav,
@@ -7120,6 +7662,7 @@ summary.motif-cs-panel-head:focus-visible {
   font-variant-numeric: tabular-nums;
 }
 
+
 .motif-cs-msa-difference-nav .motif-cs-mini-button,
 .motif-cs-msa-font-controls .motif-cs-mini-button {
   width: 25px;
@@ -7128,7 +7671,28 @@ summary.motif-cs-panel-head:focus-visible {
 }
 
 .motif-cs-msa-matrix-frame {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
   min-width: 0;
+  /* CLOSED: the non-scrolling children moved out. Only the overview row and the
+     residue viewport live in this clipped box now; the pan slider, status line,
+     order note and selection readout are siblings held by
+     .motif-cs-msa-matrix-shell, so shrinking this frame can no longer put them
+     somewhere no scrollbar reaches.
+
+     The declarations below are what the shell OVERRIDES, and they are kept as the
+     unwrapped fallback: `.motif-cs-msa-matrix-shell > .motif-cs-msa-matrix-frame`
+     in claude-science-msa.css out-specifies them (0,2,0 against 0,1,0, so source
+     order does not decide it) and supplies the real floor plus a transparent,
+     border-less frame — the enclosure paints once, on the shell. Measured on the
+     live app: frame border-top-width 0px and background rgba(0, 0, 0, 0); shell
+     1px / rgb(231, 231, 231) with the rounded corner.
+
+     `min-height: min-content` here is still NOT the fix (~469px, whole-UI scrolling
+     at 1024x768), and neither is `flex-shrink: 0` on the frame (39px of body
+     overflow at the same size). Both were measured and reverted. */
+  min-height: 0;
   overflow: hidden;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
@@ -7188,7 +7752,14 @@ summary.motif-cs-panel-head:focus-visible {
 .motif-cs-msa-overview-viewport {
   right: auto;
   min-width: 6px;
-  border: 1px solid color-mix(in srgb, var(--accent) 82%, var(--text-primary));
+  /* Ink, not accent: this rectangle and the selection band are the viewer's two
+     region outlines, one strip apart, and accent 82% put them within ΔE 2.6 of
+     each other in every theme — the same colour. The viewport marks where the
+     system is looking, which is the cursor's statement, so it takes the cursor's
+     channel (declared on .motif-cs-msa-matrix-frame). Accent then means the
+     selection and nothing else. The 9% accent wash below stays: it is a fill,
+     not a rule, so it never competes with either outline. */
+  border: 1px solid var(--motif-cs-msa-cursor-rule, var(--text-primary));
   border-radius: 2px;
   background: color-mix(in srgb, var(--accent) 9%, transparent);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--bg-primary) 80%, transparent);
@@ -7197,42 +7768,45 @@ summary.motif-cs-panel-head:focus-visible {
 
 .motif-cs-msa-matrix-scroll {
   width: 100%;
+  /* Height follows the panel this viewer is mounted in, not the browser
+     viewport. A vh cap overflows any host pane shorter than the cap, which
+     forced the whole workspace to scroll and pushed the residues out of view. */
+  flex: 1 1 auto;
   min-height: 142px;
-  max-height: min(46vh, 460px);
+  /* Horizontal is hidden because this surface's horizontal scrollbar is drawn
+     by hand, one box below, as .motif-cs-msa-pan-row — not because the surface
+     does not pan. It does: scrollWidth 3694 against clientWidth 893 on a
+     330-column alignment, and the pan row's range spans exactly that 2801px.
+     The reasons for replacing the platform bar are recorded on that rule.
+     `auto` here would stack a second, redundant horizontal bar on the same
+     2801px, misaligned with the residue columns by the label gutter, and would
+     eat height out of the three floors derived above and in
+     claude-science-msa.css. This note exists because the missing rationale got
+     the pair re-litigated as a bug twice. */
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior-x: contain;
   overscroll-behavior-y: auto;
   scrollbar-gutter: stable;
+  /* Themed through the standard property alone. Five ::-webkit-scrollbar rules
+     used to sit below this one — an 11px inset pill with an accent hover tint —
+     and none of them ever painted: naming a `scrollbar-color` makes Chromium
+     ignore every ::-webkit-scrollbar rule on the same element, so the pair
+     cannot be combined. The reasoning is written out on
+     .motif-cs-msa-view-menu-panel, which points here. Measured headed, this
+     element rendered byte-identical with and without those five rules, so they
+     read as intent and were not it. Do not delete the colour to revive them:
+     that re-breaks what the colour was added for — on a system drawing overlay
+     scrollbars nothing is painted at rest, which made this scroller look like
+     it simply ended. The 11px would not come back anyway; Chromium takes
+     thickness from an unqualified ::-webkit-scrollbar, and measured headed a
+     `:vertical`-qualified width leaves the bar at the platform's 15px even
+     with no standard property present at all. */
   scrollbar-color:
     color-mix(in srgb, var(--text-muted) 68%, var(--border-strong))
     color-mix(in srgb, var(--bg-secondary) 78%, var(--bg-primary));
   scrollbar-width: auto;
   outline: none;
-}
-
-.motif-cs-msa-matrix-scroll::-webkit-scrollbar:vertical {
-  width: 11px;
-}
-
-.motif-cs-msa-matrix-scroll::-webkit-scrollbar-track:vertical {
-  background: color-mix(in srgb, var(--bg-secondary) 62%, var(--bg-primary));
-}
-
-.motif-cs-msa-matrix-scroll::-webkit-scrollbar-thumb {
-  border: 3px solid transparent;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--text-muted) 68%, var(--border-strong));
-  background-clip: padding-box;
-}
-
-.motif-cs-msa-matrix-scroll::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--accent) 48%, var(--text-muted));
-  background-clip: padding-box;
-}
-
-.motif-cs-msa-matrix-scroll::-webkit-scrollbar-corner {
-  background: var(--bg-secondary);
 }
 
 .motif-cs-msa-matrix-scroll:focus-visible {
@@ -7277,11 +7851,21 @@ summary.motif-cs-panel-head:focus-visible {
   cursor: grabbing;
 }
 
+/* The empty track is what says "there is more alignment beyond this edge, and
+   this much of it". Diluted to 72% the boundary measured 2.14:1 in light and
+   dark and 2.28:1 in the claude themes — under the 3.0 non-text floor — while
+   the fill sat at 1.03-1.05 against the row behind it, so the trough read as
+   nothing at all and the thumb as a pill floating on the chrome. Two reviewers
+   in a row concluded from the rendered pixels that the alignment had no
+   horizontal scroll affordance while this control was on screen under their
+   cursor. Undiluted border plus a fill pushed further toward the page colour
+   restores the trough; the thumb was already 4.56-5.94 and is untouched.
+   Duplicated verbatim in ::-moz-range-track below — change both. */
 .motif-cs-msa-pan-range::-webkit-slider-runnable-track {
   height: 10px;
-  border: 1px solid color-mix(in srgb, var(--border-strong) 72%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border-strong) 76%, var(--text-muted));
   border-radius: 999px;
-  background: color-mix(in srgb, var(--bg-primary) 76%, var(--bg-secondary));
+  background: color-mix(in srgb, var(--bg-primary) 88%, var(--text-muted));
 }
 
 .motif-cs-msa-pan-range::-webkit-slider-thumb {
@@ -7299,11 +7883,13 @@ summary.motif-cs-panel-head:focus-visible {
   background: color-mix(in srgb, var(--accent) 38%, var(--text-muted));
 }
 
+/* Second copy of the trough above. Kept byte-identical in colour so the lane
+   does not read as a different control per engine. */
 .motif-cs-msa-pan-range::-moz-range-track {
   height: 8px;
-  border: 1px solid color-mix(in srgb, var(--border-strong) 72%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border-strong) 76%, var(--text-muted));
   border-radius: 999px;
-  background: color-mix(in srgb, var(--bg-primary) 76%, var(--bg-secondary));
+  background: color-mix(in srgb, var(--bg-primary) 88%, var(--text-muted));
 }
 
 .motif-cs-msa-pan-range::-moz-range-thumb {
@@ -7566,11 +8152,6 @@ summary.motif-cs-panel-head:focus-visible {
   font-weight: 720;
 }
 
-.motif-cs-msa-symbol[data-jump="true"] {
-  box-shadow: inset 0 -2px 0 var(--accent), inset 0 2px 0 var(--accent);
-  background: color-mix(in srgb, var(--accent) 15%, var(--bg-primary));
-}
-
 .motif-cs-msa-symbol[data-tone="gap"] { color: var(--text-muted); }
 .motif-cs-msa-symbol[data-tone="a"],
 .motif-cs-msa-symbol[data-tone="polar"] { color: var(--green); }
@@ -7600,6 +8181,47 @@ summary.motif-cs-panel-head:focus-visible {
   font: 9.5px/1.2 var(--font-mono);
   text-align: right;
   font-variant-numeric: tabular-nums;
+}
+
+/* One status line under the alignment: zoom on the left, the visible-column
+   readout on the right. They used to be two full-width strips, spending 46px
+   to say what fits on one 26px line. It wraps rather than clips when the panel
+   is genuinely too narrow for both. The child overrides are descendant-scoped
+   because this file loads AFTER claude-science-msa.css, so a bare class here
+   would still be fighting that file's zoom rules on specificity alone. */
+.motif-cs-msa-statusbar {
+  /* A floor, and a deliberate one: MSA_STATUSBAR_HEIGHT in ClaudeScienceMsaViewer
+     mirrors this number as the fallback for the matrix shell's height floor, used
+     until the strip has been measured. If the two part company nothing fails — the
+     shell is simply short by the difference and its border cuts across the status
+     line. Do not delete this as a no-op on a content-sized row.
+
+     It floors the row; it does not stop it GROWING. The status line wraps at narrow
+     widths (an e2e expectation already has the zoom row past 40px at 440x760), which
+     is why the shell's floor measures the strip at runtime rather than trusting this
+     value. When a wrap does outrun the reserve the border cuts chrome rather than
+     residues, which is the right way round for it to fail. */
+  min-height: 33px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0 12px;
+  padding: 0 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.motif-cs-msa-statusbar > .motif-cs-msa-zoom-row {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-top: 0;
+  padding: 3px 0;
+}
+
+.motif-cs-msa-statusbar > .motif-cs-msa-window-note {
+  flex: 0 0 auto;
+  padding: 0;
+  border-top: 0;
 }
 
 .motif-cs-msa-text-view textarea {
@@ -7951,10 +8573,11 @@ summary.motif-cs-panel-head:focus-visible {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   }
 
-  .motif-cs-msa-matrix-scroll {
-    max-height: min(42vh, 350px);
-  }
-
+  /* No max-height here. The matrix flexes to the panel it is mounted in; a vh
+     cap sizes it against the browser instead, which is what used to push the
+     residues out of view. It would bind the moment a narrow panel is tall
+     enough to give the matrix more than the cap, and then stop it growing and
+     leave dead space at the bottom. */
   .motif-cs-msa-stats {
     gap: 3px 9px;
   }
@@ -7996,12 +8619,7 @@ summary.motif-cs-panel-head:focus-visible {
     flex: 1 1 150px;
   }
 
-  .motif-cs-msa-sort-picker {
-    flex: 1 1 120px;
-  }
-
-  .motif-cs-msa-reference-picker select,
-  .motif-cs-msa-sort-picker select {
+  .motif-cs-msa-reference-picker select {
     width: 100%;
   }
 
@@ -8009,9 +8627,10 @@ summary.motif-cs-panel-head:focus-visible {
     display: none;
   }
 
+  /* Phone width only tightens the floor; the height still comes from the panel,
+     never from a vh cap. */
   .motif-cs-msa-matrix-scroll {
     min-height: 132px;
-    max-height: min(38vh, 300px);
   }
 
   .motif-cs-msa-export-row > .motif-cs-muted {
@@ -8383,7 +9002,9 @@ summary.motif-cs-panel-head:focus-visible {
 .motif-cs-guide-select {
   display: grid;
   grid-template-columns: 14px 40px minmax(0, 1fr) 54px;
-  align-items: center;
+  /* `start`, not `center`: the spacer wraps to two lines on the longer PAMs, and
+     centring would drag the checkbox and score off the first line with it. */
+  align-items: start;
   gap: 8px;
   flex: 1 1 auto;
   min-width: 0;
@@ -8406,12 +9027,19 @@ summary.motif-cs-panel-head:focus-visible {
   font-variant-numeric: tabular-nums;
 }
 .motif-cs-guide-spacer {
-  overflow: hidden;
   font-family: var(--font-mono);
   font-size: 11px;
   letter-spacing: 0.01em;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  /* The PAM is the last 3-6 nt of this string and the panel's own subtitle
+     promises it, so the string may wrap but must never be cut. Ellipsising it
+     hid every PAM base on every row at every width: for a 3-letter NGG you
+     cannot confirm the site, and for a degenerate NNGRRT reading it is the only
+     way to know the site is real. A 5'-anchored PAM was unaffected, which is
+     what shows this was "the tail is cut" and not anything about PAMs. This is
+     the same treatment the pinned layout below already gives the same element. */
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 .motif-cs-guide-pam {
   color: var(--amber);
@@ -9185,8 +9813,19 @@ summary.motif-cs-panel-head:focus-visible {
     background: var(--accent);
   }
 
+  /* Focus has to run the whole separator, not just its centre grip. The grip is
+     34px wide on a handle that is the full width of the workspace — measured at
+     1440x900, focusing it repaints 580 of 35,200 pixels, 1.65%, and all of them
+     are in the middle. Its vertical sibling lights its entire length instead
+     and repaints 23.13%, so this is the same control answering the same key
+     two different ways. Matched to that sibling: a 2px accent line at the same
+     y the grip occupies, so the grip lands inside it rather than fighting it.
+     Hover keeps the grip-only treatment deliberately — a pointer already gets
+     an ns-resize cursor over this element, and focus must not be the quieter
+     of the two signals. */
   .motif-cs-stacked-resize-handle[data-pane="sequence"]:focus-visible {
     outline: none;
+    background: linear-gradient(to bottom, transparent 0 3px, var(--accent) 3px 5px, transparent 5px 100%);
   }
 
   .motif-cs-map-frame {
@@ -9295,13 +9934,28 @@ summary.motif-cs-panel-head:focus-visible {
   .motif-cs-map-frame {
     flex: 1 1 auto;
     height: auto;
-    min-height: 410px;
+    /* This floor is what the map actually gets: `height: auto` here drops the
+       clamp(560px, 70vh, 820px) declared on the base rule, and this block
+       applies at every width from 768px up. A flat 410px letterboxed a square
+       viewBox into a wide short box on every sub-1536px desktop — which shrank
+       declared 10px labels to 5.5px, left most of the pane empty, cut cluster
+       hit targets to a few pixels, and dropped the auto-label threshold from 96
+       sites to 24, so restriction labels defaulted to off. Scale the floor with
+       the viewport instead, never below the old value. */
+    min-height: clamp(410px, 56vh, 620px);
   }
 }
 
-/* Drop the informational topbar chips (record count, length) before the primary
-   controls (pane nav / Translations / Theme) run out of room — the annotate-corner
-   reserve eats width, and these facts are shown elsewhere (inventory + seq pane). */
+/* Shrink the brand and let the meta group sit flush before the primary controls
+   (pane nav / Translations / Theme) run out of room — the annotate-corner
+   reserve eats width from the right.
+
+   This block used to also drop two informational topbar chips here, which is
+   what made them look like a narrow-width concession. They were hidden in the
+   BASE block as well, from the same initial commit, so the chip rule here never
+   changed an outcome: measured at 225 widths from 320 to 2560, under every
+   record type, pane placement and media mode, they were `display: none` and 0x0
+   in all of them. Both rules and the markup are gone. */
 @media (max-width: 1180px) {
   .motif-cs-brand {
     flex: 0 0 auto;
@@ -9310,10 +9964,6 @@ summary.motif-cs-panel-head:focus-visible {
 
   .motif-cs-topbar-meta {
     margin-left: 0;
-  }
-
-  .motif-cs-topbar-meta > .motif-cs-chip {
-    display: none;
   }
 
   .motif-cs-brand small {
@@ -9462,8 +10112,11 @@ summary.motif-cs-panel-head:focus-visible {
     background: var(--accent);
   }
 
+  /* Same full-length focus line as the sequence handle above, for the phone
+     stack where both stacked handles exist. See that rule for the numbers. */
   .motif-cs-stacked-resize-handle:focus-visible {
     outline: none;
+    background: linear-gradient(to bottom, transparent 0 3px, var(--accent) 3px 5px, transparent 5px 100%);
   }
 
   body[data-motif-cs-stacked-resizing] {
@@ -9808,8 +10461,13 @@ summary.motif-cs-panel-head:focus-visible {
     background: var(--accent);
   }
 
+  /* Same full-length focus line again. This variant outranks the unpinned rule
+     on specificity, so leaving it grip-only would have quietly restored the old
+     behaviour for anyone with the Tools panel pinned — the guard test caught
+     exactly that. */
   .motif-cs-main[data-tools-pinned="true"] > .motif-cs-stacked-resize-handle[data-pane="sequence"]:focus-visible {
     outline: none;
+    background: linear-gradient(to bottom, transparent 0 3px, var(--accent) 3px 5px, transparent 5px 100%);
   }
 
   .motif-cs-main[data-tools-pinned="true"] .motif-cs-map-frame {

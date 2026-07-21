@@ -138,13 +138,20 @@ describe('restrictions: clustering', () => {
     // The two BsmBI cuts collapse to ONE display name (was the "BsmBI,BsmBI" bug);
     // ticks[] still holds all four real cut sites so density + "+N more sites" stay put.
     expect(cluster.ticks).toHaveLength(4);
-    expect(cluster.enzymes).toEqual(['BsmBI', 'BbsI', 'AfeI']); // 3 distinct, position order
+    expect(cluster.enzymes).toEqual(['BsmBI', 'BbsI', 'AfeI']); // 3 distinct, display order
     expect(cluster.shownEnzymes).toEqual(['BsmBI', 'BbsI']); // Type IIS first, distinct, capped at 2
     expect(cluster.overflow).toBe(1); // one DISTINCT enzyme (AfeI) unshown, NOT the extra BsmBI tick
     expect(cluster.hasTypeIIS).toBe(true); // BsmBI/BbsI cut downstream
   });
 
-  it('shows a Type IIS enzyme name first without reordering the full enzyme list', () => {
+  it('orders the WHOLE enzyme list the way the label reads it, Type IIS first', () => {
+    // The full list used to stay in position order while only the shown slice was
+    // promoted, so a label reading "BbsI +3" sat over a tooltip opening "PstI, AluI".
+    // On live pUC19 with every source on that hit 9 of 20 circular clusters and 6 of
+    // 17 linear ones, with the clicked name as deep as 14th of 39. The list is ordered
+    // once now and `shownEnzymes` is a slice of it, so "the label's names are the
+    // tooltip's first names" holds by construction instead of by two functions
+    // happening to agree.
     const ticks = [
       toRestrictionTick(site('PstI', 50, 51, 'CTGCAG')),
       toRestrictionTick(site('AluI', 51, 52, 'AGCT')),
@@ -157,10 +164,12 @@ describe('restrictions: clustering', () => {
       circular: false,
     });
 
-    expect(cluster.enzymes).toEqual(['PstI', 'AluI', 'BbsI', 'HaeIII']);
+    expect(cluster.enzymes).toEqual(['BbsI', 'PstI', 'AluI', 'HaeIII']);
     expect(cluster.hasTypeIIS).toBe(true);
     expect(cluster.shownEnzymes).toEqual(['BbsI', 'PstI']);
     expect(cluster.overflow).toBe(2);
+    // The property the label depends on, stated rather than implied.
+    expect(cluster.enzymes.slice(0, cluster.shownEnzymes.length)).toEqual(cluster.shownEnzymes);
   });
 
   it('merges the circular origin seam', () => {

@@ -60,7 +60,8 @@
     "claude-science:remove-local": "node scripts/configure-motif-claude-science-local.mjs --remove",
     "claude-science:setup": "npm run claude-science:build && npm run claude-science:doctor:unregistered && npm run claude-science:install-local && npm run claude-science:check-local",
     "check:css-tokens": "node scripts/check-css-tokens.mjs",
-    "check:aria-controls": "node scripts/check-aria-controls.mjs"
+    "check:aria-controls": "node scripts/check-aria-controls.mjs",
+    "gate": "npm run typecheck && npm run lint && npm test && npm run test:plugin && npm run test:connector && npm run check:css-tokens && npm run check:aria-controls && npm run build:motif && npm run test:e2e && npm run test:e2e:msa"
   },
   "dependencies": {
     "@modelcontextprotocol/ext-apps": "1.7.4",

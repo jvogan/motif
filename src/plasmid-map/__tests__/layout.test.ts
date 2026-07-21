@@ -884,7 +884,7 @@ describe('computeMapLayout: circular pUC19', () => {
     expect(cluster).toBeDefined();
     expect(cluster!.hasTypeIIS).toBe(true);
     // label.text (aria / hit-test / collision probe) stays the flat joined string.
-    expect(cluster!.label?.text).toBe('BsaI,HpaII,MspI +2');
+    expect(cluster!.label?.text).toBe('BsaI, HpaII, MspI +2');
     // Per-enzyme breakdown: BsaI is the ONLY Type IIS; the "+N" tail is ink.
     expect(cluster!.labelSegments).toEqual([
       { text: 'BsaI', typeIIS: true },
@@ -892,9 +892,9 @@ describe('computeMapLayout: circular pUC19', () => {
       { text: 'MspI', typeIIS: false },
       { text: '+2', typeIIS: false },
     ]);
-    // The renderer's join rule (enzymes by "," + tail by " ") reconstructs label.text.
+    // The renderer's join rule (enzymes by ", " + tail by " ") reconstructs label.text.
     const rebuilt = cluster!
-      .labelSegments!.map((s, i) => (i === 0 ? '' : s.text.startsWith('+') ? ' ' : ',') + s.text)
+      .labelSegments!.map((s, i) => (i === 0 ? '' : s.text.startsWith('+') ? ' ' : ', ') + s.text)
       .join('');
     expect(rebuilt).toBe(cluster!.label?.text);
   });
@@ -914,13 +914,28 @@ describe('computeMapLayout: circular pUC19', () => {
     const visibleRestrictionLabels = layout.restrictions
       .map((restriction) => restriction.label?.text)
       .filter((text): text is string => Boolean(text));
-    const capPx = 112; // Mirrors CIRCULAR_REC_LABEL_MAX_WIDTH_PX.
+    const capPx = 126; // Mirrors CIRCULAR_REC_LABEL_MAX_WIDTH_PX.
 
     expect(visibleRestrictionLabels.length).toBeGreaterThan(0);
     expect(visibleRestrictionLabels.some((text) => text.includes(' +'))).toBe(true);
-    expect(visibleRestrictionLabels.some((text) => text.includes(', '))).toBe(false);
     for (const label of visibleRestrictionLabels) {
       expect(approxTextWidth(label)).toBeLessThanOrEqual(capPx);
+    }
+
+    // This used to assert no label contained ", ", using the separator as a proxy for
+    // "the sprawling re-grouped label path fired" — that path (radial-labels' groupText)
+    // is the only thing that used to emit a spaced comma. Per-cluster labels now join
+    // names with ", " themselves, so the proxy would silently pass forever. Assert the
+    // SHAPE the proxy stood for instead: a per-cluster label is a short list of plain
+    // enzyme names plus an optional "+N" count, never a concatenated cluster dump.
+    for (const label of visibleRestrictionLabels) {
+      const names = label.replace(/ \+\d+$/, '').split(', ');
+      expect(names.length).toBeLessThanOrEqual(3);
+      // Nicking enzymes carry a dot (Nt.BstNBI, Nb.BbvCI, Nt.BbvCI all ship in
+      // src/bio/enzyme-data.ts) and circularClusterLabel may ellipsise a name that
+      // will not fit, so the character class has to admit both. An alphanumeric-only
+      // class passes here purely because this fixture's enzymes happen to be clean.
+      for (const name of names) expect(name).toMatch(/^[A-Za-z0-9.]+…?$/);
     }
   });
 
@@ -1031,9 +1046,111 @@ describe('computeMapLayout: circular pUC19', () => {
     // Direct leaders remain the default when their chord is unobstructed; the
     // radial-first elbow is reserved for a real collision escape. Label positions
     // and the represented label set remain fixed.
+    // Rebaselined after a crowded label began preferring an outward tier over a
+    // tangential slide (TIER_ESCALATION_ANGLE_EQUIV_DEG 4 -> 1.5). Verified to be
+    // the minimal consequence of that change: the label SET, every label's text
+    // and the viewBox are byte-identical to the previous pin, and exactly one
+    // label moved — "EcoRI,SacI,KpnI +2" from 524,123 to 544,117, i.e. one tier
+    // out rather than sideways. Leader straightness itself is pinned by
+    // 'keeps circular restriction leaders pointing at their own tick' below.
+    // Rebaselined again for the ", " name separator (and the width cap raised to keep
+    // the same enzyme content fitting). Verified minimal: exactly one label changed —
+    // "EcoRI,SacI,KpnI +2" -> "EcoRI, SacI, KpnI +2", which recentres it from 544,117
+    // to 548,114. No label gained, lost, or shed a name; feature labels and the viewBox
+    // are byte-identical.
+    // Rebaselined for the cluster tooltip naming its enzyme count alongside its site
+    // count, so the drawn label's "+N" (enzyme NAMES) stops reading as a contradiction
+    // of the tooltip's "N sites". NOTHING DRAWN MOVED: hashing this layout with
+    // restrictions[].title stripped gives d304bb878f6a569d82df3f30aa4fc0ea457543c5f96
+    // ef7ed9286292111e2777f both before and after, so geometry, the label set and every
+    // label's text are byte-identical. The only delta is one tooltip string,
+    // "EcoRI, SacI, KpnI, BamHI, HindIII · 5 sites" -> "... · 5 enzymes · 5 sites".
+    // Rebaselined for the additive overflow-chip hit rect. NOTHING DRAWN MOVED:
+    // hashing this layout with overflows[].hit stripped gives
+    // 35262ad877aa6404ff777c734b5b9bb42d1416c886b3d63e36265a09290078a6, i.e. the
+    // previous pin exactly, so geometry, the label set, every label's text and the
+    // viewBox are byte-identical. The only delta is the new pointer target, which the
+    // renderer draws and the SVG export ignores.
+    // Rebaselined again for the additive overflow `count`, which lets the map dock
+    // state the chip's number to a keyboard user without re-deriving it from the
+    // chip's display text. NOTHING DRAWN MOVED: hashing this layout with
+    // overflows[].count stripped gives
+    // 59f8c609fd6b0f01efd27b54882b97c15d04bac12efc7b72f8a8d6f4e3a77ec3, the previous
+    // pin exactly.
+    // Rebaselined once more for splitting that `count` into overflows[].hiddenBodies
+    // + overflows[].unlabelled, because one integer holding "bodies not drawn plus
+    // labels not drawn" is a quantity no reader can state truthfully. NOTHING DRAWN
+    // MOVED: hashing this layout with all three of count/hiddenBodies/unlabelled
+    // stripped gives 59f8c609fd6b0f01efd27b54882b97c15d04bac12efc7b72f8a8d6f4e3a77ec3
+    // both before and after — the same digest recorded above — and a line diff of the
+    // two full layouts is exactly `"count": 1` -> `"hiddenBodies": 0, "unlabelled": 1`
+    // on the single overflow entry, with every path, label, tick and the viewBox
+    // byte-identical.
     expect(layoutHash(layout)).toBe(
-      'f7b5ec70523e97d40f49ee8afff81178c539114faa3153b8ec0a39c9a30934d1',
+      '36be85f8350cb3a6108bd002c490af9ad1b04a34bb93ec15a8bbbbb27661d09c',
     );
+  });
+
+  it('keeps circular restriction leaders pointing at their own tick', () => {
+    // A leader is only useful if you can follow it back to the cut site it names.
+    // What breaks that is not length and not angle on their own, but the two
+    // together: a label that slid a long way AROUND the ring ends up joined to
+    // its tick by a line running almost tangentially, indistinguishable from the
+    // neighbouring ticks it sweeps past. The honest measure is therefore how far
+    // the label sits SIDEWAYS of its own tick's radial spoke — len * sin(angle
+    // between the leader and that spoke. A long leader pointing straight out
+    // scores 0 and reads fine; a short stub at any angle scores small; only the
+    // long-and-tangential case scores high.
+    //
+    // Crowded map, so the packer is actually under pressure: 36 sites, several in
+    // tight clusters that cannot all fit on one tier near their own angle.
+    const dense: RestrictionSite[] = Array.from({ length: 36 }, (_, i) => {
+      const cluster = Math.floor(i / 3);
+      const pos = (cluster * 220 + (i % 3) * 9) % PUC19_LEN;
+      return site(`Enz${String.fromCharCode(65 + (i % 26))}${i}`, pos, pos + 1, 'GAATTC');
+    });
+    const crowded = computeMapLayout(
+      circularInput({ restrictionSites: dense, width: 900, height: 900 }),
+    );
+
+    // Guard the guard, and count LABELS not leaders. Filtering on leader.length > 1
+    // would let the guard be satisfied by the very thing it is meant to catch:
+    // circularLeaderToLabelEdge returns [] when the leader start lands inside the
+    // label's guard box, so pulling a label onto its tick removes it from the sample
+    // and can only flatter the measurement below. Straightening leaders by dropping
+    // labels is a regression wearing a fix's clothes.
+    const withLabels = crowded.restrictions.filter((r) => r.label);
+    expect(withLabels.length).toBeGreaterThanOrEqual(11);
+    const labelled = withLabels.filter((r) => r.label!.leader.length > 1);
+    expect(labelled.length).toBeGreaterThanOrEqual(8);
+
+    const sideways = labelled.map((r) => {
+      const leader = r.label!.leader;
+      const anchor = leader[0];
+      const end = leader[leader.length - 1];
+      const spokeX = anchor.x - crowded.center.x;
+      const spokeY = anchor.y - crowded.center.y;
+      const spokeLen = Math.hypot(spokeX, spokeY) || 1;
+      // component of the anchor->label vector perpendicular to the tick's spoke
+      return Math.abs(
+        ((end.x - anchor.x) * -spokeY + (end.y - anchor.y) * spokeX) / spokeLen,
+      );
+    });
+
+    // 8% keeps a leader visually attached to its tick while leaving the packer room
+    // to nudge labels apart. For scale, measured on the real bundled plasmids at
+    // 1920x1080 (worst leader, as a % of ring radius), before -> after the packer
+    // started preferring an outward tier over a tangential slide:
+    //   pUC19 26.1 -> 5.0   pBR322 25.8 -> 5.3   pBluescript 27.7 -> 5.3
+    //   pcDNA3.1 13.9 -> 5.0   pACYC184 25.6 -> 9.1  (the real-world worst case,
+    //   and the reason this bound is not tighter than 8% on a synthetic fixture)
+    // Restriction label counts held or improved on all five. Total label counts do
+    // NOT: on a crowded ring the feature pass, which shares this constant and runs
+    // first, can lose one (32 -> 31, "M13-rev primer") on some inputs and gain one
+    // on others. That is bounded by the feature-count assertion in
+    // label-collision.probe.test.ts, not by this test.
+    const worst = Math.max(...sideways);
+    expect(worst).toBeLessThanOrEqual(crowded.radius * 0.08);
   });
 
   it('culls dense tiny inside labels without dropping visible feature geometry', () => {
@@ -1583,7 +1700,13 @@ describe('computeMapLayout: linear + protein', () => {
     expect(layout.budgets.overflowFeatureCount).toBeGreaterThan(0);
   });
 
-  it('emits a linear feature overflow marker for hidden feature bodies and labels', () => {
+  it('emits a linear feature overflow marker that reports only what is missing', () => {
+    // 40 identical full-width features: 17 are pushed past the last row the stack can
+    // fit, and every feature that IS drawn keeps its label. So the chip has exactly one
+    // thing to say, and the version of this test that demanded it also mention dropped
+    // LABELS was passing on a bug — an overflow row used to be counted twice, once as
+    // an undrawn body and again as a dropped label, and the chip printed the sum. The
+    // clause was there because the number was wrong.
     const layout = computeMapLayout({
       mode: 'linear',
       name: 'dense stack overflow marker',
@@ -1596,16 +1719,59 @@ describe('computeMapLayout: linear + protein', () => {
       height: 420,
     });
     const marker = featureOverflow(layout);
+    const drawnUnlabelled = layout.features.filter((f) => f.segmentPaths.length > 0 && !f.label);
 
-    expect(layout.budgets.overflowFeatureCount).toBeGreaterThan(0);
+    expect(layout.budgets.overflowFeatureCount).toBe(17);
+    expect(drawnUnlabelled).toHaveLength(0);
     expect(marker).not.toBeNull();
     expect(marker!.kind).toBe('feature-labels');
-    expect(overflowCount(marker!.text)).toBe(
-      layout.budgets.overflowFeatureCount + layout.budgets.hiddenLabelCount,
-    );
-    expect(marker!.title).toMatch(/feature bod(?:y|ies)/);
-    expect(marker!.title).toContain('feature label');
+    expect(marker!.hiddenBodies).toBe(17);
+    expect(marker!.unlabelled).toBe(0);
+    expect(overflowCount(marker!.text)).toBe(17);
+    expect(marker!.title).toContain('17 feature bodies hidden');
+    expect(marker!.title).not.toContain('feature label');
     expect(marker!.title).toContain('Features tab');
+  });
+
+  it('counts a linear overflow feature once, not once per thing it is missing', () => {
+    // Both halves non-zero, which is the shape that tells a split apart from a sum: 26
+    // full-width features stack past the last row, 40 short ones are drawn and lose
+    // labels to the row de-collider. An undrawn feature has no label left to drop, so
+    // it must appear in ONE of the two numbers. It appeared in both until this test,
+    // and the chip read "+57" over 32 affected features out of 66.
+    const stacked = stackedLinearFeatures(26);
+    const shorts = Array.from({ length: 40 }, (_, i) =>
+      feat({ id: `short-${i}`, name: `short-${i}`, type: 'cds', start: i * 140, end: i * 140 + 30, strand: 1 }),
+    );
+    const layout = computeMapLayout({
+      mode: 'linear',
+      name: 'stacked plus shorts',
+      length: 6000,
+      topology: 'linear',
+      sequenceType: 'dna',
+      features: [...stacked, ...shorts],
+      restrictionSites: [],
+      width: 1000,
+      height: 420,
+    });
+    const marker = featureOverflow(layout)!;
+    const arcless = layout.features.filter((f) => f.segmentPaths.length === 0);
+    const drawnUnlabelled = layout.features.filter((f) => f.segmentPaths.length > 0 && !f.label);
+
+    // Recounted off the drawn output, which is the only reading that is not the chip's
+    // own arithmetic handed back to it.
+    expect(marker.hiddenBodies).toBe(arcless.length);
+    expect(marker.unlabelled).toBe(drawnUnlabelled.length);
+    expect(arcless).toHaveLength(25);
+    expect(drawnUnlabelled).toHaveLength(7);
+    expect(overflowCount(marker.text)).toBe(32);
+
+    // No feature is in both halves, so the printed total is a count of distinct
+    // features and can never exceed the number of features on the map.
+    const affected = new Set([...arcless, ...drawnUnlabelled].map((f) => f.id));
+    expect(affected.size).toBe(marker.hiddenBodies + marker.unlabelled);
+    expect(overflowCount(marker.text)).toBeLessThanOrEqual(layout.features.length);
+    expect(marker.title).toContain('25 feature bodies hidden and 7 feature labels dropped');
   });
 
   it('does not overlap visible linear feature labels in dense scenarios', () => {

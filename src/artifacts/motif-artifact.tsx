@@ -41,6 +41,14 @@ import { bpToAngle, pointOnCircle } from '../plasmid-map/geometry/coordinates';
 import { featureSegments as mapFeatureSegments, featureSpans, normalizeSpan } from '../plasmid-map/geometry/ranges';
 import { selectionOverlayPaths } from '../plasmid-map/selection-overlay';
 import { mapModeForBlock, type MapLayout, type MapSpan } from '../plasmid-map/types';
+import {
+  contentPointFromRoot,
+  mapContentPoint,
+  mapRootPoint,
+  rootPointFromContent,
+  type MapContentPoint,
+  type MapRootPoint,
+} from '../plasmid-map/point-spaces';
 import { SequenceMapView } from '../components/plasmid-map/SequenceMapView';
 import { LargeSequenceViewer } from './LargeSequenceViewer';
 import { ClaudeScienceMsaViewer } from './ClaudeScienceMsaViewer';
@@ -161,6 +169,7 @@ import {
   type ArtifactWorkflowResult,
 } from './claude-science-workspace-collections';
 import { normalizeArtifactWorkspaceEnvelope } from './claude-science-workspace-envelope';
+import { chooseRailPopoverPlacement, collectRailPopoverObstacles, RAIL_POPOVER_MIN_HEIGHT } from './rail-popover-placement';
 import {
   MOTIF_INVENTORY_SCHEMA,
   MOTIF_INVENTORY_SCHEMA_V1,
@@ -427,10 +436,11 @@ type Selection =
   | { kind: 'restriction'; clusterId: string; tickIds: readonly string[]; enzyme?: string }
   | null;
 
-type SvgPoint = {
-  x: number;
-  y: number;
-};
+// A bare {x, y} for a map point used to be enough. It is not: the click surface
+// and the geometry beneath it live in two different coordinate spaces that are
+// equal only at a pristine fit. See ../plasmid-map/point-spaces — use
+// MapRootPoint for pan/zoom anchoring and MapContentPoint for anything that
+// resolves to an angle or a base.
 
 type MapViewport = {
   k: number;
@@ -574,9 +584,26 @@ const DEFAULT_PANE_WIDTHS: PaneWidths = {
   tools: 260,
 };
 
+// Sequence's max is a backstop, not the working constraint. Two mechanisms already
+// bound this pane physically: resizePanePair refuses to take the neighbour below its
+// own min, and clampPaneWidthsForViewport shrinks everything proportionally once the
+// row stops fitting. The old 760 sat BELOW both of them, so it — not the workspace —
+// was what stopped the drag, at every desktop width including 2560 where the map was
+// sitting on 1528px of slack and dragging moved nothing at all.
+//
+// The pane earns the width: at 760 the sequence renders 85 bases per line over 79
+// lines; at 1500 it renders 185 over 41, with no horizontal overflow either way. The
+// cap was costing 2.2x the vertical scrolling for nothing.
+//
+// 2000 is chosen so the real constraints bind first across every width we lay out for:
+// the physical ceiling is main - inventory - toolsRail - handles - map.min, which is
+// ~1348px at 1920 and ~1988px at 2560 (the widest common desktop). Past that the cap
+// resumes as a backstop rather than a governor. It must stay a CONSTANT: the drag
+// handler clamps preferredPaneWidths to this max, so a viewport-derived value would
+// permanently shrink the user's remembered width every time they narrowed the window.
 const PANE_WIDTH_LIMITS: Record<ResizablePaneKey, { min: number; max: number }> = {
   inventory: { min: 160, max: 420 },
-  sequence: { min: 240, max: 760 },
+  sequence: { min: 240, max: 2000 },
   map: { min: 300, max: 900 },
   tools: { min: 220, max: 540 },
 };
@@ -634,6 +661,28 @@ const PANE_ICONS: Record<PaneKey, LucideIcon> = {
   sequence: List,
   tools: Wrench,
 };
+
+/**
+ * The pane widths React holds are flex-basis values; what the user sees is the basis
+ * plus whatever share of the row's leftover space flex-grow assigned. Any interaction
+ * that reasons about "how much room does the neighbour have left" has to use the
+ * rendered geometry, or it will refuse to move while slack is still visible on screen.
+ *
+ * Falls back to the stored width per pane, so a pane that is floating (and therefore
+ * not part of the row), hidden, or not yet mounted keeps its value rather than
+ * collapsing to zero.
+ */
+function measuredPaneWidths(stored: PaneWidths, placements: PanePlacements): PaneWidths {
+  const next = { ...stored };
+  if (typeof document === 'undefined') return next;
+  for (const pane of Object.keys(next) as ResizablePaneKey[]) {
+    if (placements[pane] !== 'docked') continue;
+    const element = document.querySelector<HTMLElement>(PANE_SELECTOR[pane]);
+    const width = element?.getBoundingClientRect().width ?? 0;
+    if (width > 0) next[pane] = width;
+  }
+  return next;
+}
 
 const DEFAULT_PANE_PLACEMENTS: PanePlacements = {
   inventory: 'docked',
@@ -898,7 +947,7 @@ type MapSelectionRange = {
 
 type MapDragState = {
   mode: 'range';
-  start: SvgPoint;
+  start: MapContentPoint;
   startBp: number;
   lastAngle: number;
   cumulativeAngle: number;
@@ -940,8 +989,15 @@ function defaultTranslationsWindowRect(): WindowRect {
 function defaultAlignmentWindowRect(): WindowRect {
   const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1280;
   const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 800;
+  // An alignment is the widest, tallest thing this workspace shows, and the
+  // caps are what it opens at before anyone drags a corner. The old 940x600
+  // ignored the screen entirely: on a 2560x1400 display it left 810px of unused
+  // width and 400px of unused height while the residues scrolled in a 194px
+  // slot. These caps still keep a visible margin, so it reads as a window
+  // rather than a takeover, and both are clamped by the viewport terms beside
+  // them on small screens.
   const width = Math.min(940, Math.max(320, viewportWidth - 40));
-  const height = Math.min(600, Math.max(300, viewportHeight - 112));
+  const height = Math.min(820, Math.max(300, viewportHeight - 150));
   return clampWindowRect({
     x: Math.max(16, Math.round((viewportWidth - width) / 2)),
     y: Math.max(54, Math.round((viewportHeight - height) / 2)),
@@ -1086,6 +1142,17 @@ type MotifHelp = {
 
 const DATA_PLACEHOLDERS = ['__SEQUENCE_INVENTORY__', '__MOTIF_ARTIFACT_DATA__'];
 const DEFAULT_SCHEMA = MOTIF_INVENTORY_SCHEMA;
+/* Two different ORF floors are in use and they are not interchangeable. The
+   Analysis panel scans exploratively at 10 aa; the record summary makes a
+   citable statement at the classic 30 aa floor. On pUC19 that is 221 against
+   96 — the same word, the same record, and a 2.3x disagreement that no reader
+   could resolve, because neither readout named its floor except the summary's
+   empty case ("none >=30 aa"). Both are correct populations, so the fix is that
+   both now say which one they are; unifying them would have moved a number
+   somebody may already be quoting. Named here so the label and the argument
+   passed to findORFs cannot drift apart. */
+const ANALYSIS_ORF_MIN_AA = 10;
+const SUMMARY_ORF_MIN_AA = 30;
 const MIN_ZOOM = 1;
 const MAX_ZOOM = 8;
 const ZOOM_STEP = 1.25;
@@ -1268,7 +1335,6 @@ const enzymeByLowerName = new Map(RESTRICTION_ENZYMES.map((enzyme) => [enzyme.na
 const fullEnzymeByLowerName = new Map(RESTRICTION_ENZYMES_FULL.map((enzyme) => [enzyme.name.toLowerCase(), enzyme]));
 const ALLOWED_SEQUENCE_TYPES = new Set<SequenceType>(['dna', 'rna', 'protein', 'misc', 'unknown', 'mixed']);
 const emptyFeatures: readonly Feature[] = [];
-const emptySites: readonly RestrictionSite[] = [];
 const emptyTracks: readonly InlineTranslationTrack[] = [];
 const emptyTickIds: readonly string[] = [];
 const EMPTY_ARTIFACT_VECTOR: ArtifactVector = {
@@ -1904,9 +1970,17 @@ function uniqueAlignmentId(base: string, alignments: readonly ArtifactAlignment[
 }
 
 function uniqueAlignmentName(base: string, alignments: readonly ArtifactAlignment[]): string {
-  const root = base.trim() || 'Alignment';
+  const requested = base.trim() || 'Alignment';
   const used = new Set(alignments.map((alignment) => alignment.name.trim().toLowerCase()));
-  if (!used.has(root.toLowerCase())) return root;
+  if (!used.has(requested.toLowerCase())) return requested;
+  // Saving a copy of a copy passes in a name this function already suffixed, and
+  // suffixing that again concatenated instead of counting: "REVIEW 2" became
+  // "REVIEW 2 2" and then "REVIEW 2 2 2", names that defeat telling the results
+  // apart. Count from the root instead — but only when the bare root is itself
+  // taken, so a name that merely ends in a number ("Run 2019") is never rewritten
+  // into one the user never chose.
+  const suffixed = /^(.*\S)\s+\d+$/.exec(requested);
+  const root = suffixed && used.has(suffixed[1].toLowerCase()) ? suffixed[1] : requested;
   for (let index = 2; index < 10000; index += 1) {
     const candidate = `${root} ${index}`;
     if (!used.has(candidate.toLowerCase())) return candidate;
@@ -2054,7 +2128,12 @@ function scanRestrictionSitesForRecord(
   record: ArtifactVector,
   scanEnzymes: readonly RestrictionEnzyme[],
 ): readonly RestrictionSite[] {
-  if (record.type !== 'dna' || scanEnzymes.length === 0) return emptySites;
+  // Nothing to scan is not the same as nothing to report: sites that arrived in
+  // the payload belong to the record and are not this scan's to discard. This
+  // returned `emptySites`, so a record carrying supplied sites summarised as
+  // zero the moment no enzyme source was selected, while the export of the same
+  // record still listed them. Same answer as recordSitesForExport now.
+  if (record.type !== 'dna' || scanEnzymes.length === 0) return record.sites;
   const scanned = findRestrictionSites(record.sequence, [...scanEnzymes], { topology: record.topology });
   if (record.sites.length === 0) return scanned;
   const seen = new Set(scanned.map(restrictionSiteTickId));
@@ -2123,7 +2202,7 @@ function buildRecordSummary(
   const enzymesThatCut = counts.size;
 
   const orfs = isDna && translationCode.supported
-    ? findORFs(record.sequence, 30, translationCode.table, { topology })
+    ? findORFs(record.sequence, SUMMARY_ORF_MIN_AA, translationCode.table, { topology })
     : [];
   const longestOrf = orfs[0] ?? null; // findORFs sorts by length desc
 
@@ -2167,6 +2246,9 @@ function buildRecordSummary(
     orfs: isDna
       ? {
           count: orfs.length,
+          // A machine consumer has even less chance than a reader of guessing
+          // which population `count` describes, and the app publishes two.
+          minAminoAcids: SUMMARY_ORF_MIN_AA,
           longest: longestOrf
             ? { start: longestOrf.start, end: longestOrf.end, aminoAcids: longestOrf.aminoAcids, strand: longestOrf.strand }
             : null,
@@ -2198,12 +2280,15 @@ function buildRecordSummary(
         `${enzymesThatCut} enzyme${enzymesThatCut === 1 ? '' : 's'} cut`,
     );
     if (longestOrf) {
+      // The empty case has always named its floor; the non-empty one did not,
+      // which is how this line came to report 96 while the Analysis chip
+      // reported 221 for the same record with nothing to tell them apart.
       lines.push(
-        `ORFs: ${orfs.length} (longest ${longestOrf.aminoAcids.toLocaleString()} aa at ` +
+        `ORFs: ${orfs.length} ≥${SUMMARY_ORF_MIN_AA} aa (longest ${longestOrf.aminoAcids.toLocaleString()} aa at ` +
           `${longestOrf.start + 1}–${longestOrf.end}, ${longestOrf.strand === -1 ? '−' : '+'} strand)`,
       );
     } else {
-      lines.push('ORFs: none ≥30 aa');
+      lines.push(`ORFs: none ≥${SUMMARY_ORF_MIN_AA} aa`);
     }
   }
   if (selectionData) {
@@ -2342,7 +2427,13 @@ export function toGenBankLite(record: ArtifactVector, topology: Topology): strin
   const date = genBankDate();
   const molecule = record.type === 'protein' ? 'aa' : record.type === 'rna' ? 'RNA' : 'DNA';
   const topologyLabel = topology === 'circular' ? 'circular' : 'linear';
-  const locus = `LOCUS       ${safeSlug(record.name).slice(0, 16).padEnd(16, ' ')} ${String(record.sequence.length).padStart(11, ' ')} ${molecule.padEnd(6, ' ')} ${topologyLabel.padEnd(8, ' ')} UNK ${date}`;
+  // The length needs its unit token. A reader only records a declared length when
+  // `bp` or `aa` follows the number, and that declared length is what arms the
+  // truncation checks when the file is read back in. Protein records already
+  // satisfy this because their molecule token is `aa`, so spelling out the unit
+  // is only needed for nucleotides.
+  const lengthUnit = record.type === 'protein' ? '' : 'bp ';
+  const locus = `LOCUS       ${safeSlug(record.name).slice(0, 16).padEnd(16, ' ')} ${String(record.sequence.length).padStart(11, ' ')} ${lengthUnit}${molecule.padEnd(6, ' ')} ${topologyLabel.padEnd(8, ' ')} UNK ${date}`;
   const features = record.features
     .flatMap((feature) => genBankFeatureLines(feature, record.translationTableId))
     .join('\n');
@@ -2962,13 +3053,13 @@ function codonRangeFromRangeOffset(spans: readonly MapSpan[], offset: number, se
   return { start: coords[0], end };
 }
 
-function pointToSequenceAngle(point: SvgPoint, layout: MapLayout): number {
+function pointToSequenceAngle(point: MapContentPoint, layout: MapLayout): number {
   const dx = point.x - layout.center.x;
   const dy = point.y - layout.center.y;
   return (Math.atan2(dy, dx) * 180 / Math.PI + 90 + 360) % 360;
 }
 
-function pointToSequenceOffset(point: SvgPoint, layout: MapLayout): number {
+function pointToSequenceOffset(point: MapContentPoint, layout: MapLayout): number {
   if (layout.length <= 0) return 0;
   if (layout.mode === 'linear' && layout.linearAxis) {
     const raw = ((point.x - layout.linearAxis.startX) / Math.max(1, layout.linearAxis.width)) * layout.length;
@@ -4775,7 +4866,8 @@ function App() {
   const sequenceScrollByRecordRef = useRef<Record<string, number>>({});
   const mapDragRef = useRef<MapDragState | null>(null);
   const mapPointerIdRef = useRef<number | null>(null);
-  const lastZoomAnchorRef = useRef<SvgPoint | null>(null);
+  // Root space: this is handed straight to zoomAtPoint, which pins a root point.
+  const lastZoomAnchorRef = useRef<MapRootPoint | null>(null);
   const suppressNextBackgroundClick = useRef(false);
   const selectedRecord = payload.records.find((record) => record.id === selectedRecordId) ?? payload.records[0];
   const vector = selectedRecord ?? EMPTY_ARTIFACT_VECTOR;
@@ -5131,10 +5223,19 @@ function App() {
   );
   const { ref: mapFrameRef, size: mapSize } = useElementSize();
   const mapColumnRef = useRef<HTMLElement | null>(null);
-  const mapHasRoomForRestrictionLabels = Math.min(mapSize.width, mapSize.height) >= 580;
-  const showRestrictionLabels = restrictionLabelsByRecord[recordId] ?? (
-    visibleRestrictionSites.length <= (mapHasRoomForRestrictionLabels ? 96 : 24)
-  );
+  // Labels default ON, with no site-count pre-gate. The layout engine already
+  // bounds the label ink two ways — display.maxRestrictionLabels caps how many
+  // clusters are even candidates, and the radial packer culls whatever will not
+  // fit the ring — and it reports the remainder through the "+N more sites" chip.
+  // Deciding up front from the raw SITE count skipped all of that: it is the
+  // wrong quantity (labels are per CLUSTER, and clusters stay in the 6-39 range
+  // while sites run 26-695) and it is all-or-nothing where the engine is graded.
+  // Past the threshold a map drew every tick and named none of them, and because
+  // labels-off also zeroes the unlabelled count, the chip that would have said so
+  // never appeared. Measured across the bundled vectors at 240px-1000px and with
+  // both the default and the full enzyme list, letting the packer run yields
+  // 4-24 names per map with no collisions, so there was nothing to protect.
+  const showRestrictionLabels = restrictionLabelsByRecord[recordId] ?? true;
   const canToggleTopology = hasActiveRecord && (sequenceType === 'dna' || sequenceType === 'rna');
   const mapViewport = mapViewportsByRecord[recordId] ?? DEFAULT_MAP_VIEWPORT;
   const selectedMapRange = mapRangesByRecord[recordId] ?? null;
@@ -6142,6 +6243,33 @@ function App() {
   const selectionBarLabel = selectionSummary?.label
     ?? (selectedRestriction ? `${selection?.kind === 'restriction' && selection.enzyme ? selection.enzyme : selectedRestriction.label?.text ?? 'Restriction'} site` : 'No range selected');
 
+  // The map's status corner reports two independent facts: how the view is
+  // transformed, and what is selected. They used to share one slot through a
+  // ternary, so any zoom or pan silently replaced the range readout — the
+  // selection stayed drawn on the map and stopped saying what it was. They are
+  // not alternatives, so join them instead of choosing.
+  const mapStatusHint = [
+    mapViewport.k > MIN_ZOOM + 0.0001 || Math.abs(mapViewport.tx) > 0.5 || Math.abs(mapViewport.ty) > 0.5
+      ? `${Math.round(mapViewport.k * 100)}%`
+      : null,
+    selectedMapRange ? `range ${mapRangeLabel(selectedMapRange, sequence.length)}` : null,
+  ].filter(Boolean).join(' · ');
+
+  // How many restriction sites the map is drawing without a label. The map says this
+  // in its "+N more sites" chip, but only through an SVG <title>, which no browser
+  // opens on keyboard focus — so a keyboard user is told nothing. This reads the SAME
+  // overflow entry the chip renders from, so the two cannot drift into disagreeing
+  // about one quantity.
+  //
+  // `unlabelled` specifically, never a total. An overflow chip reports two quantities
+  // — items with no body drawn, and items drawn without a name — and the sentence
+  // below is only true of the second. On the restriction chip the first is 0 (every
+  // site keeps its density tick), so a total would read the same today and start
+  // lying the moment it did not; on the FEATURE chip a total is already meaningless
+  // as a single number, which is why the field is not offered.
+  const mapUnlabelledSiteCount =
+    layout.overflows?.find((overflow) => overflow.kind === 'restriction-labels')?.unlabelled ?? 0;
+
   // The Translate window's target: the current selection (feature or range), or the
   // whole sequence when nothing is selected. Carries the target's natural strand so
   // a reverse feature defaults to antisense.
@@ -6296,7 +6424,8 @@ function App() {
     });
   }, [layout.bg, recordId]);
 
-  const zoomAtPoint = useCallback((point: SvgPoint, factor: number) => {
+  /** `point` is ROOT space — the new translate keeps that root point where it is. */
+  const zoomAtPoint = useCallback((point: MapRootPoint, factor: number) => {
     if (!Number.isFinite(factor) || factor <= 0) return;
     lastZoomAnchorRef.current = point;
     setCurrentMapViewport((currentViewport) => {
@@ -6312,19 +6441,27 @@ function App() {
   }, [setCurrentMapViewport]);
 
   const contentZoomAnchor = useMemo(
-    () => layout.mode === 'circular' && layout.radius > 0
-      ? { x: layout.center.x, y: layout.center.y - layout.radius }
-      : { x: layout.bg.x + layout.bg.width / 2, y: layout.bg.y + layout.bg.height / 2 },
+    (): MapContentPoint => (layout.mode === 'circular' && layout.radius > 0
+      ? mapContentPoint(layout.center.x, layout.center.y - layout.radius)
+      : mapContentPoint(layout.bg.x + layout.bg.width / 2, layout.bg.y + layout.bg.height / 2)),
     [layout.bg.height, layout.bg.width, layout.bg.x, layout.bg.y, layout.center.x, layout.center.y, layout.mode, layout.radius],
   );
 
-  const buttonZoomAnchor = useCallback(() => lastZoomAnchorRef.current ?? contentZoomAnchor, [contentZoomAnchor]);
+  // The remembered anchor is already root space; the layout-derived fallback is
+  // content space and has to be pushed through the current transform first. The
+  // fallback is reachable whenever the anchor ref is cleared but the zoom is
+  // kept — switching records, or changing map mode — so a zoomed map used to
+  // lurch away from the very point the + / - buttons are trying to hold still.
+  const buttonZoomAnchor = useCallback(
+    (): MapRootPoint => lastZoomAnchorRef.current ?? rootPointFromContent(contentZoomAnchor, mapViewport),
+    [contentZoomAnchor, mapViewport],
+  );
   const handleZoomIn = useCallback(() => zoomAtPoint(buttonZoomAnchor(), ZOOM_STEP), [buttonZoomAnchor, zoomAtPoint]);
   const handleZoomOut = useCallback(() => zoomAtPoint(buttonZoomAnchor(), 1 / ZOOM_STEP), [buttonZoomAnchor, zoomAtPoint]);
   const handleZoomReset = useCallback(() => setCurrentMapViewport(DEFAULT_MAP_VIEWPORT), [setCurrentMapViewport]);
 
   const handleMapWheel = useCallback((
-    point: SvgPoint,
+    point: MapRootPoint,
     deltaX: number,
     deltaY: number,
     deltaMode: number,
@@ -6352,8 +6489,9 @@ function App() {
     return true;
   }, [mapFrameRef, mapViewport.k, setCurrentMapViewport, zoomAtPoint]);
 
-  const handleMapPointerStart = useCallback((point: SvgPoint) => {
-    lastZoomAnchorRef.current = point;
+  // CONTENT space. The caller records the zoom anchor, because the caller is the
+  // one still holding the root-space point.
+  const handleMapPointerStart = useCallback((point: MapContentPoint) => {
     const startBp = pointToSequenceOffset(point, layout);
     const startAngle = pointToSequenceAngle(point, layout);
     mapDragRef.current = { mode: 'range', start: point, startBp, lastAngle: startAngle, cumulativeAngle: 0, moved: false };
@@ -6367,12 +6505,11 @@ function App() {
     return true;
   }, [layout, recordId, sequence.length, topology]);
 
-  const handleMapPointerMove = useCallback((point: SvgPoint) => {
+  const handleMapPointerMove = useCallback((point: MapContentPoint) => {
     const drag = mapDragRef.current;
     if (!drag) return;
     const dx = point.x - drag.start.x;
     const dy = point.y - drag.start.y;
-    lastZoomAnchorRef.current = point;
     if (!drag.moved && Math.hypot(dx, dy) > 2) drag.moved = true;
 
     const endBp = pointToSequenceOffset(point, layout);
@@ -6403,7 +6540,13 @@ function App() {
     mapDragRef.current = null;
   }, []);
 
-  const mapPointFromClient = useCallback((clientX: number, clientY: number): SvgPoint | null => {
+  /**
+   * Client -> SVG ROOT space. `getScreenCTM()` on the `<svg>` accounts for the
+   * viewBox and preserveAspectRatio but NOT for the viewport group's own
+   * translate/scale, so this is the space `{k, tx, ty}` is expressed in. Right
+   * for zoom anchoring; wrong for "which base is under the cursor".
+   */
+  const mapRootPointFromClient = useCallback((clientX: number, clientY: number): MapRootPoint | null => {
     const svg = mapFrameRef.current?.querySelector<SVGSVGElement>('svg.motif-plasmid-map');
     const matrix = svg?.getScreenCTM();
     if (!svg || !matrix) return null;
@@ -6411,7 +6554,7 @@ function App() {
     point.x = clientX;
     point.y = clientY;
     const transformed = point.matrixTransform(matrix.inverse());
-    return { x: transformed.x, y: transformed.y };
+    return mapRootPoint(transformed.x, transformed.y);
   }, [mapFrameRef]);
 
   useEffect(() => {
@@ -6420,7 +6563,7 @@ function App() {
 
     const handleCommandWheel = (event: globalThis.WheelEvent) => {
       if (!event.metaKey || event.ctrlKey) return;
-      const point = mapPointFromClient(event.clientX, event.clientY);
+      const point = mapRootPointFromClient(event.clientX, event.clientY);
       if (!point) return;
       const wheelUnit = event.deltaMode === 1 ? 18 : event.deltaMode === 2 ? mapFrame.clientHeight : 1;
       zoomAtPoint(point, Math.exp(-(event.deltaY * wheelUnit) * 0.0015));
@@ -6430,26 +6573,29 @@ function App() {
 
     mapFrame.addEventListener('wheel', handleCommandWheel, { passive: false, capture: true });
     return () => mapFrame.removeEventListener('wheel', handleCommandWheel, { capture: true });
-  }, [mapFrameRef, mapPointFromClient, zoomAtPoint]);
+  }, [mapFrameRef, mapRootPointFromClient, zoomAtPoint]);
 
   const handleMapSurfacePointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     if (!event.isPrimary || event.button !== 0) return;
     const target = event.target as Element;
     if (target.closest('.motif-pm-feature, .motif-pm-restriction, .motif-pm-range-overlay[data-interactive="true"]')) return;
-    const point = mapPointFromClient(event.clientX, event.clientY);
-    if (!point || !handleMapPointerStart(point)) return;
+    const rootPoint = mapRootPointFromClient(event.clientX, event.clientY);
+    if (!rootPoint) return;
+    lastZoomAnchorRef.current = rootPoint;
+    if (!handleMapPointerStart(contentPointFromRoot(rootPoint, mapViewport))) return;
     mapPointerIdRef.current = event.pointerId;
     event.currentTarget.setPointerCapture?.(event.pointerId);
     event.preventDefault();
-  }, [handleMapPointerStart, mapPointFromClient]);
+  }, [handleMapPointerStart, mapRootPointFromClient, mapViewport]);
 
   const handleMapSurfacePointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.pointerId !== mapPointerIdRef.current) return;
-    const point = mapPointFromClient(event.clientX, event.clientY);
-    if (!point) return;
+    const rootPoint = mapRootPointFromClient(event.clientX, event.clientY);
+    if (!rootPoint) return;
+    lastZoomAnchorRef.current = rootPoint;
     event.preventDefault();
-    handleMapPointerMove(point);
-  }, [handleMapPointerMove, mapPointFromClient]);
+    handleMapPointerMove(contentPointFromRoot(rootPoint, mapViewport));
+  }, [handleMapPointerMove, mapRootPointFromClient, mapViewport]);
 
   const handleMapSurfacePointerEnd = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.pointerId !== mapPointerIdRef.current) return;
@@ -7998,8 +8144,15 @@ function App() {
     if (activeEnzymeSourcesRef.current.length > 0) {
       lastVisibleEnzymeSourcesRef.current[recordId] = [...activeEnzymeSourcesRef.current];
     }
-    activeEnzymeSourcesRef.current = [];
-    setEnzymeSourcesByRecord((current) => ({ ...current, [recordId]: [] }));
+    // Hide the sites; do NOT clear the enzyme sources. `hiddenEnzymesByRecord`
+    // already drives every display surface — the map ticks, the sequence cuts and
+    // the inspector all filter through it — so emptying the source selection as
+    // well hid nothing extra, and instead reached the data: exports and
+    // `motifDescribe()` read the sources, so a control the user reads as "stop
+    // drawing these" silently changed what a downloaded GenBank/CSV/JSON said
+    // about the molecule. Measured on pUC19 before this change: the summary went
+    // from "11 single cutters; 22 enzymes cut" to "0 single cutters; 0 enzymes
+    // cut", and the exports quietly lost every non-Common source.
     setHiddenEnzymesByRecord((current) => ({
       ...current,
       [recordId]: enzymeNames,
@@ -9513,11 +9666,31 @@ function App() {
     setFloatingPaneZOrder([]);
   }, []);
 
+  // The seven floating tool windows keep their geometry in plain state, so a size
+  // dragged onto one survives closing and reopening it. That much is deliberate:
+  // a size chosen by dragging a corner is a choice, and closing a window is not a
+  // request to forget it. What was missing is the way back — "Reset display" put
+  // the panes right and left every window exactly as small as it found it, which
+  // is the one state a user actually needs the button for. The signal is what
+  // reaches windows that are already open; see FloatingWindow.
+  const [windowResetSignal, setWindowResetSignal] = useState(0);
+  const resetToolWindowRects = useCallback(() => {
+    setTranslationsWin(defaultTranslationsWindowRect());
+    setPrimerWin(defaultPrimerWindowRect());
+    setAlignmentWin(defaultAlignmentWindowRect());
+    setGelWin(defaultGelWindowRect());
+    setAssemblyWin(defaultAssemblyWindowRect());
+    setCloningDesignWin(defaultCloningDesignWindowRect());
+    setConstructVerificationWin(defaultConstructVerificationWindowRect());
+    setWindowResetSignal((value) => value + 1);
+  }, []);
+
   const resetDisplayPreferences = useCallback(() => {
     resetWorkspaceLayout();
+    resetToolWindowRects();
     clearMsaViewPreferences();
     setMsaViewPreferences({ ...DEFAULT_CLAUDE_SCIENCE_MSA_VIEW_PREFERENCES });
-  }, [resetWorkspaceLayout]);
+  }, [resetToolWindowRects, resetWorkspaceLayout]);
 
   const downloadWorkspaceBackup = useCallback(() => {
     const snapshot = createArtifactDatabaseSnapshot(payloadRef.current, artifactStateRef.current);
@@ -9902,7 +10075,14 @@ function App() {
     if (!event.isPrimary || event.button !== 0) return;
     event.preventDefault();
     const startX = event.clientX;
-    const startWidths = { ...paneWidths };
+    // paneWidths are flex BASIS values, and flex-grow then hands out whatever the row
+    // has left over on top of them. The two drift apart: at 1920 the map renders 976px
+    // against a basis of 560. Pricing the drag against the basis meant the pair stopped
+    // when the BASIS hit map.min, leaving ~400px of visibly unused map still on screen
+    // and the pane refusing to widen. Seed from the rendered geometry instead. Measured
+    // widths already sum to the row, so the free space flex-grow was distributing is
+    // zero for the duration of the drag and the pane tracks the pointer one-to-one.
+    const startWidths = measuredPaneWidths(paneWidths, panePlacements);
     const startPreferredWidths = { ...preferredPaneWidths };
     const neighbor = paneResizeNeighbor(pane, edge);
     const startWidth = startWidths[pane];
@@ -9996,7 +10176,7 @@ function App() {
     } catch {
       /* Window listeners keep resizing active when capture is unavailable. */
     }
-  }, [clampPaneWidthsForViewport, compactPinnedLayout, paneResizeNeighbor, paneWidthLimitsForCurrentLayout, paneWidths, preferredPaneWidths, resizeHandleCount, resizePanePair, showToolsResizeHandle, stopPaneResize, toolsRailWidth, visibleResizablePanes, workspaceMainSize.width]);
+  }, [clampPaneWidthsForViewport, compactPinnedLayout, paneResizeNeighbor, panePlacements, paneWidthLimitsForCurrentLayout, paneWidths, preferredPaneWidths, resizeHandleCount, resizePanePair, showToolsResizeHandle, stopPaneResize, toolsRailWidth, visibleResizablePanes, workspaceMainSize.width]);
   const resizePaneFromKeyboard = useCallback((pane: ResizablePaneKey, event: ReactKeyboardEvent<HTMLDivElement>, edge: ResizeEdge = 'after') => {
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
     event.preventDefault();
@@ -10171,6 +10351,18 @@ function App() {
       onDrop={handleDrop}
     >
       <a className="motif-cs-skip-link" href="#motif-cs-workspace">Skip to workspace</a>
+      {/* The Tools rail is authored last, so its first tool was Tab stop 124 of
+          139 at 1440x900 — measured with real keys, all fifteen tools behind
+          the whole workspace. A control that requires that many presses is
+          effectively unreachable for keyboard users.
+          A second skip link is the fix the first one already established: it
+          shares the first one's slot, since only the focused link is ever
+          untranslated, so no new CSS is needed. The rail is the last pane in
+          the DOM, so Tab from it continues straight into the tool summaries —
+          measured after: 2 Tab + Enter + 2 Tab, then all fifteen in order. */}
+      {paneVisibility.tools ? (
+        <a className="motif-cs-skip-link" href="#motif-cs-tools-pane">Skip to tools</a>
+      ) : null}
       {dropState.active ? (
         <div className="motif-cs-dropzone" aria-hidden="true">
           <div className="motif-cs-dropzone-card">{dropState.message}</div>
@@ -10204,9 +10396,15 @@ function App() {
           <span translate="no">Motif</span>
           <small translate="no">for Claude Science</small>
         </div>
+        {/* A record-count and a sequence-length chip used to render here on every
+            load and were hidden by `.motif-cs-topbar-meta > .motif-cs-chip` in the
+            BASE block — not a media query — so no viewport, record type, pane
+            placement or media mode could reveal them. Deleted rather than shown:
+            the topbar reserves 172px on the right for the host's Annotate pill
+            and leaves an 8px gap, so there is nowhere to put them, and both facts
+            are already on screen — the inventory badge carries the count and the
+            inventory row and map header both carry "circular · 2,578 bp". */}
         <div className="motif-cs-topbar-meta">
-          <span className="motif-cs-chip">{payload.records.length} record{payload.records.length === 1 ? '' : 's'}</span>
-          {hasActiveRecord ? <span className="motif-cs-chip">{sequenceLengthLabel(sequence.length, sequenceType)}</span> : null}
           <div
             className="motif-cs-pane-switcher"
             role="group"
@@ -10529,7 +10727,7 @@ function App() {
                   </div>
                 ) : null}
                 {hasActiveRecord ? (
-                <div className="motif-cs-map-toolbar" role="group" aria-label="Map zoom controls">
+                <div className="motif-cs-map-toolbar" role="group" aria-label="Map view controls">
                   <button className="motif-cs-map-button" type="button" onClick={handleZoomOut} disabled={!hasActiveRecord || mapViewport.k <= MIN_ZOOM + 0.0001} aria-label="Zoom out">-</button>
                   <button
                     className="motif-cs-map-button motif-cs-map-reset"
@@ -10542,12 +10740,34 @@ function App() {
                     Fit
                   </button>
                   <button className="motif-cs-map-button" type="button" onClick={handleZoomIn} disabled={!hasActiveRecord || mapViewport.k >= MAX_ZOOM - 0.0001} aria-label="Zoom in">+</button>
+                  {/* Whether the ring is named is a property of the map, but the
+                      only switch for it was in the Map Visibility panel, and at
+                      every laptop size measured — 1440x900, 1280x800, 1024x768,
+                      900x700 — that panel's own SUMMARY is already past the
+                      bottom of the map column, which hides 143-148px of itself.
+                      Reaching the toggle meant scrolling a pane nothing invites
+                      you to scroll and then opening a closed accordion, for a
+                      state you are looking straight at. Same handler and same
+                      wording as the panel button, so the two always agree; this
+                      is a second route to one control, not a second control.
+                      Gated on isDnaRecord exactly as the panel's is, since
+                      restriction labels are the only thing it governs. */}
+                  {isDnaRecord ? (
+                    <button
+                      className="motif-cs-map-button motif-cs-map-labels-toggle"
+                      type="button"
+                      data-active={showRestrictionLabels || undefined}
+                      aria-pressed={showRestrictionLabels}
+                      onClick={toggleRestrictionLabels}
+                      title={`Restriction labels ${showRestrictionLabels ? 'on' : 'off'}`}
+                    >
+                      Labels {showRestrictionLabels ? 'On' : 'Off'}
+                    </button>
+                  ) : null}
                 </div>
                 ) : null}
-                {mapViewport.k > MIN_ZOOM + 0.0001 || Math.abs(mapViewport.tx) > 0.5 || Math.abs(mapViewport.ty) > 0.5 ? (
-                  <div className="motif-cs-map-hint">{Math.round(mapViewport.k * 100)}%</div>
-                ) : selectedMapRange ? (
-                  <div className="motif-cs-map-hint">range {mapRangeLabel(selectedMapRange, sequence.length)}</div>
+                {mapStatusHint ? (
+                  <div className="motif-cs-map-hint">{mapStatusHint}</div>
                 ) : null}
               </div>
 
@@ -10613,6 +10833,19 @@ function App() {
                               Labels {showRestrictionLabels ? 'On' : 'Off'}
                             </button>
                             <span className="motif-cs-muted">{singleCutters.length} single-cutters</span>
+                            {/* The map's "+N more sites" chip carries this same number, but only
+                                to a pointer: it lives in an SVG <title>, which no browser opens
+                                on keyboard focus. Stated here it lands where a keyboard user is
+                                already going. Read off layout.overflows — the ARRAY THE CHIP
+                                RENDERS FROM — so the two cannot drift into disagreeing about the
+                                same quantity; a second derivation would be a second chance to be
+                                wrong. Worded as a caveat rather than a count, because sitting
+                                next to "39 single-cutters" a bare number reads as one more
+                                statistic instead of "the map is not showing you everything". */}
+                            {mapUnlabelledSiteCount > 0 ? (
+                              <span className="motif-cs-muted">{mapUnlabelledSiteCount.toLocaleString()} sites without labels on the map</span>
+                            ) : null}
+
                           </>
                         ) : (
                           <span className="motif-cs-muted">Restriction enzymes act on DNA; RNA is not converted implicitly.</span>
@@ -10713,13 +10946,13 @@ function App() {
                 {hasActiveRecord ? <EditableRecordTitle record={vector} onUpdate={updateRecordDetails} /> : <h1>No sequence loaded</h1>}
                 <p title={vector.description ?? payload.inventory.description}>{vector.description ?? payload.inventory.description}</p>
               </div>
+              {/* Same shape as the topbar pair above and found with them: a type
+                  chip and a length chip rendered here every time and hidden by
+                  `.motif-cs-sequence-title .motif-cs-title-actions .motif-cs-chip`
+                  in the base block. Four dead chips in total, not the two filed.
+                  Both facts survive in the inventory row's "dna · circular ·
+                  2,578 bp" and the map header's "circular · 2,578 bp". */}
               <div className="motif-cs-title-actions">
-                {hasActiveRecord ? (
-                  <>
-                    <span className="motif-cs-chip">{sequenceType}</span>
-                    <span className="motif-cs-chip">{sequenceLengthLabel(sequence.length, sequenceType)}</span>
-                  </>
-                ) : null}
                 <PanePlacementControl
                   pane="sequence"
                   title="Sequence"
@@ -10876,11 +11109,31 @@ function App() {
                   >
                     + Feature
                   </button>
-                  <button className="motif-cs-mini-button" type="button" disabled={!isNucleotideRecord || (!!selectionSummary && !hasMaterializableSequenceSelection)} onClick={addContextReverseComplementRecord} aria-label="Reverse complement" title={selectionSummary ? hasMaterializableSequenceSelection ? 'Create a reverse-complement record from this selection' : 'This ordered location cannot be materialized as one sequence' : 'Create a reverse-complement record from the whole sequence'}>
-                    <span className="motif-cs-label-full">Rev comp</span>
-                    <span className="motif-cs-label-short">RC</span>
+                  {/* Everything above acts on the record you are looking at;
+                      everything below adds a NEW one to the inventory. The two
+                      were spelled the same, so "Rev comp" read like the "Copy"
+                      beside it and quietly took the session from 13 records to
+                      14 with a new Derived group. Worse, with nothing selected
+                      it is the ONLY enabled control in this bar, so the one
+                      thing the resting state invites you to press was the
+                      heaviest thing in it. Both record-makers now carry the
+                      "New" the Export panel already uses to separate "Copy rev
+                      comp" from "New rev comp", and the rule marks where the
+                      weight changes. The behaviour is deliberately untouched:
+                      additive and non-destructive is the right semantics. */}
+                  <span className="motif-cs-selection-action-rule" aria-hidden="true" />
+                  <button className="motif-cs-mini-button" type="button" disabled={!isNucleotideRecord || (!!selectionSummary && !hasMaterializableSequenceSelection)} onClick={addContextReverseComplementRecord} aria-label="New rev comp record" title={selectionSummary ? hasMaterializableSequenceSelection ? 'Create a reverse-complement record from this selection' : 'This ordered location cannot be materialized as one sequence' : 'Create a reverse-complement record from the whole sequence'}>
+                    <span className="motif-cs-label-full">New rev comp</span>
+                    {/* Below a 360px pane the bar is already a scroller, and
+                        spelling "New" twice more pushed it 6px past its own
+                        clip. "+" is the same promise in one character and the
+                        "+ Feature" two buttons left already teaches it here. */}
+                    <span className="motif-cs-label-short">+ RC</span>
                   </button>
-                  <button className="motif-cs-mini-button" type="button" disabled={!selectionActionTranslation} onClick={addSelectionTranslationRecord} title="Create a new protein record from this selection's translation">Protein</button>
+                  <button className="motif-cs-mini-button" type="button" disabled={!selectionActionTranslation} onClick={addSelectionTranslationRecord} aria-label="New protein record" title="Create a new protein record from this selection's translation">
+                    <span className="motif-cs-label-full">New protein</span>
+                    <span className="motif-cs-label-short">+ Prot</span>
+                  </button>
                 </div>
               </div>
               </>
@@ -10983,8 +11236,13 @@ function App() {
               data-pane-placement={panePlacements.tools}
               data-tools-pinned={toolsDocked || toolsFloating ? 'true' : 'false'}
               role={toolsFloating ? 'dialog' : undefined}
-              aria-label={toolsFloating ? 'Tools pane' : undefined}
-              tabIndex={toolsFloating ? -1 : undefined}
+              aria-label={toolsFloating ? 'Tools pane' : 'Tools'}
+              // "Skip to tools" lands here, so the pane has to be a focus
+              // target in every placement, not only while floating: an href
+              // jump moves focus only if its target is focusable. -1 keeps it
+              // out of the sequential order it exists to let you skip.
+              id="motif-cs-tools-pane"
+              tabIndex={-1}
               onPointerDown={() => toolsFloating && bringFloatingPaneToFront('tools')}
               onFocusCapture={() => toolsFloating && bringFloatingPaneToFront('tools')}
               style={{
@@ -11441,7 +11699,21 @@ function App() {
           </details>
 
           <details className="motif-cs-panel" name="motif-cs-tools" data-rail-tool="alignment">
-            <summary ref={alignmentToggleRef} className="motif-cs-panel-head" data-rail-label="M" title="Multiple sequence alignment">
+            {/* data-rail-count is the collapsed rail's only view of the chip beside
+                it. The rail hides `.motif-cs-chip` outright, and of the fifteen tool
+                heads this is the one whose chip reports session content rather than a
+                static label, so hiding it made the rail identical whether the session
+                held no alignments or twenty. The attribute is absent at zero so a
+                session that never aligns anything gains no mark. */}
+            <summary
+              ref={alignmentToggleRef}
+              className="motif-cs-panel-head"
+              data-rail-label="M"
+              data-rail-count={payload.alignments.length || undefined}
+              title={payload.alignments.length
+                ? `Multiple sequence alignment — ${payload.alignments.length} in session`
+                : 'Multiple sequence alignment'}
+            >
               <AlignCenter className="motif-cs-panel-icon" size={14} strokeWidth={2.2} aria-hidden="true" />
               <span>Alignment</span>
               <span className="motif-cs-chip">{payload.alignments.length ? `${payload.alignments.length} MSA` : 'MSA'}</span>
@@ -11560,6 +11832,7 @@ function App() {
           title="Translations"
           subtitle={vector.name}
           initial={translationsWin}
+          resetSignal={windowResetSignal}
           rightInset={toolsRail ? TOOLS_RAIL_WIDTH : 0}
           onClose={() => setShowTranslations(false)}
           onCommit={setTranslationsWin}
@@ -11600,6 +11873,7 @@ function App() {
           title="Gel Preview"
           subtitle="qualitative agarose"
           initial={gelWin}
+          resetSignal={windowResetSignal}
           rightInset={toolsRail ? TOOLS_RAIL_WIDTH : 0}
           onClose={() => setShowGel(false)}
           onCommit={setGelWin}
@@ -11643,6 +11917,7 @@ function App() {
           title="Primer Design"
           subtitle={cloningPrimerRequest ? `${vector.name} · cloning preparation` : vector.name}
           initial={primerWin}
+          resetSignal={windowResetSignal}
           rightInset={toolsRail ? TOOLS_RAIL_WIDTH : 0}
           onClose={closePrimerWorkspace}
           onCommit={setPrimerWin}
@@ -11703,6 +11978,7 @@ function App() {
           title="Cloning Workspace"
           subtitle="Golden Gate + ligation"
           initial={assemblyWin}
+          resetSignal={windowResetSignal}
           rightInset={toolsRail ? TOOLS_RAIL_WIDTH : 0}
           onClose={() => setShowAssembly(false)}
           onCommit={setAssemblyWin}
@@ -11723,6 +11999,7 @@ function App() {
           title="Cloning Design"
           subtitle="Golden Gate profiles + Gibson"
           initial={cloningDesignWin}
+          resetSignal={windowResetSignal}
           rightInset={toolsRail ? TOOLS_RAIL_WIDTH : 0}
           onClose={() => setShowCloningDesign(false)}
           onCommit={setCloningDesignWin}
@@ -11746,6 +12023,7 @@ function App() {
           title="Construct Verification"
           subtitle={`${constructVerificationReadCount} eligible Sanger read${constructVerificationReadCount === 1 ? '' : 's'}`}
           initial={constructVerificationWin}
+          resetSignal={windowResetSignal}
           rightInset={toolsRail ? TOOLS_RAIL_WIDTH : 0}
           onClose={() => setShowConstructVerification(false)}
           onCommit={setConstructVerificationWin}
@@ -11767,6 +12045,7 @@ function App() {
           title="Multiple Sequence Alignment"
           subtitle={payload.alignments.length ? `${payload.alignments.length} in session` : 'local + imported'}
           initial={alignmentWin}
+          resetSignal={windowResetSignal}
           rightInset={toolsRail ? TOOLS_RAIL_WIDTH : 0}
           onClose={() => setShowAlignment(false)}
           onCommit={setAlignmentWin}
@@ -12144,7 +12423,7 @@ function InventoryList({
                 <span className="motif-cs-inventory-caret" aria-hidden="true">
                   <ChevronRight size={13} strokeWidth={2.2} />
                 </span>
-                <span>{group.label}</span>
+                <span title={group.label}>{group.label}</span>
                 <small>{group.records.length}</small>
               </button>
               {!collapsed ? group.records.map((record) => (
@@ -12157,7 +12436,12 @@ function InventoryList({
                   onClick={() => onSelect(record.id)}
                 >
                   <span className="motif-cs-row-main">
-                    <span translate="no">{record.name}</span>
+                    {/* Constructs are told apart by their suffix — _clone12_Rep2,
+                        -WPRE-hGHpA — and the suffix is the end the ellipsis eats
+                        at the pane's 210px default. Every other truncating
+                        control here carries the full string in a title; this row
+                        was the one that did not. */}
+                    <span translate="no" title={record.name}>{record.name}</span>
                     <small>{record.type} · {record.topology} · {sequenceLengthLabel(record.sequence.length, record.type)}</small>
                   </span>
                 </button>
@@ -12637,6 +12921,11 @@ function cssPixelValue(value: string, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+/* Only reached if the stylesheet stops positioning the popover at all; the real
+   values are read back off the element so the two cannot drift apart. */
+const RAIL_POPOVER_HOME_TOP_FALLBACK = 84;
+const RAIL_POPOVER_BOTTOM_GUTTER_FALLBACK = 22;
+
 function RailPopoverTitle({ title, meta }: { title: string; meta?: string }) {
   const [size, setSize] = useState<RailPopoverSize | null>(null);
   const [panelBody, setPanelBody] = useState<HTMLElement | null>(null);
@@ -12644,6 +12933,7 @@ function RailPopoverTitle({ title, meta }: { title: string; meta?: string }) {
   const titleRef = useRef<HTMLDivElement>(null);
   const resizeHandleRef = useRef<HTMLButtonElement>(null);
   const panelBodyRef = useRef<HTMLElement | null>(null);
+  const cssMetricsRef = useRef<{ key: string; homeTop: number; bottomGutter: number } | null>(null);
   const resizeRef = useRef<{
     pointerId: number;
     startX: number;
@@ -12678,6 +12968,141 @@ function RailPopoverTitle({ title, meta }: { title: string; meta?: string }) {
     panelBody.style.setProperty('--rail-popover-height', `${size.height}px`);
     panelBody.dataset.railPopoverResized = 'true';
   }, [size]);
+
+  /**
+   * Keep the popover off the floating window's controls. The stylesheet gives it
+   * a resting offset that knows nothing about what is underneath, which put all
+   * 15 panels on top of Maximize / Collapse / Close — the one overlap with no
+   * way out, because the control that would fix it is the control being hidden.
+   * The solver moves it the smallest distance that clears those zones and hands
+   * back the height cap that goes with wherever it landed.
+   */
+  useLayoutEffect(() => {
+    if (!panelBody) return undefined;
+    const panel = panelBody.closest<HTMLDetailsElement>('details.motif-cs-panel');
+    if (!panel) return undefined;
+
+    const clearPlacement = () => {
+      panelBody.style.removeProperty('--rail-popover-fixed-top');
+      panelBody.style.removeProperty('max-height');
+      delete panelBody.dataset.railPopoverPlacement;
+    };
+
+    /**
+     * The stylesheet owns both the resting offset and the bottom gutter baked
+     * into its max-height. Read them back off the element with our own values
+     * stripped rather than copying the numbers here, so a stylesheet edit cannot
+     * leave a stale duplicate governing the popover. Cached per viewport size,
+     * because a media query is allowed to change the offset.
+     */
+    const cssMetrics = () => {
+      const key = `${window.innerWidth}x${window.innerHeight}`;
+      const cached = cssMetricsRef.current;
+      if (cached?.key === key) return cached;
+      const ownTop = panelBody.style.getPropertyValue('--rail-popover-fixed-top');
+      const ownMaxHeight = panelBody.style.maxHeight;
+      panelBody.style.removeProperty('--rail-popover-fixed-top');
+      panelBody.style.removeProperty('max-height');
+      const computed = window.getComputedStyle(panelBody);
+      const homeTop = cssPixelValue(computed.top, RAIL_POPOVER_HOME_TOP_FALLBACK);
+      const cssMaxHeight = cssPixelValue(computed.maxHeight, window.innerHeight - homeTop - RAIL_POPOVER_BOTTOM_GUTTER_FALLBACK);
+      if (ownTop) panelBody.style.setProperty('--rail-popover-fixed-top', ownTop);
+      if (ownMaxHeight) panelBody.style.maxHeight = ownMaxHeight;
+      const metrics = {
+        key,
+        homeTop,
+        bottomGutter: Math.max(0, Math.round(window.innerHeight - homeTop - cssMaxHeight)),
+      };
+      cssMetricsRef.current = metrics;
+      return metrics;
+    };
+
+    const place = () => {
+      // Docked mode leaves the body in normal flow, where a fixed-position cap
+      // would clamp a panel nothing is covering.
+      if (!panel.open || window.getComputedStyle(panelBody).position !== 'fixed') {
+        clearPlacement();
+        return;
+      }
+      const { homeTop, bottomGutter } = cssMetrics();
+      const rect = panelBody.getBoundingClientRect();
+      const placement = chooseRailPopoverPlacement({
+        column: { left: rect.left, right: rect.right },
+        homeTop,
+        bottomGutter,
+        // Reported back as `hiddenHeight`; it does not move the panel. Content
+        // height rather than rendered height, because the rendered height is
+        // what the cap below produces and feeding that back in would let the
+        // popover chase its own tail.
+        desiredHeight: Math.max(
+          panelBody.scrollHeight,
+          cssPixelValue(panelBody.style.getPropertyValue('--rail-popover-height'), 0),
+          RAIL_POPOVER_MIN_HEIGHT,
+        ),
+        viewportHeight: window.innerHeight,
+        obstacles: collectRailPopoverObstacles(document),
+      });
+      const top = `${placement.top}px`;
+      const maxHeight = `${placement.maxHeight}px`;
+      if (panelBody.style.getPropertyValue('--rail-popover-fixed-top') !== top) {
+        panelBody.style.setProperty('--rail-popover-fixed-top', top);
+      }
+      if (panelBody.style.maxHeight !== maxHeight) panelBody.style.maxHeight = maxHeight;
+      if (panelBody.dataset.railPopoverPlacement !== placement.strategy) {
+        panelBody.dataset.railPopoverPlacement = placement.strategy;
+      }
+    };
+
+    let frame = 0;
+    const schedule = () => {
+      if (frame) return;
+      frame = window.requestAnimationFrame(() => {
+        frame = 0;
+        place();
+      });
+    };
+
+    // Windows move, resize, maximize and collapse under an open popover, and the
+    // rail can be pinned out of popover mode entirely. Watching for that is only
+    // worth the observer while this panel is the open one.
+    const observedRoot = panelBody.closest<HTMLElement>('.motif-cs-shell') ?? document.body;
+    let layoutObserver: MutationObserver | null = null;
+    const syncLayoutObserver = () => {
+      if (panel.open && !layoutObserver) {
+        layoutObserver = new MutationObserver(schedule);
+        layoutObserver.observe(observedRoot, {
+          attributes: true,
+          attributeFilter: ['style', 'class', 'data-maximized', 'data-collapsed', 'data-tools-pinned'],
+          childList: true,
+          subtree: true,
+        });
+      } else if (!panel.open && layoutObserver) {
+        layoutObserver.disconnect();
+        layoutObserver = null;
+      }
+    };
+
+    // `open` flips inside the click that toggles the panel, and a mutation
+    // callback runs at the microtask checkpoint straight after — before the
+    // browser paints — so the popover never appears at the resting offset and
+    // then jumps to the solved one.
+    const openObserver = new MutationObserver(() => {
+      syncLayoutObserver();
+      place();
+    });
+    openObserver.observe(panel, { attributes: true, attributeFilter: ['open'] });
+    window.addEventListener('resize', schedule);
+    syncLayoutObserver();
+    place();
+
+    return () => {
+      if (frame) window.cancelAnimationFrame(frame);
+      window.removeEventListener('resize', schedule);
+      openObserver.disconnect();
+      layoutObserver?.disconnect();
+      clearPlacement();
+    };
+  }, [panelBody]);
 
   useLayoutEffect(() => {
     if (!panelBody) {
@@ -13787,11 +14212,30 @@ function AnalysisPanel({
   const composition = useMemo(() => isNucleotide ? nucleotideComposition(record.sequence) : null, [isNucleotide, record.sequence]);
   const allOrfs = useMemo(
     () => isNucleotide && translationCode.supported
-      ? findORFs(record.sequence, 10, translationCode.table, { topology })
+      ? findORFs(record.sequence, ANALYSIS_ORF_MIN_AA, translationCode.table, { topology })
       : [],
     [isNucleotide, record.sequence, topology, translationCode],
   );
   const visibleOrfs = useMemo(() => allOrfs.slice(0, 8), [allOrfs]);
+  // findORFs emits one entry per START codon, so every in-frame start upstream
+  // of the same stop is counted again. On pUC19 that is 221 entries over 159
+  // distinct (strand, stop) reading frames — and four of the eight rows this
+  // panel lists are the same reverse-strand frame entered at four different
+  // starts. Read off the SAME array the list renders from, so the note and the
+  // rows cannot drift into disagreeing about one quantity.
+  const orfReadingFrameCount = useMemo(
+    () => new Set(allOrfs.map((orf) => `${orf.strand}:${orf.end}`)).size,
+    [allOrfs],
+  );
+  // Read the start codons off the table the scan actually used. This panel has
+  // a "Record genetic code" select right below it, and the tables disagree —
+  // the standard one initiates at ATG/TTG/CTG, vertebrate mitochondrial at
+  // ATT/ATC/ATA/ATG/GTG — so naming a fixed set here would have been one more
+  // readout that is true of some other configuration than the one on screen.
+  const orfStartCodons = useMemo(
+    () => (translationCode.supported ? [...translationCode.table.starts].sort().join(', ') : ''),
+    [translationCode],
+  );
   const mw = useMemo(
     () => sequenceType === 'protein' ? proteinMolecularWeight(record.sequence) : molecularWeight(record.sequence),
     [record.sequence, sequenceType],
@@ -13826,10 +14270,10 @@ function AnalysisPanel({
       <summary className="motif-cs-panel-head" data-rail-label="A" title="Analysis">
         <Activity className="motif-cs-panel-icon" size={14} strokeWidth={2.2} aria-hidden="true" />
         <span>Analysis</span>
-        <span className="motif-cs-chip">{isNucleotide ? `${allOrfs.length} ORFs` : 'protein'}</span>
+        <span className="motif-cs-chip">{isNucleotide ? `${allOrfs.length} ORFs ≥${ANALYSIS_ORF_MIN_AA} aa` : 'protein'}</span>
       </summary>
       <div className="motif-cs-tool-panel-body">
-        <RailPopoverTitle title="Analysis" meta={isNucleotide ? `${allOrfs.length} ORFs` : 'protein'} />
+        <RailPopoverTitle title="Analysis" meta={isNucleotide ? `${allOrfs.length} ORFs ≥${ANALYSIS_ORF_MIN_AA} aa` : 'protein'} />
         <div className="motif-cs-stat-grid">
           <div className="motif-cs-stat"><span>Length</span><strong>{sequenceLengthLabel(record.sequence.length, sequenceType)}</strong></div>
           <div className="motif-cs-stat"><span>Mass</span><strong>{formatMass(mw)}</strong></div>
@@ -13863,7 +14307,21 @@ function AnalysisPanel({
           </label>
           <div className="motif-cs-list">
             {allOrfs.length > visibleOrfs.length ? (
-              <p className="motif-cs-form-note">Showing the 8 longest of {allOrfs.length} detected ORFs.</p>
+              /* The chip can only carry the floor; this is where the count's
+                 definition fits, and it is the number's whole meaning. "221
+                 ORFs" on a 2.6 kb vector reads as a result about the molecule
+                 when it is a result about the scan: a 10 aa floor, six frames,
+                 and the standard table's near-cognate starts, of which only 76
+                 of the 221 are ATG. The reading-frame figure is the honest
+                 denominator — entering one stop from several in-frame starts
+                 makes several entries, which is why the eight rows below
+                 include the same reverse-strand frame four times. */
+              <p className="motif-cs-form-note">
+                Showing the 8 longest of {allOrfs.length} start-to-stop intervals ≥{ANALYSIS_ORF_MIN_AA} aa
+                across {orfReadingFrameCount} distinct reading frames — six frames, both strands,
+                starting at {orfStartCodons}, so one frame entered at several starts appears more
+                than once.
+              </p>
             ) : null}
             {visibleOrfs.length > 0 ? visibleOrfs.map((orf, index) => {
               const wraps = orf.end > record.sequence.length;
@@ -14431,11 +14889,14 @@ function SequenceToolsPanel({
   );
   const exportRecordsWithSites = useMemo(
     () => needsInventoryExport ? exportRecords.map((item) => {
-      const byName = new Map<string, RestrictionEnzyme>();
       const itemSources = enzymeSourcesByRecord[item.id] ?? DEFAULT_ENZYME_SOURCES;
-      for (const enzyme of resolveEnzymeUnion(itemSources)) byName.set(enzyme.name.toLowerCase(), enzyme);
-      for (const enzyme of customEnzymes) byName.set(enzyme.name.toLowerCase(), enzyme);
-      return { ...item, sites: recordSitesForExport(item, Array.from(byName.values())) };
+      // Resolve through the shared helper rather than a second inline copy of it.
+      // The copy called resolveEnzymeUnion directly, which falls back to the
+      // Common working set for an empty list, so a record with no sources
+      // selected exported Common's sites while every on-screen surface showed
+      // none — the export disagreeing with the app about which enzymes were even
+      // in play. The helper's own empty check keeps the two answers the same.
+      return { ...item, sites: recordSitesForExport(item, restrictionEnzymesForSources(itemSources, customEnzymes)) };
     }) : [],
     [customEnzymes, enzymeSourcesByRecord, exportRecords, needsInventoryExport],
   );
@@ -14732,6 +15193,7 @@ function FloatingWindow({
   returnFocusRef,
   maximizable = false,
   inactive = false,
+  resetSignal,
   children,
 }: {
   title: string;
@@ -14741,6 +15203,12 @@ function FloatingWindow({
   rightInset?: number;
   onClose: () => void;
   onCommit?: (rect: WindowRect) => void;
+  /**
+   * Bumped by "Reset display" to make an ALREADY OPEN window adopt `initial`
+   * again. Without it that button cannot reach these windows at all: `initial`
+   * is read once, at mount.
+   */
+  resetSignal?: number;
   returnFocusRef?: RefObject<HTMLElement | null>;
   maximizable?: boolean;
   /** Keeps a draft mounted beneath a temporarily active child workflow. */
@@ -14810,6 +15278,28 @@ function FloatingWindow({
       // native checkbox click. An open child menu still owns the first Escape
       // even when the key target is no longer inside that menu.
       if (windowRef.current?.querySelector('[data-motif-cs-escape-scope="true"]')) return;
+      // That attribute is rendered from React state, and for a native <details>
+      // menu the state arrives late: the browser opens the menu during the click,
+      // but React only hears about it from the `toggle` event, measured here at
+      // ~52ms after the click. For that whole interval the menu is open on screen
+      // while the check above sees nothing, so an Escape aimed at the menu closed
+      // the window instead. A disclosure's own `open` property is true the instant
+      // it opens, so that is the signal to read. Opt-in through the attribute
+      // rather than matching every `details[open]`: an ordinary accordion left
+      // open inside a window would otherwise swallow Escape for good, because
+      // nothing would ever close it.
+      if (windowRef.current?.querySelector('details[data-motif-cs-escape-scope-when-open][open]')) return;
+      // A tools-rail popover renders outside this window's subtree, so the check
+      // above cannot see it. This listener is in capture on window and stops
+      // propagation, so without this the window closes out from under a panel
+      // that is sitting on top of it — and the panel survives. Same selector the
+      // popover's own handler uses, so the two cannot disagree about what is open.
+      // Keyed on data-tools-pinned="false" because that is the same condition the
+      // stylesheet uses to float the panel: the guard then fires exactly when an
+      // overlay actually exists. Docked mode has the same markup but sits beside
+      // the window rather than over it, and its handler is not registered — so
+      // matching there would leave Escape doing nothing at all.
+      if (document.querySelector('.motif-cs-inspector[data-tools-pinned="false"] details[name="motif-cs-tools"][open]')) return;
       event.preventDefault();
       event.stopPropagation();
       closeWindow();
@@ -14830,6 +15320,28 @@ function FloatingWindow({
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, [maximized, rightInset]);
+
+  // "Reset display" has to reach a window that is open right now. `initial` is
+  // read once, in the useState initialiser above, so a parent handing back a
+  // fresh default rect moves nothing on screen — the user keeps staring at the
+  // 280x180 window they are trying to escape and the button reads as broken.
+  // Driven by an explicit counter rather than by `initial` changing identity,
+  // because `onCommit` writes every finished drag back into that same prop:
+  // adopting on identity would re-apply mid-interaction, against the very
+  // gesture that produced it. Maximize and collapse are cleared too — a reset
+  // that restored the size but left the window maximized would not show it.
+  const lastResetSignalRef = useRef(resetSignal);
+  useEffect(() => {
+    if (resetSignal === lastResetSignalRef.current) return;
+    lastResetSignalRef.current = resetSignal;
+    stopActiveDrag(false);
+    const next = clampWindowRect(initial, window.innerWidth, window.innerHeight, rightInset);
+    restoreRectRef.current = next;
+    rectRef.current = next;
+    setCollapsed(false);
+    setMaximized(false);
+    setRect(next);
+  }, [initial, resetSignal, rightInset, stopActiveDrag]);
 
   const restoreWindow = useCallback(() => {
     const next = clampWindowRect(restoreRectRef.current, window.innerWidth, window.innerHeight, rightInset);
@@ -14997,6 +15509,12 @@ function FloatingWindow({
         width: rect.w,
         height: collapsed ? undefined : rect.h,
         '--motif-cs-floating-right-inset': `${rightInset}px`,
+        // Anything anchored inside this window has to bound itself against the
+        // window, not the browser viewport — a 240px window on a 1400px screen
+        // is the case where the two disagree, and where a viewport-sized popover
+        // is clipped by the body with nothing able to scroll it into reach.
+        // Left unset while maximized, where the viewport IS the right bound.
+        '--motif-cs-window-height': maximized || collapsed ? undefined : `${rect.h}px`,
       } as CSSProperties}
     >
       <div

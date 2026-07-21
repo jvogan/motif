@@ -120,8 +120,13 @@ function selectFirstColumn(): void {
   Object.defineProperty(document, 'elementFromPoint', { configurable: true, value: vi.fn(() => null) });
   Object.defineProperty(ruler, 'setPointerCapture', { configurable: true, value: vi.fn() });
   Object.defineProperty(ruler, 'hasPointerCapture', { configurable: true, value: vi.fn(() => false) });
-  fireEvent.pointerDown(ruler, { button: 0, clientX: 220, clientY: 20, pointerId: 1 });
-  fireEvent.pointerUp(ruler, { button: 0, clientX: 220, clientY: 20, pointerId: 1 });
+  // Aim at the centre of the first residue column using the geometry the frame
+  // actually rendered, so resizing the row-label gutter or the cells cannot
+  // silently move this click into a different column.
+  const { cellWidth, labelWidth } = matrixGeometry();
+  const rulerX = labelWidth + (cellWidth / 2);
+  fireEvent.pointerDown(ruler, { button: 0, clientX: rulerX, clientY: 20, pointerId: 1 });
+  fireEvent.pointerUp(ruler, { button: 0, clientX: rulerX, clientY: 20, pointerId: 1 });
   expect(screen.getByTestId('msa-selection-readout')).toBeTruthy();
 }
 
@@ -196,11 +201,38 @@ describe('ClaudeScienceMsaViewer comparison correctness', () => {
     expect(partialRow?.getAttribute('aria-label')).toContain('100.0 percent identity');
     expect(terminalCell?.dataset.cellOutcome).toBe('uncovered');
     expect(terminalCell?.hasAttribute('data-difference')).toBe(false);
-    expect(screen.getByTestId('msa-stats-bar').textContent).toContain('0 differences in overlap');
-    expect(screen.getByText('0 differences')).toBeTruthy();
+    expect(screen.getByTestId('msa-stats-bar').textContent).toContain('0 columns differ from template');
+    expect(screen.getByText('Difference — of 0')).toBeTruthy();
     expect((screen.getByLabelText('Next variable column') as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByTestId('msa-overview')
       .querySelector('.motif-cs-msa-overview-mismatches')?.getAttribute('d')).toBe('');
+  });
+
+  it('names the population the stats bar counts, which is not the overlap', () => {
+    // Regression: the count was labelled "differences in overlap" while counting
+    // internal indels, which are by definition not overlap. This fixture has NO
+    // substitution anywhere — every difference is a gap facing a residue — so the
+    // count and the word are forced apart, which a fixture with mismatches in it
+    // could not do.
+    const alignment = alignmentWithRows('gap-only-differences', [
+      { id: 'reference', name: 'Reference', aligned: 'ACGTACGTAC' },
+      { id: 'identical', name: 'Identical', aligned: 'ACGTACGTAC' },
+      { id: 'gapped', name: 'Gapped', aligned: 'ACG---GTAC' },
+    ]);
+    // Independently: columns 3, 4 and 5 have a residue in the template and a gap
+    // in one row; no column has two residues that disagree.
+    expect(differenceColumns(alignment, 'reference')).toEqual([3, 4, 5]);
+
+    renderViewer(alignment);
+    const bar = screen.getByTestId('msa-stats-bar');
+    expect(bar.textContent).toContain('3 columns differ from template');
+    // The number is right; the old label was not. Pin the claim, not the phrasing:
+    // nothing in this bar may call an indel column part of an overlap.
+    expect(bar.textContent).not.toMatch(/overlap/i);
+    // The average beside it uses the same rule, so the two cannot drift apart:
+    // each row scores over the template's span with the indel columns comparable
+    // — 100% for the identical row and 7/10 for the gapped one.
+    expect(bar.textContent).toContain('85.0% avg to template');
   });
 
   it('keeps an internal deletion counted across grid, stats, navigation, and overview', () => {
@@ -222,8 +254,8 @@ describe('ClaudeScienceMsaViewer comparison correctness', () => {
     expect(deletionRow?.getAttribute('aria-label')).toContain('1 mismatches');
     expect(deletionCell?.dataset.cellOutcome).toBe('deletion');
     expect(deletionCell?.hasAttribute('data-difference')).toBe(true);
-    expect(screen.getByTestId('msa-stats-bar').textContent).toContain('1 differences in overlap');
-    expect(screen.getByText('1 differences')).toBeTruthy();
+    expect(screen.getByTestId('msa-stats-bar').textContent).toContain('1 columns differ from template');
+    expect(screen.getByText('Difference — of 1')).toBeTruthy();
     expect((screen.getByLabelText('Next variable column') as HTMLButtonElement).disabled).toBe(false);
     expect(screen.getByTestId('msa-overview')
       .querySelector('.motif-cs-msa-overview-mismatches')?.getAttribute('d')).toContain('M1 22V2H2V22Z');
@@ -315,7 +347,7 @@ describe('ClaudeScienceMsaViewer IUPAC-aware differences', () => {
     let cell = document.querySelector<HTMLElement>('[data-msa-row-id="read"] [data-alignment-column="1"]');
     expect(cell?.dataset.cellOutcome).toBe('ambiguous');
     expect(cell?.hasAttribute('data-difference')).toBe(false);
-    expect(screen.getByTestId('msa-stats-bar').textContent).toContain('0 differences in overlap');
+    expect(screen.getByTestId('msa-stats-bar').textContent).toContain('0 columns differ from template');
     expect(screen.getByTestId('msa-ambiguous-count').textContent).toContain('1 compatible');
     defaultView.unmount();
 
@@ -449,6 +481,76 @@ describe('ClaudeScienceMsaViewer reference coordinates', () => {
     await waitFor(() => expect(screen.getByRole('row', { name: 'Template positions for Reference' })).toBeTruthy());
     expect(screen.getByTestId('msa-reference-numbering-editor').textContent).toContain('Plain 1-based');
   });
+
+  it('keeps one result per numbering state instead of forking on every click', async () => {
+    // Regression: both buttons saved unconditionally, so "Use plain 1-based" was
+    // a third result rather than a way back to the first. Three round trips left
+    // seven results. One round trip would not have caught it — the count has to
+    // be watched across several.
+    const alignment = alignmentWithRows('reference-numbering-cycle', [
+      { id: 'reference', name: 'Reference', aligned: 'A-C' },
+      { id: 'second', name: 'Second', aligned: 'ATC' },
+    ]);
+    render(<ReferenceNumberingPersistenceHarness initialAlignment={alignment} />);
+    fireEvent.click(screen.getByTestId('msa-view-menu-button'));
+    fireEvent.change(screen.getByTestId('msa-reference-numbering-position'), { target: { value: '100' } });
+
+    const savedResultCount = () => {
+      const picker = document.querySelector('.motif-cs-msa-alignment-picker select');
+      if (!picker) throw new Error('the alignment picker is absent — the count below would measure nothing');
+      return picker.querySelectorAll('option').length;
+    };
+    const numberingIsOn = () => screen.getByTestId('msa-reference-numbering-editor').getAttribute('data-active') === 'true';
+
+    fireEvent.click(screen.getByTestId('msa-apply-reference-numbering'));
+    await waitFor(() => expect(numberingIsOn()).toBe(true));
+    expect(savedResultCount()).toBe(2);
+
+    for (let cycle = 0; cycle < 3; cycle += 1) {
+      fireEvent.click(screen.getByTestId('msa-clear-reference-numbering'));
+      await waitFor(() => expect(numberingIsOn()).toBe(false));
+      expect(savedResultCount()).toBe(2);
+
+      // Opening the plain result resets the editor to its defaults, so ask for
+      // the same numbering again the way a user toggling between the two would.
+      fireEvent.change(screen.getByTestId('msa-reference-numbering-position'), { target: { value: '100' } });
+      fireEvent.click(screen.getByTestId('msa-apply-reference-numbering'));
+      await waitFor(() => expect(numberingIsOn()).toBe(true));
+      expect(savedResultCount()).toBe(2);
+    }
+  });
+
+  it('does not reuse a numbering result from a provenance-distinct alignment', () => {
+    const alignment = {
+      ...alignmentWithRows('reference-numbering-provenance', [
+        { id: 'reference', name: 'Reference', aligned: 'A-C' },
+        { id: 'second', name: 'Second', aligned: 'ATC' },
+      ]),
+      outputSha256: 'a'.repeat(64),
+    };
+    const foreignNumbered = {
+      ...alignment,
+      id: 'foreign-numbered-result',
+      name: 'Foreign numbered result',
+      outputSha256: 'b'.repeat(64),
+      referenceNumbering: { rowId: 'reference', firstResiduePosition: 100 },
+    };
+    const onSaveAlignment = vi.fn((next: ArtifactAlignment) => ({ ...next, id: 'new-numbered-result' }));
+    const onActiveAlignmentChange = vi.fn();
+    renderViewer(alignment, DEFAULT_CLAUDE_SCIENCE_MSA_VIEW_PREFERENCES, {
+      alignments: [alignment, foreignNumbered],
+      onSaveAlignment,
+      onActiveAlignmentChange,
+    });
+
+    fireEvent.click(screen.getByTestId('msa-view-menu-button'));
+    fireEvent.change(screen.getByTestId('msa-reference-numbering-position'), { target: { value: '100' } });
+    fireEvent.click(screen.getByTestId('msa-apply-reference-numbering'));
+
+    expect(onSaveAlignment).toHaveBeenCalledTimes(1);
+    expect(onActiveAlignmentChange).toHaveBeenCalledWith('new-numbered-result');
+    expect(onActiveAlignmentChange).not.toHaveBeenCalledWith('foreign-numbered-result');
+  });
 });
 
 describe('ClaudeScienceMsaViewer selection interactions', () => {
@@ -536,5 +638,26 @@ describe('ClaudeScienceMsaViewer selection interactions', () => {
 
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(screen.queryByTestId('msa-selection-readout')).toBeNull();
+  });
+
+  it('strips a shared prefix from every row even when the rows disagree about its case', () => {
+    // The prefix is picked by a case-insensitive comparison. If it is then
+    // stripped case-sensitively, the one row spelling it differently keeps its
+    // full name while its siblings lose theirs — and it is the long one a narrow
+    // control truncates. Mixed-case accession and chromosome prefixes are the
+    // realistic source ("Chr1_" beside "chr1_", "sp|" beside "SP|").
+    renderViewer(alignmentWithRows('mixed-case-prefix', [
+      { id: 'a', name: 'PAL_Prunus_avium', aligned: 'ACGT' },
+      { id: 'b', name: 'pal_Pisum_sativum', aligned: 'ACGA' },
+      { id: 'c', name: 'PAL_Zea_mays', aligned: 'ACGC' },
+    ]));
+
+    const compare = screen.getByLabelText('Compare against') as HTMLSelectElement;
+    const labels = [...compare.options].map((option) => option.textContent ?? '');
+    expect(labels).toContain('Prunus_avium');
+    expect(labels).toContain('Zea_mays');
+    expect(labels).toContain('Pisum_sativum');
+    // No option may still be carrying the shared prefix in any casing.
+    expect(labels.filter((label) => /^pal[\s_./-]/i.test(label))).toEqual([]);
   });
 });

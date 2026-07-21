@@ -197,7 +197,7 @@ test.describe('Claude Science multipart feature semantics', () => {
     if ((await detail.getAttribute('data-active')) !== 'true') await detail.click();
     await page.locator('.motif-cs-feature-block').filter({ hasText: 'ordered CDS' }).first().click();
     await expect.poll(() => page.evaluate(() => window.motifDescribe?.()?.data.selection ?? null)).toBeNull();
-    await expect(page.getByRole('group', { name: 'Selection actions' }).getByRole('button', { name: 'Reverse complement' })).toBeDisabled();
+    await expect(page.getByRole('group', { name: 'Selection actions' }).getByRole('button', { name: 'New rev comp record' })).toBeDisabled();
 
     const translation = page.locator('details[data-rail-tool="translation"]');
     if ((await translation.getAttribute('open')) === null) await translation.locator(':scope > summary').click();

@@ -1254,8 +1254,8 @@ function compareMotifMatches(a: MsaMotifMatchOrder, b: MsaMotifMatchOrder): numb
  * Retains only the `capacity` globally-earliest matches (by compareMotifMatches)
  * using a binary max-heap, so a low-complexity query stays O(total × log capacity)
  * in time and O(capacity) in memory no matter how many raw hits it produces —
- * instead of collecting every hit and sorting (which the row-order cap got wrong,
- * and which could exhaust memory before the count cap ever tripped).
+ * instead of collecting every hit and sorting, which could exhaust memory before
+ * the count cap ever tripped.
  */
 class BoundedEarliestMatches {
   private heap: MsaMotifMatch[] = [];

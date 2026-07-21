@@ -15,6 +15,38 @@ function sliceBetween(source: string, startNeedle: string, endNeedle: string): s
   return source.slice(start, end);
 }
 
+/**
+ * Return the `@media` block opened by `condition` that contains `marker`,
+ * brace-matched to its own close.
+ *
+ * `sliceBetween` takes the FIRST occurrence of its start needle and runs to the
+ * next end needle, which silently spans unrelated rules once a second block
+ * shares a media condition — and a stylesheet is free to carry several. Matching
+ * braces keeps a block's assertions about that block.
+ */
+function mediaBlockContaining(css: string, condition: string, marker: string): string {
+  for (let from = 0; ; ) {
+    const open = css.indexOf(condition, from);
+    expect(open, `no ${condition} block contains ${marker}`).toBeGreaterThanOrEqual(0);
+    let depth = 0;
+    let end = -1;
+    for (let i = css.indexOf('{', open); i < css.length; i += 1) {
+      if (css[i] === '{') depth += 1;
+      else if (css[i] === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          end = i;
+          break;
+        }
+      }
+    }
+    expect(end, `unbalanced braces after ${condition}`).toBeGreaterThan(open);
+    const block = css.slice(open, end + 1);
+    if (block.includes(marker)) return block;
+    from = open + condition.length;
+  }
+}
+
 describe('Claude Science Inventory regression guards', () => {
   it('renders no record rows while an Inventory group is collapsed', () => {
     const inventoryList = sliceBetween(
@@ -96,10 +128,19 @@ describe('Claude Science Inventory regression guards', () => {
   });
 
   it('keeps Inventory vertical and record tabs visible in the split workspace', () => {
-    const splitWorkspace = sliceBetween(
+    // The stylesheet carries MORE THAN ONE `@media (min-width: 768px) and
+    // (max-width: 1535px)` block, so slicing from the first opener to the 1536
+    // breakpoint spans everything in between — including the `max-width: 767px`
+    // phone block, which is exactly where the record-tab overrides legitimately
+    // live. That made the negative assertion below fail on a stylesheet whose
+    // split-workspace rules were untouched. Select the block that actually
+    // carries the split-workspace inventory rules and brace-match to its own
+    // close, so this guard is immune to how many such blocks exist or where
+    // they sit.
+    const splitWorkspace = mediaBlockContaining(
       artifactCss,
       '@media (min-width: 768px) and (max-width: 1535px) {',
-      '@media (min-width: 1536px) {',
+      '.motif-cs-sidebar .motif-cs-inventory-groups',
     );
 
     expect(splitWorkspace).toContain('flex-wrap: nowrap;');
@@ -113,6 +154,28 @@ describe('Claude Science Inventory regression guards', () => {
       '.motif-cs-shell:has(> .motif-cs-record-tabs[data-inventory-visible="true"])',
     );
     expect(artifactCss).toMatch(/@media \(max-width: 767px\)[\s\S]*?data-inventory-visible="true"\]\)\s*\{\s*grid-template-rows:\s*auto 1fr/);
+  });
+
+  it('gives the inventory scroller a themed scrollbar rather than the platform default', () => {
+    // At laptop sizes this list is the only place a session meets its whole
+    // vector inventory, and it hides 237px of it at 1440x900 and 303px at
+    // 1024x768. `scrollbar-gutter: stable` reserves the lane; without a colour
+    // the bar fell through to the platform default and measured 1.72:1 against
+    // its own track in BOTH light themes and 2.66:1 in both dark ones, under the
+    // 3.0 non-text floor. Identical rgb across all four themes is the tell that
+    // it was never themed rather than themed badly. Measured HEADED — headless
+    // macOS Chromium reports a 0px gutter and no bar at all.
+    const list = sliceBetween(artifactCss, '.motif-cs-inventory-groups {', '}');
+    expect(list).toContain('overflow: auto');
+    expect(list).toContain('scrollbar-gutter: stable');
+    expect(list, 'inventory scroller left on the platform default scrollbar').toContain('scrollbar-color:');
+
+    // One scrollbar for the app, not two: the same two tokens the alignment
+    // matrix's scroller already uses.
+    const matrix = sliceBetween(artifactCss, '.motif-cs-msa-matrix-scroll {', '}');
+    const colourOf = (rule: string) => /scrollbar-color:\s*([^;]+);/.exec(rule)?.[1].replace(/\s+/g, ' ').trim();
+    expect(colourOf(list)).toBeTruthy();
+    expect(colourOf(list)).toBe(colourOf(matrix));
   });
 
   it('keeps the extreme-width topbar on one row without hiding stateful controls', () => {

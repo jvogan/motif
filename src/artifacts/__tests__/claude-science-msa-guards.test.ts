@@ -94,6 +94,23 @@ describe('Claude Science MSA integration guards', () => {
 });
 
 describe('Claude Science MSA interaction and rendering guards', () => {
+  it('marks every dismissable toolbar menu so its host window can see it open', () => {
+    // The window's Escape handler defers to an open menu. It cannot use the
+    // panel's rendered scope attribute for a native <details>, because React
+    // only learns the menu opened from its `toggle` event ~52ms later; it reads
+    // the element's own `open` instead, keyed on this marker. A menu added
+    // without the marker would silently take the whole window down with it, so
+    // the two counts are derived separately and have to agree.
+    const menus = viewerSource.match(/= useDismissableMenu\(/g) ?? [];
+    const marked = viewerSource.match(/data-motif-cs-escape-scope-when-open="true"/g) ?? [];
+    expect(menus.length).toBe(3);
+    expect(marked.length).toBe(menus.length);
+    expect(artifactSource).toContain("querySelector('details[data-motif-cs-escape-scope-when-open][open]')");
+    // Dismissal has to close the element, not just the state that mirrors it:
+    // inside that same interval `setOpen(false)` is a no-op and the key is lost.
+    expect(viewerSource).toContain('if (menuRef.current?.open) menuRef.current.open = false;');
+  });
+
   it('never auto-pairs the active record with an unrelated hidden workspace record', () => {
     const defaults = sliceBetween(viewerSource, 'function compatibleDefaultIds(', 'function engineMetadata(');
     expect(defaults).toContain("const activeGroup = active.group?.trim().toLocaleLowerCase();");
@@ -258,6 +275,7 @@ describe('Claude Science MSA interaction and rendering guards', () => {
     expect(matrix).toContain('aria-rowcount={tableRowCount}');
     expect(matrix).toContain('aria-rowindex={firstSequenceRow + rowIndex}');
     expect(matrix).toContain('Alignment positions count gapped columns. Template positions count non-gap residues');
+    expect(viewerSource).toContain('data-testid="msa-goto-menu-button"');
     expect(viewerSource).toContain('data-testid="msa-coordinate-system"');
     expect(viewerSource).toContain('data-testid="msa-coordinate-input"');
     expect(viewerSource).toContain("activeReferenceCoordinates ? 'Go to reference position' : 'Go to template position'");
@@ -279,12 +297,46 @@ describe('Claude Science MSA interaction and rendering guards', () => {
     expect(viewerSource).toContain('data-testid="msa-view-menu-button"');
     expect(viewerSource).toContain('data-testid="msa-view-menu-status"');
     expect(viewerSource).toContain('Reset alignment view');
-    expect(viewerSource).toContain('const axisRows = Number(visibility.showAlignmentAxis) + Number(visibility.showTemplateAxis);');
+    // Must exclude a template axis that has been merged into the alignment axis.
+    // This count drives aria-rowindex, the selection band's pixel offset, and the
+    // keyboard scroll-into-view origin at once, so over-counting it draws the
+    // band a whole row low and leaves a hole in the grid's row indices.
+    expect(viewerSource).toContain('const axisRows = Number(visibility.showAlignmentAxis) + Number(visibility.showTemplateAxis && !mergeAxisRows);');
     expect(viewerSource).toContain('const tableRowCount = axisRows');
     expect(viewerSource).toContain('Number(visibility.showConservation)');
     expect(viewerSource).toContain('Number(visibility.showConsensus)');
     expect(artifactSource).toContain("const MSA_VIEW_STORAGE_KEY = 'motif.claude-science.msa-view.v1';");
     expect(artifactCss).toMatch(/\.motif-cs-msa-toolbar\s*\{[\s\S]*?position:\s*sticky/);
+  });
+
+  it('caps the view menu against the window it lives in, with nothing constant in the ceiling', () => {
+    const panel = sliceBetween(artifactCss, '.motif-cs-msa-view-menu-panel {', '.motif-cs-msa-view-menu-panel > strong');
+    const capMatch = /max-height:\s*([^;]+);/.exec(panel);
+    expect(capMatch, 'view menu panel declares no max-height').not.toBeNull();
+    const cap = capMatch![1];
+    // Bound by the window this viewer floats in, not the browser viewport: a
+    // 240px window on a 1400px display is where the two disagree, and the window
+    // is overflow: hidden, so a panel past its bottom edge is gone rather than
+    // scrolled to.
+    expect(cap).toContain('var(--motif-cs-window-height');
+    // The ceiling has to be an expression in that variable and nothing else. A
+    // `min(<constant>, <window expression>)` reads as responsive and behaves as a
+    // constant the moment the window clears the constant — which is every
+    // ordinary window, and is how 379px of this menu stayed hidden at every size.
+    // Asserted as "no numeric term may cap it" rather than as the text of the
+    // rule, because pinning the text pins the very line a correct change deletes.
+    expect(cap).not.toMatch(/min\(\s*\d+(\.\d+)?px/);
+    expect(cap).not.toMatch(/min\(\s*calc\([^)]*\)\s*,\s*\d/);
+    // A floor is still wanted, so the menu stays usable in a tiny window.
+    expect(cap).toMatch(/max\(\s*\d+(\.\d+)?px/);
+    // And whatever still overflows has to be signalled. Naming a scrollbar-color
+    // is what forces a painted bar on a platform that would otherwise draw an
+    // overlay one, i.e. nothing at rest.
+    expect(panel).toMatch(/scrollbar-gutter:\s*stable/);
+    expect(panel).toMatch(/scrollbar-color:/);
+    // `scrollbar-width` must stay auto: any other value changes the reserved
+    // gutter that the panel's own width is sized around.
+    expect(panel).toMatch(/scrollbar-width:\s*auto/);
   });
 
   it('offers a bounded mismatch overview with viewport, pointer drag, and keyboard navigation', () => {
@@ -333,5 +385,121 @@ describe('Claude Science MSA interaction and rendering guards', () => {
     expect(artifactCss).toMatch(/\.motif-cs-msa-pan-row\s*\{[\s\S]*?grid-template-columns:\s*var\(--motif-cs-msa-label-width, 180px\) minmax\(0, 1fr\)/);
     expect(artifactCss).toMatch(/\.motif-cs-msa-pan-range\s*\{[\s\S]*?height:\s*24px/);
     expect(artifactCss).toContain('var(--motif-cs-msa-pan-thumb-width, 36px)');
+  });
+
+  it('keeps the pan lane trough drawn at a boundary strong enough to read as a scrollbar', () => {
+    // The empty trough is the part that states how much alignment lies beyond
+    // the edge. Diluting its border to 72% measured 2.14:1 in light and dark and
+    // 2.28:1 in the claude themes against the row behind it — under the 3.0
+    // non-text floor — while the fill sat at 1.03-1.05, so the lane rendered as a
+    // thumb floating on flat chrome. Two reviewers read those pixels and both
+    // reported the alignment as having no horizontal scroll affordance at all.
+    const webkitTrack = sliceBetween(artifactCss, '.motif-cs-msa-pan-range::-webkit-slider-runnable-track {', '}');
+    const mozTrack = sliceBetween(artifactCss, '.motif-cs-msa-pan-range::-moz-range-track {', '}');
+    const borderOf = (rule: string) => /border:\s*1px solid ([^;]+);/.exec(rule)?.[1];
+    for (const [engine, rule] of [['webkit', webkitTrack], ['moz', mozTrack]] as const) {
+      expect(borderOf(rule), `${engine} track declares no 1px border`).toBeTruthy();
+      expect(borderOf(rule), `${engine} trough boundary is diluted toward transparent`).not.toMatch(/transparent/);
+      expect(rule, `${engine} track fill must separate from the pan row behind it`)
+        .toMatch(/background:\s*color-mix\(in srgb, var\(--bg-primary\) 88%, var\(--text-muted\)\)/);
+    }
+    // Both engines must draw the same trough; this pair is a hand-kept duplicate.
+    expect(borderOf(mozTrack)).toBe(borderOf(webkitTrack));
+    // The thumb stays the strongest thing in the lane and is not part of this
+    // change — it already measured 4.56-5.94 against the row.
+    expect(artifactCss).toMatch(/::-webkit-slider-thumb\s*\{[\s\S]*?background:\s*color-mix\(in srgb, var\(--text-muted\) 82%, var\(--border-strong\)\)/);
+  });
+
+  it('marks the collapsed Tools rail when the session actually holds alignments', () => {
+    // The rail is the default state and it hides `.motif-cs-chip` on every tool
+    // head. Of the fifteen heads, Alignment's is the only chip that reports
+    // session content rather than a fixed label — measured empty vs loaded, it
+    // is the only one whose text changes at all — so hiding it left the rail
+    // identical whether the session held no alignments or twenty.
+    const head = sliceBetween(artifactSource, 'data-rail-label="M"', '</summary>');
+    expect(head).toContain('data-rail-count={payload.alignments.length || undefined}');
+    expect(head).toMatch(/\$\{payload\.alignments\.length\} in session/);
+    // Absent at zero: a session that never aligns anything gains no mark.
+    expect(head).toContain('|| undefined');
+
+    const dot = sliceBetween(
+      artifactCss,
+      '.motif-cs-inspector[data-tools-pinned="false"] summary.motif-cs-panel-head[data-rail-count]::after {',
+      '}',
+    );
+    // Chrome folds ::after content into the accessible name. Printing the count
+    // here replaced the head's whole name with the bare number, measured over
+    // CDP; the empty alternative text is what keeps the name intact.
+    expect(dot).toMatch(/content:\s*""\s*\/\s*""/);
+    expect(dot).toContain('background: var(--accent)');
+    expect(dot).toContain('pointer-events: none');
+    // The rail is icon-only by design; the mark must not reintroduce text that
+    // can outgrow the 38px head.
+    expect(dot).not.toMatch(/content:\s*attr\(/);
+    expect(dot).not.toMatch(/font-size/);
+  });
+
+  it('records why the matrix hides its own horizontal scrollbar', () => {
+    // The rule carried no rationale on a branch where nearly every decision
+    // does, and `overflow-x: hidden` next to a surface with 2801px of hidden
+    // extent got re-litigated as a bug twice. The scroll is real; the bar is
+    // hand-drawn one box below as .motif-cs-msa-pan-row.
+    const scrollRule = sliceBetween(artifactCss, '.motif-cs-msa-matrix-scroll {', '}');
+    expect(scrollRule).toContain('overflow-x: hidden');
+    expect(scrollRule).toMatch(/motif-cs-msa-pan-row/);
+  });
+
+  it('never pairs a scrollbar-color with ::-webkit-scrollbar rules on the same element', () => {
+    // Naming a `scrollbar-color` makes Chromium ignore every ::-webkit-scrollbar
+    // pseudo-element on that element, so the two cannot be combined: whichever
+    // half is written second is dead text that still reads as intent. The matrix
+    // scroller carried both for a long time — an 11px inset pill with an accent
+    // hover tint that never painted a pixel. Measured headed (offsetWidth minus
+    // clientWidth plus screenshot hashes of the gutter strip), the element
+    // rendered byte-identical with those five rules present and absent, while the
+    // same five rules WITHOUT the scrollbar-color rendered visibly different —
+    // which is what proves the colour is the thing disabling them.
+    //
+    // Asserted over the whole stylesheet rather than over the matrix alone,
+    // because the failure mode is someone reaching for ::-webkit-scrollbar on the
+    // next themed scroller and getting no feedback that it did nothing.
+    const withoutComments = artifactCss.replace(/\/\*[\s\S]*?\*\//g, '');
+    // Innermost blocks only: an @media wrapper cannot match, since a selector may
+    // not contain a brace, so its nested rules are what get captured.
+    const blocks = [...withoutComments.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((match) => ({
+      selectors: match[1].split(',').map((one) => one.trim().replace(/\s+/g, ' ')).filter(Boolean),
+      body: match[2],
+    }));
+    // The parse has to be shown to see both halves, or an empty intersection is
+    // just an empty parse. Both counts are asserted non-zero below.
+    const colouredElements = new Set<string>();
+    const webkitStyledElements = new Map<string, string>();
+    for (const block of blocks) {
+      for (const selector of block.selectors) {
+        if (selector.includes('::-webkit-scrollbar')) {
+          const owner = selector.slice(0, selector.indexOf('::-webkit-scrollbar'));
+          if (!webkitStyledElements.has(owner)) webkitStyledElements.set(owner, selector);
+        } else if (/(^|[\s;])scrollbar-color\s*:/.test(block.body)) {
+          colouredElements.add(selector);
+        }
+      }
+    }
+    expect(colouredElements.size, 'parsed no scrollbar-color rules at all').toBeGreaterThan(0);
+    expect(webkitStyledElements.size, 'parsed no ::-webkit-scrollbar rules at all').toBeGreaterThan(0);
+
+    const combined = [...colouredElements].filter((element) => webkitStyledElements.has(element));
+    expect(
+      combined,
+      `these elements declare scrollbar-color AND ::-webkit-scrollbar rules, so the ` +
+        `pseudo-elements are inert: ${combined.map((one) => webkitStyledElements.get(one)).join(', ')}`,
+    ).toEqual([]);
+
+    // And the matrix specifically keeps the half that paints. Deleting the colour
+    // to revive the pseudo-elements would restore the defect the colour was added
+    // for: on a system drawing overlay scrollbars nothing is painted at rest, so
+    // the scroller reads as simply ending.
+    const scrollRule = sliceBetween(artifactCss, '.motif-cs-msa-matrix-scroll {', '}');
+    expect(scrollRule).toMatch(/scrollbar-color:/);
+    expect(artifactCss).not.toMatch(/\.motif-cs-msa-matrix-scroll::-webkit-scrollbar/);
   });
 });

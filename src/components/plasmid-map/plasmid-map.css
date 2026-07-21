@@ -314,13 +314,18 @@
 .motif-pm-bg {
   fill: transparent;
   pointer-events: all;
-}
-.motif-pm-bg[data-pannable='true'] {
-  cursor: grab;
+  /* A drag here belongs to whatever the host listens for on its own wrapper (range
+     selection, in this app), so the browser must not claim the gesture as a page
+     scroll first. This used to be conditional on data-pannable — i.e. only once the
+     viewport was transformed — but the touch gesture is no less real at 100%.
+
+     No cursor is set, because there is no drag-to-pan. The rect used to advertise
+     `grab` / `grabbing` whenever the viewport was transformed, yet nothing ever wired
+     the pan it promised: pressing and dragging moved the map by exactly zero pixels.
+     A cursor is a promise about what a drag will do, and the map should only make the
+     ones its host can keep. Viewport translation is the wheel's job (plain wheel
+     translates, ctrl/pinch scales). */
   touch-action: none;
-}
-.motif-plasmid-map[data-panning='true'] .motif-pm-bg[data-pannable='true'] {
-  cursor: grabbing;
 }
 
 .motif-pm-range-overlays {
@@ -621,9 +626,17 @@
 .motif-pm-feature:focus {
   outline: none;
 }
+/* An indicator did exist here, so "no visible change on focus" was wrong — but
+   it was a 0.7px stroke diluted 30% into the feature's own colour, and a real
+   Tab onto the arc repainted 124 of 11,500 pixels, 1.08%. Every other focusable
+   thing in this app answers with a 2px undiluted accent, so this now matches
+   that: same colour, same thickness, following the arc's own geometry instead
+   of boxing it. Hover stays diluted at 0.55, so focus is unambiguously the
+   louder of the two rather than 0.15px louder. `vector-effect:
+   non-scaling-stroke` on the body means these widths are screen pixels. */
 .motif-pm-feature:focus-visible .motif-pm-feature-body {
-  stroke: color-mix(in srgb, var(--accent, #0169cc) 70%, var(--pm-base, #8a8a8a));
-  stroke-width: 0.7;
+  stroke: var(--accent, #0169cc);
+  stroke-width: 2;
 }
 .motif-pm-feature-label {
   fill: var(--text-primary, #131313);
@@ -678,7 +691,47 @@
   font-size: 10px;
   font-weight: 500;
   font-variant-numeric: tabular-nums;
-  cursor: default;
+  /* The chip's <title> is the only text that says what its count means and that no
+     site was actually dropped from the drawing. .motif-pm-overflows sets
+     pointer-events:none, so that sentence used to be unreachable by a mouse: the
+     browser resolved the chip's own centre to .motif-pm-bg. This one declaration —
+     the child overriding the group — is the entire fix.
+
+     `all` rather than `visiblePainted` so the target does not depend on the chip being
+     painted; it is the faintest ink on the map (fill-opacity 0.56 in circular) and a
+     theme or forced-colors pass that drove it to zero would otherwise take the
+     explanation with it.
+
+     No stroke hit-area here, deliberately. .motif-pm-tick-hit / .motif-pm-feature-hit
+     fatten a transparent stroke to enlarge a hit target, and the same trick was tried
+     on this text — but measured against Chromium it changes nothing: the resolved hit
+     region is identical at stroke-width 0, 12 and 40 (38x6 CSS px circular, 81x13
+     linear), because text is hit-tested as its whole run box, not per glyph outline.
+     That also means there are no inter-word gaps to bridge — sweeping the chip's centre
+     row misses 0 of 37 (circular) and 0 of 80 (linear) points. Dead declarations that
+     look load-bearing are worse than none.
+
+     Enlarging the target therefore takes a real rect, sized in the layout from the
+     chip's own text extent — see .motif-pm-overflow-hit below. This declaration stays
+     so the glyphs themselves keep working wherever the rect cannot reach. */
+  pointer-events: all;
+  cursor: help;
+}
+
+/* The chip's real pointer target. Sized in layout.ts from the estimated glyph run,
+   so it tracks the text instead of a guessed constant, and kept to ONE label line
+   tall for two reasons that are easy to undo by accident:
+     - stacked chips are placed one line apart, so a taller rect would cover the
+       chip below it and answer with the wrong tooltip;
+     - .motif-pm-overflows paints AFTER .motif-pm-features, so a rect that reached
+       into the feature lane under the linear chip would silently eat feature clicks.
+   `fill: none` would make it unhittable under pointer-events: all in some engines;
+   a transparent fill is the portable way to be present but invisible. */
+.motif-pm-overflow-hit {
+  fill: transparent;
+  stroke: none;
+  pointer-events: all;
+  cursor: help;
 }
 
 .motif-pm-container[data-map-mode='circular'] .motif-pm-overflow {
@@ -700,6 +753,22 @@
 
 [data-theme='dark'] .motif-pm-container[data-map-mode='circular'] .motif-pm-overflow {
   fill-opacity: 0.62;
+}
+
+/* Dead-looking text invites no hover, and the chip is deliberately the faintest ink on
+   the map. Lifting it to full strength under the pointer is the cue that there is
+   something here to read. Must out-specify (and follow) the four theme rules above,
+   which set fill-opacity at up to (0,4,0) — a bare .motif-pm-overflow:hover loses to
+   them and the chip would never visibly react.
+
+   Keyed on the GROUP, not the text. The hit rect is the text's SIBLING, so hovering
+   the rect never puts :hover on the text — the enlarged target would answer with a
+   tooltip while the chip sat there looking inert, which is worse than a small target
+   that reacts. The group is the one element both children have in common. */
+.motif-pm-container .motif-pm-overflow-chip:hover .motif-pm-overflow,
+.motif-pm-container[data-map-mode='circular'] .motif-pm-overflow-chip:hover .motif-pm-overflow {
+  fill: var(--text-primary, #131313);
+  fill-opacity: 1;
 }
 
 /* Type IIS enzymes get a distinct tan visual language.

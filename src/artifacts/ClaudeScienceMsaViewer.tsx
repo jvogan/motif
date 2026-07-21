@@ -11,9 +11,10 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
+  type RefObject,
 } from 'react';
 import './claude-science-msa.css';
-import { ChevronDown, ChevronLeft, ChevronRight, GripVertical, Play, Search, SlidersHorizontal, Trash2, UploadCloud } from 'lucide-react';
+import { ChevronDown, ChevronLeft, ChevronRight, Crosshair, Download, GripVertical, Play, Search, SlidersHorizontal, Trash2, UploadCloud } from 'lucide-react';
 import { MSA_MAX_SEQ_LEN } from '../bio/msa';
 import type { SangerTraceData } from '../bio/abi-import';
 import { reverseComplement } from '../bio/reverse-complement';
@@ -55,6 +56,7 @@ import {
   type AlignmentImageLayout,
   type AlignmentImageScope,
   type ArtifactAlignment,
+  type ArtifactAlignmentReferenceNumbering,
   type ArtifactMsaRecord,
   type MsaColorScheme,
   type MsaColumnStats,
@@ -230,6 +232,56 @@ export function parseReferenceCoordinateColumn(
   return column < 0 ? null : column;
 }
 
+function sameOptionalStrings(a: readonly string[] | undefined, b: readonly string[] | undefined): boolean {
+  if (!a || !b) return !a && !b;
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+function sameBooleans(a: readonly boolean[], b: readonly boolean[]): boolean {
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+// A saved numbering variant receives a fresh id and name, but every scientific
+// and provenance field is preserved. Treat results as the same lineage only when
+// all of those preserved fields agree; identical residue text can legitimately
+// come from distinct engines, inputs, or analysis runs.
+function sameAlignmentApartFromNumbering(a: ArtifactAlignment, b: ArtifactAlignment): boolean {
+  return a.molecule === b.molecule
+    && a.referenceRowId === b.referenceRowId
+    && a.alignmentLength === b.alignmentLength
+    && a.centerIdx === b.centerIdx
+    && a.createdAt === b.createdAt
+    && a.outputSha256 === b.outputSha256
+    && a.note === b.note
+    && a.consensus === b.consensus
+    && sameBooleans(a.conserved, b.conserved)
+    && sameBooleans(a.gapOnly, b.gapOnly)
+    && a.engine.id === b.engine.id
+    && a.engine.label === b.engine.label
+    && a.engine.mode === b.engine.mode
+    && a.engine.version === b.engine.version
+    && a.engine.usedFallback === b.engine.usedFallback
+    && sameOptionalStrings(a.engine.parameters, b.engine.parameters)
+    && a.rows.length === b.rows.length
+    && a.rows.every((row, index) => {
+      const other = b.rows[index];
+      return row.id === other.id
+        && row.name === other.name
+        && row.aligned === other.aligned
+        && row.identity === other.identity
+        && row.sourceRecordId === other.sourceRecordId
+        && row.inputSha256 === other.inputSha256;
+    });
+}
+
+function sameReferenceNumbering(
+  a: ArtifactAlignmentReferenceNumbering | undefined,
+  b: ArtifactAlignmentReferenceNumbering | undefined,
+): boolean {
+  if (!a || !b) return !a && !b;
+  return a.rowId === b.rowId && a.firstResiduePosition === b.firstResiduePosition;
+}
+
 export type ClaudeScienceMsaViewerProps = {
   records: readonly ViewerRecord[];
   alignments: readonly ArtifactAlignment[];
@@ -399,11 +451,15 @@ function downloadBlobFile(filename: string, blob: Blob) {
   window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
-/** Draw the alignment onto an off-DOM canvas sized from the layout. */
+/**
+ * Draw the alignment onto an off-DOM canvas sized from the layout. A null scheme
+ * means the caller asked for no residue colouring, and cells are left as
+ * background — the export's equivalent of the matrix's monochrome mode.
+ */
 function renderAlignmentImageCanvas(
   rows: readonly ImageExportRow[],
   molecule: SequenceType,
-  scheme: MsaColorScheme,
+  scheme: MsaColorScheme | null,
   layout: AlignmentImageLayout,
   title: string,
 ): HTMLCanvasElement | null {
@@ -455,7 +511,7 @@ function renderAlignmentImageCanvas(
     const row = rows[rowIndex];
     const y = layout.headerHeight + rowIndex * layout.cellHeight;
     // Cell backgrounds (+0.5 overdraw removes hairline seams between tiles).
-    for (let index = 0; index < layout.columnCount; index += 1) {
+    for (let index = 0; scheme && index < layout.columnCount; index += 1) {
       const symbol = row.aligned[layout.startColumn + index] ?? '-';
       const fill = resolveResidueCellColor(symbol, molecule, scheme, bg);
       if (!fill) continue;
@@ -493,11 +549,14 @@ function canvasToPngBlob(canvas: HTMLCanvasElement): Promise<Blob | null> {
   });
 }
 
-/** Build a self-contained SVG document for the alignment (vector alternative). */
+/**
+ * Build a self-contained SVG document for the alignment (vector alternative).
+ * A null scheme means no residue colouring, as in the canvas renderer above.
+ */
 function renderAlignmentImageSvg(
   rows: readonly ImageExportRow[],
   molecule: SequenceType,
-  scheme: MsaColorScheme,
+  scheme: MsaColorScheme | null,
   layout: AlignmentImageLayout,
   title: string,
 ): string {
@@ -531,7 +590,7 @@ function renderAlignmentImageSvg(
     const row = rows[rowIndex];
     const y = layout.headerHeight + rowIndex * layout.cellHeight;
     // Cell backgrounds.
-    for (let index = 0; index < layout.columnCount; index += 1) {
+    for (let index = 0; scheme && index < layout.columnCount; index += 1) {
       const symbol = row.aligned[layout.startColumn + index] ?? '-';
       const fill = resolveResidueCellColor(symbol, molecule, scheme, bg);
       if (!fill) continue;
@@ -814,6 +873,57 @@ export function ambiguousColumns(
   return columns;
 }
 
+// The shared prefix is CHOSEN by a case-insensitive comparison, so it has to be
+// RECOGNISED by one too. Mixed-case accession or chromosome prefixes — "Chr1_"
+// beside "chr1_", "sp|" beside "SP|" — otherwise leave exactly one row holding
+// its full name while every sibling loses theirs, and that longer row is then
+// the one a narrow control truncates. Precisely backwards.
+function startsWithSharedPrefix(name: string, prefix: string): boolean {
+  return prefix.length > 0
+    && name.length >= prefix.length
+    && name.slice(0, prefix.length).toLocaleLowerCase() === prefix.toLocaleLowerCase();
+}
+
+// Drop a prefix every row shares, keeping the whole name if nothing would be
+// left. Used wherever a narrow control has to tell rows apart by their text.
+function withoutSharedPrefix(name: string, prefix: string): string {
+  if (!startsWithSharedPrefix(name, prefix)) return name;
+  return name.slice(prefix.length).replace(/^[\s_./-]+/u, '') || name;
+}
+
+// Width of the sticky row-name gutter, and therefore the x origin of the
+// residue grid. Names are the index; residues are the subject. At the previous
+// 30% of viewport width this gutter cost as much as both app rails combined, so
+// it is biased back toward the alignment while keeping rows tellable apart.
+// eslint-disable-next-line react-refresh/only-export-components -- pure MSA helper exported for unit tests
+export function msaRowLabelWidth(viewportWidth: number): number {
+  return Math.max(136, Math.min(216, Math.round(viewportWidth * 0.22)));
+}
+
+// Rows in one alignment routinely share a gene or project prefix ("PAL — ")
+// that repeats on every label and so does nothing to tell them apart. The name
+// gutter is narrow and truncates from the right, which spends its width on that
+// shared text and elides the species that actually differs. Returns the prefix
+// worth hiding, or '' when there is none; the full name stays in the row
+// button's title and aria-label either way.
+function sharedNamePrefix(allNames: readonly string[]): string {
+  if (allNames.length < 2) return '';
+  // Keep separators attached so a prefix is never cut mid-word.
+  const tokenise = (name: string) => Array.from(name.matchAll(/[^\s_./-]+[\s_./-]*/gu), (match) => match[0]);
+  const tokenLists = allNames.map(tokenise);
+  const [first] = tokenLists;
+  // Always leave one token, so no row can render an empty label.
+  const limit = Math.min(...tokenLists.map((tokens) => tokens.length)) - 1;
+  let shared = 0;
+  while (
+    shared < limit
+    && tokenLists.every((tokens) => tokens[shared].toLocaleLowerCase() === first[shared].toLocaleLowerCase())
+  ) shared += 1;
+  const prefix = first.slice(0, shared).join('');
+  // Hiding one or two characters is not worth the ambiguity it introduces.
+  return prefix.trim().length >= 3 ? prefix : '';
+}
+
 function rowNameParts(name: string, allNames: readonly string[]): { leading: string; trailing: string } {
   const tokens = Array.from(name.matchAll(/[^\s_./-]+/g));
   if (tokens.length < 2) return { leading: name, trailing: '' };
@@ -963,19 +1073,32 @@ export function mismatchOverviewBins(
   return bins;
 }
 
+/**
+ * Content width of the observed element, plus the width its scrollbar gutter
+ * reserves. The matrix scroller keeps a `scrollbar-gutter: stable` reservation,
+ * which sits outside the content box and cannot be scrolled out from under; the
+ * content has to be widened by it or its tail is unreachable. Measured rather
+ * than assumed because the reservation is 11px where the styled webkit
+ * scrollbar applies and the platform default elsewhere.
+ */
 function useObservedWidth<T extends HTMLElement>(fallback = 720) {
   const ref = useRef<T>(null);
   const [width, setWidth] = useState(fallback);
+  const [scrollbarGutter, setScrollbarGutter] = useState(0);
   useEffect(() => {
     const element = ref.current;
     if (!element || typeof ResizeObserver === 'undefined') return undefined;
     const observer = new ResizeObserver(([entry]) => {
       if (entry.contentRect.width > 0) setWidth(Math.floor(entry.contentRect.width));
+      // offsetWidth − clientWidth is the gutter plus any horizontal border; the
+      // scroller carries no border, and an extra border's worth of trailing
+      // space would only ever be blank.
+      setScrollbarGutter(Math.max(0, element.offsetWidth - element.clientWidth));
     });
     observer.observe(element);
     return () => observer.disconnect();
   }, []);
-  return [ref, width] as const;
+  return [ref, width, scrollbarGutter] as const;
 }
 
 /** Inclusive rectangular block: column and (ordered-row) index ranges. */
@@ -1006,6 +1129,91 @@ const MSA_LETTER_MIN = 6.5;
 // Overlay geometry mirrors the fixed row heights in the viewer stylesheet.
 const MSA_MATRIX_ROW_HEIGHT = 30;
 const MSA_RULER_ROW_HEIGHT = 27;
+/** Mirrors `.motif-cs-msa-overview-row { min-height }` in motif-artifact.css. */
+const MSA_OVERVIEW_ROW_HEIGHT = 30;
+/**
+ * Mirrors `.motif-cs-msa-matrix-scroll { min-height }`. This predates the shell and
+ * already encodes what the residue viewport refuses to go below.
+ */
+const MSA_MATRIX_SCROLL_MIN_HEIGHT = 142;
+/**
+ * Floor for the clipped matrix frame: the sum of the floors its own two children
+ * already declare. Not a chosen number — a frame shorter than this clips content that
+ * has refused to shrink, which is the same defect the shell exists to remove, just
+ * one box further in. Deriving it from ruler + N rows instead gave 147 and lost
+ * exactly 25px to the clip, measured.
+ *
+ * The floor is what lets the body scroll again on a short panel: below it the frame
+ * would collapse and take the residue viewport with it, while above it the frame
+ * shrinks normally, so at 1024x768 (415px available) and 1280x900 (547px) it never
+ * binds and those sizes keep zero body overflow. It is deliberately NOT
+ * `min-height: min-content`, which computes to ~469px and forces whole-UI scrolling.
+ *
+ * Slightly conservative when the overview row is hidden, which over-reserves its 30px.
+ * The alternative is a floor that moves as tracks are toggled, and a viewport that
+ * resizes when you hide something is the defect class this whole change is about.
+ */
+const MSA_MATRIX_FRAME_MIN_HEIGHT = MSA_OVERVIEW_ROW_HEIGHT + MSA_MATRIX_SCROLL_MIN_HEIGHT;
+/**
+ * Fallback for the bottom chrome before it has been measured, and the floor under
+ * `.motif-cs-msa-statusbar`'s own declaration: one unwrapped status line. The real
+ * height is measured at runtime, because this strip WRAPS at narrow widths — an
+ * existing e2e expectation has the zoom row past 40px at 440x760.
+ */
+const MSA_STATUSBAR_HEIGHT = 33;
+/** `.motif-cs-msa-selection-readout`: 40px plus its 6px top margin, in flow. */
+const MSA_SELECTION_READOUT_HEIGHT = 46;
+/**
+ * The same readout while FLOATING — absolutely positioned, so no margin. The bottom
+ * chrome must be at least this tall for the float to sit over it without overhanging
+ * into the residue grid.
+ */
+const MSA_SELECTION_READOUT_FLOAT_HEIGHT = 40;
+/** The shell's own 1px border, top and bottom. */
+const MSA_MATRIX_SHELL_BORDERS = 2;
+/**
+ * Floor for the shell: the frame's floor plus every row currently mounted beneath it.
+ *
+ * Without a floor the shell is a flex item with `min-height: 0`, free to be shorter
+ * than its own content — and a border wraps the BORDER BOX, not the overflow. At
+ * 1100x420 the shell measured 97px against 233px of content, so its bottom border
+ * painted a hairline straight across the residue grid, 8px into row 2, reading as a
+ * row divider that is not one.
+ *
+ * It has to be COMPUTED rather than constant, because three of the four rows are
+ * conditional and this box's whole problem is the rows that are not always there. A
+ * constant covering only the permanent rows left the shell short by 45px once a
+ * selection settled, and 77px with the order note as well: the border then drew
+ * correctly around everything else and left those rows orphaned just below it.
+ * Padding the constant unconditionally would instead waste 78px at exactly the panel
+ * size that cannot spare it.
+ *
+ * The readout counts only when it is IN FLOW. While the pointer is still down it is
+ * absolutely positioned (see its `data-live` rule) and contributes no layout height,
+ * so reserving for it mid-drag would shrink the residue viewport at the one moment
+ * this change exists to hold steady.
+ *
+ * `min-height: auto` on the shell is the intuitive alternative and is WRONG — the
+ * expectation being that `overflow: hidden` on the frame clamps its contribution to
+ * its own floor. Measured, it resolves to 469px, identical to `min-content` and
+ * `fit-content`, because the frame contributes its full matrix height to a
+ * content-based minimum regardless. All three bind at 1024x768 and take body overflow
+ * from 0 to 40px, introducing whole-interface scrolling.
+ *
+ * If the status line ever wraps, this falls short by the extra line and the border
+ * cuts the status line rather than the grid: chrome instead of data, which is the
+ * right way round for it to fail.
+ */
+function msaMatrixShellMinHeight(rows: {
+  /** MEASURED height of the in-flow strip: pan row, status line, order note. */
+  chromeHeight: number;
+  readoutInFlow: boolean;
+}): number {
+  return MSA_MATRIX_FRAME_MIN_HEIGHT
+    + rows.chromeHeight
+    + (rows.readoutInFlow ? MSA_SELECTION_READOUT_HEIGHT : 0)
+    + MSA_MATRIX_SHELL_BORDERS;
+}
 // Sequence-logo track: plotting height (must match .motif-cs-msa-logo-row in
 // the CSS) and the smallest glyph, in px, still worth drawing in a segment.
 const MSA_LOGO_TRACK_HEIGHT = 46;
@@ -1199,7 +1407,7 @@ function AlignmentMatrix({
   onZoomChange: (zoom: number) => void;
   onVisibleColumnsChange: (range: { start: number; end: number }) => void;
 }) {
-  const [viewportRef, viewportWidth] = useObservedWidth<HTMLDivElement>();
+  const [viewportRef, viewportWidth, viewportScrollbarGutter] = useObservedWidth<HTMLDivElement>();
   const initialViewport = useMemo(() => msaMatrixViewportSession.get(alignment.id), [alignment.id]);
   const [scrollLeft, setScrollLeft] = useState(initialViewport?.left ?? 0);
   const scrollFrameRef = useRef<number | null>(null);
@@ -1225,6 +1433,56 @@ function AlignmentMatrix({
   const [reorderStatus, setReorderStatus] = useState('');
   const selectionAnchorRef = useRef<{ column: number; rowIndex: number } | null>(null);
   const frameRef = useRef<HTMLDivElement>(null);
+  const chromeRef = useRef<HTMLDivElement>(null);
+  /**
+   * MEASURED height of the in-flow rows under the frame — pan slider, status line,
+   * order note — rather than a sum of constants.
+   *
+   * Two things depend on it and a constant 33 had both wrong. The shell's floor was
+   * short whenever the status line wrapped, and `claude-science-msa-interactions`
+   * already asserts the zoom row exceeds 40px at 440x760, so that was demonstrated
+   * rather than theoretical. And the mid-drag readout floats over exactly this strip,
+   * so whether it FITS turns on the same number: with no pan row the strip is a single
+   * status line and a 40px readout overhangs it into the residue grid.
+   *
+   * It cannot oscillate. These rows are sized by the shell's WIDTH, which no height
+   * floor affects, so the measurement never feeds back into itself.
+   */
+  const [chromeHeight, setChromeHeight] = useState(MSA_STATUSBAR_HEIGHT);
+  const readoutRef = useRef<HTMLDivElement>(null);
+  /**
+   * MEASURED height of the readout itself. The float gate compares this against the
+   * chrome strip, and BOTH wrap: at 520px the strip grows to 44px and the readout to
+   * 61px, so gating on a 40px constant let it float and cover a residue row by 17px.
+   * Measured-against-measured is the only version that holds at every width.
+   */
+  const [readoutHeight, setReadoutHeight] = useState(MSA_SELECTION_READOUT_FLOAT_HEIGHT);
+  useEffect(() => {
+    const node = readoutRef.current;
+    if (!node || typeof ResizeObserver === 'undefined') return undefined;
+    const sync = () => setReadoutHeight((prev) => {
+      const next = Math.round(node.getBoundingClientRect().height);
+      return next > 0 && next !== prev ? next : prev;
+    });
+    sync();
+    const observer = new ResizeObserver(sync);
+    observer.observe(node);
+    return () => observer.disconnect();
+  });
+  useEffect(() => {
+    const node = chromeRef.current;
+    if (!node || typeof ResizeObserver === 'undefined') return undefined;
+    const sync = () => setChromeHeight((prev) => {
+      const next = Math.round(node.getBoundingClientRect().height);
+      return next > 0 && next !== prev ? next : prev;
+    });
+    sync();
+    const observer = new ResizeObserver(sync);
+    observer.observe(node);
+    return () => observer.disconnect();
+    // The wrapper itself is always rendered; its conditional children change its
+    // height, which the observer sees. Re-subscribing per render would be churn.
+  }, []);
   const baseCellWidth = Math.max(MSA_BASE_CELL_MIN, Math.min(MSA_BASE_CELL_MAX, fontSize * 0.78 + 2));
   const cellWidth = Math.round(Math.max(MSA_CELL_MIN, Math.min(MSA_CELL_MAX, baseCellWidth * zoom)) * 10) / 10;
   const blocks = cellWidth < MSA_LETTER_MIN;
@@ -1233,7 +1491,7 @@ function AlignmentMatrix({
   // the chosen font size when zooming in.
   const renderFontSize = blocks ? fontSize : Math.min(fontSize, Math.max(7, Math.round(cellWidth * 1.32)));
   const prevCellWidthRef = useRef(cellWidth);
-  const labelWidth = Math.max(150, Math.min(260, Math.round(viewportWidth * 0.3)));
+  const labelWidth = msaRowLabelWidth(viewportWidth);
   const sequenceViewportWidth = Math.max(120, viewportWidth - labelWidth);
   const overscan = 24;
   const visibleStartColumn = Math.max(0, Math.min(
@@ -1273,6 +1531,18 @@ function AlignmentMatrix({
     () => templatePositionCoordinates(template?.aligned ?? ''),
     [template],
   );
+  // With an ungapped template and no reference numbering, the template axis
+  // prints the same number as the alignment axis in every column, so the two
+  // rows are one row's worth of information in two rows' worth of height.
+  // Decided across the whole alignment rather than the visible window: a
+  // template gapped only near the end would otherwise make the row appear and
+  // disappear as you pan, which is worse than the duplication.
+  const axesAreIdentical = useMemo(() => (
+    !referenceCoordinates
+    && templateCoordinates.length > 0
+    && templateCoordinates[templateCoordinates.length - 1] === templateCoordinates.length
+  ), [referenceCoordinates, templateCoordinates]);
+  const mergeAxisRows = axesAreIdentical && visibility.showAlignmentAxis && visibility.showTemplateAxis;
   // Amino-acid translation of the reference row (nucleotide alignments only),
   // codons positioned against alignment columns; empty when the track is off.
   const translationCodons = useMemo(
@@ -1332,10 +1602,21 @@ function AlignmentMatrix({
     && activeCell.column < endColumn,
   );
   const allRowNames = useMemo(() => alignment.rows.map((row) => row.name), [alignment.rows]);
-  const rowLabelsById = useMemo(() => new Map(alignment.rows.map((row) => [
-    row.id,
-    rowNameParts(row.name, allRowNames),
-  ])), [alignment.rows, allRowNames]);
+  const commonNamePrefix = useMemo(() => sharedNamePrefix(allRowNames), [allRowNames]);
+  const rowLabelsById = useMemo(() => {
+    // rowNameParts trims trailing separators off `leading`, while the shared
+    // prefix carries its own. Compare on the trimmed form, or names whose
+    // distinguishing text sits entirely in the tail ("Homo sapiens hemoglobin
+    // alpha 1/2/3") never match and keep every shared character.
+    const prefix = commonNamePrefix.trimEnd();
+    return new Map(alignment.rows.map((row) => {
+      const parts = rowNameParts(row.name, allRowNames);
+      if (!startsWithSharedPrefix(parts.leading, prefix)) return [row.id, parts];
+      const leading = parts.leading.slice(prefix.length).replace(/^[\s_./-]+/u, '');
+      // Never leave a row with nothing to render.
+      return [row.id, leading || parts.trailing ? { ...parts, leading } : parts];
+    }));
+  }, [alignment.rows, allRowNames, commonNamePrefix]);
   const overviewBinCount = Math.min(512, Math.max(1, alignment.alignmentLength));
   const overviewBins = useMemo(
     () => mismatchOverviewBins(alignment, template?.id ?? referenceRowId, overviewBinCount, strictDifferences),
@@ -1357,7 +1638,11 @@ function AlignmentMatrix({
     Math.max(0, alignment.alignmentLength - 1),
     Math.floor((visibleStartColumn + Math.max(visibleStartColumn, visibleEndColumn - 1)) / 2),
   );
-  const axisRows = Number(visibility.showAlignmentAxis) + Number(visibility.showTemplateAxis);
+  // When the two position axes are identical they render as ONE row, so the
+  // template axis must not be counted here — otherwise every sequence row's
+  // aria-rowindex is one too high, aria-rowcount overshoots, and index 2 is
+  // never emitted, which assistive tech reads as a hole in the grid.
+  const axisRows = Number(visibility.showAlignmentAxis) + Number(visibility.showTemplateAxis && !mergeAxisRows);
   const firstSequenceRow = axisRows + 1;
   const tableRowCount = axisRows
     + orderedRows.length
@@ -1794,6 +2079,17 @@ function AlignmentMatrix({
     setContextMenu(null);
     setHoverCell(null);
     activateCell({ column: cell.column, rowId: cell.rowId }, false);
+    // A click has to leave DOM focus on the cell it selected. The preventDefault above
+    // suppresses the browser's own mousedown focus, so without this focus stays where it
+    // was — the window container — and arrow keys are swallowed there instead of reaching
+    // handleMatrixKeyDown on the viewport beneath it. Recovering by keyboard costs 30 tab
+    // stops, because Tab restarts from the window's first stop.
+    //
+    // Focus the element directly rather than passing focus=true to activateCell: that
+    // routes through the layout effect, which scrolls a partially visible cell into view.
+    // On the leftmost clipped column it would shift the content under the cursor at the
+    // exact moment a drag-selection begins, changing the resulting selection.
+    findGridCellElement({ rowId: cell.rowId, column: cell.column })?.focus({ preventScroll: true });
     if (!(event.shiftKey && selectionAnchorRef.current)) {
       selectionAnchorRef.current = { column: cell.column, rowIndex: cell.rowIndex };
     }
@@ -1846,6 +2142,12 @@ function AlignmentMatrix({
     setHoverCell(null);
     selectWholeColumn(column);
     rulerSelectingRef.current = true;
+    // Mirrors the grid path. `isSelecting` is what floats the selection readout out of
+    // the flow and defers the block statistics while the pointer is down. Without it a
+    // ruler drag mounted the readout as a row mid-gesture and took 46px — one whole
+    // residue row — out of the viewport, measured at 1100x640. A ruler drag selects
+    // every row, so it is the case where losing one hurts most.
+    setIsSelecting(true);
     stopDragAutoScroll();
     try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* capture is best-effort */ }
   };
@@ -1881,6 +2183,7 @@ function AlignmentMatrix({
       }
     }
     rulerSelectingRef.current = false;
+    setIsSelecting(false);
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
   };
 
@@ -2230,14 +2533,55 @@ function AlignmentMatrix({
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [clearSelection, contextMenu, searchActive, selection]);
 
+  /**
+   * Where the selection readout sits. It FLOATS over the bottom chrome only while the
+   * pointer is down AND that chrome is tall enough to hold it — otherwise it takes a
+   * row like anything else.
+   *
+   * The height test is the whole point. The float is anchored to the shell's bottom
+   * and grows upward, so it covers the chrome strip; when that strip is a lone status
+   * line (no pan row, which happens whenever the alignment fits horizontally) a 40px
+   * readout overhangs it and paints an opaque panel across the last residue row —
+   * measured at 7px, over the very rows the pointer is aiming at. Covering data is
+   * worse than the viewport shrink the float exists to avoid, so in that case the
+   * float is declined and the pre-existing in-flow behaviour stands.
+   */
+  const readoutVisible = !!selection && !!selectionCoordinates;
+  const readoutPlacement: 'none' | 'flow' | 'float' = !readoutVisible
+    ? 'none'
+    : isSelecting && chromeHeight >= readoutHeight
+      ? 'float'
+      : 'flow';
+
   const frameStyle = {
     '--motif-cs-msa-label-width': `${labelWidth}px`,
     '--motif-cs-msa-cell-width': `${cellWidth}px`,
     '--motif-cs-msa-font-size': `${renderFontSize}px`,
+    // Derived from the row-height constants above, so the floors cannot drift away
+    // from the rows they exist to hold. The shell's floor tracks what is actually
+    // mounted — three of its four rows come and go — and drops the readout while the
+    // pointer is down, when it floats instead of taking a row.
+    '--motif-cs-msa-frame-min-height': `${MSA_MATRIX_FRAME_MIN_HEIGHT}px`,
+    '--motif-cs-msa-shell-min-height': `${msaMatrixShellMinHeight({
+      chromeHeight,
+      readoutInFlow: readoutPlacement === 'flow',
+    })}px`,
   } as CSSProperties;
 
   const matrixStyle = {
-    width: totalWidth,
+    /**
+     * The scroller reserves a stable scrollbar gutter on its inline end, and
+     * scrolling stops with the content's right edge against the OUTER edge of
+     * the box — so content sized to `totalWidth` alone leaves its last gutter's
+     * worth of columns permanently underneath the reservation. Measured at
+     * 1440x980: the tail stopped 15px short at 120, 500, 5,000, 50,000 and
+     * 100x20,000 columns alike, hiding the final column completely and 64% of
+     * the one before it, through every route into the tail. Reserving the same
+     * width as trailing space lands the scroll exactly on maxHorizontalScroll.
+     * Only while the alignment overflows: adding it to one that already fits
+     * would manufacture the overflow it exists to correct.
+     */
+    width: totalWidth + (maxHorizontalScroll > 0 ? viewportScrollbarGutter : 0),
   } as CSSProperties;
 
   const navigateOverviewPointer = (element: HTMLElement, clientX: number) => {
@@ -2425,13 +2769,53 @@ function AlignmentMatrix({
   const hoverColumnLeft = hoverCell ? labelWidth + (hoverCell.column * cellWidth) : 0;
 
   return (
+    /*
+     * Two boxes, on purpose. The SHELL owns the visible enclosure and the layout
+     * vars; the FRAME is the clipped residue viewport and holds only the overview
+     * and the matrix.
+     *
+     * Everything that does not scroll — the pan slider, the status line, the order
+     * note, the selection readout — is a sibling of the frame rather than a child.
+     * Inside the frame those rows were squeezed out of a box that clips, with the
+     * window body no longer overflowing, so on a short panel they were unreachable:
+     * no scrollbar anywhere led to them. As siblings they keep their own height, the
+     * frame absorbs the shrink instead, and once the frame hits its floor the shell
+     * outgrows the body and the body scrolls again.
+     *
+     * frameStyle is declared on BOTH boxes, deliberately, but for two different
+     * reasons — and only one of them is about production.
+     *
+     * The SHELL genuinely needs it: --motif-cs-msa-label-width sizes the pan row's
+     * grid, and the pan row is now a sibling of the frame, so without it the slider
+     * falls back to 180px and stops lining up with the residue columns it scrolls.
+     *
+     * The FRAME's copy is redundant to the browser. Nothing in production reads these
+     * properties — they are consumed by CSS, which inherits, so the shell alone would
+     * serve the whole subtree. The frame keeps its own copy solely because two jsdom
+     * tests read them as INLINE style off `data-testid="msa-alignment-view"`
+     * (ClaudeScienceMsaViewer.overlays and .correctness); the e2e spec uses
+     * getComputedStyle and would be fine either way. Removing it would mean repointing
+     * those tests at a different element to accommodate a layout change, which is how
+     * a suite quietly stops testing what it says it does. It is the same object on
+     * both elements, so the two cannot drift.
+     *
+     * The cursor channel stays declared on the frame in CSS — both widgets that read
+     * it (active cell, overview viewport) are inside it.
+     */
+    <div
+      className="motif-cs-msa-matrix-shell"
+      style={frameStyle}
+      /* On the shell, not the frame: the host swallows Escape for whatever the
+         target sits inside, and the selection readout's Clear button is now a
+         sibling of the frame. Scoped to the frame it would fall outside, and
+         Escape there would close the whole window instead of the selection. */
+      data-motif-cs-escape-scope={selection ? 'true' : undefined}
+    >
     <div
       ref={frameRef}
       className="motif-cs-msa-matrix-frame"
       data-testid="msa-alignment-view"
       style={frameStyle}
-      data-has-selection={selection ? true : undefined}
-      data-motif-cs-escape-scope={selection ? 'true' : undefined}
     >
       {visibility.showOverview ? <div className="motif-cs-msa-overview-row">
         <span className="motif-cs-msa-overview-label">Overview</span>
@@ -2543,8 +2927,28 @@ function AlignmentMatrix({
           {hoverCell ? (
             <div className="motif-cs-msa-hover-column" style={{ left: hoverColumnLeft, width: cellWidth }} aria-hidden="true" />
           ) : null}
-          {visibility.showAlignmentAxis ? <div className="motif-cs-msa-ruler-row" role="row" aria-rowindex={1}>
-            <div className="motif-cs-msa-sticky-label motif-cs-msa-ruler-label" role="columnheader">Alignment position</div>
+          {visibility.showAlignmentAxis ? <div
+            className="motif-cs-msa-ruler-row"
+            role="row"
+            aria-rowindex={1}
+            aria-label={mergeAxisRows
+              ? `Alignment positions, matching template positions for ${template?.name ?? 'template'}`
+              : undefined}
+          >
+            <div
+              // When merged this label carries a name in a <small>, which is the
+              // template ruler's two-part shape — it needs that class or the name
+              // inherits the ruler's uppercase mono styling with no ellipsis and
+              // overflows the sticky gutter onto the residues.
+              className={`motif-cs-msa-sticky-label motif-cs-msa-ruler-label${mergeAxisRows ? ' motif-cs-msa-template-ruler-label' : ''}`}
+              role="columnheader"
+              title={mergeAxisRows
+                ? `Alignment position · identical to template position for ${template?.name ?? 'Template'}, which has no gaps`
+                : undefined}
+            >
+              <span>{mergeAxisRows ? 'Alignment / template' : 'Alignment position'}</span>
+              {mergeAxisRows ? <small translate="no">{template?.name ?? 'Template'}</small> : null}
+            </div>
             <div
               className="motif-cs-msa-ruler-window motif-cs-msa-ruler-window-clickable"
               style={{ left: labelWidth + (startColumn * cellWidth) }}
@@ -2571,7 +2975,7 @@ function AlignmentMatrix({
             </div>
           </div> : null}
 
-          {visibility.showTemplateAxis ? <div
+          {visibility.showTemplateAxis && !mergeAxisRows ? <div
             className="motif-cs-msa-ruler-row motif-cs-msa-template-ruler-row"
             data-alignment-axis={visibility.showAlignmentAxis || undefined}
             role="row"
@@ -2749,6 +3153,41 @@ function AlignmentMatrix({
           </div> : null}
         </div>
       </div>
+      </div>
+      {/* Every in-flow row under the frame, in one box so its real height can be
+          MEASURED. The floor and the mid-drag float both depend on how tall this
+          strip actually is, and both were wrong while it was assumed to be 33px:
+          the status line wraps at narrow widths, and with no pan row the strip is
+          too short for the floating readout to sit over. */}
+      <div className="motif-cs-msa-matrix-chrome" ref={chromeRef}>
+      {/* The pan slider is the alignment's horizontal scrollbar, so it sits
+          directly against the matrix and stays aligned to the residue columns
+          rather than joining the status line below. It is a SIBLING of the frame,
+          not a child: inside the clipped frame it was the first thing squeezed off
+          a short panel, with nothing to scroll to reach it. */}
+      {maxHorizontalScroll > 0 ? (
+        <div className="motif-cs-msa-pan-row" data-testid="msa-horizontal-scroll-row">
+          <span className="motif-cs-msa-pan-label" aria-hidden="true">Columns</span>
+          <input
+            className="motif-cs-msa-pan-range"
+            data-testid="msa-horizontal-scroll"
+            type="range"
+            min={0}
+            max={Math.max(1, Math.ceil(maxHorizontalScroll))}
+            step={1}
+            value={Math.min(Math.ceil(maxHorizontalScroll), Math.round(scrollLeft))}
+            onChange={(event) => setHorizontalScroll(Number(event.target.value))}
+            aria-label="Horizontal alignment scroll"
+            aria-valuetext={`Columns ${visibleStartColumn + 1}–${Math.max(visibleStartColumn + 1, visibleEndColumn)} of ${alignment.alignmentLength}`}
+            title="Drag to pan alignment columns"
+            style={{ '--motif-cs-msa-pan-thumb-width': `${panThumbWidth}px` } as CSSProperties}
+          />
+        </div>
+      ) : null}
+      {/* Zoom and the visible-column readout answer the same question — what am
+          I looking at, and how closely — so they share one status line instead
+          of taking a strip each under the alignment. */}
+      <div className="motif-cs-msa-statusbar">
       <div className="motif-cs-msa-zoom-row" data-testid="msa-zoom-row">
         <span className="motif-cs-msa-zoom-label" aria-hidden="true">Zoom</span>
         <input
@@ -2783,30 +3222,12 @@ function AlignmentMatrix({
         ) : null}
         {blocks ? <span className="motif-cs-chip motif-cs-msa-blocks-chip" data-testid="msa-blocks-chip" title="Columns are compressed past letter legibility; residues render as coloured blocks">Blocks</span> : null}
       </div>
-      {maxHorizontalScroll > 0 ? (
-        <div className="motif-cs-msa-pan-row" data-testid="msa-horizontal-scroll-row">
-          <span className="motif-cs-msa-pan-label" aria-hidden="true">Columns</span>
-          <input
-            className="motif-cs-msa-pan-range"
-            data-testid="msa-horizontal-scroll"
-            type="range"
-            min={0}
-            max={Math.max(1, Math.ceil(maxHorizontalScroll))}
-            step={1}
-            value={Math.min(Math.ceil(maxHorizontalScroll), Math.round(scrollLeft))}
-            onChange={(event) => setHorizontalScroll(Number(event.target.value))}
-            aria-label="Horizontal alignment scroll"
-            aria-valuetext={`Columns ${visibleStartColumn + 1}–${Math.max(visibleStartColumn + 1, visibleEndColumn)} of ${alignment.alignmentLength}`}
-            title="Drag to pan alignment columns"
-            style={{ '--motif-cs-msa-pan-thumb-width': `${panThumbWidth}px` } as CSSProperties}
-          />
-        </div>
-      ) : null}
       <span id="motif-cs-msa-matrix-help" className="motif-cs-visually-hidden">{referenceCoordinates
         ? 'Alignment positions count gapped columns. Reference positions use the saved first-residue coordinate; reference-gap columns append stable insertion letters, and leading gaps use the preceding coordinate. Choose any row header button to make that row the comparison template. In the grid, use Arrow keys to move the active residue, Shift plus Arrow keys to extend a selection, Home and End for row boundaries, Control or Command plus Home or End for grid boundaries, Page Up and Page Down to move by a viewport, Space to select a column, and Shift plus F10 or the Context Menu key for selection actions. The Columns slider and Shift plus wheel also pan the alignment. Switch to Text to read or copy the complete aligned sequences with assistive technology.'
         : 'Alignment positions count gapped columns. Template positions count non-gap residues in the chosen template; blank template-axis cells are gaps. Choose any row header button to make that row the template. In the grid, use Arrow keys to move the active residue, Shift plus Arrow keys to extend a selection, Home and End for row boundaries, Control or Command plus Home or End for grid boundaries, Page Up and Page Down to move by a viewport, Space to select a column, and Shift plus F10 or the Context Menu key for selection actions. The Columns slider and Shift plus wheel also pan the alignment. Switch to Text to read or copy the complete aligned sequences with assistive technology.'}</span>
       <div className="motif-cs-msa-window-note" aria-live="polite">
         Alignment columns {visibleStartColumn + 1}–{Math.max(visibleStartColumn + 1, visibleEndColumn)} of {alignment.alignmentLength.toLocaleString()}
+      </div>
       </div>
       {manualOrder ? (
         <div className="motif-cs-msa-order-note" data-testid="msa-order-note">
@@ -2816,8 +3237,22 @@ function AlignmentMatrix({
         </div>
       ) : null}
       <span className="motif-cs-visually-hidden" data-testid="msa-reorder-status" role="status" aria-live="polite">{reorderStatus}</span>
+      </div>
       {selection && selectionCoordinates ? (
-        <div className="motif-cs-msa-selection-readout" data-testid="msa-selection-readout" role="status" aria-live="polite">
+        <div
+          ref={readoutRef}
+          className="motif-cs-msa-selection-readout"
+          data-testid="msa-selection-readout"
+          /* While the pointer is still down the readout floats instead of claiming a
+             row. Taking one mid-drag shrinks the residue viewport by 46px under the
+             pointer — measured at 1 to 2 rows cut off between 1100x600 and 1100x768 —
+             which moves the rows you are dragging toward away from you. It settles
+             into the flow on pointer-up, when nothing is being aimed at. Same
+             reasoning as selectionSummary, which already waits for the settle. */
+          data-live={readoutPlacement === 'float' || undefined}
+          role="status"
+          aria-live="polite"
+        >
           <strong>Selected</strong>
           <span>cols {selection.colStart + 1}–{selection.colEnd + 1} ({selectionCoordinates.columns.toLocaleString()})</span>
           {selectionReferenceRange
@@ -2857,6 +3292,69 @@ function AlignmentMatrix({
       ) : null}
     </div>
   );
+}
+
+/**
+ * Shared dismissal behaviour for the toolbar's `<details>` menus: an outside
+ * pointerdown closes the menu, and Escape closes it and returns focus to its own
+ * summary. Both listeners are capture-phase on purpose — the floating window's
+ * own Escape handler also listens on capture, so a bubble-phase listener here
+ * would never see the key first and Escape would close the whole window.
+ *
+ * Returns the focus-restoring close, for callers that dismiss the menu directly.
+ */
+function useDismissableMenu(
+  open: boolean,
+  setOpen: (next: boolean) => void,
+  menuRef: RefObject<HTMLDetailsElement | null>,
+  buttonRef: RefObject<HTMLElement | null>,
+): () => void {
+  // The browser opens a <details> during the click and only tells React later,
+  // through the `toggle` event — measured at ~52ms. Inside that gap the menu is
+  // open on screen while `open` here is still false, so `setOpen(false)` alone
+  // is a no-op and the dismissal is silently dropped. Closing the element itself
+  // is what actually shuts it; the toggle that follows settles the state.
+  const shut = useCallback(() => {
+    if (menuRef.current?.open) menuRef.current.open = false;
+    setOpen(false);
+  }, [menuRef, setOpen]);
+
+  const close = useCallback(() => {
+    shut();
+    window.requestAnimationFrame(() => buttonRef.current?.focus({ preventScroll: true }));
+  }, [buttonRef, shut]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const closeFromOutside = (event: Event) => {
+      if (menuRef.current?.contains(event.target as Node)) return;
+      shut();
+    };
+    document.addEventListener('pointerdown', closeFromOutside, true);
+    // focusin as well as pointerdown: a <summary> activated from the keyboard
+    // fires click but never pointerdown, so tabbing to a sibling trigger and
+    // pressing Enter would otherwise leave both menus open, stacked in the same
+    // right-anchored rectangle with their Escape handlers racing.
+    document.addEventListener('focusin', closeFromOutside, true);
+    return () => {
+      document.removeEventListener('pointerdown', closeFromOutside, true);
+      document.removeEventListener('focusin', closeFromOutside, true);
+    };
+  }, [menuRef, open, shut]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const closeFromEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      close();
+    };
+    window.addEventListener('keydown', closeFromEscape, true);
+    return () => window.removeEventListener('keydown', closeFromEscape, true);
+  }, [close, open]);
+
+  return close;
 }
 
 export function ClaudeScienceMsaViewer({
@@ -2922,6 +3420,8 @@ export function ClaudeScienceMsaViewer({
   const [copyStatus, setCopyStatus] = useState<{ label: string; message: string; tone: 'status' | 'error' } | null>(null);
   const [imageScope, setImageScope] = useState<AlignmentImageScope>('view');
   const [viewMenuOpen, setViewMenuOpen] = useState(false);
+  const [exportMenuOpen, setExportMenuOpen] = useState(false);
+  const [gotoMenuOpen, setGotoMenuOpen] = useState(false);
   const [viewResetStatus, setViewResetStatus] = useState('');
   const alignmentFileInputRef = useRef<HTMLInputElement>(null);
   const recordFileInputRef = useRef<HTMLInputElement>(null);
@@ -2933,6 +3433,10 @@ export function ClaudeScienceMsaViewer({
   const copyStatusTimerRef = useRef<number | null>(null);
   const viewMenuRef = useRef<HTMLDetailsElement>(null);
   const viewMenuButtonRef = useRef<HTMLElement>(null);
+  const exportMenuRef = useRef<HTMLDetailsElement>(null);
+  const exportMenuButtonRef = useRef<HTMLElement>(null);
+  const gotoMenuRef = useRef<HTMLDetailsElement>(null);
+  const gotoMenuButtonRef = useRef<HTMLElement>(null);
   const pendingReferenceNumberingStatusRef = useRef<{ alignmentId: string; message: string } | null>(null);
   const explicitlySelectedTemplateIdRef = useRef<string | null>(null);
   // Latest visible column window reported by the matrix, for "Visible view" export.
@@ -2974,6 +3478,15 @@ export function ClaudeScienceMsaViewer({
     // reports a fresh range on mount (undefined until then falls back to whole).
     visibleColumnsRef.current = null;
   }, [activeAlignment]);
+
+  // Only the matrix reports a visible column window, but Export now lives in the
+  // toolbar and is offered in every mode. Without this, leaving the Viewer would
+  // leave the last window behind, and "Image · Visible view" from Traces or Text
+  // would silently export columns the user is no longer looking at. Clearing it
+  // falls through to the whole-alignment path.
+  useEffect(() => {
+    if (displayMode !== 'viewer') visibleColumnsRef.current = null;
+  }, [displayMode]);
 
   // Reset the sequence search only when switching to a different alignment, not
   // when the same alignment yields a new object (e.g. a template change), so a
@@ -3020,16 +3533,6 @@ export function ClaudeScienceMsaViewer({
     const frame = window.requestAnimationFrame(() => cancelDeleteRef.current?.focus());
     return () => window.cancelAnimationFrame(frame);
   }, [pendingDeleteId]);
-
-  useEffect(() => {
-    if (!viewMenuOpen) return undefined;
-    const closeFromOutside = (event: PointerEvent) => {
-      if (viewMenuRef.current?.contains(event.target as Node)) return;
-      setViewMenuOpen(false);
-    };
-    document.addEventListener('pointerdown', closeFromOutside, true);
-    return () => document.removeEventListener('pointerdown', closeFromOutside, true);
-  }, [viewMenuOpen]);
 
   const selectedRecords = useMemo(
     () => records.filter((record) => selectedIds.has(record.id)),
@@ -3113,14 +3616,31 @@ export function ClaudeScienceMsaViewer({
     ? comparisonStats.reduce((sum, stats) => sum + stats.identity, 0) / comparisonStats.length
     : null;
   const differenceNavigationDisabled = !hasComparableRows || differences.length === 0;
+  // One phrasing in both states. Reading "717 differences" before stepping and
+  // "Difference 1 of 717" after made the same control look like two controls.
   const differenceNavigationLabel = !hasComparableRows
     ? 'No comparable rows'
     : differenceIndex >= 0
       ? `Difference ${differenceIndex + 1} of ${differences.length}`
-      : `${differences.length} differences`;
+      : `Difference — of ${differences.length}`;
+  // Reserve the widest label this alignment can produce. The counter gains
+  // digits as you step, and a box that grows with it walks the "next" button
+  // out from under the cursor clicking it.
+  const differenceNavigationWidth = Math.max(
+    'No comparable rows'.length,
+    `Difference ${differences.length} of ${differences.length}`.length,
+  );
   const textContent = activeAlignment ? formatAlignment(activeAlignment, textFormat) : '';
   const selectedExport = formatExtension(textFormat);
   const pickerLabels = useMemo(() => alignmentPickerLabels(alignments), [alignments]);
+  // The template picker is a narrow control listing rows that often differ only
+  // in their tail, so a shared prefix pushes the distinguishing text past the
+  // ellipsis and every option renders alike. Strip it here too.
+  const compareRowLabels = useMemo(() => {
+    const rows = activeAlignment?.rows ?? [];
+    const prefix = sharedNamePrefix(rows.map((row) => row.name)).trimEnd();
+    return new Map(rows.map((row) => [row.id, withoutSharedPrefix(row.name, prefix)]));
+  }, [activeAlignment]);
   const matrixVisibility = useMemo<MsaMatrixVisibility>(() => ({
     showOverview: viewPreferences.showOverview,
     showAlignmentAxis: viewPreferences.showAlignmentAxis,
@@ -3197,15 +3717,27 @@ export function ClaudeScienceMsaViewer({
     });
     const rows = imageExportRows(activeAlignment, referenceRowId);
     const title = activeAlignment.name;
+    // Mirror what the matrix paints rather than the scheme alone. The export used
+    // to read only `colorScheme`, so turning "Residue colors" off changed nothing
+    // about the image — and because the scheme select is disabled while colours
+    // are off, the saved file was coloured by a setting the UI was preventing the
+    // user from inspecting. The exception is the same one the matrix makes: when
+    // cells are too narrow to carry glyphs, colour is the only thing left holding
+    // the sequence, so a monochrome birdseye would export a blank rectangle. In
+    // that case the matrix falls back to the automatic tone scheme, not to the
+    // user's stored one, so this does too.
+    const exportScheme: MsaColorScheme | null = colorMode === 'residue'
+      ? colorScheme
+      : layout.drawLetters ? null : 'auto';
     try {
       if (format === 'svg') {
-        const svg = renderAlignmentImageSvg(rows, activeAlignment.molecule, colorScheme, layout, title);
+        const svg = renderAlignmentImageSvg(rows, activeAlignment.molecule, exportScheme, layout, title);
         const filename = safeAlignmentFilename(activeAlignment, 'svg');
         downloadBlobFile(filename, new Blob([svg], { type: 'image/svg+xml' }));
         flashStatus('Image export', layout.clamped ? `Saved ${filename} (scaled to fit)` : `Saved ${filename}`, 'status');
         return;
       }
-      const canvas = renderAlignmentImageCanvas(rows, activeAlignment.molecule, colorScheme, layout, title);
+      const canvas = renderAlignmentImageCanvas(rows, activeAlignment.molecule, exportScheme, layout, title);
       const blob = canvas ? await canvasToPngBlob(canvas) : null;
       if (!blob) {
         flashStatus('Image export', 'PNG export is unavailable here. Try Save SVG.', 'error');
@@ -3217,7 +3749,7 @@ export function ClaudeScienceMsaViewer({
     } catch {
       flashStatus('Image export', 'Image export failed. Try Save SVG or the Visible view scope.', 'error');
     }
-  }, [activeAlignment, colorScheme, fontSize, imageScope, referenceRowId, flashStatus]);
+  }, [activeAlignment, colorMode, colorScheme, fontSize, imageScope, referenceRowId, flashStatus]);
 
   const hydrateInputsFromAlignment = useCallback((alignment: ArtifactAlignment) => {
     const linked = alignment.rows.map((row) => (
@@ -3522,8 +4054,21 @@ export function ClaudeScienceMsaViewer({
 
   const jumpDifference = (direction: -1 | 1) => {
     if (differenceNavigationDisabled) return;
+    // Stepping back off the front returns to the neutral "— of N" state rather
+    // than teleporting to the far end. Both ends used to wrap by modular
+    // arithmetic with nothing said about it, so three Prev presses from the start
+    // read "130 of 130" and threw the view to the opposite end of the alignment —
+    // and Prev from neutral did the same, before the user had gone anywhere.
+    // Forward still wraps, because there is no neutral state past the last one to
+    // land on, and that wrap is at least announced by the counter returning to 1.
+    if (direction < 0 && differenceIndex <= 0) {
+      setDifferenceIndex(-1);
+      setJumpColumn(null);
+      setJumpRowId(null);
+      return;
+    }
     const nextIndex = differenceIndex < 0
-      ? direction > 0 ? 0 : differences.length - 1
+      ? 0
       : (differenceIndex + direction + differences.length) % differences.length;
     setDifferenceIndex(nextIndex);
     setJumpColumn(differences[nextIndex]);
@@ -3605,6 +4150,37 @@ export function ClaudeScienceMsaViewer({
       : activeReferenceCoordinates
         ? `Reference position ${activeReferenceCoordinates[column].label} in ${activeNumberingReference?.name ?? 'reference'} shown at alignment column ${(column + 1).toLocaleString()}.`
         : `Template position ${requested.toLocaleString()} in ${template?.name ?? 'template'} shown at alignment column ${(column + 1).toLocaleString()}.`);
+    // Deliberately does NOT close the menu. The jump issues no focus request, so
+    // nothing dismisses the panel and it stays over the stats row it just
+    // changed — which reads like an oversight until you try closing it: looking
+    // up a run of positions is the normal use of this box, and auto-close makes
+    // every position after the first cost a reopen. The residues themselves are
+    // below the panel, so what it covers is re-readable metadata. Staying open
+    // is the cheaper of the two costs.
+  };
+
+  // The saved result that is this alignment in the numbering state asked for, if
+  // the session already holds one. Both buttons used to save unconditionally,
+  // which made "Use plain 1-based" a third result rather than a way back to the
+  // first: three round trips left seven results named up to "REVIEW 2 2 2 2 2 2".
+  // Reopening the state the user already has keeps one result per distinct
+  // numbering, which is what "save as a new session result" was always meant to
+  // mean.
+  const savedResultWithNumbering = (numbering: ArtifactAlignmentReferenceNumbering | undefined) => (
+    activeAlignment
+      ? alignments.find((candidate) => (
+        candidate.id !== activeAlignment.id
+        && sameAlignmentApartFromNumbering(candidate, activeAlignment)
+        && sameReferenceNumbering(candidate.referenceNumbering, numbering)
+      )) ?? null
+      : null
+  );
+
+  const openSavedResult = (alignment: ArtifactAlignment, message: string) => {
+    pendingReferenceNumberingStatusRef.current = { alignmentId: alignment.id, message };
+    setReferenceNumberingError(null);
+    setReferenceNumberingStatus(message);
+    onActiveAlignmentChange(alignment.id);
   };
 
   const applyReferenceNumbering = () => {
@@ -3637,12 +4213,15 @@ export function ClaudeScienceMsaViewer({
       setReferenceNumberingStatus('Reference numbering is already applied.');
       return;
     }
+    const numbering = { rowId: numberingRow.id, firstResiduePosition };
+    const alreadySaved = savedResultWithNumbering(numbering);
+    if (alreadySaved) {
+      openSavedResult(alreadySaved, `Opened “${alreadySaved.name}”, the saved result that already uses this numbering.`);
+      return;
+    }
     const successMessage = 'Reference numbering saved as a new session result and opened.';
     try {
-      const saved = onSaveAlignment({
-        ...activeAlignment,
-        referenceNumbering: { rowId: numberingRow.id, firstResiduePosition },
-      });
+      const saved = onSaveAlignment({ ...activeAlignment, referenceNumbering: numbering });
       pendingReferenceNumberingStatusRef.current = { alignmentId: saved.id, message: successMessage };
       setReferenceNumberingError(null);
       setReferenceNumberingStatus(successMessage);
@@ -3655,6 +4234,11 @@ export function ClaudeScienceMsaViewer({
 
   const clearReferenceNumbering = () => {
     if (!activeAlignment?.referenceNumbering) return;
+    const plainResult = savedResultWithNumbering(undefined);
+    if (plainResult) {
+      openSavedResult(plainResult, `Reopened “${plainResult.name}”, which is this alignment on plain 1-based numbering.`);
+      return;
+    }
     const plainAlignment = { ...activeAlignment };
     delete plainAlignment.referenceNumbering;
     const successMessage = 'Plain 1-based numbering saved as a new session result and opened.';
@@ -3671,7 +4255,18 @@ export function ClaudeScienceMsaViewer({
   };
 
   const resetAlignmentView = useCallback(() => {
-    onViewPreferencesChange({ ...DEFAULT_CLAUDE_SCIENCE_MSA_VIEW_PREFERENCES });
+    // Everything about how the alignment is DRAWN goes back to its default, which
+    // is what the button offers. Two stored preferences are deliberately carried
+    // through rather than reset, because neither describes the drawing:
+    // `textFormat` decides the bytes Copy and Download write, and resetting it
+    // silently changed a chosen export format; `displayMode` is which pane is
+    // open, and resetting it threw a user reading the Text pane back into the
+    // Viewer. Both controls live outside the View menu this button sits in.
+    onViewPreferencesChange({
+      ...DEFAULT_CLAUDE_SCIENCE_MSA_VIEW_PREFERENCES,
+      displayMode: viewPreferences.displayMode,
+      textFormat: viewPreferences.textFormat,
+    });
     setDifferenceIndex(-1);
     setJumpColumn(null);
     setCoordinateSystem('alignment');
@@ -3679,25 +4274,12 @@ export function ClaudeScienceMsaViewer({
     setColumnError(null);
     setColumnStatus('');
     setViewResetToken((token) => token + 1);
-    setViewResetStatus('Alignment view reset. Result and comparison template kept.');
-  }, [onViewPreferencesChange]);
+    setViewResetStatus('Alignment view reset. Result, comparison template and export format kept.');
+  }, [onViewPreferencesChange, viewPreferences.displayMode, viewPreferences.textFormat]);
 
-  const closeViewMenu = useCallback(() => {
-    setViewMenuOpen(false);
-    window.requestAnimationFrame(() => viewMenuButtonRef.current?.focus({ preventScroll: true }));
-  }, []);
-
-  useEffect(() => {
-    if (!viewMenuOpen) return undefined;
-    const closeFromEscape = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
-      event.preventDefault();
-      event.stopPropagation();
-      closeViewMenu();
-    };
-    window.addEventListener('keydown', closeFromEscape, true);
-    return () => window.removeEventListener('keydown', closeFromEscape, true);
-  }, [closeViewMenu, viewMenuOpen]);
+  const closeViewMenu = useDismissableMenu(viewMenuOpen, setViewMenuOpen, viewMenuRef, viewMenuButtonRef);
+  const closeExportMenu = useDismissableMenu(exportMenuOpen, setExportMenuOpen, exportMenuRef, exportMenuButtonRef);
+  const closeGotoMenu = useDismissableMenu(gotoMenuOpen, setGotoMenuOpen, gotoMenuRef, gotoMenuButtonRef);
 
   const deleteActiveAlignment = () => {
     if (!activeAlignment) return;
@@ -3753,6 +4335,9 @@ export function ClaudeScienceMsaViewer({
       <details
         className="motif-cs-msa-source"
         open={sourceOpen}
+        /* Once a result exists the toolbar's "Edit inputs" button is the way in,
+           so this banner is redundant chrome; it only re-appears while open. */
+        data-redundant={activeAlignment && !sourceOpen ? 'true' : undefined}
         onToggle={(event) => handleSourceToggle(event.currentTarget.open)}
       >
         <summary ref={sourceSummaryRef}>
@@ -3982,13 +4567,11 @@ export function ClaudeScienceMsaViewer({
                 {!alignments.some((alignment) => alignment.id === activeAlignment.id) ? <option value={activeAlignment.id}>{pickerLabels.get(activeAlignment.id) ?? activeAlignment.name}</option> : null}
               </select>
             </label>
-            <span
-              className="motif-cs-chip motif-cs-msa-engine-chip"
-              data-fallback={activeAlignment.engine.usedFallback || undefined}
-              title={`${activeAlignment.engine.label}${activeAlignment.engine.version ? ` ${activeAlignment.engine.version}` : ''}${activeAlignment.engine.usedFallback ? ' · fallback used' : ''}`}
-            >
-              {activeAlignment.engine.label}{activeAlignment.engine.version ? ` ${activeAlignment.engine.version}` : ''}{activeAlignment.engine.usedFallback ? ' · fallback' : ''}
-            </span>
+            {/* The engine chip used to sit here repeating what the Provenance
+                summary one row below already says — same label, same version,
+                same fallback note — and it cost 134px of a row that had none to
+                spare. Provenance says strictly more (it adds how the engine was
+                executed), so nothing is lost by letting it be the one voice. */}
             <button
               className="motif-cs-mini-button motif-cs-msa-edit-inputs"
               type="button"
@@ -4006,9 +4589,106 @@ export function ClaudeScienceMsaViewer({
               {traceAvailable ? <button type="button" data-active={displayMode === 'trace' || undefined} aria-pressed={displayMode === 'trace'} onClick={() => updateViewPreferences({ displayMode: 'trace' })}>Traces</button> : null}
               <button type="button" data-active={displayMode === 'text' || undefined} aria-pressed={displayMode === 'text'} onClick={() => updateViewPreferences({ displayMode: 'text' })}>Text</button>
             </div>
+            {/* Jumping to a coordinate is a deliberate "take me there" action, not
+                something read while scanning residues, and as a permanent form it
+                was the control that forced the row below onto a second line. */}
+            {displayMode === 'viewer' ? (
+              <details
+                ref={gotoMenuRef}
+                className="motif-cs-msa-goto-menu"
+                // Static, and read together with the element's own `open`: the
+                // panel's data-motif-cs-escape-scope below cannot be trusted for
+                // the ~52ms between the browser opening this menu and React
+                // hearing about it, which is long enough for the host window to
+                // take an Escape meant for the menu and close itself.
+                data-motif-cs-escape-scope-when-open="true"
+                open={gotoMenuOpen}
+                onToggle={(event) => setGotoMenuOpen(event.currentTarget.open)}
+                onKeyDown={(event) => {
+                  if (event.key !== 'Escape') return;
+                  event.preventDefault();
+                  event.stopPropagation();
+                  closeGotoMenu();
+                }}
+              >
+                <summary ref={gotoMenuButtonRef} data-testid="msa-goto-menu-button" aria-label="Go to a position in the alignment" aria-expanded={gotoMenuOpen}>
+                  <Crosshair size={13} strokeWidth={2.1} aria-hidden="true" />
+                  {coordinateSystem === 'alignment'
+                    ? 'Go to'
+                    : activeReferenceCoordinates ? 'Go to \u00b7 reference' : 'Go to \u00b7 template'}
+                  <ChevronDown size={12} aria-hidden="true" />
+                </summary>
+                <div className="motif-cs-msa-goto-menu-panel" data-testid="msa-goto-menu" data-motif-cs-escape-scope={gotoMenuOpen || undefined}>
+                    <form
+                      className="motif-cs-msa-column-jump"
+                      data-invalid={columnError ? true : undefined}
+                      noValidate
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        goToCoordinate();
+                      }}
+                    >
+                      <label className="motif-cs-msa-coordinate-system">
+                        <span className="motif-cs-visually-hidden">Coordinate system</span>
+                        <select
+                          data-testid="msa-coordinate-system"
+                          name="alignment-coordinate-system"
+                          value={coordinateSystem}
+                          aria-label="Coordinate system"
+                          onChange={(event) => {
+                            setCoordinateSystem(event.target.value as CoordinateSystem);
+                            setColumnDraft('');
+                            setColumnError(null);
+                            setColumnStatus('');
+                          }}
+                        >
+                          <option value="alignment">Alignment column</option>
+                          <option value="template">{activeReferenceCoordinates ? 'Reference position' : 'Template position'}</option>
+                        </select>
+                      </label>
+                      <label>
+                        <span className="motif-cs-visually-hidden">{coordinateSystem === 'alignment' ? 'Alignment column' : activeReferenceCoordinates ? 'Reference position' : 'Template position'}</span>
+                        <input
+                          data-testid="msa-coordinate-input"
+                          type={coordinateSystem === 'template' && activeReferenceCoordinates ? 'text' : 'number'}
+                          name="alignment-coordinate"
+                          autoComplete="off"
+                          inputMode={coordinateSystem === 'template' && activeReferenceCoordinates ? 'text' : 'numeric'}
+                          min={coordinateSystem === 'template' && activeReferenceCoordinates ? undefined : 1}
+                          max={coordinateSystem === 'template' && activeReferenceCoordinates
+                            ? undefined
+                            : coordinateSystem === 'alignment'
+                              ? activeAlignment.alignmentLength
+                              : activeTemplate?.aligned.replace(/-/g, '').length ?? 0}
+                          step={coordinateSystem === 'template' && activeReferenceCoordinates ? undefined : 1}
+                          pattern={coordinateSystem === 'template' && activeReferenceCoordinates ? '[0-9]+[A-Za-z]*' : undefined}
+                          placeholder={coordinateSystem === 'template' && activeReferenceCoordinates ? '101 or 101A' : undefined}
+                          value={columnDraft}
+                          onChange={(event) => {
+                            setColumnDraft(event.target.value);
+                            setColumnError(null);
+                            setColumnStatus('');
+                          }}
+                          aria-label={coordinateSystem === 'alignment' ? 'Go to alignment column' : activeReferenceCoordinates ? 'Go to reference position' : 'Go to template position'}
+                          aria-invalid={columnError ? true : undefined}
+                          aria-describedby={columnError ? 'motif-cs-msa-column-error' : undefined}
+                        />
+                      </label>
+                      <button className="motif-cs-mini-button" type="submit">Go</button>
+                      {columnError ? <span id="motif-cs-msa-column-error" className="motif-cs-msa-column-error" role="alert">{columnError}</span> : null}
+                      {/* Safe inside the panel only because the panel stays open
+                          after a jump (see goToCoordinate). Anyone adding
+                          auto-close must move this out first, or the success is
+                          announced into a closed <details> and never heard. */}
+                      <span className="motif-cs-visually-hidden" role="status" aria-live="polite">{columnStatus}</span>
+                    </form>
+                </div>
+              </details>
+            ) : null}
             <details
               ref={viewMenuRef}
               className="motif-cs-msa-view-menu"
+              data-motif-cs-escape-scope-when-open="true"
               open={viewMenuOpen}
               onToggle={(event) => setViewMenuOpen(event.currentTarget.open)}
               onKeyDown={(event) => {
@@ -4082,6 +4762,19 @@ export function ClaudeScienceMsaViewer({
                     ) : null}
                   </>
                 ) : null}
+                {/* Row order is a display preference like the tracks above it, and
+                    it is set once and left alone — it does not earn 155px of the
+                    control row it used to sit in. */}
+                <label className="motif-cs-msa-view-select">
+                  <span>Sort</span>
+                  <select value={sortMode} onChange={(event) => updateViewPreferences({ sortMode: event.target.value as RowSortMode })}>
+                    <option value="original">Original order</option>
+                    <option value="name">Name</option>
+                    <option value="identity">Identity</option>
+                    <option value="mismatches">Mismatches</option>
+                    <option value="length">Ungapped length</option>
+                  </select>
+                </label>
                 <label>
                   <input
                     type="checkbox"
@@ -4128,7 +4821,7 @@ export function ClaudeScienceMsaViewer({
                         setReferenceNumberingStatus('');
                       }}
                     >
-                      {activeAlignment.rows.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}
+                      {activeAlignment.rows.map((row) => <option key={row.id} value={row.id} title={row.name}>{compareRowLabels.get(row.id) ?? row.name}</option>)}
                     </select>
                   </label>
                   <label className="motif-cs-msa-reference-numbering-position">
@@ -4184,6 +4877,58 @@ export function ClaudeScienceMsaViewer({
                 <span className="motif-cs-msa-view-menu-status" data-testid="msa-view-menu-status" data-empty={!viewResetStatus || undefined} role="status" aria-live="polite">{viewResetStatus}</span>
               </div>
             </details>
+            {/* Export used to be a permanent 49px strip under the alignment, most
+                of it a sentence of guidance nobody rereads. It is an end-of-look
+                action, so it belongs beside the other toolbar menus. */}
+            <details
+              ref={exportMenuRef}
+              className="motif-cs-msa-export-menu"
+              data-motif-cs-escape-scope-when-open="true"
+              open={exportMenuOpen}
+              onToggle={(event) => setExportMenuOpen(event.currentTarget.open)}
+              onKeyDown={(event) => {
+                if (event.key !== 'Escape') return;
+                event.preventDefault();
+                event.stopPropagation();
+                closeExportMenu();
+              }}
+            >
+              <summary ref={exportMenuButtonRef} data-testid="msa-export-menu-button" aria-label="Export alignment" aria-expanded={exportMenuOpen}>
+                <Download size={13} strokeWidth={2.1} aria-hidden="true" />
+                Export
+                <ChevronDown size={12} aria-hidden="true" />
+              </summary>
+              <div className="motif-cs-msa-export-row motif-cs-msa-export-menu-panel" data-testid="msa-export-menu" data-motif-cs-escape-scope={exportMenuOpen || undefined}>
+                <label>
+                  <span>Export</span>
+                  <select value={textFormat} onChange={(event) => updateViewPreferences({ textFormat: event.target.value as TextFormat })}>
+                    <option value="fasta">Aligned FASTA</option>
+                    <option value="clustal">CLUSTAL</option>
+                    <option value="consensus">Consensus FASTA</option>
+                    <option value="json">Alignment JSON</option>
+                  </select>
+                </label>
+                <button className="motif-cs-mini-button" type="button" onClick={() => void copyFromViewer(selectedExport.label, textContent)}>{copyStatus?.label === selectedExport.label && copyStatus.tone === 'status' ? 'Copied' : 'Copy'}</button>
+                <button className="motif-cs-mini-button" type="button" onClick={() => onDownload(safeAlignmentFilename(activeAlignment, selectedExport.extension), textContent, selectedExport.mime)}>Download</button>
+                <div className="motif-cs-msa-export-image" data-testid="msa-export-image">
+                  <label className="motif-cs-msa-image-scope">
+                    <span>Image</span>
+                    <select
+                      value={imageScope}
+                      data-testid="msa-export-image-scope"
+                      aria-label="Image export scope"
+                      onChange={(event) => setImageScope(event.target.value as AlignmentImageScope)}
+                    >
+                      <option value="view">Visible view</option>
+                      <option value="all">Whole alignment</option>
+                    </select>
+                  </label>
+                  <button className="motif-cs-mini-button" type="button" data-testid="msa-export-png" onClick={() => void exportAlignmentImage('png')}>Save PNG</button>
+                  <button className="motif-cs-mini-button" type="button" data-testid="msa-export-svg" onClick={() => void exportAlignmentImage('svg')}>Save SVG</button>
+                </div>
+                <span className="motif-cs-muted">In session · Export a workspace backup before reload. To restore a ZIP export, unzip it and choose inventory.json in Settings. {activeAlignment.note}</span>
+              </div>
+            </details>
             {pendingDeleteId === activeAlignment.id ? (
               <div className="motif-cs-msa-delete-confirm" role="group" aria-label="Confirm alignment deletion">
                 <span>Delete?</span>
@@ -4217,6 +4962,9 @@ export function ClaudeScienceMsaViewer({
             </div>
           ) : null}
 
+          {/* Counts and provenance are both read-once metadata, so they share a
+              row instead of each taking a full strip above the residues. */}
+          <div className="motif-cs-msa-meta-row">
           <details
             className="motif-cs-msa-provenance"
             data-testid="msa-provenance"
@@ -4255,13 +5003,26 @@ export function ClaudeScienceMsaViewer({
             <span><strong>{activeAlignment.rows.length}</strong> rows</span>
             <span><strong>{activeAlignment.alignmentLength.toLocaleString()}</strong> columns</span>
             <span><strong>{conservedPct}%</strong> conserved</span>
-            <span><strong>{avgIdentity === null ? 'N/A' : `${formatIdentity(avgIdentity)}%`}</strong> avg to template</span>
-            <span><strong>{differences.length.toLocaleString()}</strong> differences in overlap</span>
+            <span title="Mean of each row's identity to the template, over the columns the template spans, ignoring the ragged ends where a row has not started or has already finished. A column where one side has an internal gap counts as comparable and not matching.">
+              <strong>{avgIdentity === null ? 'N/A' : `${formatIdentity(avgIdentity)}%`}</strong> avg to template
+            </span>
+            {/* This said "differences in overlap", which named a population it
+                does not count: a column where a row has an internal gap facing a
+                template residue is an indel, not overlap, and it is counted.
+                An alignment with no substitutions at all and one 20-column
+                internal gap printed "20 differences in overlap". Both this and
+                the average beside it use the SAME rule — template span, ragged
+                ends excluded, internal indels counted — so the fix is to name
+                that rule rather than to change either number. */}
+            <span title="Columns inside the template's span where at least one row's call differs from the template — substitutions and internal gaps alike. Ragged ends, where a row has not started or has already finished, are not counted.">
+              <strong>{differences.length.toLocaleString()}</strong> columns differ from template
+            </span>
             {ambiguities.length > 0 ? (
               <span className="motif-cs-msa-stats-ambiguous" data-testid="msa-ambiguous-count" title="Columns with compatible ambiguity-code calls, counted separately from hard differences">
                 <strong>{ambiguities.length.toLocaleString()}</strong> compatible
               </span>
             ) : null}
+          </div>
           </div>
 
           {displayMode === 'viewer' ? (
@@ -4274,22 +5035,12 @@ export function ClaudeScienceMsaViewer({
                 <label className="motif-cs-msa-reference-picker">
                   <span>Compare against</span>
                   <select value={referenceRowId} disabled={!hasComparableRows} onChange={(event) => selectTemplate(event.target.value)}>
-                    {activeAlignment.rows.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}
-                  </select>
-                </label>
-                <label className="motif-cs-msa-sort-picker">
-                  <span>Sort</span>
-                  <select value={sortMode} onChange={(event) => updateViewPreferences({ sortMode: event.target.value as RowSortMode })}>
-                    <option value="original">Original order</option>
-                    <option value="name">Name</option>
-                    <option value="identity">Identity</option>
-                    <option value="mismatches">Mismatches</option>
-                    <option value="length">Ungapped length</option>
+                    {activeAlignment.rows.map((row) => <option key={row.id} value={row.id} title={row.name}>{compareRowLabels.get(row.id) ?? row.name}</option>)}
                   </select>
                 </label>
                 <div className="motif-cs-msa-difference-nav" role="group" aria-label="Variable column navigation">
                   <button className="motif-cs-mini-button" type="button" disabled={differenceNavigationDisabled} onClick={() => jumpDifference(-1)} aria-label="Previous variable column"><ChevronLeft size={13} /></button>
-                  <span>{differenceNavigationLabel}</span>
+                  <span style={{ minWidth: `${differenceNavigationWidth}ch` }}>{differenceNavigationLabel}</span>
                   <button className="motif-cs-mini-button" type="button" disabled={differenceNavigationDisabled} onClick={() => jumpDifference(1)} aria-label="Next variable column"><ChevronRight size={13} /></button>
                 </div>
                 <form
@@ -4310,7 +5061,15 @@ export function ClaudeScienceMsaViewer({
                     spellCheck={false}
                     maxLength={MSA_MOTIF_SEARCH_MAX_QUERY_LENGTH}
                     value={searchQuery}
+                    // Degenerate codes are honoured and nothing said so, which
+                    // made a correct count look like a bug: typing ZZ into a
+                    // protein alignment containing no literal Z returns every
+                    // adjacent E/Q pair, and that is right. The rule is in the
+                    // title rather than the placeholder because the box is 146px
+                    // and every phrasing naming IUPAC needs 151px or more — a
+                    // placeholder that says it and then clips says nothing.
                     placeholder="Find sequence…"
+                    title="Case-insensitive, and IUPAC ambiguity codes match the residues they stand for — N matches any base, Z matches E or Q."
                     aria-label="Find a sequence motif in the alignment"
                     onChange={(event) => setSearchQuery(event.target.value)}
                     onKeyDown={(event) => {
@@ -4324,70 +5083,17 @@ export function ClaudeScienceMsaViewer({
                         ? 'Searching…'
                         : searchMatches.length === 0
                           ? searchResult.truncated ? 'Search limit reached' : 'No matches'
-                          : `${searchIndex >= 0 ? `${Math.min(searchIndex, searchMatches.length - 1) + 1} of ` : ''}${searchMatches.length.toLocaleString()}${searchResult.truncated ? '+' : ''}`
+                          // Before anything has been stepped to there is no
+                          // current match, and a bare "13" beside a pair of
+                          // step arrows reads as "match 13 of something". The
+                          // noun says which number this is.
+                          : searchIndex >= 0
+                            ? `${Math.min(searchIndex, searchMatches.length - 1) + 1} of ${searchMatches.length.toLocaleString()}${searchResult.truncated ? '+' : ''}`
+                            : `${searchMatches.length.toLocaleString()}${searchResult.truncated ? '+' : ''} ${searchMatches.length === 1 ? 'match' : 'matches'}`
                       : ''}
                   </span>
                   <button type="button" className="motif-cs-mini-button" data-testid="msa-search-prev" disabled={searchMatches.length === 0} onClick={() => stepSearch(-1)} aria-label="Previous match"><ChevronLeft size={13} /></button>
                   <button type="submit" className="motif-cs-mini-button" data-testid="msa-search-next" disabled={searchMatches.length === 0} aria-label="Next match"><ChevronRight size={13} /></button>
-                </form>
-                <form
-                  className="motif-cs-msa-column-jump"
-                  data-invalid={columnError ? true : undefined}
-                  noValidate
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    goToCoordinate();
-                  }}
-                >
-                  <label className="motif-cs-msa-coordinate-system">
-                    <span className="motif-cs-visually-hidden">Coordinate system</span>
-                    <select
-                      data-testid="msa-coordinate-system"
-                      name="alignment-coordinate-system"
-                      value={coordinateSystem}
-                      aria-label="Coordinate system"
-                      onChange={(event) => {
-                        setCoordinateSystem(event.target.value as CoordinateSystem);
-                        setColumnDraft('');
-                        setColumnError(null);
-                        setColumnStatus('');
-                      }}
-                    >
-                      <option value="alignment">Alignment column</option>
-                      <option value="template">{activeReferenceCoordinates ? 'Reference position' : 'Template position'}</option>
-                    </select>
-                  </label>
-                  <label>
-                    <span className="motif-cs-visually-hidden">{coordinateSystem === 'alignment' ? 'Alignment column' : activeReferenceCoordinates ? 'Reference position' : 'Template position'}</span>
-                    <input
-                      data-testid="msa-coordinate-input"
-                      type={coordinateSystem === 'template' && activeReferenceCoordinates ? 'text' : 'number'}
-                      name="alignment-coordinate"
-                      autoComplete="off"
-                      inputMode={coordinateSystem === 'template' && activeReferenceCoordinates ? 'text' : 'numeric'}
-                      min={coordinateSystem === 'template' && activeReferenceCoordinates ? undefined : 1}
-                      max={coordinateSystem === 'template' && activeReferenceCoordinates
-                        ? undefined
-                        : coordinateSystem === 'alignment'
-                          ? activeAlignment.alignmentLength
-                          : activeTemplate?.aligned.replace(/-/g, '').length ?? 0}
-                      step={coordinateSystem === 'template' && activeReferenceCoordinates ? undefined : 1}
-                      pattern={coordinateSystem === 'template' && activeReferenceCoordinates ? '[0-9]+[A-Za-z]*' : undefined}
-                      placeholder={coordinateSystem === 'template' && activeReferenceCoordinates ? '101 or 101A' : undefined}
-                      value={columnDraft}
-                      onChange={(event) => {
-                        setColumnDraft(event.target.value);
-                        setColumnError(null);
-                        setColumnStatus('');
-                      }}
-                      aria-label={coordinateSystem === 'alignment' ? 'Go to alignment column' : activeReferenceCoordinates ? 'Go to reference position' : 'Go to template position'}
-                      aria-invalid={columnError ? true : undefined}
-                      aria-describedby={columnError ? 'motif-cs-msa-column-error' : undefined}
-                    />
-                  </label>
-                  <button className="motif-cs-mini-button" type="submit">Go</button>
-                  {columnError ? <span id="motif-cs-msa-column-error" className="motif-cs-msa-column-error" role="alert">{columnError}</span> : null}
-                  <span className="motif-cs-visually-hidden" role="status" aria-live="polite">{columnStatus}</span>
                 </form>
               </div>
               {viewPreferences.showRowStatsPanel ? (
@@ -4435,12 +5141,12 @@ export function ClaudeScienceMsaViewer({
                 <label className="motif-cs-msa-reference-picker">
                   <span>Compare against</span>
                   <select value={referenceRowId} disabled={!hasComparableRows} onChange={(event) => selectTemplate(event.target.value)}>
-                    {activeAlignment.rows.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}
+                    {activeAlignment.rows.map((row) => <option key={row.id} value={row.id} title={row.name}>{compareRowLabels.get(row.id) ?? row.name}</option>)}
                   </select>
                 </label>
                 <div className="motif-cs-msa-difference-nav" role="group" aria-label="Variable column navigation">
                   <button className="motif-cs-mini-button" type="button" disabled={differenceNavigationDisabled} onClick={() => jumpDifference(-1)} aria-label="Previous variable column"><ChevronLeft size={13} /></button>
-                  <span>{differenceNavigationLabel}</span>
+                  <span style={{ minWidth: `${differenceNavigationWidth}ch` }}>{differenceNavigationLabel}</span>
                   <button className="motif-cs-mini-button" type="button" disabled={differenceNavigationDisabled} onClick={() => jumpDifference(1)} aria-label="Next variable column"><ChevronRight size={13} /></button>
                 </div>
                 <span className="motif-cs-muted">Click a call, drag the position slider, or use arrow keys inside the trace.</span>
@@ -4459,37 +5165,6 @@ export function ClaudeScienceMsaViewer({
               <textarea className="motif-cs-textarea" readOnly value={textContent} aria-label={`${selectedExport.label} alignment text`} />
             </div>
           )}
-
-          <div className="motif-cs-msa-export-row">
-            <label>
-              <span>Export</span>
-              <select value={textFormat} onChange={(event) => updateViewPreferences({ textFormat: event.target.value as TextFormat })}>
-                <option value="fasta">Aligned FASTA</option>
-                <option value="clustal">CLUSTAL</option>
-                <option value="consensus">Consensus FASTA</option>
-                <option value="json">Alignment JSON</option>
-              </select>
-            </label>
-            <button className="motif-cs-mini-button" type="button" onClick={() => void copyFromViewer(selectedExport.label, textContent)}>{copyStatus?.label === selectedExport.label && copyStatus.tone === 'status' ? 'Copied' : 'Copy'}</button>
-            <button className="motif-cs-mini-button" type="button" onClick={() => onDownload(safeAlignmentFilename(activeAlignment, selectedExport.extension), textContent, selectedExport.mime)}>Download</button>
-            <div className="motif-cs-msa-export-image" data-testid="msa-export-image">
-              <label className="motif-cs-msa-image-scope">
-                <span>Image</span>
-                <select
-                  value={imageScope}
-                  data-testid="msa-export-image-scope"
-                  aria-label="Image export scope"
-                  onChange={(event) => setImageScope(event.target.value as AlignmentImageScope)}
-                >
-                  <option value="view">Visible view</option>
-                  <option value="all">Whole alignment</option>
-                </select>
-              </label>
-              <button className="motif-cs-mini-button" type="button" data-testid="msa-export-png" onClick={() => void exportAlignmentImage('png')}>Save PNG</button>
-              <button className="motif-cs-mini-button" type="button" data-testid="msa-export-svg" onClick={() => void exportAlignmentImage('svg')}>Save SVG</button>
-            </div>
-            <span className="motif-cs-muted">In session · Export a workspace backup before reload. To restore a ZIP export, unzip it and choose inventory.json in Settings. {activeAlignment.note}</span>
-          </div>
         </>
       ) : (
         <div className="motif-cs-msa-empty" data-testid="msa-empty-state">

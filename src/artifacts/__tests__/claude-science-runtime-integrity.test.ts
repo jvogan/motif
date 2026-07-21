@@ -19,12 +19,14 @@ import {
   createDefensiveRuntimeSnapshot,
   describePayloadSnapshot,
   inventoryReportHtml,
+  normalizeRecord,
   normalizeSequence,
   omitUndefinedObjectProperties,
   parseImportedRecords,
   prepareArtifactDatabaseRestore,
   prepareInventoryReplacement,
   prepareRecordsOnlyWorkspaceReplacement,
+  toGenBankLite,
   validateRuntimeRecordInputs,
 } from '../motif-artifact';
 
@@ -837,6 +839,45 @@ describe('Claude Science runtime data-integrity behavior', () => {
     }));
   });
 
+  // The truncation checks above all run on hand-written GenBank. These cases run
+  // Motif's exporter and reader against each other so the exported LOCUS length
+  // remains actionable during truncation checks.
+  it('declares an exported length the reader can act on, for nucleotides and protein alike', () => {
+    const dna = normalizeRecord({ id: 'unit-dna', name: 'unit-dna', molecule: 'dna', seq: 'GAATTC'.repeat(100) }, 0);
+    const protein = normalizeRecord({ id: 'unit-aa', name: 'unit-aa', molecule: 'protein', seq: 'MKVLAAGIVGLNLGGK'.repeat(10) }, 0);
+    expect(dna).not.toBeNull();
+    expect(protein).not.toBeNull();
+
+    expect(toGenBankLite(dna!, 'linear')).toContain('600 bp ');
+    expect(toGenBankLite(protein!, 'linear')).toContain('160 aa');
+  });
+
+  it('catches a truncated copy of its own GenBank export instead of importing a fragment', () => {
+    const sequence = 'GAATTC'.repeat(100);
+    const record = normalizeRecord({ id: 'roundtrip', name: 'roundtrip', molecule: 'dna', seq: sequence }, 0);
+    expect(record).not.toBeNull();
+    const genbank = toGenBankLite(record!, 'linear');
+
+    // An intact export still round-trips, so the guard below is not simply
+    // refusing everything this exporter writes.
+    const reimported = parseImportedRecords(genbank, '', 'auto', 'linear');
+    expect(reimported).toHaveLength(1);
+    expect((reimported[0].seq ?? '').toUpperCase()).toBe(sequence);
+    expect(sequence).toHaveLength(600);
+
+    // Keep ORIGIN plus its first two rows: 120 residues of a declared 600.
+    const lines = genbank.split('\n');
+    const originAt = lines.indexOf('ORIGIN');
+    expect(originAt).toBeGreaterThan(-1);
+    const truncated = lines.slice(0, originAt + 3).join('\n');
+    expect(truncated).not.toBe(genbank);
+    expect(truncated.split('\n')).toHaveLength(originAt + 3);
+
+    expect(() => parseImportedRecords(truncated, '', 'auto', 'linear')).toThrowError(
+      expect.objectContaining({ code: 'MOTIF_TRUNCATED_GENBANK_IMPORT' }),
+    );
+  });
+
   it('builds an immediate description from a fresh restriction scan', () => {
     const payload = prepareInventoryReplacement([
       { id: 'eco-ri-record', name: 'EcoRI record', type: 'dna', topology: 'linear', sequence: 'TTTGAATTCAAA' },
@@ -900,8 +941,18 @@ describe('Claude Science runtime data-integrity behavior', () => {
     expect(analysisPanel).toContain('const allOrfs = useMemo(');
     expect(analysisPanel).toContain('const visibleOrfs = useMemo(() => allOrfs.slice(0, 8), [allOrfs]);');
     expect(analysisPanel).toContain('orfCount: allOrfs.length');
-    expect(analysisPanel).toContain('Showing the 8 longest of {allOrfs.length} detected ORFs.');
-    expect(analysisPanel).toContain('`${allOrfs.length} ORFs`');
+    // Both readouts still publish the COMPLETE total while only eight rows
+    // render, which is what this guard exists for. The wording moved because
+    // "ORFs" was doing two jobs: this panel counts start-to-stop intervals at a
+    // 10 aa floor while the record summary counts at 30 aa, and the two
+    // published 221 and 96 for the same record in the same session under the
+    // same word. Each count now names its own floor, so assert the floor
+    // travels WITH the number rather than pinning the prose around it.
+    expect(analysisPanel).toContain('Showing the 8 longest of {allOrfs.length} start-to-stop intervals');
+    expect(analysisPanel).toContain('≥{ANALYSIS_ORF_MIN_AA} aa');
+    expect(analysisPanel).toContain('`${allOrfs.length} ORFs ≥${ANALYSIS_ORF_MIN_AA} aa`');
+    // A bare count with no floor beside it is the defect this replaced.
+    expect(analysisPanel).not.toContain('`${allOrfs.length} ORFs`');
   });
 
   it('labels lossy interchange exports and session durability honestly', () => {
