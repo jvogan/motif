@@ -59,23 +59,24 @@ html[data-theme="light"] {
 
 html[data-theme="claude-light"] {
   color-scheme: light;
-  --app-bg: #f4f4f2;
-  --workspace-bg: #f9f9f7;
-  --topbar-bg: #f9f9f7;
-  --panel-bg: #f4f4f2;
-  --bg-primary: #fbfbf9;
-  --bg-secondary: #f4f4f2;
-  --bg-tertiary: #e8e8e4;
-  --bg-hover: #efefec;
-  --bg-active: #ede4db;
-  --border: #d9d9d4;
-  --border-subtle: #e6e6e2;
-  --border-strong: #85847f;
-  --text-primary: #2d2d2b;
-  --text-secondary: #4f4f4c;
-  --text-muted: #686762;
-  --accent-base: #cc7d5e;
-  --accent: #a84f31;
+  --app-bg: #f6f2ed;
+  --workspace-bg: #fcfaf7;
+  --topbar-bg: #fcfaf7;
+  --panel-bg: #f8f4ef;
+  --bg-primary: #fffdf9;
+  --bg-secondary: #f7f2ec;
+  --bg-tertiary: #eee7df;
+  --bg-hover: #f4ebe3;
+  --bg-active: #c55f3d;
+  --border: #e2dad2;
+  --border-subtle: #eee7e0;
+  --border-strong: #95877d;
+  --text-primary: #2b2724;
+  --text-secondary: #504842;
+  --text-muted: #70665f;
+  --accent-base: #b95435;
+  --accent: #b04d2f;
+  --accent-contrast: #fffaf6;
   --green: #2c6e49;
   --purple: #6f4c9b;
   --amber: #805a10;
@@ -83,31 +84,150 @@ html[data-theme="claude-light"] {
   --feature-neutral: #5f5e5a;
 }
 
+html[data-theme="claude-light"] .motif-cs-record-tab {
+  margin: 4px 3px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+}
+
+html[data-theme="claude-light"] .motif-cs-record-tab[data-active="true"] {
+  border-color: var(--accent-base);
+  background: var(--accent-base);
+  color: var(--accent-contrast);
+}
+
+html[data-theme="claude-light"] .motif-cs-record-tab[data-active="true"] .motif-cs-record-tab-name {
+  color: var(--accent-contrast);
+}
+
+html[data-theme="claude-light"] .motif-cs-pane-toggle[data-active="true"],
+html[data-theme="claude-light"] .motif-cs-window-toggle[data-active="true"] {
+  border-color: var(--accent-base);
+  border-radius: var(--radius-md);
+  background: var(--accent-base);
+  color: var(--accent-contrast);
+}
+
+html[data-theme="claude-light"] .motif-cs-pane-toggle[data-active="true"] .motif-cs-nav-icon,
+html[data-theme="claude-light"] .motif-cs-window-toggle[data-active="true"] .motif-cs-nav-icon {
+  color: var(--accent-contrast);
+}
+
+html[data-theme="claude-light"] .motif-cs-row[data-active="true"] {
+  background: color-mix(in srgb, var(--accent-base) 9%, var(--bg-primary));
+  box-shadow: inset 3px 0 0 var(--accent-base);
+}
+
+html[data-theme="claude-light"] .motif-cs-row.motif-cs-inventory-record-row[data-active="true"],
+html[data-theme="claude-light"] .motif-cs-row.motif-cs-inventory-record-row[data-active="true"]:hover,
+html[data-theme="claude-light"] .motif-cs-row.motif-cs-inventory-record-row[data-active="true"]:focus-visible {
+  border-top-color: var(--accent-base);
+  background: var(--accent-base);
+  box-shadow: none;
+  color: var(--accent-contrast);
+}
+
+html[data-theme="claude-light"] .motif-cs-inventory-record-row[data-active="true"] .motif-cs-row-main > span:first-child,
+html[data-theme="claude-light"] .motif-cs-inventory-record-row[data-active="true"] .motif-cs-row-main small {
+  color: var(--accent-contrast);
+}
+
+html[data-theme="claude-light"] .motif-cs-mini-button[data-active="true"],
+html[data-theme="claude-light"] .motif-cs-view-toggle button[data-active],
+html[data-theme="claude-light"] .motif-cs-edit-mode-toggle button[data-active],
+html[data-theme="claude-light"] .motif-cs-segmented button[data-active] {
+  border-color: var(--accent-base);
+  background: var(--accent-base);
+  color: var(--accent-contrast);
+  box-shadow: none;
+}
+
 html[data-theme="claude-dark"] {
   color-scheme: dark;
-  --app-bg: #2d2d2b;
-  --workspace-bg: #2d2d2b;
-  --topbar-bg: #2d2d2b;
-  --panel-bg: #333331;
-  --bg-primary: #353533;
-  --bg-secondary: #3a3a37;
-  --bg-tertiary: #444440;
-  --bg-hover: #41413e;
-  --bg-active: #503b30;
-  --border: #4a4a46;
-  --border-subtle: #3b3b38;
-  --border-strong: #88857f;
-  --text-primary: #f9f9f7;
-  --text-secondary: #d9d9d4;
-  --text-muted: #b1aea8;
-  --accent-base: #cc7d5e;
-  --accent: #e09a7d;
+  --app-bg: #191919;
+  --workspace-bg: #1f1f1f;
+  --topbar-bg: #242424;
+  --panel-bg: #262626;
+  --bg-primary: #232323;
+  --bg-secondary: #2b2b2b;
+  --bg-tertiary: #363636;
+  --bg-hover: #323232;
+  --bg-active: #b95435;
+  --border: #414141;
+  --border-subtle: #333333;
+  --border-strong: #858585;
+  --text-primary: #f5f5f4;
+  --text-secondary: #d6d3d1;
+  --text-muted: #a7a3a0;
+  --accent-base: #b95435;
+  --accent: #e19475;
+  --accent-contrast: #fffaf6;
   --green: #66c58c;
   --purple: #b69adf;
   --amber: #e2b45d;
   --red: #f38b7d;
   --feature-neutral: #d9d7d1;
-  --focus-ring: #e09a7d;
+  --focus-ring: #e19475;
+}
+
+html[data-theme="claude-dark"] .motif-cs-record-tab {
+  margin: 4px 3px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+}
+
+html[data-theme="claude-dark"] .motif-cs-record-tab[data-active="true"] {
+  border-color: var(--accent-base);
+  background: var(--accent-base);
+  color: var(--accent-contrast);
+}
+
+html[data-theme="claude-dark"] .motif-cs-record-tab[data-active="true"] .motif-cs-record-tab-name {
+  color: var(--accent-contrast);
+}
+
+html[data-theme="claude-dark"] .motif-cs-pane-toggle[data-active="true"],
+html[data-theme="claude-dark"] .motif-cs-window-toggle[data-active="true"] {
+  border-color: var(--accent-base);
+  border-radius: var(--radius-md);
+  background: var(--accent-base);
+  color: var(--accent-contrast);
+}
+
+html[data-theme="claude-dark"] .motif-cs-pane-toggle[data-active="true"] .motif-cs-nav-icon,
+html[data-theme="claude-dark"] .motif-cs-window-toggle[data-active="true"] .motif-cs-nav-icon {
+  color: var(--accent-contrast);
+}
+
+html[data-theme="claude-dark"] .motif-cs-row[data-active="true"] {
+  background: color-mix(in srgb, var(--accent) 11%, var(--bg-primary));
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+html[data-theme="claude-dark"] .motif-cs-row.motif-cs-inventory-record-row[data-active="true"],
+html[data-theme="claude-dark"] .motif-cs-row.motif-cs-inventory-record-row[data-active="true"]:hover,
+html[data-theme="claude-dark"] .motif-cs-row.motif-cs-inventory-record-row[data-active="true"]:focus-visible {
+  border-top-color: var(--accent-base);
+  background: var(--accent-base);
+  box-shadow: none;
+  color: var(--accent-contrast);
+}
+
+html[data-theme="claude-dark"] .motif-cs-inventory-record-row[data-active="true"] .motif-cs-row-main > span:first-child,
+html[data-theme="claude-dark"] .motif-cs-inventory-record-row[data-active="true"] .motif-cs-row-main small {
+  color: var(--accent-contrast);
+}
+
+html[data-theme="claude-dark"] .motif-cs-mini-button[data-active="true"],
+html[data-theme="claude-dark"] .motif-cs-view-toggle button[data-active],
+html[data-theme="claude-dark"] .motif-cs-edit-mode-toggle button[data-active],
+html[data-theme="claude-dark"] .motif-cs-segmented button[data-active] {
+  border-color: var(--accent-base);
+  background: var(--accent-base);
+  color: var(--accent-contrast);
+  box-shadow: none;
 }
 
 :root {
@@ -134,7 +254,7 @@ html[data-theme="claude-dark"] {
   --theme-preview-dark-accent: #339cff;
   --theme-preview-claude-light-surface: #f9f9f7;
   --theme-preview-claude-light-ink: #2d2d2b;
-  --theme-preview-claude-dark-surface: #2d2d2b;
+  --theme-preview-claude-dark-surface: #1f1f1f;
   --theme-preview-claude-dark-ink: #f9f9f7;
   --theme-preview-claude-accent: #cc7d5e;
   --motif-cs-trace-a: var(--green);
@@ -1458,7 +1578,11 @@ body[data-motif-cs-rail-popover-resizing] .motif-cs-rail-popover-resize::after {
   font-size: 11px;
 }
 
-.motif-cs-main[data-sequence-hidden="true"] > .motif-cs-sidebar,
+.motif-cs-main[data-sequence-hidden="true"] > .motif-cs-sidebar {
+  flex-grow: 0;
+  flex-shrink: 1;
+}
+
 .motif-cs-main[data-sequence-hidden="true"] > .motif-cs-map-column,
 .motif-cs-main[data-sequence-hidden="true"] > .motif-cs-inspector[data-tools-pinned="true"] {
   flex-grow: 1;

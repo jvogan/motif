@@ -192,6 +192,7 @@ describe('Claude Science Inventory regression guards', () => {
     expect(artifactCss).not.toContain('motif-cs-toggle-state');
     expect(artifactSource).not.toContain('data-state={showTranslations');
     expect(artifactCss).toMatch(/\.motif-cs-pane-toggle\[data-active="true"\][\s\S]*?background:\s*transparent/);
-    expect(artifactSource).toContain('<small className="motif-cs-pane-state">Rail</small>');
+    expect(artifactSource).not.toContain('<small className="motif-cs-pane-state">Rail</small>');
+    expect(artifactSource).toContain("toolsDocked ? 'expanded' : 'rail'");
   });
 });

@@ -2179,7 +2179,7 @@ test.describe('Claude Science artifact campaign', () => {
 
     await page.locator('select[name="artifact-theme"]').selectOption('claude-dark');
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'claude-dark');
-    await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute('content', '#2d2d2b');
+    await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute('content', '#1f1f1f');
     await page.reload();
     await expect(page.locator('.motif-cs-shell')).toBeVisible();
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'claude-dark');
@@ -2489,7 +2489,8 @@ test.describe('Claude Science artifact campaign', () => {
     await expect(page.locator('.motif-cs-main')).toHaveAttribute('data-sequence-hidden', 'true');
     await expect(page.locator('.motif-cs-sequence-column')).toHaveCount(0);
     expect(Math.round((await page.locator('.motif-cs-inspector').boundingBox())!.width)).toBe(48);
-    await expect(toolsToggle.locator('.motif-cs-pane-state')).toHaveText('Rail');
+    await expect(toolsToggle).toHaveAttribute('aria-label', /^Tools rail/);
+    await expect(toolsToggle.locator('.motif-cs-pane-state')).toHaveCount(0);
     const mainWidth = await page.locator('.motif-cs-main').evaluate((element) => ({
       clientWidth: element.clientWidth,
       scrollWidth: element.scrollWidth,
@@ -2715,7 +2716,8 @@ test.describe('Claude Science artifact campaign', () => {
       expect(Math.abs(rail.map.y - pinned.map.y)).toBeLessThanOrEqual(2);
       expect(rail.map.width).toBeGreaterThan(pinned.map.width + 150);
       expect(Math.round(rail.tools.width)).toBe(48);
-      await expect(toolsToggle.locator('.motif-cs-pane-state')).toHaveText('Rail');
+      await expect(toolsToggle).toHaveAttribute('aria-label', /^Tools rail/);
+      await expect(toolsToggle.locator('.motif-cs-pane-state')).toHaveCount(0);
       await expect(page.getByRole('separator', { name: 'Resize stacked sequence pane' })).toBeVisible();
 
       if (width === 1180) {

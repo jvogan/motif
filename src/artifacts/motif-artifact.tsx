@@ -10111,13 +10111,29 @@ function App() {
   ) => {
     const paneLimits = paneWidthLimitsForCurrentLayout(pane);
     const neighborLimits = paneWidthLimitsForCurrentLayout(neighbor);
+    // Flex-grow can make a rendered pane wider than its stored-width maximum.
+    // Keep zero in the legal delta range when either rendered width already
+    // sits outside its preferred limits, so the user can drag it back toward
+    // the configured range instead of being clamped in the wrong direction.
+    const paneMinDelta = startWidths[pane] < paneLimits.min
+      ? 0
+      : paneLimits.min - startWidths[pane];
+    const paneMaxDelta = startWidths[pane] > paneLimits.max
+      ? 0
+      : paneLimits.max - startWidths[pane];
+    const neighborMinDelta = startWidths[neighbor] > neighborLimits.max
+      ? Number.NEGATIVE_INFINITY
+      : startWidths[neighbor] - neighborLimits.max;
+    const neighborMaxDelta = startWidths[neighbor] < neighborLimits.min
+      ? 0
+      : startWidths[neighbor] - neighborLimits.min;
     const minDelta = Math.max(
-      paneLimits.min - startWidths[pane],
-      startWidths[neighbor] - neighborLimits.max,
+      paneMinDelta,
+      neighborMinDelta,
     );
     const maxDelta = Math.min(
-      paneLimits.max - startWidths[pane],
-      startWidths[neighbor] - neighborLimits.min,
+      paneMaxDelta,
+      neighborMaxDelta,
     );
     const appliedDelta = clamp(requestedPaneDelta, minDelta, maxDelta);
     return {
@@ -10505,7 +10521,6 @@ function App() {
                   <PaneIcon className="motif-cs-nav-icon" aria-hidden="true" />
                   <span>{PANE_LABELS[pane]}</span>
                   {paneFloating ? <small className="motif-cs-pane-state">Float</small> : null}
-                  {pane === 'tools' && toolsRail ? <small className="motif-cs-pane-state">Rail</small> : null}
                 </button>
               );
             })}
