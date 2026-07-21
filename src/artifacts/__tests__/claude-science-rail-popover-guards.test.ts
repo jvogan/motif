@@ -49,6 +49,35 @@ describe('Claude Science rail popover regression guards', () => {
     expect(featureList).toContain('more translations');
   });
 
+  it('caps the features list at nothing, in every Tools placement rather than one', () => {
+    // `c999493` removed a `max-height: min(24vh, 190px)` from this list — but as an
+    // ADDITION at higher specificity, under
+    // `.motif-cs-inspector[data-tools-pinned="false"]`. The base rule stayed in force
+    // for every state that selector does not match, so the pinned docked column and
+    // the floated Tools pane kept the entire defect while a fix was on record.
+    // Measured in the pinned state before this change: clientHeight 189 against
+    // scrollHeight 288, 3 of 8 rows unreachable, identically at 1440x900, 1440x980,
+    // 1920x1080 and 2560x1400 — the same numbers the earlier fix's own comment
+    // records as already solved.
+    const baseRule = artifactCss.slice(
+      artifactCss.indexOf('.motif-cs-feature-annotation-list {'),
+      artifactCss.indexOf('}', artifactCss.indexOf('.motif-cs-feature-annotation-list {')),
+    );
+    expect(baseRule, 'the features list base rule is missing').toBeTruthy();
+    // Asserted as "no height cap of any kind", not as the absence of one literal
+    // string: re-adding the constant in another shape is the same defect.
+    expect(baseRule, 'a height cap is back on the base rule, so it binds in every state the overrides miss')
+      .not.toMatch(/max-height/);
+    // The list still scrolls rather than clipping when the popover is dragged shorter
+    // than its content, which is the one state where it can be squeezed.
+    expect(baseRule).toMatch(/overflow:\s*auto/);
+    // The popover's own flex treatment stays: there it has a definite height to take
+    // the remainder of, which the docked and floated columns do not.
+    expect(artifactCss).toMatch(
+      /\.motif-cs-inspector\[data-tools-pinned="false"\][^{]*\.motif-cs-feature-annotation-list\s*\{[\s\S]*?flex:\s*1 1 auto/,
+    );
+  });
+
   it('keeps the close control visible while a long editor scrolls', () => {
     expect(artifactCss).toMatch(
       /\.motif-cs-inspector\[data-tools-pinned="false"\] \.motif-cs-rail-popover-title\s*\{[\s\S]*?position:\s*sticky;[\s\S]*?top:\s*0;/,
@@ -267,7 +296,18 @@ describe('Claude Science rail popover regression guards', () => {
     expect(artifactSource).toContain("window.addEventListener('pointercancel', endPointerResize);");
     expect(artifactSource).toContain("handle.addEventListener('lostpointercapture', endLostPointerCapture);");
     expect(artifactSource).toContain('widthDelta = event.key === \'ArrowLeft\' ? step');
-    expect(artifactCss).toMatch(/@media \(max-width: 1280px\)[\s\S]*?max-height:\s*min\(calc\(100vh - var\(--rail-popover-fixed-top\) - 22px\), 600px\)/);
+    // The popover is bounded by the viewport and the rail offset, and nothing else.
+    // This used to assert a second copy of the declaration inside the 1280px block,
+    // which was byte-identical to the base rule and did nothing — the base rule reads
+    // the offset through var(), so it re-resolves on its own. Assert the two halves
+    // that carry the behaviour instead: the bound itself, and the breakpoint moving
+    // the offset it is measured from.
+    expect(railBody).toMatch(/max-height:\s*calc\(100vh - var\(--rail-popover-fixed-top\) - 22px\)/);
+    // A constant term would have to come back as min(viewport, Npx), and it would cap
+    // the drag below the viewport at every size — the drag reads its limit straight off
+    // the computed max-height, so a flat 600px was what stopped the pointer.
+    expect(railBody).not.toMatch(/max-height:\s*min\(/);
+    expect(artifactCss).toMatch(/@media \(max-width: 1280px\)[\s\S]*?--rail-popover-fixed-top:\s*132px/);
   });
 
   it('cleans up floating-window pointer listeners when a drag is interrupted', () => {

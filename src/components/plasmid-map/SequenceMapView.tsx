@@ -18,7 +18,6 @@ import {
   Fragment,
   type CSSProperties,
   type KeyboardEvent,
-  type PointerEvent,
 } from 'react';
 import type {
   MapLayout,
@@ -63,15 +62,18 @@ export interface SequenceMapViewProps {
   /** SVG paths for the current sequence selection projected onto the map. */
   selectionPaths?: readonly string[];
   viewport?: MapViewport;
-  isPanning?: boolean;
   onFeatureClick?: (featureId: string) => void;
   onRestrictionClick?: (clusterId: string, tickIds: readonly string[]) => void;
   onRangeOverlayClick?: (overlayId: string) => void;
   onBackgroundClick?: () => void;
+  /**
+   * Wheel is the map's ONLY viewport gesture: plain wheel translates, ctrl/pinch
+   * scales. There is deliberately no drag-to-pan — background drag belongs to the
+   * host's range selection, and this component used to advertise a pan (data-pannable,
+   * cursor:grab, onPanStart/Move/End) that nothing ever wired, so a grab cursor invited
+   * a drag that moved nothing. An affordance nobody implements is worse than none.
+   */
   onWheelZoom?: (point: SvgPoint, deltaX: number, deltaY: number, deltaMode: number, ctrlKey: boolean, shiftKey: boolean) => boolean;
-  onPanStart?: (point: SvgPoint) => boolean;
-  onPanMove?: (point: SvgPoint) => void;
-  onPanEnd?: () => void;
   /** Dock-fill linear maps are height-stretched by CSS; center their content in that viewport. */
   centerLinearContent?: boolean;
 }
@@ -110,10 +112,13 @@ function restrictionAccessibleName(restriction: MapRestrictionRender): string {
   const titleName = restriction.title?.split(' · ', 1)[0]?.trim();
   const name = titleName || restriction.label?.text || 'Restriction site';
   const coordinate = Math.max(0, Math.trunc(restriction.anchorBp)) + 1;
-  const tickCount = restriction.tickIds.length;
-  const kind = tickCount === 1 ? 'site' : 'cluster';
-  const tickWord = tickCount === 1 ? 'map tick' : 'map ticks';
-  return `${name}, restriction ${kind} at ${MAP_NUMBER_FORMAT.format(coordinate)} bp, ${MAP_NUMBER_FORMAT.format(tickCount)} ${tickWord}`;
+  const siteCount = restriction.tickIds.length;
+  const kind = siteCount === 1 ? 'site' : 'cluster';
+  // "cut sites", not "map ticks": the cluster's own tooltip counts the same quantity
+  // as "N sites" and the overflow chip as "+N more sites". A third word for it left a
+  // screen-reader user reconciling ticks against sites against the label's "+N" names.
+  const siteWord = siteCount === 1 ? 'cut site' : 'cut sites';
+  return `${name}, restriction ${kind} at ${MAP_NUMBER_FORMAT.format(coordinate)} bp, ${MAP_NUMBER_FORMAT.format(siteCount)} ${siteWord}`;
 }
 
 function restrictionAnnotationSemanticScale(zoom: number): number {
@@ -266,10 +271,10 @@ function MapText({
           ? segments.map((seg, i) => (
               <Fragment key={i}>
                 {/* Separators are bare text nodes (normal ink): enzyme tokens join
-                    with "," and the "+N" overflow tail (always "+"-prefixed, never
+                    with ", " and the "+N" overflow tail (always "+"-prefixed, never
                     first) with " " — matching clusterLabelText exactly. Only the
                     enzyme <tspan> carries the Type IIS class, so commas/tail stay ink. */}
-                {i > 0 ? (seg.text.startsWith('+') ? ' ' : ',') : null}
+                {i > 0 ? (seg.text.startsWith('+') ? ' ' : ', ') : null}
                 <tspan className={seg.typeIIS ? 'motif-pm-restriction-enz--typeiis' : undefined}>
                   {seg.text}
                 </tspan>
@@ -366,8 +371,10 @@ const RestrictionMark = memo(function RestrictionMark({
   const activate = () => onClick?.(restriction.clusterId, restriction.tickIds);
   // Segmented labels color per-enzyme via <tspan>; data-segmented tells the CSS to
   // drop the aggregate whole-label tint (unsegmented linear labels keep it).
+  // Must reproduce clusterLabelText's join rule exactly: mismatch silently falls back
+  // to the flat label and drops per-enzyme Type IIS coloring, with no error anywhere.
   const segmentedText = restriction.labelSegments
-    ?.map((seg, i) => `${i > 0 ? (seg.text.startsWith('+') ? ' ' : ',') : ''}${seg.text}`)
+    ?.map((seg, i) => `${i > 0 ? (seg.text.startsWith('+') ? ' ' : ', ') : ''}${seg.text}`)
     .join('');
   const segmented =
     !!restriction.label && !!restriction.labelSegments && restriction.labelSegments.length > 0 && segmentedText === restriction.label.text;
@@ -481,21 +488,16 @@ export const SequenceMapView = memo(function SequenceMapView({
   selectedRangeOverlayId,
   selectionPaths,
   viewport = DEFAULT_VIEWPORT,
-  isPanning = false,
   onFeatureClick,
   onRestrictionClick,
   onRangeOverlayClick,
   onBackgroundClick,
   onWheelZoom,
-  onPanStart,
-  onPanMove,
-  onPanEnd,
   centerLinearContent = false,
 }: SequenceMapViewProps) {
   const svgRef = useRef<SVGSVGElement>(null);
   const onWheelZoomRef = useRef(onWheelZoom);
   onWheelZoomRef.current = onWheelZoom;
-  const panPointerRef = useRef<number | null>(null);
   const isCircular = layout.mode === 'circular';
   const preserveAspectRatio = isCircular || centerLinearContent ? 'xMidYMid meet' : 'xMidYMin meet';
   // Protein maps count residues, not base pairs.
@@ -608,38 +610,6 @@ export const SequenceMapView = memo(function SequenceMapView({
     return () => el.removeEventListener('wheel', onWheelNative);
   }, [interactive]);
 
-  const handleBackgroundPointerDown = (e: PointerEvent<SVGRectElement>) => {
-    if (!interactive) return;
-    if (e.button !== 0 || !onPanStart) return;
-    const svg = svgRef.current;
-    if (!svg) return;
-    const point = svgPointFromClient(svg, e.clientX, e.clientY);
-    if (!point || !onPanStart(point)) return;
-    panPointerRef.current = e.pointerId;
-    e.currentTarget.setPointerCapture(e.pointerId);
-    e.preventDefault();
-  };
-
-  const handleBackgroundPointerMove = (e: PointerEvent<SVGRectElement>) => {
-    if (!interactive) return;
-    if (panPointerRef.current !== e.pointerId || !onPanMove) return;
-    const svg = svgRef.current;
-    if (!svg) return;
-    const point = svgPointFromClient(svg, e.clientX, e.clientY);
-    if (!point) return;
-    e.preventDefault();
-    onPanMove(point);
-  };
-
-  const endBackgroundPan = (e: PointerEvent<SVGRectElement>) => {
-    if (!interactive) return;
-    if (panPointerRef.current !== e.pointerId) return;
-    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
-    panPointerRef.current = null;
-    e.preventDefault();
-    onPanEnd?.();
-  };
-
   return (
     <svg
       ref={svgRef}
@@ -651,26 +621,24 @@ export const SequenceMapView = memo(function SequenceMapView({
       }`}
       preserveAspectRatio={preserveAspectRatio}
       data-interactive={interactive ? 'true' : undefined}
-      data-zoomed={hasViewportTransform || undefined}
-      data-panning={isPanning || undefined}
       onClick={interactive ? () => onBackgroundClick?.() : undefined}
     >
       {/* Background-clear lives on the SVG root above, so clicking ANY
           non-interactive area (inner ring, center label, coord numbers, gaps)
           deselects — features/restrictions stopPropagation so their clicks never
           reach it. The rect stays outside the zoom transform as the full-view
-          transparent hit/pan surface. */}
+          transparent hit surface.
+
+          It carries NO pointer handlers on purpose. Whatever drag the host wants over
+          the map (range selection, in this app) it listens for on its own wrapper and
+          receives by bubbling; a handler here would only be able to compete with that.
+          Viewport translation is the wheel's job — see onWheelZoom. */}
       <rect
         className="motif-pm-bg"
         x={layout.bg.x}
         y={layout.bg.y}
         width={layout.bg.width}
         height={layout.bg.height}
-        data-pannable={hasViewportTransform || undefined}
-        onPointerDown={handleBackgroundPointerDown}
-        onPointerMove={handleBackgroundPointerMove}
-        onPointerUp={endBackgroundPan}
-        onPointerCancel={endBackgroundPan}
       />
       {isCircular && selectionPaths && selectionPaths.length > 0 ? (
         <defs>
@@ -828,14 +796,13 @@ export const SequenceMapView = memo(function SequenceMapView({
         {layout.overflows?.length ? (
           <g className="motif-pm-overflows">
             {layout.overflows.map((overflow) => (
-              <text
-                key={overflow.id}
-                className="motif-pm-overflow"
-                x={overflow.x}
-                y={overflow.y}
-                textAnchor={overflow.anchor}
-                data-kind={overflow.kind}
-              >
+              // The <title> is the ONLY place the map says what the chip's count
+              // means and that nothing was actually dropped from the drawing. It
+              // hangs off the GROUP, not the text, so the layout's hit rect resolves
+              // to it too — a <title> is inherited by whichever child the pointer
+              // lands on. The chip still declares NO pointer handlers of its own, so
+              // a press bubbles on to whatever surface owns the map's drag.
+              <g key={overflow.id} className="motif-pm-overflow-chip" data-kind={overflow.kind}>
                 <title>
                   {restrictionDensityRender.binned && overflow.kind === 'restriction-labels'
                     ? overflow.title.replace(
@@ -844,8 +811,23 @@ export const SequenceMapView = memo(function SequenceMapView({
                       )
                     : overflow.title}
                 </title>
-                {overflow.text}
-              </text>
+                <rect
+                  className="motif-pm-overflow-hit"
+                  x={overflow.hit.x}
+                  y={overflow.hit.y}
+                  width={overflow.hit.width}
+                  height={overflow.hit.height}
+                />
+                <text
+                  className="motif-pm-overflow"
+                  x={overflow.x}
+                  y={overflow.y}
+                  textAnchor={overflow.anchor}
+                  data-kind={overflow.kind}
+                >
+                  {overflow.text}
+                </text>
+              </g>
             ))}
           </g>
         ) : null}

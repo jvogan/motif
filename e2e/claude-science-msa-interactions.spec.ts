@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
 
 // Real-mouse interaction coverage for the MSA viewer: selection, hover readout,
@@ -115,6 +116,7 @@ test.describe('Motif MSA viewer interactions', () => {
     await expect(compatibleCell).toHaveAttribute('data-cell-outcome', 'ambiguous');
     await expect(compatibleCell).toHaveAttribute('aria-label', /reference position 100/);
 
+    await page.getByTestId('msa-goto-menu-button').click();
     await page.getByTestId('msa-coordinate-system').selectOption('template');
     const coordinateInput = page.getByTestId('msa-coordinate-input');
     await expect(coordinateInput).toHaveAttribute('type', 'text');
@@ -143,6 +145,28 @@ test.describe('Motif MSA viewer interactions', () => {
     await expect(moved).toBeFocused();
     await expect(moved).toHaveAttribute('data-alignment-column', '2');
     await expect(moved).toHaveAttribute('aria-label', 'Residue I, alignment column 2, row ref');
+  });
+
+  test('clicking a residue leaves the keyboard able to move from it', async ({ page }) => {
+    await setup(page);
+    // Deliberately no .focus() call anywhere in this test — that is the whole point.
+    // Every other keyboard test here focuses the cell first, which is exactly why the
+    // grid could ship with arrows dead after a click: the click left DOM focus on the
+    // window container, keydown never reached the matrix, and getting back in by
+    // keyboard took 30 tab stops.
+    const target = page.locator('[data-msa-grid-cell="true"]').nth(120);
+    const column = await target.getAttribute('data-alignment-column');
+    await target.click();
+
+    const clicked = activeGridCell(page);
+    await expect(clicked).toBeFocused();
+    await expect(clicked).toHaveAttribute('data-alignment-column', column!);
+
+    await page.keyboard.press('ArrowRight');
+    await expect(activeGridCell(page)).toHaveAttribute(
+      'data-alignment-column',
+      String(Number(column) + 1),
+    );
   });
 
   test('Shift plus Arrow extends the keyboard selection from its anchor', async ({ page }) => {
@@ -219,6 +243,79 @@ test.describe('Motif MSA viewer interactions', () => {
     await page.keyboard.press('Escape');
     await expect(page.locator('.motif-cs-msa-selection-band')).toHaveCount(0);
     await expect(page.getByTestId('msa-alignment-view')).toBeVisible();
+  });
+
+  test('Escape dismisses a covering tools panel before the window underneath', async ({ page }) => {
+    // The window listens in capture on window and stops propagation, so without
+    // an explicit guard it closed itself and left the panel covering the space.
+    await setup(page);
+    const panel = page.locator('.motif-cs-inspector details[name="motif-cs-tools"]').first();
+    await panel.locator(':scope > summary').click();
+    await expect(panel).toHaveAttribute('open', '');
+
+    await page.keyboard.press('Escape');
+    await expect(panel).not.toHaveAttribute('open', '');
+    // The window — and the view state inside it — survives the first press.
+    await expect(page.getByTestId('msa-alignment-view')).toBeVisible();
+
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.motif-cs-window')).toHaveCount(0);
+  });
+
+  test('the position axes share one row until the template gains a gap', async ({ page }) => {
+    // An ungapped template prints the same number as the alignment axis in every
+    // column, so two rows carry one row of information.
+    await setup(page);
+    const rulerRows = page.locator('.motif-cs-msa-ruler-row');
+    await expect(rulerRows).toHaveCount(1);
+    await expect(rulerRows.locator('.motif-cs-msa-ruler-label')).toContainText('Alignment / template');
+
+    // Turning the template axis off leaves the row, minus the template's name —
+    // the View menu checkbox must never become a control with no visible effect.
+    await page.getByTestId('msa-view-menu-button').click();
+    await page.getByRole('checkbox', { name: /Template axis/i }).setChecked(false);
+    await expect(rulerRows).toHaveCount(1);
+    await expect(rulerRows.locator('.motif-cs-msa-ruler-label')).toHaveText('Alignment position');
+    await page.getByRole('checkbox', { name: /Template axis/i }).setChecked(true);
+    await expect(rulerRows.locator('.motif-cs-msa-ruler-label')).toContainText('Alignment / template');
+  });
+
+  test('a gapped template keeps its own position axis', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.addInitScript(() => { window.localStorage.clear(); window.sessionStorage.clear(); });
+    await page.goto('/motif.html');
+    await expect(page.locator('.motif-cs-shell')).toBeVisible();
+    await page.evaluate(() => {
+      const api = (window as unknown as { motifAddAlignments?: (a: unknown) => number }).motifAddAlignments;
+      if (!api) throw new Error('motifAddAlignments unavailable');
+      // The template's gap makes its coordinates diverge from the alignment's.
+      api({
+        name: 'Gapped template',
+        molecule: 'protein',
+        alignedFasta: '>ref\nACDE----FGHIKLMNPQRS\n>v1\nACDEWWWWFGHIKLMNPQRS\n>v2\nACDEWWWWFGHIKLMNPQRA\n',
+      });
+    });
+    await page.getByTestId('msa-open-button').dispatchEvent('click');
+    await expect(page.getByTestId('msa-alignment-view')).toBeVisible();
+
+    await expect(page.locator('.motif-cs-msa-ruler-row')).toHaveCount(2);
+    await expect(page.locator('.motif-cs-msa-template-ruler-row')).toBeVisible();
+  });
+
+  test('Escape still closes the window when Tools is docked beside it', async ({ page }) => {
+    // Docked tools use the same markup as the rail popover but sit beside the
+    // window rather than over it, and their own Escape handler is not registered.
+    // Deferring to them there would leave Escape doing nothing at all.
+    await setup(page);
+    await page.locator('[data-pane-toggle="tools"]').click();
+    await expect(page.locator('.motif-cs-inspector')).toHaveAttribute('data-tools-pinned', 'true');
+
+    const docked = page.locator('.motif-cs-inspector details[name="motif-cs-tools"]').first();
+    await docked.locator(':scope > summary').click();
+    await expect(docked).toHaveAttribute('open', '');
+
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.motif-cs-window')).toHaveCount(0);
   });
 
   test('grid drag past the right edge auto-scrolls into far columns', async ({ page }) => {
@@ -393,7 +490,10 @@ test.describe('Motif MSA viewer interactions', () => {
   });
 
   test('a near-vertical wheel gesture is not hijacked into horizontal scroll', async ({ page }) => {
-    await setupDna(page);
+    // Enough rows that the matrix overflows vertically. The matrix sizes to its
+    // panel and owns the vertical scroll, so the gesture is absorbed here rather
+    // than delegated to a scrolling window body.
+    await setup(page, 1440, 980, 120, 30);
     const scroll = page.locator('.motif-cs-msa-matrix-scroll');
     const spot = await center(page, 1, 10);
     await page.mouse.move(spot.x, spot.y);
@@ -401,15 +501,11 @@ test.describe('Motif MSA viewer interactions', () => {
     await page.mouse.wheel(180, 6);
     await expect.poll(() => scroll.evaluate((el) => el.scrollLeft)).toBeGreaterThan(0);
     const afterHorizontal = await scroll.evaluate((el) => el.scrollLeft);
-    const body = page.locator('.motif-cs-window-body');
-    const bodyBefore = await body.evaluate((el) => el.scrollTop);
+    const verticalBefore = await scroll.evaluate((el) => el.scrollTop);
     // A near-vertical gesture (tiny deltaX) must not change horizontal scroll —
     // its vertical delta is honoured instead of being swallowed as horizontal.
     await page.mouse.wheel(6, 160);
-    await expect.poll(() => scroll.evaluate((el) => el.scrollLeft)).toBe(afterHorizontal);
-    // ...and the vertical delta actually scrolled (the matrix has no vertical
-    // overflow here, so it delegates to the scrollable window body).
-    await expect.poll(() => body.evaluate((el) => el.scrollTop)).toBeGreaterThan(bodyBefore);
+    await expect.poll(() => scroll.evaluate((el) => el.scrollTop)).toBeGreaterThan(verticalBefore);
     expect(await scroll.evaluate((el) => el.scrollLeft)).toBe(afterHorizontal);
   });
 
@@ -675,6 +771,68 @@ test.describe('Motif MSA viewer interactions', () => {
     await expect(page.getByTestId('msa-zoom-reset')).toBeVisible();
   });
 
+  test('panning to the end brings the final column fully into view', async ({ page }) => {
+    // The scroller reserves a stable scrollbar gutter outside its content box.
+    // Content sized to the columns alone stops with its right edge against the
+    // OUTER edge, parking the last column underneath that reservation where no
+    // amount of scrolling retrieves it. Measured against the CONTENT box — the
+    // border box counts the gutter as visible and passes while the column is
+    // hidden.
+    await setup(page, 900, 860, 1000);
+    const pan = page.getByTestId('msa-horizontal-scroll');
+    await expect(pan).toBeVisible();
+    const max = await pan.evaluate((element) => (element as HTMLInputElement).max);
+    await pan.fill(max);
+
+    // Scrolling is immediate, while the virtualized column window is deliberately
+    // updated on the next animation frame. Wait for that render boundary before
+    // measuring the final cell; the geometry assertions below remain exact.
+    await expect(
+      page.locator('.motif-cs-msa-matrix-row').first().locator('[data-alignment-column="1000"]'),
+    ).toBeAttached();
+
+    const tail = await page.evaluate((lastColumn) => {
+      const scroller = document.querySelector('.motif-cs-msa-matrix-scroll');
+      const cell = document.querySelector(`.motif-cs-msa-matrix-row [data-alignment-column="${lastColumn}"]`);
+      const gutter = document.querySelector('.motif-cs-msa-sticky-label');
+      if (!scroller || !cell || !gutter) return null;
+      const box = scroller.getBoundingClientRect();
+      const contentRight = box.left + scroller.clientLeft + scroller.clientWidth;
+      const clipLeft = Math.max(box.left, gutter.getBoundingClientRect().right);
+      const rect = cell.getBoundingClientRect();
+      return {
+        width: rect.width,
+        visibleWidth: Math.max(0, Math.min(rect.right, contentRight) - Math.max(rect.left, clipLeft)),
+        scrollLeft: scroller.scrollLeft,
+      };
+    }, 1000);
+
+    if (!tail) {
+      // This null has fired under machine load, and "matrix tail geometry
+      // missing" names neither which of the three lookups came back empty nor
+      // what the scroller had settled on — so the failure could only be re-run,
+      // never read. Gathered on the failing path alone, so the passing path is
+      // unchanged.
+      const why = await page.evaluate(() => {
+        const scroller = document.querySelector('.motif-cs-msa-matrix-scroll');
+        const columns = [...document.querySelectorAll('.motif-cs-msa-matrix-row:first-of-type [data-alignment-column]')]
+          .map((cell) => cell.getAttribute('data-alignment-column'));
+        return [
+          `scroller=${Boolean(scroller)}`,
+          `stickyLabel=${Boolean(document.querySelector('.motif-cs-msa-sticky-label'))}`,
+          `renderedColumns=${columns.length} (${columns[0] ?? 'none'}…${columns[columns.length - 1] ?? 'none'})`,
+          `scrollLeft=${scroller?.scrollLeft ?? '?'} of ${scroller ? scroller.scrollWidth - scroller.clientWidth : '?'}`,
+        ].join(' ');
+      });
+      throw new Error(`matrix tail geometry missing: ${why}`);
+    }
+    expect(tail.width).toBeGreaterThan(0);
+    // Fully visible, not merely intersecting: the defect left 0 of 10.6px.
+    expect(tail.visibleWidth).toBeGreaterThan(tail.width - 0.5);
+    // The scroller reaches the range the pan control advertises, not 15px short.
+    expect(tail.scrollLeft).toBeGreaterThan(Number(max) - 1);
+  });
+
   test('very long alignments offer an honest minimum zoom instead of claiming to fit', async ({ page }) => {
     await setup(page, 900, 860, 1000);
     const control = page.getByTestId('msa-zoom-fit');
@@ -886,5 +1044,436 @@ test.describe('Motif MSA viewer interactions', () => {
     // The crowded set wrapped onto a second line rather than overflowing.
     const row = await page.getByTestId('msa-zoom-row').boundingBox();
     expect(row!.height).toBeGreaterThan(40);
+  });
+
+  test('zoom and the visible-column readout share one status line', async ({ page }) => {
+    await setup(page, 1280, 900, 400, 6);
+    const zoom = await page.getByTestId('msa-zoom-row').boundingBox();
+    const note = await page.locator('.motif-cs-msa-window-note').boundingBox();
+    if (!zoom || !note) throw new Error('status line missing');
+    // Same line: their vertical centres coincide, and the readout sits to the right.
+    expect(Math.abs((zoom.y + zoom.height / 2) - (note.y + note.height / 2))).toBeLessThanOrEqual(2);
+    expect(note.x).toBeGreaterThan(zoom.x + zoom.width - 1);
+  });
+
+  test('the export menu holds every export control and closes before the window', async ({ page }) => {
+    await setup(page, 1280, 900);
+    const trigger = page.getByTestId('msa-export-menu-button');
+    const panel = page.getByTestId('msa-export-menu');
+    await expect(trigger).toBeVisible();
+    await expect(panel).toBeHidden();
+
+    await trigger.click();
+    await expect(panel).toBeVisible();
+    for (const name of ['Copy', 'Download', 'Save PNG', 'Save SVG']) {
+      await expect(panel.getByRole('button', { name, exact: true })).toBeVisible();
+    }
+    await expect(panel.getByRole('combobox', { name: 'Export', exact: true })).toBeVisible();
+    await expect(page.getByTestId('msa-export-image-scope')).toBeVisible();
+
+    // Escape dismisses the menu and returns focus to its trigger; the window
+    // beneath must survive, and only a second Escape may close it.
+    await page.keyboard.press('Escape');
+    await expect(panel).toBeHidden();
+    await expect(page.getByTestId('msa-alignment-view')).toBeVisible();
+    await expect(trigger).toBeFocused();
+  });
+
+  // Residue fills are the only <rect> elements the image renderers emit per cell;
+  // the page background and the label gutter are emitted without x/y.
+  const svgCellFills = (svg: string) => [...svg.matchAll(
+    /<rect x="[^"]*" y="[^"]*" width="[^"]*" height="[^"]*" fill="([^"]+)"\/>/g,
+  )].map((match) => match[1]);
+
+  async function savedSvg(page: Page) {
+    const [download] = await Promise.all([
+      page.waitForEvent('download'),
+      page.getByTestId('msa-export-svg').click(),
+    ]);
+    const path = await download.path();
+    if (!path) throw new Error('the SVG export produced no file — nothing below was measured');
+    return readFileSync(path, 'utf8');
+  }
+
+  test('stepping back off the first difference returns to neutral instead of the far end', async ({ page }) => {
+    // Regression: both ends wrapped by modular arithmetic with nothing said, so
+    // three Prev presses from the start read "N of N" and threw the view to the
+    // opposite end of the alignment — and Prev from the neutral state did it
+    // before the user had gone anywhere. One round trip would not show this.
+    await setup(page);
+    const counter = page.locator('.motif-cs-msa-difference-nav span').first();
+    const previous = page.getByLabel('Previous variable column').first();
+    const next = page.getByLabel('Next variable column').first();
+    const total = (await counter.textContent())?.match(/of\s+([\d,]+)/)?.[1];
+    if (!total) throw new Error('no difference total on the counter — nothing below was measured');
+    expect(Number(total.replaceAll(',', ''))).toBeGreaterThan(3);
+
+    await expect(counter).toHaveText(`Difference — of ${total}`);
+    await previous.click();
+    await expect(counter).toHaveText(`Difference — of ${total}`);
+
+    for (const step of [1, 2, 3]) {
+      await next.click();
+      await expect(counter).toHaveText(`Difference ${step} of ${total}`);
+    }
+    for (const step of [2, 1]) {
+      await previous.click();
+      await expect(counter).toHaveText(`Difference ${step} of ${total}`);
+    }
+    await previous.click();
+    await expect(counter).toHaveText(`Difference — of ${total}`);
+  });
+
+  test('the search readout says what its number is before a match is stepped to', async ({ page }) => {
+    // A bare "36" beside two step arrows reads as "match 36".
+    await setup(page);
+    const readout = page.getByTestId('msa-search-count');
+    await page.getByTestId('msa-search-input').fill('AIR');
+    await expect(readout).toHaveText(/^\d+ matches$/);
+    await page.getByTestId('msa-search-input').press('Enter');
+    await expect(readout).toHaveText(/^1 of \d+$/);
+  });
+
+  test('the exported image follows the residue-colour toggle, and stays legible without it', async ({ page }) => {
+    // Regression: the export read only `colorScheme` and never `colorMode`, so
+    // turning colours off changed nothing — and since the scheme select is
+    // disabled while colours are off, the file was coloured by a setting the UI
+    // was preventing the user from inspecting.
+    await setup(page);
+    await page.getByTestId('msa-view-menu-button').click();
+    await page.getByLabel('Colour scheme').isDisabled();
+    await page.keyboard.press('Escape');
+
+    await page.getByTestId('msa-export-menu-button').click();
+    await expect(page.getByTestId('msa-export-image-scope')).toBeVisible();
+    const mono = svgCellFills(await savedSvg(page));
+    await page.keyboard.press('Escape');
+
+    await page.getByTestId('msa-view-menu-button').click();
+    await page.getByRole('checkbox', { name: 'Residue colors' }).check();
+    await page.getByLabel('Colour scheme').selectOption('taylor');
+    await page.keyboard.press('Escape');
+    await page.getByTestId('msa-export-menu-button').click();
+    const coloured = svgCellFills(await savedSvg(page));
+    await page.keyboard.press('Escape');
+
+    // Colours on: every cell painted, in the scheme that was chosen. Taylor is
+    // used rather than clustal because 'auto' resolves TO clustal for a protein,
+    // so comparing those two compares a scheme with itself.
+    expect(coloured.length).toBeGreaterThan(300);
+    expect(new Set(coloured).size).toBeGreaterThan(9);
+    // Colours off: no residue fills at all, and the letters are still there — the
+    // image is monochrome, not empty.
+    expect(mono.length).toBeLessThan(coloured.length / 10);
+    expect(new Set(mono).size).toBeLessThanOrEqual(1);
+
+    // The exception, and the reason this is not simply "skip the fills": once the
+    // alignment is too wide to draw letters, colour is all that is left carrying
+    // the sequence, so a monochrome whole-alignment export must still be painted.
+    await setup(page, 1440, 980, 6000);
+    await page.getByTestId('msa-export-menu-button').click();
+    await page.getByTestId('msa-export-image-scope').selectOption('all');
+    const dense = await savedSvg(page);
+    const denseFills = svgCellFills(dense);
+    // Precondition: this really is the letters-dropped regime. The document
+    // always carries a title and axis ticks, so "no <text> at all" would be the
+    // wrong test — what marks birdseye is text becoming negligible against cells.
+    expect((dense.match(/<text /g) ?? []).length).toBeLessThan(denseFills.length / 10);
+    expect(denseFills.length).toBeGreaterThan(1000);
+  });
+
+  test('resetting the alignment view keeps the export format and the pane you are in', async ({ page }) => {
+    // Regression: the reset spread the whole defaults object, so a control called
+    // "Reset alignment view" silently changed the chosen export format and threw
+    // a user reading the Text pane back into the Viewer.
+    await setup(page);
+    await page.getByTestId('msa-export-menu-button').click();
+    const format = page.getByTestId('msa-export-menu').locator('select').first();
+    await format.selectOption('clustal');
+    await page.keyboard.press('Escape');
+    await page.getByRole('button', { name: 'Text', exact: true }).click();
+    const pane = page.getByRole('button', { name: 'Text', exact: true });
+    await expect(pane).toHaveAttribute('aria-pressed', 'true');
+
+    // Move something the reset SHOULD restore, so this proves narrowing rather
+    // than a reset that no longer does anything.
+    await page.getByTestId('msa-view-menu-button').click();
+    await page.getByRole('checkbox', { name: 'Residue colors' }).check();
+    await page.getByRole('button', { name: 'Reset alignment view' }).click();
+
+    await expect(page.getByRole('checkbox', { name: 'Residue colors' })).not.toBeChecked();
+    await expect(pane).toHaveAttribute('aria-pressed', 'true');
+    await page.keyboard.press('Escape');
+    await page.getByTestId('msa-export-menu-button').click();
+    await expect(format).toHaveValue('clustal');
+  });
+
+  test('cycling reference numbering leaves one result per state, with stable names', async ({ page }) => {
+    // Regression: "Use plain 1-based" forked instead of going back, and the name
+    // it asked for was already suffixed, so the suffix concatenated. Three round
+    // trips left seven results ending in "REVIEW 2 2 2 2 2 2". A single round trip
+    // would not have shown either problem.
+    await setup(page, 1440, 1100);
+    await page.getByTestId('msa-view-menu-button').click();
+    const savedResults = () => page.locator('.motif-cs-msa-alignment-picker select option').allTextContents();
+    const numberingIsOn = () => page.getByTestId('msa-reference-numbering-editor').evaluate((el) => el.getAttribute('data-active') === 'true');
+
+    expect(await savedResults()).toEqual(['E2E protein panel']);
+    await page.getByTestId('msa-apply-reference-numbering').click();
+    await expect.poll(numberingIsOn).toBe(true);
+    const afterFirstApply = await savedResults();
+    expect(afterFirstApply).toHaveLength(2);
+
+    for (let cycle = 0; cycle < 3; cycle += 1) {
+      await page.getByTestId('msa-clear-reference-numbering').click();
+      await expect.poll(numberingIsOn).toBe(false);
+      expect(await savedResults()).toEqual(afterFirstApply);
+
+      await page.getByTestId('msa-apply-reference-numbering').click();
+      await expect.poll(numberingIsOn).toBe(true);
+      expect(await savedResults()).toEqual(afterFirstApply);
+    }
+    // No name may be a suffix pile-up, and no two may collide.
+    for (const name of afterFirstApply) expect(name).not.toMatch(/\s\d+\s+\d+$/);
+    expect(new Set(afterFirstApply).size).toBe(afterFirstApply.length);
+
+    // A genuinely different numbering IS a new result, and it counts up from the
+    // root rather than gluing another suffix on.
+    await page.getByTestId('msa-reference-numbering-position').fill('250');
+    await page.getByTestId('msa-apply-reference-numbering').click();
+    await expect.poll(async () => (await savedResults()).length).toBe(3);
+    const names = await savedResults();
+    expect(names[2]).toBe(`${names[0]} 3`);
+  });
+
+  test('the view menu grows with the window instead of stopping at a constant', async ({ page }) => {
+    // Regression: the cap was `min(430px, <window expression>)`. Every window
+    // taller than 540px made min() pick the constant, so the menu showed 428px of
+    // an 807px list at every window size — and dragging the window taller changed
+    // nothing, leaving 852px of window unused beside 379px of hidden menu.
+    await setup(page, 1440, 1300);
+    await page.getByTestId('msa-view-menu-button').click();
+    const panel = page.getByTestId('msa-view-menu');
+    await expect(panel).toBeVisible();
+
+    const read = () => panel.evaluate((el) => {
+      const host = el.closest('.motif-cs-window');
+      if (!host) throw new Error('the view menu is not inside a window — this measures nothing');
+      const panelBox = el.getBoundingClientRect();
+      const windowBox = host.getBoundingClientRect();
+      if (panelBox.height <= 0) throw new Error('the view menu panel has no box — this measures nothing');
+      return {
+        windowHeight: Math.round(windowBox.height),
+        visible: el.clientHeight,
+        content: el.scrollHeight,
+        hidden: el.scrollHeight - el.clientHeight,
+        pastWindowBottom: Math.round(panelBox.bottom - windowBox.bottom),
+        // Minus the panel's own two 1px borders; what is left is scrollbar.
+        gutter: el.offsetWidth - el.clientWidth - 2,
+      };
+    });
+
+    const handle = page.locator('.motif-cs-window-resize').first();
+    await handle.focus();
+    for (let step = 0; step < 40; step += 1) await handle.press('Shift+ArrowUp');
+    const samples = [await read()];
+    for (let batch = 0; batch < 4; batch += 1) {
+      for (let step = 0; step < 10; step += 1) await handle.press('Shift+ArrowDown');
+      samples.push(await read());
+    }
+
+    // The window really did grow each time; without this the heights below would
+    // agree for the most boring possible reason.
+    for (let index = 1; index < samples.length; index += 1) {
+      expect(samples[index].windowHeight).toBeGreaterThan(samples[index - 1].windowHeight);
+    }
+    // The menu grew with it, and monotonically.
+    expect(new Set(samples.map((sample) => sample.visible)).size).toBeGreaterThan(1);
+    for (let index = 1; index < samples.length; index += 1) {
+      expect(samples[index].visible).toBeGreaterThanOrEqual(samples[index - 1].visible);
+    }
+    // Given room, it stops hiding anything at all.
+    const tallest = samples[samples.length - 1];
+    expect(tallest.hidden).toBe(0);
+    expect(tallest.visible).toBe(tallest.content);
+    // It never outgrows the window, which is overflow: hidden and would clip it.
+    // The first sample is the 180px window floor, where the menu's own 120px floor
+    // legitimately wins.
+    for (const sample of samples.slice(1)) expect(sample.pastWindowBottom).toBeLessThanOrEqual(0);
+    // And whatever is still hidden is signalled rather than left silent.
+    for (const sample of samples) expect(sample.gutter).toBeGreaterThan(0);
+  });
+
+  test('toolbar menu panels stay inside the window at a narrow width', async ({ page }) => {
+    // Regression: the panels were anchored to their own trigger and right-aligned
+    // to it, so a panel wider than the gap to the left edge hung off-screen — at
+    // this width the export panel began 106px past it, unreachable.
+    await setup(page, 760, 820);
+    for (const [triggerId, panelId] of [
+      ['msa-export-menu-button', 'msa-export-menu'],
+      ['msa-view-menu-button', 'msa-view-menu'],
+      ['msa-goto-menu-button', 'msa-goto-menu'],
+    ]) {
+      await page.getByTestId(triggerId).click();
+      const box = await page.getByTestId(panelId).boundingBox();
+      if (!box) throw new Error(`${panelId} missing`);
+      expect(box.x).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width).toBeLessThanOrEqual(760);
+      await page.keyboard.press('Escape');
+    }
+  });
+
+  test('the window corner grip still takes the mouse at the smallest window size', async ({ page }) => {
+    // Regression: the grip declared no z-index, so it only outranked content
+    // stacking at auto. Narrow the window and the sticky toolbar wraps taller
+    // than a short body, so it covers the bottom-right corner; at z-index 10 it
+    // then painted over the grip and took the press itself. Mouse resizing died
+    // completely at 280x180, with 82% of the body below the fold and no
+    // scrollbar, so nothing but the keyboard could get the window back.
+    await setup(page, 1440, 900);
+    const grip = page.getByRole('button', { name: /^Resize .* window in 2 dimensions/ });
+    const size = async () => page.evaluate(() => {
+      const box = document.querySelector('.motif-cs-window')!.getBoundingClientRect();
+      return { w: Math.round(box.width), h: Math.round(box.height) };
+    });
+
+    // Reach the minimum through the keyboard path, which never depended on paint
+    // order — so the state under test is reached even when the grip is buried.
+    await grip.focus();
+    for (let step = 0; step < 200; step += 1) {
+      const now = await size();
+      if (now.w <= 280 && now.h <= 180) break;
+      await page.keyboard.press(now.w > 280 ? 'ArrowLeft' : 'ArrowUp');
+    }
+    expect(await size()).toEqual({ w: 280, h: 180 });
+
+    // The grip is window chrome: it has to be the element under its own centre.
+    const centre = await page.evaluate(() => {
+      const box = document.querySelector('.motif-cs-window-resize')!.getBoundingClientRect();
+      const x = box.x + box.width / 2;
+      const y = box.y + box.height / 2;
+      const hit = document.elementFromPoint(x, y);
+      return { x, y, hit: hit ? `${hit.tagName}.${hit.className}` : 'none' };
+    });
+    expect(centre.hit).toBe('BUTTON.motif-cs-window-resize');
+
+    // And a real mouse drag from there resizes. Pinned to the absolute size the
+    // drag has to produce, so a partly working drag cannot pass either.
+    await page.mouse.move(centre.x, centre.y);
+    await page.mouse.down();
+    for (let step = 1; step <= 10; step += 1) {
+      await page.mouse.move(centre.x + step * 20, centre.y + step * 20);
+    }
+    await page.mouse.up();
+    expect(await size()).toEqual({ w: 480, h: 380 });
+  });
+
+  test('"Reset display" restores a shrunken alignment window that reopening deliberately does not', async ({ page }) => {
+    // Two behaviours that look like one bug and are not. Keeping a dragged size
+    // across a close and reopen is correct — a size chosen by dragging a corner
+    // is a choice, and closing a window is not a request to forget it. What was
+    // missing is the way back: the seven floating tool windows keep their
+    // geometry in state that "Reset display" never touched, so the button put
+    // the panes right and left the window exactly as small as it found it.
+    //
+    // The half that is easy to get wrong is the OPEN window. `initial` is read
+    // once, in a useState initialiser, so resetting the parent's rect alone
+    // moves nothing on screen — measured, that leaves the window at 280x180
+    // while silently fixing only the NEXT open, which is the one moment the
+    // user is guaranteed not to be looking. Both states are asserted below.
+    await setup(page, 1440, 900);
+    const size = async () => page.evaluate(() => {
+      const box = document.querySelector('.motif-cs-window')!.getBoundingClientRect();
+      return { w: Math.round(box.width), h: Math.round(box.height) };
+    });
+    const reopen = async () => {
+      await page.locator('.motif-cs-window-close').first().click();
+      await expect(page.getByTestId('msa-alignment-view')).toBeHidden();
+      await page.getByTestId('msa-open-button').dispatchEvent('click');
+      await expect(page.getByTestId('msa-alignment-view')).toBeVisible();
+    };
+
+    // min(940, 1440 - 40) x min(820, 900 - 150). Pinned, so a change to either
+    // cap has to come past this test rather than through it.
+    const defaultSize = { w: 940, h: 750 };
+    expect(await size()).toEqual(defaultSize);
+
+    const grip = await page.evaluate(() => {
+      const box = document.querySelector('.motif-cs-window-resize')!.getBoundingClientRect();
+      return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    });
+    await page.mouse.move(grip.x, grip.y);
+    await page.mouse.down();
+    for (let step = 1; step <= 20; step += 1) {
+      await page.mouse.move(grip.x - step * 40, grip.y - step * 32, { steps: 2 });
+    }
+    await page.mouse.up();
+    // The floor. Asserted rather than assumed: everything below is about
+    // recovering from this state, so a drag that never reached it would leave
+    // the rest of this test proving nothing.
+    expect(await size()).toEqual({ w: 280, h: 180 });
+
+    await reopen();
+    expect(await size(), 'a deliberately chosen window size must survive a reopen').toEqual({ w: 280, h: 180 });
+
+    const settings = page.locator('details[data-rail-tool="settings"]');
+    await settings.locator(':scope > summary').click();
+    await settings.getByRole('button', { name: 'Reset display' }).click();
+    await expect.poll(size, { message: 'Reset display left the OPEN window at its floor' }).toEqual(defaultSize);
+
+    await reopen();
+    expect(await size(), 'the reset must clear the remembered size, not just the rendered one').toEqual(defaultSize);
+  });
+
+  test('Escape dismisses a toolbar menu opened a moment earlier instead of closing the window', async ({ page }) => {
+    // Regression: the window deferred to an open menu by looking for a rendered
+    // data-motif-cs-escape-scope attribute, but for a native <details> that
+    // attribute only arrives with React's `toggle` handler — measured at ~52ms
+    // after the browser had already opened the menu on screen. An Escape inside
+    // that interval found no scope, so the window closed and took the alignment
+    // with it. On a loaded machine the interval is far longer, which is how the
+    // artifact suite hit this about one run in six while passing in isolation.
+    //
+    // Click and key both go through CDP, back to back: real trusted input, with
+    // only the automation round trip removed — which is what a busy machine
+    // removes as well.
+    await page.addInitScript(() => {
+      (window as unknown as { __escapeState?: unknown }).__escapeState = null;
+      window.addEventListener('keydown', (event) => {
+        if (event.key !== 'Escape') return;
+        const host = document.querySelector<HTMLDetailsElement>('details.motif-cs-msa-export-menu');
+        const shell = document.querySelector('.motif-cs-window');
+        (window as unknown as { __escapeState?: unknown }).__escapeState = {
+          isTrusted: event.isTrusted,
+          menuOpen: host ? host.open : null,
+          renderedScope: !!shell?.querySelector('[data-motif-cs-escape-scope="true"]'),
+        };
+      }, true);
+    });
+    await setup(page, 1280, 900);
+
+    const client = await page.context().newCDPSession(page);
+    const box = await page.getByTestId('msa-export-menu-button').boundingBox();
+    if (!box) throw new Error('export menu trigger has no box');
+    const x = box.x + box.width / 2;
+    const y = box.y + box.height / 2;
+    const mouse = (type: string, buttons: number) => client.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1, buttons });
+    const key = (type: string) => client.send('Input.dispatchKeyEvent', { type, key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 });
+    await Promise.all([mouse('mousePressed', 1), mouse('mouseReleased', 0), key('keyDown'), key('keyUp')]);
+    await page.waitForTimeout(400);
+
+    // The state under test has to have been reached: menu open on screen while
+    // the rendered scope attribute is still absent. Without this the test would
+    // keep passing if that interval ever closed, while checking nothing at all.
+    type EscapeState = { isTrusted: boolean; menuOpen: boolean | null; renderedScope: boolean };
+    const observed = await page.evaluate(() => (window as unknown as { __escapeState?: EscapeState | null }).__escapeState);
+    expect(observed, 'no Escape reached the page').toBeTruthy();
+    expect(observed!.isTrusted, 'the key must be real input, not a dispatched event').toBe(true);
+    expect(observed!.menuOpen, 'the menu must be open when Escape lands').toBe(true);
+    expect(observed!.renderedScope, 'the race window was never entered — this test no longer tests anything').toBe(false);
+
+    // The window survives, and the key does what the user meant by it.
+    await expect(page.getByTestId('msa-alignment-view')).toBeVisible();
+    await expect(page.locator('details.motif-cs-msa-export-menu')).not.toHaveAttribute('open', /.*/);
   });
 });

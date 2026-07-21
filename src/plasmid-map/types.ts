@@ -169,9 +169,67 @@ export interface MapOverflowRender {
   kind: string;
   text: string;
   title: string;
+  /*
+   * What the chip is reporting, as numbers rather than as digits embedded in `text`
+   * ("+30 more sites") or `title`.
+   *
+   * The chip is not the only place these belong: it explains itself through an SVG
+   * `<title>`, which no browser opens on keyboard focus, so anywhere that has to
+   * state the same quantity to a keyboard user needs the same number. Recovering it
+   * with a regex over the display string would make every such reader a
+   * reconstruction that has to keep matching the chip's wording — the map has been
+   * bitten by exactly that before (see the labelSegments note on MapRestrictionRender).
+   *
+   * TWO fields rather than one total, and that is the point. The feature chip reports
+   * two different things at once — items the map draws no body for, and items it draws
+   * but cannot name — and a single integer holding their sum is a number no sentence
+   * can truthfully use: of a summed "32", both "32 features have no label" and "32
+   * features are missing from the map" are false. `text` still prints the sum, because
+   * a chip has room for one number and its own `title` breaks that sum apart right
+   * beside it. Every OTHER reader has to state which quantity it means, so the type
+   * makes it pick one. A single `count` holding the sum was here before, and the
+   * agreement test guarding it could only ever confirm the sum matched itself.
+   *
+   * The two are disjoint by construction — an item is either drawn or it is not, and
+   * an undrawn one has no label left to drop — so `hiddenBodies + unlabelled` counts
+   * distinct affected items, which is exactly what `text` prints.
+   */
+  /**
+   * Items the map draws no geometry for at all: features pushed past the last lane the
+   * compressed stack could fit, kept discoverable by hover title + the Features tab.
+   * Always 0 on a restriction chip — every site keeps its density tick, which is what
+   * that chip's own title promises.
+   */
+  hiddenBodies: number;
+  /**
+   * Items the map DOES draw but does not name: features whose label was culled, or
+   * restriction SITES under a cluster whose label was culled.
+   *
+   * Counts unnamed ITEMS, not label glyphs. One dropped cluster label can leave a
+   * dozen sites unlabelled, and "N sites" is the wording the chip, the cluster tooltip
+   * and the Map Visibility dock already share for it — naming this `hiddenLabels`
+   * would invite the next reader to print "12 labels hidden" over a map that dropped
+   * one.
+   */
+  unlabelled: number;
   x: number;
   y: number;
   anchor: 'start' | 'middle' | 'end';
+  /**
+   * Pointer target for the chip, in the same space as `x`/`y`.
+   *
+   * The chip's ONLY explanation of its own count is a `<title>`, and SVG text is
+   * hit-tested as its whole run box — so without this the target is exactly the
+   * glyph run, a few CSS px tall once the map's meet-scaling is applied. This rect
+   * is sized from the chip's own estimated text extent, never from taste.
+   *
+   * Height is deliberately ONE label line: that is the pitch stacked chips are
+   * placed at, so two chips' targets tile instead of overlapping, and it keeps the
+   * rect clear of the feature lane that sits just below the linear chip. The chip
+   * layer paints above the features, so a taller rect would silently eat their
+   * clicks. Growing this is not free.
+   */
+  hit: { x: number; y: number; width: number; height: number };
 }
 
 export interface MapCenterTitle {

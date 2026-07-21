@@ -322,13 +322,13 @@ test.describe('Claude Science artifact campaign', () => {
     await expect(page.locator('.motif-cs-record-tab[data-active="true"]')).toContainText('lacZ-alpha');
 
     await pUC19.click();
-    await page.getByRole('button', { name: 'Reverse complement', exact: true }).click();
+    await page.getByRole('button', { name: 'New rev comp record', exact: true }).click();
     expect(await page.evaluate(() => window.motifGetInventory().length)).toBe(inventoryCountBefore + 2);
     await expect(page.locator('.motif-cs-record-tab[data-active="true"]')).toContainText('reverse complement');
 
     await pUC19.click();
     await feature.click();
-    await page.getByRole('button', { name: 'Reverse complement', exact: true }).click();
+    await page.getByRole('button', { name: 'New rev comp record', exact: true }).click();
     expect(await page.evaluate(() => window.motifGetInventory().length)).toBe(inventoryCountBefore + 3);
     await expect(page.locator('.motif-cs-record-tab[data-active="true"]')).toContainText('reverse complement');
     await expect(page.getByTestId('session-durability-status')).toHaveText('unsaved changes');
@@ -484,6 +484,83 @@ test.describe('Claude Science artifact campaign', () => {
     await expect(mapVisibility).toContainText('No enzymes match this filter.');
     await filter.fill('');
     expect(await mapVisibility.locator('.motif-cs-restriction-row input:checked').count()).toBe(visibleBefore);
+  });
+
+  test('a dense plasmid names its restriction clusters instead of drawing anonymous ticks', async ({ page }) => {
+    await openArtifact(page, 1600, 1000);
+
+    const clusters = page.locator('.motif-pm-restriction');
+    const names = page.locator('.motif-pm-restriction-label');
+    const readMap = async () => ({
+      clusters: await clusters.count(),
+      names: await names.count(),
+    });
+
+    // A sparse record: every cluster carries a name and nothing is withheld.
+    await expect(page.locator('.motif-cs-record-tab[data-active="true"]')).toContainText('pUC19');
+    const sparse = await readMap();
+    expect(sparse.clusters).toBe(22);
+    expect(sparse.names).toBe(22);
+    await expect(page.locator('.motif-pm-overflows text')).toHaveCount(0);
+
+    // A dense record: 149 sites over 31 clusters. The map cannot name all 31, but
+    // "cannot name all" is not "name none" — it used to draw 62 ticks and zero
+    // names because a site-count threshold switched labelling off wholesale.
+    await page.getByRole('tab', { name: 'pET-28a(+)' }).click();
+    await expect(page.locator('.motif-cs-record-tab[data-active="true"]')).toContainText('pET-28a(+)');
+
+    const mapVisibility = page.locator('details').filter({ hasText: 'Map Visibility' }).first();
+    await mapVisibility.locator(':scope > summary').click();
+    await expect(mapVisibility).toContainText('149/149 sites');
+
+    const dense = await readMap();
+    expect(dense.clusters).toBe(31);
+    expect(dense.names).toBeGreaterThanOrEqual(20);
+    expect(dense.names).toBeLessThanOrEqual(dense.clusters);
+
+    // Whatever it could not name, it says so rather than going quiet.
+    await expect(page.locator('.motif-pm-overflows text').filter({ hasText: /more sites$/ })).toHaveCount(1);
+
+    // Naming the cut sites must not cost the map its features. A rescue pass places
+    // grouped clusters over feature labels and deletes what it lands on; unbounded,
+    // it spent this vector's whole cloning site — promoter, operator, RBS, tag and
+    // terminator, five labels — to gain two enzyme names.
+    const featureNames = page.locator('.motif-pm-feature-label');
+    await expect(featureNames).toHaveCount(6);
+    for (const name of ['T7 prom.', 'RBS', '6xHis', 'T7 terminator']) {
+      await expect(featureNames.filter({ hasText: name })).toHaveCount(1);
+    }
+
+    // The labelling control reads the same on the dense record as on the sparse
+    // one — the density of a record is not a reason to flip a user-facing toggle.
+    const labelToggle = mapVisibility.getByRole('button', { name: /^Labels (On|Off)$/ });
+    await expect(labelToggle).toHaveText('Labels On');
+
+    // Shrink to a laptop-sized window. This is the case that used to fail hardest:
+    // the old threshold halved once the map's smaller dimension fell under 580px,
+    // and the sparsest bundled vector has 26 sites, so EVERY record lost EVERY
+    // name here — including the ones that looked healthy at 1600x1000.
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await expect
+      .poll(async () => {
+        const box = (await page.locator('.motif-pm-container').boundingBox())!;
+        return Math.min(box.width, box.height);
+      }, { message: 'map never re-laid out below the old 580px branch point' })
+      .toBeLessThan(580);
+
+    const denseSmall = await readMap();
+    expect(denseSmall.names).toBeGreaterThanOrEqual(15);
+    await expect(labelToggle).toHaveText('Labels On');
+
+    await page.getByRole('tab', { name: 'pUC19' }).click();
+    await expect(page.locator('.motif-cs-record-tab[data-active="true"]')).toContainText('pUC19');
+    const sparseSmall = await readMap();
+    expect(sparseSmall.clusters).toBe(22);
+    expect(sparseSmall.names).toBeGreaterThanOrEqual(15);
+
+    await page.setViewportSize({ width: 1600, height: 1000 });
+    await page.getByRole('tab', { name: 'pUC19' }).click();
+    await expect(labelToggle).toHaveText('Labels On');
   });
 
   test('digest recipes reject unknown enzymes and survive map-source changes', async ({ page }) => {
@@ -1226,6 +1303,53 @@ test.describe('Claude Science artifact campaign', () => {
     await expect(page.getByRole('button', { name: 'Show sites' })).toBeDisabled();
   });
 
+  test('hiding restriction sites changes the map but not the exports or the summary', async ({ page }) => {
+    // "Hide sites" is a display control. It used to empty the record's enzyme
+    // sources as well, and the export and summary paths read those sources — so
+    // decluttering the map silently rewrote what a downloaded file said about
+    // the molecule. Everything downstream of the scan must be untouched.
+    await openArtifact(page);
+
+    const sitesCsvRowCount = async () => {
+      const panel = page.locator('.motif-cs-sequence-tools-panel');
+      // An open <details> reports open as "", which is falsy — testing truthiness
+      // here closes the panel on the second call.
+      if ((await panel.getAttribute('open')) === null) await panel.locator(':scope > summary').click();
+      await panel.locator('select[name="export-format"]').selectOption('sites-csv');
+      const downloadPromise = page.waitForEvent('download');
+      await panel.getByRole('button', { name: 'Download' }).click();
+      const file = await (await downloadPromise).path();
+      if (!file) throw new Error('restriction-site CSV download produced no file');
+      return (await readFile(file, 'utf8')).trim().split('\n').length - 1;
+    };
+    const cutterCounts = async () => page.evaluate(() => {
+      const text = window.motifDescribe?.()?.text ?? '';
+      return {
+        singleCutters: Number(text.match(/(\d+)\s+single cutters?/i)?.[1] ?? -1),
+        enzymesCut: Number(text.match(/(\d+)\s+enzymes? cut/i)?.[1] ?? -1),
+      };
+    });
+
+    const csvRowsBefore = await sitesCsvRowCount();
+    const countsBefore = await cutterCounts();
+    // Without sites to lose, "unchanged" would be true of a broken build too.
+    expect(csvRowsBefore).toBeGreaterThan(0);
+    expect(countsBefore.singleCutters).toBeGreaterThan(0);
+    expect(countsBefore.enzymesCut).toBeGreaterThan(0);
+
+    const mapVisibility = page.locator('details').filter({ hasText: 'Map visibility' }).first();
+    if (!(await mapVisibility.getAttribute('open'))) await mapVisibility.locator('summary').click();
+    const restrictionLabels = page.locator('.motif-cs-restriction-label');
+    expect(await restrictionLabels.count()).toBeGreaterThan(0);
+    await page.getByRole('button', { name: 'Hide sites' }).click();
+    // The control did its visible job — otherwise the assertions below pass on a
+    // click that never landed.
+    await expect(restrictionLabels).toHaveCount(0);
+
+    expect(await sitesCsvRowCount()).toBe(csvRowsBefore);
+    expect(await cutterCounts()).toEqual(countsBefore);
+  });
+
   test('primer edits clear invalid results and recompute valid pairs immediately', async ({ page }) => {
     await openArtifact(page, 1180, 900);
     const primerPanel = page.locator('details[data-rail-tool="primer-design"]');
@@ -1264,6 +1388,244 @@ test.describe('Claude Science artifact campaign', () => {
     await exportSummary.scrollIntoViewIfNeeded();
     await exportSummary.click();
     await expect(exportPanel).toHaveAttribute('open', '');
+  });
+
+  test('no Tools rail popover heading paints over the first line beneath it', async ({ page }) => {
+    await openArtifact(page, 1440, 900);
+    const toolsToggle = page.getByRole('button', { name: /Tools/ }).first();
+    if ((await toolsToggle.getAttribute('aria-pressed')) === 'true') await toolsToggle.click();
+
+    const tools = await page.locator('details[data-rail-tool]').evaluateAll((panels) =>
+      panels.map((panel) => (panel as HTMLElement).dataset.railTool!),
+    );
+    expect(tools.length).toBeGreaterThan(8);
+
+    const overprinting: string[] = [];
+    const measured: string[] = [];
+    for (const tool of tools) {
+      const panel = page.locator(`details[data-rail-tool="${tool}"]`);
+      if (!(await panel.getAttribute('open'))) await panel.locator(':scope > summary').click();
+
+      // The heading is sticky with an opaque background, so anything laid out above
+      // its bottom edge is painted over rather than merely crowded. A grid body that
+      // reserves less room for the heading than the heading renders swallows the
+      // panel's first line, with no scrollbar or any other signal that it did.
+      const overlap = await panel.evaluate((el) => {
+        const body = el.querySelector<HTMLElement>('.motif-cs-tool-panel-body');
+        const title = body?.querySelector<HTMLElement>(':scope > .motif-cs-rail-popover-title');
+        // The popover body is position:fixed, so offsetParent is always null here —
+        // ask for painted boxes instead. The heading is display:none while Tools is
+        // pinned, which is a different layout with no sticky overlap to check.
+        if (!body || !title || !body.getClientRects().length || !title.getClientRects().length) return null;
+        const next = [...body.children].find(
+          (child) => child !== title && getComputedStyle(child).position !== 'fixed',
+        );
+        if (!next) return null;
+        return Math.round(title.getBoundingClientRect().bottom - next.getBoundingClientRect().top);
+      });
+      if (overlap === null) continue;
+      measured.push(tool);
+      if (overlap > 0) overprinting.push(`${tool} by ${overlap}px`);
+    }
+
+    // Guard the guard: a fixture change that stopped these panels opening would
+    // otherwise turn this into a test that passes by measuring nothing.
+    expect(measured.length, `rail panels actually measured: ${measured.join(', ')}`).toBeGreaterThan(8);
+    expect(overprinting, `rail headings covering their own panel body: ${overprinting.join(', ')}`).toEqual([]);
+  });
+
+  test('no Tools rail popover covers the alignment window controls that would close it', async ({ page }) => {
+    await openArtifact(page, 1440, 980);
+    const toolsToggle = page.getByRole('button', { name: /Tools/ }).first();
+    if ((await toolsToggle.getAttribute('aria-pressed')) === 'true') await toolsToggle.click();
+
+    /** Where the open popover is, and whether it is sitting on the window's own controls. */
+    const readPlacement = () => page.evaluate(() => {
+      const body = document.querySelector<HTMLElement>('.motif-cs-inspector[data-tools-pinned="false"] .motif-cs-panel[open] > .motif-cs-tool-panel-body');
+      if (!body) return null;
+      const rect = body.getBoundingClientRect();
+      const covered: string[] = [];
+      for (const control of document.querySelectorAll<HTMLElement>('.motif-cs-window .motif-cs-window-head-actions button')) {
+        const box = control.getBoundingClientRect();
+        // Hit-test rather than compare boxes: this is the question the user asks
+        // of the pixel, and it accounts for stacking as well as geometry.
+        const hit = document.elementFromPoint(Math.round(box.x + box.width / 2), Math.round(box.y + box.height / 2));
+        if (!hit || !(control.contains(hit) || hit.contains(control))) covered.push(control.getAttribute('aria-label') ?? '?');
+      }
+      return {
+        top: Math.round(rect.top),
+        bottom: Math.round(rect.bottom),
+        left: Math.round(rect.left),
+        right: Math.round(rect.right),
+        height: Math.round(rect.height),
+        maxHeight: Number.parseFloat(getComputedStyle(body).maxHeight),
+        viewport: { width: window.innerWidth, height: window.innerHeight },
+        covered,
+      };
+    });
+
+    const railTools = await page.locator('.motif-cs-inspector[data-tools-pinned="false"] details[data-rail-tool]')
+      .evaluateAll((panels) => panels.map((panel) => (panel as HTMLElement).dataset.railTool!));
+    expect(railTools.length).toBeGreaterThan(8);
+
+    // The stylesheet's resting offset and its bottom gutter, read from the rule
+    // rather than restated here, so this test tracks a stylesheet edit.
+    const resting = await page.evaluate(() => {
+      const panel = document.querySelector('.motif-cs-inspector[data-tools-pinned="false"] details.motif-cs-panel');
+      return Number.parseFloat(getComputedStyle(panel!).getPropertyValue('--rail-popover-fixed-top'));
+    });
+    expect(resting).toBeGreaterThan(0);
+
+    // Nothing open to avoid: the popover must not move, and its height bound must
+    // still be the viewport bound the drag-resize reads its limit from.
+    const settings = page.locator('details[data-rail-tool="settings"]');
+    await settings.locator(':scope > summary').click();
+    const unobstructed = (await readPlacement())!;
+    expect(unobstructed.top).toBe(resting);
+    const gutter = unobstructed.viewport.height - unobstructed.top - unobstructed.maxHeight;
+    expect(gutter).toBeGreaterThan(0);
+    await settings.locator(':scope > summary').click();
+
+    await page.evaluate(() => {
+      window.motifAddAlignments({
+        id: 'popover-placement',
+        name: 'Popover placement fixture',
+        molecule: 'dna',
+        referenceRowId: 'placement-template',
+        rows: [
+          { id: 'placement-template', name: 'Template', aligned: 'ACGTACGTACGT' },
+          { id: 'placement-read-a', name: 'Read A', aligned: 'ACGTACGAACGT' },
+          { id: 'placement-read-b', name: 'Read B', aligned: 'ACGTACGTAAGT' },
+        ],
+        engine: { id: 'mafft', label: 'MAFFT', version: '7.526', mode: 'local-command' },
+      });
+    });
+    const alignmentWindow = page.locator('.motif-cs-window');
+    await expect(alignmentWindow).toBeVisible();
+    await expect(alignmentWindow.locator('.motif-cs-window-head-actions button')).not.toHaveCount(0);
+
+    // Park the window so its title bar lands under the popover column — the state
+    // that used to bury Maximize, Collapse and Close behind every one of these
+    // panels, with no way out because the popover is right-anchored and the
+    // control that would move it is the control it is covering.
+    const headBox = (await alignmentWindow.locator('.motif-cs-window-head').boundingBox())!;
+    const windowBox = (await alignmentWindow.boundingBox())!;
+    await page.mouse.move(headBox.x + 120, headBox.y + headBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(
+      headBox.x + 120 + (1432 - (windowBox.x + windowBox.width)),
+      headBox.y + headBox.height / 2 + (200 - windowBox.y),
+      { steps: 12 },
+    );
+    await page.mouse.up();
+
+    const placements = new Map<string, string>();
+    const covering: string[] = [];
+    const offscreen: string[] = [];
+    for (const tool of railTools) {
+      const panel = page.locator(`details[data-rail-tool="${tool}"]`);
+      if (!(await panel.getAttribute('open'))) await panel.locator(':scope > summary').click();
+      const placement = await readPlacement();
+      if (!placement) continue;
+      if (placement.covered.length > 0) covering.push(`${tool} covers ${placement.covered.join(' + ')}`);
+      if (placement.top < 0 || placement.left < 0
+        || placement.bottom > placement.viewport.height
+        || placement.right > placement.viewport.width) {
+        offscreen.push(`${tool} at ${placement.left},${placement.top}-${placement.right},${placement.bottom} in ${placement.viewport.width}x${placement.viewport.height}`);
+      }
+      // The bound has to follow wherever the popover landed, because the
+      // drag-resize takes its limit straight off the computed max-height.
+      expect(placement.top + placement.maxHeight,
+        `${tool} height bound runs past the viewport gutter`).toBeLessThanOrEqual(placement.viewport.height - gutter);
+      expect(placement.maxHeight, `${tool} height bound collapsed`).toBeGreaterThan(0);
+      placements.set(tool, `${placement.top}/${placement.maxHeight}`);
+      await panel.locator(':scope > summary').click();
+    }
+
+    expect(placements.size, `rail panels actually measured: ${[...placements.keys()].join(', ')}`).toBeGreaterThan(8);
+    expect(covering, `rail popovers burying the window controls: ${covering.join('; ')}`).toEqual([]);
+    expect(offscreen, `rail popovers off screen: ${offscreen.join('; ')}`).toEqual([]);
+    // A rail only works if the panel is in the same place every time. All of
+    // them share one answer for a given layout, and reopening does not move it.
+    expect(new Set(placements.values()).size,
+      `rail popovers disagreed about where to open: ${[...placements].map(([t, p]) => `${t}=${p}`).join(' ')}`).toBe(1);
+
+    const repeats: string[] = [];
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await settings.locator(':scope > summary').click();
+      const placement = (await readPlacement())!;
+      repeats.push(`${placement.top}/${placement.maxHeight}`);
+      await settings.locator(':scope > summary').click();
+    }
+    expect(new Set(repeats).size, `reopening moved the popover: ${repeats.join(' ')}`).toBe(1);
+    expect(repeats[0]).toBe(placements.get('settings'));
+
+    // Drag-resize must still reach the bound that goes with the solved position.
+    await settings.locator(':scope > summary').click();
+    const body = settings.locator('.motif-cs-tool-panel-body');
+    const handle = body.getByTestId('rail-popover-resize');
+    const handleBox = (await handle.boundingBox())!;
+    await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + handleBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(handleBox.x + handleBox.width / 2, 980 + 600, { steps: 16 });
+    await page.mouse.up();
+    const dragged = (await readPlacement())!;
+    expect(dragged.height).toBe(Math.round(dragged.maxHeight));
+    expect(dragged.bottom).toBeLessThanOrEqual(dragged.viewport.height);
+    expect(dragged.covered, `dragging the popover taller buried ${dragged.covered.join(' + ')}`).toEqual([]);
+  });
+
+  test('the annotations panel shows every feature it counts, and dragging it taller reveals more', async ({ page }) => {
+    await openArtifact(page, 1440, 980);
+    const toolsToggle = page.getByRole('button', { name: /Tools/ }).first();
+    if ((await toolsToggle.getAttribute('aria-pressed')) === 'true') await toolsToggle.click();
+
+    const panel = page.locator('details[data-rail-tool="annotations"]');
+    if (!(await panel.getAttribute('open'))) await panel.locator(':scope > summary').click();
+    const list = panel.locator('.motif-cs-feature-annotation-list');
+    await expect(list).toBeVisible();
+
+    // A row counts as shown only if the browser resolves it at its own centre.
+    // The list used to cap itself at min(24vh, 190px) — 190px at every viewport
+    // height above 792px — so it clipped 3 of 8 rows behind an overlay scrollbar
+    // that is invisible until you scroll, while the panel heading said "8 features".
+    const reach = async () => list.evaluate((el) => {
+      const rows = [...el.querySelectorAll<HTMLElement>(':scope > .motif-cs-row')];
+      const shown = rows.filter((row) => {
+        const rect = row.getBoundingClientRect();
+        const hit = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+        return !!hit && (hit === row || row.contains(hit));
+      });
+      return { total: rows.length, shown: shown.length, clientH: el.clientHeight, scrollH: el.scrollHeight };
+    });
+
+    const before = await reach();
+    // Guard the guard: with no rows this passes by checking nothing.
+    expect(before.total, 'feature rows rendered').toBeGreaterThan(5);
+    expect(before.shown, `feature rows reachable of ${before.total}`).toBe(before.total);
+    expect(before.scrollH - before.clientH, 'feature list content hidden inside its own cap').toBeLessThanOrEqual(1);
+
+    // The panel is well under the viewport bound here, so it grew to fit instead
+    // of scrolling — which is the whole point, but it means the assertion above
+    // would also pass if the list were merely tall enough by luck. Drag the
+    // popover taller and require the list to actually take the new space: a
+    // constant cap swallows it (measured 391px -> 598px moved the list 0px).
+    // The annotations details also contains the nested feature-editor panel, so
+    // `.motif-cs-tool-panel-body` alone matches two elements.
+    const body = panel.locator('.motif-cs-annotation-panel-body');
+    const handle = body.getByTestId('rail-popover-resize');
+    const handleBox = (await handle.boundingBox())!;
+    const listBefore = (await list.boundingBox())!.height;
+    await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + handleBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + handleBox.height / 2 + 260, { steps: 8 });
+    await page.mouse.up();
+
+    const listAfter = (await list.boundingBox())!.height;
+    expect(listAfter, 'feature list height after dragging the popover 260px taller').toBeGreaterThan(listBefore + 150);
+    // The popover must stay on screen while doing it.
+    const grown = (await body.boundingBox())!;
+    expect(grown.y + grown.height).toBeLessThanOrEqual(980);
   });
 
   test('a Tools rail popover grows leftward, shrinks rightward, and docks without stale dimensions', async ({ page }) => {
@@ -1714,6 +2076,22 @@ test.describe('Claude Science artifact campaign', () => {
     await downloadPromise;
     await expect(exportPanel.getByText(/Download requested for motif-inventory\.json/)).toBeVisible();
     await expect(page.getByTestId('session-durability-status')).toHaveText('unsaved changes');
+
+    // Everything above dispatches a SYNTHETIC beforeunload, which proves the
+    // listener is registered and calls preventDefault. It cannot prove Chromium
+    // raises its dialog -- a synthetic event skips the browser's own machinery,
+    // so that assertion passes just as happily on a build where the user is
+    // never actually warned. Close the tab the way a user does and require the
+    // browser dialog itself.
+    const dialogs: string[] = [];
+    page.on('dialog', async (dialog) => {
+      dialogs.push(dialog.type());
+      await dialog.dismiss();
+    });
+    await page.close({ runBeforeUnload: true });
+    await expect.poll(() => dialogs, {
+      message: 'a real tab close with unsaved changes must raise the browser beforeunload dialog',
+    }).toContain('beforeunload');
   });
 
   test('250k records keep sequence and translation DOM bounded and an empty inventory exports only real data', async ({ page }) => {
@@ -2181,6 +2559,48 @@ test.describe('Claude Science artifact campaign', () => {
     expect(afterHeight).toBeLessThan(beforeHeight);
     await expect(rowResize).toHaveAttribute('aria-valuenow', String(afterHeight));
 
+    const main = page.locator('.motif-cs-main');
+    const dimensions = await main.evaluate((element) => ({ clientWidth: element.clientWidth, scrollWidth: element.scrollWidth }));
+    expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.clientWidth + 2);
+  });
+
+  test('the sequence pane keeps widening while the map still has width to give', async ({ page }) => {
+    await openArtifact(page, 1920, 1080);
+
+    const sequence = page.locator('.motif-cs-sequence-column');
+    const map = page.locator('.motif-cs-map-column');
+    const separator = page.getByRole('separator', { name: 'Resize sequence and map panes' });
+    await expect(separator).toBeVisible();
+
+    const startWidth = (await sequence.boundingBox())!.width;
+    const handle = (await separator.boundingBox())!;
+    const y = handle.y + handle.height / 2;
+    await page.mouse.move(handle.x + handle.width / 2, y);
+    await page.mouse.down();
+    // Well past any ceiling: this asserts where the drag STOPS, not where the pointer went.
+    await page.mouse.move(handle.x + handle.width / 2 + 900, y, { steps: 12 });
+    await page.mouse.up();
+
+    const widened = (await sequence.boundingBox())!.width;
+    const mapWidth = (await map.boundingBox())!.width;
+
+    // A flat 760px cap used to stop this drag at every viewport width, while the map
+    // sat on hundreds of pixels of unused slack. Both numbers matter: the pane has to
+    // clear the old cap, and it still must not eat into the map's 300px minimum.
+    expect(widened).toBeGreaterThan(startWidth);
+    expect(widened).toBeGreaterThan(800);
+    expect(mapWidth).toBeGreaterThanOrEqual(300);
+
+    // aria-valuenow reports the flex BASIS the drag committed, which is not always the
+    // rendered width: the map declines to shrink below its own content, so it can end
+    // up wider than the basis asked for and the sequence correspondingly narrower.
+    // Assert the invariant that is actually true rather than an equality that is not.
+    const valueMax = Number(await separator.getAttribute('aria-valuemax'));
+    const valueNow = Number(await separator.getAttribute('aria-valuenow'));
+    expect(valueNow).toBeGreaterThan(760);
+    expect(valueNow).toBeLessThanOrEqual(valueMax);
+
+    // Widening must not push the workspace into horizontal overflow.
     const main = page.locator('.motif-cs-main');
     const dimensions = await main.evaluate((element) => ({ clientWidth: element.clientWidth, scrollWidth: element.scrollWidth }));
     expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.clientWidth + 2);
@@ -2831,6 +3251,140 @@ test.describe('Claude Science artifact campaign', () => {
     expect(counterclockwise).not.toBe(clockwise);
   });
 
+  test('the map keeps saying what is selected while the view is zoomed', async ({ page }) => {
+    // The status corner reports two independent facts — the view transform and the
+    // selection — and they used to share one slot through a ternary the zoom badge
+    // always won. So zooming left the selection drawn on the map and unnamed, while
+    // the paths stayed live. A pan alone was enough; the badge could still read 100%.
+    await openArtifact(page, 1180, 900);
+    const mapFrame = page.locator('.motif-cs-map-frame');
+    const hint = mapFrame.locator('.motif-cs-map-hint');
+    const svg = mapFrame.locator('svg.motif-plasmid-map');
+    const svgBox = (await svg.boundingBox())!;
+    const centre = { x: svgBox.x + svgBox.width / 2, y: svgBox.y + svgBox.height / 2 };
+    const radius = Math.min(svgBox.width, svgBox.height) * 0.28;
+
+    await page.mouse.move(centre.x, centre.y - radius);
+    await page.mouse.down();
+    await page.mouse.move(centre.x + radius, centre.y, { steps: 8 });
+    await page.mouse.up();
+
+    const atFit = (await hint.textContent()) ?? '';
+    expect(atFit).toContain('range');
+    expect(atFit).not.toContain('%');
+    const selectionPaths = await mapFrame.locator('.motif-pm-selection').count();
+    expect(selectionPaths).toBeGreaterThan(0);
+
+    for (let i = 0; i < 4; i += 1) await page.getByRole('button', { name: 'Zoom in' }).click();
+    await expect(mapFrame.locator('.motif-pm-viewport')).toHaveAttribute('transform', /scale\((?!1\))/);
+
+    // Both facts, not one of them, joined in that order. The shape is written out
+    // literally rather than built from whatever produces the percentage — an
+    // expectation assembled from the same expression as the value under test moves
+    // with it and passes either way.
+    const zoomed = (await hint.textContent()) ?? '';
+    expect(zoomed).toMatch(/^\d+% · range \d/);
+    // ...and the range half is byte-identical to the fitted reading: zoom changes how
+    // the map is drawn, not what is selected. Restoring the ternary drops this half
+    // and fails here.
+    expect(zoomed.split(' · ')).toHaveLength(2);
+    expect(zoomed.split(' · ')[1]).toBe(atFit);
+    expect(await mapFrame.locator('.motif-pm-selection').count()).toBe(selectionPaths);
+  });
+
+  test('map clicks resolve the same base whether the view is fitted, panned, or zoomed', async ({ page }) => {
+    await openArtifact(page, 1180, 900);
+    const svg = page.locator('.motif-cs-map-frame svg.motif-plasmid-map');
+    const svgBox = (await svg.boundingBox())!;
+    const centre = { x: svgBox.x + svgBox.width / 2, y: svgBox.y + svgBox.height / 2 };
+
+    // Independent oracle: push the client point through the viewport group's OWN
+    // screen matrix and measure it against the backbone's rendered box. It shares
+    // no code with the handler under test, so it cannot fail in the same
+    // direction — which is the whole point, since the two coordinate spaces
+    // involved are numerically identical at the default fit.
+    // Read the record length rather than assuming one: an oracle that hardcodes
+    // a length reports the implementation as broken whenever the fixture changes.
+    const sequenceLength = await page.evaluate(() => {
+      const text = [...document.querySelectorAll('.motif-cs-panel-meta, .motif-cs-pane-title')]
+        .map((node) => node.textContent ?? '')
+        .find((value) => /[\d,]+\s*bp/.test(value));
+      const match = text?.match(/([\d,]+)\s*bp/);
+      return match ? Number(match[1].replace(/,/g, '')) : null;
+    });
+    expect(sequenceLength, 'could not read the record length for the oracle').toBeGreaterThan(100);
+
+    const baseUnderPoint = (client: { x: number; y: number }) => page.evaluate(([point, length]) => {
+      const root = document.querySelector<SVGSVGElement>('.motif-cs-map-frame svg.motif-plasmid-map');
+      const group = root?.querySelector<SVGGElement>('.motif-pm-viewport');
+      const backbone = group?.querySelector<SVGGraphicsElement>('.motif-pm-backbone');
+      if (!root || !group || !backbone) return null;
+      const svgPoint = root.createSVGPoint();
+      svgPoint.x = (point as { x: number; y: number }).x;
+      svgPoint.y = (point as { x: number; y: number }).y;
+      const local = svgPoint.matrixTransform(group.getScreenCTM()!.inverse());
+      const box = backbone.getBBox();
+      const centreX = box.x + (box.width / 2);
+      const centreY = box.y + (box.height / 2);
+      const degrees = ((Math.atan2(local.y - centreY, local.x - centreX) * 180 / Math.PI) + 90 + 360) % 360;
+      return Math.round((degrees / 360) * (length as number)) + 1;
+    }, [client, sequenceLength] as const);
+
+    const clickedBase = async () => {
+      const meta = await page.locator('.motif-cs-sequence-panel .motif-cs-panel-meta').textContent();
+      const match = (meta ?? '').trim().match(/^([\d,]+)-/);
+      return match ? Number(match[1].replace(/,/g, '')) : null;
+    };
+
+    const probe = { x: centre.x + (Math.min(svgBox.width, svgBox.height) * 0.3), y: centre.y };
+    const offCentre = { x: centre.x - 120, y: centre.y - 120 };
+
+    // Three viewports: a pristine fit; a pan with the zoom badge still reading
+    // 100%; and an off-centre zoom. The middle one matters most — a click can be
+    // hundreds of bases wrong while nothing on screen says the view has moved.
+    const seen: Array<{ label: string; expected: number; actual: number | null }> = [];
+    for (const step of [
+      { label: 'fit', prepare: async () => {} },
+      {
+        label: 'panned at fit',
+        prepare: async () => {
+          await svg.dispatchEvent('wheel', { deltaY: 180, clientX: centre.x, clientY: centre.y });
+        },
+      },
+      {
+        label: 'zoomed off centre',
+        prepare: async () => {
+          await svg.dispatchEvent('wheel', {
+            deltaY: -260, clientX: offCentre.x, clientY: offCentre.y, ctrlKey: true,
+          });
+        },
+      },
+    ]) {
+      await step.prepare();
+      await page.waitForTimeout(220);
+      const expected = await baseUnderPoint(probe);
+      expect(expected, `oracle failed to resolve a base at ${step.label}`).not.toBeNull();
+      await page.mouse.click(probe.x, probe.y);
+      await page.waitForTimeout(160);
+      seen.push({ label: step.label, expected: expected!, actual: await clickedBase() });
+    }
+
+    for (const { label, expected, actual } of seen) {
+      expect(actual, `no base was selected at ${label}`).not.toBeNull();
+      // Allow the half-base rounding at the seam and nothing else. The defect
+      // this guards against was 153-803 bp, so the tolerance has room to spare.
+      expect(
+        Math.min(Math.abs(actual! - expected), sequenceLength! - Math.abs(actual! - expected)),
+        `${label}: clicked the position of base ${expected} but the app selected ${actual}`,
+      ).toBeLessThanOrEqual(2);
+    }
+
+    // The view really did move between steps, so the three checks above were not
+    // three copies of the same easy case.
+    await expect(page.locator('.motif-cs-map-frame .motif-pm-viewport')).toHaveAttribute('transform', /scale\((?!1\))/);
+    expect(new Set(seen.map((entry) => entry.expected)).size).toBeGreaterThan(1);
+  });
+
   test('narrow linear maps keep the range readout clear of zoom controls', async ({ page }) => {
     await openArtifact(page, 640, 700);
     await page.evaluate(() => window.motifRenderInventory?.([{
@@ -2847,10 +3401,28 @@ test.describe('Claude Science artifact campaign', () => {
     const svgBox = await svg.boundingBox();
     expect(svgBox).toBeTruthy();
 
-    const y = svgBox!.y + svgBox!.height * 0.52;
-    await page.mouse.move(svgBox!.x + svgBox!.width * 0.28, y);
+    // Drag along a row that is actually the range-drag surface. A fixed fraction of
+    // the SVG height is not: enzyme labels are drawn across the middle of a short
+    // linear map, and a press that lands on one selects that cluster instead of
+    // starting a range — which leaves no range and no readout to place, so this
+    // test would fail describing the readout rather than the missed drag.
+    const startX = svgBox!.x + svgBox!.width * 0.28;
+    const endX = svgBox!.x + svgBox!.width * 0.55;
+    const y = await page.evaluate(([x0, x1, top, height]) => {
+      for (let step = 0; step <= 20; step += 1) {
+        const candidate = top + (height * (2 + step * 3)) / 100;
+        const onBackground = [x0, x1].every((x) => document
+          .elementFromPoint(x, candidate)
+          ?.classList.contains('motif-pm-bg'));
+        if (onBackground) return candidate;
+      }
+      return -1;
+    }, [startX, endX, svgBox!.y, svgBox!.height]);
+    expect(y, 'no row of the linear map accepts a range drag').toBeGreaterThan(0);
+
+    await page.mouse.move(startX, y);
     await page.mouse.down();
-    await page.mouse.move(svgBox!.x + svgBox!.width * 0.55, y, { steps: 8 });
+    await page.mouse.move(endX, y, { steps: 8 });
     await page.mouse.up();
 
     const hint = mapFrame.locator('.motif-cs-map-hint');
@@ -3136,7 +3708,7 @@ test.describe('Claude Science artifact campaign', () => {
     });
     const stats = page.getByTestId('msa-stats-bar');
     await expect(stats).toContainText('92.9% avg to template');
-    await expect(stats).toContainText('1 differences in overlap');
+    await expect(stats).toContainText('1 columns differ from template');
     await expect(page.getByRole('row', { name: /Read B; 0 mismatches; 6 ungapped bp; 100\.0 percent/ })).toBeVisible();
   });
 
@@ -3216,7 +3788,7 @@ test.describe('Claude Science artifact campaign', () => {
     await expect(page.getByTestId('msa-run-button')).toBeEnabled();
     await page.getByTestId('msa-run-button').click();
     await expect(page.getByTestId('msa-stats-bar')).toBeVisible({ timeout: 15_000 });
-    await expect(windowPanel.locator('.motif-cs-msa-toolbar .motif-cs-chip')).toHaveText('Motif local preview');
+    await expect(windowPanel.getByTestId('msa-provenance')).toContainText('Motif local preview');
 
     const overview = page.getByTestId('msa-overview');
     const matrix = page.getByRole('region', { name: 'Scrollable alignment matrix viewport', exact: true });
@@ -3239,7 +3811,10 @@ test.describe('Claude Science artifact campaign', () => {
     await expect(windowPanel.locator('.motif-cs-msa-matrix-row').first().getByRole('button')).toHaveAttribute('aria-label', templateButtonName!);
     await expect(windowPanel.locator('.motif-cs-msa-matrix-row').first()).toContainText('Template');
     await expect(windowPanel.locator('.motif-cs-msa-matrix-row').first()).toContainText('Δ');
+    // Row order lives in the View menu now, beside the other display preferences.
+    await windowPanel.getByTestId('msa-view-menu-button').click();
     await page.getByLabel('Sort').selectOption('mismatches');
+    await windowPanel.getByTestId('msa-view-menu-button').click();
     await expect(windowPanel.locator('.motif-cs-msa-matrix-row').first().getByRole('button')).toHaveAttribute('aria-label', templateButtonName!);
 
     const renderedSymbols = await page.locator('.motif-cs-msa-symbol').count();
@@ -3365,10 +3940,19 @@ test.describe('Claude Science artifact campaign', () => {
     await expect(settings).not.toHaveAttribute('open', '');
     const body = dialog.locator('.motif-cs-window-body');
     const toolbar = dialog.getByTestId('msa-result-toolbar');
-    const exportRow = dialog.locator('.motif-cs-msa-export-row');
+    const exportTrigger = dialog.getByTestId('msa-export-menu-button');
+    // Scroll as far as this panel allows and assert the toolbar holds its place
+    // either way. The body used to be guaranteed to overflow at phone width, so
+    // this test could require scrollTop > 0; the controls now fit, and pinning a
+    // viewport that still overflows would be tuning the test to a magic number
+    // rather than testing the behaviour. What matters is unchanged: wherever the
+    // body ends up, the toolbar stays put, visible and clickable, and export
+    // rides along in it instead of sitting below a screenful of residues.
+    // (Asserting that scrollTop landed at scrollHeight - clientHeight would be a
+    // tautology — the platform clamps it there for every element, scrollable or
+    // not. The assertions below carry the actual claim.)
     await body.evaluate((element) => { element.scrollTop = element.scrollHeight; });
-    await expect.poll(() => body.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
-    await expect(exportRow).toBeVisible();
+    await expect(exportTrigger).toBeVisible();
     await expect(toolbar).toBeVisible();
 
     const toolbarGeometry = await toolbar.evaluate((element) => {
@@ -3596,15 +4180,24 @@ test.describe('Claude Science artifact campaign', () => {
     await expect(windowPanel).toBeVisible();
     await picker.selectOption('view-state-second');
     await windowPanel.getByRole('button', { name: 'All letters' }).click();
-    await windowPanel.getByLabel('Sort').selectOption('name');
+    // Row order and the export format now live inside the View and Export
+    // menus, so each has to be opened before its control is reachable. The
+    // preferences under test are unchanged.
     const viewButton = windowPanel.getByTestId('msa-view-menu-button');
     await viewButton.click();
+    await windowPanel.getByLabel('Sort').selectOption('name');
     await windowPanel.getByTestId('msa-view-menu').getByRole('checkbox', { name: 'Residue colors' }).check();
     await windowPanel.getByRole('button', { name: 'Increase alignment font size' }).click();
     await windowPanel.getByRole('button', { name: 'Text' }).click();
+    const exportMenuButton = windowPanel.getByTestId('msa-export-menu-button');
+    await exportMenuButton.click();
     const exportFormat = windowPanel.getByRole('combobox', { name: 'Export', exact: true });
     await exportFormat.selectOption('json');
 
+    // With a menu open, the first Escape dismisses the menu; only once nothing
+    // is covering the window does Escape reach the window itself.
+    await page.keyboard.press('Escape');
+    await expect(windowPanel.getByTestId('msa-export-menu')).toBeHidden();
     await page.keyboard.press('Escape');
     await expect(windowPanel).toBeHidden();
     await expect(alignmentSummary).toBeFocused();
@@ -3613,11 +4206,14 @@ test.describe('Claude Science artifact campaign', () => {
 
     await expect(picker).toHaveValue('view-state-second');
     await expect(windowPanel.getByRole('button', { name: 'Text' })).toHaveAttribute('aria-pressed', 'true');
+    await exportMenuButton.click();
+    await expect(windowPanel.getByTestId('msa-export-menu')).toBeVisible();
     await expect(exportFormat).toHaveValue('json');
+    await page.keyboard.press('Escape');
     await windowPanel.getByRole('button', { name: 'Viewer' }).click();
     await expect(windowPanel.getByRole('button', { name: 'All letters' })).toHaveAttribute('aria-pressed', 'true');
-    await expect(windowPanel.getByLabel('Sort')).toHaveValue('name');
     await viewButton.click();
+    await expect(windowPanel.getByLabel('Sort')).toHaveValue('name');
     await expect(windowPanel.getByTestId('msa-view-menu').getByRole('checkbox', { name: 'Residue colors' })).toBeChecked();
     await expect(windowPanel.locator('.motif-cs-msa-view-font-row > span')).toHaveText('Aa 12 px');
   });
@@ -3783,6 +4379,7 @@ test.describe('Claude Science artifact campaign', () => {
     const copyStatus = windowPanel.getByTestId('msa-copy-status');
     await expect(copyStatus).toHaveAttribute('role', 'status');
     await expect(copyStatus).toHaveAttribute('aria-live', 'polite');
+    await windowPanel.getByTestId('msa-export-menu-button').click();
     await windowPanel.locator('.motif-cs-msa-export-row').getByRole('button', { name: 'Copy', exact: true }).click();
     await expect(copyStatus).toBeVisible();
     await expect(copyStatus).toHaveText('Aligned FASTA copied');
@@ -3820,6 +4417,7 @@ test.describe('Claude Science artifact campaign', () => {
     ));
     expect(templatePositions).toEqual(['gap', 'gap', '1', '2', 'gap', '3', '4', 'gap', 'gap']);
 
+    await windowPanel.getByTestId('msa-goto-menu-button').click();
     const columnInput = windowPanel.getByRole('spinbutton', { name: 'Go to alignment column' });
     await columnInput.fill('6');
     await columnInput.press('Enter');
@@ -3863,6 +4461,7 @@ test.describe('Claude Science artifact campaign', () => {
     }));
 
     const dialog = page.getByRole('dialog', { name: 'Multiple Sequence Alignment' });
+    await dialog.getByTestId('msa-goto-menu-button').click();
     const coordinateSystem = dialog.getByTestId('msa-coordinate-system');
     const coordinateInput = dialog.getByTestId('msa-coordinate-input');
     await expect(coordinateSystem).toBeVisible();
@@ -3976,10 +4575,16 @@ test.describe('Claude Science artifact campaign', () => {
     await page.keyboard.up('Shift');
     await expect.poll(() => matrix.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);
 
+    // At this size the window body must not scroll at all: the matrix sizes to
+    // the panel and owns its own scrolling, so nothing is left underneath to
+    // slide. A vertical wheel must also leave the pan position alone — the
+    // dominant axis is vertical, and this test is about the pan rail.
     const windowBody = windowPanel.locator('.motif-cs-window-body');
-    await windowBody.evaluate((element) => { element.scrollTop = 0; });
+    expect(await windowBody.evaluate((element) => element.scrollHeight - element.clientHeight)).toBeLessThanOrEqual(1);
+    const panBefore = await matrix.evaluate((element) => element.scrollLeft);
     await page.mouse.wheel(0, 700);
-    await expect.poll(() => windowBody.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+    expect(await windowBody.evaluate((element) => element.scrollTop)).toBe(0);
+    expect(await matrix.evaluate((element) => element.scrollLeft)).toBe(panBefore);
 
     await page.screenshot({ path: path.join(msaCampaignOutputDir, `msa-pan-rail-${browserName}-1440x900.png`) });
   });
@@ -4002,7 +4607,7 @@ test.describe('Claude Science artifact campaign', () => {
     await page.locator('.motif-cs-msa-import-fields select').nth(1).selectOption('clustal-omega');
     await page.locator('.motif-cs-msa-import-fields input').last().fill('1.2.4');
     await page.getByTestId('msa-import-button').click();
-    await expect(page.getByTestId('msa-result-toolbar').getByText('Clustal Omega 1.2.4', { exact: true })).toBeVisible();
+    await expect(page.getByTestId('msa-provenance')).toContainText('Clustal Omega 1.2.4');
     await expect(page.getByTestId('msa-stats-bar')).toContainText('10 columns');
 
     const saved = await page.evaluate(() => window.motifGetAlignments());
@@ -4010,17 +4615,22 @@ test.describe('Claude Science artifact campaign', () => {
     expect(saved[0].engine).toMatchObject({ id: 'clustal-omega', label: 'Clustal Omega', version: '1.2.4', mode: 'local-command' });
 
     await page.getByRole('button', { name: 'Text' }).click();
+    await page.getByTestId('msa-export-menu-button').click();
     await page.getByTestId('msa-workspace').getByRole('combobox', { name: 'Export', exact: true }).selectOption('clustal');
+    await page.getByTestId('msa-export-menu-button').click();
+    await expect(page.getByTestId('msa-export-menu')).toBeHidden();
     const exportedClustal = await page.getByLabel('CLUSTAL alignment text').inputValue();
     expect(exportedClustal).toMatch(/sample_A\s+ACGT--ACGT/);
-    await page.locator('.motif-cs-msa-source > summary').click();
+    // Once a result exists the source banner collapses out of the way, and
+    // "Edit inputs" is the affordance that brings it back.
+    await page.getByTestId('msa-edit-inputs').click();
     await page.getByTestId('msa-workspace').getByRole('button', { name: 'Aligned file' }).click();
     await page.locator('.motif-cs-msa-import-fields input').first().fill('Round-tripped CLUSTAL');
     await page.locator('.motif-cs-msa-import-fields select').nth(1).selectOption('imported');
     await page.locator('.motif-cs-msa-import-fields input').last().fill('');
     await input.fill(exportedClustal);
     await page.getByTestId('msa-import-button').click();
-    await expect(page.locator('.motif-cs-msa-toolbar .motif-cs-chip')).toHaveText('Imported alignment');
+    await expect(page.getByTestId('msa-provenance')).toContainText('Imported alignment');
     const roundTripped = await page.evaluate(() => window.motifGetAlignments());
     expect(roundTripped).toHaveLength(2);
     expect(roundTripped[1].rows.map((row: { aligned: string }) => row.aligned)).toEqual(roundTripped[0].rows.map((row: { aligned: string }) => row.aligned));
@@ -4077,7 +4687,14 @@ test.describe('Claude Science artifact campaign', () => {
     await page.setViewportSize({ width: 390, height: 760 });
     const windowPanel = page.locator('.motif-cs-window').filter({ has: page.getByTestId('msa-workspace') });
     await expect(windowPanel).toBeVisible();
-    await expect(windowPanel.locator('.motif-cs-msa-source > summary .motif-cs-chip')).toHaveText('MAFFT');
+    // The engine has to be READABLE, not merely present in the DOM. The source
+    // summary that used to be asserted here is display:none in exactly the state
+    // where its chip renders the engine label, so toHaveText passed against
+    // markup nobody can see — inside the test named for staying accessible at
+    // phone width. The provenance summary is where a reader actually finds it.
+    const provenance = windowPanel.getByTestId('msa-provenance').locator('summary');
+    await expect(provenance).toBeVisible();
+    await expect(provenance).toContainText('MAFFT');
     expect(await page.evaluate(() => window.motifGetAlignments()[0]?.engine.version)).toBe('7.526');
     await expect(windowPanel.locator('.motif-cs-msa-row-name-trailing')).toHaveText(['reference', 'ins3', 'del3']);
 
@@ -4096,6 +4713,7 @@ test.describe('Claude Science artifact campaign', () => {
     await page.screenshot({ path: path.join(msaCampaignOutputDir, 'msa-claude-dark-viewer-390x760.png') });
     await page.getByRole('button', { name: 'Text' }).click();
     await expect(page.getByLabel('Aligned FASTA alignment text')).toHaveValue(/>Campaign2_reference/);
+    await windowPanel.getByTestId('msa-export-menu-button').click();
     await windowPanel.getByRole('combobox', { name: 'Export', exact: true }).selectOption('clustal');
     await expect(page.getByLabel('CLUSTAL alignment text')).toHaveValue(/CLUSTAL W/);
 
@@ -4104,7 +4722,7 @@ test.describe('Claude Science artifact campaign', () => {
     await page.screenshot({ path: path.join(msaCampaignOutputDir, 'msa-claude-dark-390x760.png') });
   });
 
-  test('MSA 100-row density preserves suffixes, semantics, and chained scrolling', async ({ page }) => {
+  test('MSA 100-row density preserves suffixes, semantics, and panel-owned scrolling', async ({ page }) => {
     test.setTimeout(120_000);
     await openArtifact(page, 1180, 820);
     await page.evaluate(() => {
@@ -4178,7 +4796,13 @@ test.describe('Claude Science artifact campaign', () => {
     });
     await page.mouse.move(visibleMatrixPoint.x, visibleMatrixPoint.y);
     await page.mouse.wheel(0, 700);
-    await expect.poll(() => windowBody.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+    // A hundred rows are reachable inside the matrix, so the wheel scrolls the
+    // matrix and the window body stays put. It used to be the other way round:
+    // the matrix was capped short, the workspace overflowed, and reaching row
+    // 100 meant scrolling the entire UI — controls and all — off the top.
+    await expect.poll(() => matrixViewport.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+    expect(await windowBody.evaluate((element) => element.scrollTop)).toBe(0);
+    await matrixViewport.evaluate((element) => { element.scrollTop = element.scrollHeight; });
 
     const lastRowVisible = await windowPanel.locator('.motif-cs-msa-matrix-row').nth(99).evaluate((row) => {
       const rowRect = row.getBoundingClientRect();
@@ -4186,7 +4810,13 @@ test.describe('Claude Science artifact campaign', () => {
       return rowRect.top >= viewportRect.top - 1 && rowRect.bottom <= viewportRect.bottom + 1;
     });
     expect(lastRowVisible).toBe(true);
+    // Export stays reachable at this density without scrolling anywhere: it is
+    // a toolbar menu now rather than a strip below a hundred rows of residues.
+    await expect(windowPanel.getByTestId('msa-export-menu-button')).toBeInViewport();
+    await windowPanel.getByTestId('msa-export-menu-button').click();
     await expect(windowPanel.locator('.motif-cs-msa-export-row')).toBeInViewport();
+    await windowPanel.getByTestId('msa-export-menu-button').click();
+    await expect(windowPanel.getByTestId('msa-export-menu')).toBeHidden();
 
     const accessibility = await new AxeBuilder({ page }).include('.motif-cs-window').analyze();
     expect(accessibility.violations).toEqual([]);
@@ -4360,7 +4990,11 @@ test.describe('Claude Science artifact campaign', () => {
   });
 
   test('eight AB1 reads stay synchronized, virtualized, and reviewable at compact sizes', async ({ page }) => {
-    await openArtifact(page, 1180, 820);
+    // 750 tall, not 820: the alignment window opens at viewportHeight - 150, so
+    // this is the viewport that still yields the compact 600px panel this test
+    // is named for. Left at 820 the panel is roomy, everything fits, and the
+    // scroll hand-off below would never be exercised at all.
+    await openArtifact(page, 1180, 750);
     await page.locator('select[name="artifact-theme"]').selectOption('claude-light');
     await page.evaluate(() => {
       const template = 'ACGTTGCA'.repeat(45);

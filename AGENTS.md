@@ -12,6 +12,13 @@ npm test
 npm run preview:motif
 ```
 
+Use `npm run typecheck`, never `npx tsc --noEmit`. The root `tsconfig.json` is
+solution-style (`"files": []` plus project references), so `--noEmit` finds no
+files and exits 0 unconditionally, while `tsc -b` follows the project
+references. It is not a weaker check; it does not check this repository.
+`scripts/__tests__/gate-parity.test.mjs` fails if the `typecheck` script drifts
+to `--noEmit`.
+
 For visible changes, open `preview/motif-artifact.html` in a real browser and
 exercise wide, narrow, light, dark, resized-panel, mouse, and keyboard states.
 A passing DOM assertion is not proof that a control is legible or reachable.
@@ -56,22 +63,24 @@ A passing DOM assertion is not proof that a control is legible or reachable.
 - Treat Database JSON and workspace ZIP as portable checkpoints, not encrypted
   durable storage.
 - Connector or remote-mutation changes require an explicit, separately
-  reviewed integration campaign. Keep model-facing tools narrow and typed;
+  reviewed integration change. Keep model-facing tools narrow and typed;
   never expose generic DOM, eval, shell, or filesystem bridges.
 
 ## Validation before handoff
 
 ```bash
-npm run typecheck
-npm run lint
-npm test
-npm run test:plugin
-npm run check:css-tokens
-npm run check:aria-controls
-npm run build:motif
-npm run test:e2e
-npm run test:e2e:msa
+npm run gate
 ```
+
+That runs the same checks as CI, in the same order. Keeping the sequence in one
+command avoids drift between contributor guidance and the workflow.
+`scripts/__tests__/gate-parity.test.mjs` fails if `gate` and the workflow stop
+agreeing in either direction.
+
+Read the `N passed / N failed` summary line, not only the exit code of a
+pipeline: `npm run test:e2e | tail -40` reports `tail`'s exit code. The browser
+specs also self-skip when their environment variable is unset, so an exit code
+of 0 can mean nothing ran.
 
 Also run `npm run validate:plugin` when the Claude CLI is available. Report any
 skips, external-tool assumptions, and generated output hashes explicitly.

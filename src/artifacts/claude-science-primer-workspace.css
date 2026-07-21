@@ -698,6 +698,7 @@
 .motif-cs-primer-workspace-footer {
   flex: 0 0 auto;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 14px;
@@ -707,13 +708,18 @@
   background: var(--panel-bg);
 }
 
+/* The status carries the QC verdict, so it wraps rather than ellipsising: the
+   ΔTm sits at the end of the sentence and was the first thing cut. It is the
+   only yielding item next to a rigid 858px button block, so it also needs a
+   flex-basis small enough to stay on the buttons' row at the default window
+   width, and wrap onto its own row rather than collapse to 0 below that. */
 .motif-cs-primer-live-status {
+  flex: 1 1 180px;
   min-width: 0;
-  overflow: hidden;
   color: var(--text-muted);
   font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .motif-cs-primer-footer-actions {
@@ -794,7 +800,11 @@
     flex-direction: column;
   }
 
+  /* The footer is a column here, so the base rule's flex-basis would be read as
+     a height and give the status 180px of empty box. It already spans the full
+     width in a column, so it needs no basis at all. */
   .motif-cs-primer-live-status {
+    flex: 0 0 auto;
     white-space: normal;
   }
 

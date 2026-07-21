@@ -7,6 +7,10 @@ const here = dirname(fileURLToPath(import.meta.url));
 const artifactSource = readFileSync(resolve(here, '..', 'motif-artifact.tsx'), 'utf8');
 const artifactCss = readFileSync(resolve(here, '..', 'motif-artifact.css'), 'utf8');
 const primerWorkspaceSource = readFileSync(resolve(here, '..', 'ClaudeSciencePrimerWorkspace.tsx'), 'utf8');
+const plasmidMapCss = readFileSync(
+  resolve(here, '..', '..', 'components', 'plasmid-map', 'plasmid-map.css'),
+  'utf8',
+);
 
 function sliceBetween(startNeedle: string, endNeedle: string): string {
   const start = artifactSource.indexOf(startNeedle);
@@ -32,6 +36,79 @@ describe('Claude Science accessibility and interaction guards', () => {
     expect(artifactSource).toContain("aria-label={payload.records.length === 0 ? 'Sequence workspace; no records open' : undefined}");
     expect(artifactSource).toContain("role={payload.records.length > 0 ? 'tablist' : undefined}");
     expect(artifactCss).toContain('.motif-cs-skip-link:focus-visible');
+  });
+
+  it('gives the Tools rail a skip link, because sequential Tab prices it out of reach', () => {
+    // Measured at 1440x900 with real Tab keys: the first rail tool was stop 124
+    // of 139, behind the entire workspace. That cost is effectively unreachable
+    // for a keyboard user. Via this link the
+    // cost is 2 Tab + Enter + 2 Tab, and all fifteen tools then follow in order.
+    expect(artifactSource).toContain('<a className="motif-cs-skip-link" href="#motif-cs-tools-pane">Skip to tools</a>');
+
+    // The href and the id must agree. They did not in the first draft of this
+    // fix -- the link pointed at #motif-cs-tools while the pane was
+    // #motif-cs-tools-pane -- and nothing failed anywhere. Enter simply moved
+    // focus nowhere: no console error, no missing target, the link still looked
+    // right in the DOM. Only walking the focus afterwards caught it, so pin the
+    // pair rather than the two strings independently.
+    const skipHref = artifactSource.match(/className="motif-cs-skip-link" href="#([\w-]+)">Skip to tools/)?.[1];
+    expect(skipHref, 'Skip to tools link is missing its href').toBeTruthy();
+    expect(artifactSource, `no element carries id="${skipHref}" -- the skip link points at nothing`)
+      .toContain(`id="${skipHref}"`);
+
+    // An href jump moves focus only if the target is focusable, so the rail
+    // needs tabIndex -1 in EVERY placement. It previously had one only while
+    // floating, which is the placement the link is least needed in.
+    const railPane = sliceBetween('key="tools-pane"', 'className="motif-cs-pane-title"');
+    expect(railPane).toContain('id="motif-cs-tools-pane"');
+    expect(railPane).toContain('tabIndex={-1}');
+    expect(railPane, 'the landing target needs a name to announce on arrival')
+      .toContain("aria-label={toolsFloating ? 'Tools pane' : 'Tools'}");
+  });
+
+  it('keeps both pane splitters and map features visibly focusable', () => {
+    // The filed premise was that these show NO focus indicator because they
+    // compute `outline: none 0px`. That reading is right and the conclusion is
+    // wrong: every one of them sets `outline: none` deliberately and paints its
+    // indicator into background / ::after / stroke instead. Measured by pixel
+    // diff between rest and a real Tab, at 1440x900:
+    //   vertical splitter   23.13% of its pixels repaint  -- was already fine
+    //   stacked splitter     1.65% -> 9.36% after this fix
+    //   map feature arc      1.08% -> 27.46% after this fix
+    // So only the latter two were real, and a probe reading outline and
+    // box-shadow alone cannot tell any of the three apart.
+
+    // Vertical splitter: full-length accent stripe plus accent grip. Unchanged,
+    // guarded so the refutation does not get "fixed" by a later reviewer.
+    expect(artifactCss).toMatch(
+      /\.motif-cs-resize-handle:hover,\s*\.motif-cs-resize-handle:focus-visible,[\s\S]*?background:\s*\n?\s*linear-gradient\(to right, transparent 0 2px, var\(--accent\) 2px 4px/,
+    );
+
+    // Stacked splitter: its grip is 34px wide on a handle that spans the whole
+    // workspace, so a grip-only recolour is invisible at that scale. Both
+    // stacked rules take the full-length line.
+    const stackedFocusRules = artifactCss.match(
+      /\.motif-cs-stacked-resize-handle(\[data-pane="sequence"\])?:focus-visible \{[^}]*\}/g,
+    ) ?? [];
+    expect(stackedFocusRules.length, 'expected a focus rule per stacked-handle layout').toBe(3);
+    for (const rule of stackedFocusRules) {
+      expect(rule, 'stacked handle focus must light the whole separator, not just its grip')
+        .toContain('linear-gradient(to bottom, transparent 0 3px, var(--accent) 3px 5px, transparent 5px 100%)');
+    }
+
+    // Map feature arcs: undiluted accent at the app's 2px, not a 0.7px stroke
+    // mixed 30% into the feature's own colour. The dilution is what made it
+    // read as absent -- against a coloured arc, 70% accent is barely a shift.
+    const mapFeatureFocus = plasmidMapCss.match(
+      /\.motif-pm-feature:focus-visible \.motif-pm-feature-body \{[^}]*\}/,
+    )?.[0] ?? '';
+    expect(mapFeatureFocus, 'map features lost their focus rule').toBeTruthy();
+    expect(mapFeatureFocus).toContain('stroke: var(--accent, #0169cc)');
+    expect(mapFeatureFocus, 'a diluted focus stroke is what made this look like no indicator at all')
+      .not.toContain('color-mix');
+    const focusWidth = Number(mapFeatureFocus.match(/stroke-width:\s*([\d.]+)/)?.[1]);
+    // Must also stay clear of hover (0.55), so focus is not the quieter signal.
+    expect(focusWidth).toBeGreaterThanOrEqual(2);
   });
 
   it('returns focus to the corresponding top control when a pane disappears', () => {
