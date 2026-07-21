@@ -1231,7 +1231,15 @@ function computeLinearLayout(input: MapInput): MapLayout {
   const segByFeature = new Map<string, MapFeatureSegment[]>();
   const laneItems: LaneItem[] = [];
   for (const f of features) {
-    const segs = featureSegments(f, length, 'linear');
+    // Segment against what the MOLECULE is, not how it is being drawn. The two
+    // were the same value for as long as the only way to get a linear drawing
+    // was to convert the record, so this hardcoded 'linear' never cost
+    // anything. Drawing a circular molecule as a line makes them differ, and an
+    // origin-spanning feature normalises to [] under 'linear' against
+    // [{2600,2686},{0,120}] under 'circular'. Measured: the feature stayed in
+    // the features array with segmentPaths [] and label null — present and
+    // invisible, which a list-membership check reports as fine.
+    const segs = featureSegments(f, length, input.topology);
     segByFeature.set(f.id, segs);
     if (segs.length > 0) {
       const name = f.name || f.type;
