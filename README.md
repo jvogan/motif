@@ -10,38 +10,67 @@
 [Examples](examples/README.md) ·
 [Security](SECURITY.md)
 
-Motif is a portable molecular-biology workbench built for the Claude Science
-hackathon. It turns sequence records and analysis results into one
-self-contained HTML workspace that can be opened locally or in Claude
-Science, inspected visually, edited with mouse and keyboard, checkpointed, and
-shared as an ordinary file. Motif also declares a live MCP App; whether a local
-connector mounts automatically depends on the Claude Science host build.
+Motif is an AI-native molecular biology workbench for Claude Science. It
+combines sequence records and analysis results in a self-contained HTML
+workspace that opens locally or in Claude Science. You can inspect and edit
+records, review maps and alignments, save checkpoints, and export a workspace
+ZIP.
 
-This repository is the standalone Motif source. It contains no desktop shell
-or native database. Its optional `motif-local` connector is ephemeral and
-Motif-owned; it does not depend on another application checkout.
+Claude Science can use `motif_open_workbench` to open the MCP App. If the host
+does not display the App, `motif_create_workbench_artifact` returns a
+self-contained HTML workbench that opens in the right pane.
+
+This repository contains the source for the workbench, Claude plugin,
+standalone skill, and local connector. The connector builds and runs from this
+checkout.
 
 Motif is an independent hackathon project and is not an Anthropic product or
 an official Claude Science integration.
 
+## Install with a coding agent
+
+Give Claude Code, Codex, or another local coding agent with terminal access
+this repository and the following request:
+
+```text
+Install the latest released version of Motif for Claude Science from
+https://github.com/jvogan/motif.
+
+Follow docs/CLAUDE_SCIENCE_QUICKSTART.md. Place the checkout in a stable local
+folder, run npm ci and npm run claude-science:setup, and use only the bundled
+examples/motif-demo.gb file for the first test. Verify any downloaded release
+assets against the published checksums. Preserve unrelated local connectors.
+Tell me when I need to grant folder access, restart Claude Science, or
+reconnect motif-local.
+```
+
+For manual installation, follow the
+[Claude Science quickstart](docs/CLAUDE_SCIENCE_QUICKSTART.md).
+
 ## What is included
 
-- annotated DNA, RNA, and protein inventory
-- detail and standard sequence views with selection and editing tools
-- circular and linear maps with restriction-site controls
-- bounded browser MSA plus import and review of aligned FASTA/CLUSTAL
-- no-shell MAFFT, MUSCLE, and Clustal Omega helper with provenance hashes
-- AB1/ABI Sanger import and chromatogram review
-- restriction digest, qualitative gel, primer/PCR, Gibson, Golden Gate,
-  GoldenBraid, and traditional ligation workspaces
-- ORF/translation analysis and PAM-based CRISPR guide candidates
-- notes, workflow history, typed analysis results, and inert text/JSON assets
-- Database JSON checkpoint/restore and workspace ZIP handoff export
-- deterministic Claude plugin bundle and standalone skill
-- Motif-owned MCP connector with a full-workbench `ui://` App and embedded HTML
-  fallback for Claude Science
+- DNA, RNA, and protein records with annotations, tags, notes, and editing
+  tools
+- Standard and per-base Detail sequence views with selection and editing
+- Circular and linear maps with features, coordinates, restriction sites,
+  selection, labels, and pan/zoom
+- Restriction digest prediction, fragment records, and a qualitative gel
+- Primer/PCR design, Gibson, Golden Gate, GoldenBraid, and traditional ligation
+  workflows
+- In-browser MSA for 2–10 compatible records of up to 3,000 residues each,
+  plus import and review of aligned FASTA/CLUSTAL
+- An external MSA runner for MAFFT, MUSCLE, and Clustal Omega that invokes one
+  selected executable without a command shell and records its version,
+  arguments, and hashes
+- AB1/ABI Sanger import and chromatogram review using existing base calls
+- ORF and translation analysis, plus PAM-based CRISPR guide candidates
+- Workflow history, typed analysis results, and plain-text or JSON attachments
+  that Motif stores and displays without executing
+- Database JSON checkpoint and restore, plus workspace ZIP export
+- A deterministic Claude plugin bundle, standalone skill, and local MCP
+  connector with a full-workbench `ui://` App and embedded HTML fallback
 
-## Quick start
+## Develop from source
 
 Requires Git and Node.js 22.12 or newer. From a source checkout:
 
@@ -60,14 +89,15 @@ npm run dev
 
 ## First success in Claude Science
 
-Install the local connector from a fixed checkout:
+Install the local connector from the checkout you intend to keep:
 
 ```bash
 npm run claude-science:setup
 ```
 
-Grant Claude Science access to that exact checkout, fully quit and reopen the
-app, then reconnect **motif-local**. The connector should expose exactly
+Setup registers this checkout's path. Moving the folder later requires running
+setup again. Grant Claude Science access to the exact folder, fully quit and
+reopen the app, then reconnect **motif-local**. The connector exposes exactly
 `motif_open_workbench` and `motif_create_workbench_artifact`.
 
 For the most reliable first visual result, attach the bundled synthetic
@@ -82,8 +112,10 @@ Science artifact and open it in the right pane. Report the record name,
 topology, and residue count.
 ```
 
-Clicking the generated HTML once is normal. It opens the full interactive
-workbench as an immutable snapshot. See the
+Click the generated HTML to open the interactive workbench. The file contains
+a snapshot of the input and Motif build used to create it; later source or
+build changes do not update it. Export a new checkpoint to preserve edits made
+in the workbench. See the
 [Claude Science quickstart](docs/CLAUDE_SCIENCE_QUICKSTART.md) for permission,
 verification, and optional live-App steps.
 
@@ -116,9 +148,9 @@ inlined, and the plugin contains its compiled connector, App, standalone
 template, and artifact resource. The ZIP is deterministic and its file/archive
 SHA-256 values are recorded beside it.
 
-The plugin ZIP is for Claude/plugin hosts. It does not by itself install the
-Claude Science local connector; use `npm run claude-science:setup` from the
-source checkout for that workflow.
+The plugin ZIP is for Claude/plugin hosts. It does not install the Claude
+Science local connector. Run `npm run claude-science:setup` from a source
+checkout instead.
 
 To generate an additional repo-local artifact with preloaded data:
 
@@ -128,8 +160,8 @@ npm run build:motif -- \
   --out ./preview/my-motif-workspace.html
 ```
 
-Use `--handoff /explicit/path/motif-artifact.html` only when an external copy is
-intended. The build does not write outside this repository by default.
+Use `--handoff /explicit/path/motif-artifact.html` only to write a copy outside
+the repository. By default, the build writes nothing outside it.
 
 ## Validate
 
@@ -154,46 +186,46 @@ is installed.
 For a fresh installation, follow the
 [public Claude Science quickstart](docs/CLAUDE_SCIENCE_QUICKSTART.md).
 
-Build, protocol-check, and register the connector without replacing any other
-local connector:
+Build, check, and register the connector:
 
 ```bash
 npm run claude-science:setup
 ```
 
-This adds exactly one `motif-local` entry to Claude Science's local MCP config
-after a successful build and unregistered protocol doctor. It preserves
-unrelated entries and writes a private backup before any changed config is
-installed. Grant the exact Motif checkout read access in Claude Science, fully
-quit and reopen the app, then reconnect `motif-local`.
+Setup builds the connector and checks its protocol before changing Claude
+Science's configuration. It then adds exactly one `motif-local` entry,
+preserves unrelated entries, and writes a private backup before installing a
+changed configuration. Grant the Motif checkout read access in Claude Science,
+fully quit and reopen the app, then reconnect `motif-local`.
 
-The connected surface exposes `motif_open_workbench` for bounded Motif payload,
-FASTA, GenBank, or raw-sequence review. Pass the complete text and its exact
-filename; a successful result proves that Motif parsed the input, but only a
-visible Motif frame proves that Claude Science mounted the MCP App. Current
-local/custom connector builds may not list Motif in the artifact viewer
-chooser, so use that shortcut only when Motif is actually offered.
+The connector exposes `motif_open_workbench` for bounded Motif payload, FASTA,
+GenBank, raw-sequence, or Motif JSON review. Pass the complete text and its
+exact filename. A successful result means Motif parsed the input; only a
+visible Motif frame confirms that Claude Science mounted the MCP App. Some
+local/custom connector builds do not list Motif in the artifact viewer chooser;
+use that path only when Motif appears there.
 
-The dependable visual fallback is `motif_create_workbench_artifact`: save the
-exact returned HTML resource, then click or open it in Claude Science's right
-pane. The resulting workbench is interactive, but it is an immutable snapshot
-and does not live-update when the source or Motif build changes.
+If no workbench appears, use `motif_create_workbench_artifact`. Save the exact
+returned HTML resource, then open it in Claude Science's right pane. The file
+contains a snapshot of the input and Motif build used to create it; later
+source or build changes do not update it.
 
-The connector does not write a database or run external executables. Its
-`window.motif*` API remains page-local and is used only by the bundled narrow
-MCP App bridge. Setup, verification, rollback, and host limitations are
-documented in [Claude Science integration](docs/CLAUDE_SCIENCE_INTEGRATION.md).
+The connector does not write a database or run external executables. It uses
+Motif's bounded page-local workspace API and does not expose a generic DOM,
+evaluation, shell, or filesystem bridge. Setup, verification, rollback, and
+host limitations are documented in
+[Claude Science integration](docs/CLAUDE_SCIENCE_INTEGRATION.md).
 Known host errors, reload boundaries, and visual acceptance steps are in the
 [Motif + Claude Science troubleshooting guide](docs/CLAUDE_SCIENCE_TROUBLESHOOTING.md).
 
 ## Data safety
 
-Motif has no hosted backend and does not transmit sequence data by itself.
-External MSA tools run only when explicitly invoked outside the HTML. Data you
-provide to Claude Science remains subject to your Claude and organization data
-policies. Do not use sensitive or unpublished sequences without authorization.
-Workspace exports are ordinary unencrypted files; keep them under an
-appropriate local storage and backup policy.
+Motif has no hosted backend. The standalone HTML does not upload sequence data
+to a Motif service. External MSA tools run only when explicitly invoked outside
+the HTML. Data supplied through Claude Science remains subject to your Claude
+and organization data policies. Do not use sensitive or unpublished sequences
+without authorization. Workspace exports are unencrypted files; store and
+back them up according to their sensitivity.
 
 See the plugin [README](src/artifacts/motif-for-claude-science-plugin/README.md)
 for payload, MSA, Sanger, installation, and security details.
