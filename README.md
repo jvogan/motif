@@ -20,6 +20,12 @@ Claude Science can use `motif_open_workbench` to open the MCP App. If the host
 does not display the App, `motif_create_workbench_artifact` returns a
 self-contained HTML workbench that opens in the right pane.
 
+<p align="center">
+  <img src="docs/assets/claude-science-motif-viewer.webp" alt="Motif open in Claude Science with two sequence records, annotated sequence detail, a linear map, and restriction-digest results." width="100%" />
+</p>
+
+<p align="center"><em>Motif in Claude Science with two sequence records, annotated sequence detail, a linear map, and restriction-digest results.</em></p>
+
 This repository contains the source for the workbench, Claude plugin,
 standalone skill, and local connector. The connector builds and runs from this
 checkout.
@@ -118,6 +124,20 @@ build changes do not update it. Export a new checkpoint to preserve edits made
 in the workbench. See the
 [Claude Science quickstart](docs/CLAUDE_SCIENCE_QUICKSTART.md) for permission,
 verification, and optional live-App steps.
+
+To have Claude prepare a workbench with colored annotations, replace the
+bracketed text in this prompt:
+
+```text
+Read the complete attached sequence file. Build a Motif payload that preserves
+the source sequences, record names, molecule types, topology, coordinates, and
+existing annotations. Add only these annotations: [names, types, coordinates,
+and directions]. Give new annotation types distinct, readable colors; use the
+same color for annotations with the same type and keep adjacent features easy
+to distinguish. Call motif_create_workbench_artifact with the payload, preserve
+the exact returned HTML as a Claude Science artifact, and open it in the right
+pane.
+```
 
 The [public examples](examples/README.md) also include synthetic FASTA,
 aligned CLUSTAL, and complete workspace JSON inputs with expected identities.
