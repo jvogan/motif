@@ -40,7 +40,7 @@ import { computeMapLayout } from '../plasmid-map/layout';
 import { bpToAngle, pointOnCircle } from '../plasmid-map/geometry/coordinates';
 import { featureSegments as mapFeatureSegments, featureSpans, normalizeSpan } from '../plasmid-map/geometry/ranges';
 import { selectionOverlayPaths } from '../plasmid-map/selection-overlay';
-import { mapModeForBlock, type MapLayout, type MapSpan } from '../plasmid-map/types';
+import { mapModeForBlock, type MapLayout, type MapMode, type MapSpan } from '../plasmid-map/types';
 import {
   contentPointFromRoot,
   mapContentPoint,
@@ -4688,6 +4688,18 @@ function App() {
     initialWorkspace.artifactState.motifsByRecord,
   );
   const [mapViewportsByRecord, setMapViewportsByRecord] = useState<Record<string, MapViewport>>({});
+  /* How the map is DRAWN, per record. Deliberately NOT a topology override:
+     `record.topology` stays the single source of truth for what the molecule
+     is, and nothing here reaches restriction finding, ORF finding, span
+     normalisation or the GenBank LOCUS line. A per-view topology override was
+     considered and banned before — see the "stores topology on the record so
+     the UI, API, and exports agree" guard — and the distinction is the point.
+     Banned: shadow state that lets the map and an export disagree about the
+     molecule. This: a choice of drawing, sitting beside the zoom viewport,
+     which is the other thing that changes the picture and not the science.
+     Absent entry = follow the molecule, so a record whose topology is later
+     converted goes back to being drawn the way it is. */
+  const [mapRenderModeByRecord, setMapRenderModeByRecord] = useState<Record<string, MapMode>>({});
   const [mapRangesByRecord, setMapRangesByRecord] = useState<Record<string, MapSelectionRange | null>>({});
   const [selection, setSelection] = useState<Selection>(null);
   const [featureEditorRequest, requestFeatureEditor] = useReducer((count: number) => count + 1, 0);
@@ -5237,6 +5249,18 @@ function App() {
   // 4-24 names per map with no collisions, so there was nothing to protect.
   const showRestrictionLabels = restrictionLabelsByRecord[recordId] ?? true;
   const canToggleTopology = hasActiveRecord && (sequenceType === 'dna' || sequenceType === 'rna');
+  /* Follows the molecule until someone asks for a different drawing. Protein is
+     forced linear here for the same reason computeMapLayout forces it: there is
+     no ring to draw. `canDrawAsRing` is what gates the control, so a genuinely
+     linear record is not offered a circular drawing of a molecule that has two
+     ends. */
+  const canDrawAsRing = hasActiveRecord && sequenceType !== 'protein' && topology === 'circular';
+  const mapRenderMode: MapMode = sequenceType === 'protein'
+    ? 'linear'
+    : mapRenderModeByRecord[recordId] ?? mapModeForBlock(topology, sequenceType);
+  const setMapRenderMode = useCallback((mode: MapMode) => {
+    setMapRenderModeByRecord((current) => (current[recordId] === mode ? current : { ...current, [recordId]: mode }));
+  }, [recordId]);
   const mapViewport = mapViewportsByRecord[recordId] ?? DEFAULT_MAP_VIEWPORT;
   const selectedMapRange = mapRangesByRecord[recordId] ?? null;
   const motif = motifsByRecord[recordId] ?? defaultMotifForRecord(sequenceType, payload.defaultMotif);
@@ -6145,7 +6169,14 @@ function App() {
 
   const layout = useMemo(
     () => computeMapLayout({
-      mode: mapModeForBlock(topology, sequenceType),
+      // THE SEAM. This one line used to collapse "what the molecule is" into
+      // "how to draw it" — computeMapLayout has always taken `mode` as a
+      // first-class input and consulted `topology` only as a fallback, so the
+      // capability to draw a plasmid as a line was built and unreachable.
+      // `topology` below still travels into the layout unchanged, which is what
+      // lets feature segmentation stay true to the molecule while the geometry
+      // follows the drawing.
+      mode: mapRenderMode,
       name: vector.name,
       length: sequence.length,
       topology,
@@ -6168,7 +6199,10 @@ function App() {
         showRestrictionLabels,
       },
     }),
-    [mapFeatures, visibleRestrictionSites, mapSize.height, mapSize.width, sequence.length, sequenceType, showRestrictionLabels, topology, vector.name],
+    // `mapRenderMode` belongs here now that it is no longer a pure function of
+    // `topology`: without it the map keeps its old drawing until some other
+    // dependency happens to change.
+    [mapFeatures, mapRenderMode, visibleRestrictionSites, mapSize.height, mapSize.width, sequence.length, sequenceType, showRestrictionLabels, topology, vector.name],
   );
 
   useEffect(() => {
@@ -6500,10 +6534,14 @@ function App() {
     setSelection(null);
     setMapRangesByRecord((current) => ({
       ...current,
-      [recordId]: rangeFromMapDrag(startBp, startBp + 1, sequence.length, topology),
+      // A drag is a gesture on a PICTURE, so it follows how the map is drawn.
+      // `layout.mode` and `topology` were always equal while the only way to
+      // get a linear drawing was to convert the record; they can differ now,
+      // and a wrapping range is not expressible by one drag along an axis.
+      [recordId]: rangeFromMapDrag(startBp, startBp + 1, sequence.length, layout.mode),
     }));
     return true;
-  }, [layout, recordId, sequence.length, topology]);
+  }, [layout, recordId, sequence.length]);
 
   const handleMapPointerMove = useCallback((point: MapContentPoint) => {
     const drag = mapDragRef.current;
@@ -6514,20 +6552,25 @@ function App() {
 
     const endBp = pointToSequenceOffset(point, layout);
     let nextRange: MapSelectionRange;
-    if (topology === 'circular') {
+    // Keyed on how the map is DRAWN. The angle model needs a ring: on a linear
+    // layout `layout.center` is the axis's left end, so dragging along the axis
+    // barely moves the angle and the sweep never grows. `pointToSequenceOffset`
+    // and the content-point projection above already key on layout.mode — this
+    // was the one place in the gesture still asking the molecule instead.
+    if (layout.mode === 'circular') {
       const nextAngle = pointToSequenceAngle(point, layout);
       drag.cumulativeAngle += signedCircularAngleDelta(drag.lastAngle, nextAngle);
       drag.lastAngle = nextAngle;
       nextRange = rangeFromCircularAngleDrag(drag.startBp, drag.cumulativeAngle, sequence.length);
     } else {
-      nextRange = rangeFromMapDrag(drag.startBp, endBp, sequence.length, topology);
+      nextRange = rangeFromMapDrag(drag.startBp, endBp, sequence.length, layout.mode);
     }
     setMapRangesByRecord((current) => {
       const previous = current[recordId];
       if (previous && previous.start === nextRange.start && previous.end === nextRange.end) return current;
       return { ...current, [recordId]: nextRange };
     });
-  }, [layout, recordId, sequence.length, topology]);
+  }, [layout, recordId, sequence.length]);
 
   const handleMapPointerEnd = useCallback(() => {
     const drag = mapDragRef.current;
@@ -8046,9 +8089,22 @@ function App() {
     setSequenceViewMode('detail');
   }, [addTranslationLayer]);
 
-  const toggleTopology = useCallback(() => {
+  /* Converts the MOLECULE. Reached from Entry Details only — the map's "Draw as"
+     control no longer comes here, which is the whole point of #34. Still clears
+     the selection, caret and map range, because after a conversion those really
+     can mean something different. */
+  const convertRecordTopology = useCallback((nextTopology: Topology) => {
     if (!canToggleTopology) return;
-    const nextTopology: Topology = topology === 'circular' ? 'linear' : 'circular';
+    if (nextTopology === topology) return;
+    // Drop any explicit drawing choice for this record so the map goes back to
+    // showing the molecule as it now is. Leaving it would mean converting to
+    // linear and still seeing a ring, which is the same class of lie in reverse.
+    setMapRenderModeByRecord((current) => {
+      if (!(recordId in current)) return current;
+      const next = { ...current };
+      delete next[recordId];
+      return next;
+    });
     setPayload((current) => {
       const nextPayload: LoadedPayload = {
         ...current,
@@ -10786,26 +10842,47 @@ function App() {
                   {isNucleotideRecord ? (
                     <>
                       <div className="motif-cs-layer-actions">
-                        <div className="motif-cs-segmented motif-cs-shape-toggle" role="group" aria-label="Map shape">
+                        {/* This used to read "◯ Circular | — Linear" and CONVERT the
+                            molecule: it wrote topology into the record, cleared the
+                            selection, caret and map range, and changed which
+                            restriction sites are FOUND — on pUC19, 325 against 324,
+                            the one lost being BtgZI at 2576, which straddles the
+                            origin — all from a panel called Map Visibility among
+                            controls that change only the picture. It now picks a
+                            DRAWING. The record is untouched, so nothing is cleared,
+                            and the signals that say what the molecule is stay put as
+                            the confirmation: the pane subtitle still reads "circular
+                            · 2,578 bp" and the inventory line still says circular.
+                            Converting lives in Entry Details with the other fields
+                            that describe the molecule. */}
+                        <span className="motif-cs-muted">Draw as</span>
+                        <div className="motif-cs-segmented motif-cs-shape-toggle" role="group" aria-label="Map drawing">
                           <button
                             type="button"
-                            data-active={topology === 'circular' || undefined}
-                            aria-pressed={topology === 'circular'}
-                            disabled={!canToggleTopology}
-                            onClick={() => { if (topology !== 'circular') toggleTopology(); }}
+                            data-active={mapRenderMode === 'circular' || undefined}
+                            aria-pressed={mapRenderMode === 'circular'}
+                            disabled={!canDrawAsRing}
+                            title={canDrawAsRing
+                              ? 'Draw this map as a ring'
+                              : 'A linear molecule has two ends; convert it in Entry Details to draw it as a ring'}
+                            onClick={() => setMapRenderMode('circular')}
                           >
                             ◯ Circular
                           </button>
                           <button
                             type="button"
-                            data-active={topology === 'linear' || undefined}
-                            aria-pressed={topology === 'linear'}
-                            disabled={!canToggleTopology}
-                            onClick={() => { if (topology !== 'linear') toggleTopology(); }}
+                            data-active={mapRenderMode === 'linear' || undefined}
+                            aria-pressed={mapRenderMode === 'linear'}
+                            disabled={!hasActiveRecord}
+                            title="Draw this map as a line. The record stays as it is."
+                            onClick={() => setMapRenderMode('linear')}
                           >
                             — Linear
                           </button>
                         </div>
+                        {mapRenderMode !== mapModeForBlock(topology, sequenceType) ? (
+                          <span className="motif-cs-muted">Drawing only — still a {topology} {sequenceType.toUpperCase()}</span>
+                        ) : null}
                         {isDnaRecord ? (
                           <>
                             <button
@@ -11289,7 +11366,13 @@ function App() {
               </div>
           {hasActiveRecord ? (
           <>
-          <EntryDetailsPanel record={vector} onUpdate={updateRecordDetails} onDelete={deleteActiveRecord} />
+          <EntryDetailsPanel
+            record={vector}
+            onUpdate={updateRecordDetails}
+            onConvertTopology={convertRecordTopology}
+            canConvertTopology={canToggleTopology}
+            onDelete={deleteActiveRecord}
+          />
           <FeatureList
             recordId={recordId}
             sequenceLength={sequence.length}
@@ -13304,10 +13387,14 @@ function defaultFeatureColor(type: FeatureType): string {
 function EntryDetailsPanel({
   record,
   onUpdate,
+  onConvertTopology,
+  canConvertTopology,
   onDelete,
 }: {
   record: ArtifactVector;
   onUpdate: (details: { name: string; description?: string; group?: string }) => void;
+  onConvertTopology: (next: Topology) => void;
+  canConvertTopology: boolean;
   onDelete: () => void;
 }) {
   const [name, setName] = useState(record.name);
@@ -13394,6 +13481,38 @@ function EntryDetailsPanel({
             placeholder="Optional folder…"
           />
         </label>
+        {/* Converting the molecule belongs with the fields that describe it, not
+            in a panel called Map Visibility among controls that change only the
+            picture. This edits the record, so it sits beside the ends — the
+            other statement about the molecule's physical shape — and says what
+            it costs, in the same voice as "Exports use this name." above. */}
+        {canConvertTopology ? (
+          <label>
+            <span>Topology</span>
+            <div className="motif-cs-segmented" role="group" aria-label="Convert molecule topology">
+              <button
+                type="button"
+                data-active={record.topology === 'circular' || undefined}
+                aria-pressed={record.topology === 'circular'}
+                onClick={() => { if (record.topology !== 'circular') onConvertTopology('circular'); }}
+              >
+                ◯ Circular
+              </button>
+              <button
+                type="button"
+                data-active={record.topology === 'linear' || undefined}
+                aria-pressed={record.topology === 'linear'}
+                onClick={() => { if (record.topology !== 'linear') onConvertTopology('linear'); }}
+              >
+                — Linear
+              </button>
+            </div>
+            <p className="motif-cs-form-note">
+              Converting changes which restriction sites are found and what exported files record.
+              To read this entry as a line without converting it, use Draw as in Map Visibility.
+            </p>
+          </label>
+        ) : null}
         {record.type === 'dna' && (record.overhang5 !== undefined || record.overhang3 !== undefined) ? (
           <dl className="motif-cs-record-ends" aria-label="Physical DNA ends">
             <div>
