@@ -37,7 +37,7 @@ describe('Claude Science workspace layout guards', () => {
     expect(artifactSource).toContain("description: 'Warm charcoal · coral'");
     expect(artifactCss).toContain('.motif-cs-theme-choice[data-theme-choice="claude-light"]');
     expect(artifactCss).toContain('--theme-preview-claude-light-surface: #f9f9f7;');
-    expect(artifactCss).toContain('--theme-preview-claude-dark-surface: #2d2d2b;');
+    expect(artifactCss).toContain('--theme-preview-claude-dark-surface: #1f1f1f;');
     expect(artifactCss).toContain('--choice-accent: var(--theme-preview-claude-accent);');
   });
 
