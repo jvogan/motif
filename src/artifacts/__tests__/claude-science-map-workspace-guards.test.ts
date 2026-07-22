@@ -34,6 +34,14 @@ describe('Claude Science map workspace regression guards', () => {
     );
   });
 
+  it('shares restriction controls between Map Visibility and the Tools rail', () => {
+    expect(artifactSource).toContain('const renderRestrictionSiteControls = (includeMapSummary = false): ReactNode => {');
+    expect(artifactSource).toContain('{isDnaRecord ? renderRestrictionSiteControls(true) : null}');
+    expect(artifactSource).toContain('data-rail-tool="restriction-sites"');
+    expect(artifactSource).toContain('{renderRestrictionSiteControls(false)}');
+    expect(artifactSource).toContain('requestSequenceFocus();\n    setLockedTranslateTarget(null);');
+  });
+
   it('defaults restriction labels on instead of pre-judging them by site count', () => {
     // A site-count threshold here switched labelling off wholesale on any record
     // past it, which on the bundled vectors meant 8 of 13 drew every tick and
@@ -59,20 +67,26 @@ describe('Claude Science map workspace regression guards', () => {
     expect(addCustomEnzyme).not.toContain('setEnzymeSourcesByRecord');
   });
 
-  it('anchors the circular map readout to the edge its column actually shows', () => {
-    // Between 768px and 1535px the circular map frame is floored taller than the
-    // column can display — measured 504px of frame in a 442px column at 1440x900,
-    // 141px of it scrolled away — so anything anchored to the frame's BOTTOM is
-    // off-screen in every state. The readout was; the zoom controls were not, and
-    // the only difference between them was which edge they hang off.
+  it('keeps map controls in the pane heading and the circular readout on a reachable edge', () => {
+    // The compact control group belongs inside the pane heading. Its position
+    // therefore cannot change when the canvas switches between the tall
+    // circular and short linear layouts.
     const base = sliceBetween(artifactCss, '.motif-cs-map-hint {', '}');
     const toolbar = sliceBetween(artifactCss, '.motif-cs-map-toolbar {', '}');
-    // The premise the fix rests on: the top edge is the safe one, because that is
-    // where the controls that survived are anchored. If the toolbar ever moves to
-    // the bottom this reasoning is void and this test should fail.
-    expect(toolbar, 'the zoom controls no longer anchor to the safe top edge').toMatch(/top:\s*12px/);
+    expect(toolbar).toMatch(/flex:\s*0 0 auto/);
+    expect(toolbar).toMatch(/min-height:\s*28px/);
+    expect(toolbar).not.toMatch(/position:\s*absolute/);
+    expect(toolbar).not.toMatch(/\btop:/);
+    expect(toolbar).not.toMatch(/\bbottom:/);
+    const toolbarIndex = artifactSource.indexOf('className="motif-cs-map-toolbar"');
+    const frameIndex = artifactSource.indexOf('ref={mapFrameRef}');
+    expect(toolbarIndex).toBeGreaterThanOrEqual(0);
+    expect(frameIndex).toBeGreaterThan(toolbarIndex);
     expect(base).toMatch(/bottom:\s*12px/);
 
+    // Between 768px and 1535px the circular map frame can extend below its
+    // column's visible edge, so keep the transient readout on the reachable top
+    // edge. This no longer has any relationship to toolbar placement.
     const circular = sliceBetween(
       artifactCss,
       '.motif-cs-map-frame[data-map-mode="circular"] .motif-cs-map-hint {',
@@ -85,8 +99,7 @@ describe('Claude Science map workspace regression guards', () => {
     expect(circular).toMatch(/bottom:\s*auto/);
 
     // Scope. The rule must not reach 1536px and up, where the column does fit its
-    // frame and the lower-left corner is both reachable and quieter — and it must
-    // not reach the linear map, which has its own placement for its own reason.
+    // frame and the lower-left corner is reachable, or the linear map.
     const scoped = sliceBetween(
       artifactCss,
       '@media (min-width: 768px) and (max-width: 1535px) {\n  .motif-cs-map-frame[data-map-mode="circular"] .motif-cs-map-hint {',

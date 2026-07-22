@@ -310,7 +310,7 @@ test.describe('Motif MSA viewer interactions', () => {
     await page.locator('[data-pane-toggle="tools"]').click();
     await expect(page.locator('.motif-cs-inspector')).toHaveAttribute('data-tools-pinned', 'true');
 
-    const docked = page.locator('.motif-cs-inspector details[name="motif-cs-tools"]').first();
+    const docked = page.locator('.motif-cs-inspector details[data-rail-tool]').first();
     await docked.locator(':scope > summary').click();
     await expect(docked).toHaveAttribute('open', '');
 

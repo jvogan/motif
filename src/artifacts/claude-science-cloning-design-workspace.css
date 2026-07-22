@@ -1413,3 +1413,17 @@
     scroll-behavior: auto !important;
   }
 }
+
+html:is([data-theme="claude-light"], [data-theme="claude-dark"]) .motif-cs-cloning-design-methods button[data-selected],
+html:is([data-theme="claude-light"], [data-theme="claude-dark"]) .motif-cs-cloning-design-methods button[data-selected]:hover,
+html:is([data-theme="claude-light"], [data-theme="claude-dark"]) .motif-cs-cloning-design-segmented label[data-selected],
+html:is([data-theme="claude-light"], [data-theme="claude-dark"]) .motif-cs-cloning-design-orientation button[data-selected],
+html:is([data-theme="claude-light"], [data-theme="claude-dark"]) .motif-cs-cloning-design-orientation button[data-selected]:hover {
+  border-color: var(--accent-base);
+  background: var(--accent-base);
+  color: var(--accent-contrast);
+}
+
+html:is([data-theme="claude-light"], [data-theme="claude-dark"]) .motif-cs-cloning-design-methods button[data-selected] small {
+  color: var(--accent-contrast);
+}

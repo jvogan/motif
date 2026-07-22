@@ -17,6 +17,7 @@ html[data-theme="dark"] {
   --text-muted: #ababab;
   --accent-base: #0169cc;
   --accent: #339cff;
+  --accent-contrast: #ffffff;
   --green: #40c977;
   --purple: #ad7bf9;
   --amber: #f0b429;
@@ -50,6 +51,7 @@ html[data-theme="light"] {
   --text-muted: #6b6b6b;
   --accent-base: #0169cc;
   --accent: #0169cc;
+  --accent-contrast: #ffffff;
   --green: #137a46;
   --purple: #6d35c1;
   --amber: #865b00;
@@ -109,28 +111,77 @@ html[data-theme="claude-light"] .motif-cs-window-toggle[data-active="true"] {
   color: var(--accent-contrast);
 }
 
+html[data-theme="claude-light"] .motif-cs-pane-toggle[data-active="true"]:disabled,
+html[data-theme="claude-light"] .motif-cs-pane-toggle[data-active="true"]:disabled:hover,
+html[data-theme="claude-light"] .motif-cs-pane-toggle[data-active="true"]:disabled:focus-visible,
+html[data-theme="claude-light"] .motif-cs-gel-source-row[data-selected],
+html[data-theme="claude-light"] .motif-cs-gel-source-row[data-selected]:hover,
+html[data-theme="claude-light"] .motif-cs-gel-ladder-picker .motif-cs-segmented label[data-selected],
+html[data-theme="claude-light"] .motif-cs-sanger-lane[data-active] .motif-cs-sanger-lane-header {
+  border-color: var(--accent-base);
+  background: var(--accent-base);
+  color: var(--accent-contrast);
+  box-shadow: none;
+}
+
+html[data-theme="claude-light"] .motif-cs-pane-toggle[data-active="true"]:disabled .motif-cs-nav-icon,
+html[data-theme="claude-light"] .motif-cs-gel-source-row[data-selected] strong,
+html[data-theme="claude-light"] .motif-cs-gel-source-row[data-selected] small,
+html[data-theme="claude-light"] .motif-cs-sanger-lane[data-active] .motif-cs-sanger-lane-header * {
+  color: var(--accent-contrast);
+}
+
+html[data-theme="claude-light"] .motif-cs-sanger-lane[data-active] .motif-cs-sanger-lane-header .motif-cs-chip {
+  border-color: color-mix(in srgb, var(--accent-contrast) 48%, transparent);
+  background: transparent;
+}
+
 html[data-theme="claude-light"] .motif-cs-pane-toggle[data-active="true"] .motif-cs-nav-icon,
 html[data-theme="claude-light"] .motif-cs-window-toggle[data-active="true"] .motif-cs-nav-icon {
   color: var(--accent-contrast);
 }
 
-html[data-theme="claude-light"] .motif-cs-row[data-active="true"] {
-  background: color-mix(in srgb, var(--accent-base) 9%, var(--bg-primary));
-  box-shadow: inset 3px 0 0 var(--accent-base);
-}
-
-html[data-theme="claude-light"] .motif-cs-row.motif-cs-inventory-record-row[data-active="true"],
-html[data-theme="claude-light"] .motif-cs-row.motif-cs-inventory-record-row[data-active="true"]:hover,
-html[data-theme="claude-light"] .motif-cs-row.motif-cs-inventory-record-row[data-active="true"]:focus-visible {
+html[data-theme="claude-light"] .motif-cs-row[data-active="true"],
+html[data-theme="claude-light"] .motif-cs-row[data-active="true"]:hover,
+html[data-theme="claude-light"] .motif-cs-row[data-active="true"]:focus-visible,
+html[data-theme="claude-light"] .motif-cs-sidebar .motif-cs-row.motif-cs-row-compact[data-active="true"],
+html[data-theme="claude-light"] .motif-cs-inventory-group-head[data-active="true"],
+html[data-theme="claude-light"] .motif-cs-restriction-row[data-active="true"],
+html[data-theme="claude-light"] .motif-cs-restriction-site-row[data-active="true"],
+html[data-theme="claude-light"] .motif-cs-theme-choice[data-active="true"],
+html[data-theme="claude-light"] .motif-cs-theme-choice[data-active="true"]:hover,
+html[data-theme="claude-light"] .motif-cs-msa-record-option[data-active="true"],
+html[data-theme="claude-light"] .motif-cs-msa-record-option[data-active="true"]:hover {
   border-top-color: var(--accent-base);
+  border-color: var(--accent-base);
   background: var(--accent-base);
   box-shadow: none;
   color: var(--accent-contrast);
 }
 
-html[data-theme="claude-light"] .motif-cs-inventory-record-row[data-active="true"] .motif-cs-row-main > span:first-child,
-html[data-theme="claude-light"] .motif-cs-inventory-record-row[data-active="true"] .motif-cs-row-main small {
+html[data-theme="claude-light"] .motif-cs-row[data-active="true"] .motif-cs-row-main,
+html[data-theme="claude-light"] .motif-cs-row[data-active="true"] .motif-cs-row-main > span:first-child,
+html[data-theme="claude-light"] .motif-cs-row[data-active="true"] .motif-cs-row-main small,
+html[data-theme="claude-light"] .motif-cs-row[data-active="true"] .motif-cs-row-meta,
+html[data-theme="claude-light"] .motif-cs-row[data-active="true"] .motif-cs-chip,
+html[data-theme="claude-light"] .motif-cs-restriction-row[data-active="true"] .motif-cs-row-main,
+html[data-theme="claude-light"] .motif-cs-restriction-row[data-active="true"] .motif-cs-row-meta,
+html[data-theme="claude-light"] .motif-cs-restriction-site-row[data-active="true"] .motif-cs-row-main,
+html[data-theme="claude-light"] .motif-cs-restriction-site-row[data-active="true"] .motif-cs-row-main small,
+html[data-theme="claude-light"] .motif-cs-restriction-site-row[data-active="true"] .motif-cs-row-meta,
+html[data-theme="claude-light"] .motif-cs-theme-choice[data-active="true"] .motif-cs-theme-choice-copy small,
+html[data-theme="claude-light"] .motif-cs-msa-record-option[data-active="true"] small,
+html[data-theme="claude-light"] .motif-cs-msa-record-option[data-active="true"] em,
+html[data-theme="claude-light"] .motif-cs-translation-row-shell[data-active="true"] .motif-cs-translation-row-delete {
   color: var(--accent-contrast);
+}
+
+html[data-theme="claude-light"] .motif-cs-restriction-row[data-active="true"] .motif-cs-cut-dot {
+  border-color: var(--accent-contrast);
+}
+
+html[data-theme="claude-light"] .motif-cs-restriction-row[data-active="true"] .motif-cs-toggle input:checked + .motif-cs-cut-dot {
+  background: var(--accent-contrast);
 }
 
 html[data-theme="claude-light"] .motif-cs-mini-button[data-active="true"],
@@ -141,6 +192,27 @@ html[data-theme="claude-light"] .motif-cs-segmented button[data-active] {
   background: var(--accent-base);
   color: var(--accent-contrast);
   box-shadow: none;
+}
+
+html[data-theme="claude-light"] .motif-cs-inspector .motif-cs-panel[open] > .motif-cs-panel-head,
+html[data-theme="claude-light"] .motif-cs-restriction-source[data-active="true"] {
+  border-color: var(--accent-base);
+  background: var(--accent-base);
+  color: var(--accent-contrast);
+  box-shadow: none;
+}
+
+html[data-theme="claude-light"] .motif-cs-inspector .motif-cs-panel[open] > .motif-cs-panel-head > span,
+html[data-theme="claude-light"] .motif-cs-inspector .motif-cs-panel[open] > .motif-cs-panel-head > .motif-cs-chip,
+html[data-theme="claude-light"] .motif-cs-inspector .motif-cs-panel[open] > .motif-cs-panel-head > .motif-cs-panel-icon,
+html[data-theme="claude-light"] .motif-cs-inspector .motif-cs-panel[open] > .motif-cs-panel-head::after,
+html[data-theme="claude-light"] .motif-cs-restriction-source[data-active="true"] .motif-cs-source-state {
+  color: var(--accent-contrast);
+}
+
+html[data-theme="claude-light"] .motif-cs-restriction-source[data-active="true"] .motif-cs-source-state {
+  border-color: color-mix(in srgb, var(--accent-contrast) 48%, transparent);
+  background: color-mix(in srgb, var(--accent-base) 84%, #000000);
 }
 
 html[data-theme="claude-dark"] {
@@ -196,28 +268,77 @@ html[data-theme="claude-dark"] .motif-cs-window-toggle[data-active="true"] {
   color: var(--accent-contrast);
 }
 
+html[data-theme="claude-dark"] .motif-cs-pane-toggle[data-active="true"]:disabled,
+html[data-theme="claude-dark"] .motif-cs-pane-toggle[data-active="true"]:disabled:hover,
+html[data-theme="claude-dark"] .motif-cs-pane-toggle[data-active="true"]:disabled:focus-visible,
+html[data-theme="claude-dark"] .motif-cs-gel-source-row[data-selected],
+html[data-theme="claude-dark"] .motif-cs-gel-source-row[data-selected]:hover,
+html[data-theme="claude-dark"] .motif-cs-gel-ladder-picker .motif-cs-segmented label[data-selected],
+html[data-theme="claude-dark"] .motif-cs-sanger-lane[data-active] .motif-cs-sanger-lane-header {
+  border-color: var(--accent-base);
+  background: var(--accent-base);
+  color: var(--accent-contrast);
+  box-shadow: none;
+}
+
+html[data-theme="claude-dark"] .motif-cs-pane-toggle[data-active="true"]:disabled .motif-cs-nav-icon,
+html[data-theme="claude-dark"] .motif-cs-gel-source-row[data-selected] strong,
+html[data-theme="claude-dark"] .motif-cs-gel-source-row[data-selected] small,
+html[data-theme="claude-dark"] .motif-cs-sanger-lane[data-active] .motif-cs-sanger-lane-header * {
+  color: var(--accent-contrast);
+}
+
+html[data-theme="claude-dark"] .motif-cs-sanger-lane[data-active] .motif-cs-sanger-lane-header .motif-cs-chip {
+  border-color: color-mix(in srgb, var(--accent-contrast) 48%, transparent);
+  background: transparent;
+}
+
 html[data-theme="claude-dark"] .motif-cs-pane-toggle[data-active="true"] .motif-cs-nav-icon,
 html[data-theme="claude-dark"] .motif-cs-window-toggle[data-active="true"] .motif-cs-nav-icon {
   color: var(--accent-contrast);
 }
 
-html[data-theme="claude-dark"] .motif-cs-row[data-active="true"] {
-  background: color-mix(in srgb, var(--accent) 11%, var(--bg-primary));
-  box-shadow: inset 3px 0 0 var(--accent);
-}
-
-html[data-theme="claude-dark"] .motif-cs-row.motif-cs-inventory-record-row[data-active="true"],
-html[data-theme="claude-dark"] .motif-cs-row.motif-cs-inventory-record-row[data-active="true"]:hover,
-html[data-theme="claude-dark"] .motif-cs-row.motif-cs-inventory-record-row[data-active="true"]:focus-visible {
+html[data-theme="claude-dark"] .motif-cs-row[data-active="true"],
+html[data-theme="claude-dark"] .motif-cs-row[data-active="true"]:hover,
+html[data-theme="claude-dark"] .motif-cs-row[data-active="true"]:focus-visible,
+html[data-theme="claude-dark"] .motif-cs-sidebar .motif-cs-row.motif-cs-row-compact[data-active="true"],
+html[data-theme="claude-dark"] .motif-cs-inventory-group-head[data-active="true"],
+html[data-theme="claude-dark"] .motif-cs-restriction-row[data-active="true"],
+html[data-theme="claude-dark"] .motif-cs-restriction-site-row[data-active="true"],
+html[data-theme="claude-dark"] .motif-cs-theme-choice[data-active="true"],
+html[data-theme="claude-dark"] .motif-cs-theme-choice[data-active="true"]:hover,
+html[data-theme="claude-dark"] .motif-cs-msa-record-option[data-active="true"],
+html[data-theme="claude-dark"] .motif-cs-msa-record-option[data-active="true"]:hover {
   border-top-color: var(--accent-base);
+  border-color: var(--accent-base);
   background: var(--accent-base);
   box-shadow: none;
   color: var(--accent-contrast);
 }
 
-html[data-theme="claude-dark"] .motif-cs-inventory-record-row[data-active="true"] .motif-cs-row-main > span:first-child,
-html[data-theme="claude-dark"] .motif-cs-inventory-record-row[data-active="true"] .motif-cs-row-main small {
+html[data-theme="claude-dark"] .motif-cs-row[data-active="true"] .motif-cs-row-main,
+html[data-theme="claude-dark"] .motif-cs-row[data-active="true"] .motif-cs-row-main > span:first-child,
+html[data-theme="claude-dark"] .motif-cs-row[data-active="true"] .motif-cs-row-main small,
+html[data-theme="claude-dark"] .motif-cs-row[data-active="true"] .motif-cs-row-meta,
+html[data-theme="claude-dark"] .motif-cs-row[data-active="true"] .motif-cs-chip,
+html[data-theme="claude-dark"] .motif-cs-restriction-row[data-active="true"] .motif-cs-row-main,
+html[data-theme="claude-dark"] .motif-cs-restriction-row[data-active="true"] .motif-cs-row-meta,
+html[data-theme="claude-dark"] .motif-cs-restriction-site-row[data-active="true"] .motif-cs-row-main,
+html[data-theme="claude-dark"] .motif-cs-restriction-site-row[data-active="true"] .motif-cs-row-main small,
+html[data-theme="claude-dark"] .motif-cs-restriction-site-row[data-active="true"] .motif-cs-row-meta,
+html[data-theme="claude-dark"] .motif-cs-theme-choice[data-active="true"] .motif-cs-theme-choice-copy small,
+html[data-theme="claude-dark"] .motif-cs-msa-record-option[data-active="true"] small,
+html[data-theme="claude-dark"] .motif-cs-msa-record-option[data-active="true"] em,
+html[data-theme="claude-dark"] .motif-cs-translation-row-shell[data-active="true"] .motif-cs-translation-row-delete {
   color: var(--accent-contrast);
+}
+
+html[data-theme="claude-dark"] .motif-cs-restriction-row[data-active="true"] .motif-cs-cut-dot {
+  border-color: var(--accent-contrast);
+}
+
+html[data-theme="claude-dark"] .motif-cs-restriction-row[data-active="true"] .motif-cs-toggle input:checked + .motif-cs-cut-dot {
+  background: var(--accent-contrast);
 }
 
 html[data-theme="claude-dark"] .motif-cs-mini-button[data-active="true"],
@@ -228,6 +349,44 @@ html[data-theme="claude-dark"] .motif-cs-segmented button[data-active] {
   background: var(--accent-base);
   color: var(--accent-contrast);
   box-shadow: none;
+}
+
+html[data-theme="claude-dark"] .motif-cs-inspector .motif-cs-panel[open] > .motif-cs-panel-head,
+html[data-theme="claude-dark"] .motif-cs-restriction-source[data-active="true"] {
+  border-color: var(--accent-base);
+  background: var(--accent-base);
+  color: var(--accent-contrast);
+  box-shadow: none;
+}
+
+html[data-theme="claude-dark"] .motif-cs-inspector .motif-cs-panel[open] > .motif-cs-panel-head > span,
+html[data-theme="claude-dark"] .motif-cs-inspector .motif-cs-panel[open] > .motif-cs-panel-head > .motif-cs-chip,
+html[data-theme="claude-dark"] .motif-cs-inspector .motif-cs-panel[open] > .motif-cs-panel-head > .motif-cs-panel-icon,
+html[data-theme="claude-dark"] .motif-cs-inspector .motif-cs-panel[open] > .motif-cs-panel-head::after,
+html[data-theme="claude-dark"] .motif-cs-restriction-source[data-active="true"] .motif-cs-source-state {
+  color: var(--accent-contrast);
+}
+
+html[data-theme="claude-dark"] .motif-cs-restriction-source[data-active="true"] .motif-cs-source-state {
+  border-color: color-mix(in srgb, var(--accent-contrast) 48%, transparent);
+  background: color-mix(in srgb, var(--accent-base) 84%, #000000);
+}
+
+html:is([data-theme="claude-light"], [data-theme="claude-dark"]) .motif-cs-annotation-list .motif-cs-row[data-active="true"],
+html:is([data-theme="claude-light"], [data-theme="claude-dark"]) .motif-cs-annotation-list .motif-cs-row[data-active="true"]:hover,
+html:is([data-theme="claude-light"], [data-theme="claude-dark"]) .motif-cs-annotation-list .motif-cs-row[data-active="true"]:focus-visible {
+  border-color: color-mix(in srgb, var(--motif-cs-row-color, var(--accent-base)) 34%, var(--border-subtle));
+  background: color-mix(in srgb, var(--motif-cs-row-color, var(--accent-base)) 15%, var(--bg-primary));
+  box-shadow: inset 3px 0 0 var(--motif-cs-row-color, var(--accent-base));
+  color: var(--text-primary);
+}
+
+html:is([data-theme="claude-light"], [data-theme="claude-dark"]) .motif-cs-annotation-list .motif-cs-row[data-active="true"] .motif-cs-row-main,
+html:is([data-theme="claude-light"], [data-theme="claude-dark"]) .motif-cs-annotation-list .motif-cs-row[data-active="true"] .motif-cs-row-main small,
+html:is([data-theme="claude-light"], [data-theme="claude-dark"]) .motif-cs-annotation-list .motif-cs-row[data-active="true"] .motif-cs-row-meta,
+html:is([data-theme="claude-light"], [data-theme="claude-dark"]) .motif-cs-annotation-list .motif-cs-row[data-active="true"] .motif-cs-chip,
+html:is([data-theme="claude-light"], [data-theme="claude-dark"]) .motif-cs-translation-row-shell[data-active="true"] .motif-cs-translation-row-delete {
+  color: var(--text-primary);
 }
 
 :root {
@@ -1018,7 +1177,7 @@ summary,
 }
 
 .motif-cs-map-column > .motif-cs-pane-title {
-  min-height: 22px;
+  min-height: 30px;
   padding: 0 2px 2px 10px;
 }
 
@@ -1030,6 +1189,16 @@ summary,
 
 .motif-cs-map-column > .motif-cs-pane-title small {
   font-size: 10px;
+}
+
+.motif-cs-map-title-full {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.motif-cs-map-title-compact {
+  display: none;
 }
 
 .motif-cs-map-column > .motif-cs-pane-title .motif-cs-pane-collapse {
@@ -1172,30 +1341,9 @@ body[data-motif-cs-rail-popover-resizing] {
   pointer-events: auto;
 }
 
-/* Below this height the rail's fifteen tools do not fit, and until now they
-   simply left the screen: Settings — theme, backup, Clear workspace — and
-   Alignment, the 14th icon, became unreachable with no way back. Measured at
-   1440x600: content 625 against 530 of room, and wheel, touch-drag and 120
-   presses of Tab all left it exactly where it was. Only page zoom under 100%
-   recovered them, which is a workaround a stuck user has to already know.
-
-   694px is not a chosen number. The rail holds 15 heads at 34px with 3px
-   between them plus its title and 8px padding, which is 625px of content under
-   a 70px top bar — so 695 is the last height where the last icon fits, and 694
-   is the first where something is hidden. It is exactly the boundary the
-   advisor observed independently. A 16th tool moves it; the guard test ties
-   this constant to the tool count so it cannot drift silently.
-
-   `pointer-events: auto` here does NOT weaken the rule above it. That rule
-   protects EMPTY rail space, and empty rail space is what has just run out:
-   measured 205px at 900, 65px at 760, 5px at 700 and 0px at 694 and below. The
-   passthrough is restored in full the moment there is anything to pass through.
-   Scoping it this way was not caution — with the rail left `pointer-events:
-   none`, `overflow-y: auto` alone is a mirage. The wheel then targets whatever
-   sits BENEATH the rail, so it scrolls only while the pointer is over an icon
-   and is dead in the 3px gaps between them (measured: 103 over an icon, 0 in a
-   gap, at the same height), and the thumb cannot be dragged at all. */
-@media (max-height: 694px) {
+/* Sixteen 34px tool heads, their gaps, the title, and padding need 662px below
+   the top bar. Once they no longer fit, the rail becomes its own scroll area. */
+@media (max-height: 731px) {
   .motif-cs-inspector[data-tools-pinned="false"] {
     overflow-y: auto;
     overflow-x: hidden;
@@ -1387,9 +1535,30 @@ body[data-motif-cs-rail-popover-resizing] {
 }
 
 @media (max-width: 520px) {
+  .motif-cs-map-title-full {
+    display: none;
+  }
+
+  .motif-cs-map-title-compact {
+    display: inline;
+  }
+
   .motif-cs-inspector[data-tools-pinned="false"] .motif-cs-panel[open] > .motif-cs-tool-panel-body {
     right: 50px;
     width: min(var(--rail-popover-width, 344px), calc(100vw - 62px));
+    max-width: calc(100vw - 62px);
+  }
+
+  .motif-cs-panel .motif-cs-restriction-source-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .motif-cs-panel .motif-cs-restriction-source:nth-child(even) {
+    border-left: 0;
+  }
+
+  .motif-cs-panel .motif-cs-restriction-source:nth-child(n + 2) {
+    border-top: 1px solid var(--border-subtle);
   }
 }
 
@@ -1525,12 +1694,18 @@ body[data-motif-cs-rail-popover-resizing] .motif-cs-rail-popover-resize::after {
 .motif-cs-inspector[data-tools-pinned="true"] {
   gap: 0;
   padding: 8px 0;
+  scrollbar-gutter: stable;
 }
 
 .motif-cs-inspector[data-tools-pinned="true"] .motif-cs-pane-title {
+  position: sticky;
+  z-index: 5;
+  top: 8px;
+  flex: 0 0 auto;
   min-height: 30px;
   padding: 0 10px 7px 12px;
   border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-primary);
 }
 
 .motif-cs-inspector[data-tools-pinned="true"] .motif-cs-panel {
@@ -1708,15 +1883,6 @@ body[data-motif-cs-rail-popover-resizing] .motif-cs-rail-popover-resize::after {
 
 .motif-cs-map-frame {
   position: relative;
-  /* How much of a row the zoom toolbar occupies, declared on the frame because
-     the toolbar and the status readout are SIBLINGS and in linear mode they
-     share the bottom edge from opposite ends — the readout subtracts this to
-     stay clear. It used to be a bare 126px written into the readout's own
-     max-width, which meant every control added to the toolbar had to remember
-     to go and re-guess a number living somewhere else. Protein and RNA records
-     get no Labels chip, so their toolbar is the original three zoom buttons
-     wide: 28 + 34 + 28, two 2px gaps, and the 12px inset at each end. */
-  --map-toolbar-reserve: 126px;
   /* Map-first workspace: keep the restriction/source panels below the primary
      canvas rather than letting them crowd it. */
   height: clamp(560px, 70vh, 820px);
@@ -1727,14 +1893,6 @@ body[data-motif-cs-rail-popover-resizing] .motif-cs-rail-popover-resize::after {
   border-bottom: 1px solid color-mix(in srgb, var(--border-subtle) 72%, transparent);
   border-radius: 0;
   overflow: hidden;
-}
-
-/* DNA records add the Sites chip, so the readout starts further in. Keyed off
-   the chip being present so
-   the reserve follows what is actually rendered instead of restating the gate
-   that renders it. */
-.motif-cs-map-frame:has(.motif-cs-map-labels-toggle) {
-  --map-toolbar-reserve: 176px;
 }
 
 /* A linear map is short and wide — don't reserve a tall square frame for it,
@@ -1825,25 +1983,17 @@ body[data-motif-cs-rail-popover-resizing] .motif-cs-rail-popover-resize::after {
 }
 
 .motif-cs-map-toolbar {
-  position: absolute;
-  top: 12px;
-  left: 12px;
-  z-index: 3;
   display: inline-flex;
+  flex: 0 0 auto;
   align-items: center;
+  align-self: center;
   gap: 2px;
+  min-width: 0;
+  min-height: 28px;
   padding: 0;
   border: 0;
   border-radius: 0;
   background: transparent;
-}
-
-/* Linear maps place their axis and early restriction ticks across the top edge.
-   Keep zoom controls in the otherwise-empty lower corner so they never steal
-   pointer events from the first sites. */
-.motif-cs-map-frame[data-map-mode="linear"] .motif-cs-map-toolbar {
-  top: auto;
-  bottom: 10px;
 }
 
 .motif-cs-map-button {
@@ -1873,32 +2023,42 @@ body[data-motif-cs-rail-popover-resizing] .motif-cs-rail-popover-resize::after {
   color: var(--text-primary);
 }
 
-/* Puts restriction-label state on the map instead of only in the visibility
-   panel. State comes from the filled/unfilled button and aria-pressed, so the
-   visible caption stays compact and does not move when toggled. */
-.motif-cs-map-labels-toggle {
-  width: auto;
-  min-width: 40px;
-  padding-inline: 6px;
+.motif-cs-map-mode-toggle {
+  margin-left: 3px;
+  border-color: var(--border-subtle);
+  background: color-mix(in srgb, var(--bg-primary) 88%, transparent);
+}
+
+.motif-cs-map-mode-toggle svg,
+.motif-cs-map-sites-toggle svg {
+  display: block;
+}
+
+/* The compact scissors button controls the full restriction-site layer. The
+   detailed visibility panel still owns separate source, enzyme, and label
+   controls. */
+.motif-cs-map-sites-toggle {
+  width: 28px;
+  min-width: 28px;
   color: var(--text-muted);
-  font-size: 10px;
-  font-weight: 700;
 }
 
 /* Labels default on, so this is the resting look: a filled chip is both the
    state and what makes the caption legible over map ink. */
-.motif-cs-map-labels-toggle[data-active] {
-  border-color: color-mix(in srgb, var(--border-strong) 55%, transparent);
-  background: color-mix(in srgb, var(--bg-primary) 82%, transparent);
-  color: var(--text-primary);
-}
-
 .motif-cs-map-button:hover,
 .motif-cs-map-button:focus-visible {
   border-color: color-mix(in srgb, var(--border-strong) 55%, transparent);
   background: color-mix(in srgb, var(--bg-primary) 82%, transparent);
   color: var(--text-primary);
   outline: none;
+}
+
+.motif-cs-map-sites-toggle[data-active],
+.motif-cs-map-sites-toggle[data-active]:hover,
+.motif-cs-map-sites-toggle[data-active]:focus-visible {
+  border-color: var(--accent-base);
+  background: var(--accent-base);
+  color: var(--accent-contrast);
 }
 
 .motif-cs-map-button:disabled {
@@ -1931,7 +2091,7 @@ body[data-motif-cs-rail-popover-resizing] .motif-cs-rail-popover-resize::after {
 .motif-cs-map-frame[data-map-mode="linear"] .motif-cs-map-hint {
   right: 12px;
   left: auto;
-  max-width: min(320px, calc(100% - var(--map-toolbar-reserve)));
+  max-width: min(320px, calc(100% - 24px));
   text-align: right;
 }
 
@@ -10667,6 +10827,10 @@ summary.motif-cs-panel-head:focus-visible {
 
   .motif-cs-main[data-content-pane-count="3"] > .motif-cs-map-column .motif-cs-map-frame {
     min-height: 120px;
+  }
+
+  .motif-cs-main[data-content-pane-count="3"] > .motif-cs-map-column {
+    padding-block: 0;
   }
 }
 

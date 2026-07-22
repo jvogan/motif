@@ -886,3 +886,18 @@
     transition-duration: 0.01ms !important;
   }
 }
+
+html:is([data-theme="claude-light"], [data-theme="claude-dark"]) .motif-cs-primer-preset[data-active],
+html:is([data-theme="claude-light"], [data-theme="claude-dark"]) .motif-cs-primer-preset[data-active]:hover,
+html:is([data-theme="claude-light"], [data-theme="claude-dark"]) .motif-cs-primer-pair-row[data-selected],
+html:is([data-theme="claude-light"], [data-theme="claude-dark"]) .motif-cs-primer-pair-row[data-selected]:hover {
+  border-color: var(--accent-base);
+  background: var(--accent-base);
+  color: var(--accent-contrast);
+}
+
+html:is([data-theme="claude-light"], [data-theme="claude-dark"]) .motif-cs-primer-pair-row[data-selected] .motif-cs-primer-pair-rank,
+html:is([data-theme="claude-light"], [data-theme="claude-dark"]) .motif-cs-primer-pair-row[data-selected] .motif-cs-primer-pair-arrow,
+html:is([data-theme="claude-light"], [data-theme="claude-dark"]) .motif-cs-primer-pair-row[data-selected] small {
+  color: var(--accent-contrast);
+}

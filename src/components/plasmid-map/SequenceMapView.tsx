@@ -94,10 +94,7 @@ type RovingMapKeyDown = (
   activate: () => void,
 ) => void;
 
-type RenderedRestrictionDensityTick = MapRestrictionDensityTick & {
-  /** Number of raw sites represented by this projected mark. */
-  siteCount?: number;
-};
+type RenderedRestrictionDensityTick = MapRestrictionDensityTick;
 
 interface RestrictionDensityRender {
   ticks: readonly RenderedRestrictionDensityTick[];
@@ -142,7 +139,7 @@ function buildRestrictionDensityRender(
   sequenceLength: number,
 ): RestrictionDensityRender {
   if (densityTicks.length <= MAX_RESTRICTION_DENSITY_TICKS) {
-    return { ticks: densityTicks, binned: false };
+    return { ticks: densityTicks, binned: densityTicks.some((tick) => (tick.siteCount ?? 1) > 1) };
   }
 
   interface DensityBin {
@@ -164,24 +161,25 @@ function buildRestrictionDensityRender(
       : sourceIndex / densityTicks.length;
     const boundedRatio = Math.max(0, Math.min(1 - Number.EPSILON, sequenceRatio));
     const binIndex = Math.floor(boundedRatio * MAX_RESTRICTION_DENSITY_TICKS);
+    const sourceCount = densityTick.siteCount ?? 1;
     const bin = bins[binIndex];
     if (bin) {
-      bin.count += 1;
-      bin.anchorBp += densityTick.anchorBp;
-      bin.x1 += densityTick.tick.x1;
-      bin.y1 += densityTick.tick.y1;
-      bin.x2 += densityTick.tick.x2;
-      bin.y2 += densityTick.tick.y2;
+      bin.count += sourceCount;
+      bin.anchorBp += densityTick.anchorBp * sourceCount;
+      bin.x1 += densityTick.tick.x1 * sourceCount;
+      bin.y1 += densityTick.tick.y1 * sourceCount;
+      bin.x2 += densityTick.tick.x2 * sourceCount;
+      bin.y2 += densityTick.tick.y2 * sourceCount;
       return;
     }
     bins[binIndex] = {
       firstId: densityTick.id,
-      count: 1,
-      anchorBp: densityTick.anchorBp,
-      x1: densityTick.tick.x1,
-      y1: densityTick.tick.y1,
-      x2: densityTick.tick.x2,
-      y2: densityTick.tick.y2,
+      count: sourceCount,
+      anchorBp: densityTick.anchorBp * sourceCount,
+      x1: densityTick.tick.x1 * sourceCount,
+      y1: densityTick.tick.y1 * sourceCount,
+      x2: densityTick.tick.x2 * sourceCount,
+      y2: densityTick.tick.y2 * sourceCount,
     };
   });
 
@@ -323,7 +321,7 @@ const FeatureShape = memo(function FeatureShape({
       style={style}
       role={interactive ? 'button' : undefined}
       tabIndex={interactive ? tabIndex : undefined}
-      aria-label={`${feature.name}, ${feature.type}, ${strandLabel}`}
+      aria-label={feature.title ?? `${feature.name}, ${feature.type}, ${strandLabel}`}
       aria-pressed={interactive ? selected : undefined}
       onClick={interactive ? (e) => {
         e.stopPropagation();
@@ -548,6 +546,10 @@ export const SequenceMapView = memo(function SequenceMapView({
     () => buildRestrictionDensityRender(layout.restrictionDensityTicks, layout.length),
     [layout.length, layout.restrictionDensityTicks],
   );
+  const restrictionDensitySourceCount = useMemo(
+    () => layout.restrictionDensityTicks.reduce((sum, tick) => sum + (tick.siteCount ?? 1), 0),
+    [layout.restrictionDensityTicks],
+  );
 
   const handleMapItemFocus = useCallback((interactionIndex: number) => {
     const key = mapInteractionModel.keys[interactionIndex];
@@ -765,7 +767,7 @@ export const SequenceMapView = memo(function SequenceMapView({
           aria-hidden="true"
           pointerEvents="none"
           data-binned={restrictionDensityRender.binned || undefined}
-          data-source-count={layout.restrictionDensityTicks.length}
+          data-source-count={restrictionDensitySourceCount}
           data-rendered-count={restrictionDensityRender.ticks.length}
         >
           {restrictionDensityRender.ticks.map((densityTick) => (

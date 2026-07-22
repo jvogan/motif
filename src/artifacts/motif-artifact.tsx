@@ -1,8 +1,8 @@
 /* eslint-disable react-refresh/only-export-components -- artifact entry exports pure runtime test seams */
-import { Component, useCallback, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from 'react';
+import { Component, memo, useCallback, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
-import { Activity, AlignCenter, Beaker, ChevronDown, ChevronLeft, ChevronRight, Crosshair, Dna, FileText, History, Info, Languages, LayoutGrid, List, Map as MapIcon, Maximize2, Minimize2, NotebookPen, Plus, Redo2, Search, Settings, ShieldCheck, Tag, Trash2, Undo2, Workflow, Wrench, X, type LucideIcon } from 'lucide-react';
+import { Activity, AlignCenter, Beaker, ChevronDown, ChevronLeft, ChevronRight, Circle, Crosshair, Dna, FileText, History, Info, Languages, LayoutGrid, List, Map as MapIcon, Maximize2, Minimize2, MoveHorizontal, NotebookPen, Plus, Redo2, Scissors, Search, Settings, ShieldCheck, Tag, Trash2, Undo2, Workflow, Wrench, X, type LucideIcon } from 'lucide-react';
 import vectorsRaw from '../../public/data/vectors.json?raw';
 import type { Feature, FeatureStrand, FeatureType, ORF, RestrictionEnzyme, RestrictionSite, SequenceType, Topology } from '../bio/types';
 import { extractEmbeddedFastaContent, parseFasta } from '../bio/fasta-parser';
@@ -41,6 +41,10 @@ import { bpToAngle, pointOnCircle } from '../plasmid-map/geometry/coordinates';
 import { featureSegments as mapFeatureSegments, featureSpans, normalizeSpan } from '../plasmid-map/geometry/ranges';
 import { selectionOverlayPaths } from '../plasmid-map/selection-overlay';
 import { mapModeForBlock, type MapLayout, type MapMode, type MapSpan } from '../plasmid-map/types';
+import {
+  restrictionDensitySourcesForMap,
+  restrictionSitesForInteractiveMap,
+} from '../plasmid-map/restriction-display';
 import {
   contentPointFromRoot,
   mapContentPoint,
@@ -1174,12 +1178,15 @@ const SUMMARY_ORF_MIN_AA = 30;
 const MIN_ZOOM = 1;
 const MAX_ZOOM = 8;
 const ZOOM_STEP = 1.25;
-const MAP_FIT_PAN_MARGIN_SCALE = 0.08;
+const MAP_PAN_MARGIN_SCALE = 0.24;
+const MAP_PAN_MARGIN_MIN = 56;
+const MAP_LINEAR_PAN_MARGIN_Y_MIN = 160;
 const MAP_FIT_WHEEL_PAN_SCALE = 0.22;
 const MAP_ZOOMED_WHEEL_PAN_SCALE = 0.78;
 const MAP_CIRCULAR_RANGE_HIT_MIN = 18;
 const MAP_CIRCULAR_RANGE_HIT_MAX = 34;
-const MAP_LINEAR_RANGE_HIT_Y = 18;
+const MAP_LINEAR_RANGE_HIT_TOP_Y = 18;
+const MAP_LINEAR_RANGE_HIT_BOTTOM_Y = 176;
 const MAP_LINEAR_RANGE_HIT_X = 8;
 const DEFAULT_MAP_VIEWPORT: MapViewport = { k: 1, tx: 0, ty: 0 };
 const builtInRecords = JSON.parse(vectorsRaw) as ArtifactRecordInput[];
@@ -1642,25 +1649,27 @@ function sameViewport(a: MapViewport, b: MapViewport): boolean {
 function clampMapViewport(
   viewport: MapViewport,
   bg: { x: number; y: number; width: number; height: number },
+  mode: MapMode,
 ): MapViewport {
   const k = clamp(Number.isFinite(viewport.k) ? viewport.k : 1, MIN_ZOOM, MAX_ZOOM);
+  const marginX = Math.max(MAP_PAN_MARGIN_MIN, bg.width * MAP_PAN_MARGIN_SCALE);
+  const marginY = mode === 'linear'
+    ? Math.max(MAP_LINEAR_PAN_MARGIN_Y_MIN, bg.height * MAP_PAN_MARGIN_SCALE)
+    : Math.max(MAP_PAN_MARGIN_MIN, bg.height * MAP_PAN_MARGIN_SCALE);
   if (k <= MIN_ZOOM + 0.0001) {
-    // At "Fit", allow a small bounded pan. Otherwise a trackpad/mouse wheel over
-    // the map appears inert in a full-height workspace where the page itself
-    // cannot scroll, which makes the map feel stuck.
-    const marginX = Math.max(20, bg.width * MAP_FIT_PAN_MARGIN_SCALE);
-    const marginY = Math.max(20, bg.height * MAP_FIT_PAN_MARGIN_SCALE);
+    // Fit remains the exact reset position, but a subsequent drag gets enough
+    // symmetric travel to inspect labels near every edge.
     const tx = clamp(Number.isFinite(viewport.tx) ? viewport.tx : 0, -marginX, marginX);
     const ty = clamp(Number.isFinite(viewport.ty) ? viewport.ty : 0, -marginY, marginY);
     return Math.abs(tx) < 0.01 && Math.abs(ty) < 0.01 ? DEFAULT_MAP_VIEWPORT : { k: MIN_ZOOM, tx, ty };
   }
 
   const right = bg.x + bg.width;
-  const minTx = right - right * k;
-  const maxTx = bg.x - bg.x * k;
+  const minTx = right - right * k - marginX;
+  const maxTx = bg.x - bg.x * k + marginX;
   const bottom = bg.y + bg.height;
-  const minTy = bottom - bottom * k;
-  const maxTy = bg.y - bg.y * k;
+  const minTy = bottom - bottom * k - marginY;
+  const maxTy = bg.y - bg.y * k + marginY;
 
   return {
     k,
@@ -3110,16 +3119,26 @@ function mapPointerActionAtPoint(point: MapContentPoint, layout: MapLayout, zoom
   if (layout.mode === 'circular') {
     const distance = Math.hypot(point.x - layout.center.x, point.y - layout.center.y);
     const tolerance = clamp(layout.radius * 0.14, MAP_CIRCULAR_RANGE_HIT_MIN, MAP_CIRCULAR_RANGE_HIT_MAX) / contentScale;
-    return Math.abs(distance - layout.radius) <= tolerance ? 'range' : 'pan';
+    // A ring has a large, otherwise-empty interior. Treat that whole interior
+    // as sequence-selection space: the drag angle identifies the bases, while
+    // blank canvas outside the molecule remains available for panning. A thin
+    // tolerance outside the backbone keeps the visible ring easy to acquire.
+    return distance <= layout.radius + tolerance ? 'range' : 'pan';
   }
 
   const axis = layout.linearAxis;
   if (!axis) return 'pan';
   const hitX = MAP_LINEAR_RANGE_HIT_X / contentScale;
-  const hitY = MAP_LINEAR_RANGE_HIT_Y / contentScale;
+  const hitTopY = MAP_LINEAR_RANGE_HIT_TOP_Y / contentScale;
+  const hitBottomY = MAP_LINEAR_RANGE_HIT_BOTTOM_Y / (contentScale * Math.pow(contentScale, 0.75));
   const alongAxis = point.x >= axis.startX - hitX
     && point.x <= axis.endX + hitX;
-  return alongAxis && Math.abs(point.y - axis.y) <= hitY ? 'range' : 'pan';
+  // The linear drawing uses the rows below its sequence axis for annotations.
+  // Keep those rows available at Fit, then narrow the screen-space range band
+  // as the drawing grows so a zoomed map still has blank canvas for panning.
+  const inSequenceBand = point.y >= axis.y - hitTopY
+    && point.y <= Math.min(layout.bg.y + layout.bg.height, axis.y + hitBottomY);
+  return alongAxis && inSequenceBand ? 'range' : 'pan';
 }
 
 function signedCircularAngleDelta(fromAngle: number, toAngle: number): number {
@@ -4754,6 +4773,7 @@ function App() {
   const [mapRenderModeByRecord, setMapRenderModeByRecord] = useState<Record<string, MapMode>>({});
   const [mapRangesByRecord, setMapRangesByRecord] = useState<Record<string, MapSelectionRange | null>>({});
   const [selection, setSelection] = useState<Selection>(null);
+  const [sequenceFocusRequest, requestSequenceFocus] = useReducer((count: number) => count + 1, 0);
   const [featureEditorRequest, requestFeatureEditor] = useReducer((count: number) => count + 1, 0);
   const [sequenceViewMode, setSequenceViewMode] = useState<SequenceViewMode>('detail');
   // User-added inline translation layers (from a selection). Coding features
@@ -5286,6 +5306,16 @@ function App() {
     () => restrictionSites.filter((site) => !hiddenEnzymes.has(site.enzyme)),
     [hiddenEnzymes, restrictionSites],
   );
+  const restrictionLayerVisible = visibleRestrictionSites.length > 0;
+  const interactiveMapRestrictionSites = useMemo(
+    () => restrictionSitesForInteractiveMap(visibleRestrictionSites),
+    [visibleRestrictionSites],
+  );
+  const mapRestrictionDensitySources = useMemo(
+    () => restrictionDensitySourcesForMap(visibleRestrictionSites, sequence.length),
+    [sequence.length, visibleRestrictionSites],
+  );
+  const mapRestrictionSitesOmitted = visibleRestrictionSites.length - interactiveMapRestrictionSites.length;
   const { ref: mapFrameRef, size: mapSize } = useElementSize();
   const mapColumnRef = useRef<HTMLElement | null>(null);
   // Labels default ON, with no site-count pre-gate. The layout engine already
@@ -5311,6 +5341,8 @@ function App() {
   const mapRenderMode: MapMode = sequenceType === 'protein'
     ? 'linear'
     : mapRenderModeByRecord[recordId] ?? mapModeForBlock(topology, sequenceType);
+  const mapRenderModeTarget: MapMode = mapRenderMode === 'circular' ? 'linear' : 'circular';
+  const canUseMapRenderModeTarget = mapRenderModeTarget === 'linear' || canDrawAsRing;
   const setMapRenderMode = useCallback((mode: MapMode) => {
     setMapRenderModeByRecord((current) => (current[recordId] === mode ? current : { ...current, [recordId]: mode }));
   }, [recordId]);
@@ -6235,7 +6267,8 @@ function App() {
       topology,
       sequenceType,
       features: mapFeatures,
-      restrictionSites: visibleRestrictionSites,
+      restrictionSites: interactiveMapRestrictionSites,
+      restrictionDensitySources: mapRestrictionDensitySources,
       width: mapSize.width,
       height: mapSize.height,
       // Cap the linear lane pitch (LINEAR_LANE_PITCH_MAX) so rows pack tightly
@@ -6255,7 +6288,7 @@ function App() {
     // `mapRenderMode` belongs here now that it is no longer a pure function of
     // `topology`: without it the map keeps its old drawing until some other
     // dependency happens to change.
-    [mapFeatures, mapRenderMode, visibleRestrictionSites, mapSize.height, mapSize.width, sequence.length, sequenceType, showRestrictionLabels, topology, vector.name],
+    [interactiveMapRestrictionSites, mapFeatures, mapRenderMode, mapRestrictionDensitySources, mapSize.height, mapSize.width, sequence.length, sequenceType, showRestrictionLabels, topology, vector.name],
   );
 
   useEffect(() => {
@@ -6268,11 +6301,11 @@ function App() {
     setMapViewportsByRecord((current) => {
       const currentViewport = current[recordId];
       if (!currentViewport) return current;
-      const nextViewport = clampMapViewport(currentViewport, layout.bg);
+      const nextViewport = clampMapViewport(currentViewport, layout.bg, layout.mode);
       if (sameViewport(currentViewport, nextViewport)) return current;
       return { ...current, [recordId]: nextViewport };
     });
-  }, [layout.bg, recordId]);
+  }, [layout.bg, layout.mode, recordId]);
 
   const selectedFeatureId = selection?.kind === 'feature' ? selection.id : null;
   const activeClusterId = selection?.kind === 'restriction' ? selection.clusterId : null;
@@ -6290,14 +6323,14 @@ function App() {
     : selectedFeature
       ? null
       : selectedMapRange;
-  // A selected feature already has an exact outline on the map. The broad
-  // coordinate sector is reserved for an explicit range selection, where no
-  // feature glyph exists to carry the state.
+  // Keep the exact selected-feature outline and the coordinate overlay. The
+  // outline identifies the annotation; the overlay makes its sequence extent
+  // visible at normal zoom, including very short and nested features.
   const visibleMapRanges = useMemo(
     () => selectedMapRange
       ? normalizeSpan(selectedMapRange.start, selectedMapRange.end, sequence.length, topology)
-      : [],
-    [selectedMapRange, sequence.length, topology],
+      : selectedFeatureSpans,
+    [selectedFeatureSpans, selectedMapRange, sequence.length, topology],
   );
   const selectionPaths = useMemo(
     () => artifactSelectionOverlayPaths(layout, visibleMapRanges),
@@ -6341,6 +6374,9 @@ function App() {
       ? `${Math.round(mapViewport.k * 100)}%`
       : null,
     selectedMapRange ? `range ${mapRangeLabel(selectedMapRange, sequence.length)}` : null,
+    mapRestrictionSitesOmitted > 0
+      ? `${interactiveMapRestrictionSites.length.toLocaleString()} of ${visibleRestrictionSites.length.toLocaleString()} sites selectable`
+      : null,
   ].filter(Boolean).join(' · ');
 
   // How many restriction sites the map is drawing without a label. The map says this
@@ -6506,11 +6542,11 @@ function App() {
     setMapViewportsByRecord((current) => {
       const currentViewport = current[recordId] ?? DEFAULT_MAP_VIEWPORT;
       const rawNext = typeof updater === 'function' ? updater(currentViewport) : updater;
-      const nextViewport = clampMapViewport(rawNext, layout.bg);
+      const nextViewport = clampMapViewport(rawNext, layout.bg, layout.mode);
       if (sameViewport(currentViewport, nextViewport)) return current;
       return { ...current, [recordId]: nextViewport };
     });
-  }, [layout.bg, recordId]);
+  }, [layout.bg, layout.mode, recordId]);
 
   /** `point` is ROOT space — the new translate keeps that root point where it is. */
   const zoomAtPoint = useCallback((point: MapRootPoint, factor: number) => {
@@ -6760,7 +6796,13 @@ function App() {
     });
   }, [features, hiddenFeatureTranslationIds, recordId]);
 
+  const handleMapFeatureClick = useCallback((featureId: string) => {
+    requestSequenceFocus();
+    handleFeatureClick(featureId);
+  }, [handleFeatureClick]);
+
   const handleRestrictionClick = useCallback((clusterId: string, tickIds: readonly string[], enzyme?: string) => {
+    requestSequenceFocus();
     setLockedTranslateTarget(null);
     setSelectedTranslationLayerByRecord((current) => (
       current[recordId] ? { ...current, [recordId]: null } : current
@@ -6771,7 +6813,7 @@ function App() {
       if (!current[recordId]) return current;
       return { ...current, [recordId]: null };
     });
-  }, [recordId]);
+  }, [recordId, requestSequenceFocus]);
 
   const handleSequenceRestrictionClick = useCallback((site: RestrictionSite) => {
     const tickId = restrictionSiteTickId(site);
@@ -9030,7 +9072,7 @@ function App() {
 
   const closeOpenToolDetails = useCallback(() => {
     if (typeof document === 'undefined') return;
-    document.querySelectorAll<HTMLDetailsElement>('.motif-cs-inspector details[name="motif-cs-tools"][open]').forEach((panel) => {
+    document.querySelectorAll<HTMLDetailsElement>('.motif-cs-inspector details[data-rail-tool][open]').forEach((panel) => {
       panel.open = false;
     });
   }, []);
@@ -9726,26 +9768,20 @@ function App() {
     };
   }, [toolsPinned]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const inspector = toolsInspectorRef.current;
     if (!inspector) return undefined;
-    const handleToggle = (event: Event) => {
-      const panel = event.target;
-      if (!toolsPinned || !(panel instanceof HTMLDetailsElement) || !panel.open || panel.parentElement !== inspector) return;
-      window.requestAnimationFrame(() => {
-        const summary = panel.querySelector<HTMLElement>(':scope > summary');
-        if (!summary) return;
-        const inspectorRect = inspector.getBoundingClientRect();
-        const summaryRect = summary.getBoundingClientRect();
-        const desiredTop = inspectorRect.top + 4;
-        if (summaryRect.top < desiredTop || summaryRect.bottom > inspectorRect.bottom - 4) {
-          inspector.scrollTop += summaryRect.top - desiredTop;
-        }
+    const syncDisclosureGroups = () => {
+      inspector.querySelectorAll<HTMLDetailsElement>('details[data-rail-tool]').forEach((panel) => {
+        if (toolsPinned) panel.removeAttribute('name');
+        else panel.setAttribute('name', 'motif-cs-tools');
       });
     };
-    inspector.addEventListener('toggle', handleToggle, true);
-    return () => inspector.removeEventListener('toggle', handleToggle, true);
-  }, [toolsPinned]);
+    syncDisclosureGroups();
+    const observer = new MutationObserver(syncDisclosureGroups);
+    observer.observe(inspector, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, [paneVisibility.tools, recordId, toolsPinned]);
 
   const handleMapDockOpen = useCallback(() => {
     closeOpenToolDetails();
@@ -10484,6 +10520,89 @@ function App() {
     } as CSSProperties;
   };
 
+  const renderRestrictionSiteControls = (includeMapSummary = false): ReactNode => {
+    if (!hasActiveRecord || !isDnaRecord) {
+      return (
+        <p className="motif-cs-muted">
+          {hasActiveRecord
+            ? 'Restriction sites are available for DNA records.'
+            : 'Add or select a DNA record to inspect restriction sites.'}
+        </p>
+      );
+    }
+    const restorableSourceCount = lastVisibleEnzymeSourcesRef.current[recordId]?.length ?? 0;
+    const canShowSites = visibleRestrictionSites.length < restrictionSites.length
+      || (scanEnzymes.length === 0 && restorableSourceCount > 0);
+    return (
+      <>
+        <div className="motif-cs-layer-actions">
+          <button
+            type="button"
+            className="motif-cs-mini-button"
+            onClick={() => setAllEnzymesVisible(true)}
+            disabled={!canShowSites}
+            title={scanEnzymes.length === 0
+              ? restorableSourceCount > 0
+                ? 'Restore the source groups hidden with Hide sites'
+                : 'Enable a source group first'
+              : 'Show every site in the enabled source groups'}
+          >
+            Show sites
+          </button>
+          <button
+            type="button"
+            className="motif-cs-mini-button"
+            onClick={() => setAllEnzymesVisible(false)}
+            disabled={!restrictionLayerVisible}
+            title="Hide all restriction sites"
+          >
+            Hide sites
+          </button>
+          <button
+            type="button"
+            className="motif-cs-mini-button"
+            data-active={showRestrictionLabels || undefined}
+            aria-pressed={showRestrictionLabels}
+            onClick={toggleRestrictionLabels}
+            aria-label={`${showRestrictionLabels ? 'Hide' : 'Show'} restriction-site labels`}
+            title={`${showRestrictionLabels ? 'Hide' : 'Show'} restriction-site labels`}
+          >
+            Site labels
+          </button>
+          <span className="motif-cs-muted">{singleCutters.length} single-cutters</span>
+          {includeMapSummary && mapUnlabelledSiteCount > 0 ? (
+            <span className="motif-cs-muted">
+              {mapUnlabelledSiteCount.toLocaleString()} {mapRestrictionSitesOmitted > 0 ? 'selectable sites' : 'sites'} without labels on the map
+            </span>
+          ) : null}
+          {includeMapSummary && mapRestrictionSitesOmitted > 0 ? (
+            <span className="motif-cs-muted">
+              Density marks include all {visibleRestrictionSites.length.toLocaleString()} visible sites; {interactiveMapRestrictionSites.length.toLocaleString()} evenly distributed sites can be selected from the map.
+            </span>
+          ) : null}
+        </div>
+        <RestrictionSourceControls
+          sources={enzymeSources}
+          enzymeCount={scanEnzymes.length}
+          onToggle={setEnzymeSourceEnabled}
+        />
+        <RestrictionList
+          sites={restrictionSites}
+          enzymes={scanEnzymes}
+          sequenceLength={sequence.length}
+          topology={topology}
+          layout={layout.restrictions}
+          hiddenEnzymes={hiddenEnzymes}
+          selectedClusterId={activeClusterId}
+          selectedTickIds={selectedRestrictionTickIds}
+          onSelect={handleRestrictionClick}
+          onToggle={setEnzymeVisible}
+        />
+        <AddEnzymeForm onAdd={addCustomEnzyme} knownEnzymes={RESTRICTION_ENZYMES_FULL} />
+      </>
+    );
+  };
+
   return (
     <div
       className="motif-cs-shell"
@@ -10807,9 +10926,58 @@ function App() {
                 onKeyDown={(event) => moveFloatingPaneFromKeyboard('map', event)}
               >
                 <div>
-                  <span>{hasActiveRecord ? mapPaneTitle : 'Map'}</span>
+                  <span className="motif-cs-map-title-full">{hasActiveRecord ? mapPaneTitle : 'Map'}</span>
+                  <span className="motif-cs-map-title-compact">Map</span>
                   <small>{hasActiveRecord ? `${topology} · ${sequenceLengthLabel(sequence.length, sequenceType)}` : 'No active record'}</small>
                 </div>
+                {hasActiveRecord ? (
+                  <div className="motif-cs-map-toolbar" role="group" aria-label="Map view controls">
+                    <button className="motif-cs-map-button" type="button" onClick={handleZoomOut} disabled={!hasActiveRecord || mapViewport.k <= MIN_ZOOM + 0.0001} aria-label="Zoom out">-</button>
+                    <button
+                      className="motif-cs-map-button motif-cs-map-reset"
+                      type="button"
+                      onClick={handleZoomReset}
+                      disabled={!hasActiveRecord || (mapViewport.k <= MIN_ZOOM + 0.0001 && Math.abs(mapViewport.tx) < 0.5 && Math.abs(mapViewport.ty) < 0.5)}
+                      aria-label="Reset map view"
+                      title="Reset map view"
+                    >
+                      Fit
+                    </button>
+                    <button className="motif-cs-map-button" type="button" onClick={handleZoomIn} disabled={!hasActiveRecord || mapViewport.k >= MAX_ZOOM - 0.0001} aria-label="Zoom in">+</button>
+                    {isNucleotideRecord ? (
+                      <button
+                        className="motif-cs-map-button motif-cs-map-mode-toggle"
+                        type="button"
+                        data-current-mode={mapRenderMode}
+                        disabled={!canUseMapRenderModeTarget}
+                        aria-label={mapRenderModeTarget === 'linear' ? 'Draw map as line' : 'Draw map as circle'}
+                        title={canUseMapRenderModeTarget
+                          ? `Draw map as ${mapRenderModeTarget === 'linear' ? 'line' : 'circle'}`
+                          : 'A linear molecule has two ends and cannot be drawn as a circle'}
+                        onClick={() => setMapRenderMode(mapRenderModeTarget)}
+                      >
+                        {mapRenderModeTarget === 'linear' ? (
+                          <MoveHorizontal size={15} strokeWidth={2.2} aria-hidden="true" />
+                        ) : (
+                          <Circle size={14} strokeWidth={2.2} aria-hidden="true" />
+                        )}
+                      </button>
+                    ) : null}
+                    {isDnaRecord ? (
+                      <button
+                        className="motif-cs-map-button motif-cs-map-sites-toggle"
+                        type="button"
+                        data-active={restrictionLayerVisible || undefined}
+                        aria-pressed={restrictionLayerVisible}
+                        onClick={() => setAllEnzymesVisible(!restrictionLayerVisible)}
+                        aria-label={`${restrictionLayerVisible ? 'Hide' : 'Show'} restriction sites`}
+                        title={`${restrictionLayerVisible ? 'Hide' : 'Show'} restriction sites`}
+                      >
+                        <Scissors size={14} strokeWidth={2.1} aria-hidden="true" />
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
                 <PanePlacementControl
                   pane="map"
                   title="Map"
@@ -10840,7 +11008,7 @@ function App() {
                 data-map-pointer-action={mapPointerAction}
                 data-theme={mapTheme}
                 data-empty={!hasActiveRecord || undefined}
-                title="Wheel or blank-canvas drag to pan; Shift-wheel pans horizontally; Ctrl/Command-wheel zooms; drag near the sequence to select a range"
+                title="Wheel or drag outside the sequence to pan; Shift-wheel pans horizontally; Ctrl/Command-wheel zooms; drag inside a circular map or along a linear map to select a range"
               >
                 <div
                   className="motif-pm-container"
@@ -10860,7 +11028,7 @@ function App() {
                     activeClusterId={activeClusterId}
                     selectionPaths={selectionPaths}
                     viewport={mapViewport}
-                    onFeatureClick={handleFeatureClick}
+                    onFeatureClick={handleMapFeatureClick}
                     onRestrictionClick={handleRestrictionClick}
                     onBackgroundClick={handleMapBackgroundClick}
                     onWheelZoom={handleMapWheel}
@@ -10871,47 +11039,6 @@ function App() {
                     <strong>No map to display</strong>
                     <span>Add a DNA, RNA, or protein record to render its overview.</span>
                   </div>
-                ) : null}
-                {hasActiveRecord ? (
-                <div className="motif-cs-map-toolbar" role="group" aria-label="Map view controls">
-                  <button className="motif-cs-map-button" type="button" onClick={handleZoomOut} disabled={!hasActiveRecord || mapViewport.k <= MIN_ZOOM + 0.0001} aria-label="Zoom out">-</button>
-                  <button
-                    className="motif-cs-map-button motif-cs-map-reset"
-                    type="button"
-                    onClick={handleZoomReset}
-                    disabled={!hasActiveRecord || (mapViewport.k <= MIN_ZOOM + 0.0001 && Math.abs(mapViewport.tx) < 0.5 && Math.abs(mapViewport.ty) < 0.5)}
-                    aria-label="Reset map view"
-                    title="Reset map view"
-                  >
-                    Fit
-                  </button>
-                  <button className="motif-cs-map-button" type="button" onClick={handleZoomIn} disabled={!hasActiveRecord || mapViewport.k >= MAX_ZOOM - 0.0001} aria-label="Zoom in">+</button>
-                  {/* Whether the ring is named is a property of the map, but the
-                      only switch for it was in the Map Visibility panel, and at
-                      every laptop size measured — 1440x900, 1280x800, 1024x768,
-                      900x700 — that panel's own SUMMARY is already past the
-                      bottom of the map column, which hides 143-148px of itself.
-                      Reaching the toggle meant scrolling a pane nothing invites
-                      you to scroll and then opening a closed accordion, for a
-                      state you are looking straight at. Same handler and same
-                      wording as the panel button, so the two always agree; this
-                      is a second route to one control, not a second control.
-                      Gated on isDnaRecord exactly as the panel's is, since
-                      restriction labels are the only thing it governs. */}
-                  {isDnaRecord ? (
-                    <button
-                      className="motif-cs-map-button motif-cs-map-labels-toggle"
-                      type="button"
-                      data-active={showRestrictionLabels || undefined}
-                      aria-pressed={showRestrictionLabels}
-                      onClick={toggleRestrictionLabels}
-                      aria-label={`${showRestrictionLabels ? 'Hide' : 'Show'} restriction-site labels`}
-                      title={`${showRestrictionLabels ? 'Hide' : 'Show'} restriction-site labels`}
-                    >
-                      Sites
-                    </button>
-                  ) : null}
-                </div>
                 ) : null}
                 {mapStatusHint ? (
                   <div className="motif-cs-map-hint">{mapStatusHint}</div>
@@ -10974,74 +11101,11 @@ function App() {
                         {mapRenderMode !== mapModeForBlock(topology, sequenceType) ? (
                           <span className="motif-cs-muted">Drawing only — still a {topology} {sequenceType.toUpperCase()}</span>
                         ) : null}
-                        {isDnaRecord ? (
-                          <>
-                            <button
-                              type="button"
-                              className="motif-cs-mini-button"
-                              onClick={() => setAllEnzymesVisible(true)}
-                              disabled={scanEnzymes.length === 0 && (lastVisibleEnzymeSourcesRef.current[recordId]?.length ?? 0) === 0}
-                              title={scanEnzymes.length === 0
-                                ? (lastVisibleEnzymeSourcesRef.current[recordId]?.length ?? 0) > 0
-                                  ? 'Restore the source groups hidden with Hide sites'
-                                  : 'Enable a source group first'
-                                : 'Show all sites in the enabled source groups'}
-                            >
-                              Show sites
-                            </button>
-                            <button type="button" className="motif-cs-mini-button" onClick={() => setAllEnzymesVisible(false)} title="Turn off source groups and hide restriction sites">Hide sites</button>
-                            <button
-                              type="button"
-                              className="motif-cs-mini-button"
-                              data-active={showRestrictionLabels || undefined}
-                              aria-pressed={showRestrictionLabels}
-                              onClick={toggleRestrictionLabels}
-                              aria-label={`${showRestrictionLabels ? 'Hide' : 'Show'} restriction-site labels`}
-                              title={`${showRestrictionLabels ? 'Hide' : 'Show'} restriction-site labels`}
-                            >
-                              Site labels
-                            </button>
-                            <span className="motif-cs-muted">{singleCutters.length} single-cutters</span>
-                            {/* The map's "+N more sites" chip carries this same number, but only
-                                to a pointer: it lives in an SVG <title>, which no browser opens
-                                on keyboard focus. Stated here it lands where a keyboard user is
-                                already going. Read off layout.overflows — the ARRAY THE CHIP
-                                RENDERS FROM — so the two cannot drift into disagreeing about the
-                                same quantity; a second derivation would be a second chance to be
-                                wrong. Worded as a caveat rather than a count, because sitting
-                                next to "39 single-cutters" a bare number reads as one more
-                                statistic instead of "the map is not showing you everything". */}
-                            {mapUnlabelledSiteCount > 0 ? (
-                              <span className="motif-cs-muted">{mapUnlabelledSiteCount.toLocaleString()} sites without labels on the map</span>
-                            ) : null}
-
-                          </>
-                        ) : (
+                        {!isDnaRecord ? (
                           <span className="motif-cs-muted">Restriction enzymes act on DNA; RNA is not converted implicitly.</span>
-                        )}
+                        ) : null}
                       </div>
-                      {isDnaRecord ? (
-                        <>
-                          <RestrictionSourceControls
-                            sources={enzymeSources}
-                            enzymeCount={scanEnzymes.length}
-                            onToggle={setEnzymeSourceEnabled}
-                          />
-                          <RestrictionList
-                            sites={restrictionSites}
-                            enzymes={scanEnzymes}
-                            sequenceLength={sequence.length}
-                            topology={topology}
-                            layout={layout.restrictions}
-                            hiddenEnzymes={hiddenEnzymes}
-                            selectedClusterId={activeClusterId}
-                            selectedTickIds={selectedRestrictionTickIds}
-                            onSelect={handleRestrictionClick}
-                            onToggle={setEnzymeVisible}
-                          />
-                          <AddEnzymeForm onAdd={addCustomEnzyme} knownEnzymes={RESTRICTION_ENZYMES_FULL} />
-                        </>
-                      ) : null}
+                      {isDnaRecord ? renderRestrictionSiteControls(true) : null}
                     </>
                   ) : (
                     <p className="motif-cs-muted">Map shape and restriction controls are available for nucleotide records.</p>
@@ -11317,6 +11381,8 @@ function App() {
                 <LargeSequenceViewer
                   sequence={sequence}
                   threshold={LARGE_SEQUENCE_DETAIL_THRESHOLD}
+                  selectedRange={selectedFeatureSpans[0] ?? visibleMapRanges[0] ?? null}
+                  focusRequest={sequenceFocusRequest}
                 />
               ) : (
                 <SequenceText
@@ -11326,6 +11392,7 @@ function App() {
                 features={features}
                 selectedFeature={selectedFeature}
                 selectedMapRange={selectedMapRange}
+                focusRequest={sequenceFocusRequest}
                 motifHits={motifHits}
                 motifLength={cleanedMotifLength}
                 restrictionSites={visibleRestrictionSites}
@@ -11605,6 +11672,25 @@ function App() {
               ) : (
                 <span>Select a feature or restriction tick.</span>
               )}
+            </div>
+          </details>
+
+          <details className="motif-cs-panel" name="motif-cs-tools" data-rail-tool="restriction-sites">
+            <summary className="motif-cs-panel-head" data-rail-label="E" title="Restriction sites">
+              <Scissors className="motif-cs-panel-icon" size={14} strokeWidth={2.2} aria-hidden="true" />
+              <span>Restriction Sites</span>
+              <span className="motif-cs-chip">
+                {hasActiveRecord && isDnaRecord
+                  ? `${visibleRestrictionSites.length}/${restrictionSites.length}`
+                  : 'DNA'}
+              </span>
+            </summary>
+            <div className="motif-cs-tool-panel-body motif-cs-restriction-tool-body">
+              <RailPopoverTitle
+                title="Restriction Sites"
+                meta={hasActiveRecord && isDnaRecord ? restrictionVisibilityMeta.full : 'DNA only'}
+              />
+              {renderRestrictionSiteControls(false)}
             </div>
           </details>
 
@@ -12981,6 +13067,7 @@ function FeatureList({
               key={feature.id}
               className="motif-cs-row"
               data-active={feature.id === selectedFeatureId || undefined}
+              style={{ '--motif-cs-row-color': feature.color } as CSSProperties}
               type="button"
               aria-pressed={feature.id === selectedFeatureId}
               onMouseDown={(event) => event.preventDefault()}
@@ -13018,6 +13105,7 @@ function FeatureList({
                 <button
                   className="motif-cs-row motif-cs-translation-row"
                   data-active={active || undefined}
+                  style={{ '--motif-cs-row-color': track.color ?? 'var(--accent)' } as CSSProperties}
                   type="button"
                   aria-pressed={active}
                   onMouseDown={(event) => event.preventDefault()}
@@ -16219,6 +16307,9 @@ function AddEnzymeForm({
   const [recognition, setRecognition] = useState('');
   const [status, setStatus] = useState('');
   const [hasError, setHasError] = useState(false);
+  const instanceId = useId();
+  const statusId = `motif-cs-add-enzyme-status-${instanceId}`;
+  const knownEnzymesId = `motif-cs-known-enzymes-${instanceId}`;
 
   const submit = () => {
     const result = onAdd(name, recognition);
@@ -16237,7 +16328,7 @@ function AddEnzymeForm({
     <div className="motif-cs-add-enzyme">
       <div className="motif-cs-add-enzyme-head">
         <span className="motif-cs-add-enzyme-title">Add enzyme / site</span>
-        {status ? <span className="motif-cs-chip" role="status" aria-live="polite" aria-atomic="true" id="motif-cs-add-enzyme-status">{status}</span> : null}
+        {status ? <span className="motif-cs-chip" role="status" aria-live="polite" aria-atomic="true" id={statusId}>{status}</span> : null}
       </div>
       <div className="motif-cs-add-enzyme-row">
         <input
@@ -16250,10 +16341,10 @@ function AddEnzymeForm({
           placeholder="Known enzyme, e.g. EcoRV…"
           aria-label="Known or custom enzyme name"
           aria-invalid={hasError || undefined}
-          aria-describedby={status ? 'motif-cs-add-enzyme-status' : undefined}
-          list="motif-cs-known-enzymes"
+          aria-describedby={status ? statusId : undefined}
+          list={knownEnzymesId}
         />
-        <datalist id="motif-cs-known-enzymes">
+        <datalist id={knownEnzymesId}>
           {knownEnzymes.map((enzyme) => <option key={enzyme.name} value={enzyme.name} />)}
         </datalist>
         <input
@@ -16267,7 +16358,7 @@ function AddEnzymeForm({
           placeholder="Custom motif, e.g. GGTACC…"
           aria-label="Custom enzyme recognition sequence"
           aria-invalid={hasError || undefined}
-          aria-describedby={status ? 'motif-cs-add-enzyme-status' : undefined}
+          aria-describedby={status ? statusId : undefined}
           translate="no"
           spellCheck={false}
         />
@@ -16418,8 +16509,7 @@ function RestrictionList({
                 className="motif-cs-restriction-site-row"
                 data-active={active || undefined}
                 aria-pressed={active}
-                onClick={() => cluster && onSelect(cluster.clusterId, [tickId], site.enzyme)}
-                disabled={!cluster}
+                onClick={() => onSelect(cluster?.clusterId ?? `site:${tickId}`, [tickId], site.enzyme)}
                 title={`${site.enzyme} ${site.recognitionSequence} at ${site.position + 1}, ${cutLabel}, ${overhangLabel} overhang, ${site.strand === -1 ? 'reverse' : 'forward'} strand`}
               >
                 <span className="motif-cs-row-main" translate="no">
@@ -16833,13 +16923,14 @@ function TranslationTrackRow({
   );
 }
 
-function SequenceText({
+const SequenceText = memo(function SequenceText({
   sequence,
   sequenceType,
   topology,
   features,
   selectedFeature,
   selectedMapRange,
+  focusRequest,
   motifHits,
   motifLength,
   restrictionSites,
@@ -16865,6 +16956,7 @@ function SequenceText({
   features: readonly Feature[];
   selectedFeature: Feature | null;
   selectedMapRange: MapSelectionRange | null;
+  focusRequest: number;
   motifHits: readonly number[];
   motifLength: number;
   restrictionSites: readonly RestrictionSite[];
@@ -17220,8 +17312,122 @@ function SequenceText({
       return geometry ? [geometry] : [];
     });
   }, [detailMode, restrictionEnzymes, restrictionSites, sequence.length, sequenceType, topology]);
-  const focusStart = selectedRanges[0]?.start ?? null;
-  const focusKey = selectedFeature?.id ?? (selectedMapRange ? `${selectedMapRange.start}:${selectedMapRange.end}` : 'none');
+  const featureLanesByLine = useMemo(() => {
+    const lanes = new Map<number, LineFeatureBlock[][]>();
+    if (!detailMode || features.length === 0) return lanes;
+    for (let lineStart = 0; lineStart < sequence.length; lineStart += basesPerLine) {
+      const lineEnd = Math.min(sequence.length, lineStart + basesPerLine);
+      const lineLanes = featureLanesForLine(features, lineStart, lineEnd, sequence.length, topology);
+      if (lineLanes.length > 0) lanes.set(lineStart, lineLanes);
+    }
+    return lanes;
+  }, [basesPerLine, detailMode, features, sequence.length, topology]);
+  const restrictionLabelsByLine = useMemo(() => {
+    const labels = new Map<number, ReturnType<typeof restrictionLabelLanesForLine>>();
+    if (!detailMode || restrictionSites.length === 0) return labels;
+    for (let lineStart = 0; lineStart < sequence.length; lineStart += basesPerLine) {
+      const lineEnd = Math.min(sequence.length, lineStart + basesPerLine);
+      const lineLabels = restrictionLabelLanesForLine(restrictionSites, lineStart, lineEnd);
+      if (lineLabels.lanes.length > 0 || lineLabels.hidden > 0) labels.set(lineStart, lineLabels);
+    }
+    return labels;
+  }, [basesPerLine, detailMode, restrictionSites, sequence.length]);
+  const restrictionKeyboardKeys = useMemo(() => {
+    const keys: string[] = [];
+    for (const lineLabels of restrictionLabelsByLine.values()) {
+      for (const lane of lineLabels.lanes) {
+        for (const label of lane) keys.push(label.key);
+      }
+    }
+    return keys;
+  }, [restrictionLabelsByLine]);
+  const restrictionKeyboardKeySet = useMemo(
+    () => new Set(restrictionKeyboardKeys),
+    [restrictionKeyboardKeys],
+  );
+  const selectedRestrictionKey = useMemo(() => {
+    if (selectedRestrictionTickSet.size === 0) return null;
+    for (const lineLabels of restrictionLabelsByLine.values()) {
+      for (const lane of lineLabels.lanes) {
+        const selected = lane.find((label) => (
+          label.sites.some((site) => restrictionSelectionHasSite(selectedRestrictionTickSet, site))
+        ));
+        if (selected) return selected.key;
+      }
+    }
+    return null;
+  }, [restrictionLabelsByLine, selectedRestrictionTickSet]);
+  const [rovingRestrictionKey, setRovingRestrictionKey] = useState<string | null>(null);
+  const effectiveRovingRestrictionKey = rovingRestrictionKey && restrictionKeyboardKeySet.has(rovingRestrictionKey)
+    ? rovingRestrictionKey
+    : selectedRestrictionKey && restrictionKeyboardKeySet.has(selectedRestrictionKey)
+      ? selectedRestrictionKey
+      : restrictionKeyboardKeys[0] ?? null;
+  useEffect(() => {
+    if (selectedRestrictionKey) setRovingRestrictionKey(selectedRestrictionKey);
+  }, [selectedRestrictionKey]);
+  const handleRestrictionLabelKeyDown = useCallback((
+    event: ReactKeyboardEvent<HTMLButtonElement>,
+    key: string,
+  ) => {
+    if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
+    const index = restrictionKeyboardKeys.indexOf(key);
+    if (index < 0 || restrictionKeyboardKeys.length === 0) return;
+    const nextIndex = event.key === 'Home'
+      ? 0
+      : event.key === 'End'
+        ? restrictionKeyboardKeys.length - 1
+        : clamp(
+            index + (event.key === 'ArrowRight' || event.key === 'ArrowDown' ? 1 : -1),
+            0,
+            restrictionKeyboardKeys.length - 1,
+          );
+    const nextKey = restrictionKeyboardKeys[nextIndex];
+    const sequenceElement = event.currentTarget.closest<HTMLElement>('.motif-cs-sequence');
+    const next = Array.from(
+      sequenceElement?.querySelectorAll<HTMLButtonElement>('.motif-cs-restriction-label[data-restriction-key]') ?? [],
+    ).find((candidate) => candidate.dataset.restrictionKey === nextKey);
+    if (!sequenceElement || !next) return;
+    event.preventDefault();
+    setRovingRestrictionKey(nextKey);
+    next.focus({ preventScroll: true });
+    const scroller = effectiveSequenceScroller(sequenceElement);
+    const scrollerRect = scroller.getBoundingClientRect();
+    const nextRect = next.getBoundingClientRect();
+    if (nextRect.top < scrollerRect.top + 24 || nextRect.bottom > scrollerRect.bottom - 24) {
+      scroller.scrollBy({ top: nextRect.top - scrollerRect.top - scrollerRect.height / 2, behavior: 'auto' });
+    }
+  }, [restrictionKeyboardKeys]);
+  const activeRestrictionCutsByLine = useMemo(() => {
+    const cuts = new Map<number, RestrictionCutGeometry[]>();
+    if (activeRestrictionTickSet.size === 0) return cuts;
+    for (const geometry of restrictionGeometry) {
+      if (!restrictionSelectionHasSite(activeRestrictionTickSet, geometry.site)) continue;
+      const lineStarts = new Set<number>();
+      for (const cut of [geometry.senseCut, geometry.antisenseCut]) {
+        const lineStart = cut === sequence.length
+          ? Math.max(0, Math.floor((sequence.length - 1) / basesPerLine) * basesPerLine)
+          : Math.floor(cut / basesPerLine) * basesPerLine;
+        lineStarts.add(lineStart);
+      }
+      for (const lineStart of lineStarts) {
+        const lineCuts = cuts.get(lineStart);
+        if (lineCuts) lineCuts.push(geometry);
+        else cuts.set(lineStart, [geometry]);
+      }
+    }
+    return cuts;
+  }, [activeRestrictionTickSet, basesPerLine, restrictionGeometry, sequence.length]);
+  const selectedRestrictionFocusStart = selectedRestrictionTickSet.size > 0
+    ? restrictionSites.find((site) => restrictionSelectionHasSite(selectedRestrictionTickSet, site))?.position ?? null
+    : null;
+  const focusStart = selectedRanges[0]?.start ?? selectedRestrictionFocusStart;
+  const focusKey = selectedFeature?.id
+    ?? (selectedMapRange
+      ? `${selectedMapRange.start}:${selectedMapRange.end}`
+      : selectedRestrictionFocusStart === null
+        ? 'none'
+        : `restriction:${selectedRestrictionFocusStart}`);
   // Pre-build the inline amino-acid rows per line, memoized on the tracks (NOT the
   // selection). The rows are React elements with stable identity, so a selection
   // drag — which re-renders SequenceText every frame — reuses these exact nodes and
@@ -17307,7 +17513,7 @@ function SequenceText({
         + node.clientHeight / 2;
       scroller.scrollTo({ top: Math.max(0, top), behavior: 'auto' });
     });
-  }, [basesPerLine, detailMode, focusKey, focusStart, sequence.length, showComplement]);
+  }, [basesPerLine, detailMode, focusKey, focusRequest, focusStart, sequence.length, showComplement]);
 
   // Clip a [start,end) range to a line, returning its ch offset+width or null.
   const clipRangeToLine = (range: { start: number; end: number }, lineStart: number, lineEnd: number) => {
@@ -17323,17 +17529,9 @@ function SequenceText({
     const lineEnd = Math.min(sequence.length, lineStart + basesPerLine);
     const lineLen = lineEnd - lineStart;
     const lineSequence = sequence.slice(lineStart, lineEnd);
-    const lineFeatureLanes = detailMode ? featureLanesForLine(features, lineStart, lineEnd, sequence.length, topology) : [];
-    const lineRestrictionLabels = detailMode
-      ? restrictionLabelLanesForLine(restrictionSites, lineStart, lineEnd)
-      : { lanes: [], hidden: 0 };
-    const lineRestrictionCuts = restrictionGeometry.filter(({ site, senseCut, antisenseCut }) => (
-      restrictionSelectionHasSite(activeRestrictionTickSet, site)
-      && (
-        restrictionCutBelongsToLine(senseCut, lineStart, lineEnd, sequence.length)
-        || restrictionCutBelongsToLine(antisenseCut, lineStart, lineEnd, sequence.length)
-      )
-    ));
+    const lineFeatureLanes = featureLanesByLine.get(lineStart) ?? [];
+    const lineRestrictionLabels = restrictionLabelsByLine.get(lineStart) ?? { lanes: [], hidden: 0 };
+    const lineRestrictionCuts = activeRestrictionCutsByLine.get(lineStart) ?? [];
     const isFocusLine = focusStart !== null && focusStart >= lineStart && focusStart < lineEnd;
     const lineTranslations = translationByLine.get(lineStart);
     // Selection + motif render as flat overlay rects behind static base text, so a
@@ -17379,8 +17577,11 @@ function SequenceText({
                         type="button"
                         className="motif-cs-restriction-label"
                         data-selected={selected || undefined}
+                        data-restriction-key={label.key}
                         aria-pressed={selected}
+                        aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown Home End"
                         aria-label={`${label.label}, restriction ${label.sites.length === 1 ? 'site' : 'cluster'} at ${primary.position + 1} bp, ${primaryCutLabel}, ${primary.overhang === 'blunt' ? 'blunt' : `${primary.overhang === '5prime' ? "5 prime" : "3 prime"} overhang`}, ${primary.strand === -1 ? 'reverse' : 'forward'} strand`}
+                        tabIndex={label.key === effectiveRovingRestrictionKey ? 0 : -1}
                         data-type-iis={typeIIS || undefined}
                         data-site-position={primary.position}
                         data-recognition-length={primary.recognitionSequence.length}
@@ -17388,8 +17589,12 @@ function SequenceText({
                         onPointerDown={(event) => event.stopPropagation()}
                         onPointerEnter={() => setHoveredRestrictionTickIds(label.sites.map(restrictionSiteTickId))}
                         onPointerLeave={() => setHoveredRestrictionTickIds([])}
-                        onFocus={() => setHoveredRestrictionTickIds(label.sites.map(restrictionSiteTickId))}
+                        onFocus={() => {
+                          setRovingRestrictionKey(label.key);
+                          setHoveredRestrictionTickIds(label.sites.map(restrictionSiteTickId));
+                        }}
                         onBlur={() => setHoveredRestrictionTickIds([])}
+                        onKeyDown={(event) => handleRestrictionLabelKeyDown(event, label.key)}
                         onClick={(event) => {
                           event.stopPropagation();
                           suppressNextFocusScrollRef.current = true;
@@ -17549,7 +17754,7 @@ function SequenceText({
       {grouped}
     </div>
   );
-}
+});
 
 if (typeof document !== 'undefined') {
   const rootElement = document.getElementById('root');

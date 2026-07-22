@@ -1141,6 +1141,17 @@
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
+
+html:is([data-theme="claude-light"], [data-theme="claude-dark"]) .motif-cs-msa-workspace .motif-cs-msa-row-stats-scroll th > button[data-active='true'],
+html:is([data-theme="claude-light"], [data-theme="claude-dark"]) .motif-cs-msa-workspace .motif-cs-msa-row-stats-scroll th > button[data-active='true']:hover,
+html:is([data-theme="claude-light"], [data-theme="claude-dark"]) .motif-cs-msa-workspace .motif-cs-msa-row-stats-scroll th > button[data-active='true']:focus-visible {
+  background: var(--accent-base);
+  color: var(--accent-contrast);
+}
+
+html:is([data-theme="claude-light"], [data-theme="claude-dark"]) .motif-cs-msa-workspace .motif-cs-msa-row-stats-scroll th > button[data-active='true'] .motif-cs-msa-row-stats-sort-indicator {
+  color: var(--accent-contrast);
+}
 .motif-cs-msa-workspace .motif-cs-msa-row-stats-sort-indicator {
   width: 1em;
   color: var(--text-muted);

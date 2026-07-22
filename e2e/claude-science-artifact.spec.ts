@@ -5,10 +5,10 @@ import path from 'node:path';
 import { buildAbiFixture } from './fidelity-fixtures';
 
 const artifactUrl = process.env.MOTIF_ARTIFACT_URL;
-const outputDir = path.resolve('output/playwright/resume-20260711-campaign');
-const msaCampaignOutputDir = path.resolve('output/playwright/msa-campaign-2-fixed');
+const outputDir = path.resolve('output/playwright/artifact-workflows');
+const msaOutputDir = path.resolve('output/playwright/msa-workflows');
 
-test.describe('Claude Science artifact campaign', () => {
+test.describe('Claude Science artifact workflows', () => {
   test.skip(!artifactUrl, 'Set MOTIF_ARTIFACT_URL to run the standalone artifact audit.');
 
   const pageDiagnostics = new WeakMap<Page, string[]>();
@@ -30,7 +30,7 @@ test.describe('Claude Science artifact campaign', () => {
 
   test.beforeAll(async () => {
     await mkdir(outputDir, { recursive: true });
-    await mkdir(msaCampaignOutputDir, { recursive: true });
+    await mkdir(msaOutputDir, { recursive: true });
   });
 
   async function openArtifact(page: Page, width = 1440, height = 1000) {
@@ -208,7 +208,8 @@ test.describe('Claude Science artifact campaign', () => {
     }]));
 
     const offPageFeature = page.locator('.motif-pm-feature[data-feature-id="feature-125"]');
-    const selectedFeatureName = (await offPageFeature.getAttribute('aria-label'))!.split(',')[0];
+    const selectedFeatureName = 'Feature 126';
+    await expect(offPageFeature).toHaveAttribute('aria-label', 'Feature 126 · cds · 3751–3774 →');
     // Dense circular features overlap at this scale; dispatch to the target node
     // so this regression isolates list paging rather than SVG hit ordering.
     await offPageFeature.dispatchEvent('click');
@@ -295,6 +296,7 @@ test.describe('Claude Science artifact campaign', () => {
           const mapFeature = page.locator(`.motif-pm-feature[data-feature-id="${feature.id}"]`);
           await mapFeature.locator('.motif-pm-feature-hit').click();
           await expect(mapFeature).toHaveAttribute('aria-pressed', 'true');
+          await expect(page.locator('.motif-cs-map-frame .motif-pm-selection').first()).toBeVisible();
           await expect.poll(async () => {
             const state = await focusState();
             return state.fullyVisible
@@ -311,8 +313,38 @@ test.describe('Claude Science artifact campaign', () => {
         expect(scrollPositions[1]).toBeLessThan(scrollPositions[0]);
         expect(scrollPositions[2]).toBeLessThan(scrollPositions[1]);
         expect(new Set(scrollOwners)).toEqual(new Set([viewport.label === 'stacked' ? 'pane' : 'sequence']));
+
+        const repeatedFeature = page.locator('.motif-pm-feature[data-feature-id="late-feature"]');
+        await repeatedFeature.locator('.motif-pm-feature-hit').click();
+        await expect.poll(async () => (await focusState()).fullyVisible).toBe(true);
+        await sequence.evaluate((element) => {
+          element.scrollTop = 0;
+          const pane = element.closest<HTMLElement>('.motif-cs-sequence-column');
+          if (pane) pane.scrollTop = 0;
+        });
+        await repeatedFeature.locator('.motif-pm-feature-hit').click();
+        await expect.poll(async () => {
+          const state = await focusState();
+          return state.fullyVisible && state.lineStart <= 10_800 && state.lineStart + state.lineLength > 10_800;
+        }).toBe(true);
       }
     }
+  });
+
+  test('restriction labels use one Tab stop and arrow-key navigation', async ({ page }) => {
+    await openArtifact(page, 1180, 900);
+    const labels = page.locator('.motif-cs-restriction-label');
+    expect(await labels.count()).toBeGreaterThan(2);
+    await expect(page.locator('.motif-cs-restriction-label[tabindex="0"]')).toHaveCount(1);
+
+    const first = page.locator('.motif-cs-restriction-label[tabindex="0"]');
+    const firstKey = await first.getAttribute('data-restriction-key');
+    await first.focus();
+    await page.keyboard.press('ArrowRight');
+    const focusedKey = await page.locator('.motif-cs-restriction-label:focus').getAttribute('data-restriction-key');
+    expect(focusedKey).toBeTruthy();
+    expect(focusedKey).not.toBe(firstKey);
+    await expect(page.locator('.motif-cs-restriction-label[tabindex="0"]')).toHaveCount(1);
   });
 
   test('selected directional features outline the complete arrow shape', async ({ page }) => {
@@ -345,7 +377,8 @@ test.describe('Claude Science artifact campaign', () => {
       });
       await page.mouse.click(clickPoint.x, clickPoint.y);
       await expect(feature).toHaveAttribute('data-selected', 'true');
-      await expect(page.locator('.motif-pm-selection')).toHaveCount(0);
+      await expect(feature).toHaveAttribute('aria-label', /501–2800/);
+      await expect(page.locator('.motif-pm-selection')).toHaveCount(topology === 'circular' ? 3 : 1);
       const style = await body.evaluate((path) => {
         const computed = getComputedStyle(path);
         const swatch = document.createElement('span');
@@ -443,7 +476,7 @@ test.describe('Claude Science artifact campaign', () => {
         await page.mouse.click(tip.x, tip.y);
         await expect(feature).toHaveAttribute('data-selected', 'true');
         await expect(page.locator('.motif-pm-feature[data-selected="true"]')).toHaveCount(1);
-        await expect(page.locator('.motif-pm-selection')).toHaveCount(0);
+        await expect(page.locator('.motif-pm-selection')).toHaveCount(topology === 'circular' ? 3 : 1);
         await expect.poll(async () => {
           const focus = await sequenceFocus();
           return focus.highlightCount > 0
@@ -684,8 +717,8 @@ test.describe('Claude Science artifact campaign', () => {
     await enzymeName.fill('Wave3I');
     await mapVisibility.getByRole('button', { name: 'Add', exact: true }).click();
     await expect(enzymeName).toHaveAttribute('aria-invalid', 'true');
-    await expect(enzymeRecognition).toHaveAttribute('aria-describedby', 'motif-cs-add-enzyme-status');
-    await expect(mapVisibility.locator('#motif-cs-add-enzyme-status')).toContainText('recognition sequence');
+    await expect(enzymeRecognition).toHaveAttribute('aria-describedby', /^motif-cs-add-enzyme-status-/);
+    await expect(mapVisibility.locator('[id^="motif-cs-add-enzyme-status-"]')).toContainText('recognition sequence');
     await enzymeRecognition.fill('TTTTCG');
     await mapVisibility.getByRole('button', { name: 'Add', exact: true }).click();
 
@@ -724,6 +757,183 @@ test.describe('Claude Science artifact campaign', () => {
     await expect(mapVisibility).toContainText('No enzymes match this filter.');
     await filter.fill('');
     expect(await mapVisibility.locator('.motif-cs-restriction-row input:checked').count()).toBe(visibleBefore);
+  });
+
+  test('Restriction Sites tool stays synchronized and works with the Map pane hidden', async ({ page }) => {
+    await openArtifact(page, 1180, 900);
+
+    const tool = page.locator('details[data-rail-tool="restriction-sites"]');
+    const toolSummary = tool.locator(':scope > summary');
+    const mapVisibility = page.locator('details').filter({ hasText: 'Map Visibility' }).first();
+    await mapVisibility.locator(':scope > summary').click();
+    await toolSummary.click();
+
+    const totalClusters = await page.locator('.motif-pm-restriction').count();
+    expect(totalClusters).toBeGreaterThan(0);
+    const initialToolCount = (await toolSummary.locator('.motif-cs-chip').innerText()).match(/^(\d+)\/(\d+)$/);
+    expect(initialToolCount).toBeTruthy();
+    const totalSites = Number(initialToolCount![2]);
+    expect(Number(initialToolCount![1])).toBe(totalSites);
+    await expect(mapVisibility.locator(':scope > summary')).toContainText(`${totalSites}/${totalSites} sites`);
+
+    await tool.getByRole('button', { name: 'Hide sites', exact: true }).click();
+    await expect(page.locator('.motif-pm-restriction')).toHaveCount(0);
+    await expect(page.locator('.motif-pm-restriction-density > *')).toHaveCount(0);
+    await expect(toolSummary.locator('.motif-cs-chip')).toHaveText(`0/${totalSites}`);
+    await expect(mapVisibility.locator(':scope > summary')).toContainText(`0/${totalSites} sites`);
+    await expect(page.locator('.motif-cs-map-sites-toggle')).toHaveAttribute('aria-pressed', 'false');
+
+    await tool.getByRole('button', { name: 'Show sites', exact: true }).click();
+    await expect(page.locator('.motif-pm-restriction').first()).toBeVisible();
+    await expect(page.locator('.motif-pm-restriction-density > *').first()).toBeVisible();
+    await expect(toolSummary.locator('.motif-cs-chip')).toHaveText(`${totalSites}/${totalSites}`);
+
+    const toolLabelToggle = tool.getByRole('button', { name: 'Hide restriction-site labels' });
+    await toolLabelToggle.click();
+    await expect(page.locator('.motif-pm-restriction-label')).toHaveCount(0);
+    await expect(page.locator('.motif-pm-restriction')).toHaveCount(totalClusters);
+    await expect(mapVisibility.getByRole('button', { name: 'Show restriction-site labels' })).toHaveAttribute('aria-pressed', 'false');
+
+    await toolSummary.click();
+    await page.getByRole('button', { name: 'Collapse map pane' }).click();
+    await expect(page.locator('.motif-cs-main')).toHaveAttribute('data-map-hidden', 'true');
+    await toolSummary.click();
+    await expect(tool).toHaveAttribute('open', '');
+
+    const firstSite = tool.locator('.motif-cs-restriction-site-row').first();
+    const firstSiteTitle = await firstSite.getAttribute('title');
+    expect(firstSiteTitle).toBeTruthy();
+    await firstSite.click();
+    await expect(firstSite).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.locator('.motif-cs-restriction-label[data-selected="true"]')).toHaveCount(1);
+    await expect(page.locator('.motif-cs-seq-block[data-seq-focus="true"]')).toHaveCount(1);
+
+    await tool.getByRole('button', { name: 'Hide sites', exact: true }).click();
+    await expect(toolSummary.locator('.motif-cs-chip')).toHaveText(`0/${totalSites}`);
+  });
+
+  test('phone Restriction Sites popover uses the available width without clipping source names', async ({ page }) => {
+    await openArtifact(page, 390, 760);
+    const tool = page.locator('details[data-rail-tool="restriction-sites"]');
+    await tool.locator(':scope > summary').click();
+    const body = tool.locator(':scope > .motif-cs-tool-panel-body');
+    await expect(body).toBeVisible();
+    const bodyBox = (await body.boundingBox())!;
+    expect(bodyBox.width).toBeGreaterThanOrEqual(320);
+    expect(bodyBox.x).toBeGreaterThanOrEqual(8);
+    expect(bodyBox.x + bodyBox.width).toBeLessThanOrEqual(342);
+
+    const title = body.locator('.motif-cs-rail-popover-title strong');
+    await expect(title).toHaveText('Restriction Sites');
+    expect(await title.evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+    for (const label of await body.locator('.motif-cs-source-label').all()) {
+      expect(await label.evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+    }
+  });
+
+  test('Claude themes fill generic active UI while preserving feature-colored selections', async ({ page }) => {
+    await openArtifact(page, 1600, 900);
+    const toolsToggle = page.getByRole('button', { name: /Tools/ }).first();
+    if ((await toolsToggle.getAttribute('aria-pressed')) !== 'true') await toolsToggle.click();
+    const tool = page.locator('details[data-rail-tool="restriction-sites"]');
+    if ((await tool.getAttribute('open')) === null) await tool.locator(':scope > summary').click();
+    const annotations = page.locator('details[data-rail-tool="annotations"]');
+    if ((await annotations.getAttribute('open')) === null) await annotations.locator(':scope > summary').click();
+    const feature = annotations.locator('.motif-cs-feature-annotation-list .motif-cs-row').first();
+    await feature.click();
+    const site = tool.locator('.motif-cs-restriction-site-row').first();
+    await site.click();
+    const settings = page.locator('details[data-rail-tool="settings"]');
+    if ((await settings.getAttribute('open')) === null) await settings.locator(':scope > summary').click();
+
+    for (const label of ['Claude Light', 'Claude Dark']) {
+      await page.getByLabel('Theme').selectOption({ label });
+      await page.waitForTimeout(150);
+      await feature.click();
+      await page.waitForTimeout(150);
+      const styles = await tool.evaluate((details) => {
+        const summary = details.querySelector<HTMLElement>(':scope > summary')!;
+        const source = details.querySelector<HTMLElement>('.motif-cs-restriction-source[data-active="true"]')!;
+        const sourceState = source.querySelector<HTMLElement>('.motif-cs-source-state')!;
+        const feature = document.querySelector<HTMLElement>('details[data-rail-tool="annotations"] .motif-cs-feature-annotation-list .motif-cs-row[data-active="true"]')!;
+        const featureMeta = feature.querySelector<HTMLElement>('.motif-cs-row-meta')!;
+        const featureSwatch = feature.querySelector<HTMLElement>('.motif-cs-swatch')!;
+        const activeTheme = document.querySelector<HTMLElement>('.motif-cs-theme-choice[data-active="true"]')!;
+        const activeThemeNote = activeTheme.querySelector<HTMLElement>('small')!;
+        const sample = (color: string) => {
+          const canvas = document.createElement('canvas');
+          canvas.width = 1;
+          canvas.height = 1;
+          const context = canvas.getContext('2d')!;
+          context.fillStyle = color;
+          context.fillRect(0, 0, 1, 1);
+          return Array.from(context.getImageData(0, 0, 1, 1).data);
+        };
+        const probe = document.createElement('span');
+        probe.style.color = 'var(--accent-contrast)';
+        document.body.append(probe);
+        const contrast = getComputedStyle(probe).color;
+        probe.style.color = 'var(--text-primary)';
+        const primary = getComputedStyle(probe).color;
+        probe.style.background = 'var(--bg-primary)';
+        const surface = getComputedStyle(probe).backgroundColor;
+        probe.remove();
+        return {
+          summaryBackground: sample(getComputedStyle(summary).backgroundColor),
+          summaryColor: sample(getComputedStyle(summary).color),
+          sourceBackground: sample(getComputedStyle(source).backgroundColor),
+          sourceColor: sample(getComputedStyle(source).color),
+          sourceStateColor: sample(getComputedStyle(sourceState).color),
+          featureBackground: sample(getComputedStyle(feature).backgroundColor),
+          featureColor: sample(getComputedStyle(feature).color),
+          featureMetaColor: sample(getComputedStyle(featureMeta).color),
+          featureSwatchBackground: sample(getComputedStyle(featureSwatch).backgroundColor),
+          activeThemeBackground: sample(getComputedStyle(activeTheme).backgroundColor),
+          activeThemeColor: sample(getComputedStyle(activeTheme).color),
+          activeThemeNoteColor: sample(getComputedStyle(activeThemeNote).color),
+          contrast: sample(contrast),
+          primary: sample(primary),
+          surface: sample(surface),
+        };
+      });
+      expect(styles.summaryBackground).toEqual(styles.sourceBackground);
+      expect(styles.activeThemeBackground).toEqual(styles.sourceBackground);
+      expect(styles.featureBackground).not.toEqual(styles.sourceBackground);
+      expect(styles.featureBackground).not.toEqual(styles.surface);
+      expect(styles.summaryColor).toEqual(styles.contrast);
+      expect(styles.sourceColor).toEqual(styles.contrast);
+      expect(styles.sourceStateColor).toEqual(styles.contrast);
+      expect(styles.featureColor).toEqual(styles.primary);
+      expect(styles.featureMetaColor).toEqual(styles.primary);
+      expect(styles.activeThemeColor).toEqual(styles.contrast);
+      expect(styles.activeThemeNoteColor).toEqual(styles.contrast);
+      expect(styles.featureSwatchBackground).not.toEqual(styles.featureBackground);
+
+      await site.click();
+      await page.waitForTimeout(150);
+      const siteStyles = await site.evaluate((row) => {
+        const meta = row.querySelector<HTMLElement>('.motif-cs-row-meta')!;
+        const normalize = (color: string) => {
+          const canvas = document.createElement('canvas');
+          canvas.width = 1;
+          canvas.height = 1;
+          const context = canvas.getContext('2d')!;
+          context.fillStyle = color;
+          context.fillRect(0, 0, 1, 1);
+          return Array.from(context.getImageData(0, 0, 1, 1).data);
+        };
+        const source = document.querySelector<HTMLElement>('.motif-cs-restriction-source[data-active="true"]')!;
+        return {
+          background: normalize(getComputedStyle(row).backgroundColor),
+          color: normalize(getComputedStyle(row).color),
+          metaColor: normalize(getComputedStyle(meta).color),
+          sourceBackground: normalize(getComputedStyle(source).backgroundColor),
+        };
+      });
+      expect(siteStyles.background).toEqual(siteStyles.sourceBackground);
+      expect(siteStyles.color).toEqual(styles.contrast);
+      expect(siteStyles.metaColor).toEqual(styles.contrast);
+    }
   });
 
   test('a dense plasmid names its restriction clusters instead of drawing anonymous ticks', async ({ page }) => {
@@ -771,13 +981,13 @@ test.describe('Claude Science artifact campaign', () => {
       await expect(featureNames.filter({ hasText: name })).toHaveCount(1);
     }
 
-    // The labelling control reads the same on the dense record as on the sparse
-    // one — the density of a record is not a reason to flip a user-facing toggle.
+    // The detailed panel keeps a labels-only control. The compact scissors
+    // controls the complete restriction-site layer — ticks and labels together.
     const labelToggle = mapVisibility.getByRole('button', { name: 'Hide restriction-site labels' });
-    const toolbarToggle = page.locator('.motif-cs-map-toolbar .motif-cs-map-labels-toggle');
+    const toolbarToggle = page.locator('.motif-cs-map-toolbar .motif-cs-map-sites-toggle');
     await expect(labelToggle).toHaveText('Site labels');
-    await expect(toolbarToggle).toHaveText('Sites');
-    await expect(toolbarToggle).toHaveAttribute('aria-label', 'Hide restriction-site labels');
+    await expect(toolbarToggle.locator('svg')).toHaveCount(1);
+    await expect(toolbarToggle).toHaveAttribute('aria-label', 'Hide restriction sites');
     await expect(toolbarToggle).toHaveAttribute('aria-pressed', 'true');
 
     // Shrink to a laptop-sized window. This is the case that used to fail hardest:
@@ -806,12 +1016,25 @@ test.describe('Claude Science artifact campaign', () => {
     await page.getByRole('tab', { name: 'pUC19' }).click();
     await expect(labelToggle).toHaveText('Site labels');
 
+    const activeToggleStyle = await toolbarToggle.evaluate((button) => {
+      const style = getComputedStyle(button);
+      return { backgroundColor: style.backgroundColor, color: style.color };
+    });
     await toolbarToggle.click();
+    await expect(page.locator('.motif-pm-restriction')).toHaveCount(0);
+    await expect(page.locator('.motif-pm-restriction-density > *')).toHaveCount(0);
     await expect(page.locator('.motif-pm-restriction-label')).toHaveCount(0);
-    await expect(toolbarToggle).toHaveText('Sites');
-    await expect(toolbarToggle).toHaveAttribute('aria-label', 'Show restriction-site labels');
+    await expect(toolbarToggle.locator('svg')).toHaveCount(1);
+    await expect(toolbarToggle).toHaveAttribute('aria-label', 'Show restriction sites');
     await expect(toolbarToggle).toHaveAttribute('aria-pressed', 'false');
-    await mapVisibility.getByRole('button', { name: 'Show restriction-site labels' }).click();
+    const inactiveHoveredStyle = await toolbarToggle.evaluate((button) => {
+      const style = getComputedStyle(button);
+      return { backgroundColor: style.backgroundColor, color: style.color };
+    });
+    expect(inactiveHoveredStyle).not.toEqual(activeToggleStyle);
+    await toolbarToggle.click();
+    await expect(page.locator('.motif-pm-restriction').first()).toBeVisible();
+    await expect(page.locator('.motif-pm-restriction-density > *').first()).toBeVisible();
     await expect(page.locator('.motif-pm-restriction-label').first()).toBeVisible();
   });
 
@@ -933,7 +1156,7 @@ test.describe('Claude Science artifact campaign', () => {
     expect(await page.evaluate(() => window.motifGetInventory?.().length)).toBe(3);
   });
 
-  test('cloning campaign: Save & open gel persists once and produces a configurable saved gel result', async ({ page }) => {
+  test('cloning workflow: Save & open gel persists once and produces a configurable saved gel result', async ({ page }) => {
     await openArtifact(page, 1440, 900);
     await page.evaluate(() => window.motifRenderInventory?.([
       {
@@ -1101,7 +1324,7 @@ test.describe('Claude Science artifact campaign', () => {
     expect(await page.evaluate(() => window.motifGetWorkflowResults?.().length)).toBe(2);
   });
 
-  test('cloning campaign: blocked plans stay honest and a valid BsaI product saves atomically once', async ({ page }) => {
+  test('cloning workflow: blocked plans stay honest and a valid BsaI product saves atomically once', async ({ page }) => {
     await openArtifact(page, 1440, 900);
     const cloning = page.locator('details[data-rail-tool="cloning"]');
     await cloning.locator(':scope > summary').click();
@@ -1957,6 +2180,66 @@ test.describe('Claude Science artifact campaign', () => {
     await expect(primerPanel).not.toHaveAttribute('open', '');
   });
 
+  test('opening pinned tools keeps earlier rows and the pane width fixed', async ({ page }) => {
+    await openArtifact(page, 1600, 900);
+    const toolsToggle = page.getByRole('button', { name: /Tools/ }).first();
+    if ((await toolsToggle.getAttribute('aria-pressed')) !== 'true') await toolsToggle.click();
+
+    const inspector = page.locator('.motif-cs-inspector[data-tools-pinned="true"]');
+    const paneTitle = inspector.locator(':scope > .motif-cs-pane-title');
+    const row = (tool: string) => inspector.locator(`details[data-rail-tool="${tool}"] > summary`);
+    const stableTools = ['notes', 'inspector', 'restriction-sites'] as const;
+    const geometry = async () => ({
+      inspector: await inspector.boundingBox(),
+      rows: await Promise.all(stableTools.map(async (tool) => ({ tool, box: await row(tool).boundingBox() }))),
+    });
+    const expectStable = (before: Awaited<ReturnType<typeof geometry>>, after: Awaited<ReturnType<typeof geometry>>) => {
+      expect(before.inspector && after.inspector).toBeTruthy();
+      expect(Math.abs(after.inspector!.x - before.inspector!.x)).toBeLessThan(1);
+      expect(Math.abs(after.inspector!.width - before.inspector!.width)).toBeLessThan(1);
+      for (let index = 0; index < before.rows.length; index += 1) {
+        const first = before.rows[index].box;
+        const second = after.rows[index].box;
+        expect(first && second).toBeTruthy();
+        expect(Math.abs(second!.x - first!.x), `${before.rows[index].tool} moved horizontally`).toBeLessThan(1);
+        expect(Math.abs(second!.y - first!.y), `${before.rows[index].tool} moved vertically`).toBeLessThan(1);
+        expect(Math.abs(second!.width - first!.width), `${before.rows[index].tool} changed width`).toBeLessThan(1);
+      }
+    };
+
+    const beforeTranslation = await geometry();
+    await row('translation').click();
+    await expect(inspector.locator('details[data-rail-tool="translation"]')).toHaveAttribute('open', '');
+    await page.waitForTimeout(50);
+    expectStable(beforeTranslation, await geometry());
+
+    await row('pattern-search').click();
+    await expect(inspector.locator('details[data-rail-tool="pattern-search"]')).toHaveAttribute('open', '');
+    await page.waitForTimeout(50);
+    expectStable(beforeTranslation, await geometry());
+
+    const titleBeforeScroll = (await paneTitle.boundingBox())!;
+    const guideRow = row('guide');
+    await guideRow.scrollIntoViewIfNeeded();
+    await guideRow.click();
+    await expect(inspector.locator('details[data-rail-tool="guide"]')).toHaveAttribute('open', '');
+    const titleAfterScroll = (await paneTitle.boundingBox())!;
+    expect(Math.abs(titleAfterScroll.x - titleBeforeScroll.x)).toBeLessThan(1);
+    expect(Math.abs(titleAfterScroll.y - titleBeforeScroll.y)).toBeLessThan(1);
+    expect(Math.abs(titleAfterScroll.width - titleBeforeScroll.width)).toBeLessThan(1);
+    expect(Math.abs(titleAfterScroll.height - titleBeforeScroll.height)).toBeLessThan(1);
+
+    await openArtifact(page, 1180, 820);
+    if ((await toolsToggle.getAttribute('aria-pressed')) !== 'true') await toolsToggle.click();
+    const compactTitleBefore = (await paneTitle.boundingBox())!;
+    await row('guide').scrollIntoViewIfNeeded();
+    await row('guide').click();
+    await expect(inspector.locator('details[data-rail-tool="guide"]')).toHaveAttribute('open', '');
+    const compactTitleAfter = (await paneTitle.boundingBox())!;
+    expect(Math.abs(compactTitleAfter.y - compactTitleBefore.y)).toBeLessThan(1);
+    expect(Math.abs(compactTitleAfter.height - compactTitleBefore.height)).toBeLessThan(1);
+  });
+
   test('a short Tools rail popover keeps its resize grip on the visible corner after growing', async ({ page }) => {
     await openArtifact(page, 1180, 820);
     const toolsToggle = page.getByRole('button', { name: /Tools/ }).first();
@@ -2378,6 +2661,18 @@ test.describe('Claude Science artifact campaign', () => {
     expect(densityMetrics.sourceCount).toBeGreaterThan(512);
     expect(densityMetrics.renderedCount).toBeLessThanOrEqual(512);
     expect(densityMetrics.representedCount).toBe(densityMetrics.sourceCount);
+    expect(await page.locator('.motif-pm-restriction').count()).toBeLessThanOrEqual(512);
+    await expect(page.locator('.motif-cs-map-hint')).toContainText(/512 of .* sites selectable/);
+
+    const restrictionTool = page.locator('details[data-rail-tool="restriction-sites"]');
+    await restrictionTool.locator(':scope > summary').click();
+    const denseSiteRows = restrictionTool.locator('.motif-cs-restriction-site-row');
+    await expect(denseSiteRows).toHaveCount(160);
+    await expect(restrictionTool.locator('.motif-cs-restriction-site-row:disabled')).toHaveCount(0);
+    const exactSiteOutsideMapBudget = denseSiteRows.nth(1);
+    await exactSiteOutsideMapBudget.click();
+    await expect(exactSiteOutsideMapBudget).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.locator('details[data-rail-tool="inspector"]')).toContainText(/bp · 1 hit/);
 
     const inventoryRow = page.locator('.motif-cs-sidebar .motif-cs-row-compact').first();
     await expect(inventoryRow).toBeVisible();
@@ -2405,6 +2700,44 @@ test.describe('Claude Science artifact campaign', () => {
     await expect(exportPanel.getByRole('button', { name: 'Sequence' })).toBeDisabled();
     const emptyDatabase = JSON.parse(await exportPanel.getByLabel('Selected export preview').inputValue());
     expect(emptyDatabase.records).toEqual([]);
+  });
+
+  test('large-record Sequence follows repeated map feature selections', async ({ page }) => {
+    await openArtifact(page, 1180, 900);
+    const sequence = 'A'.repeat(50_001);
+    await page.evaluate((largeSequence) => window.motifRenderInventory?.([{
+      id: 'large-map-sync',
+      name: 'Large map sync',
+      type: 'dna',
+      topology: 'linear',
+      sequence: largeSequence,
+      annotations: [{
+        id: 'late-large-feature',
+        name: 'Late large feature',
+        type: 'misc_feature',
+        start: 45_000,
+        end: 49_000,
+        strand: 1,
+      }],
+    }]), sequence);
+
+    const densityView = page.getByTestId('large-sequence-viewer');
+    const value = densityView.locator('textarea');
+    const feature = page.locator('.motif-pm-feature[data-feature-id="late-large-feature"]');
+    const expectFocusedRange = async () => {
+      await expect(densityView.getByTestId('large-sequence-selection')).toHaveText('Map selection: 45,001–49,000.');
+      await expect.poll(() => value.evaluate((control) => ({
+        selectionStart: control.selectionStart,
+        selectionEnd: control.selectionEnd,
+      }))).toEqual({ selectionStart: 45_000, selectionEnd: 49_000 });
+      expect(await value.evaluate((control) => control.scrollTop)).toBeGreaterThan(0);
+    };
+
+    await feature.locator('.motif-pm-feature-hit').click();
+    await expectFocusedRange();
+    await value.evaluate((control) => { control.scrollTop = 0; });
+    await feature.locator('.motif-pm-feature-hit').click();
+    await expectFocusedRange();
   });
 
   test('desktop themes have no automatic WCAG A/AA violations', async ({ page }) => {
@@ -3474,6 +3807,10 @@ test.describe('Claude Science artifact campaign', () => {
     const mapFrame = page.locator('.motif-cs-map-frame');
     const viewport = page.locator('.motif-cs-map-frame .motif-pm-viewport');
     const svg = page.locator('.motif-cs-map-frame svg.motif-plasmid-map');
+    const viewportOffset = () => viewport.evaluate((element) => {
+      const matrix = (element as SVGGElement).transform.baseVal.consolidate()?.matrix;
+      return { x: matrix?.e ?? 0, y: matrix?.f ?? 0 };
+    });
     const sequenceFocus = () => page.locator('.motif-cs-sequence').evaluate((container) => {
       const pane = container.closest<HTMLElement>('.motif-cs-sequence-column');
       const scroller = container.scrollHeight > container.clientHeight + 1
@@ -3508,6 +3845,37 @@ test.describe('Claude Science artifact campaign', () => {
     await expect(viewport).toHaveAttribute('transform', /translate/);
 
     await page.getByRole('button', { name: 'Reset map view' }).click();
+    await page.evaluate(() => window.motifRenderInventory?.([{
+      id: 'circular-drag-zones',
+      name: 'Circular drag zones',
+      molecule: 'dna',
+      topology: 'circular',
+      sequence: 'A'.repeat(4_000),
+      annotations: [],
+    }]));
+    await expect(mapFrame).toHaveAttribute('data-map-mode', 'circular');
+    await svg.dispatchEvent('wheel', {
+      deltaY: -55,
+      clientX: center.x,
+      clientY: center.y,
+      ctrlKey: true,
+    });
+    await expect(mapFrame.locator('.motif-cs-map-hint')).toContainText('%');
+    const zoomedBackbone = (await mapFrame.locator('.motif-pm-backbone').boundingBox())!;
+    const zoomedOutsideRing = {
+      x: svgBox!.x + 10,
+      y: zoomedBackbone.y + zoomedBackbone.height / 2,
+    };
+    await page.mouse.move(zoomedOutsideRing.x, zoomedOutsideRing.y);
+    await expect(mapFrame).toHaveAttribute('data-map-pointer-action', 'pan');
+    await page.mouse.down();
+    await page.mouse.move(zoomedOutsideRing.x + 420, zoomedOutsideRing.y + 180, { steps: 12 });
+    await page.mouse.up();
+    const zoomedPositive = await viewportOffset();
+    expect(zoomedPositive.x).toBeGreaterThan(80);
+    expect(zoomedPositive.y).toBeGreaterThan(100);
+
+    await page.getByRole('button', { name: 'Reset map view' }).click();
     const circularBackbone = (await mapFrame.locator('.motif-pm-backbone').boundingBox())!;
     const circularCenter = {
       x: circularBackbone.x + circularBackbone.width / 2,
@@ -3520,24 +3888,45 @@ test.describe('Claude Science artifact campaign', () => {
     await page.mouse.move(outsideRing.x, outsideRing.y);
     await expect(mapFrame).toHaveAttribute('data-map-pointer-action', 'pan');
     await page.mouse.down();
-    await page.mouse.move(outsideRing.x + 48, outsideRing.y + 22, { steps: 8 });
+    await page.mouse.move(outsideRing.x + 420, outsideRing.y + 180, { steps: 12 });
     await page.mouse.up();
     await expect(viewport).toHaveAttribute('transform', /translate/);
+    const circularPositive = await viewportOffset();
+    expect(circularPositive.x).toBeGreaterThan(100);
+    expect(circularPositive.y).toBeGreaterThan(100);
     await expect(mapFrame.locator('.motif-cs-map-hint')).not.toContainText('range');
 
     await page.getByRole('button', { name: 'Reset map view' }).click();
+    const outsideRingRight = {
+      x: svgBox!.x + svgBox!.width - Math.max(12, (circularBackbone.x - svgBox!.x) * 0.45),
+      y: circularBackbone.y + circularBackbone.height / 2,
+    };
+    await page.mouse.move(outsideRingRight.x, outsideRingRight.y);
+    await expect(mapFrame).toHaveAttribute('data-map-pointer-action', 'pan');
+    await page.mouse.down();
+    await page.mouse.move(outsideRingRight.x - 420, outsideRingRight.y - 180, { steps: 12 });
+    await page.mouse.up();
+    const circularNegative = await viewportOffset();
+    expect(circularNegative.x).toBeLessThan(-100);
+    expect(circularNegative.y).toBeLessThan(-100);
+
+    await page.getByRole('button', { name: 'Reset map view' }).click();
     const radius = circularBackbone.width / 2;
-    await page.mouse.move(circularCenter.x, circularCenter.y - radius);
+    const insideRing = {
+      x: circularCenter.x,
+      y: circularCenter.y - radius * 0.45,
+    };
+    await page.mouse.move(insideRing.x, insideRing.y);
     await expect(mapFrame).toHaveAttribute('data-map-pointer-action', 'range');
     await page.mouse.down();
-    await page.mouse.move(circularCenter.x + radius, circularCenter.y, { steps: 8 });
+    await page.mouse.move(circularCenter.x + radius * 0.45, circularCenter.y, { steps: 8 });
     await page.mouse.up();
     const clockwise = await mapFrame.locator('.motif-cs-map-hint').textContent();
     expect(clockwise).toContain('range');
 
-    await page.mouse.move(circularCenter.x, circularCenter.y - radius);
+    await page.mouse.move(insideRing.x, insideRing.y);
     await page.mouse.down();
-    await page.mouse.move(circularCenter.x - radius, circularCenter.y, { steps: 8 });
+    await page.mouse.move(circularCenter.x - radius * 0.45, circularCenter.y, { steps: 8 });
     await page.mouse.up();
     const counterclockwise = await mapFrame.locator('.motif-cs-map-hint').textContent();
     expect(counterclockwise).toContain('range');
@@ -3553,36 +3942,103 @@ test.describe('Claude Science artifact campaign', () => {
       molecule: 'dna',
       topology: 'linear',
       sequence: 'A'.repeat(4_000),
+      annotations: [
+        { id: 'linear-lane-1', name: 'Lane 1', type: 'cds', start: 400, end: 1_600, strand: 1 },
+        { id: 'linear-lane-2', name: 'Lane 2', type: 'promoter', start: 600, end: 1_400, strand: 1 },
+        { id: 'linear-lane-3', name: 'Lane 3', type: 'misc_feature', start: 800, end: 1_200, strand: 1 },
+      ],
     }]));
     await expect(mapFrame).toHaveAttribute('data-map-mode', 'linear');
     const linearSvgBox = (await svg.boundingBox())!;
     const linearBackbone = (await mapFrame.locator('.motif-pm-backbone').boundingBox())!;
-    const belowAxis = {
+    const blankCanvas = {
       x: linearSvgBox.x + linearSvgBox.width / 2,
-      y: Math.min(linearSvgBox.y + linearSvgBox.height - 10, linearBackbone.y + 52),
+      y: linearSvgBox.y + linearSvgBox.height - 10,
     };
-    await page.mouse.move(belowAxis.x, belowAxis.y);
+    await page.mouse.move(blankCanvas.x, blankCanvas.y);
     await expect(mapFrame).toHaveAttribute('data-map-pointer-action', 'pan');
     await page.mouse.down();
-    await page.mouse.move(belowAxis.x + 46, belowAxis.y + 18, { steps: 8 });
+    await page.mouse.move(blankCanvas.x + 260, blankCanvas.y + 360, { steps: 12 });
     await page.mouse.up();
     await expect(viewport).toHaveAttribute('transform', /translate/);
+    const linearPositive = await viewportOffset();
+    expect(linearPositive.x).toBeGreaterThan(100);
+    expect(linearPositive.y).toBeGreaterThan(140);
     await expect(mapFrame.locator('.motif-cs-map-hint')).not.toContainText('range');
 
     await page.getByRole('button', { name: 'Reset map view' }).click();
-    const axisY = linearBackbone.y + linearBackbone.height / 2;
-    const axisStart = linearBackbone.x + linearBackbone.width * 0.25;
-    const axisEnd = linearBackbone.x + linearBackbone.width * 0.7;
-    await page.mouse.move(axisStart, axisY);
+    await page.mouse.move(blankCanvas.x, blankCanvas.y);
+    await expect(mapFrame).toHaveAttribute('data-map-pointer-action', 'pan');
+    await page.mouse.down();
+    await page.mouse.move(blankCanvas.x - 260, blankCanvas.y - 360, { steps: 12 });
+    await page.mouse.up();
+    const linearNegative = await viewportOffset();
+    expect(linearNegative.x).toBeLessThan(-100);
+    expect(linearNegative.y).toBeLessThan(-140);
+
+    await page.getByRole('button', { name: 'Reset map view' }).click();
+    const lowerFeatureRow = (await mapFrame.locator('.motif-pm-feature[data-feature-id="linear-lane-3"]').boundingBox())!;
+    const lowerSelectionY = lowerFeatureRow.y + lowerFeatureRow.height / 2;
+    const axisStart = linearBackbone.x + linearBackbone.width * 0.55;
+    const axisEnd = linearBackbone.x + linearBackbone.width * 0.8;
+    await page.mouse.move(axisStart, lowerSelectionY);
     await expect(mapFrame).toHaveAttribute('data-map-pointer-action', 'range');
     await page.mouse.down();
-    await page.mouse.move(axisEnd, axisY, { steps: 8 });
+    await page.mouse.move(axisEnd, lowerSelectionY, { steps: 8 });
     await page.mouse.up();
     await expect(mapFrame.locator('.motif-cs-map-hint')).toContainText('range');
     await expect.poll(async () => {
       const focus = await sequenceFocus();
-      return focus.visible && focus.lineStart >= 800 && focus.lineStart <= 1_200;
+      return focus.visible && focus.lineStart >= 2_100 && focus.lineStart <= 2_300;
     }).toBe(true);
+  });
+
+  test('map controls keep one header position while circle and line canvases reflow', async ({ page }) => {
+    for (const viewport of [
+      { width: 1600, height: 900 },
+      { width: 900, height: 720 },
+      { width: 390, height: 760 },
+    ]) {
+      await openArtifact(page, viewport.width, viewport.height);
+      const mapColumn = page.locator('.motif-cs-map-column');
+      const mapFrame = mapColumn.locator('.motif-cs-map-frame');
+      const toolbar = mapColumn.locator('.motif-cs-map-toolbar');
+      const drawing = toolbar.locator('.motif-cs-map-mode-toggle');
+      await toolbar.scrollIntoViewIfNeeded();
+
+      await expect(toolbar).toBeVisible();
+      await expect(drawing).toHaveAttribute('aria-label', 'Draw map as line');
+      await expect(drawing.locator('svg')).toHaveCount(1);
+      const circularBox = (await toolbar.boundingBox())!;
+
+      await drawing.click();
+      await expect(mapFrame).toHaveAttribute('data-map-mode', 'linear');
+      await expect(drawing).toHaveAttribute('aria-label', 'Draw map as circle');
+      const linearBox = (await toolbar.boundingBox())!;
+      expect(Math.abs(linearBox.x - circularBox.x)).toBeLessThan(1);
+      expect(Math.abs(linearBox.y - circularBox.y)).toBeLessThan(1);
+
+      await drawing.click();
+      await expect(mapFrame).toHaveAttribute('data-map-mode', 'circular');
+      await expect(drawing).toHaveAttribute('aria-label', 'Draw map as line');
+    }
+
+    // Opening the dock changes the content below the canvas, but not the
+    // control group in the pane heading.
+    await openArtifact(page, 900, 720);
+    const mapColumn = page.locator('.motif-cs-map-column');
+    const mapFrame = mapColumn.locator('.motif-cs-map-frame');
+    const toolbar = mapColumn.locator('.motif-cs-map-toolbar');
+    const drawing = toolbar.locator('.motif-cs-map-mode-toggle');
+    const mapVisibility = mapColumn.locator('.motif-cs-map-visibility-panel');
+    await mapVisibility.locator(':scope > summary').click();
+    await toolbar.scrollIntoViewIfNeeded();
+    const circularOpenBox = (await toolbar.boundingBox())!;
+    await drawing.click();
+    await expect(mapFrame).toHaveAttribute('data-map-mode', 'linear');
+    const linearOpenBox = (await toolbar.boundingBox())!;
+    expect(Math.abs(linearOpenBox.x - circularOpenBox.x)).toBeLessThan(1);
+    expect(Math.abs(linearOpenBox.y - circularOpenBox.y)).toBeLessThan(1);
   });
 
   test('high zoom keeps range bands compact and Fit preserves the selection', async ({ page }) => {
@@ -3621,11 +4077,11 @@ test.describe('Claude Science artifact campaign', () => {
     ringTop = { x: backbone.x + backbone.width / 2, y: backbone.y };
     await page.mouse.move(ringTop.x, ringTop.y + 10);
     await expect(mapFrame).toHaveAttribute('data-map-pointer-action', 'range');
-    await page.mouse.move(ringTop.x, ringTop.y + 50);
+    await page.mouse.move(ringTop.x, ringTop.y - 50);
     await expect(mapFrame).toHaveAttribute('data-map-pointer-action', 'pan');
     const beforeCircularPan = await viewport.getAttribute('transform');
     await page.mouse.down();
-    await page.mouse.move(ringTop.x + 36, ringTop.y + 68, { steps: 6 });
+    await page.mouse.move(ringTop.x + 36, ringTop.y - 68, { steps: 6 });
     await page.mouse.up();
     expect(await viewport.getAttribute('transform')).not.toBe(beforeCircularPan);
 
@@ -3881,9 +4337,11 @@ test.describe('Claude Science artifact campaign', () => {
 
     const hint = mapFrame.locator('.motif-cs-map-hint');
     await expect(hint).toContainText('range');
-    const toolbarBox = (await mapFrame.locator('.motif-cs-map-toolbar').boundingBox())!;
+    const toolbarBox = (await page.locator('.motif-cs-map-column .motif-cs-map-toolbar').boundingBox())!;
+    const frameBox = (await mapFrame.boundingBox())!;
     const hintBox = (await hint.boundingBox())!;
-    expect(hintBox.x).toBeGreaterThanOrEqual(toolbarBox.x + toolbarBox.width + 8);
+    expect(toolbarBox.y + toolbarBox.height).toBeLessThanOrEqual(frameBox.y + 1);
+    expect(hintBox.x).toBeGreaterThanOrEqual(svgBox!.x + 8);
     expect(hintBox.x + hintBox.width).toBeLessThanOrEqual(svgBox!.x + svgBox!.width - 8);
     await mapFrame.screenshot({ path: path.join(outputDir, 'linear-range-status-640x700.png') });
   });
@@ -3937,7 +4395,7 @@ test.describe('Claude Science artifact campaign', () => {
       expect(geometry.boundaryBeforeSettings).toBe(true);
       expect(geometry.containedHorizontally).toBe(true);
       expect(geometry.launcherHit).toBe(true);
-      await page.screenshot({ path: path.join(msaCampaignOutputDir, `alignment-launcher-${viewport.width}x${viewport.height}.png`) });
+      await page.screenshot({ path: path.join(msaOutputDir, `alignment-launcher-${viewport.width}x${viewport.height}.png`) });
     }
 
     for (const viewport of [
@@ -3997,7 +4455,7 @@ test.describe('Claude Science artifact campaign', () => {
       const settings = page.locator('details[data-rail-tool="settings"]');
       await settings.locator(':scope > summary').click();
       await expect(settings).toHaveAttribute('open', '');
-      await page.screenshot({ path: path.join(msaCampaignOutputDir, `alignment-rail-dark-settings-${viewport.width}x${viewport.height}.png`) });
+      await page.screenshot({ path: path.join(msaOutputDir, `alignment-rail-dark-settings-${viewport.width}x${viewport.height}.png`) });
     }
   });
 
@@ -4005,9 +4463,9 @@ test.describe('Claude Science artifact campaign', () => {
     await openArtifact(page, 1180, 820);
     await page.evaluate(() => {
       window.motifAddRecords([
-        { id: 'campaign-a', name: 'Campaign2_variant_A', type: 'dna', topology: 'linear', sequence: 'ACGT'.repeat(60), group: 'MSA Campaign 2' },
-        { id: 'campaign-b', name: 'Campaign2_variant_B_ins3', type: 'dna', topology: 'linear', sequence: `${'ACGT'.repeat(30)}AAA${'ACGT'.repeat(30)}`, group: 'MSA Campaign 2' },
-        { id: 'campaign-c', name: 'Campaign2_variant_C_del3', type: 'dna', topology: 'linear', sequence: 'ACGT'.repeat(59), group: 'MSA Campaign 2' },
+        { id: 'msa-example-a', name: 'Example_variant_A', type: 'dna', topology: 'linear', sequence: 'ACGT'.repeat(60), group: 'MSA examples' },
+        { id: 'msa-example-b', name: 'Example_variant_B_ins3', type: 'dna', topology: 'linear', sequence: `${'ACGT'.repeat(30)}AAA${'ACGT'.repeat(30)}`, group: 'MSA examples' },
+        { id: 'msa-example-c', name: 'Example_variant_C_del3', type: 'dna', topology: 'linear', sequence: 'ACGT'.repeat(59), group: 'MSA examples' },
       ]);
     });
 
@@ -4017,22 +4475,22 @@ test.describe('Claude Science artifact campaign', () => {
     const recordList = page.getByTestId('msa-record-list');
     const selectedOptions = recordList.locator('.motif-cs-msa-record-option[data-active="true"]');
     await expect(selectedOptions).toHaveCount(2);
-    await expect(selectedOptions.nth(0)).toContainText('Campaign2_variant_A');
-    await expect(selectedOptions.nth(1)).toContainText('Campaign2_variant_B_ins3');
+    await expect(selectedOptions.nth(0)).toContainText('Example_variant_A');
+    await expect(selectedOptions.nth(1)).toContainText('Example_variant_B_ins3');
     await expect(recordList.locator('.motif-cs-msa-record-option').filter({ hasText: 'pUC19' }).locator('input')).not.toBeChecked();
 
     await page.getByLabel('Filter records').fill('pUC19');
-    await expect(recordList.locator('.motif-cs-msa-record-option').nth(0)).toContainText('Campaign2_variant_A');
-    await expect(recordList.locator('.motif-cs-msa-record-option').nth(1)).toContainText('Campaign2_variant_B_ins3');
+    await expect(recordList.locator('.motif-cs-msa-record-option').nth(0)).toContainText('Example_variant_A');
+    await expect(recordList.locator('.motif-cs-msa-record-option').nth(1)).toContainText('Example_variant_B_ins3');
     await expect(recordList.locator('.motif-cs-msa-record-option').filter({ hasText: 'pUC19' })).toBeVisible();
-    await page.screenshot({ path: path.join(msaCampaignOutputDir, 'selection-same-group-pinned.png') });
+    await page.screenshot({ path: path.join(msaOutputDir, 'selection-same-group-pinned.png') });
     await page.getByTestId('msa-selected-only').click();
     await expect(recordList.locator('.motif-cs-msa-record-option')).toHaveCount(2);
     await page.getByTestId('msa-clear-selection').click();
     await expect(recordList.locator('input:checked')).toHaveCount(0);
     await expect(page.getByTestId('msa-selected-only')).toHaveAttribute('aria-pressed', 'false');
     await expect(page.getByTestId('msa-run-button')).toBeDisabled();
-    await page.screenshot({ path: path.join(msaCampaignOutputDir, 'selection-same-group-and-clear.png') });
+    await page.screenshot({ path: path.join(msaOutputDir, 'selection-same-group-and-clear.png') });
   });
 
   test('MSA accepts direct multi-file sequence drops, selects the new records, and keeps the shell importer out of the path', async ({ page }) => {
@@ -4076,7 +4534,7 @@ test.describe('Claude Science artifact campaign', () => {
     await expect(selected.nth(2)).toContainText('drop-read-r');
     await expect(workspace.locator('.motif-cs-msa-intake-status')).toContainText('Imported 2 records');
     await expect(page.getByLabel('Choose sequence files for alignment')).toHaveAttribute('multiple', '');
-    await page.screenshot({ path: path.join(msaCampaignOutputDir, 'direct-multifile-drop-selected.png') });
+    await page.screenshot({ path: path.join(msaOutputDir, 'direct-multifile-drop-selected.png') });
 
     await page.setViewportSize({ width: 390, height: 760 });
     const compactDropzone = page.getByTestId('msa-record-dropzone');
@@ -4084,7 +4542,7 @@ test.describe('Claude Science artifact campaign', () => {
     expect(await compactDropzone.evaluate((element) => element.scrollWidth)).toBeLessThanOrEqual(
       await compactDropzone.evaluate((element) => element.clientWidth + 2),
     );
-    await page.screenshot({ path: path.join(msaCampaignOutputDir, 'direct-multifile-drop-390x760.png') });
+    await page.screenshot({ path: path.join(msaOutputDir, 'direct-multifile-drop-390x760.png') });
     await page.setViewportSize({ width: 1180, height: 820 });
 
     await page.getByTestId('msa-run-button').click();
@@ -4113,7 +4571,7 @@ test.describe('Claude Science artifact campaign', () => {
     expect((await selected.allTextContents()).join('\n')).not.toContain('pUC19');
     await expect(workspace.getByLabel('Initial template').locator('option:checked')).toHaveText('plate-read-a');
     await expect(workspace.getByTestId('msa-source-link-status')).toContainText('selected 2 imported AB1 reads');
-    await page.screenshot({ path: path.join(msaCampaignOutputDir, 'direct-ab1-import-selection.png') });
+    await page.screenshot({ path: path.join(msaOutputDir, 'direct-ab1-import-selection.png') });
   });
 
   test('MSA routes one aligned-file drop to a review step without flattening gaps into inventory records', async ({ page }) => {
@@ -4139,7 +4597,7 @@ test.describe('Claude Science artifact campaign', () => {
     await expect(page.getByTestId('msa-workspace').locator('.motif-cs-msa-intake-status')).toContainText('review the molecule and engine');
     expect(await page.evaluate(() => window.motifGetInventory().length)).toBe(beforeCount);
     await expect(page.getByLabel('Choose a pre-aligned sequence file')).toHaveAttribute('type', 'file');
-    await page.screenshot({ path: path.join(msaCampaignOutputDir, 'direct-aligned-file-review.png') });
+    await page.screenshot({ path: path.join(msaOutputDir, 'direct-aligned-file-review.png') });
     await page.getByTestId('msa-import-button').click();
     await expect(page.getByTestId('msa-stats-bar')).toContainText('10 columns');
   });
@@ -4214,7 +4672,7 @@ test.describe('Claude Science artifact campaign', () => {
     await expect(localOptions).toBeVisible();
     await expect(localOptions.locator('select')).toHaveValue('sanger-local-template');
     await expect(localOptions.getByRole('checkbox', { name: 'Auto-orient AB1 reads' })).toBeChecked();
-    await page.screenshot({ path: path.join(msaCampaignOutputDir, 'local-sanger-source-options.png') });
+    await page.screenshot({ path: path.join(msaOutputDir, 'local-sanger-source-options.png') });
     await page.getByTestId('msa-run-button').click();
     await expect(page.getByTestId('msa-stats-bar')).toContainText('100% conserved');
     await expect(page.locator('.motif-cs-msa-export-row')).toContainText('Auto-oriented 1 AB1 read');
@@ -4223,7 +4681,7 @@ test.describe('Claude Science artifact campaign', () => {
     await expect(traceViewer.locator('.motif-cs-sanger-toolbar .motif-cs-chip')).toHaveText('reverse');
     await expect(traceViewer.locator('canvas')).toHaveAttribute('aria-label', /aligned reverse to template Chosen Sanger template/);
     await expect(traceViewer.locator('.motif-cs-sanger-warnings')).toContainText('no signal channels');
-    await page.screenshot({ path: path.join(msaCampaignOutputDir, 'local-sanger-auto-orient.png') });
+    await page.screenshot({ path: path.join(msaOutputDir, 'local-sanger-auto-orient.png') });
   });
 
   test('MSA local workflow is explicit, virtualized, movable, resizable, and focus-safe', async ({ page }) => {
@@ -4298,7 +4756,7 @@ test.describe('Claude Science artifact campaign', () => {
     expect(afterResize.width).toBeGreaterThanOrEqual(afterMove.width);
     expect(afterResize.height).toBeGreaterThanOrEqual(afterMove.height);
 
-    await page.screenshot({ path: path.join(msaCampaignOutputDir, 'local-template-overview-and-stats.png') });
+    await page.screenshot({ path: path.join(msaOutputDir, 'local-template-overview-and-stats.png') });
 
     await page.keyboard.press('Escape');
     await expect(windowPanel).toBeHidden();
@@ -4434,7 +4892,7 @@ test.describe('Claude Science artifact campaign', () => {
     expect(hitTest).toBe(true);
     await textButton.click();
     await expect(textButton).toHaveAttribute('aria-pressed', 'true');
-    await page.screenshot({ path: path.join(msaCampaignOutputDir, 'msa-result-toolbar-sticky-390x760.png') });
+    await page.screenshot({ path: path.join(msaOutputDir, 'msa-result-toolbar-sticky-390x760.png') });
     await toolbar.getByRole('button', { name: 'Viewer' }).click();
     await toolbar.getByTestId('msa-view-menu-button').click();
     const compactViewMenu = dialog.getByTestId('msa-view-menu');
@@ -4442,7 +4900,7 @@ test.describe('Claude Science artifact campaign', () => {
     const compactMenuBox = (await compactViewMenu.boundingBox())!;
     expect(compactMenuBox.x).toBeGreaterThanOrEqual(0);
     expect(compactMenuBox.x + compactMenuBox.width).toBeLessThanOrEqual(390);
-    await page.screenshot({ path: path.join(msaCampaignOutputDir, 'msa-view-menu-sticky-390x760.png') });
+    await page.screenshot({ path: path.join(msaOutputDir, 'msa-view-menu-sticky-390x760.png') });
   });
 
   test('MSA View menu persists visibility choices, resets them, and owns Escape before the window', async ({ page }) => {
@@ -4469,7 +4927,7 @@ test.describe('Claude Science artifact campaign', () => {
     const viewMenu = dialog.getByTestId('msa-view-menu');
     await expect(viewMenu).toBeVisible();
     await expect(viewButton).toHaveAttribute('aria-expanded', 'true');
-    await page.screenshot({ path: path.join(msaCampaignOutputDir, 'msa-view-menu-1180x820.png') });
+    await page.screenshot({ path: path.join(msaOutputDir, 'msa-view-menu-1180x820.png') });
 
     const defaultVisibleLabels = [
       'Overview',
@@ -4568,7 +5026,7 @@ test.describe('Claude Science artifact campaign', () => {
     const inputFasta = await readFile(inputDownloadPath!, 'utf8');
     expect(inputFasta).toMatch(/^>pUC19\n[ACGT]+/);
     expect(inputFasta).toContain('\n>pACYC184\n');
-    await page.screenshot({ path: path.join(msaCampaignOutputDir, 'edit-inputs-preserves-setup.png') });
+    await page.screenshot({ path: path.join(msaOutputDir, 'edit-inputs-preserves-setup.png') });
 
     await page.setViewportSize({ width: 390, height: 760 });
     const handoff = windowPanel.locator('.motif-cs-msa-external-handoff');
@@ -4581,7 +5039,7 @@ test.describe('Claude Science artifact campaign', () => {
     expect(compactGeometry.scrollWidth).toBeLessThanOrEqual(compactGeometry.clientWidth + 1);
     await expect(page.getByTestId('msa-copy-input-fasta')).toBeVisible();
     await expect(page.getByTestId('msa-download-input-fasta')).toBeVisible();
-    await page.screenshot({ path: path.join(msaCampaignOutputDir, 'edit-inputs-external-handoff-390x760.png') });
+    await page.screenshot({ path: path.join(msaOutputDir, 'edit-inputs-external-handoff-390x760.png') });
     await page.setViewportSize({ width: 1180, height: 820 });
 
     await page.getByTestId('msa-run-button').click();
@@ -4897,7 +5355,7 @@ test.describe('Claude Science artifact campaign', () => {
       cells.map((cell) => cell.getAttribute('data-template-position'))
     ));
     expect(alternatePositions).toEqual(['1', '2', 'gap', '3', 'gap', '4', '5', '6', '7']);
-    await page.screenshot({ path: path.join(msaCampaignOutputDir, 'template-axis-and-column-lookup.png') });
+    await page.screenshot({ path: path.join(msaOutputDir, 'template-axis-and-column-lookup.png') });
   });
 
   test('MSA template-position lookup maps through gaps exactly and enforces ungapped bounds', async ({ page }) => {
@@ -5040,7 +5498,7 @@ test.describe('Claude Science artifact campaign', () => {
     expect(await windowBody.evaluate((element) => element.scrollTop)).toBe(0);
     expect(await matrix.evaluate((element) => element.scrollLeft)).toBe(panBefore);
 
-    await page.screenshot({ path: path.join(msaCampaignOutputDir, `msa-pan-rail-${browserName}-1440x900.png`) });
+    await page.screenshot({ path: path.join(msaOutputDir, `msa-pan-rail-${browserName}-1440x900.png`) });
   });
 
   test('MSA aligned-FASTA import records honest provenance and rejects malformed replacement atomically', async ({ page }) => {
@@ -5131,9 +5589,9 @@ test.describe('Claude Science artifact campaign', () => {
       window.motifAddAlignments({
         id: 'mafft-demo', name: 'Kinase homologs', molecule: 'dna', referenceRowId: 'reference',
         rows: [
-          { id: 'reference', name: 'Campaign2_reference', aligned: reference },
-          { id: 'variant-b', name: 'Campaign2_variant_B_ins3', aligned: variantB.join('') },
-          { id: 'variant-c', name: 'Campaign2_variant_C_del3', aligned: variantC.join('') },
+          { id: 'reference', name: 'Example_reference', aligned: reference },
+          { id: 'variant-b', name: 'Example_variant_B_ins3', aligned: variantB.join('') },
+          { id: 'variant-c', name: 'Example_variant_C_del3', aligned: variantC.join('') },
         ],
         engine: { id: 'mafft', label: 'MAFFT', version: '7.526', mode: 'local-command', parameters: ['--auto'] },
       });
@@ -5164,16 +5622,16 @@ test.describe('Claude Science artifact campaign', () => {
     expect(geometry.right).toBeLessThanOrEqual(geometry.viewportWidth);
     expect(geometry.bottom).toBeLessThanOrEqual(geometry.viewportHeight);
 
-    await page.screenshot({ path: path.join(msaCampaignOutputDir, 'msa-claude-dark-viewer-390x760.png') });
+    await page.screenshot({ path: path.join(msaOutputDir, 'msa-claude-dark-viewer-390x760.png') });
     await page.getByRole('button', { name: 'Text' }).click();
-    await expect(page.getByLabel('Aligned FASTA alignment text')).toHaveValue(/>Campaign2_reference/);
+    await expect(page.getByLabel('Aligned FASTA alignment text')).toHaveValue(/>Example_reference/);
     await windowPanel.getByTestId('msa-export-menu-button').click();
     await windowPanel.getByRole('combobox', { name: 'Export', exact: true }).selectOption('clustal');
     await expect(page.getByLabel('CLUSTAL alignment text')).toHaveValue(/CLUSTAL W/);
 
     const accessibility = await new AxeBuilder({ page }).include('.motif-cs-window').analyze();
     expect(accessibility.violations).toEqual([]);
-    await page.screenshot({ path: path.join(msaCampaignOutputDir, 'msa-claude-dark-390x760.png') });
+    await page.screenshot({ path: path.join(msaOutputDir, 'msa-claude-dark-390x760.png') });
   });
 
   test('MSA 100-row density preserves suffixes, semantics, and panel-owned scrolling', async ({ page }) => {
@@ -5274,7 +5732,7 @@ test.describe('Claude Science artifact campaign', () => {
 
     const accessibility = await new AxeBuilder({ page }).include('.motif-cs-window').analyze();
     expect(accessibility.violations).toEqual([]);
-    await page.screenshot({ path: path.join(msaCampaignOutputDir, 'msa-density-100-row-fixed.png') });
+    await page.screenshot({ path: path.join(msaOutputDir, 'msa-density-100-row-fixed.png') });
   });
 
   test('MSA 50k-column overview stays bounded and navigates without column-sized DOM', async ({ page }) => {
@@ -5310,7 +5768,7 @@ test.describe('Claude Science artifact campaign', () => {
     await page.keyboard.press('End');
     await expect.poll(() => matrixViewport.evaluate((element) => element.scrollLeft)).toBeGreaterThan(400_000);
     await expect(windowPanel.locator('.motif-cs-msa-window-note')).toContainText('50,000');
-    await page.screenshot({ path: path.join(msaCampaignOutputDir, 'msa-50k-columns.png') });
+    await page.screenshot({ path: path.join(msaOutputDir, 'msa-50k-columns.png') });
   });
 
   test('aligned AB1 reads expose interactive forward and reverse chromatograms', async ({ page }) => {
@@ -5427,19 +5885,19 @@ test.describe('Claude Science artifact campaign', () => {
 
     const accessibility = await new AxeBuilder({ page }).include('.motif-cs-window').analyze();
     expect(accessibility.violations).toEqual([]);
-    await page.screenshot({ path: path.join(msaCampaignOutputDir, 'sanger-traces-claude-light.png') });
+    await page.screenshot({ path: path.join(msaOutputDir, 'sanger-traces-claude-light.png') });
 
     await page.setViewportSize({ width: 390, height: 760 });
     await expect(traceViewer).toBeVisible();
     expect(await traceViewer.evaluate((element) => element.scrollWidth)).toBeLessThanOrEqual(await traceViewer.evaluate((element) => element.clientWidth + 2));
-    await page.screenshot({ path: path.join(msaCampaignOutputDir, 'sanger-traces-phone.png') });
+    await page.screenshot({ path: path.join(msaOutputDir, 'sanger-traces-phone.png') });
 
     await page.setViewportSize({ width: 900, height: 760 });
     for (const theme of ['light', 'dark', 'claude-light', 'claude-dark'] as const) {
       await page.locator('select[name="artifact-theme"]').selectOption(theme);
       await page.waitForTimeout(80);
       await expect(traceViewer).toBeVisible();
-      await page.screenshot({ path: path.join(msaCampaignOutputDir, `sanger-traces-${theme}.png`) });
+      await page.screenshot({ path: path.join(msaOutputDir, `sanger-traces-${theme}.png`) });
     }
   });
 
@@ -5573,7 +6031,7 @@ test.describe('Claude Science artifact campaign', () => {
 
     const accessibility = await new AxeBuilder({ page }).include('.motif-cs-window').analyze();
     expect(accessibility.violations).toEqual([]);
-    await page.screenshot({ path: path.join(msaCampaignOutputDir, 'sanger-stacked-eight-claude-light.png') });
+    await page.screenshot({ path: path.join(msaOutputDir, 'sanger-stacked-eight-claude-light.png') });
 
     await page.setViewportSize({ width: 390, height: 760 });
     await expect(traceViewer).toBeVisible();
@@ -5586,12 +6044,12 @@ test.describe('Claude Science artifact campaign', () => {
       return context.getImageData(0, 0, element.width, element.height).data.some((value, index) => index % 4 === 3 && value > 0);
     })).toBe(true);
     await traceViewer.getByRole('button', { name: 'Stacked', exact: true }).click();
-    await page.screenshot({ path: path.join(msaCampaignOutputDir, 'sanger-stacked-eight-phone.png') });
+    await page.screenshot({ path: path.join(msaOutputDir, 'sanger-stacked-eight-phone.png') });
 
     await page.setViewportSize({ width: 900, height: 760 });
     await page.locator('select[name="artifact-theme"]').selectOption('claude-dark');
     await page.waitForTimeout(80);
-    await page.screenshot({ path: path.join(msaCampaignOutputDir, 'sanger-stacked-eight-claude-dark.png') });
+    await page.screenshot({ path: path.join(msaOutputDir, 'sanger-stacked-eight-claude-dark.png') });
   });
 
   for (const theme of ['light', 'dark', 'claude-light', 'claude-dark'] as const) {
