@@ -106,7 +106,8 @@ Use the portable artifact path as the primary visual test:
 2. Call `motif_create_workbench_artifact` with that complete text as `content`,
    the exact basename as `filename`, and a safe `.html` `outputFilename`.
 3. Verify the returned schema, source name, record count, residue count,
-   bounded record names/IDs, byte count, and checksum against the input.
+   bounded record names/IDs, runtime build ID, byte count, and checksum against
+   the input.
 4. Save the exact returned HTML and click or open it in Claude Science's right
    pane. Confirm the frame visibly says **Motif** and contains the intended
    records.
@@ -122,8 +123,9 @@ generic artifact fallback, not evidence of a Motif parse failure.
 
 After the portable artifact passes, optionally call `motif_open_workbench`
 with the same complete `content` and exact `filename`. Verify the returned
-source and counts, then separately confirm whether a live frame mounted. A tool
-summary or `ui://` link proves execution only.
+source, counts, runtime build ID, `delivery: live-app-request`, and
+`visibleMountConfirmed: false`, then separately confirm whether a live frame
+mounted. A tool summary or `ui://` link proves execution only.
 
 For visual acceptance, verify record name, molecule, topology, residue count,
 sequence content, annotations, selection drag, map selection, theme, and pane

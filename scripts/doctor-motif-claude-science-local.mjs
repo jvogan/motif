@@ -246,6 +246,9 @@ async function inspectProtocol(paths, timeoutMs) {
     assert(!opened?.isError, 'open-workbench smoke test returned an error');
     assert(opened?.structuredContent?.schema === 'motif.mcp.workbench.v1', 'open result schema is not Motif-owned');
     assert(opened?.structuredContent?.mode === 'artifact', 'opened FASTA was not identified as an artifact');
+    assert(opened?.structuredContent?.delivery === 'live-app-request', 'open result does not identify its delivery boundary');
+    assert(opened?.structuredContent?.visibleMountConfirmed === false, 'open result overstates visible mounting');
+    assert(/^[a-f0-9]{64}$/u.test(opened?.structuredContent?.runtimeBuildId), 'open result is missing the runtime build identity');
     assert(opened?.structuredContent?.recordCount === 1, 'opened FASTA did not produce one record');
     assert(opened?.structuredContent?.residueCount === PRIVACY_SENTINEL.length, 'opened FASTA residue count is incorrect');
     const openedSummary = opened?.content?.find(item => item?.type === 'text')?.text;
@@ -272,6 +275,14 @@ async function inspectProtocol(paths, timeoutMs) {
       'standalone artifact result schema is not Motif-owned',
     );
     assert(artifactResult?.structuredContent?.recordCount === 1, 'standalone artifact did not retain its record');
+    assert(
+      artifactResult?.structuredContent?.delivery === 'embedded-html-resource',
+      'standalone artifact result does not identify its delivery boundary',
+    );
+    assert(
+      artifactResult?.structuredContent?.runtimeBuildId === opened?.structuredContent?.runtimeBuildId,
+      'standalone artifact and live App results disagree on the runtime build identity',
+    );
     const artifactSummary = artifactResult?.content?.find(item => item?.type === 'text')?.text;
     assert(
       typeof artifactSummary === 'string' && artifactSummary.includes('Records: motif-doctor [motif-doctor].'),

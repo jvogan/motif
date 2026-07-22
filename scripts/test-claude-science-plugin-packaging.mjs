@@ -158,6 +158,10 @@ check('plugin source has a matching, bounded manifest and skill', () => {
   assert.ok(manifest.name.length <= 64);
   assert.ok(manifest.description.length < 256);
   assert.ok(skillDescription.length > 0 && skillDescription.length <= 200);
+  assert.match(skill, /For a dependable visual result, call `motif_create_workbench_artifact`/u);
+  assert.match(skill, /Use `motif_open_workbench` first only when the current host is already known to\s+mount the live MCP App/u);
+  assert.match(skill, /A request to open, show, reload, or retry an existing construct is a display\s+request/u);
+  assert.match(skill, /Reuse the exact latest sequence, annotations, colors, and provenance/u);
   assert.match(manifest.version, /^\d+\.\d+\.\d+$/);
   assert.equal(manifest.version, '0.2.1');
   assert.equal(manifest.version, artifactVersion);

@@ -104,7 +104,7 @@ mounted a visible App frame.
 For a dependable visual result, call `motif_create_workbench_artifact` with the
 complete FASTA or GenBank text in `content`, the exact basename in `filename`,
 and a safe `.html` `outputFilename`. Verify the returned source, counts,
-bounded record names/IDs, bytes, and checksum. Save the exact embedded HTML and
+bounded record names/IDs, runtime build ID, bytes, and checksum. Save the exact embedded HTML and
 click or open it in Claude Science's right pane. The workbench is interactive,
 but it is an immutable snapshot rather than a live MCP App.
 
@@ -136,6 +136,7 @@ Use this matrix:
 Saved HTML workbenches are immutable snapshots. Rebuilding Motif does not
 modify a previously saved or already open artifact. Use a new filename during
 acceptance testing so the host cannot show stale bytes under an old artifact.
+Settings displays the version and runtime build ID embedded in the open file.
 
 ## Input and identity checks
 

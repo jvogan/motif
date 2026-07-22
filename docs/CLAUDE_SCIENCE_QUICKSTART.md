@@ -105,14 +105,15 @@ motif_create_workbench_artifact exactly once with filename "motif-demo.gb",
 content set to the complete GenBank text, title "Motif demo — MOTIFDEMO", and
 outputFilename "motif-demo-workbench.html". Preserve the exact returned HTML
 as a Claude Science artifact. Report its record count, residue count, and
-record names/IDs, then open it in the right pane.
+record names/IDs, and runtime build ID, then open it in the right pane.
 ```
 
 The expected record is `MOTIFDEMO`, linear DNA, 180 bp, with `source` and
 `demo_cds` features spanning 1–180. Clicking the generated HTML once is normal.
 Confirm a visible **Motif** identity and these values before testing Inventory,
 Sequence, Map, and Tools with mouse and keyboard. This HTML is interactive but
-immutable; regenerate it after changing the input or Motif build.
+immutable; regenerate it after changing the input or Motif build. Settings
+shows the version and runtime build ID embedded in the open file.
 
 ## Optional live-App check
 
@@ -123,7 +124,7 @@ mounts local MCP Apps automatically:
 Call motif-local's motif_open_workbench exactly once with filename set to
 motif-demo.gb and content set to the same complete GenBank text. Verify the
 returned source name, record count, residue count, and record names/IDs, then
-tell me whether a visible Motif frame mounted.
+report the runtime build ID and tell me whether a visible Motif frame mounted.
 ```
 
 A successful result proves execution and parsing; a text summary or `ui://`

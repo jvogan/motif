@@ -8,6 +8,7 @@ import {
 } from './contracts.js';
 
 const DATA_TAG_PATTERN = /(<script type="application\/json" id="motif-artifact-data">)([\s\S]*?)(<\/script>)/u;
+const BUILD_ID_META_PATTERN = /<meta name="motif-build-id" content="([a-f0-9]{64})"\s*\/?>/u;
 
 function jsonForScriptTag(value: unknown): string {
   return JSON.stringify(value)
@@ -29,6 +30,7 @@ function safeArtifactBase(value: string): string {
 export type RenderMotifArtifactRequest = {
   template: string;
   workbench: MotifWorkbenchResult;
+  runtimeBuildId: string;
   title?: string;
   filename?: string;
 };
@@ -45,6 +47,10 @@ export function renderMotifArtifact(request: RenderMotifArtifactRequest): Render
   if (!request.workbench.payload) {
     throw new Error('A payload or sequence artifact is required to create a shareable Motif workbench.');
   }
+  const templateBuildId = request.template.match(BUILD_ID_META_PATTERN)?.[1];
+  if (!templateBuildId || templateBuildId !== request.runtimeBuildId) {
+    throw new Error('Motif artifact template build identity is missing or inconsistent. Rebuild the connector.');
+  }
   const title = request.title?.trim() || request.workbench.sourceName?.replace(/\.[^.]+$/u, '') || 'Motif workbench';
   const requestedFilename = request.filename?.trim().replace(/\.html?$/iu, '');
   const filename = `${safeArtifactBase(requestedFilename || title)}.html`;
@@ -56,6 +62,9 @@ export function renderMotifArtifact(request: RenderMotifArtifactRequest): Render
   const bytes = Buffer.byteLength(html, 'utf8');
   const summary = motifArtifactExportSummarySchema.parse({
     schema: MOTIF_ARTIFACT_EXPORT_SCHEMA,
+    delivery: 'embedded-html-resource',
+    visibleMountConfirmed: false,
+    runtimeBuildId: request.runtimeBuildId,
     filename,
     ...(request.workbench.sourceName ? { sourceName: request.workbench.sourceName } : {}),
     recordCount: request.workbench.recordCount,

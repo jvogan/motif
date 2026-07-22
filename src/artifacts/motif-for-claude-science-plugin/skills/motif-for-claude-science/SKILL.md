@@ -5,16 +5,23 @@ description: Creates a self-contained Motif for Claude Science workbench, option
 
 # Motif for Claude Science
 
-Open the connected Motif workbench when its MCP tools are available, or create
-a user-owned self-contained HTML workbench from the bundled resource.
+Create a user-owned self-contained HTML workbench from the connected Motif
+resource. Use the live MCP App when the current host is known to mount it.
 
 ## Connected Claude Science path
 
-When `motif_open_workbench` is available, prefer it for interactive review of
+For a dependable visual result, call `motif_create_workbench_artifact` with
 one bounded Motif payload or exact FASTA, GenBank, raw-sequence, or Motif JSON
 content. Pass either `payload` or `content`, never both. Include `filename`
 when it carries a useful format/provenance hint and include an explicit
-`molecule` for ambiguous raw sequence text.
+`molecule` for ambiguous raw sequence text. The tool returns status text and a
+separate HTML resource: preserve `content[].resource.text` exactly, save it as
+the suggested filename, and open it in Claude Science's right pane. Do not
+prepend the status text or strip text from the HTML resource.
+
+Use `motif_open_workbench` first only when the current host is already known to
+mount the live MCP App. Otherwise, use it after the portable artifact as an
+optional live-App check.
 
 Verify the returned `motif.mcp.workbench.v1` schema, mode, source name, record
 count, and residue count against the intended input. A successful tool call
@@ -25,12 +32,15 @@ only when Motif is actually listed. The host message
 `Sequence viewer unavailable—showing as text` is a generic fallback, not a
 Motif parse error.
 
-If the host does not mount MCP Apps, call
-`motif_create_workbench_artifact` with the same bounded input. It returns a
-self-contained HTML resource plus filename, byte count, and SHA-256 metadata;
-it does not write a file. Preserve the exact returned HTML, save it, and click
-or open it in Claude Science's right pane. Verify the visible workbench. It is
-interactive, but it is an immutable snapshot rather than a live MCP App.
+The artifact result includes filename, byte count, SHA-256 metadata, and the
+runtime build ID; it does not write a file. Verify the visible workbench after
+opening it. The file is interactive, but it is an immutable snapshot rather
+than a live MCP App.
+
+A request to open, show, reload, or retry an existing construct is a display
+request. Reuse the exact latest sequence, annotations, colors, and provenance.
+Do not add or remove biological content unless the user explicitly requests
+that change.
 
 These connector tools are ephemeral viewer/export operations. They do not
 write a sequence database, run external executables, or make AB1 binary data a
@@ -164,7 +174,8 @@ coordinates.
           "type": "cds",
           "start": 0,
           "end": 12,
-          "direction": "forward"
+          "direction": "forward",
+          "color": "#2EAD67"
         }
       ]
     }
@@ -215,6 +226,25 @@ also set `metadata.motifSubRangeOrder` to `biological`. Motif preserves an
 unmarked reverse multipart checkpoint, but keeps sequence-derived actions
 unavailable because older text-order and current biological-order arrays cannot
 be distinguished safely without that marker.
+
+Use `feature.color` for an explicit display color. When color is part of the
+request, prefer a Motif payload over interchange text so the requested colors
+reach the workbench directly. Use `misc_feature` for a named sequence motif or
+chromophore codons and `restriction_site` for a cloning or restriction site.
+Do not rely on editor-specific GenBank color qualifiers as the only color
+source.
+
+## Preserve scope and provenance
+
+- Keep display retries separate from sequence-design changes.
+- Preserve the exact accession and coordinate transformation used for sourced
+  sequence segments.
+- Describe estimated feature bounds as estimated. Do not call an annotation
+  set complete when any reported bounds remain approximate.
+- Do not describe a sequence as canonical, or generalize expression behavior
+  across hosts, unless the cited source and checks support that claim.
+- Verify final record length, topology, feature coordinates, and requested ORFs
+  before generating the workbench.
 
 Alignment payloads accept either one top-level `alignment` object or an
 `alignments` array. Each alignment accepts `rows` (alias: `sequences`) with

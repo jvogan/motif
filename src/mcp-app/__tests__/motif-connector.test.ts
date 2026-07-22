@@ -15,7 +15,8 @@ import {
 } from '../../../mcp/motif/server.js';
 import { isMotifWorkbenchResult } from '../motif-workbench-bridge.js';
 
-const artifactTemplate = '<!doctype html><html><head><title>Motif for Claude Science</title></head><body><script type="application/json" id="motif-artifact-data">__SEQUENCE_INVENTORY__</script></body></html>';
+const runtimeBuildId = 'a'.repeat(64);
+const artifactTemplate = `<!doctype html><html><head><meta name="motif-build-id" content="${runtimeBuildId}"><title>Motif for Claude Science</title></head><body><script type="application/json" id="motif-artifact-data">__SEQUENCE_INVENTORY__</script></body></html>`;
 
 const openedClients: Client[] = [];
 const openedServers: ReturnType<typeof createMotifClaudeScienceServer>[] = [];
@@ -325,10 +326,14 @@ describe('Motif embedded artifact export', () => {
     const artifact = renderMotifArtifact({
       template: artifactTemplate,
       workbench,
+      runtimeBuildId,
       filename: '../Demo report.html',
     });
     expect(artifact.summary).toMatchObject({
       schema: 'motif.mcp.artifact-export.v1',
+      delivery: 'embedded-html-resource',
+      visibleMountConfirmed: false,
+      runtimeBuildId,
       filename: 'Demo-report.html',
       recordCount: 1,
       residueCount: 6,
@@ -344,6 +349,7 @@ describe('Motif for Claude Science MCP server', () => {
     const traceEvents: MotifMcpTraceEvent[] = [];
     const server = createMotifClaudeScienceServer({
       version: '0.2.1-test',
+      runtimeBuildId,
       readWorkbenchHtml: async () => '<!doctype html><title>Motif for Claude Science</title><div class="motif-cs-brand">Motif</div>',
       readArtifactTemplate: async () => artifactTemplate,
       trace: event => traceEvents.push(event),
@@ -387,6 +393,10 @@ describe('Motif for Claude Science MCP server', () => {
     expect(openResult.isError).not.toBe(true);
     expect(openResult.structuredContent).toMatchObject({
       schema: 'motif.mcp.workbench.v1',
+      delivery: 'live-app-request',
+      visibleMountConfirmed: false,
+      fallbackTool: 'motif_create_workbench_artifact',
+      runtimeBuildId,
       mode: 'artifact',
       sourceName: sensitiveFilename,
       recordCount: 1,
@@ -427,6 +437,9 @@ describe('Motif for Claude Science MCP server', () => {
     expect(artifactResult.isError, JSON.stringify(artifactResult)).not.toBe(true);
     expect(artifactResult.structuredContent).toMatchObject({
       schema: 'motif.mcp.artifact-export.v1',
+      delivery: 'embedded-html-resource',
+      visibleMountConfirmed: false,
+      runtimeBuildId,
       filename: 'motif-review.html',
       recordCount: 1,
       residueCount: sensitiveSequence.length,
@@ -457,6 +470,7 @@ describe('Motif for Claude Science MCP server', () => {
   it('bounds record summaries without presenting shortened identifiers as exact', async () => {
     const server = createMotifClaudeScienceServer({
       version: '0.2.1-test',
+      runtimeBuildId,
       readWorkbenchHtml: async () => '<title>Motif for Claude Science</title>',
       readArtifactTemplate: async () => artifactTemplate,
     });
@@ -500,6 +514,7 @@ describe('Motif for Claude Science MCP server', () => {
   it('returns bounded public errors without mounting malformed content', async () => {
     const server = createMotifClaudeScienceServer({
       version: '0.2.1-test',
+      runtimeBuildId,
       readWorkbenchHtml: async () => '<title>Motif for Claude Science</title>',
       readArtifactTemplate: async () => artifactTemplate,
     });

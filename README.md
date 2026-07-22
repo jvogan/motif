@@ -115,13 +115,13 @@ motif_create_workbench_artifact exactly once with filename "motif-demo.gb",
 the complete content, title "Motif demo — MOTIFDEMO", and outputFilename
 "motif-demo-workbench.html". Preserve the exact returned HTML as a Claude
 Science artifact and open it in the right pane. Report the record name,
-topology, and residue count.
+topology, residue count, and runtime build ID.
 ```
 
 Click the generated HTML to open the interactive workbench. The file contains
 a snapshot of the input and Motif build used to create it; later source or
-build changes do not update it. Export a new checkpoint to preserve edits made
-in the workbench. See the
+build changes do not update it. Settings shows the Motif version and runtime
+build ID. Export a new checkpoint to preserve edits made in the workbench. See the
 [Claude Science quickstart](docs/CLAUDE_SCIENCE_QUICKSTART.md) for permission,
 verification, and optional live-App steps.
 

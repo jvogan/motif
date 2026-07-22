@@ -225,6 +225,148 @@ test.describe('Claude Science artifact campaign', () => {
     await expect(annotationsPanel.getByRole('button', { name: /Show 10 more translations/ })).toBeVisible();
   });
 
+  test('map feature clicks move the Sequence viewport to circular and linear selections', async ({ page }) => {
+    const features = [
+      { id: 'early-feature', name: 'Early feature', type: 'misc_feature', start: 100, end: 700, strand: 1 },
+      { id: 'middle-feature', name: 'Middle reverse feature', type: 'misc_feature', start: 5_600, end: 6_500, strand: -1 },
+      { id: 'late-feature', name: 'Late feature', type: 'misc_feature', start: 10_800, end: 11_600, strand: 1 },
+    ] as const;
+    const sequence = page.locator('.motif-cs-sequence');
+
+    const focusState = async () => sequence.evaluate((container) => {
+      const focus = container.querySelector<HTMLElement>('[data-seq-focus="true"]');
+      const bases = focus?.querySelector<HTMLElement>('[data-line-start]');
+      const pane = container.closest<HTMLElement>('.motif-cs-sequence-column');
+      const scroller = container.scrollHeight > container.clientHeight + 1
+        ? container
+        : pane && pane.scrollHeight > pane.clientHeight + 1
+          ? pane
+          : container;
+      const containerRect = scroller.getBoundingClientRect();
+      const focusRect = focus?.getBoundingClientRect();
+      return {
+        scrollTop: scroller.scrollTop,
+        scrollOwner: scroller === container ? 'sequence' : 'pane',
+        lineStart: Number(bases?.dataset.lineStart),
+        lineLength: Number(bases?.dataset.lineLen),
+        selectionHighlightCount: focus?.querySelectorAll(
+          '.motif-cs-seq-hl:not(.motif-cs-seq-hl-motif):not(.motif-cs-seq-hl-restriction)',
+        ).length ?? 0,
+        fullyVisible: Boolean(
+          focusRect
+          && focusRect.top >= containerRect.top + 24
+          && focusRect.bottom <= containerRect.bottom - 24
+        ),
+      };
+    });
+
+    for (const viewport of [
+      { label: 'wide', width: 1600, height: 700 },
+      { label: 'stacked', width: 900, height: 720 },
+    ] as const) {
+      await openArtifact(page, viewport.width, viewport.height);
+      if (viewport.label === 'stacked') {
+        const sequenceBox = (await page.locator('.motif-cs-sequence-column').boundingBox())!;
+        const mapBox = (await page.locator('.motif-cs-map-column').boundingBox())!;
+        expect(mapBox.y).toBeGreaterThan(sequenceBox.y);
+      }
+
+      for (const topology of ['circular', 'linear'] as const) {
+        await page.evaluate(({ recordTopology, recordFeatures, viewportLabel }) => {
+          window.motifRenderInventory([{
+            id: `map-sequence-scroll-${viewportLabel}-${recordTopology}`,
+            name: `Map sequence scroll ${viewportLabel} ${recordTopology}`,
+            molecule: 'dna',
+            topology: recordTopology,
+            seq: 'ATGC'.repeat(3_000),
+            annotations: recordFeatures,
+          }]);
+        }, { recordTopology: topology, recordFeatures: features, viewportLabel: viewport.label });
+        await expect(page.locator('.motif-pm-feature')).toHaveCount(features.length);
+        await sequence.evaluate((element) => {
+          element.scrollTop = 0;
+          const pane = element.closest<HTMLElement>('.motif-cs-sequence-column');
+          if (pane) pane.scrollTop = 0;
+        });
+
+        const scrollPositions: number[] = [];
+        const scrollOwners: string[] = [];
+        for (const feature of [...features].reverse()) {
+          const mapFeature = page.locator(`.motif-pm-feature[data-feature-id="${feature.id}"]`);
+          await mapFeature.locator('.motif-pm-feature-hit').click();
+          await expect(mapFeature).toHaveAttribute('aria-pressed', 'true');
+          await expect.poll(async () => {
+            const state = await focusState();
+            return state.fullyVisible
+              && state.selectionHighlightCount > 0
+              && state.lineStart <= feature.start
+              && state.lineStart + state.lineLength > feature.start;
+          }).toBe(true);
+          const state = await focusState();
+          scrollPositions.push(state.scrollTop);
+          scrollOwners.push(state.scrollOwner);
+        }
+
+        expect(scrollPositions[0]).toBeGreaterThan(1_000);
+        expect(scrollPositions[1]).toBeLessThan(scrollPositions[0]);
+        expect(scrollPositions[2]).toBeLessThan(scrollPositions[1]);
+        expect(new Set(scrollOwners)).toEqual(new Set([viewport.label === 'stacked' ? 'pane' : 'sequence']));
+      }
+    }
+  });
+
+  test('selected directional features outline the complete arrow shape', async ({ page }) => {
+    await openArtifact(page, 1180, 900);
+    for (const topology of ['circular', 'linear'] as const) {
+      await page.evaluate((recordTopology) => window.motifRenderInventory?.([{
+        id: `selected-arrow-${recordTopology}`,
+        name: `Selected arrow ${recordTopology}`,
+        molecule: 'dna',
+        topology: recordTopology,
+        sequence: 'A'.repeat(4_000),
+        annotations: [{
+          id: 'directional-feature',
+          name: 'Directional feature',
+          type: 'cds',
+          start: 500,
+          end: 2_800,
+          strand: 1,
+        }],
+      }]), topology);
+
+      const feature = page.locator('.motif-pm-feature[data-feature-id="directional-feature"]');
+      const body = feature.locator('.motif-pm-feature-body');
+      const hit = feature.locator('.motif-pm-feature-hit');
+      const clickPoint = await hit.evaluate((path) => {
+        const svgPath = path as SVGPathElement;
+        const point = svgPath.getPointAtLength(svgPath.getTotalLength() * 0.05);
+        const screen = point.matrixTransform(svgPath.getScreenCTM()!);
+        return { x: screen.x, y: screen.y };
+      });
+      await page.mouse.click(clickPoint.x, clickPoint.y);
+      await expect(feature).toHaveAttribute('data-selected', 'true');
+      const style = await body.evaluate((path) => {
+        const computed = getComputedStyle(path);
+        const swatch = document.createElement('span');
+        swatch.style.color = 'var(--accent)';
+        path.closest('.motif-cs-shell')!.appendChild(swatch);
+        const accent = getComputedStyle(swatch).color;
+        swatch.remove();
+        return {
+          path: path.getAttribute('d'),
+          stroke: computed.stroke,
+          accent,
+          strokeWidth: parseFloat(computed.strokeWidth),
+          strokeLinejoin: computed.strokeLinejoin,
+        };
+      });
+      expect(style.path).toMatch(/[AL].*Z$/);
+      expect(style.stroke).toBe(style.accent);
+      expect(style.strokeWidth).toBeGreaterThanOrEqual(1.5);
+      expect(style.strokeLinejoin).toBe('round');
+    }
+  });
+
   test('long import errors wrap inside the Add Entry popover', async ({ page }) => {
     await openArtifact(page, 640, 700);
     await page.getByRole('button', { name: 'Add entry' }).click();
@@ -3217,11 +3359,31 @@ test.describe('Claude Science artifact campaign', () => {
     expect(mapBox.y + mapBox.height).toBeLessThanOrEqual(mainBox.y + mainBox.height + 2);
   });
 
-  test('map supports wheel pan, modifier-wheel zoom, and bidirectional drag selection', async ({ page }) => {
+  test('map supports wheel and blank-canvas pan, modifier-wheel zoom, and sequence drag selection', async ({ page }) => {
     await openArtifact(page, 1180, 900);
     const mapFrame = page.locator('.motif-cs-map-frame');
     const viewport = page.locator('.motif-cs-map-frame .motif-pm-viewport');
     const svg = page.locator('.motif-cs-map-frame svg.motif-plasmid-map');
+    const sequenceFocus = () => page.locator('.motif-cs-sequence').evaluate((container) => {
+      const pane = container.closest<HTMLElement>('.motif-cs-sequence-column');
+      const scroller = container.scrollHeight > container.clientHeight + 1
+        ? container
+        : pane && pane.scrollHeight > pane.clientHeight + 1
+          ? pane
+          : container;
+      const focus = container.querySelector<HTMLElement>('[data-seq-focus="true"]');
+      const bases = focus?.querySelector<HTMLElement>('[data-line-start]');
+      const viewportRect = scroller.getBoundingClientRect();
+      const focusRect = focus?.getBoundingClientRect();
+      return {
+        lineStart: Number(bases?.dataset.lineStart),
+        visible: Boolean(
+          focusRect
+          && focusRect.top >= viewportRect.top + 24
+          && focusRect.bottom <= viewportRect.bottom - 24
+        ),
+      };
+    });
     const svgBox = await svg.boundingBox();
     expect(svgBox).toBeTruthy();
     const center = { x: svgBox!.x + svgBox!.width / 2, y: svgBox!.y + svgBox!.height / 2 };
@@ -3236,21 +3398,81 @@ test.describe('Claude Science artifact campaign', () => {
     await expect(viewport).toHaveAttribute('transform', /translate/);
 
     await page.getByRole('button', { name: 'Reset map view' }).click();
-    const radius = Math.min(svgBox!.width, svgBox!.height) * 0.28;
-    await page.mouse.move(center.x, center.y - radius);
+    const circularBackbone = (await mapFrame.locator('.motif-pm-backbone').boundingBox())!;
+    const circularCenter = {
+      x: circularBackbone.x + circularBackbone.width / 2,
+      y: circularBackbone.y + circularBackbone.height / 2,
+    };
+    const outsideRing = {
+      x: svgBox!.x + Math.max(12, (circularBackbone.x - svgBox!.x) * 0.45),
+      y: circularBackbone.y + circularBackbone.height / 2,
+    };
+    await page.mouse.move(outsideRing.x, outsideRing.y);
+    await expect(mapFrame).toHaveAttribute('data-map-pointer-action', 'pan');
     await page.mouse.down();
-    await page.mouse.move(center.x + radius, center.y, { steps: 8 });
+    await page.mouse.move(outsideRing.x + 48, outsideRing.y + 22, { steps: 8 });
+    await page.mouse.up();
+    await expect(viewport).toHaveAttribute('transform', /translate/);
+    await expect(mapFrame.locator('.motif-cs-map-hint')).not.toContainText('range');
+
+    await page.getByRole('button', { name: 'Reset map view' }).click();
+    const radius = circularBackbone.width / 2;
+    await page.mouse.move(circularCenter.x, circularCenter.y - radius);
+    await expect(mapFrame).toHaveAttribute('data-map-pointer-action', 'range');
+    await page.mouse.down();
+    await page.mouse.move(circularCenter.x + radius, circularCenter.y, { steps: 8 });
     await page.mouse.up();
     const clockwise = await mapFrame.locator('.motif-cs-map-hint').textContent();
     expect(clockwise).toContain('range');
 
-    await page.mouse.move(center.x, center.y - radius);
+    await page.mouse.move(circularCenter.x, circularCenter.y - radius);
     await page.mouse.down();
-    await page.mouse.move(center.x - radius, center.y, { steps: 8 });
+    await page.mouse.move(circularCenter.x - radius, circularCenter.y, { steps: 8 });
     await page.mouse.up();
     const counterclockwise = await mapFrame.locator('.motif-cs-map-hint').textContent();
     expect(counterclockwise).toContain('range');
     expect(counterclockwise).not.toBe(clockwise);
+    await expect.poll(async () => {
+      const focus = await sequenceFocus();
+      return focus.visible && focus.lineStart >= 1_700;
+    }).toBe(true);
+
+    await page.evaluate(() => window.motifRenderInventory?.([{
+      id: 'linear-drag-zones',
+      name: 'Linear drag zones',
+      molecule: 'dna',
+      topology: 'linear',
+      sequence: 'A'.repeat(4_000),
+    }]));
+    await expect(mapFrame).toHaveAttribute('data-map-mode', 'linear');
+    const linearSvgBox = (await svg.boundingBox())!;
+    const linearBackbone = (await mapFrame.locator('.motif-pm-backbone').boundingBox())!;
+    const belowAxis = {
+      x: linearSvgBox.x + linearSvgBox.width / 2,
+      y: Math.min(linearSvgBox.y + linearSvgBox.height - 10, linearBackbone.y + 52),
+    };
+    await page.mouse.move(belowAxis.x, belowAxis.y);
+    await expect(mapFrame).toHaveAttribute('data-map-pointer-action', 'pan');
+    await page.mouse.down();
+    await page.mouse.move(belowAxis.x + 46, belowAxis.y + 18, { steps: 8 });
+    await page.mouse.up();
+    await expect(viewport).toHaveAttribute('transform', /translate/);
+    await expect(mapFrame.locator('.motif-cs-map-hint')).not.toContainText('range');
+
+    await page.getByRole('button', { name: 'Reset map view' }).click();
+    const axisY = linearBackbone.y + linearBackbone.height / 2;
+    const axisStart = linearBackbone.x + linearBackbone.width * 0.25;
+    const axisEnd = linearBackbone.x + linearBackbone.width * 0.7;
+    await page.mouse.move(axisStart, axisY);
+    await expect(mapFrame).toHaveAttribute('data-map-pointer-action', 'range');
+    await page.mouse.down();
+    await page.mouse.move(axisEnd, axisY, { steps: 8 });
+    await page.mouse.up();
+    await expect(mapFrame.locator('.motif-cs-map-hint')).toContainText('range');
+    await expect.poll(async () => {
+      const focus = await sequenceFocus();
+      return focus.visible && focus.lineStart >= 800 && focus.lineStart <= 1_200;
+    }).toBe(true);
   });
 
   test('the map keeps saying what is selected while the view is zoomed', async ({ page }) => {
@@ -3294,8 +3516,18 @@ test.describe('Claude Science artifact campaign', () => {
     expect(await mapFrame.locator('.motif-pm-selection').count()).toBe(selectionPaths);
   });
 
-  test('map clicks resolve the same base whether the view is fitted, panned, or zoomed', async ({ page }) => {
+  test('backbone clicks resolve the visible base after fit, pan, and zoom', async ({ page }) => {
     await openArtifact(page, 1180, 900);
+    await page.evaluate(() => window.motifRenderInventory?.([{
+      id: 'map-coordinate-fixture',
+      name: 'Map coordinate fixture',
+      molecule: 'dna',
+      topology: 'circular',
+      sequence: 'A'.repeat(12_000),
+      features: [],
+      sites: [],
+    }]));
+    await expect(page.locator('.motif-cs-map-frame')).toContainText('12,000 bp');
     const svg = page.locator('.motif-cs-map-frame svg.motif-plasmid-map');
     const svgBox = (await svg.boundingBox())!;
     const centre = { x: svgBox.x + svgBox.width / 2, y: svgBox.y + svgBox.height / 2 };
@@ -3338,14 +3570,40 @@ test.describe('Claude Science artifact campaign', () => {
       return match ? Number(match[1].replace(/,/g, '')) : null;
     };
 
-    const probe = { x: centre.x + (Math.min(svgBox.width, svgBox.height) * 0.3), y: centre.y };
+    // Blank canvas is now a pan surface. Sample a visible point on the transformed
+    // backbone for each state so the click remains a range-selection gesture while
+    // the coordinate conversion is exercised after both translation and scaling.
+    const backboneProbe = (offset: number) => page.evaluate((startOffset) => {
+      const root = document.querySelector<SVGSVGElement>('.motif-cs-map-frame svg.motif-plasmid-map');
+      const backbone = root?.querySelector<SVGGeometryElement>('.motif-pm-backbone');
+      if (!root || !backbone) return null;
+      const total = backbone.getTotalLength();
+      const rootRect = root.getBoundingClientRect();
+      for (let index = 0; index < 48; index += 1) {
+        const fraction = ((startOffset + (index * 7)) % 48) / 48;
+        const local = backbone.getPointAtLength(total * fraction);
+        const screen = local.matrixTransform(backbone.getScreenCTM()!);
+        if (
+          screen.x < rootRect.left + 12
+          || screen.x > rootRect.right - 12
+          || screen.y < rootRect.top + 12
+          || screen.y > rootRect.bottom - 12
+        ) continue;
+        const hit = document.elementFromPoint(screen.x, screen.y);
+        if (!hit?.closest('[data-map-interaction-surface]')) continue;
+        if (hit.closest('.motif-pm-feature, .motif-pm-restriction, .motif-pm-range-overlay')) continue;
+        return { x: screen.x, y: screen.y };
+      }
+      return null;
+    }, offset);
+
     const offCentre = { x: centre.x - 120, y: centre.y - 120 };
 
     // Three viewports: a pristine fit; a pan with the zoom badge still reading
     // 100%; and an off-centre zoom. The middle one matters most — a click can be
     // hundreds of bases wrong while nothing on screen says the view has moved.
     const seen: Array<{ label: string; expected: number; actual: number | null }> = [];
-    for (const step of [
+    const steps = [
       { label: 'fit', prepare: async () => {} },
       {
         label: 'panned at fit',
@@ -3361,12 +3619,15 @@ test.describe('Claude Science artifact campaign', () => {
           });
         },
       },
-    ]) {
+    ];
+    for (const [stepIndex, step] of steps.entries()) {
       await step.prepare();
       await page.waitForTimeout(220);
-      const expected = await baseUnderPoint(probe);
+      const probe = await backboneProbe(stepIndex * 13);
+      expect(probe, `could not find a visible backbone point at ${step.label}`).not.toBeNull();
+      const expected = await baseUnderPoint(probe!);
       expect(expected, `oracle failed to resolve a base at ${step.label}`).not.toBeNull();
-      await page.mouse.click(probe.x, probe.y);
+      await page.mouse.click(probe!.x, probe!.y);
       await page.waitForTimeout(160);
       seen.push({ label: step.label, expected: expected!, actual: await clickedBase() });
     }
@@ -3403,24 +3664,12 @@ test.describe('Claude Science artifact campaign', () => {
     const svgBox = await svg.boundingBox();
     expect(svgBox).toBeTruthy();
 
-    // Drag along a row that is actually the range-drag surface. A fixed fraction of
-    // the SVG height is not: enzyme labels are drawn across the middle of a short
-    // linear map, and a press that lands on one selects that cluster instead of
-    // starting a range — which leaves no range and no readout to place, so this
-    // test would fail describing the readout rather than the missed drag.
+    // Drag on the rendered sequence axis. Blank canvas above and below it pans,
+    // while the backbone remains the range-selection target.
     const startX = svgBox!.x + svgBox!.width * 0.28;
     const endX = svgBox!.x + svgBox!.width * 0.55;
-    const y = await page.evaluate(([x0, x1, top, height]) => {
-      for (let step = 0; step <= 20; step += 1) {
-        const candidate = top + (height * (2 + step * 3)) / 100;
-        const onBackground = [x0, x1].every((x) => document
-          .elementFromPoint(x, candidate)
-          ?.classList.contains('motif-pm-bg'));
-        if (onBackground) return candidate;
-      }
-      return -1;
-    }, [startX, endX, svgBox!.y, svgBox!.height]);
-    expect(y, 'no row of the linear map accepts a range drag').toBeGreaterThan(0);
+    const backboneBox = (await mapFrame.locator('.motif-pm-backbone').boundingBox())!;
+    const y = backboneBox.y + backboneBox.height / 2;
 
     await page.mouse.move(startX, y);
     await page.mouse.down();

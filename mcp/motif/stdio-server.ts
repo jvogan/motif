@@ -45,6 +45,15 @@ async function readVersion(): Promise<string> {
   return '0.2.1';
 }
 
+async function readRuntimeBuildId(workbenchPath: string): Promise<string> {
+  const html = await readFile(workbenchPath, 'utf8');
+  const runtimeBuildId = html.match(/<meta name="motif-build-id" content="([a-f0-9]{64})"\s*\/?>/u)?.[1];
+  if (!runtimeBuildId) {
+    throw new Error('Motif MCP App build identity is missing. Rebuild or reinstall the connector.');
+  }
+  return runtimeBuildId;
+}
+
 async function main(): Promise<void> {
   const traceEnabled = process.env.MOTIF_MCP_TRACE === '1'
     || process.env.MOTIF_MCP_TRACE === 'true';
@@ -59,8 +68,10 @@ async function main(): Promise<void> {
     resolve(moduleDirectory, 'motif-template.html'),
     resolve(inferredRoot, 'dist-motif/motif-template.html'),
   ], 'Motif artifact template');
+  const runtimeBuildId = await readRuntimeBuildId(workbenchPath);
   const server = createMotifClaudeScienceServer({
     version,
+    runtimeBuildId,
     readWorkbenchHtml: () => readFile(workbenchPath, 'utf8'),
     readArtifactTemplate: () => readFile(artifactTemplatePath, 'utf8'),
     ...(traceEnabled ? {

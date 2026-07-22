@@ -270,7 +270,7 @@ describe('Claude Science rail popover regression guards', () => {
     expect(artifactSource).toContain('<Settings className="motif-cs-panel-icon"');
     expect(artifactSource).toContain('<strong>Motif for Claude Science</strong>');
     expect(artifactSource).toContain("const MOTIF_ARTIFACT_VERSION = '0.2.1';");
-    expect(artifactSource).toContain('<span>Version {MOTIF_ARTIFACT_VERSION}</span>');
+    expect(artifactSource).toContain('Version {MOTIF_ARTIFACT_VERSION} · Build {MOTIF_ARTIFACT_BUILD_LABEL}');
     expect(artifactSource).not.toContain('__APP_VERSION__');
     expect(artifactSource).toContain('Motif is an open-source, AI-native molecular biology suite for researchers.');
     expect(artifactSource).toContain('<span>By Jacob Vogan</span>');
