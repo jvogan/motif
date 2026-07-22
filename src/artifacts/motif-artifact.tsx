@@ -1180,11 +1180,13 @@ const MAX_ZOOM = 8;
 const ZOOM_STEP = 1.25;
 const MAP_PAN_MARGIN_SCALE = 0.24;
 const MAP_PAN_MARGIN_MIN = 56;
+const MAP_LINEAR_PAN_MARGIN_Y_MIN = 160;
 const MAP_FIT_WHEEL_PAN_SCALE = 0.22;
 const MAP_ZOOMED_WHEEL_PAN_SCALE = 0.78;
 const MAP_CIRCULAR_RANGE_HIT_MIN = 18;
 const MAP_CIRCULAR_RANGE_HIT_MAX = 34;
-const MAP_LINEAR_RANGE_HIT_Y = 18;
+const MAP_LINEAR_RANGE_HIT_TOP_Y = 18;
+const MAP_LINEAR_RANGE_HIT_BOTTOM_Y = 176;
 const MAP_LINEAR_RANGE_HIT_X = 8;
 const DEFAULT_MAP_VIEWPORT: MapViewport = { k: 1, tx: 0, ty: 0 };
 const builtInRecords = JSON.parse(vectorsRaw) as ArtifactRecordInput[];
@@ -1647,10 +1649,13 @@ function sameViewport(a: MapViewport, b: MapViewport): boolean {
 function clampMapViewport(
   viewport: MapViewport,
   bg: { x: number; y: number; width: number; height: number },
+  mode: MapMode,
 ): MapViewport {
   const k = clamp(Number.isFinite(viewport.k) ? viewport.k : 1, MIN_ZOOM, MAX_ZOOM);
   const marginX = Math.max(MAP_PAN_MARGIN_MIN, bg.width * MAP_PAN_MARGIN_SCALE);
-  const marginY = Math.max(MAP_PAN_MARGIN_MIN, bg.height * MAP_PAN_MARGIN_SCALE);
+  const marginY = mode === 'linear'
+    ? Math.max(MAP_LINEAR_PAN_MARGIN_Y_MIN, bg.height * MAP_PAN_MARGIN_SCALE)
+    : Math.max(MAP_PAN_MARGIN_MIN, bg.height * MAP_PAN_MARGIN_SCALE);
   if (k <= MIN_ZOOM + 0.0001) {
     // Fit remains the exact reset position, but a subsequent drag gets enough
     // symmetric travel to inspect labels near every edge.
@@ -3124,10 +3129,16 @@ function mapPointerActionAtPoint(point: MapContentPoint, layout: MapLayout, zoom
   const axis = layout.linearAxis;
   if (!axis) return 'pan';
   const hitX = MAP_LINEAR_RANGE_HIT_X / contentScale;
-  const hitY = MAP_LINEAR_RANGE_HIT_Y / contentScale;
+  const hitTopY = MAP_LINEAR_RANGE_HIT_TOP_Y / contentScale;
+  const hitBottomY = MAP_LINEAR_RANGE_HIT_BOTTOM_Y / (contentScale * Math.pow(contentScale, 0.75));
   const alongAxis = point.x >= axis.startX - hitX
     && point.x <= axis.endX + hitX;
-  return alongAxis && Math.abs(point.y - axis.y) <= hitY ? 'range' : 'pan';
+  // The linear drawing uses the rows below its sequence axis for annotations.
+  // Keep those rows available at Fit, then narrow the screen-space range band
+  // as the drawing grows so a zoomed map still has blank canvas for panning.
+  const inSequenceBand = point.y >= axis.y - hitTopY
+    && point.y <= Math.min(layout.bg.y + layout.bg.height, axis.y + hitBottomY);
+  return alongAxis && inSequenceBand ? 'range' : 'pan';
 }
 
 function signedCircularAngleDelta(fromAngle: number, toAngle: number): number {
@@ -5295,6 +5306,7 @@ function App() {
     () => restrictionSites.filter((site) => !hiddenEnzymes.has(site.enzyme)),
     [hiddenEnzymes, restrictionSites],
   );
+  const restrictionLayerVisible = visibleRestrictionSites.length > 0;
   const interactiveMapRestrictionSites = useMemo(
     () => restrictionSitesForInteractiveMap(visibleRestrictionSites),
     [visibleRestrictionSites],
@@ -6289,11 +6301,11 @@ function App() {
     setMapViewportsByRecord((current) => {
       const currentViewport = current[recordId];
       if (!currentViewport) return current;
-      const nextViewport = clampMapViewport(currentViewport, layout.bg);
+      const nextViewport = clampMapViewport(currentViewport, layout.bg, layout.mode);
       if (sameViewport(currentViewport, nextViewport)) return current;
       return { ...current, [recordId]: nextViewport };
     });
-  }, [layout.bg, recordId]);
+  }, [layout.bg, layout.mode, recordId]);
 
   const selectedFeatureId = selection?.kind === 'feature' ? selection.id : null;
   const activeClusterId = selection?.kind === 'restriction' ? selection.clusterId : null;
@@ -6530,11 +6542,11 @@ function App() {
     setMapViewportsByRecord((current) => {
       const currentViewport = current[recordId] ?? DEFAULT_MAP_VIEWPORT;
       const rawNext = typeof updater === 'function' ? updater(currentViewport) : updater;
-      const nextViewport = clampMapViewport(rawNext, layout.bg);
+      const nextViewport = clampMapViewport(rawNext, layout.bg, layout.mode);
       if (sameViewport(currentViewport, nextViewport)) return current;
       return { ...current, [recordId]: nextViewport };
     });
-  }, [layout.bg, recordId]);
+  }, [layout.bg, layout.mode, recordId]);
 
   /** `point` is ROOT space — the new translate keeps that root point where it is. */
   const zoomAtPoint = useCallback((point: MapRootPoint, factor: number) => {
@@ -6790,6 +6802,7 @@ function App() {
   }, [handleFeatureClick]);
 
   const handleRestrictionClick = useCallback((clusterId: string, tickIds: readonly string[], enzyme?: string) => {
+    requestSequenceFocus();
     setLockedTranslateTarget(null);
     setSelectedTranslationLayerByRecord((current) => (
       current[recordId] ? { ...current, [recordId]: null } : current
@@ -6800,7 +6813,7 @@ function App() {
       if (!current[recordId]) return current;
       return { ...current, [recordId]: null };
     });
-  }, [recordId]);
+  }, [recordId, requestSequenceFocus]);
 
   const handleSequenceRestrictionClick = useCallback((site: RestrictionSite) => {
     const tickId = restrictionSiteTickId(site);
@@ -9059,7 +9072,7 @@ function App() {
 
   const closeOpenToolDetails = useCallback(() => {
     if (typeof document === 'undefined') return;
-    document.querySelectorAll<HTMLDetailsElement>('.motif-cs-inspector details[name="motif-cs-tools"][open]').forEach((panel) => {
+    document.querySelectorAll<HTMLDetailsElement>('.motif-cs-inspector details[data-rail-tool][open]').forEach((panel) => {
       panel.open = false;
     });
   }, []);
@@ -9755,26 +9768,20 @@ function App() {
     };
   }, [toolsPinned]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const inspector = toolsInspectorRef.current;
     if (!inspector) return undefined;
-    const handleToggle = (event: Event) => {
-      const panel = event.target;
-      if (!toolsPinned || !(panel instanceof HTMLDetailsElement) || !panel.open || panel.parentElement !== inspector) return;
-      window.requestAnimationFrame(() => {
-        const summary = panel.querySelector<HTMLElement>(':scope > summary');
-        if (!summary) return;
-        const inspectorRect = inspector.getBoundingClientRect();
-        const summaryRect = summary.getBoundingClientRect();
-        const desiredTop = inspectorRect.top + 4;
-        if (summaryRect.top < desiredTop || summaryRect.bottom > inspectorRect.bottom - 4) {
-          inspector.scrollTop += summaryRect.top - desiredTop;
-        }
+    const syncDisclosureGroups = () => {
+      inspector.querySelectorAll<HTMLDetailsElement>('details[data-rail-tool]').forEach((panel) => {
+        if (toolsPinned) panel.removeAttribute('name');
+        else panel.setAttribute('name', 'motif-cs-tools');
       });
     };
-    inspector.addEventListener('toggle', handleToggle, true);
-    return () => inspector.removeEventListener('toggle', handleToggle, true);
-  }, [toolsPinned]);
+    syncDisclosureGroups();
+    const observer = new MutationObserver(syncDisclosureGroups);
+    observer.observe(inspector, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, [paneVisibility.tools, recordId, toolsPinned]);
 
   const handleMapDockOpen = useCallback(() => {
     closeOpenToolDetails();
@@ -10513,6 +10520,89 @@ function App() {
     } as CSSProperties;
   };
 
+  const renderRestrictionSiteControls = (includeMapSummary = false): ReactNode => {
+    if (!hasActiveRecord || !isDnaRecord) {
+      return (
+        <p className="motif-cs-muted">
+          {hasActiveRecord
+            ? 'Restriction sites are available for DNA records.'
+            : 'Add or select a DNA record to inspect restriction sites.'}
+        </p>
+      );
+    }
+    const restorableSourceCount = lastVisibleEnzymeSourcesRef.current[recordId]?.length ?? 0;
+    const canShowSites = visibleRestrictionSites.length < restrictionSites.length
+      || (scanEnzymes.length === 0 && restorableSourceCount > 0);
+    return (
+      <>
+        <div className="motif-cs-layer-actions">
+          <button
+            type="button"
+            className="motif-cs-mini-button"
+            onClick={() => setAllEnzymesVisible(true)}
+            disabled={!canShowSites}
+            title={scanEnzymes.length === 0
+              ? restorableSourceCount > 0
+                ? 'Restore the source groups hidden with Hide sites'
+                : 'Enable a source group first'
+              : 'Show every site in the enabled source groups'}
+          >
+            Show sites
+          </button>
+          <button
+            type="button"
+            className="motif-cs-mini-button"
+            onClick={() => setAllEnzymesVisible(false)}
+            disabled={!restrictionLayerVisible}
+            title="Hide all restriction sites"
+          >
+            Hide sites
+          </button>
+          <button
+            type="button"
+            className="motif-cs-mini-button"
+            data-active={showRestrictionLabels || undefined}
+            aria-pressed={showRestrictionLabels}
+            onClick={toggleRestrictionLabels}
+            aria-label={`${showRestrictionLabels ? 'Hide' : 'Show'} restriction-site labels`}
+            title={`${showRestrictionLabels ? 'Hide' : 'Show'} restriction-site labels`}
+          >
+            Site labels
+          </button>
+          <span className="motif-cs-muted">{singleCutters.length} single-cutters</span>
+          {includeMapSummary && mapUnlabelledSiteCount > 0 ? (
+            <span className="motif-cs-muted">
+              {mapUnlabelledSiteCount.toLocaleString()} {mapRestrictionSitesOmitted > 0 ? 'selectable sites' : 'sites'} without labels on the map
+            </span>
+          ) : null}
+          {includeMapSummary && mapRestrictionSitesOmitted > 0 ? (
+            <span className="motif-cs-muted">
+              Density marks include all {visibleRestrictionSites.length.toLocaleString()} visible sites; {interactiveMapRestrictionSites.length.toLocaleString()} evenly distributed sites can be selected from the map.
+            </span>
+          ) : null}
+        </div>
+        <RestrictionSourceControls
+          sources={enzymeSources}
+          enzymeCount={scanEnzymes.length}
+          onToggle={setEnzymeSourceEnabled}
+        />
+        <RestrictionList
+          sites={restrictionSites}
+          enzymes={scanEnzymes}
+          sequenceLength={sequence.length}
+          topology={topology}
+          layout={layout.restrictions}
+          hiddenEnzymes={hiddenEnzymes}
+          selectedClusterId={activeClusterId}
+          selectedTickIds={selectedRestrictionTickIds}
+          onSelect={handleRestrictionClick}
+          onToggle={setEnzymeVisible}
+        />
+        <AddEnzymeForm onAdd={addCustomEnzyme} knownEnzymes={RESTRICTION_ENZYMES_FULL} />
+      </>
+    );
+  };
+
   return (
     <div
       className="motif-cs-shell"
@@ -10836,9 +10926,58 @@ function App() {
                 onKeyDown={(event) => moveFloatingPaneFromKeyboard('map', event)}
               >
                 <div>
-                  <span>{hasActiveRecord ? mapPaneTitle : 'Map'}</span>
+                  <span className="motif-cs-map-title-full">{hasActiveRecord ? mapPaneTitle : 'Map'}</span>
+                  <span className="motif-cs-map-title-compact">Map</span>
                   <small>{hasActiveRecord ? `${topology} · ${sequenceLengthLabel(sequence.length, sequenceType)}` : 'No active record'}</small>
                 </div>
+                {hasActiveRecord ? (
+                  <div className="motif-cs-map-toolbar" role="group" aria-label="Map view controls">
+                    <button className="motif-cs-map-button" type="button" onClick={handleZoomOut} disabled={!hasActiveRecord || mapViewport.k <= MIN_ZOOM + 0.0001} aria-label="Zoom out">-</button>
+                    <button
+                      className="motif-cs-map-button motif-cs-map-reset"
+                      type="button"
+                      onClick={handleZoomReset}
+                      disabled={!hasActiveRecord || (mapViewport.k <= MIN_ZOOM + 0.0001 && Math.abs(mapViewport.tx) < 0.5 && Math.abs(mapViewport.ty) < 0.5)}
+                      aria-label="Reset map view"
+                      title="Reset map view"
+                    >
+                      Fit
+                    </button>
+                    <button className="motif-cs-map-button" type="button" onClick={handleZoomIn} disabled={!hasActiveRecord || mapViewport.k >= MAX_ZOOM - 0.0001} aria-label="Zoom in">+</button>
+                    {isNucleotideRecord ? (
+                      <button
+                        className="motif-cs-map-button motif-cs-map-mode-toggle"
+                        type="button"
+                        data-current-mode={mapRenderMode}
+                        disabled={!canUseMapRenderModeTarget}
+                        aria-label={mapRenderModeTarget === 'linear' ? 'Draw map as line' : 'Draw map as circle'}
+                        title={canUseMapRenderModeTarget
+                          ? `Draw map as ${mapRenderModeTarget === 'linear' ? 'line' : 'circle'}`
+                          : 'A linear molecule has two ends and cannot be drawn as a circle'}
+                        onClick={() => setMapRenderMode(mapRenderModeTarget)}
+                      >
+                        {mapRenderModeTarget === 'linear' ? (
+                          <MoveHorizontal size={15} strokeWidth={2.2} aria-hidden="true" />
+                        ) : (
+                          <Circle size={14} strokeWidth={2.2} aria-hidden="true" />
+                        )}
+                      </button>
+                    ) : null}
+                    {isDnaRecord ? (
+                      <button
+                        className="motif-cs-map-button motif-cs-map-sites-toggle"
+                        type="button"
+                        data-active={restrictionLayerVisible || undefined}
+                        aria-pressed={restrictionLayerVisible}
+                        onClick={() => setAllEnzymesVisible(!restrictionLayerVisible)}
+                        aria-label={`${restrictionLayerVisible ? 'Hide' : 'Show'} restriction sites`}
+                        title={`${restrictionLayerVisible ? 'Hide' : 'Show'} restriction sites`}
+                      >
+                        <Scissors size={14} strokeWidth={2.1} aria-hidden="true" />
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
                 <PanePlacementControl
                   pane="map"
                   title="Map"
@@ -10901,66 +11040,6 @@ function App() {
                     <span>Add a DNA, RNA, or protein record to render its overview.</span>
                   </div>
                 ) : null}
-                {hasActiveRecord ? (
-                <div className="motif-cs-map-toolbar" role="group" aria-label="Map view controls">
-                  <button className="motif-cs-map-button" type="button" onClick={handleZoomOut} disabled={!hasActiveRecord || mapViewport.k <= MIN_ZOOM + 0.0001} aria-label="Zoom out">-</button>
-                  <button
-                    className="motif-cs-map-button motif-cs-map-reset"
-                    type="button"
-                    onClick={handleZoomReset}
-                    disabled={!hasActiveRecord || (mapViewport.k <= MIN_ZOOM + 0.0001 && Math.abs(mapViewport.tx) < 0.5 && Math.abs(mapViewport.ty) < 0.5)}
-                    aria-label="Reset map view"
-                    title="Reset map view"
-                  >
-                    Fit
-                  </button>
-                  <button className="motif-cs-map-button" type="button" onClick={handleZoomIn} disabled={!hasActiveRecord || mapViewport.k >= MAX_ZOOM - 0.0001} aria-label="Zoom in">+</button>
-                  {isNucleotideRecord ? (
-                    <button
-                      className="motif-cs-map-button motif-cs-map-mode-toggle"
-                      type="button"
-                      data-current-mode={mapRenderMode}
-                      disabled={!canUseMapRenderModeTarget}
-                      aria-label={mapRenderModeTarget === 'linear' ? 'Draw map as line' : 'Draw map as circle'}
-                      title={canUseMapRenderModeTarget
-                        ? `Draw map as ${mapRenderModeTarget === 'linear' ? 'line' : 'circle'}`
-                        : 'A linear molecule has two ends and cannot be drawn as a circle'}
-                      onClick={() => setMapRenderMode(mapRenderModeTarget)}
-                    >
-                      {mapRenderModeTarget === 'linear' ? (
-                        <MoveHorizontal size={15} strokeWidth={2.2} aria-hidden="true" />
-                      ) : (
-                        <Circle size={14} strokeWidth={2.2} aria-hidden="true" />
-                      )}
-                    </button>
-                  ) : null}
-                  {/* Whether the ring is named is a property of the map, but the
-                      only switch for it was in the Map Visibility panel, and at
-                      every laptop size measured — 1440x900, 1280x800, 1024x768,
-                      900x700 — that panel's own SUMMARY is already past the
-                      bottom of the map column, which hides 143-148px of itself.
-                      Reaching the toggle meant scrolling a pane nothing invites
-                      you to scroll and then opening a closed accordion, for a
-                      state you are looking straight at. Same handler and same
-                      wording as the panel button, so the two always agree; this
-                      is a second route to one control, not a second control.
-                      Gated on isDnaRecord exactly as the panel's is, since
-                      restriction labels are the only thing it governs. */}
-                  {isDnaRecord ? (
-                    <button
-                      className="motif-cs-map-button motif-cs-map-labels-toggle"
-                      type="button"
-                      data-active={showRestrictionLabels || undefined}
-                      aria-pressed={showRestrictionLabels}
-                      onClick={toggleRestrictionLabels}
-                      aria-label={`${showRestrictionLabels ? 'Hide' : 'Show'} restriction-site labels`}
-                      title={`${showRestrictionLabels ? 'Hide' : 'Show'} restriction-site labels`}
-                    >
-                      <Scissors size={14} strokeWidth={2.1} aria-hidden="true" />
-                    </button>
-                  ) : null}
-                </div>
-                ) : null}
                 {mapStatusHint ? (
                   <div className="motif-cs-map-hint">{mapStatusHint}</div>
                 ) : null}
@@ -11022,81 +11101,11 @@ function App() {
                         {mapRenderMode !== mapModeForBlock(topology, sequenceType) ? (
                           <span className="motif-cs-muted">Drawing only — still a {topology} {sequenceType.toUpperCase()}</span>
                         ) : null}
-                        {isDnaRecord ? (
-                          <>
-                            <button
-                              type="button"
-                              className="motif-cs-mini-button"
-                              onClick={() => setAllEnzymesVisible(true)}
-                              disabled={scanEnzymes.length === 0 && (lastVisibleEnzymeSourcesRef.current[recordId]?.length ?? 0) === 0}
-                              title={scanEnzymes.length === 0
-                                ? (lastVisibleEnzymeSourcesRef.current[recordId]?.length ?? 0) > 0
-                                  ? 'Restore the source groups hidden with Hide sites'
-                                  : 'Enable a source group first'
-                                : 'Show all sites in the enabled source groups'}
-                            >
-                              Show sites
-                            </button>
-                            <button type="button" className="motif-cs-mini-button" onClick={() => setAllEnzymesVisible(false)} title="Turn off source groups and hide restriction sites">Hide sites</button>
-                            <button
-                              type="button"
-                              className="motif-cs-mini-button"
-                              data-active={showRestrictionLabels || undefined}
-                              aria-pressed={showRestrictionLabels}
-                              onClick={toggleRestrictionLabels}
-                              aria-label={`${showRestrictionLabels ? 'Hide' : 'Show'} restriction-site labels`}
-                              title={`${showRestrictionLabels ? 'Hide' : 'Show'} restriction-site labels`}
-                            >
-                              Site labels
-                            </button>
-                            <span className="motif-cs-muted">{singleCutters.length} single-cutters</span>
-                            {/* The map's "+N more sites" chip carries this same number, but only
-                                to a pointer: it lives in an SVG <title>, which no browser opens
-                                on keyboard focus. Stated here it lands where a keyboard user is
-                                already going. Read off layout.overflows — the ARRAY THE CHIP
-                                RENDERS FROM — so the two cannot drift into disagreeing about the
-                                same quantity; a second derivation would be a second chance to be
-                                wrong. Worded as a caveat rather than a count, because sitting
-                                next to "39 single-cutters" a bare number reads as one more
-                                statistic instead of "the map is not showing you everything". */}
-                            {mapUnlabelledSiteCount > 0 ? (
-                              <span className="motif-cs-muted">
-                                {mapUnlabelledSiteCount.toLocaleString()} {mapRestrictionSitesOmitted > 0 ? 'selectable sites' : 'sites'} without labels on the map
-                              </span>
-                            ) : null}
-                            {mapRestrictionSitesOmitted > 0 ? (
-                              <span className="motif-cs-muted">
-                                Density marks include all {visibleRestrictionSites.length.toLocaleString()} visible sites; {interactiveMapRestrictionSites.length.toLocaleString()} evenly distributed sites can be selected from the map.
-                              </span>
-                            ) : null}
-
-                          </>
-                        ) : (
+                        {!isDnaRecord ? (
                           <span className="motif-cs-muted">Restriction enzymes act on DNA; RNA is not converted implicitly.</span>
-                        )}
+                        ) : null}
                       </div>
-                      {isDnaRecord ? (
-                        <>
-                          <RestrictionSourceControls
-                            sources={enzymeSources}
-                            enzymeCount={scanEnzymes.length}
-                            onToggle={setEnzymeSourceEnabled}
-                          />
-                          <RestrictionList
-                            sites={restrictionSites}
-                            enzymes={scanEnzymes}
-                            sequenceLength={sequence.length}
-                            topology={topology}
-                            layout={layout.restrictions}
-                            hiddenEnzymes={hiddenEnzymes}
-                            selectedClusterId={activeClusterId}
-                            selectedTickIds={selectedRestrictionTickIds}
-                            onSelect={handleRestrictionClick}
-                            onToggle={setEnzymeVisible}
-                          />
-                          <AddEnzymeForm onAdd={addCustomEnzyme} knownEnzymes={RESTRICTION_ENZYMES_FULL} />
-                        </>
-                      ) : null}
+                      {isDnaRecord ? renderRestrictionSiteControls(true) : null}
                     </>
                   ) : (
                     <p className="motif-cs-muted">Map shape and restriction controls are available for nucleotide records.</p>
@@ -11663,6 +11672,25 @@ function App() {
               ) : (
                 <span>Select a feature or restriction tick.</span>
               )}
+            </div>
+          </details>
+
+          <details className="motif-cs-panel" name="motif-cs-tools" data-rail-tool="restriction-sites">
+            <summary className="motif-cs-panel-head" data-rail-label="E" title="Restriction sites">
+              <Scissors className="motif-cs-panel-icon" size={14} strokeWidth={2.2} aria-hidden="true" />
+              <span>Restriction Sites</span>
+              <span className="motif-cs-chip">
+                {hasActiveRecord && isDnaRecord
+                  ? `${visibleRestrictionSites.length}/${restrictionSites.length}`
+                  : 'DNA'}
+              </span>
+            </summary>
+            <div className="motif-cs-tool-panel-body motif-cs-restriction-tool-body">
+              <RailPopoverTitle
+                title="Restriction Sites"
+                meta={hasActiveRecord && isDnaRecord ? restrictionVisibilityMeta.full : 'DNA only'}
+              />
+              {renderRestrictionSiteControls(false)}
             </div>
           </details>
 
@@ -13039,6 +13067,7 @@ function FeatureList({
               key={feature.id}
               className="motif-cs-row"
               data-active={feature.id === selectedFeatureId || undefined}
+              style={{ '--motif-cs-row-color': feature.color } as CSSProperties}
               type="button"
               aria-pressed={feature.id === selectedFeatureId}
               onMouseDown={(event) => event.preventDefault()}
@@ -13076,6 +13105,7 @@ function FeatureList({
                 <button
                   className="motif-cs-row motif-cs-translation-row"
                   data-active={active || undefined}
+                  style={{ '--motif-cs-row-color': track.color ?? 'var(--accent)' } as CSSProperties}
                   type="button"
                   aria-pressed={active}
                   onMouseDown={(event) => event.preventDefault()}
@@ -16277,6 +16307,9 @@ function AddEnzymeForm({
   const [recognition, setRecognition] = useState('');
   const [status, setStatus] = useState('');
   const [hasError, setHasError] = useState(false);
+  const instanceId = useId();
+  const statusId = `motif-cs-add-enzyme-status-${instanceId}`;
+  const knownEnzymesId = `motif-cs-known-enzymes-${instanceId}`;
 
   const submit = () => {
     const result = onAdd(name, recognition);
@@ -16295,7 +16328,7 @@ function AddEnzymeForm({
     <div className="motif-cs-add-enzyme">
       <div className="motif-cs-add-enzyme-head">
         <span className="motif-cs-add-enzyme-title">Add enzyme / site</span>
-        {status ? <span className="motif-cs-chip" role="status" aria-live="polite" aria-atomic="true" id="motif-cs-add-enzyme-status">{status}</span> : null}
+        {status ? <span className="motif-cs-chip" role="status" aria-live="polite" aria-atomic="true" id={statusId}>{status}</span> : null}
       </div>
       <div className="motif-cs-add-enzyme-row">
         <input
@@ -16308,10 +16341,10 @@ function AddEnzymeForm({
           placeholder="Known enzyme, e.g. EcoRV…"
           aria-label="Known or custom enzyme name"
           aria-invalid={hasError || undefined}
-          aria-describedby={status ? 'motif-cs-add-enzyme-status' : undefined}
-          list="motif-cs-known-enzymes"
+          aria-describedby={status ? statusId : undefined}
+          list={knownEnzymesId}
         />
-        <datalist id="motif-cs-known-enzymes">
+        <datalist id={knownEnzymesId}>
           {knownEnzymes.map((enzyme) => <option key={enzyme.name} value={enzyme.name} />)}
         </datalist>
         <input
@@ -16325,7 +16358,7 @@ function AddEnzymeForm({
           placeholder="Custom motif, e.g. GGTACC…"
           aria-label="Custom enzyme recognition sequence"
           aria-invalid={hasError || undefined}
-          aria-describedby={status ? 'motif-cs-add-enzyme-status' : undefined}
+          aria-describedby={status ? statusId : undefined}
           translate="no"
           spellCheck={false}
         />
@@ -17386,8 +17419,16 @@ const SequenceText = memo(function SequenceText({
     }
     return cuts;
   }, [activeRestrictionTickSet, basesPerLine, restrictionGeometry, sequence.length]);
-  const focusStart = selectedRanges[0]?.start ?? null;
-  const focusKey = selectedFeature?.id ?? (selectedMapRange ? `${selectedMapRange.start}:${selectedMapRange.end}` : 'none');
+  const selectedRestrictionFocusStart = selectedRestrictionTickSet.size > 0
+    ? restrictionSites.find((site) => restrictionSelectionHasSite(selectedRestrictionTickSet, site))?.position ?? null
+    : null;
+  const focusStart = selectedRanges[0]?.start ?? selectedRestrictionFocusStart;
+  const focusKey = selectedFeature?.id
+    ?? (selectedMapRange
+      ? `${selectedMapRange.start}:${selectedMapRange.end}`
+      : selectedRestrictionFocusStart === null
+        ? 'none'
+        : `restriction:${selectedRestrictionFocusStart}`);
   // Pre-build the inline amino-acid rows per line, memoized on the tracks (NOT the
   // selection). The rows are React elements with stable identity, so a selection
   // drag — which re-renders SequenceText every frame — reuses these exact nodes and

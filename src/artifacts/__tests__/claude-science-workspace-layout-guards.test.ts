@@ -608,7 +608,9 @@ describe('Claude Science workspace layout guards', () => {
     );
     expect(pointerStart).toContain('mapPointerActionAtPoint(contentPoint, layout, mapViewport.k)');
     expect(artifactSource).toContain('MAP_CIRCULAR_RANGE_HIT_MAX) / contentScale');
-    expect(artifactSource).toContain('MAP_LINEAR_RANGE_HIT_Y / contentScale');
+    expect(artifactSource).toContain('MAP_LINEAR_RANGE_HIT_TOP_Y / contentScale');
+    expect(artifactSource).toContain('MAP_LINEAR_RANGE_HIT_BOTTOM_Y / (contentScale * Math.pow(contentScale, 0.75))');
+    expect(artifactSource).toContain('Math.min(layout.bg.y + layout.bg.height, axis.y + hitBottomY)');
     expect(pointerStart).toContain("mode: 'range'");
     expect(pointerStart).toContain("mode: 'pan'");
     expect(pointerStart).not.toContain('mapViewport.k >');
@@ -790,7 +792,7 @@ describe('Claude Science workspace layout guards', () => {
     // under 100% recovered them.
     const rule = sliceBetween(
       artifactCss,
-      '@media (max-height: 694px) {',
+      '@media (max-height: 731px) {',
       '\n}',
     );
     expect(rule).toContain('.motif-cs-inspector[data-tools-pinned="false"]');
@@ -810,15 +812,15 @@ describe('Claude Science workspace layout guards', () => {
     const collapsed = sliceBetween(artifactCss, '.motif-cs-inspector[data-tools-pinned="false"] {', '}');
     expect(collapsed).toContain('pointer-events: none');
 
-    // 694 is derived, not chosen: 15 heads x 34px + 14 gaps x 3px + title and
-    // 8px padding = 625px of content under a 70px top bar, so 695 is the last
+    // 731 is derived, not chosen: 16 heads x 34px + 15 gaps x 3px + title and
+    // 8px padding = 662px of content under a 70px top bar, so 732 is the last
     // height that fits. These are the inputs -- if any moves, re-derive.
     expect(collapsed).toContain('padding: 8px 5px');
     expect(collapsed).toContain('gap: 3px');
     expect(artifactCss).toMatch(/\.motif-cs-inspector\[data-tools-pinned="false"\] \.motif-cs-panel-head\s*\{[\s\S]*?min-height:\s*34px/);
-    // Tool count is the other input. 16 rail labels exist in the artifact, 15 of
+    // Tool count is the other input. 17 rail labels exist in the artifact, 16 of
     // them in this rail; adding one moves the breakpoint and must fail here.
     expect((artifactSource.match(/data-rail-label="/g) ?? []).length,
-      'rail tool count changed -- re-derive the 694px breakpoint').toBe(16);
+      'rail tool count changed -- re-derive the 731px breakpoint').toBe(17);
   });
 });

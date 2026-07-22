@@ -196,8 +196,9 @@ describe('Claude Science accessibility and interaction guards', () => {
     expect(artifactSource).toContain('id="motif-cs-feature-range-error"');
     expect(artifactSource.match(/aria-describedby=\{!rangeValidation\.valid \? 'motif-cs-translation-range-error' : undefined\}/g)).toHaveLength(2);
     expect(artifactSource).toContain('id="motif-cs-translation-range-error"');
-    expect(artifactSource.match(/aria-describedby=\{status \? 'motif-cs-add-enzyme-status' : undefined\}/g)).toHaveLength(2);
-    expect(artifactSource).toContain('id="motif-cs-add-enzyme-status"');
+    expect(artifactSource.match(/aria-describedby=\{status \? statusId : undefined\}/g)).toHaveLength(2);
+    expect(artifactSource).toContain('id={statusId}');
+    expect(artifactSource).toContain('const instanceId = useId()');
   });
 
   it('gives every primer numeric field stable browser metadata', () => {
