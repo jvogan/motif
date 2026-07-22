@@ -3102,18 +3102,24 @@ function pointToSequenceOffset(point: MapContentPoint, layout: MapLayout): numbe
   return clamp(Math.round((angle / 360) * layout.length), 0, Math.max(0, layout.length - 1));
 }
 
-function mapPointerActionAtPoint(point: MapContentPoint, layout: MapLayout): MapPointerAction {
+function mapPointerActionAtPoint(point: MapContentPoint, layout: MapLayout, zoom: number): MapPointerAction {
+  // The pointer is converted into map-content coordinates before it reaches
+  // this function. Divide the intended screen-space hit widths by the current
+  // zoom so the range band does not expand over the canvas as the map grows.
+  const contentScale = Math.max(MIN_ZOOM, Number.isFinite(zoom) ? zoom : MIN_ZOOM);
   if (layout.mode === 'circular') {
     const distance = Math.hypot(point.x - layout.center.x, point.y - layout.center.y);
-    const tolerance = clamp(layout.radius * 0.14, MAP_CIRCULAR_RANGE_HIT_MIN, MAP_CIRCULAR_RANGE_HIT_MAX);
+    const tolerance = clamp(layout.radius * 0.14, MAP_CIRCULAR_RANGE_HIT_MIN, MAP_CIRCULAR_RANGE_HIT_MAX) / contentScale;
     return Math.abs(distance - layout.radius) <= tolerance ? 'range' : 'pan';
   }
 
   const axis = layout.linearAxis;
   if (!axis) return 'pan';
-  const alongAxis = point.x >= axis.startX - MAP_LINEAR_RANGE_HIT_X
-    && point.x <= axis.endX + MAP_LINEAR_RANGE_HIT_X;
-  return alongAxis && Math.abs(point.y - axis.y) <= MAP_LINEAR_RANGE_HIT_Y ? 'range' : 'pan';
+  const hitX = MAP_LINEAR_RANGE_HIT_X / contentScale;
+  const hitY = MAP_LINEAR_RANGE_HIT_Y / contentScale;
+  const alongAxis = point.x >= axis.startX - hitX
+    && point.x <= axis.endX + hitX;
+  return alongAxis && Math.abs(point.y - axis.y) <= hitY ? 'range' : 'pan';
 }
 
 function signedCircularAngleDelta(fromAngle: number, toAngle: number): number {
@@ -6284,13 +6290,14 @@ function App() {
     : selectedFeature
       ? null
       : selectedMapRange;
+  // A selected feature already has an exact outline on the map. The broad
+  // coordinate sector is reserved for an explicit range selection, where no
+  // feature glyph exists to carry the state.
   const visibleMapRanges = useMemo(
-    () => selectedFeature
-      ? selectedFeatureSpans
-      : selectedMapRange
-        ? normalizeSpan(selectedMapRange.start, selectedMapRange.end, sequence.length, topology)
-        : [],
-    [selectedFeature, selectedFeatureSpans, selectedMapRange, sequence.length, topology],
+    () => selectedMapRange
+      ? normalizeSpan(selectedMapRange.start, selectedMapRange.end, sequence.length, topology)
+      : [],
+    [selectedMapRange, sequence.length, topology],
   );
   const selectionPaths = useMemo(
     () => artifactSelectionOverlayPaths(layout, visibleMapRanges),
@@ -6571,7 +6578,7 @@ function App() {
   }, [mapFrameRef, mapViewport.k, setCurrentMapViewport, zoomAtPoint]);
 
   const handleMapPointerStart = useCallback((rootPoint: MapRootPoint, contentPoint: MapContentPoint) => {
-    const action = mapPointerActionAtPoint(contentPoint, layout);
+    const action = mapPointerActionAtPoint(contentPoint, layout, mapViewport.k);
     setMapPointerAction(action);
     if (action === 'pan') {
       mapDragRef.current = { mode: 'pan', start: rootPoint, viewport: mapViewport, moved: false };
@@ -6698,7 +6705,7 @@ function App() {
     if (!rootPoint) return;
     const contentPoint = contentPointFromRoot(rootPoint, mapViewport);
     if (mapPointerIdRef.current === null) {
-      setMapPointerAction(mapPointerActionAtPoint(contentPoint, layout));
+      setMapPointerAction(mapPointerActionAtPoint(contentPoint, layout, mapViewport.k));
       return;
     }
     if (event.pointerId !== mapPointerIdRef.current) return;
@@ -10898,9 +10905,10 @@ function App() {
                       data-active={showRestrictionLabels || undefined}
                       aria-pressed={showRestrictionLabels}
                       onClick={toggleRestrictionLabels}
-                      title={`Restriction labels ${showRestrictionLabels ? 'on' : 'off'}`}
+                      aria-label={`${showRestrictionLabels ? 'Hide' : 'Show'} restriction-site labels`}
+                      title={`${showRestrictionLabels ? 'Hide' : 'Show'} restriction-site labels`}
                     >
-                      Labels {showRestrictionLabels ? 'On' : 'Off'}
+                      Sites
                     </button>
                   ) : null}
                 </div>
@@ -10988,9 +10996,10 @@ function App() {
                               data-active={showRestrictionLabels || undefined}
                               aria-pressed={showRestrictionLabels}
                               onClick={toggleRestrictionLabels}
-                              title={`Restriction labels ${showRestrictionLabels ? 'on' : 'off'}`}
+                              aria-label={`${showRestrictionLabels ? 'Hide' : 'Show'} restriction-site labels`}
+                              title={`${showRestrictionLabels ? 'Hide' : 'Show'} restriction-site labels`}
                             >
-                              Labels {showRestrictionLabels ? 'On' : 'Off'}
+                              Site labels
                             </button>
                             <span className="motif-cs-muted">{singleCutters.length} single-cutters</span>
                             {/* The map's "+N more sites" chip carries this same number, but only
