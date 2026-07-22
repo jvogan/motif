@@ -631,7 +631,9 @@ describe('Claude Science workspace layout guards', () => {
     expect(artifactSource).toContain('const [hoveredRestrictionTickIds, setHoveredRestrictionTickIds]');
     expect(artifactSource).toContain('restrictionSelectionHasSite(activeRestrictionTickSet, site)');
     expect(artifactSource).toContain('onPointerEnter={() => setHoveredRestrictionTickIds(label.sites.map(restrictionSiteTickId))}');
-    expect(artifactSource).toContain('onFocus={() => setHoveredRestrictionTickIds(label.sites.map(restrictionSiteTickId))}');
+    expect(artifactSource).toContain('onFocus={() => {');
+    expect(artifactSource).toContain('setRovingRestrictionKey(label.key);');
+    expect(artifactSource).toContain('setHoveredRestrictionTickIds(label.sites.map(restrictionSiteTickId));');
     expect(artifactSource).toContain('data-cut-bond={senseCut}');
     expect(artifactSource).toContain('data-cut-bond={antisenseCut}');
   });

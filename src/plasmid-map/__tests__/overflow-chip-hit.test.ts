@@ -324,7 +324,9 @@ describe('overflow chip hit rect', () => {
     expect(read).toContain("overflow.kind === 'restriction-labels'");
     expect(read).toContain('.unlabelled');
     expect(read).not.toMatch(/hiddenBodies|\+/);
-    expect(artifactSource).toContain('{mapUnlabelledSiteCount.toLocaleString()} sites without labels on the map');
+    expect(artifactSource).toContain('{mapUnlabelledSiteCount.toLocaleString()} {mapRestrictionSitesOmitted > 0 ? \'selectable sites\' : \'sites\'} without labels on the map');
+    expect(artifactSource).toContain('Density marks include all {visibleRestrictionSites.length.toLocaleString()} visible sites');
+    expect(artifactSource).toContain('{interactiveMapRestrictionSites.length.toLocaleString()} evenly distributed sites can be selected from the map.');
   });
 
   it('sizes itself at the type size the stylesheet actually draws the chip at', () => {
