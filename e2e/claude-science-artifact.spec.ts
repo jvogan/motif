@@ -2664,6 +2664,16 @@ test.describe('Claude Science artifact workflows', () => {
     expect(await page.locator('.motif-pm-restriction').count()).toBeLessThanOrEqual(512);
     await expect(page.locator('.motif-cs-map-hint')).toContainText(/512 of .* sites selectable/);
 
+    const restrictionTool = page.locator('details[data-rail-tool="restriction-sites"]');
+    await restrictionTool.locator(':scope > summary').click();
+    const denseSiteRows = restrictionTool.locator('.motif-cs-restriction-site-row');
+    await expect(denseSiteRows).toHaveCount(160);
+    await expect(restrictionTool.locator('.motif-cs-restriction-site-row:disabled')).toHaveCount(0);
+    const exactSiteOutsideMapBudget = denseSiteRows.nth(1);
+    await exactSiteOutsideMapBudget.click();
+    await expect(exactSiteOutsideMapBudget).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.locator('details[data-rail-tool="inspector"]')).toContainText(/bp · 1 hit/);
+
     const inventoryRow = page.locator('.motif-cs-sidebar .motif-cs-row-compact').first();
     await expect(inventoryRow).toBeVisible();
     expect((await inventoryRow.boundingBox())!.height).toBeLessThanOrEqual(48);

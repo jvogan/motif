@@ -16509,8 +16509,7 @@ function RestrictionList({
                 className="motif-cs-restriction-site-row"
                 data-active={active || undefined}
                 aria-pressed={active}
-                onClick={() => cluster && onSelect(cluster.clusterId, [tickId], site.enzyme)}
-                disabled={!cluster}
+                onClick={() => onSelect(cluster?.clusterId ?? `site:${tickId}`, [tickId], site.enzyme)}
                 title={`${site.enzyme} ${site.recognitionSequence} at ${site.position + 1}, ${cutLabel}, ${overhangLabel} overhang, ${site.strand === -1 ? 'reverse' : 'forward'} strand`}
               >
                 <span className="motif-cs-row-main" translate="no">
