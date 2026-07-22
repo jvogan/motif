@@ -809,7 +809,7 @@ test.describe('Claude Science artifact campaign', () => {
     const labelToggle = mapVisibility.getByRole('button', { name: 'Hide restriction-site labels' });
     const toolbarToggle = page.locator('.motif-cs-map-toolbar .motif-cs-map-labels-toggle');
     await expect(labelToggle).toHaveText('Site labels');
-    await expect(toolbarToggle).toHaveText('Sites');
+    await expect(toolbarToggle.locator('svg')).toHaveCount(1);
     await expect(toolbarToggle).toHaveAttribute('aria-label', 'Hide restriction-site labels');
     await expect(toolbarToggle).toHaveAttribute('aria-pressed', 'true');
 
@@ -845,7 +845,7 @@ test.describe('Claude Science artifact campaign', () => {
     });
     await toolbarToggle.click();
     await expect(page.locator('.motif-pm-restriction-label')).toHaveCount(0);
-    await expect(toolbarToggle).toHaveText('Sites');
+    await expect(toolbarToggle.locator('svg')).toHaveCount(1);
     await expect(toolbarToggle).toHaveAttribute('aria-label', 'Show restriction-site labels');
     await expect(toolbarToggle).toHaveAttribute('aria-pressed', 'false');
     const inactiveHoveredStyle = await toolbarToggle.evaluate((button) => {
@@ -3556,6 +3556,10 @@ test.describe('Claude Science artifact campaign', () => {
     const mapFrame = page.locator('.motif-cs-map-frame');
     const viewport = page.locator('.motif-cs-map-frame .motif-pm-viewport');
     const svg = page.locator('.motif-cs-map-frame svg.motif-plasmid-map');
+    const viewportOffset = () => viewport.evaluate((element) => {
+      const matrix = (element as SVGGElement).transform.baseVal.consolidate()?.matrix;
+      return { x: matrix?.e ?? 0, y: matrix?.f ?? 0 };
+    });
     const sequenceFocus = () => page.locator('.motif-cs-sequence').evaluate((container) => {
       const pane = container.closest<HTMLElement>('.motif-cs-sequence-column');
       const scroller = container.scrollHeight > container.clientHeight + 1
@@ -3599,6 +3603,28 @@ test.describe('Claude Science artifact campaign', () => {
       annotations: [],
     }]));
     await expect(mapFrame).toHaveAttribute('data-map-mode', 'circular');
+    await svg.dispatchEvent('wheel', {
+      deltaY: -55,
+      clientX: center.x,
+      clientY: center.y,
+      ctrlKey: true,
+    });
+    await expect(mapFrame.locator('.motif-cs-map-hint')).toContainText('%');
+    const zoomedBackbone = (await mapFrame.locator('.motif-pm-backbone').boundingBox())!;
+    const zoomedOutsideRing = {
+      x: svgBox!.x + 10,
+      y: zoomedBackbone.y + zoomedBackbone.height / 2,
+    };
+    await page.mouse.move(zoomedOutsideRing.x, zoomedOutsideRing.y);
+    await expect(mapFrame).toHaveAttribute('data-map-pointer-action', 'pan');
+    await page.mouse.down();
+    await page.mouse.move(zoomedOutsideRing.x + 420, zoomedOutsideRing.y + 180, { steps: 12 });
+    await page.mouse.up();
+    const zoomedPositive = await viewportOffset();
+    expect(zoomedPositive.x).toBeGreaterThan(80);
+    expect(zoomedPositive.y).toBeGreaterThan(100);
+
+    await page.getByRole('button', { name: 'Reset map view' }).click();
     const circularBackbone = (await mapFrame.locator('.motif-pm-backbone').boundingBox())!;
     const circularCenter = {
       x: circularBackbone.x + circularBackbone.width / 2,
@@ -3611,10 +3637,27 @@ test.describe('Claude Science artifact campaign', () => {
     await page.mouse.move(outsideRing.x, outsideRing.y);
     await expect(mapFrame).toHaveAttribute('data-map-pointer-action', 'pan');
     await page.mouse.down();
-    await page.mouse.move(outsideRing.x + 48, outsideRing.y + 22, { steps: 8 });
+    await page.mouse.move(outsideRing.x + 420, outsideRing.y + 180, { steps: 12 });
     await page.mouse.up();
     await expect(viewport).toHaveAttribute('transform', /translate/);
+    const circularPositive = await viewportOffset();
+    expect(circularPositive.x).toBeGreaterThan(100);
+    expect(circularPositive.y).toBeGreaterThan(100);
     await expect(mapFrame.locator('.motif-cs-map-hint')).not.toContainText('range');
+
+    await page.getByRole('button', { name: 'Reset map view' }).click();
+    const outsideRingRight = {
+      x: svgBox!.x + svgBox!.width - Math.max(12, (circularBackbone.x - svgBox!.x) * 0.45),
+      y: circularBackbone.y + circularBackbone.height / 2,
+    };
+    await page.mouse.move(outsideRingRight.x, outsideRingRight.y);
+    await expect(mapFrame).toHaveAttribute('data-map-pointer-action', 'pan');
+    await page.mouse.down();
+    await page.mouse.move(outsideRingRight.x - 420, outsideRingRight.y - 180, { steps: 12 });
+    await page.mouse.up();
+    const circularNegative = await viewportOffset();
+    expect(circularNegative.x).toBeLessThan(-100);
+    expect(circularNegative.y).toBeLessThan(-100);
 
     await page.getByRole('button', { name: 'Reset map view' }).click();
     const radius = circularBackbone.width / 2;
@@ -3659,10 +3702,23 @@ test.describe('Claude Science artifact campaign', () => {
     await page.mouse.move(belowAxis.x, belowAxis.y);
     await expect(mapFrame).toHaveAttribute('data-map-pointer-action', 'pan');
     await page.mouse.down();
-    await page.mouse.move(belowAxis.x + 46, belowAxis.y + 18, { steps: 8 });
+    await page.mouse.move(belowAxis.x + 260, belowAxis.y + 100, { steps: 10 });
     await page.mouse.up();
     await expect(viewport).toHaveAttribute('transform', /translate/);
+    const linearPositive = await viewportOffset();
+    expect(linearPositive.x).toBeGreaterThan(100);
+    expect(linearPositive.y).toBeGreaterThan(45);
     await expect(mapFrame.locator('.motif-cs-map-hint')).not.toContainText('range');
+
+    await page.getByRole('button', { name: 'Reset map view' }).click();
+    await page.mouse.move(belowAxis.x, belowAxis.y);
+    await expect(mapFrame).toHaveAttribute('data-map-pointer-action', 'pan');
+    await page.mouse.down();
+    await page.mouse.move(belowAxis.x - 260, belowAxis.y - 100, { steps: 10 });
+    await page.mouse.up();
+    const linearNegative = await viewportOffset();
+    expect(linearNegative.x).toBeLessThan(-100);
+    expect(linearNegative.y).toBeLessThan(-45);
 
     await page.getByRole('button', { name: 'Reset map view' }).click();
     const axisY = linearBackbone.y + linearBackbone.height / 2;
@@ -3684,20 +3740,18 @@ test.describe('Claude Science artifact campaign', () => {
     await openArtifact(page, 900, 720);
     const mapFrame = page.locator('.motif-cs-map-frame');
     const drawing = mapFrame.locator('.motif-cs-map-mode-toggle');
-    const circular = drawing.getByRole('button', { name: 'Circular', exact: true });
-    const linear = drawing.getByRole('button', { name: 'Linear', exact: true });
 
     await expect(drawing).toBeVisible();
-    await expect(circular).toHaveAttribute('aria-pressed', 'true');
-    await expect(linear).toHaveAttribute('aria-pressed', 'false');
+    await expect(drawing).toHaveAttribute('aria-label', 'Draw map as line');
+    await expect(drawing.locator('svg')).toHaveCount(1);
 
-    await linear.click();
+    await drawing.click();
     await expect(mapFrame).toHaveAttribute('data-map-mode', 'linear');
-    await expect(linear).toHaveAttribute('aria-pressed', 'true');
+    await expect(drawing).toHaveAttribute('aria-label', 'Draw map as circle');
 
-    await circular.click();
+    await drawing.click();
     await expect(mapFrame).toHaveAttribute('data-map-mode', 'circular');
-    await expect(circular).toHaveAttribute('aria-pressed', 'true');
+    await expect(drawing).toHaveAttribute('aria-label', 'Draw map as line');
   });
 
   test('high zoom keeps range bands compact and Fit preserves the selection', async ({ page }) => {

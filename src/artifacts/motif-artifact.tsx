@@ -2,7 +2,7 @@
 import { Component, memo, useCallback, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
-import { Activity, AlignCenter, Beaker, ChevronDown, ChevronLeft, ChevronRight, Crosshair, Dna, FileText, History, Info, Languages, LayoutGrid, List, Map as MapIcon, Maximize2, Minimize2, NotebookPen, Plus, Redo2, Search, Settings, ShieldCheck, Tag, Trash2, Undo2, Workflow, Wrench, X, type LucideIcon } from 'lucide-react';
+import { Activity, AlignCenter, Beaker, ChevronDown, ChevronLeft, ChevronRight, Circle, Crosshair, Dna, FileText, History, Info, Languages, LayoutGrid, List, Map as MapIcon, Maximize2, Minimize2, MoveHorizontal, NotebookPen, Plus, Redo2, Scissors, Search, Settings, ShieldCheck, Tag, Trash2, Undo2, Workflow, Wrench, X, type LucideIcon } from 'lucide-react';
 import vectorsRaw from '../../public/data/vectors.json?raw';
 import type { Feature, FeatureStrand, FeatureType, ORF, RestrictionEnzyme, RestrictionSite, SequenceType, Topology } from '../bio/types';
 import { extractEmbeddedFastaContent, parseFasta } from '../bio/fasta-parser';
@@ -1178,7 +1178,8 @@ const SUMMARY_ORF_MIN_AA = 30;
 const MIN_ZOOM = 1;
 const MAX_ZOOM = 8;
 const ZOOM_STEP = 1.25;
-const MAP_FIT_PAN_MARGIN_SCALE = 0.08;
+const MAP_PAN_MARGIN_SCALE = 0.24;
+const MAP_PAN_MARGIN_MIN = 56;
 const MAP_FIT_WHEEL_PAN_SCALE = 0.22;
 const MAP_ZOOMED_WHEEL_PAN_SCALE = 0.78;
 const MAP_CIRCULAR_RANGE_HIT_MIN = 18;
@@ -1648,23 +1649,22 @@ function clampMapViewport(
   bg: { x: number; y: number; width: number; height: number },
 ): MapViewport {
   const k = clamp(Number.isFinite(viewport.k) ? viewport.k : 1, MIN_ZOOM, MAX_ZOOM);
+  const marginX = Math.max(MAP_PAN_MARGIN_MIN, bg.width * MAP_PAN_MARGIN_SCALE);
+  const marginY = Math.max(MAP_PAN_MARGIN_MIN, bg.height * MAP_PAN_MARGIN_SCALE);
   if (k <= MIN_ZOOM + 0.0001) {
-    // At "Fit", allow a small bounded pan. Otherwise a trackpad/mouse wheel over
-    // the map appears inert in a full-height workspace where the page itself
-    // cannot scroll, which makes the map feel stuck.
-    const marginX = Math.max(20, bg.width * MAP_FIT_PAN_MARGIN_SCALE);
-    const marginY = Math.max(20, bg.height * MAP_FIT_PAN_MARGIN_SCALE);
+    // Fit remains the exact reset position, but a subsequent drag gets enough
+    // symmetric travel to inspect labels near every edge.
     const tx = clamp(Number.isFinite(viewport.tx) ? viewport.tx : 0, -marginX, marginX);
     const ty = clamp(Number.isFinite(viewport.ty) ? viewport.ty : 0, -marginY, marginY);
     return Math.abs(tx) < 0.01 && Math.abs(ty) < 0.01 ? DEFAULT_MAP_VIEWPORT : { k: MIN_ZOOM, tx, ty };
   }
 
   const right = bg.x + bg.width;
-  const minTx = right - right * k;
-  const maxTx = bg.x - bg.x * k;
+  const minTx = right - right * k - marginX;
+  const maxTx = bg.x - bg.x * k + marginX;
   const bottom = bg.y + bg.height;
-  const minTy = bottom - bottom * k;
-  const maxTy = bg.y - bg.y * k;
+  const minTy = bottom - bottom * k - marginY;
+  const maxTy = bg.y - bg.y * k + marginY;
 
   return {
     k,
@@ -5329,6 +5329,8 @@ function App() {
   const mapRenderMode: MapMode = sequenceType === 'protein'
     ? 'linear'
     : mapRenderModeByRecord[recordId] ?? mapModeForBlock(topology, sequenceType);
+  const mapRenderModeTarget: MapMode = mapRenderMode === 'circular' ? 'linear' : 'circular';
+  const canUseMapRenderModeTarget = mapRenderModeTarget === 'linear' || canDrawAsRing;
   const setMapRenderMode = useCallback((mode: MapMode) => {
     setMapRenderModeByRecord((current) => (current[recordId] === mode ? current : { ...current, [recordId]: mode }));
   }, [recordId]);
@@ -10914,31 +10916,23 @@ function App() {
                   </button>
                   <button className="motif-cs-map-button" type="button" onClick={handleZoomIn} disabled={!hasActiveRecord || mapViewport.k >= MAX_ZOOM - 0.0001} aria-label="Zoom in">+</button>
                   {isNucleotideRecord ? (
-                    <div className="motif-cs-map-mode-toggle" role="group" aria-label="Map drawing">
-                      <button
-                        className="motif-cs-map-button motif-cs-map-mode-button"
-                        type="button"
-                        data-active={mapRenderMode === 'circular' || undefined}
-                        aria-pressed={mapRenderMode === 'circular'}
-                        disabled={!canDrawAsRing}
-                        title={canDrawAsRing
-                          ? 'Draw this map as a circle'
-                          : 'A linear molecule has two ends and cannot be drawn as a circle'}
-                        onClick={() => setMapRenderMode('circular')}
-                      >
-                        Circular
-                      </button>
-                      <button
-                        className="motif-cs-map-button motif-cs-map-mode-button"
-                        type="button"
-                        data-active={mapRenderMode === 'linear' || undefined}
-                        aria-pressed={mapRenderMode === 'linear'}
-                        title="Draw this map as a line. The record stays as it is."
-                        onClick={() => setMapRenderMode('linear')}
-                      >
-                        Linear
-                      </button>
-                    </div>
+                    <button
+                      className="motif-cs-map-button motif-cs-map-mode-toggle"
+                      type="button"
+                      data-current-mode={mapRenderMode}
+                      disabled={!canUseMapRenderModeTarget}
+                      aria-label={mapRenderModeTarget === 'linear' ? 'Draw map as line' : 'Draw map as circle'}
+                      title={canUseMapRenderModeTarget
+                        ? `Draw map as ${mapRenderModeTarget === 'linear' ? 'line' : 'circle'}`
+                        : 'A linear molecule has two ends and cannot be drawn as a circle'}
+                      onClick={() => setMapRenderMode(mapRenderModeTarget)}
+                    >
+                      {mapRenderModeTarget === 'linear' ? (
+                        <MoveHorizontal size={15} strokeWidth={2.2} aria-hidden="true" />
+                      ) : (
+                        <Circle size={14} strokeWidth={2.2} aria-hidden="true" />
+                      )}
+                    </button>
                   ) : null}
                   {/* Whether the ring is named is a property of the map, but the
                       only switch for it was in the Map Visibility panel, and at
@@ -10962,7 +10956,7 @@ function App() {
                       aria-label={`${showRestrictionLabels ? 'Hide' : 'Show'} restriction-site labels`}
                       title={`${showRestrictionLabels ? 'Hide' : 'Show'} restriction-site labels`}
                     >
-                      Sites
+                      <Scissors size={14} strokeWidth={2.1} aria-hidden="true" />
                     </button>
                   ) : null}
                 </div>

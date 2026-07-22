@@ -1736,11 +1736,11 @@ body[data-motif-cs-rail-popover-resizing] .motif-cs-rail-popover-resize::after {
    the reserve follows what is actually rendered instead of restating the gate
    that renders it. */
 .motif-cs-map-frame:has(.motif-cs-map-labels-toggle) {
-  --map-toolbar-reserve: 294px;
+  --map-toolbar-reserve: 190px;
 }
 
 .motif-cs-map-frame:has(.motif-cs-map-mode-toggle):not(:has(.motif-cs-map-labels-toggle)) {
-  --map-toolbar-reserve: 244px;
+  --map-toolbar-reserve: 158px;
 }
 
 /* A linear map is short and wide — don't reserve a tall square frame for it,
@@ -1880,45 +1880,23 @@ body[data-motif-cs-rail-popover-resizing] .motif-cs-rail-popover-resize::after {
 }
 
 .motif-cs-map-mode-toggle {
-  display: inline-flex;
-  overflow: hidden;
-  margin-inline: 3px 1px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 3px;
+  margin-left: 3px;
+  border-color: var(--border-subtle);
   background: color-mix(in srgb, var(--bg-primary) 88%, transparent);
 }
 
-.motif-cs-map-mode-toggle .motif-cs-map-mode-button {
-  width: auto;
-  min-width: 45px;
-  padding-inline: 6px;
-  border: 0;
-  border-radius: 0;
-  font-size: 10px;
-  font-weight: 700;
-}
-
-.motif-cs-map-mode-toggle .motif-cs-map-mode-button + .motif-cs-map-mode-button {
-  border-left: 1px solid var(--border-subtle);
-}
-
-.motif-cs-map-mode-toggle .motif-cs-map-mode-button[data-active],
-.motif-cs-map-mode-toggle .motif-cs-map-mode-button[data-active]:hover,
-.motif-cs-map-mode-toggle .motif-cs-map-mode-button[data-active]:focus-visible {
-  background: var(--accent-base);
-  color: var(--accent-contrast);
+.motif-cs-map-mode-toggle svg,
+.motif-cs-map-labels-toggle svg {
+  display: block;
 }
 
 /* Puts restriction-label state on the map instead of only in the visibility
    panel. State comes from the filled/unfilled button and aria-pressed, so the
    visible caption stays compact and does not move when toggled. */
 .motif-cs-map-labels-toggle {
-  width: auto;
-  min-width: 40px;
-  padding-inline: 6px;
+  width: 28px;
+  min-width: 28px;
   color: var(--text-muted);
-  font-size: 10px;
-  font-weight: 700;
 }
 
 /* Labels default on, so this is the resting look: a filled chip is both the
