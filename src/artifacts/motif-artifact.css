@@ -1804,18 +1804,17 @@ body[data-motif-cs-rail-popover-resizing] .motif-cs-rail-popover-resize::after {
   stroke: none;
 }
 
-/* Crosshair unconditionally, because background drag is range selection and that
-   is true at every zoom. There used to be a second rule here keyed on
-   `data-pannable='true'` setting the identical cursor — it existed to beat the
-   `grab` that the map's own stylesheet applied once the viewport was
-   transformed. So the map advertised a drag-to-pan that no host ever wired, and
-   this override quietly hid the evidence: the cursor a user saw was always
-   crosshair. The attribute and the `grab` are both gone now, and a rule that
-   overrides something no longer declared is just a place for the next reader to
-   lose ten minutes. */
 .motif-cs-map-frame .motif-pm-bg {
   cursor: crosshair;
   touch-action: none;
+}
+
+.motif-cs-map-frame[data-map-pointer-action="pan"] .motif-pm-bg {
+  cursor: grab;
+}
+
+.motif-cs-map-frame[data-map-pointer-action="pan"] .motif-pm-container:active .motif-pm-bg {
+  cursor: grabbing;
 }
 
 /* The painted backbone is map geometry, not a control. Let pointer starts fall

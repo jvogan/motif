@@ -65,7 +65,8 @@ Minimal payload:
           "type": "cds",
           "start": 0,
           "end": 12,
-          "direction": "forward"
+          "direction": "forward",
+          "color": "#2EAD67"
         }
       ]
     }
@@ -90,6 +91,20 @@ also set `metadata.motifSubRangeOrder` to `biological`. Motif preserves an
 unmarked reverse multipart checkpoint, but keeps sequence-derived actions
 unavailable because older text-order and current biological-order arrays cannot
 be distinguished safely without that marker.
+
+Use `feature.color` for an explicit display color. When color is part of the
+request, prefer a Motif payload over interchange text so the requested colors
+reach the workbench directly. Use `misc_feature` for a named sequence motif or
+chromophore codons and `restriction_site` for a cloning or restriction site.
+Do not rely on editor-specific GenBank color qualifiers as the only color
+source.
+
+Opening, showing, or retrying an existing construct does not authorize a
+sequence or annotation change. Reuse the exact latest payload unless the user
+explicitly requests a biological edit. Preserve source accessions and
+coordinate transformations, label estimated feature bounds as estimated, and
+verify the final record length, topology, feature coordinates, and requested
+ORFs before generating the workbench.
 
 ## Add a precomputed alignment
 

@@ -15,6 +15,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildSync } from 'esbuild';
 import { validatePayload as validateArtifactPayload } from '../src/artifacts/motif-for-claude-science-plugin/skills/motif-for-claude-science/scripts/create-artifact.mjs';
+import { stampMotifBuildIdentity } from './motif-build-identity.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const outDir = join(root, 'dist-motif');
@@ -445,7 +446,9 @@ export function runBuild(args = process.argv.slice(2)) {
     return;
   }
 
-  const template = inlineAssetTags(readFileSync(distHtml, 'utf8'));
+  const { html: template, runtimeBuildId } = stampMotifBuildIdentity(
+    inlineAssetTags(readFileSync(distHtml, 'utf8')),
+  );
   writeFileSync(templateHtml, template);
   runConnectorBuild();
 
@@ -482,6 +485,7 @@ export function runBuild(args = process.argv.slice(2)) {
   console.log(`Wrote Claude Science connector ${connectorDistPath}`);
   console.log(`Wrote plugin archive ${pluginZipPath}`);
   console.log(`Wrote checksums ${pluginChecksumPath}`);
+  console.log(`Runtime build ${runtimeBuildId}`);
   if (handoffPath) console.log(`Wrote explicit handoff ${handoffPath}`);
 }
 

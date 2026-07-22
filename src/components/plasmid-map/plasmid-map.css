@@ -231,7 +231,7 @@
 .motif-pm-overview-selection {
   fill: var(--accent, #0169cc);
   fill-opacity: 0.22;
-  stroke: var(--accent, #0169cc);
+  stroke: var(--accent);
   stroke-width: 0.6;
   vector-effect: non-scaling-stroke;
 }
@@ -611,8 +611,8 @@
   vector-effect: non-scaling-stroke;
   transition: fill 90ms ease-out, stroke 90ms ease-out, stroke-width 90ms ease-out;
 }
-/* Add a light interaction hairline without returning to the heavy selected
-   outlines that made features visually noisy at map scale. */
+/* Hover stays quiet; selection uses one continuous accent stroke on the same
+   path as the feature body, including directional arrowheads. */
 .motif-pm-feature:hover .motif-pm-feature-body {
   fill: color-mix(in srgb, var(--pm-base, #8a8a8a) 42%, var(--bg-primary, #ffffff));
   stroke: color-mix(in srgb, var(--pm-base, #8a8a8a) 52%, var(--accent, #0169cc));
@@ -620,8 +620,9 @@
 }
 .motif-pm-feature[data-selected='true'] .motif-pm-feature-body {
   fill: color-mix(in srgb, var(--pm-base, #8a8a8a) 52%, var(--bg-primary, #ffffff));
-  stroke: color-mix(in srgb, var(--pm-base, #8a8a8a) 42%, var(--border, #cbd5e1));
-  stroke-width: 0.45;
+  stroke: var(--accent, #0169cc);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
 }
 .motif-pm-feature:focus {
   outline: none;

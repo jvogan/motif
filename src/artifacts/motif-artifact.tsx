@@ -211,6 +211,14 @@ import {
 import './motif-artifact.css';
 
 const MOTIF_ARTIFACT_VERSION = '0.2.1';
+const MOTIF_ARTIFACT_BUILD_ID = (() => {
+  if (typeof document === 'undefined') return 'development';
+  const value = document.querySelector<HTMLMetaElement>('meta[name="motif-build-id"]')?.content.trim() ?? '';
+  return /^[a-f0-9]{64}$/u.test(value) ? value : 'development';
+})();
+const MOTIF_ARTIFACT_BUILD_LABEL = MOTIF_ARTIFACT_BUILD_ID === 'development'
+  ? MOTIF_ARTIFACT_BUILD_ID
+  : MOTIF_ARTIFACT_BUILD_ID.slice(0, 12);
 const MAX_INTERACTIVE_TRANSLATION_RESIDUES = 5_000;
 const ANNOTATION_LIST_PAGE_SIZE = 120;
 export const MOTIF_MAX_RECORD_LENGTH = 250_000;
@@ -945,14 +953,23 @@ type MapSelectionRange = {
   end: number;
 };
 
-type MapDragState = {
-  mode: 'range';
-  start: MapContentPoint;
-  startBp: number;
-  lastAngle: number;
-  cumulativeAngle: number;
-  moved: boolean;
-};
+type MapPointerAction = 'range' | 'pan';
+
+type MapDragState =
+  | {
+      mode: 'range';
+      start: MapContentPoint;
+      startBp: number;
+      lastAngle: number;
+      cumulativeAngle: number;
+      moved: boolean;
+    }
+  | {
+      mode: 'pan';
+      start: MapRootPoint;
+      viewport: MapViewport;
+      moved: boolean;
+    };
 
 type WindowRect = { x: number; y: number; w: number; h: number };
 
@@ -1123,6 +1140,7 @@ declare global {
 // embedded seed JSON to add sequences — it can call motifAddRecords(...) at runtime.
 type MotifHelp = {
   summary: string;
+  build: { version: string; runtimeBuildId: string };
   howToAddSequences: string;
   capabilities: Record<string, string>;
   agentRules: string[];
@@ -1159,6 +1177,10 @@ const ZOOM_STEP = 1.25;
 const MAP_FIT_PAN_MARGIN_SCALE = 0.08;
 const MAP_FIT_WHEEL_PAN_SCALE = 0.22;
 const MAP_ZOOMED_WHEEL_PAN_SCALE = 0.78;
+const MAP_CIRCULAR_RANGE_HIT_MIN = 18;
+const MAP_CIRCULAR_RANGE_HIT_MAX = 34;
+const MAP_LINEAR_RANGE_HIT_Y = 18;
+const MAP_LINEAR_RANGE_HIT_X = 8;
 const DEFAULT_MAP_VIEWPORT: MapViewport = { k: 1, tx: 0, ty: 0 };
 const builtInRecords = JSON.parse(vectorsRaw) as ArtifactRecordInput[];
 
@@ -1197,6 +1219,10 @@ const MOTIF_HELP: MotifHelp = {
   summary:
     'Motif sequence workbench. Records (DNA/RNA/protein) are held in an in-memory inventory. ' +
     'You can add, group, inspect, annotate, translate, search, and export sequences at RUNTIME.',
+  build: {
+    version: MOTIF_ARTIFACT_VERSION,
+    runtimeBuildId: MOTIF_ARTIFACT_BUILD_ID,
+  },
   howToAddSequences:
     'Call window.motifAddRecords(recordOrRecords) to APPEND without disturbing existing records ' +
     '(returns the count added and focuses the first). Use window.motifRenderInventory(records) only ' +
@@ -1641,6 +1667,12 @@ function clampMapViewport(
     tx: clamp(Number.isFinite(viewport.tx) ? viewport.tx : 0, Math.min(minTx, maxTx), Math.max(minTx, maxTx)),
     ty: clamp(Number.isFinite(viewport.ty) ? viewport.ty : 0, Math.min(minTy, maxTy), Math.max(minTy, maxTy)),
   };
+}
+
+function effectiveSequenceScroller(sequenceElement: HTMLElement): HTMLElement {
+  if (sequenceElement.scrollHeight > sequenceElement.clientHeight + 1) return sequenceElement;
+  const pane = sequenceElement.closest<HTMLElement>('.motif-cs-sequence-column');
+  return pane && pane.scrollHeight > pane.clientHeight + 1 ? pane : sequenceElement;
 }
 
 function looksLikeImplicitProteinSequence(rawSequence: string): boolean {
@@ -3068,6 +3100,20 @@ function pointToSequenceOffset(point: MapContentPoint, layout: MapLayout): numbe
 
   const angle = pointToSequenceAngle(point, layout);
   return clamp(Math.round((angle / 360) * layout.length), 0, Math.max(0, layout.length - 1));
+}
+
+function mapPointerActionAtPoint(point: MapContentPoint, layout: MapLayout): MapPointerAction {
+  if (layout.mode === 'circular') {
+    const distance = Math.hypot(point.x - layout.center.x, point.y - layout.center.y);
+    const tolerance = clamp(layout.radius * 0.14, MAP_CIRCULAR_RANGE_HIT_MIN, MAP_CIRCULAR_RANGE_HIT_MAX);
+    return Math.abs(distance - layout.radius) <= tolerance ? 'range' : 'pan';
+  }
+
+  const axis = layout.linearAxis;
+  if (!axis) return 'pan';
+  const alongAxis = point.x >= axis.startX - MAP_LINEAR_RANGE_HIT_X
+    && point.x <= axis.endX + MAP_LINEAR_RANGE_HIT_X;
+  return alongAxis && Math.abs(point.y - axis.y) <= MAP_LINEAR_RANGE_HIT_Y ? 'range' : 'pan';
 }
 
 function signedCircularAngleDelta(fromAngle: number, toAngle: number): number {
@@ -4878,6 +4924,7 @@ function App() {
   const sequenceScrollByRecordRef = useRef<Record<string, number>>({});
   const mapDragRef = useRef<MapDragState | null>(null);
   const mapPointerIdRef = useRef<number | null>(null);
+  const [mapPointerAction, setMapPointerAction] = useState<MapPointerAction>('range');
   // Root space: this is handed straight to zoomAtPoint, which pins a root point.
   const lastZoomAnchorRef = useRef<MapRootPoint | null>(null);
   const suppressNextBackgroundClick = useRef(false);
@@ -5134,9 +5181,9 @@ function App() {
 
   const rememberActiveSequenceScroll = useCallback(() => {
     const activeRecordId = selectedRecordIdRef.current;
-    const sequenceScroller = document.querySelector<HTMLElement>('.motif-cs-sequence');
-    if (activeRecordId && sequenceScroller) {
-      sequenceScrollByRecordRef.current[activeRecordId] = sequenceScroller.scrollTop;
+    const sequenceElement = document.querySelector<HTMLElement>('.motif-cs-sequence');
+    if (activeRecordId && sequenceElement) {
+      sequenceScrollByRecordRef.current[activeRecordId] = effectiveSequenceScroller(sequenceElement).scrollTop;
     }
   }, []);
 
@@ -5176,9 +5223,9 @@ function App() {
   }, [payload.records, selectRecord]);
 
   useLayoutEffect(() => {
-    const sequenceScroller = document.querySelector<HTMLElement>('.motif-cs-sequence');
-    if (!sequenceScroller) return;
-    sequenceScroller.scrollTop = sequenceScrollByRecordRef.current[recordId] ?? 0;
+    const sequenceElement = document.querySelector<HTMLElement>('.motif-cs-sequence');
+    if (!sequenceElement) return;
+    effectiveSequenceScroller(sequenceElement).scrollTop = sequenceScrollByRecordRef.current[recordId] ?? 0;
   }, [recordId]);
 
   useEffect(() => {
@@ -6523,12 +6570,17 @@ function App() {
     return true;
   }, [mapFrameRef, mapViewport.k, setCurrentMapViewport, zoomAtPoint]);
 
-  // CONTENT space. The caller records the zoom anchor, because the caller is the
-  // one still holding the root-space point.
-  const handleMapPointerStart = useCallback((point: MapContentPoint) => {
-    const startBp = pointToSequenceOffset(point, layout);
-    const startAngle = pointToSequenceAngle(point, layout);
-    mapDragRef.current = { mode: 'range', start: point, startBp, lastAngle: startAngle, cumulativeAngle: 0, moved: false };
+  const handleMapPointerStart = useCallback((rootPoint: MapRootPoint, contentPoint: MapContentPoint) => {
+    const action = mapPointerActionAtPoint(contentPoint, layout);
+    setMapPointerAction(action);
+    if (action === 'pan') {
+      mapDragRef.current = { mode: 'pan', start: rootPoint, viewport: mapViewport, moved: false };
+      return true;
+    }
+
+    const startBp = pointToSequenceOffset(contentPoint, layout);
+    const startAngle = pointToSequenceAngle(contentPoint, layout);
+    mapDragRef.current = { mode: 'range', start: contentPoint, startBp, lastAngle: startAngle, cumulativeAngle: 0, moved: false };
     setLockedTranslateTarget(null);
     setSelectedTranslationLayerByRecord((current) => (current[recordId] ? { ...current, [recordId]: null } : current));
     setSelection(null);
@@ -6541,16 +6593,26 @@ function App() {
       [recordId]: rangeFromMapDrag(startBp, startBp + 1, sequence.length, layout.mode),
     }));
     return true;
-  }, [layout, recordId, sequence.length]);
+  }, [layout, mapViewport, recordId, sequence.length]);
 
-  const handleMapPointerMove = useCallback((point: MapContentPoint) => {
+  const handleMapPointerMove = useCallback((rootPoint: MapRootPoint, contentPoint: MapContentPoint) => {
     const drag = mapDragRef.current;
     if (!drag) return;
+    const point = drag.mode === 'pan' ? rootPoint : contentPoint;
     const dx = point.x - drag.start.x;
     const dy = point.y - drag.start.y;
     if (!drag.moved && Math.hypot(dx, dy) > 2) drag.moved = true;
 
-    const endBp = pointToSequenceOffset(point, layout);
+    if (drag.mode === 'pan') {
+      setCurrentMapViewport({
+        ...drag.viewport,
+        tx: drag.viewport.tx + dx,
+        ty: drag.viewport.ty + dy,
+      });
+      return;
+    }
+
+    const endBp = pointToSequenceOffset(contentPoint, layout);
     let nextRange: MapSelectionRange;
     // Keyed on how the map is DRAWN. The angle model needs a ring: on a linear
     // layout `layout.center` is the axis's left end, so dragging along the axis
@@ -6558,7 +6620,7 @@ function App() {
     // and the content-point projection above already key on layout.mode — this
     // was the one place in the gesture still asking the molecule instead.
     if (layout.mode === 'circular') {
-      const nextAngle = pointToSequenceAngle(point, layout);
+      const nextAngle = pointToSequenceAngle(contentPoint, layout);
       drag.cumulativeAngle += signedCircularAngleDelta(drag.lastAngle, nextAngle);
       drag.lastAngle = nextAngle;
       nextRange = rangeFromCircularAngleDrag(drag.startBp, drag.cumulativeAngle, sequence.length);
@@ -6570,7 +6632,7 @@ function App() {
       if (previous && previous.start === nextRange.start && previous.end === nextRange.end) return current;
       return { ...current, [recordId]: nextRange };
     });
-  }, [layout, recordId, sequence.length]);
+  }, [layout, recordId, sequence.length, setCurrentMapViewport]);
 
   const handleMapPointerEnd = useCallback(() => {
     const drag = mapDragRef.current;
@@ -6625,20 +6687,25 @@ function App() {
     const rootPoint = mapRootPointFromClient(event.clientX, event.clientY);
     if (!rootPoint) return;
     lastZoomAnchorRef.current = rootPoint;
-    if (!handleMapPointerStart(contentPointFromRoot(rootPoint, mapViewport))) return;
+    if (!handleMapPointerStart(rootPoint, contentPointFromRoot(rootPoint, mapViewport))) return;
     mapPointerIdRef.current = event.pointerId;
     event.currentTarget.setPointerCapture?.(event.pointerId);
     event.preventDefault();
   }, [handleMapPointerStart, mapRootPointFromClient, mapViewport]);
 
   const handleMapSurfacePointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    if (event.pointerId !== mapPointerIdRef.current) return;
     const rootPoint = mapRootPointFromClient(event.clientX, event.clientY);
     if (!rootPoint) return;
+    const contentPoint = contentPointFromRoot(rootPoint, mapViewport);
+    if (mapPointerIdRef.current === null) {
+      setMapPointerAction(mapPointerActionAtPoint(contentPoint, layout));
+      return;
+    }
+    if (event.pointerId !== mapPointerIdRef.current) return;
     lastZoomAnchorRef.current = rootPoint;
     event.preventDefault();
-    handleMapPointerMove(contentPointFromRoot(rootPoint, mapViewport));
-  }, [handleMapPointerMove, mapRootPointFromClient, mapViewport]);
+    handleMapPointerMove(rootPoint, contentPoint);
+  }, [handleMapPointerMove, layout, mapRootPointFromClient, mapViewport]);
 
   const handleMapSurfacePointerEnd = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.pointerId !== mapPointerIdRef.current) return;
@@ -10763,9 +10830,10 @@ function App() {
                 ref={mapFrameRef}
                 className="motif-cs-map-frame"
                 data-map-mode={layout.mode}
+                data-map-pointer-action={mapPointerAction}
                 data-theme={mapTheme}
                 data-empty={!hasActiveRecord || undefined}
-                title="Wheel to pan; Shift-wheel pans horizontally; Ctrl/Command-wheel zooms; drag selects a range"
+                title="Wheel or blank-canvas drag to pan; Shift-wheel pans horizontally; Ctrl/Command-wheel zooms; drag near the sequence to select a range"
               >
                 <div
                   className="motif-pm-container"
@@ -11910,7 +11978,7 @@ function App() {
               />
               <div className="motif-cs-about-block">
                 <strong>Motif for Claude Science</strong>
-                <span>Version {MOTIF_ARTIFACT_VERSION}</span>
+                <span title={`Runtime build ${MOTIF_ARTIFACT_BUILD_ID}`}>Version {MOTIF_ARTIFACT_VERSION} · Build {MOTIF_ARTIFACT_BUILD_LABEL}</span>
                 <p>Motif is an open-source, AI-native molecular biology suite for researchers.</p>
                 <p className="motif-cs-share-note">Share the generated HTML for local browser review. Download a workspace backup to carry records, alignments, notes, results, and display-independent session state to another copy.</p>
                 <span>By Jacob Vogan</span>
@@ -17216,14 +17284,19 @@ function SequenceText({
     const node = container?.querySelector<HTMLElement>('[data-seq-focus="true"]');
     if (!container || !node) return;
     window.requestAnimationFrame(() => {
-      const containerRect = container.getBoundingClientRect();
+      const scroller = effectiveSequenceScroller(container);
+      const containerRect = scroller.getBoundingClientRect();
       const nodeRect = node.getBoundingClientRect();
       const margin = 32;
       if (nodeRect.top >= containerRect.top + margin && nodeRect.bottom <= containerRect.bottom - margin) {
         return;
       }
-      const top = node.offsetTop - container.clientHeight / 2 + node.clientHeight / 2;
-      container.scrollTo({ top: Math.max(0, top), behavior: 'auto' });
+      const top = scroller.scrollTop
+        + nodeRect.top
+        - containerRect.top
+        - scroller.clientHeight / 2
+        + node.clientHeight / 2;
+      scroller.scrollTo({ top: Math.max(0, top), behavior: 'auto' });
     });
   }, [basesPerLine, detailMode, focusKey, focusStart, sequence.length, showComplement]);
 

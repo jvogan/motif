@@ -297,8 +297,9 @@ describe('Claude Science workspace layout guards', () => {
   it('keeps sequence scrolling local to each open record', () => {
     expect(artifactSource).toContain('const sequenceScrollByRecordRef = useRef<Record<string, number>>({});');
     expect(artifactSource).toContain('const rememberActiveSequenceScroll = useCallback(() => {');
-    expect(artifactSource).toContain('sequenceScrollByRecordRef.current[activeRecordId] = sequenceScroller.scrollTop;');
-    expect(artifactSource).toContain('sequenceScroller.scrollTop = sequenceScrollByRecordRef.current[recordId] ?? 0;');
+    expect(artifactSource).toContain('sequenceScrollByRecordRef.current[activeRecordId] = effectiveSequenceScroller(sequenceElement).scrollTop;');
+    expect(artifactSource).toContain('effectiveSequenceScroller(sequenceElement).scrollTop = sequenceScrollByRecordRef.current[recordId] ?? 0;');
+    expect(artifactSource).toContain("sequenceElement.closest<HTMLElement>('.motif-cs-sequence-column')");
     expect(artifactSource).toContain('window.motifAddRecords = (recordOrRecords) => {');
     expect(artifactSource).toContain('const addRecord = useCallback((recordInput: ArtifactRecordInput): boolean => (');
     expect(artifactSource).toContain('onClick={() => selectRecord(record.id)}');
@@ -599,19 +600,22 @@ describe('Claude Science workspace layout guards', () => {
     expect(artifactSource).not.toContain('// eslint-disable-next-line react-hooks/exhaustive-deps -- reset only on target change');
   });
 
-  it('keeps plain map dragging available for range selection after zooming', () => {
+  it('keeps sequence dragging for range selection and blank-canvas dragging for pan', () => {
     const pointerStart = sliceBetween(
       artifactSource,
       'const handleMapPointerStart = useCallback',
       'const handleMapPointerMove = useCallback',
     );
+    expect(pointerStart).toContain('mapPointerActionAtPoint(contentPoint, layout)');
     expect(pointerStart).toContain("mode: 'range'");
-    expect(pointerStart).not.toContain("mode: 'pan'");
+    expect(pointerStart).toContain("mode: 'pan'");
     expect(pointerStart).not.toContain('mapViewport.k >');
     expect(artifactSource).toContain('data-map-interaction-surface');
+    expect(artifactSource).toContain('data-map-pointer-action={mapPointerAction}');
     expect(artifactSource).toContain("target.closest('.motif-pm-feature, .motif-pm-restriction, .motif-pm-range-overlay[data-interactive=\"true\"]')");
     expect(artifactSource).toContain('onPointerDown={handleMapSurfacePointerDown}');
     expect(artifactCss).toMatch(/\.motif-cs-map-frame \.motif-pm-backbone\s*\{[\s\S]*?pointer-events:\s*none/);
+    expect(artifactCss).toMatch(/\[data-map-pointer-action="pan"\] \.motif-pm-bg\s*\{[\s\S]*?cursor:\s*grab/);
   });
 
   it('accepts extended protein symbols and classifies Type IIS from enzyme geometry', () => {

@@ -21,6 +21,7 @@ import {
 
 export type MotifClaudeScienceServerOptions = {
   version: string;
+  runtimeBuildId: string;
   readWorkbenchHtml: () => Promise<string>;
   readArtifactTemplate: () => Promise<string>;
   trace?: (event: MotifMcpTraceEvent) => void;
@@ -168,12 +169,13 @@ function emitTrace(options: MotifClaudeScienceServerOptions, event: MotifMcpTrac
 }
 
 function workbenchSummaryText(result: ReturnType<typeof prepareMotifWorkbench>): string {
+  const build = result.runtimeBuildId ? ` Runtime build ${result.runtimeBuildId.slice(0, 12)}.` : '';
   if (result.mode === 'sample') {
-    return 'Motif for Claude Science workbench requested with its bundled sample inventory. Host rendering is a separate client action.';
+    return `Motif for Claude Science workbench requested with its bundled sample inventory.${build} Host rendering is a separate client action.`;
   }
   const source = result.sourceName ? ` from ${result.sourceName}` : '';
   const records = workbenchRecordSummary(result);
-  return `Motif for Claude Science workbench requested${source} with ${result.recordCount} record${result.recordCount === 1 ? '' : 's'} and ${result.residueCount.toLocaleString()} residues.${records} Host rendering is a separate client action.`;
+  return `Motif for Claude Science workbench requested${source} with ${result.recordCount} record${result.recordCount === 1 ? '' : 's'} and ${result.residueCount.toLocaleString()} residues.${records}${build} Host rendering is a separate client action.`;
 }
 
 function workbenchRecordSummary(result: ReturnType<typeof prepareMotifWorkbench>): string {
@@ -243,9 +245,9 @@ export function createMotifClaudeScienceServer(options: MotifClaudeScienceServer
     server,
     'motif_open_workbench',
     {
-      title: 'Open Motif for Claude Science',
+      title: 'Request the live Motif workbench',
       description:
-        'Open the interactive Motif molecular-biology workbench. Accepts a bounded Motif inventory payload or exact FASTA, GenBank, raw sequence, or Motif JSON content. With no data, opens the bundled sample inventory. This read-only tool does not write a database or run external executables.',
+        'Request the live interactive Motif molecular-biology workbench. A successful result confirms parsing and requests the MCP App; it does not confirm that the host displayed a frame. Accepts a bounded Motif inventory payload or exact FASTA, GenBank, raw sequence, or Motif JSON content. With no data, requests the bundled sample inventory. This read-only tool does not write a database or run external executables.',
       inputSchema: workbenchInputSchema,
       outputSchema: motifWorkbenchResultSchema,
       annotations: readOnlyAnnotations('Open Motif for Claude Science'),
@@ -258,7 +260,13 @@ export function createMotifClaudeScienceServer(options: MotifClaudeScienceServer
       const trace = startTrace('motif_open_workbench');
       try {
         const input = workbenchInputSchema.parse(args) as MotifWorkbenchInput;
-        const result = prepareMotifWorkbench(input);
+        const result = motifWorkbenchResultSchema.parse({
+          ...prepareMotifWorkbench(input),
+          delivery: 'live-app-request',
+          visibleMountConfirmed: false,
+          fallbackTool: 'motif_create_workbench_artifact',
+          runtimeBuildId: options.runtimeBuildId,
+        });
         finishTrace(trace, 'ok', {
           mode: result.mode,
           recordCount: result.recordCount,
@@ -293,6 +301,7 @@ export function createMotifClaudeScienceServer(options: MotifClaudeScienceServer
         const artifact = renderMotifArtifact({
           template: await options.readArtifactTemplate(),
           workbench,
+          runtimeBuildId: options.runtimeBuildId,
           ...(input.title ? { title: input.title } : {}),
           ...(input.outputFilename ? { filename: input.outputFilename } : {}),
         });
@@ -306,7 +315,7 @@ export function createMotifClaudeScienceServer(options: MotifClaudeScienceServer
           content: [
             {
               type: 'text',
-              text: `Prepared self-contained Motif for Claude Science workbench ${artifact.summary.filename} with ${artifact.summary.recordCount} record${artifact.summary.recordCount === 1 ? '' : 's'}.${workbenchRecordSummary(workbench)} No file was written. Save or open the attached HTML resource in Claude Science.`,
+              text: `Prepared self-contained Motif for Claude Science workbench ${artifact.summary.filename} with ${artifact.summary.recordCount} record${artifact.summary.recordCount === 1 ? '' : 's'}.${workbenchRecordSummary(workbench)} Runtime build ${artifact.summary.runtimeBuildId.slice(0, 12)}. No file was written. Save or open the attached HTML resource in Claude Science.`,
             },
             {
               type: 'resource',

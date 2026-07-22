@@ -134,9 +134,9 @@ const FEATURE_TYPE_MAP: Record<string, FeatureType> = {
   restriction_site: 'restriction_site',
 };
 
-// De-color sweep: persisted feature.color uses the muted DARK palette keyed by
-// type. The renderer remaps these to the light --feature-* tokens on a light
-// theme, so this is the single canonical hex an imported feature carries.
+// Imported features use the muted palette by type unless the record supplies a
+// safe explicit feature color. The renderer adapts the palette defaults across
+// themes while preserving an explicit annotation color.
 const FEATURE_COLORS: Record<FeatureType, string> = {
   gene: '#7E9BBF',
   cds: '#7E9BBF',
@@ -164,6 +164,26 @@ const FEATURE_COLORS: Record<FeatureType, string> = {
   enhancer: '#C6A86B',
   custom: '#8B8F99',
 };
+
+const SAFE_IMPORTED_FEATURE_COLOR = /^(?:#[0-9a-f]{3,8}|(?:rgb|hsl)a?\([\d\s.,%+\-/]+\)|[a-z]+)$/i;
+
+function importedFeatureColor(
+  qualifiers: Readonly<Record<string, string | true>>,
+  strand: FeatureStrand,
+  fallback: string,
+): string {
+  const values = new Map(Object.entries(qualifiers).map(([key, value]) => [key.toLowerCase(), value]));
+  const preferredKeys = strand === -1
+    ? ['apeinfo_revcolor', 'apeinfo_fwdcolor']
+    : ['apeinfo_fwdcolor', 'apeinfo_revcolor'];
+  for (const key of preferredKeys) {
+    const value = values.get(key);
+    if (typeof value !== 'string') continue;
+    const color = value.trim();
+    if (color.length <= 80 && SAFE_IMPORTED_FEATURE_COLOR.test(color)) return color;
+  }
+  return fallback;
+}
 
 /**
  * Parse a location string like "100..200", "complement(100..200)",
@@ -467,7 +487,7 @@ export function parseFeatures(featuresText: string): Feature[] {
       end,
       strand,
       subRanges,
-      color: FEATURE_COLORS[mappedType],
+      color: importedFeatureColor(qualifiers, strand, FEATURE_COLORS[mappedType]),
       metadata: {
         ...qualifiers,
         ...(locationOperator ? { motifLocationOperator: locationOperator } : {}),

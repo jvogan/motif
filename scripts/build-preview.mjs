@@ -13,6 +13,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { stampMotifBuildIdentity } from './motif-build-identity.mjs';
 
 const root = resolve(new URL('..', import.meta.url).pathname);
 const previewDir = join(root, 'preview');
@@ -70,7 +71,8 @@ try {
   if (build.status !== 0) process.exitCode = build.status ?? 1;
   else {
     const distHtml = join(buildDir, 'motif.html');
-    let html = inlineAssetTags(readFileSync(distHtml, 'utf8'));
+    const stamped = stampMotifBuildIdentity(inlineAssetTags(readFileSync(distHtml, 'utf8')));
+    let html = stamped.html;
     if (payloadPath) {
       const payload = JSON.parse(readFileSync(resolve(payloadPath), 'utf8'));
       html = injectPayload(html, jsonForScriptTag(payload));
@@ -81,6 +83,7 @@ try {
     writeFileSync(finalPath, html);
 
     console.log(`\n✓ preview written: ${finalPath}`);
+    console.log(`  runtime build: ${stamped.runtimeBuildId}`);
     console.log(`  open: file://${finalPath}`);
   }
 } finally {
