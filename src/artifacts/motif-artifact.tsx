@@ -17327,21 +17327,19 @@ const SequenceText = memo(function SequenceText({
           );
     const nextKey = restrictionKeyboardKeys[nextIndex];
     const sequenceElement = event.currentTarget.closest<HTMLElement>('.motif-cs-sequence');
+    const next = Array.from(
+      sequenceElement?.querySelectorAll<HTMLButtonElement>('.motif-cs-restriction-label[data-restriction-key]') ?? [],
+    ).find((candidate) => candidate.dataset.restrictionKey === nextKey);
+    if (!sequenceElement || !next) return;
     event.preventDefault();
     setRovingRestrictionKey(nextKey);
-    window.requestAnimationFrame(() => {
-      const next = Array.from(
-        sequenceElement?.querySelectorAll<HTMLButtonElement>('.motif-cs-restriction-label[data-restriction-key]') ?? [],
-      ).find((candidate) => candidate.dataset.restrictionKey === nextKey);
-      if (!sequenceElement || !next) return;
-      next.focus({ preventScroll: true });
-      const scroller = effectiveSequenceScroller(sequenceElement);
-      const scrollerRect = scroller.getBoundingClientRect();
-      const nextRect = next.getBoundingClientRect();
-      if (nextRect.top < scrollerRect.top + 24 || nextRect.bottom > scrollerRect.bottom - 24) {
-        scroller.scrollBy({ top: nextRect.top - scrollerRect.top - scrollerRect.height / 2, behavior: 'auto' });
-      }
-    });
+    next.focus({ preventScroll: true });
+    const scroller = effectiveSequenceScroller(sequenceElement);
+    const scrollerRect = scroller.getBoundingClientRect();
+    const nextRect = next.getBoundingClientRect();
+    if (nextRect.top < scrollerRect.top + 24 || nextRect.bottom > scrollerRect.bottom - 24) {
+      scroller.scrollBy({ top: nextRect.top - scrollerRect.top - scrollerRect.height / 2, behavior: 'auto' });
+    }
   }, [restrictionKeyboardKeys]);
   const activeRestrictionCutsByLine = useMemo(() => {
     const cuts = new Map<number, RestrictionCutGeometry[]>();
