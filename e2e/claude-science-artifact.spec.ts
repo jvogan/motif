@@ -311,6 +311,20 @@ test.describe('Claude Science artifact campaign', () => {
         expect(scrollPositions[1]).toBeLessThan(scrollPositions[0]);
         expect(scrollPositions[2]).toBeLessThan(scrollPositions[1]);
         expect(new Set(scrollOwners)).toEqual(new Set([viewport.label === 'stacked' ? 'pane' : 'sequence']));
+
+        const repeatedFeature = page.locator('.motif-pm-feature[data-feature-id="late-feature"]');
+        await repeatedFeature.locator('.motif-pm-feature-hit').click();
+        await expect.poll(async () => (await focusState()).fullyVisible).toBe(true);
+        await sequence.evaluate((element) => {
+          element.scrollTop = 0;
+          const pane = element.closest<HTMLElement>('.motif-cs-sequence-column');
+          if (pane) pane.scrollTop = 0;
+        });
+        await repeatedFeature.locator('.motif-pm-feature-hit').click();
+        await expect.poll(async () => {
+          const state = await focusState();
+          return state.fullyVisible && state.lineStart <= 10_800 && state.lineStart + state.lineLength > 10_800;
+        }).toBe(true);
       }
     }
   });
@@ -2405,6 +2419,44 @@ test.describe('Claude Science artifact campaign', () => {
     await expect(exportPanel.getByRole('button', { name: 'Sequence' })).toBeDisabled();
     const emptyDatabase = JSON.parse(await exportPanel.getByLabel('Selected export preview').inputValue());
     expect(emptyDatabase.records).toEqual([]);
+  });
+
+  test('large-record Sequence follows repeated map feature selections', async ({ page }) => {
+    await openArtifact(page, 1180, 900);
+    const sequence = 'A'.repeat(50_001);
+    await page.evaluate((largeSequence) => window.motifRenderInventory?.([{
+      id: 'large-map-sync',
+      name: 'Large map sync',
+      type: 'dna',
+      topology: 'linear',
+      sequence: largeSequence,
+      annotations: [{
+        id: 'late-large-feature',
+        name: 'Late large feature',
+        type: 'misc_feature',
+        start: 45_000,
+        end: 49_000,
+        strand: 1,
+      }],
+    }]), sequence);
+
+    const densityView = page.getByTestId('large-sequence-viewer');
+    const value = densityView.locator('textarea');
+    const feature = page.locator('.motif-pm-feature[data-feature-id="late-large-feature"]');
+    const expectFocusedRange = async () => {
+      await expect(densityView.getByTestId('large-sequence-selection')).toHaveText('Map selection: 45,001–49,000.');
+      await expect.poll(() => value.evaluate((control) => ({
+        selectionStart: control.selectionStart,
+        selectionEnd: control.selectionEnd,
+      }))).toEqual({ selectionStart: 45_000, selectionEnd: 49_000 });
+      expect(await value.evaluate((control) => control.scrollTop)).toBeGreaterThan(0);
+    };
+
+    await feature.locator('.motif-pm-feature-hit').click();
+    await expectFocusedRange();
+    await value.evaluate((control) => { control.scrollTop = 0; });
+    await feature.locator('.motif-pm-feature-hit').click();
+    await expectFocusedRange();
   });
 
   test('desktop themes have no automatic WCAG A/AA violations', async ({ page }) => {

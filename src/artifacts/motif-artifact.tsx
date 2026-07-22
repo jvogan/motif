@@ -1,5 +1,5 @@
 /* eslint-disable react-refresh/only-export-components -- artifact entry exports pure runtime test seams */
-import { Component, useCallback, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from 'react';
+import { Component, memo, useCallback, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import { Activity, AlignCenter, Beaker, ChevronDown, ChevronLeft, ChevronRight, Crosshair, Dna, FileText, History, Info, Languages, LayoutGrid, List, Map as MapIcon, Maximize2, Minimize2, NotebookPen, Plus, Redo2, Search, Settings, ShieldCheck, Tag, Trash2, Undo2, Workflow, Wrench, X, type LucideIcon } from 'lucide-react';
@@ -4754,6 +4754,7 @@ function App() {
   const [mapRenderModeByRecord, setMapRenderModeByRecord] = useState<Record<string, MapMode>>({});
   const [mapRangesByRecord, setMapRangesByRecord] = useState<Record<string, MapSelectionRange | null>>({});
   const [selection, setSelection] = useState<Selection>(null);
+  const [sequenceFocusRequest, requestSequenceFocus] = useReducer((count: number) => count + 1, 0);
   const [featureEditorRequest, requestFeatureEditor] = useReducer((count: number) => count + 1, 0);
   const [sequenceViewMode, setSequenceViewMode] = useState<SequenceViewMode>('detail');
   // User-added inline translation layers (from a selection). Coding features
@@ -6759,6 +6760,11 @@ function App() {
       return { ...current, [recordId]: null };
     });
   }, [features, hiddenFeatureTranslationIds, recordId]);
+
+  const handleMapFeatureClick = useCallback((featureId: string) => {
+    requestSequenceFocus();
+    handleFeatureClick(featureId);
+  }, [handleFeatureClick]);
 
   const handleRestrictionClick = useCallback((clusterId: string, tickIds: readonly string[], enzyme?: string) => {
     setLockedTranslateTarget(null);
@@ -10860,7 +10866,7 @@ function App() {
                     activeClusterId={activeClusterId}
                     selectionPaths={selectionPaths}
                     viewport={mapViewport}
-                    onFeatureClick={handleFeatureClick}
+                    onFeatureClick={handleMapFeatureClick}
                     onRestrictionClick={handleRestrictionClick}
                     onBackgroundClick={handleMapBackgroundClick}
                     onWheelZoom={handleMapWheel}
@@ -11317,6 +11323,8 @@ function App() {
                 <LargeSequenceViewer
                   sequence={sequence}
                   threshold={LARGE_SEQUENCE_DETAIL_THRESHOLD}
+                  selectedRange={selectedFeatureSpans[0] ?? visibleMapRanges[0] ?? null}
+                  focusRequest={sequenceFocusRequest}
                 />
               ) : (
                 <SequenceText
@@ -11326,6 +11334,7 @@ function App() {
                 features={features}
                 selectedFeature={selectedFeature}
                 selectedMapRange={selectedMapRange}
+                focusRequest={sequenceFocusRequest}
                 motifHits={motifHits}
                 motifLength={cleanedMotifLength}
                 restrictionSites={visibleRestrictionSites}
@@ -16833,13 +16842,14 @@ function TranslationTrackRow({
   );
 }
 
-function SequenceText({
+const SequenceText = memo(function SequenceText({
   sequence,
   sequenceType,
   topology,
   features,
   selectedFeature,
   selectedMapRange,
+  focusRequest,
   motifHits,
   motifLength,
   restrictionSites,
@@ -16865,6 +16875,7 @@ function SequenceText({
   features: readonly Feature[];
   selectedFeature: Feature | null;
   selectedMapRange: MapSelectionRange | null;
+  focusRequest: number;
   motifHits: readonly number[];
   motifLength: number;
   restrictionSites: readonly RestrictionSite[];
@@ -17307,7 +17318,7 @@ function SequenceText({
         + node.clientHeight / 2;
       scroller.scrollTo({ top: Math.max(0, top), behavior: 'auto' });
     });
-  }, [basesPerLine, detailMode, focusKey, focusStart, sequence.length, showComplement]);
+  }, [basesPerLine, detailMode, focusKey, focusRequest, focusStart, sequence.length, showComplement]);
 
   // Clip a [start,end) range to a line, returning its ch offset+width or null.
   const clipRangeToLine = (range: { start: number; end: number }, lineStart: number, lineEnd: number) => {
@@ -17549,7 +17560,7 @@ function SequenceText({
       {grouped}
     </div>
   );
-}
+});
 
 if (typeof document !== 'undefined') {
   const rootElement = document.getElementById('root');
