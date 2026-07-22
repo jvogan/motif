@@ -42,6 +42,10 @@ import { featureSegments as mapFeatureSegments, featureSpans, normalizeSpan } fr
 import { selectionOverlayPaths } from '../plasmid-map/selection-overlay';
 import { mapModeForBlock, type MapLayout, type MapMode, type MapSpan } from '../plasmid-map/types';
 import {
+  restrictionDensitySourcesForMap,
+  restrictionSitesForInteractiveMap,
+} from '../plasmid-map/restriction-display';
+import {
   contentPointFromRoot,
   mapContentPoint,
   mapRootPoint,
@@ -5287,6 +5291,15 @@ function App() {
     () => restrictionSites.filter((site) => !hiddenEnzymes.has(site.enzyme)),
     [hiddenEnzymes, restrictionSites],
   );
+  const interactiveMapRestrictionSites = useMemo(
+    () => restrictionSitesForInteractiveMap(visibleRestrictionSites),
+    [visibleRestrictionSites],
+  );
+  const mapRestrictionDensitySources = useMemo(
+    () => restrictionDensitySourcesForMap(visibleRestrictionSites, sequence.length),
+    [sequence.length, visibleRestrictionSites],
+  );
+  const mapRestrictionSitesOmitted = visibleRestrictionSites.length - interactiveMapRestrictionSites.length;
   const { ref: mapFrameRef, size: mapSize } = useElementSize();
   const mapColumnRef = useRef<HTMLElement | null>(null);
   // Labels default ON, with no site-count pre-gate. The layout engine already
@@ -6236,7 +6249,8 @@ function App() {
       topology,
       sequenceType,
       features: mapFeatures,
-      restrictionSites: visibleRestrictionSites,
+      restrictionSites: interactiveMapRestrictionSites,
+      restrictionDensitySources: mapRestrictionDensitySources,
       width: mapSize.width,
       height: mapSize.height,
       // Cap the linear lane pitch (LINEAR_LANE_PITCH_MAX) so rows pack tightly
@@ -6256,7 +6270,7 @@ function App() {
     // `mapRenderMode` belongs here now that it is no longer a pure function of
     // `topology`: without it the map keeps its old drawing until some other
     // dependency happens to change.
-    [mapFeatures, mapRenderMode, visibleRestrictionSites, mapSize.height, mapSize.width, sequence.length, sequenceType, showRestrictionLabels, topology, vector.name],
+    [interactiveMapRestrictionSites, mapFeatures, mapRenderMode, mapRestrictionDensitySources, mapSize.height, mapSize.width, sequence.length, sequenceType, showRestrictionLabels, topology, vector.name],
   );
 
   useEffect(() => {
@@ -6342,6 +6356,9 @@ function App() {
       ? `${Math.round(mapViewport.k * 100)}%`
       : null,
     selectedMapRange ? `range ${mapRangeLabel(selectedMapRange, sequence.length)}` : null,
+    mapRestrictionSitesOmitted > 0
+      ? `${interactiveMapRestrictionSites.length.toLocaleString()} of ${visibleRestrictionSites.length.toLocaleString()} sites selectable`
+      : null,
   ].filter(Boolean).join(' · ');
 
   // How many restriction sites the map is drawing without a label. The map says this
@@ -11018,7 +11035,14 @@ function App() {
                                 next to "39 single-cutters" a bare number reads as one more
                                 statistic instead of "the map is not showing you everything". */}
                             {mapUnlabelledSiteCount > 0 ? (
-                              <span className="motif-cs-muted">{mapUnlabelledSiteCount.toLocaleString()} sites without labels on the map</span>
+                              <span className="motif-cs-muted">
+                                {mapUnlabelledSiteCount.toLocaleString()} {mapRestrictionSitesOmitted > 0 ? 'selectable sites' : 'sites'} without labels on the map
+                              </span>
+                            ) : null}
+                            {mapRestrictionSitesOmitted > 0 ? (
+                              <span className="motif-cs-muted">
+                                Density marks include all {visibleRestrictionSites.length.toLocaleString()} visible sites; {interactiveMapRestrictionSites.length.toLocaleString()} evenly distributed sites can be selected from the map.
+                              </span>
                             ) : null}
 
                           </>
@@ -17231,6 +17255,16 @@ const SequenceText = memo(function SequenceText({
       return geometry ? [geometry] : [];
     });
   }, [detailMode, restrictionEnzymes, restrictionSites, sequence.length, sequenceType, topology]);
+  const featureLanesByLine = useMemo(() => {
+    const lanes = new Map<number, LineFeatureBlock[][]>();
+    if (!detailMode || features.length === 0) return lanes;
+    for (let lineStart = 0; lineStart < sequence.length; lineStart += basesPerLine) {
+      const lineEnd = Math.min(sequence.length, lineStart + basesPerLine);
+      const lineLanes = featureLanesForLine(features, lineStart, lineEnd, sequence.length, topology);
+      if (lineLanes.length > 0) lanes.set(lineStart, lineLanes);
+    }
+    return lanes;
+  }, [basesPerLine, detailMode, features, sequence.length, topology]);
   const restrictionLabelsByLine = useMemo(() => {
     const labels = new Map<number, ReturnType<typeof restrictionLabelLanesForLine>>();
     if (!detailMode || restrictionSites.length === 0) return labels;
@@ -17309,6 +17343,26 @@ const SequenceText = memo(function SequenceText({
       }
     });
   }, [restrictionKeyboardKeys]);
+  const activeRestrictionCutsByLine = useMemo(() => {
+    const cuts = new Map<number, RestrictionCutGeometry[]>();
+    if (activeRestrictionTickSet.size === 0) return cuts;
+    for (const geometry of restrictionGeometry) {
+      if (!restrictionSelectionHasSite(activeRestrictionTickSet, geometry.site)) continue;
+      const lineStarts = new Set<number>();
+      for (const cut of [geometry.senseCut, geometry.antisenseCut]) {
+        const lineStart = cut === sequence.length
+          ? Math.max(0, Math.floor((sequence.length - 1) / basesPerLine) * basesPerLine)
+          : Math.floor(cut / basesPerLine) * basesPerLine;
+        lineStarts.add(lineStart);
+      }
+      for (const lineStart of lineStarts) {
+        const lineCuts = cuts.get(lineStart);
+        if (lineCuts) lineCuts.push(geometry);
+        else cuts.set(lineStart, [geometry]);
+      }
+    }
+    return cuts;
+  }, [activeRestrictionTickSet, basesPerLine, restrictionGeometry, sequence.length]);
   const focusStart = selectedRanges[0]?.start ?? null;
   const focusKey = selectedFeature?.id ?? (selectedMapRange ? `${selectedMapRange.start}:${selectedMapRange.end}` : 'none');
   // Pre-build the inline amino-acid rows per line, memoized on the tracks (NOT the
@@ -17412,15 +17466,9 @@ const SequenceText = memo(function SequenceText({
     const lineEnd = Math.min(sequence.length, lineStart + basesPerLine);
     const lineLen = lineEnd - lineStart;
     const lineSequence = sequence.slice(lineStart, lineEnd);
-    const lineFeatureLanes = detailMode ? featureLanesForLine(features, lineStart, lineEnd, sequence.length, topology) : [];
+    const lineFeatureLanes = featureLanesByLine.get(lineStart) ?? [];
     const lineRestrictionLabels = restrictionLabelsByLine.get(lineStart) ?? { lanes: [], hidden: 0 };
-    const lineRestrictionCuts = restrictionGeometry.filter(({ site, senseCut, antisenseCut }) => (
-      restrictionSelectionHasSite(activeRestrictionTickSet, site)
-      && (
-        restrictionCutBelongsToLine(senseCut, lineStart, lineEnd, sequence.length)
-        || restrictionCutBelongsToLine(antisenseCut, lineStart, lineEnd, sequence.length)
-      )
-    ));
+    const lineRestrictionCuts = activeRestrictionCutsByLine.get(lineStart) ?? [];
     const isFocusLine = focusStart !== null && focusStart >= lineStart && focusStart < lineEnd;
     const lineTranslations = translationByLine.get(lineStart);
     // Selection + motif render as flat overlay rects behind static base text, so a

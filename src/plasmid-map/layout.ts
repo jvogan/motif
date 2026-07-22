@@ -808,13 +808,16 @@ function computeCircularLayout(input: MapInput): MapLayout {
   const recTickInner = R + REC_TICK_INNER_OFFSET;
   const recTickOuter = recTickInner + REC_TICK_LEN;
 
-  const restrictionDensityTicks: MapRestrictionDensityTick[] = restrictionTicks.map((t, i) => {
-    const angle = bpToAngle(t.position, length);
+  const densitySources = input.restrictionDensitySources
+    ?? restrictionTicks.map((tick) => ({ id: tick.id, position: tick.position, siteCount: 1 }));
+  const restrictionDensityTicks: MapRestrictionDensityTick[] = densitySources.map((source, i) => {
+    const angle = bpToAngle(source.position, length);
     const p1 = pointOnCircle(cx, cy, densityTickInner, angle);
     const p2 = pointOnCircle(cx, cy, densityTickOuter, angle);
     return {
-      id: `redt-${i}-${t.id}`,
-      anchorBp: t.position,
+      id: `redt-${i}-${source.id}`,
+      anchorBp: source.position,
+      ...(source.siteCount > 1 ? { siteCount: source.siteCount } : {}),
       tick: { x1: round(p1.x), y1: round(p1.y), x2: round(p2.x), y2: round(p2.y) },
     };
   });
@@ -1840,11 +1843,14 @@ function computeLinearLayout(input: MapInput): MapLayout {
     circular: false,
   });
 
-  const restrictionDensityTicks: MapRestrictionDensityTick[] = restrictionTicks.map((t, i) => {
-    const xc = x(t.position);
+  const densitySources = input.restrictionDensitySources
+    ?? restrictionTicks.map((tick) => ({ id: tick.id, position: tick.position, siteCount: 1 }));
+  const restrictionDensityTicks: MapRestrictionDensityTick[] = densitySources.map((source, i) => {
+    const xc = x(source.position);
     return {
-      id: `redt-${i}-${t.id}`,
-      anchorBp: t.position,
+      id: `redt-${i}-${source.id}`,
+      anchorBp: source.position,
+      ...(source.siteCount > 1 ? { siteCount: source.siteCount } : {}),
       tick: {
         x1: round(xc),
         y1: recDensityTickTopY,

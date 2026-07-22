@@ -2418,6 +2418,8 @@ test.describe('Claude Science artifact campaign', () => {
     expect(densityMetrics.sourceCount).toBeGreaterThan(512);
     expect(densityMetrics.renderedCount).toBeLessThanOrEqual(512);
     expect(densityMetrics.representedCount).toBe(densityMetrics.sourceCount);
+    expect(await page.locator('.motif-pm-restriction').count()).toBeLessThanOrEqual(512);
+    await expect(page.locator('.motif-cs-map-hint')).toContainText(/512 of .* sites selectable/);
 
     const inventoryRow = page.locator('.motif-cs-sidebar .motif-cs-row-compact').first();
     await expect(inventoryRow).toBeVisible();

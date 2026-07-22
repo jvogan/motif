@@ -124,7 +124,15 @@ export interface MapFeatureRender {
 export interface MapRestrictionDensityTick {
   id: string;
   anchorBp: number;
+  /** Number of raw restriction sites represented by this density mark. */
+  siteCount?: number;
   tick: { x1: number; y1: number; x2: number; y2: number };
+}
+
+export interface MapRestrictionDensitySource {
+  id: string;
+  position: number;
+  siteCount: number;
 }
 
 export interface MapRestrictionRender {
@@ -282,6 +290,8 @@ export interface MapInput {
   sequenceType: SequenceType;
   features: readonly Feature[];
   restrictionSites: readonly RestrictionSite[];
+  /** Optional pre-aggregated density substrate; interactive clusters still use restrictionSites. */
+  restrictionDensitySources?: readonly MapRestrictionDensitySource[];
   /** viewport pixel size (roughly square for circular). */
   width: number;
   height: number;
