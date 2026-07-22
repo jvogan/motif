@@ -3114,7 +3114,11 @@ function mapPointerActionAtPoint(point: MapContentPoint, layout: MapLayout, zoom
   if (layout.mode === 'circular') {
     const distance = Math.hypot(point.x - layout.center.x, point.y - layout.center.y);
     const tolerance = clamp(layout.radius * 0.14, MAP_CIRCULAR_RANGE_HIT_MIN, MAP_CIRCULAR_RANGE_HIT_MAX) / contentScale;
-    return Math.abs(distance - layout.radius) <= tolerance ? 'range' : 'pan';
+    // A ring has a large, otherwise-empty interior. Treat that whole interior
+    // as sequence-selection space: the drag angle identifies the bases, while
+    // blank canvas outside the molecule remains available for panning. A thin
+    // tolerance outside the backbone keeps the visible ring easy to acquire.
+    return distance <= layout.radius + tolerance ? 'range' : 'pan';
   }
 
   const axis = layout.linearAxis;
@@ -6305,14 +6309,14 @@ function App() {
     : selectedFeature
       ? null
       : selectedMapRange;
-  // A selected feature already has an exact outline on the map. The broad
-  // coordinate sector is reserved for an explicit range selection, where no
-  // feature glyph exists to carry the state.
+  // Keep the exact selected-feature outline and the coordinate overlay. The
+  // outline identifies the annotation; the overlay makes its sequence extent
+  // visible at normal zoom, including very short and nested features.
   const visibleMapRanges = useMemo(
     () => selectedMapRange
       ? normalizeSpan(selectedMapRange.start, selectedMapRange.end, sequence.length, topology)
-      : [],
-    [selectedMapRange, sequence.length, topology],
+      : selectedFeatureSpans,
+    [selectedFeatureSpans, selectedMapRange, sequence.length, topology],
   );
   const selectionPaths = useMemo(
     () => artifactSelectionOverlayPaths(layout, visibleMapRanges),
@@ -10863,7 +10867,7 @@ function App() {
                 data-map-pointer-action={mapPointerAction}
                 data-theme={mapTheme}
                 data-empty={!hasActiveRecord || undefined}
-                title="Wheel or blank-canvas drag to pan; Shift-wheel pans horizontally; Ctrl/Command-wheel zooms; drag near the sequence to select a range"
+                title="Wheel or drag outside the sequence to pan; Shift-wheel pans horizontally; Ctrl/Command-wheel zooms; drag inside a circular map or along a linear map to select a range"
               >
                 <div
                   className="motif-pm-container"
@@ -10909,6 +10913,33 @@ function App() {
                     Fit
                   </button>
                   <button className="motif-cs-map-button" type="button" onClick={handleZoomIn} disabled={!hasActiveRecord || mapViewport.k >= MAX_ZOOM - 0.0001} aria-label="Zoom in">+</button>
+                  {isNucleotideRecord ? (
+                    <div className="motif-cs-map-mode-toggle" role="group" aria-label="Map drawing">
+                      <button
+                        className="motif-cs-map-button motif-cs-map-mode-button"
+                        type="button"
+                        data-active={mapRenderMode === 'circular' || undefined}
+                        aria-pressed={mapRenderMode === 'circular'}
+                        disabled={!canDrawAsRing}
+                        title={canDrawAsRing
+                          ? 'Draw this map as a circle'
+                          : 'A linear molecule has two ends and cannot be drawn as a circle'}
+                        onClick={() => setMapRenderMode('circular')}
+                      >
+                        Circular
+                      </button>
+                      <button
+                        className="motif-cs-map-button motif-cs-map-mode-button"
+                        type="button"
+                        data-active={mapRenderMode === 'linear' || undefined}
+                        aria-pressed={mapRenderMode === 'linear'}
+                        title="Draw this map as a line. The record stays as it is."
+                        onClick={() => setMapRenderMode('linear')}
+                      >
+                        Linear
+                      </button>
+                    </div>
+                  ) : null}
                   {/* Whether the ring is named is a property of the map, but the
                       only switch for it was in the Map Visibility panel, and at
                       every laptop size measured — 1440x900, 1280x800, 1024x768,

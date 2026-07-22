@@ -296,6 +296,7 @@ test.describe('Claude Science artifact campaign', () => {
           const mapFeature = page.locator(`.motif-pm-feature[data-feature-id="${feature.id}"]`);
           await mapFeature.locator('.motif-pm-feature-hit').click();
           await expect(mapFeature).toHaveAttribute('aria-pressed', 'true');
+          await expect(page.locator('.motif-cs-map-frame .motif-pm-selection').first()).toBeVisible();
           await expect.poll(async () => {
             const state = await focusState();
             return state.fullyVisible
@@ -377,7 +378,7 @@ test.describe('Claude Science artifact campaign', () => {
       await page.mouse.click(clickPoint.x, clickPoint.y);
       await expect(feature).toHaveAttribute('data-selected', 'true');
       await expect(feature).toHaveAttribute('aria-label', /501–2800/);
-      await expect(page.locator('.motif-pm-selection')).toHaveCount(0);
+      await expect(page.locator('.motif-pm-selection')).toHaveCount(topology === 'circular' ? 3 : 1);
       const style = await body.evaluate((path) => {
         const computed = getComputedStyle(path);
         const swatch = document.createElement('span');
@@ -475,7 +476,7 @@ test.describe('Claude Science artifact campaign', () => {
         await page.mouse.click(tip.x, tip.y);
         await expect(feature).toHaveAttribute('data-selected', 'true');
         await expect(page.locator('.motif-pm-feature[data-selected="true"]')).toHaveCount(1);
-        await expect(page.locator('.motif-pm-selection')).toHaveCount(0);
+        await expect(page.locator('.motif-pm-selection')).toHaveCount(topology === 'circular' ? 3 : 1);
         await expect.poll(async () => {
           const focus = await sequenceFocus();
           return focus.highlightCount > 0
@@ -3589,6 +3590,15 @@ test.describe('Claude Science artifact campaign', () => {
     await expect(viewport).toHaveAttribute('transform', /translate/);
 
     await page.getByRole('button', { name: 'Reset map view' }).click();
+    await page.evaluate(() => window.motifRenderInventory?.([{
+      id: 'circular-drag-zones',
+      name: 'Circular drag zones',
+      molecule: 'dna',
+      topology: 'circular',
+      sequence: 'A'.repeat(4_000),
+      annotations: [],
+    }]));
+    await expect(mapFrame).toHaveAttribute('data-map-mode', 'circular');
     const circularBackbone = (await mapFrame.locator('.motif-pm-backbone').boundingBox())!;
     const circularCenter = {
       x: circularBackbone.x + circularBackbone.width / 2,
@@ -3608,17 +3618,21 @@ test.describe('Claude Science artifact campaign', () => {
 
     await page.getByRole('button', { name: 'Reset map view' }).click();
     const radius = circularBackbone.width / 2;
-    await page.mouse.move(circularCenter.x, circularCenter.y - radius);
+    const insideRing = {
+      x: circularCenter.x,
+      y: circularCenter.y - radius * 0.45,
+    };
+    await page.mouse.move(insideRing.x, insideRing.y);
     await expect(mapFrame).toHaveAttribute('data-map-pointer-action', 'range');
     await page.mouse.down();
-    await page.mouse.move(circularCenter.x + radius, circularCenter.y, { steps: 8 });
+    await page.mouse.move(circularCenter.x + radius * 0.45, circularCenter.y, { steps: 8 });
     await page.mouse.up();
     const clockwise = await mapFrame.locator('.motif-cs-map-hint').textContent();
     expect(clockwise).toContain('range');
 
-    await page.mouse.move(circularCenter.x, circularCenter.y - radius);
+    await page.mouse.move(insideRing.x, insideRing.y);
     await page.mouse.down();
-    await page.mouse.move(circularCenter.x - radius, circularCenter.y, { steps: 8 });
+    await page.mouse.move(circularCenter.x - radius * 0.45, circularCenter.y, { steps: 8 });
     await page.mouse.up();
     const counterclockwise = await mapFrame.locator('.motif-cs-map-hint').textContent();
     expect(counterclockwise).toContain('range');
@@ -3666,6 +3680,26 @@ test.describe('Claude Science artifact campaign', () => {
     }).toBe(true);
   });
 
+  test('map drawing controls stay visible and switch a circular record between circle and line', async ({ page }) => {
+    await openArtifact(page, 900, 720);
+    const mapFrame = page.locator('.motif-cs-map-frame');
+    const drawing = mapFrame.locator('.motif-cs-map-mode-toggle');
+    const circular = drawing.getByRole('button', { name: 'Circular', exact: true });
+    const linear = drawing.getByRole('button', { name: 'Linear', exact: true });
+
+    await expect(drawing).toBeVisible();
+    await expect(circular).toHaveAttribute('aria-pressed', 'true');
+    await expect(linear).toHaveAttribute('aria-pressed', 'false');
+
+    await linear.click();
+    await expect(mapFrame).toHaveAttribute('data-map-mode', 'linear');
+    await expect(linear).toHaveAttribute('aria-pressed', 'true');
+
+    await circular.click();
+    await expect(mapFrame).toHaveAttribute('data-map-mode', 'circular');
+    await expect(circular).toHaveAttribute('aria-pressed', 'true');
+  });
+
   test('high zoom keeps range bands compact and Fit preserves the selection', async ({ page }) => {
     await openArtifact(page, 1180, 900);
     const mapFrame = page.locator('.motif-cs-map-frame');
@@ -3702,11 +3736,11 @@ test.describe('Claude Science artifact campaign', () => {
     ringTop = { x: backbone.x + backbone.width / 2, y: backbone.y };
     await page.mouse.move(ringTop.x, ringTop.y + 10);
     await expect(mapFrame).toHaveAttribute('data-map-pointer-action', 'range');
-    await page.mouse.move(ringTop.x, ringTop.y + 50);
+    await page.mouse.move(ringTop.x, ringTop.y - 50);
     await expect(mapFrame).toHaveAttribute('data-map-pointer-action', 'pan');
     const beforeCircularPan = await viewport.getAttribute('transform');
     await page.mouse.down();
-    await page.mouse.move(ringTop.x + 36, ringTop.y + 68, { steps: 6 });
+    await page.mouse.move(ringTop.x + 36, ringTop.y - 68, { steps: 6 });
     await page.mouse.up();
     expect(await viewport.getAttribute('transform')).not.toBe(beforeCircularPan);
 
