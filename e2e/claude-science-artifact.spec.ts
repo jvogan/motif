@@ -208,7 +208,8 @@ test.describe('Claude Science artifact campaign', () => {
     }]));
 
     const offPageFeature = page.locator('.motif-pm-feature[data-feature-id="feature-125"]');
-    const selectedFeatureName = (await offPageFeature.getAttribute('aria-label'))!.split(',')[0];
+    const selectedFeatureName = 'Feature 126';
+    await expect(offPageFeature).toHaveAttribute('aria-label', 'Feature 126 · cds · 3751–3774 →');
     // Dense circular features overlap at this scale; dispatch to the target node
     // so this regression isolates list paging rather than SVG hit ordering.
     await offPageFeature.dispatchEvent('click');
