@@ -17231,6 +17231,84 @@ const SequenceText = memo(function SequenceText({
       return geometry ? [geometry] : [];
     });
   }, [detailMode, restrictionEnzymes, restrictionSites, sequence.length, sequenceType, topology]);
+  const restrictionLabelsByLine = useMemo(() => {
+    const labels = new Map<number, ReturnType<typeof restrictionLabelLanesForLine>>();
+    if (!detailMode || restrictionSites.length === 0) return labels;
+    for (let lineStart = 0; lineStart < sequence.length; lineStart += basesPerLine) {
+      const lineEnd = Math.min(sequence.length, lineStart + basesPerLine);
+      const lineLabels = restrictionLabelLanesForLine(restrictionSites, lineStart, lineEnd);
+      if (lineLabels.lanes.length > 0 || lineLabels.hidden > 0) labels.set(lineStart, lineLabels);
+    }
+    return labels;
+  }, [basesPerLine, detailMode, restrictionSites, sequence.length]);
+  const restrictionKeyboardKeys = useMemo(() => {
+    const keys: string[] = [];
+    for (const lineLabels of restrictionLabelsByLine.values()) {
+      for (const lane of lineLabels.lanes) {
+        for (const label of lane) keys.push(label.key);
+      }
+    }
+    return keys;
+  }, [restrictionLabelsByLine]);
+  const restrictionKeyboardKeySet = useMemo(
+    () => new Set(restrictionKeyboardKeys),
+    [restrictionKeyboardKeys],
+  );
+  const selectedRestrictionKey = useMemo(() => {
+    if (selectedRestrictionTickSet.size === 0) return null;
+    for (const lineLabels of restrictionLabelsByLine.values()) {
+      for (const lane of lineLabels.lanes) {
+        const selected = lane.find((label) => (
+          label.sites.some((site) => restrictionSelectionHasSite(selectedRestrictionTickSet, site))
+        ));
+        if (selected) return selected.key;
+      }
+    }
+    return null;
+  }, [restrictionLabelsByLine, selectedRestrictionTickSet]);
+  const [rovingRestrictionKey, setRovingRestrictionKey] = useState<string | null>(null);
+  const effectiveRovingRestrictionKey = rovingRestrictionKey && restrictionKeyboardKeySet.has(rovingRestrictionKey)
+    ? rovingRestrictionKey
+    : selectedRestrictionKey && restrictionKeyboardKeySet.has(selectedRestrictionKey)
+      ? selectedRestrictionKey
+      : restrictionKeyboardKeys[0] ?? null;
+  useEffect(() => {
+    if (selectedRestrictionKey) setRovingRestrictionKey(selectedRestrictionKey);
+  }, [selectedRestrictionKey]);
+  const handleRestrictionLabelKeyDown = useCallback((
+    event: ReactKeyboardEvent<HTMLButtonElement>,
+    key: string,
+  ) => {
+    if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
+    const index = restrictionKeyboardKeys.indexOf(key);
+    if (index < 0 || restrictionKeyboardKeys.length === 0) return;
+    const nextIndex = event.key === 'Home'
+      ? 0
+      : event.key === 'End'
+        ? restrictionKeyboardKeys.length - 1
+        : clamp(
+            index + (event.key === 'ArrowRight' || event.key === 'ArrowDown' ? 1 : -1),
+            0,
+            restrictionKeyboardKeys.length - 1,
+          );
+    const nextKey = restrictionKeyboardKeys[nextIndex];
+    const sequenceElement = event.currentTarget.closest<HTMLElement>('.motif-cs-sequence');
+    event.preventDefault();
+    setRovingRestrictionKey(nextKey);
+    window.requestAnimationFrame(() => {
+      const next = Array.from(
+        sequenceElement?.querySelectorAll<HTMLButtonElement>('.motif-cs-restriction-label[data-restriction-key]') ?? [],
+      ).find((candidate) => candidate.dataset.restrictionKey === nextKey);
+      if (!sequenceElement || !next) return;
+      next.focus({ preventScroll: true });
+      const scroller = effectiveSequenceScroller(sequenceElement);
+      const scrollerRect = scroller.getBoundingClientRect();
+      const nextRect = next.getBoundingClientRect();
+      if (nextRect.top < scrollerRect.top + 24 || nextRect.bottom > scrollerRect.bottom - 24) {
+        scroller.scrollBy({ top: nextRect.top - scrollerRect.top - scrollerRect.height / 2, behavior: 'auto' });
+      }
+    });
+  }, [restrictionKeyboardKeys]);
   const focusStart = selectedRanges[0]?.start ?? null;
   const focusKey = selectedFeature?.id ?? (selectedMapRange ? `${selectedMapRange.start}:${selectedMapRange.end}` : 'none');
   // Pre-build the inline amino-acid rows per line, memoized on the tracks (NOT the
@@ -17335,9 +17413,7 @@ const SequenceText = memo(function SequenceText({
     const lineLen = lineEnd - lineStart;
     const lineSequence = sequence.slice(lineStart, lineEnd);
     const lineFeatureLanes = detailMode ? featureLanesForLine(features, lineStart, lineEnd, sequence.length, topology) : [];
-    const lineRestrictionLabels = detailMode
-      ? restrictionLabelLanesForLine(restrictionSites, lineStart, lineEnd)
-      : { lanes: [], hidden: 0 };
+    const lineRestrictionLabels = restrictionLabelsByLine.get(lineStart) ?? { lanes: [], hidden: 0 };
     const lineRestrictionCuts = restrictionGeometry.filter(({ site, senseCut, antisenseCut }) => (
       restrictionSelectionHasSite(activeRestrictionTickSet, site)
       && (
@@ -17390,8 +17466,11 @@ const SequenceText = memo(function SequenceText({
                         type="button"
                         className="motif-cs-restriction-label"
                         data-selected={selected || undefined}
+                        data-restriction-key={label.key}
                         aria-pressed={selected}
+                        aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown Home End"
                         aria-label={`${label.label}, restriction ${label.sites.length === 1 ? 'site' : 'cluster'} at ${primary.position + 1} bp, ${primaryCutLabel}, ${primary.overhang === 'blunt' ? 'blunt' : `${primary.overhang === '5prime' ? "5 prime" : "3 prime"} overhang`}, ${primary.strand === -1 ? 'reverse' : 'forward'} strand`}
+                        tabIndex={label.key === effectiveRovingRestrictionKey ? 0 : -1}
                         data-type-iis={typeIIS || undefined}
                         data-site-position={primary.position}
                         data-recognition-length={primary.recognitionSequence.length}
@@ -17399,8 +17478,12 @@ const SequenceText = memo(function SequenceText({
                         onPointerDown={(event) => event.stopPropagation()}
                         onPointerEnter={() => setHoveredRestrictionTickIds(label.sites.map(restrictionSiteTickId))}
                         onPointerLeave={() => setHoveredRestrictionTickIds([])}
-                        onFocus={() => setHoveredRestrictionTickIds(label.sites.map(restrictionSiteTickId))}
+                        onFocus={() => {
+                          setRovingRestrictionKey(label.key);
+                          setHoveredRestrictionTickIds(label.sites.map(restrictionSiteTickId));
+                        }}
                         onBlur={() => setHoveredRestrictionTickIds([])}
+                        onKeyDown={(event) => handleRestrictionLabelKeyDown(event, label.key)}
                         onClick={(event) => {
                           event.stopPropagation();
                           suppressNextFocusScrollRef.current = true;

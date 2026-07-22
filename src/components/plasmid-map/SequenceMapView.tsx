@@ -323,7 +323,7 @@ const FeatureShape = memo(function FeatureShape({
       style={style}
       role={interactive ? 'button' : undefined}
       tabIndex={interactive ? tabIndex : undefined}
-      aria-label={`${feature.name}, ${feature.type}, ${strandLabel}`}
+      aria-label={feature.title ?? `${feature.name}, ${feature.type}, ${strandLabel}`}
       aria-pressed={interactive ? selected : undefined}
       onClick={interactive ? (e) => {
         e.stopPropagation();

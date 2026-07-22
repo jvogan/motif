@@ -329,6 +329,22 @@ test.describe('Claude Science artifact campaign', () => {
     }
   });
 
+  test('restriction labels use one Tab stop and arrow-key navigation', async ({ page }) => {
+    await openArtifact(page, 1180, 900);
+    const labels = page.locator('.motif-cs-restriction-label');
+    expect(await labels.count()).toBeGreaterThan(2);
+    await expect(page.locator('.motif-cs-restriction-label[tabindex="0"]')).toHaveCount(1);
+
+    const first = page.locator('.motif-cs-restriction-label[tabindex="0"]');
+    const firstKey = await first.getAttribute('data-restriction-key');
+    await first.focus();
+    await page.keyboard.press('ArrowRight');
+    const focusedKey = await page.locator('.motif-cs-restriction-label:focus').getAttribute('data-restriction-key');
+    expect(focusedKey).toBeTruthy();
+    expect(focusedKey).not.toBe(firstKey);
+    await expect(page.locator('.motif-cs-restriction-label[tabindex="0"]')).toHaveCount(1);
+  });
+
   test('selected directional features outline the complete arrow shape', async ({ page }) => {
     await openArtifact(page, 1180, 900);
     for (const topology of ['circular', 'linear'] as const) {
@@ -359,6 +375,7 @@ test.describe('Claude Science artifact campaign', () => {
       });
       await page.mouse.click(clickPoint.x, clickPoint.y);
       await expect(feature).toHaveAttribute('data-selected', 'true');
+      await expect(feature).toHaveAttribute('aria-label', /501–2800/);
       await expect(page.locator('.motif-pm-selection')).toHaveCount(0);
       const style = await body.evaluate((path) => {
         const computed = getComputedStyle(path);
@@ -820,11 +837,20 @@ test.describe('Claude Science artifact campaign', () => {
     await page.getByRole('tab', { name: 'pUC19' }).click();
     await expect(labelToggle).toHaveText('Site labels');
 
+    const activeToggleStyle = await toolbarToggle.evaluate((button) => {
+      const style = getComputedStyle(button);
+      return { backgroundColor: style.backgroundColor, color: style.color };
+    });
     await toolbarToggle.click();
     await expect(page.locator('.motif-pm-restriction-label')).toHaveCount(0);
     await expect(toolbarToggle).toHaveText('Sites');
     await expect(toolbarToggle).toHaveAttribute('aria-label', 'Show restriction-site labels');
     await expect(toolbarToggle).toHaveAttribute('aria-pressed', 'false');
+    const inactiveHoveredStyle = await toolbarToggle.evaluate((button) => {
+      const style = getComputedStyle(button);
+      return { backgroundColor: style.backgroundColor, color: style.color };
+    });
+    expect(inactiveHoveredStyle).not.toEqual(activeToggleStyle);
     await mapVisibility.getByRole('button', { name: 'Show restriction-site labels' }).click();
     await expect(page.locator('.motif-pm-restriction-label').first()).toBeVisible();
   });

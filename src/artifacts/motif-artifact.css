@@ -17,6 +17,7 @@ html[data-theme="dark"] {
   --text-muted: #ababab;
   --accent-base: #0169cc;
   --accent: #339cff;
+  --accent-contrast: #ffffff;
   --green: #40c977;
   --purple: #ad7bf9;
   --amber: #f0b429;
@@ -50,6 +51,7 @@ html[data-theme="light"] {
   --text-muted: #6b6b6b;
   --accent-base: #0169cc;
   --accent: #0169cc;
+  --accent-contrast: #ffffff;
   --green: #137a46;
   --purple: #6d35c1;
   --amber: #865b00;
@@ -1887,18 +1889,20 @@ body[data-motif-cs-rail-popover-resizing] .motif-cs-rail-popover-resize::after {
 
 /* Labels default on, so this is the resting look: a filled chip is both the
    state and what makes the caption legible over map ink. */
-.motif-cs-map-labels-toggle[data-active] {
-  border-color: color-mix(in srgb, var(--border-strong) 55%, transparent);
-  background: color-mix(in srgb, var(--bg-primary) 82%, transparent);
-  color: var(--text-primary);
-}
-
 .motif-cs-map-button:hover,
 .motif-cs-map-button:focus-visible {
   border-color: color-mix(in srgb, var(--border-strong) 55%, transparent);
   background: color-mix(in srgb, var(--bg-primary) 82%, transparent);
   color: var(--text-primary);
   outline: none;
+}
+
+.motif-cs-map-labels-toggle[data-active],
+.motif-cs-map-labels-toggle[data-active]:hover,
+.motif-cs-map-labels-toggle[data-active]:focus-visible {
+  border-color: var(--accent-base);
+  background: var(--accent-base);
+  color: var(--accent-contrast);
 }
 
 .motif-cs-map-button:disabled {
