@@ -606,7 +606,9 @@ describe('Claude Science workspace layout guards', () => {
       'const handleMapPointerStart = useCallback',
       'const handleMapPointerMove = useCallback',
     );
-    expect(pointerStart).toContain('mapPointerActionAtPoint(contentPoint, layout)');
+    expect(pointerStart).toContain('mapPointerActionAtPoint(contentPoint, layout, mapViewport.k)');
+    expect(artifactSource).toContain('MAP_CIRCULAR_RANGE_HIT_MAX) / contentScale');
+    expect(artifactSource).toContain('MAP_LINEAR_RANGE_HIT_Y / contentScale');
     expect(pointerStart).toContain("mode: 'range'");
     expect(pointerStart).toContain("mode: 'pan'");
     expect(pointerStart).not.toContain('mapViewport.k >');

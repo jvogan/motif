@@ -345,6 +345,7 @@ test.describe('Claude Science artifact campaign', () => {
       });
       await page.mouse.click(clickPoint.x, clickPoint.y);
       await expect(feature).toHaveAttribute('data-selected', 'true');
+      await expect(page.locator('.motif-pm-selection')).toHaveCount(0);
       const style = await body.evaluate((path) => {
         const computed = getComputedStyle(path);
         const swatch = document.createElement('span');
@@ -364,6 +365,103 @@ test.describe('Claude Science artifact campaign', () => {
       expect(style.stroke).toBe(style.accent);
       expect(style.strokeWidth).toBeGreaterThanOrEqual(1.5);
       expect(style.strokeLinejoin).toBe('round');
+    }
+  });
+
+  test('high-zoom arrowheads select nested features and keep Sequence synchronized', async ({ page }) => {
+    await openArtifact(page, 1600, 900);
+    const features = [
+      { id: 'outer-forward', name: 'Outer forward', type: 'cds', start: 4_800, end: 6_000, strand: 1 },
+      { id: 'inner-forward', name: 'Inner forward', type: 'cds', start: 5_200, end: 6_000, strand: 1 },
+      { id: 'reverse-feature', name: 'Reverse feature', type: 'cds', start: 6_000, end: 7_200, strand: -1 },
+    ];
+    const featureTip = async (featureId: string, strand: number) => page
+      .locator(`.motif-pm-feature[data-feature-id="${featureId}"] .motif-pm-feature-body`)
+      .evaluate((path, direction) => {
+        const body = path as SVGPathElement;
+        const linePoints = [...(body.getAttribute('d') ?? '').matchAll(/L (-?\d+(?:\.\d+)?) (-?\d+(?:\.\d+)?)/g)]
+          .map((match) => ({ x: Number(match[1]), y: Number(match[2]) }));
+        const tip = direction === 1 ? linePoints[0] : linePoints.at(-1);
+        if (!tip) throw new Error('Directional feature path has no arrow tip');
+        const box = body.getBBox();
+        const center = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+        const dx = center.x - tip.x;
+        const dy = center.y - tip.y;
+        const distance = Math.max(1, Math.hypot(dx, dy));
+        const inside = { x: tip.x + dx / distance, y: tip.y + dy / distance };
+        const point = body.ownerSVGElement!.createSVGPoint();
+        point.x = inside.x;
+        point.y = inside.y;
+        const screen = point.matrixTransform(body.getScreenCTM()!);
+        return {
+          x: screen.x,
+          y: screen.y,
+          localX: inside.x,
+          localY: inside.y,
+          hitFeatureId: document.elementFromPoint(screen.x, screen.y)
+            ?.closest<SVGGElement>('.motif-pm-feature')?.dataset.featureId ?? null,
+        };
+      }, strand);
+    const sequenceFocus = () => page.locator('.motif-cs-sequence').evaluate((container) => {
+      const focus = container.querySelector<HTMLElement>('[data-seq-focus="true"]');
+      const bases = focus?.querySelector<HTMLElement>('[data-line-start]');
+      return {
+        highlightCount: focus?.querySelectorAll(
+          '.motif-cs-seq-hl:not(.motif-cs-seq-hl-motif):not(.motif-cs-seq-hl-restriction)',
+        ).length ?? 0,
+        lineStart: Number(bases?.dataset.lineStart),
+        lineLength: Number(bases?.dataset.lineLen),
+      };
+    });
+
+    for (const topology of ['circular', 'linear'] as const) {
+      await page.evaluate(({ recordTopology, recordFeatures }) => window.motifRenderInventory?.([{
+        id: `high-zoom-arrows-${recordTopology}`,
+        name: `High zoom arrows ${recordTopology}`,
+        molecule: 'dna',
+        topology: recordTopology,
+        sequence: 'A'.repeat(12_000),
+        annotations: recordFeatures,
+      }]), { recordTopology: topology, recordFeatures: features });
+
+      for (const featureInput of features) {
+        const feature = page.locator(`.motif-pm-feature[data-feature-id="${featureInput.id}"]`);
+        const initialTip = await featureTip(featureInput.id, featureInput.strand);
+        const svg = page.locator('.motif-cs-map-frame svg.motif-plasmid-map');
+        for (let step = 0; step < 5; step += 1) {
+          await svg.dispatchEvent('wheel', {
+            deltaY: -700,
+            clientX: initialTip.x,
+            clientY: initialTip.y,
+            ctrlKey: true,
+          });
+        }
+        await expect(page.locator('.motif-cs-map-hint')).toContainText('800%');
+
+        const tip = await featureTip(featureInput.id, featureInput.strand);
+        expect(tip.hitFeatureId, JSON.stringify(tip)).toBe(featureInput.id);
+        await page.mouse.click(tip.x, tip.y);
+        await expect(feature).toHaveAttribute('data-selected', 'true');
+        await expect(page.locator('.motif-pm-feature[data-selected="true"]')).toHaveCount(1);
+        await expect(page.locator('.motif-pm-selection')).toHaveCount(0);
+        await expect.poll(async () => {
+          const focus = await sequenceFocus();
+          return focus.highlightCount > 0
+            && focus.lineStart <= featureInput.start
+            && focus.lineStart + focus.lineLength > featureInput.start;
+        }).toBe(true);
+
+        if (topology === 'circular' && featureInput.id === 'outer-forward') {
+          await page.screenshot({ path: path.join(outputDir, 'map-arrow-selection-high-zoom-light.png'), fullPage: true });
+          await page.getByLabel('Theme').selectOption({ label: 'Claude Dark' });
+          await page.screenshot({ path: path.join(outputDir, 'map-arrow-selection-high-zoom-claude-dark.png'), fullPage: true });
+          await page.getByLabel('Theme').selectOption({ label: 'Light' });
+        }
+
+        await page.getByRole('button', { name: 'Reset map view' }).click();
+        await expect(page.locator('.motif-cs-map-frame .motif-pm-viewport')).not.toHaveAttribute('transform');
+        await expect(feature).toHaveAttribute('data-selected', 'true');
+      }
     }
   });
 
@@ -675,8 +773,12 @@ test.describe('Claude Science artifact campaign', () => {
 
     // The labelling control reads the same on the dense record as on the sparse
     // one — the density of a record is not a reason to flip a user-facing toggle.
-    const labelToggle = mapVisibility.getByRole('button', { name: /^Labels (On|Off)$/ });
-    await expect(labelToggle).toHaveText('Labels On');
+    const labelToggle = mapVisibility.getByRole('button', { name: 'Hide restriction-site labels' });
+    const toolbarToggle = page.locator('.motif-cs-map-toolbar .motif-cs-map-labels-toggle');
+    await expect(labelToggle).toHaveText('Site labels');
+    await expect(toolbarToggle).toHaveText('Sites');
+    await expect(toolbarToggle).toHaveAttribute('aria-label', 'Hide restriction-site labels');
+    await expect(toolbarToggle).toHaveAttribute('aria-pressed', 'true');
 
     // Shrink to a laptop-sized window. This is the case that used to fail hardest:
     // the old threshold halved once the map's smaller dimension fell under 580px,
@@ -692,7 +794,7 @@ test.describe('Claude Science artifact campaign', () => {
 
     const denseSmall = await readMap();
     expect(denseSmall.names).toBeGreaterThanOrEqual(15);
-    await expect(labelToggle).toHaveText('Labels On');
+    await expect(labelToggle).toHaveText('Site labels');
 
     await page.getByRole('tab', { name: 'pUC19' }).click();
     await expect(page.locator('.motif-cs-record-tab[data-active="true"]')).toContainText('pUC19');
@@ -702,7 +804,15 @@ test.describe('Claude Science artifact campaign', () => {
 
     await page.setViewportSize({ width: 1600, height: 1000 });
     await page.getByRole('tab', { name: 'pUC19' }).click();
-    await expect(labelToggle).toHaveText('Labels On');
+    await expect(labelToggle).toHaveText('Site labels');
+
+    await toolbarToggle.click();
+    await expect(page.locator('.motif-pm-restriction-label')).toHaveCount(0);
+    await expect(toolbarToggle).toHaveText('Sites');
+    await expect(toolbarToggle).toHaveAttribute('aria-label', 'Show restriction-site labels');
+    await expect(toolbarToggle).toHaveAttribute('aria-pressed', 'false');
+    await mapVisibility.getByRole('button', { name: 'Show restriction-site labels' }).click();
+    await expect(page.locator('.motif-pm-restriction-label').first()).toBeVisible();
   });
 
   test('digest recipes reject unknown enzymes and survive map-source changes', async ({ page }) => {
@@ -3473,6 +3583,99 @@ test.describe('Claude Science artifact campaign', () => {
       const focus = await sequenceFocus();
       return focus.visible && focus.lineStart >= 800 && focus.lineStart <= 1_200;
     }).toBe(true);
+  });
+
+  test('high zoom keeps range bands compact and Fit preserves the selection', async ({ page }) => {
+    await openArtifact(page, 1180, 900);
+    const mapFrame = page.locator('.motif-cs-map-frame');
+    const viewport = mapFrame.locator('.motif-pm-viewport');
+    const svg = mapFrame.locator('svg.motif-plasmid-map');
+
+    await page.evaluate(() => window.motifRenderInventory?.([{
+      id: 'high-zoom-range-circular',
+      name: 'High zoom range circular',
+      molecule: 'dna',
+      topology: 'circular',
+      sequence: 'A'.repeat(4_000),
+      annotations: [],
+    }]));
+    let backbone = (await mapFrame.locator('.motif-pm-backbone').boundingBox())!;
+    let ringTop = { x: backbone.x + backbone.width / 2, y: backbone.y };
+    await page.mouse.move(ringTop.x, ringTop.y);
+    await page.mouse.down();
+    await page.mouse.move(backbone.x + backbone.width, backbone.y + backbone.height / 2, { steps: 8 });
+    await page.mouse.up();
+    const circularSelectionPaths = await mapFrame.locator('.motif-pm-selection').count();
+    expect(circularSelectionPaths).toBeGreaterThan(0);
+
+    for (let step = 0; step < 5; step += 1) {
+      await svg.dispatchEvent('wheel', {
+        deltaY: -700,
+        clientX: ringTop.x,
+        clientY: ringTop.y,
+        ctrlKey: true,
+      });
+    }
+    await expect(mapFrame.locator('.motif-cs-map-hint')).toContainText('800%');
+    backbone = (await mapFrame.locator('.motif-pm-backbone').boundingBox())!;
+    ringTop = { x: backbone.x + backbone.width / 2, y: backbone.y };
+    await page.mouse.move(ringTop.x, ringTop.y + 10);
+    await expect(mapFrame).toHaveAttribute('data-map-pointer-action', 'range');
+    await page.mouse.move(ringTop.x, ringTop.y + 50);
+    await expect(mapFrame).toHaveAttribute('data-map-pointer-action', 'pan');
+    const beforeCircularPan = await viewport.getAttribute('transform');
+    await page.mouse.down();
+    await page.mouse.move(ringTop.x + 36, ringTop.y + 68, { steps: 6 });
+    await page.mouse.up();
+    expect(await viewport.getAttribute('transform')).not.toBe(beforeCircularPan);
+
+    await page.getByRole('button', { name: 'Reset map view' }).click();
+    await expect(viewport).not.toHaveAttribute('transform');
+    await expect(mapFrame.locator('.motif-pm-selection')).toHaveCount(circularSelectionPaths);
+    await expect(mapFrame.locator('.motif-cs-map-hint')).toContainText('range');
+    await expect(mapFrame.locator('.motif-cs-map-hint')).not.toContainText('%');
+
+    await page.evaluate(() => window.motifRenderInventory?.([{
+      id: 'high-zoom-range-linear',
+      name: 'High zoom range linear',
+      molecule: 'dna',
+      topology: 'linear',
+      sequence: 'A'.repeat(4_000),
+      annotations: [],
+    }]));
+    const linearBackbone = (await mapFrame.locator('.motif-pm-backbone').boundingBox())!;
+    const axis = { x: linearBackbone.x + linearBackbone.width / 2, y: linearBackbone.y + linearBackbone.height / 2 };
+    await page.mouse.move(axis.x - 80, axis.y);
+    await page.mouse.down();
+    await page.mouse.move(axis.x + 80, axis.y, { steps: 8 });
+    await page.mouse.up();
+    const linearSelectionPaths = await mapFrame.locator('.motif-pm-selection').count();
+    expect(linearSelectionPaths).toBeGreaterThan(0);
+
+    for (let step = 0; step < 5; step += 1) {
+      await svg.dispatchEvent('wheel', {
+        deltaY: -700,
+        clientX: axis.x,
+        clientY: axis.y,
+        ctrlKey: true,
+      });
+    }
+    await expect(mapFrame.locator('.motif-cs-map-hint')).toContainText('800%');
+    const zoomedLinearBackbone = (await mapFrame.locator('.motif-pm-backbone').boundingBox())!;
+    const zoomedAxis = {
+      x: zoomedLinearBackbone.x + zoomedLinearBackbone.width / 2,
+      y: zoomedLinearBackbone.y + zoomedLinearBackbone.height / 2,
+    };
+    await page.mouse.move(zoomedAxis.x, zoomedAxis.y + 10);
+    await expect(mapFrame).toHaveAttribute('data-map-pointer-action', 'range');
+    await page.mouse.move(zoomedAxis.x, zoomedAxis.y + 50);
+    await expect(mapFrame).toHaveAttribute('data-map-pointer-action', 'pan');
+
+    await page.getByRole('button', { name: 'Reset map view' }).click();
+    await expect(viewport).not.toHaveAttribute('transform');
+    await expect(mapFrame.locator('.motif-pm-selection')).toHaveCount(linearSelectionPaths);
+    await expect(mapFrame.locator('.motif-cs-map-hint')).toContainText('range');
+    await expect(mapFrame.locator('.motif-cs-map-hint')).not.toContainText('%');
   });
 
   test('the map keeps saying what is selected while the view is zoomed', async ({ page }) => {

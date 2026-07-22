@@ -1729,12 +1729,12 @@ body[data-motif-cs-rail-popover-resizing] .motif-cs-rail-popover-resize::after {
   overflow: hidden;
 }
 
-/* DNA records add the Labels chip, so their toolbar runs 163px rather than 94px
-   and the readout has to start further in. Keyed off the chip being present so
+/* DNA records add the Sites chip, so the readout starts further in. Keyed off
+   the chip being present so
    the reserve follows what is actually rendered instead of restating the gate
    that renders it. */
 .motif-cs-map-frame:has(.motif-cs-map-labels-toggle) {
-  --map-toolbar-reserve: 200px;
+  --map-toolbar-reserve: 176px;
 }
 
 /* A linear map is short and wide — don't reserve a tall square frame for it,
@@ -1869,14 +1869,17 @@ body[data-motif-cs-rail-popover-resizing] .motif-cs-rail-popover-resize::after {
   font-weight: 700;
 }
 
-/* Puts restriction-label state on the map instead of only in a panel whose own
-   heading is below the fold at every laptop size. Sized for the wider of its
-   two captions so the zoom buttons beside it do not shift when it is pressed —
-   a control that moves when you use it reads as two controls. */
+.motif-cs-map-reset:not(:disabled) {
+  color: var(--text-primary);
+}
+
+/* Puts restriction-label state on the map instead of only in the visibility
+   panel. State comes from the filled/unfilled button and aria-pressed, so the
+   visible caption stays compact and does not move when toggled. */
 .motif-cs-map-labels-toggle {
   width: auto;
-  min-width: 62px;
-  padding-inline: 7px;
+  min-width: 40px;
+  padding-inline: 6px;
   color: var(--text-muted);
   font-size: 10px;
   font-weight: 700;
