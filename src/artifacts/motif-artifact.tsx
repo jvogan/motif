@@ -616,7 +616,11 @@ const DEFAULT_PANE_WIDTHS: PaneWidths = {
 const PANE_WIDTH_LIMITS: Record<ResizablePaneKey, { min: number; max: number }> = {
   inventory: { min: 160, max: 420 },
   sequence: { min: 240, max: 2000 },
-  map: { min: 300, max: 900 },
+  // Like Sequence, Map's maximum is a preference backstop rather than the
+  // working drag limit. The adjacent pane minimum and the workspace width are
+  // the physical bounds. A 900px cap stopped the divider after a few pixels in
+  // ordinary desktop layouts even while Sequence still had room to shrink.
+  map: { min: 300, max: 2000 },
   tools: { min: 220, max: 540 },
 };
 
@@ -648,6 +652,8 @@ const STACKED_LAYOUT_MEDIA = '(max-width: 767px)';
 const COMPACT_PINNED_LAYOUT_MEDIA = '(min-width: 640px) and (max-width: 1535px)';
 const TWO_ROW_LAYOUT_MEDIA = '(min-width: 640px) and (max-width: 1535px)';
 const OVERLAY_TOOLS_LAYOUT_MEDIA = '(max-width: 1535px)';
+const PANE_RESIZE_START_EVENT = 'motif-cs-pane-resize-start';
+const PANE_RESIZE_END_EVENT = 'motif-cs-pane-resize-end';
 const PANE_ORDER_FALLBACK: Record<PaneKey, number> = DEFAULT_PANE_ORDER.reduce(
   (acc, pane, index) => ({ ...acc, [pane]: index }),
   {} as Record<PaneKey, number>,
@@ -4946,6 +4952,7 @@ function App() {
   } | null>(null);
   const floatingPaneInteractionCleanupRef = useRef<(() => void) | null>(null);
   const paneResizeCleanupRef = useRef<(() => void) | null>(null);
+  const keyboardPaneResizeEndTimerRef = useRef<number | null>(null);
   const stackedPaneResizeCleanupRef = useRef<(() => void) | null>(null);
   const sequenceScrollByRecordRef = useRef<Record<string, number>>({});
   const mapDragRef = useRef<MapDragState | null>(null);
@@ -8398,7 +8405,14 @@ function App() {
   const stopPaneResize = useCallback(() => {
     paneResizeCleanupRef.current?.();
     paneResizeCleanupRef.current = null;
+    const hadKeyboardResize = keyboardPaneResizeEndTimerRef.current !== null;
+    if (keyboardPaneResizeEndTimerRef.current !== null) {
+      window.clearTimeout(keyboardPaneResizeEndTimerRef.current);
+      keyboardPaneResizeEndTimerRef.current = null;
+    }
+    const wasResizing = Boolean(document.body.dataset.motifCsResizing);
     delete document.body.dataset.motifCsResizing;
+    if (wasResizing || hadKeyboardResize) window.dispatchEvent(new Event(PANE_RESIZE_END_EVENT));
   }, []);
 
   const stopStackedPaneResize = useCallback(() => {
@@ -10347,6 +10361,7 @@ function App() {
     }
 
     paneResizeCleanupRef.current = removeListeners;
+    window.dispatchEvent(new Event(PANE_RESIZE_START_EVENT));
     document.body.dataset.motifCsResizing = pane;
     window.addEventListener('pointermove', handlePointerMove);
     window.addEventListener('pointerup', handlePointerEnd);
@@ -10362,6 +10377,15 @@ function App() {
   const resizePaneFromKeyboard = useCallback((pane: ResizablePaneKey, event: ReactKeyboardEvent<HTMLDivElement>, edge: ResizeEdge = 'after') => {
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
     event.preventDefault();
+    if (keyboardPaneResizeEndTimerRef.current === null) {
+      window.dispatchEvent(new Event(PANE_RESIZE_START_EVENT));
+    } else {
+      window.clearTimeout(keyboardPaneResizeEndTimerRef.current);
+    }
+    keyboardPaneResizeEndTimerRef.current = window.setTimeout(() => {
+      keyboardPaneResizeEndTimerRef.current = null;
+      window.dispatchEvent(new Event(PANE_RESIZE_END_EVENT));
+    }, 120);
     const direction = pane === 'tools' || edge === 'before' ? -1 : 1;
     const screenDirection = event.key === 'ArrowRight' ? 1 : -1;
     const step = event.shiftKey ? 32 : 16;
@@ -16986,6 +17010,18 @@ const SequenceText = memo(function SequenceText({
   const containerRef = useRef<HTMLDivElement>(null);
   const rulerRef = useRef<HTMLSpanElement>(null);
   const charWidthRef = useRef<number>(0);
+  const basesPerLineRef = useRef(60);
+  const resizeScrollAnchorRef = useRef<{
+    base: number;
+    blockOffset: number;
+    targetBasesPerLine: number;
+  } | null>(null);
+  const stableScrollAnchorRef = useRef<{
+    base: number;
+    blockOffset: number;
+  } | null>(null);
+  const paneResizeActiveRef = useRef(false);
+  const anchoredSequenceRef = useRef(sequence);
   const dragAnchorRef = useRef<number | null>(null);
   const dragPointerIdRef = useRef<number | null>(null);
   const dragStartPointRef = useRef<{ x: number; y: number } | null>(null);
@@ -17062,6 +17098,76 @@ const SequenceText = memo(function SequenceText({
     return () => document.removeEventListener('copy', handleDocumentCopy);
   }, [selectedAaTrackText, writeSelectedAaToClipboard]);
 
+  const captureStableScrollAnchor = useCallback(() => {
+    const container = containerRef.current;
+    if (!container) return null;
+    const scroller = effectiveSequenceScroller(container);
+    const scrollerRect = scroller.getBoundingClientRect();
+    const blocks = Array.from(container.querySelectorAll<HTMLElement>('.motif-cs-seq-block'));
+    const focusBlock = container.querySelector<HTMLElement>('[data-seq-focus="true"]');
+    const focusRect = focusBlock?.getBoundingClientRect();
+    const focusVisible = Boolean(
+      focusBlock
+      && focusRect
+      && focusRect.bottom > scrollerRect.top
+      && focusRect.top < scrollerRect.bottom,
+    );
+    const centreY = scrollerRect.top + scrollerRect.height / 2;
+    const anchorBlock = focusVisible
+      ? focusBlock
+      : blocks.reduce<HTMLElement | null>((best, block) => {
+          if (!best) return block;
+          const blockRect = block.getBoundingClientRect();
+          const bestRect = best.getBoundingClientRect();
+          const blockDistance = Math.abs((blockRect.top + blockRect.bottom) / 2 - centreY);
+          const bestDistance = Math.abs((bestRect.top + bestRect.bottom) / 2 - centreY);
+          return blockDistance < bestDistance ? block : best;
+        }, null);
+    const anchorBases = anchorBlock?.querySelector<HTMLElement>('.motif-cs-seq-bases');
+    const focusedBase = Number(focusBlock?.dataset.seqFocusStart);
+    const base = focusVisible && Number.isFinite(focusedBase)
+      ? focusedBase
+      : Number(anchorBases?.dataset.lineStart);
+    if (!anchorBlock || !Number.isFinite(base)) return null;
+    const anchor = {
+      base,
+      blockOffset: anchorBlock.getBoundingClientRect().top - scrollerRect.top,
+    };
+    stableScrollAnchorRef.current = anchor;
+    return anchor;
+  }, []);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return undefined;
+    const capture = () => {
+      captureStableScrollAnchor();
+    };
+    const begin = () => {
+      paneResizeActiveRef.current = true;
+      capture();
+    };
+    const release = () => {
+      paneResizeActiveRef.current = false;
+    };
+    capture();
+    window.addEventListener(PANE_RESIZE_START_EVENT, begin);
+    window.addEventListener(PANE_RESIZE_END_EVENT, release);
+    window.addEventListener('resize', capture);
+    return () => {
+      window.removeEventListener(PANE_RESIZE_START_EVENT, begin);
+      window.removeEventListener(PANE_RESIZE_END_EVENT, release);
+      window.removeEventListener('resize', capture);
+    };
+  }, [captureStableScrollAnchor]);
+
+  useLayoutEffect(() => {
+    if (anchoredSequenceRef.current === sequence) return;
+    anchoredSequenceRef.current = sequence;
+    stableScrollAnchorRef.current = null;
+    resizeScrollAnchorRef.current = null;
+  }, [sequence]);
+
   const handleCopy = useCallback((event: ReactClipboardEvent<HTMLDivElement>) => {
     if (selectedAaTrackText && writeSelectedAaToClipboard(event.clipboardData)) {
       event.preventDefault();
@@ -17108,13 +17214,65 @@ const SequenceText = memo(function SequenceText({
       const basesWidth = container.clientWidth - padX - 48 - 10 - 10;
       const fit = Math.floor(basesWidth / charW);
       const next = clamp(Math.floor(fit / 5) * 5, 15, 300);
-      setBasesPerLine((prev) => (prev === next ? prev : next));
+      if (basesPerLineRef.current === next) return;
+
+      // Rewrapping changes every line boundary. Preserve the biological region
+      // the user was looking at before the pane width changed. The resize-start
+      // snapshot keeps this anchor independent of intermediate
+      // scroll events while the pane is moving.
+      const stableAnchor = stableScrollAnchorRef.current ?? captureStableScrollAnchor();
+      if (stableAnchor) {
+        resizeScrollAnchorRef.current = {
+          ...stableAnchor,
+          targetBasesPerLine: next,
+        };
+      }
+
+      basesPerLineRef.current = next;
+      setBasesPerLine(next);
     };
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(container);
     return () => ro.disconnect();
-  }, []);
+  }, [captureStableScrollAnchor]);
+
+  useLayoutEffect(() => {
+    const anchor = resizeScrollAnchorRef.current;
+    const container = containerRef.current;
+    if (!anchor || !container || anchor.targetBasesPerLine !== basesPerLine) return;
+    let settleFrame = 0;
+    const frame = window.requestAnimationFrame(() => {
+      settleFrame = window.requestAnimationFrame(() => {
+        if (resizeScrollAnchorRef.current !== anchor) return;
+        const scroller = effectiveSequenceScroller(container);
+        const anchorRow = Array.from(container.querySelectorAll<HTMLElement>('.motif-cs-seq-bases'))
+          .find((row) => {
+            const start = Number(row.dataset.lineStart);
+            const length = Number(row.dataset.lineLen);
+            return Number.isFinite(start)
+              && Number.isFinite(length)
+              && anchor.base >= start
+              && anchor.base < start + length;
+          });
+        const anchorBlock = anchorRow?.closest<HTMLElement>('.motif-cs-seq-block');
+        if (anchorBlock) {
+          const currentOffset = anchorBlock.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+          const delta = currentOffset - anchor.blockOffset;
+          if (Math.abs(delta) > 0.5) scroller.scrollTop += delta;
+          stableScrollAnchorRef.current = {
+            base: anchor.base,
+            blockOffset: anchor.blockOffset,
+          };
+        }
+        resizeScrollAnchorRef.current = null;
+      });
+    });
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.cancelAnimationFrame(settleFrame);
+    };
+  }, [basesPerLine]);
 
   // Geometric hit-testing: map a pointer to a base index from the row's left edge
   // and the measured monospace char width. This is exact to the base under the
@@ -17428,6 +17586,8 @@ const SequenceText = memo(function SequenceText({
       : selectedRestrictionFocusStart === null
         ? 'none'
         : `restriction:${selectedRestrictionFocusStart}`);
+  const previousFocusKeyRef = useRef(focusKey);
+  const previousFocusRequestRef = useRef(focusRequest);
   // Pre-build the inline amino-acid rows per line, memoized on the tracks (NOT the
   // selection). The rows are React elements with stable identity, so a selection
   // drag — which re-renders SequenceText every frame — reuses these exact nodes and
@@ -17490,7 +17650,21 @@ const SequenceText = memo(function SequenceText({
   }, [sequence, sequenceType, topology, translationTracks, basesPerLine, selectedAaTrackId, selectInlineTranslationTrack, onTranslationCodonSelect]);
 
   useEffect(() => {
-    if (focusStart === null) return;
+    const selectionChanged = previousFocusKeyRef.current !== focusKey
+      || previousFocusRequestRef.current !== focusRequest;
+    previousFocusKeyRef.current = focusKey;
+    previousFocusRequestRef.current = focusRequest;
+    if (focusStart === null) {
+      if (selectionChanged) resizeScrollAnchorRef.current = null;
+      return;
+    }
+    if (selectionChanged) {
+      // A new selection owns the viewport. Cancel any delayed rewrap
+      // correction so it cannot pull the newly selected row away.
+      resizeScrollAnchorRef.current = null;
+    } else if (paneResizeActiveRef.current) {
+      return;
+    }
     if (suppressNextFocusScrollRef.current) {
       suppressNextFocusScrollRef.current = false;
       return;
@@ -17546,7 +17720,12 @@ const SequenceText = memo(function SequenceText({
     const caretOffset = caretInLine && caret !== null ? Math.min(caret - lineStart, lineLen) : -1;
 
     grouped.push(
-      <div className="motif-cs-seq-block" key={lineStart} data-seq-focus={isFocusLine || undefined}>
+      <div
+        className="motif-cs-seq-block"
+        key={lineStart}
+        data-seq-focus={isFocusLine || undefined}
+        data-seq-focus-start={isFocusLine ? focusStart : undefined}
+      >
         {lineRestrictionLabels.lanes.length > 0 ? (
           <div className="motif-cs-restriction-tracks" aria-label={`Restriction sites for ${lineStart + 1}-${lineEnd}`}>
             {lineRestrictionLabels.lanes.map((lane, laneIndex) => (

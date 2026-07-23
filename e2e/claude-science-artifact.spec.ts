@@ -3192,6 +3192,168 @@ test.describe('Claude Science artifact workflows', () => {
     expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.clientWidth + 2);
   });
 
+  test('the map keeps widening and the selected sequence location stays anchored during resize', async ({ page }) => {
+    await openArtifact(page, 1800, 1200);
+
+    const inventoryToggle = page.locator('[data-pane-toggle="inventory"]');
+    if ((await inventoryToggle.getAttribute('aria-pressed')) === 'true') await inventoryToggle.click();
+    const toolsToggle = page.locator('[data-pane-toggle="tools"]');
+    if ((await toolsToggle.getAttribute('aria-pressed')) !== 'true') await toolsToggle.click();
+
+    const inspector = page.locator('.motif-cs-inspector[data-tools-pinned="true"]');
+    const patternPanel = inspector.locator('details[data-rail-tool="pattern-search"]');
+    await patternPanel.locator(':scope > summary').scrollIntoViewIfNeeded();
+    await patternPanel.locator(':scope > summary').click();
+    await patternPanel.locator('input[name="motif-search"]').fill('GAATTC');
+    await patternPanel.locator('.motif-cs-motif-hit-row').first().click();
+    await expect(page.locator('.motif-cs-selection-name')).toHaveText('809-814 (6)');
+
+    const sequence = page.locator('.motif-cs-sequence-column');
+    const sequenceScroller = sequence.locator('.motif-cs-sequence');
+    const map = page.locator('.motif-cs-map-column');
+    const separator = page.getByRole('separator', { name: 'Resize sequence and map panes' });
+    const focusedBlock = sequenceScroller.locator('[data-seq-focus="true"]');
+    const focusOffset = async () => {
+      const [scrollerBox, blockBox] = await Promise.all([
+        sequenceScroller.boundingBox(),
+        focusedBlock.boundingBox(),
+      ]);
+      expect(scrollerBox && blockBox).toBeTruthy();
+      return blockBox!.y - scrollerBox!.y;
+    };
+
+    const sequenceBefore = (await sequence.boundingBox())!;
+    const mapBefore = (await map.boundingBox())!;
+    const handleBefore = (await separator.boundingBox())!;
+    const focusBefore = await focusOffset();
+    const pointerStart = handleBefore.x + handleBefore.width / 2;
+    const pointerY = handleBefore.y + handleBefore.height / 2;
+
+    await page.mouse.move(pointerStart, pointerY);
+    await page.mouse.down();
+    for (let step = 1; step <= 18; step += 1) {
+      await page.mouse.move(pointerStart - step * 10, pointerY);
+      await page.evaluate(() => new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      }));
+      const handle = (await separator.boundingBox())!;
+      expect(Math.abs((handle.x + handle.width / 2) - (pointerStart - step * 10))).toBeLessThanOrEqual(4);
+    }
+    await page.mouse.up();
+
+    const sequenceAfter = (await sequence.boundingBox())!;
+    const mapAfter = (await map.boundingBox())!;
+    const focusAfter = await focusOffset();
+    expect(sequenceAfter.width).toBeLessThan(sequenceBefore.width - 160);
+    expect(sequenceAfter.width).toBeGreaterThanOrEqual(240);
+    expect(mapAfter.width).toBeGreaterThan(mapBefore.width + 160);
+    expect(mapAfter.width).toBeGreaterThan(900);
+    expect(Math.abs(focusAfter - focusBefore)).toBeLessThanOrEqual(3);
+    await expect(page.locator('.motif-cs-selection-name')).toHaveText('809-814 (6)');
+    await expect(focusedBlock).toBeInViewport();
+
+    const main = page.locator('.motif-cs-main');
+    const dimensions = await main.evaluate((element) => ({ clientWidth: element.clientWidth, scrollWidth: element.scrollWidth }));
+    expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.clientWidth + 2);
+  });
+
+  test('repeated keyboard pane resizing keeps the selected sequence location anchored', async ({ page }) => {
+    await openArtifact(page, 1800, 1200);
+
+    const inventoryToggle = page.locator('[data-pane-toggle="inventory"]');
+    if ((await inventoryToggle.getAttribute('aria-pressed')) === 'true') await inventoryToggle.click();
+    const toolsToggle = page.locator('[data-pane-toggle="tools"]');
+    if ((await toolsToggle.getAttribute('aria-pressed')) !== 'true') await toolsToggle.click();
+
+    const inspector = page.locator('.motif-cs-inspector[data-tools-pinned="true"]');
+    const patternPanel = inspector.locator('details[data-rail-tool="pattern-search"]');
+    await patternPanel.locator(':scope > summary').scrollIntoViewIfNeeded();
+    await patternPanel.locator(':scope > summary').click();
+    await patternPanel.locator('input[name="motif-search"]').fill('GAATTC');
+    await patternPanel.locator('.motif-cs-motif-hit-row').first().click();
+    await expect(page.locator('.motif-cs-selection-name')).toHaveText('809-814 (6)');
+
+    const sequence = page.locator('.motif-cs-sequence-column');
+    const sequenceScroller = sequence.locator('.motif-cs-sequence');
+    const map = page.locator('.motif-cs-map-column');
+    const separator = page.getByRole('separator', { name: 'Resize sequence and map panes' });
+    const focusedBlock = sequenceScroller.locator('[data-seq-focus="true"]');
+    const focusOffset = async () => {
+      const [scrollerBox, blockBox] = await Promise.all([
+        sequenceScroller.boundingBox(),
+        focusedBlock.boundingBox(),
+      ]);
+      expect(scrollerBox && blockBox).toBeTruthy();
+      return blockBox!.y - scrollerBox!.y;
+    };
+
+    const sequenceBefore = (await sequence.boundingBox())!.width;
+    const mapBefore = (await map.boundingBox())!.width;
+    const focusBefore = await focusOffset();
+    await separator.focus();
+    for (let step = 0; step < 12; step += 1) {
+      await separator.dispatchEvent('keydown', {
+        key: 'ArrowLeft',
+        code: 'ArrowLeft',
+        repeat: step > 0,
+      });
+      await page.waitForTimeout(20);
+    }
+    await page.waitForTimeout(180);
+    await page.evaluate(() => new Promise<void>((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    }));
+
+    const sequenceAfter = (await sequence.boundingBox())!.width;
+    const mapAfter = (await map.boundingBox())!.width;
+    expect(sequenceAfter).toBeLessThan(sequenceBefore - 160);
+    expect(mapAfter).toBeGreaterThan(mapBefore + 160);
+    expect(Math.abs((await focusOffset()) - focusBefore)).toBeLessThanOrEqual(3);
+    await expect(page.locator('.motif-cs-selection-name')).toHaveText('809-814 (6)');
+    await expect(focusedBlock).toBeInViewport();
+  });
+
+  test('a new Pattern Search selection supersedes a pending pane-resize anchor', async ({ page }) => {
+    await openArtifact(page, 1800, 1200);
+
+    const inventoryToggle = page.locator('[data-pane-toggle="inventory"]');
+    if ((await inventoryToggle.getAttribute('aria-pressed')) === 'true') await inventoryToggle.click();
+    const toolsToggle = page.locator('[data-pane-toggle="tools"]');
+    if ((await toolsToggle.getAttribute('aria-pressed')) !== 'true') await toolsToggle.click();
+
+    const inspector = page.locator('.motif-cs-inspector[data-tools-pinned="true"]');
+    const patternPanel = inspector.locator('details[data-rail-tool="pattern-search"]');
+    await patternPanel.locator(':scope > summary').scrollIntoViewIfNeeded();
+    await patternPanel.locator(':scope > summary').click();
+    await patternPanel.locator('input[name="motif-search"]').fill('ATG');
+    const hits = patternPanel.locator('.motif-cs-motif-hit-row');
+    await expect.poll(() => hits.count()).toBeGreaterThan(8);
+    await hits.first().click();
+
+    const separator = page.getByRole('separator', { name: 'Resize sequence and map panes' });
+    const handle = (await separator.boundingBox())!;
+    const pointerX = handle.x + handle.width / 2;
+    const pointerY = handle.y + handle.height / 2;
+    await page.mouse.move(pointerX, pointerY);
+    await page.mouse.down();
+    await page.mouse.move(pointerX - 60, pointerY, { steps: 6 });
+
+    const nextHit = hits.nth(8);
+    const nextPosition = Number(await nextHit.locator('.motif-cs-motif-hit-position').textContent());
+    await nextHit.dispatchEvent('click');
+    await page.mouse.up();
+    await page.evaluate(() => new Promise<void>((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    }));
+
+    await expect(page.locator('.motif-cs-selection-name')).toHaveText(
+      `${nextPosition}-${nextPosition + 2} (3)`,
+    );
+    const focusedBlock = page.locator('.motif-cs-sequence [data-seq-focus="true"]');
+    await expect(focusedBlock).toBeInViewport();
+    await expect(focusedBlock.locator('.motif-cs-seq-hl:not(.motif-cs-seq-hl-motif)').first()).toBeVisible();
+  });
+
   test('pane resize modes clean up on blur and Escape docking', async ({ page }) => {
     await openArtifact(page, 640, 500);
     const toolsToggle = page.getByRole('button', { name: /Tools/ }).first();
