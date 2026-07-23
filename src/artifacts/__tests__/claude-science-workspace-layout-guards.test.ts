@@ -361,7 +361,7 @@ describe('Claude Science workspace layout guards', () => {
     expect(artifactSource).toContain("const TWO_ROW_LAYOUT_MEDIA = '(min-width: 640px) and (max-width: 1535px)';");
     expect(artifactSource).toContain("const OVERLAY_TOOLS_LAYOUT_MEDIA = '(max-width: 1535px)';");
     expect(artifactSource).toContain("sequence: { min: 240, max: 2000 }");
-    expect(artifactSource).toContain("map: { min: 300, max: 900 }");
+    expect(artifactSource).toContain("map: { min: 300, max: 2000 }");
     expect(artifactCss).toMatch(/\.motif-cs-resize-handle\[data-pane="sequence"\]\s*\{[\s\S]*?display:\s*block/);
     expect(artifactCss).toMatch(/@media \(min-width: 768px\) and \(max-width: 1535px\)[\s\S]*?\.motif-cs-resize-handle\[data-pane="inventory"\],[\s\S]*?\.motif-cs-resize-handle\[data-pane="sequence"\][\s\S]*?display:\s*block/);
     expect(artifactCss).toMatch(/@media \(min-width: 1536px\)[\s\S]*?\.motif-cs-resize-handle\[data-pane="tools"\][\s\S]*?display:\s*block/);
