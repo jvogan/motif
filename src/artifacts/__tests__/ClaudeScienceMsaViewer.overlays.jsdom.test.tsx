@@ -17,9 +17,13 @@ const overlayCss = readFileSync(resolve(here, '..', 'claude-science-msa.css'), '
 const artifactCss = readFileSync(resolve(here, '..', 'motif-artifact.css'), 'utf8');
 const viewerSource = readFileSync(resolve(here, '..', 'ClaudeScienceMsaViewer.tsx'), 'utf8');
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 /** Body of the rule block for `selector` that carries `needle`. */
 function ruleBlockContaining(css: string, selector: string, needle: string): string | null {
-  const re = new RegExp(`${selector.replace(/[.[\]]/g, '\\$&')}\\s*\\{([^}]*)\\}`, 'g');
+  const re = new RegExp(`${escapeRegExp(selector)}\\s*\\{([^}]*)\\}`, 'g');
   for (const match of css.matchAll(re)) if (match[1].includes(needle)) return match[1];
   return null;
 }
