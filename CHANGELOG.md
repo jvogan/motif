@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.3.0 — 2026-07-29
+
 - Updated runtime and build dependencies to clear current npm advisories,
   kept both Playwright packages aligned, and retained Node 22 as the supported
   type-definition baseline.
