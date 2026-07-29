@@ -163,7 +163,7 @@ check('plugin source has a matching, bounded manifest and skill', () => {
   assert.match(skill, /A request to open, show, reload, or retry an existing construct is a display\s+request/u);
   assert.match(skill, /Reuse the exact latest sequence, annotations, colors, and provenance/u);
   assert.match(manifest.version, /^\d+\.\d+\.\d+$/);
-  assert.equal(manifest.version, '0.2.1');
+  assert.equal(manifest.version, '0.3.0');
   assert.equal(manifest.version, artifactVersion);
   assert.ok(changelog.split(/\r?\n/u).some((line) => (
     line === `## ${manifest.version}` || line.startsWith(`## ${manifest.version} `)

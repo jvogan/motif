@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.0 — 2026-07-29
+
+- Expanded the full Motif workbench with more robust MSA and Sanger review,
+  typed results, pane layouts, sequence editing, and portable recovery flows.
+- Made discontinuous INSDC locations and NCBI genetic-code choices
+  authoritative across translation, interchange, cloning, and provenance.
+- Added public-safe examples and strengthened deterministic connector
+  packaging, dependency notices, validation, and browser coverage.
+- Updated the bounded connector runtime and build toolchain to resolve current
+  dependency advisories while retaining the supported Node 22 baseline.
+
 ## 0.2.1 — 2026-07-13
 
 - Documented the exact read-only Claude Science sandbox grant and full relaunch

@@ -1,6 +1,6 @@
 # Motif + Claude Science troubleshooting
 
-Last reviewed: July 13, 2026. Motif connector version: `0.2.1`.
+Last reviewed: July 29, 2026. Motif connector version: `0.3.0`.
 
 This guide covers the local `motif-local` connector only. It does not assume
 another application, connector, database, or product identity.

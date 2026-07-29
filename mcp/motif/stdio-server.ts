@@ -42,7 +42,7 @@ async function readVersion(): Promise<string> {
       // Fall through to the next supported manifest location.
     }
   }
-  return '0.2.1';
+  return '0.3.0';
 }
 
 async function readRuntimeBuildId(workbenchPath: string): Promise<string> {
