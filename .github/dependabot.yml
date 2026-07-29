@@ -5,8 +5,34 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    groups:
+      playwright:
+        patterns:
+          - playwright
+          - "@playwright/test"
+      node-types:
+        patterns:
+          - "@types/node"
+      development-minor-and-patch:
+        dependency-type: development
+        update-types:
+          - minor
+          - patch
+        exclude-patterns:
+          - playwright
+          - "@playwright/test"
+          - "@types/node"
+      production-minor-and-patch:
+        dependency-type: production
+        update-types:
+          - minor
+          - patch
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    groups:
+      github-actions:
+        patterns:
+          - "*"
