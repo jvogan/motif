@@ -66,7 +66,6 @@ export function prositeToRegexSource(pattern: string, _alphabet: PrositeAlphabet
     if (ch === '>') {
       if (i !== raw.length - 1) return null; // `>` only legal at the very end
       anchorEnd = true;
-      i += 1;
       break;
     }
     if (ch === '-') { i += 1; continue; } // element separator (optional but standard)
@@ -179,7 +178,6 @@ export function parsePrositePattern(
     if (ch === '>') {
       if (i !== raw.length - 1) return null;
       anchorEnd = true;
-      i += 1;
       break;
     }
     if (ch === '-') { i += 1; continue; }

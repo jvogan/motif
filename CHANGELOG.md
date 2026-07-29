@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Updated runtime and build dependencies to clear current npm advisories,
+  kept both Playwright packages aligned, and retained Node 22 as the supported
+  type-definition baseline.
 - Preserved range-note and pinned-translation anchors across sequence edits,
   separated session hydration from durable checkpoints, and made browser
   download receipts honest about unverified saves.

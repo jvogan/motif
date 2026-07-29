@@ -27,6 +27,10 @@ export default defineConfig([
       },
     },
     rules: {
+      // Motif intentionally replaces parser/runtime failures with bounded,
+      // public-safe messages. Attaching raw causes can retain paths or input
+      // details that must not cross the connector's error boundary.
+      'preserve-caught-error': 'off',
       // Keep core hook rules active while allowing intentional manual
       // memoization and ref/effect patterns in the portable workbench.
       'react-hooks/preserve-manual-memoization': 'off',
@@ -75,6 +79,9 @@ export default defineConfig([
   {
     files: ['src/**/*.{ts,tsx}'],
     rules: {
+      // The workbench reads and updates DOM geometry through guarded layout
+      // effects; the rule treats those DOM references as immutable state.
+      'react-hooks/immutability': 'off',
       'react-hooks/preserve-manual-memoization': 'off',
       'react-hooks/refs': 'off',
       'react-hooks/set-state-in-effect': 'off',
