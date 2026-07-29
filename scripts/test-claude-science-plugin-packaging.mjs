@@ -165,7 +165,9 @@ check('plugin source has a matching, bounded manifest and skill', () => {
   assert.match(manifest.version, /^\d+\.\d+\.\d+$/);
   assert.equal(manifest.version, '0.2.1');
   assert.equal(manifest.version, artifactVersion);
-  assert.match(changelog, new RegExp(`^## ${manifest.version.replace(/\./g, '\\.')}(?:\\s|$)`, 'm'));
+  assert.ok(changelog.split(/\r?\n/u).some((line) => (
+    line === `## ${manifest.version}` || line.startsWith(`## ${manifest.version} `)
+  )));
   assert.ok(existsSync(join(pluginSource, runnerRelativePath)));
   assert.ok(existsSync(join(pluginSource, 'skills/motif-for-claude-science/scripts/analysis-validator.mjs')));
   assert.ok(existsSync(join(pluginSource, 'skills/motif-for-claude-science/scripts/workspace-validator.mjs')));

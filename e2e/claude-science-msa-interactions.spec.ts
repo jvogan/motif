@@ -193,6 +193,11 @@ test.describe('Motif MSA viewer interactions', () => {
     await expect(activeGridCell(page).locator('xpath=..').locator('xpath=..')).toHaveAttribute('data-msa-row-index', '1');
 
     await page.keyboard.press('End');
+    // The End navigation virtualizes a new cell at the far edge before focus
+    // follows it. Wait for that handoff so the next chord cannot land on the
+    // temporarily unfocused document under slower CI runners.
+    await expect(activeGridCell(page)).toBeFocused();
+    await expect(activeGridCell(page)).toHaveAttribute('data-alignment-column', '120');
     await page.keyboard.press('Control+Home');
     await expect(activeGridCell(page)).toBeFocused();
     await expect(activeGridCell(page)).toHaveAttribute('data-alignment-column', '1');
