@@ -3672,7 +3672,7 @@ export function ClaudeScienceMsaViewer({
     try {
       ok = await onCopy(label, content);
     } catch {
-      ok = false;
+      // Keep the default failure state and show the bounded recovery message.
     }
     if (copyStatusTimerRef.current !== null) window.clearTimeout(copyStatusTimerRef.current);
     setCopyStatus({
