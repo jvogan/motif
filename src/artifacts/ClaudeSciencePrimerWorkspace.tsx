@@ -185,7 +185,7 @@ function initialPresetForIntent(intent: ClaudeSciencePrimerIntent): PrimerPreset
 }
 
 function normalizeInitialTail(value: string | undefined): string {
-  return (value ?? '').toUpperCase().replace(/[^A-Z]/g, '');
+  return (value ?? '').replace(/\s+/g, '').toUpperCase();
 }
 
 function clamp(value: number, minimum: number, maximum: number): number {
@@ -225,6 +225,9 @@ function filenameFor(recordName: string): string {
 }
 
 function diagnosticMessage(result: PrimerPairResult): string {
+  if (result.warnings && result.warnings.length > 0) {
+    return `${result.warnings.join(' ')} ${result.forwardCount + result.reverseCount === 0 ? 'No exact primer candidates were evaluated.' : 'Review the affected candidates before ordering.'}`;
+  }
   if (result.forwardCount > 0 && result.reverseCount > 0) {
     const reasons: string[] = [];
     if (result.rejections.tmDiff > 0) reasons.push(`${result.rejections.tmDiff.toLocaleString()} pairings exceeded ΔTm 5 °C`);
@@ -249,8 +252,8 @@ function hasClamp(candidate: PrimerCandidate): boolean {
   return /[GC]/.test(candidate.sequence.slice(-5).toUpperCase());
 }
 
-function qualityState(deltaG: number, cutoff: number): 'pass' | 'review' {
-  return deltaG < cutoff ? 'review' : 'pass';
+function qualityState(deltaG: number, cutoff: number, status: 'exact' | 'ambiguous' | 'invalid' = 'exact'): 'pass' | 'review' {
+  return status !== 'exact' || deltaG < cutoff ? 'review' : 'pass';
 }
 
 function Metric({ label, value, state }: { label: string; value: string; state?: 'pass' | 'review' }) {
@@ -285,6 +288,7 @@ export function ClaudeSciencePrimerWorkspace({
 }: ClaudeSciencePrimerWorkspaceProps) {
   const titleId = useId();
   const statusId = useId();
+  const validationMessageId = useId();
   const workspaceRef = useRef<HTMLElement>(null);
   const initialFocusRef = useRef<HTMLButtonElement>(null);
   const initialTarget = useMemo(
@@ -376,17 +380,24 @@ export function ClaudeSciencePrimerWorkspace({
     () => record.sequence.toUpperCase().replace(/U/g, 'T').replace(/\s/g, ''),
     [record.sequence],
   );
+  const targetRangeInvalid = targetStart < 1 || targetEnd > normalizedSequence.length || targetEnd <= targetStart;
+  const lengthInvalid = minLength < 12 || maxLength > 60 || minLength > maxLength;
+  const targetTmInvalid = targetTm < 40 || targetTm > 80;
+  const gcInvalid = minGC < 0 || maxGC > 100 || minGC > maxGC;
+  const fieldDescription = (invalid: boolean): string => invalid
+    ? `${statusId} ${validationMessageId}`
+    : statusId;
   const validationMessage = useMemo(() => {
     if (normalizedSequence.length < 24) return 'The record is too short for paired primer design.';
-    if (targetStart < 1 || targetEnd > normalizedSequence.length || targetEnd <= targetStart) {
+    if (targetRangeInvalid) {
       return `Use a non-wrapping target inside 1–${normalizedSequence.length.toLocaleString()}.`;
     }
-    if (minLength < 12 || maxLength > 60 || minLength > maxLength) return 'Primer length must be 12–60 nt, with minimum no larger than maximum.';
-    if (targetTm < 40 || targetTm > 80) return 'Target Tm must be between 40 and 80 °C.';
-    if (minGC < 0 || maxGC > 100 || minGC > maxGC) return 'GC range must be 0–100%, with minimum no larger than maximum.';
-    if (!/^[ACGTN]+$/.test(normalizedSequence)) return 'Primer design supports nucleotide records containing A, C, G, T/U, and N.';
+    if (lengthInvalid) return 'Primer length must be 12–60 nt, with minimum no larger than maximum.';
+    if (targetTmInvalid) return 'Target Tm must be between 40 and 80 °C.';
+    if (gcInvalid) return 'GC range must be 0–100%, with minimum no larger than maximum.';
+    if (!/^[ACGTURYSWKMBDHVN]+$/.test(normalizedSequence)) return 'Primer design supports nucleotide records containing IUPAC DNA/RNA symbols only.';
     return '';
-  }, [maxGC, maxLength, minGC, minLength, normalizedSequence, targetEnd, targetStart, targetTm]);
+  }, [gcInvalid, lengthInvalid, normalizedSequence, targetRangeInvalid, targetTmInvalid]);
 
   const parameters = useMemo<PrimerDesignParams>(() => ({
     targetStart: targetStart - 1,
@@ -608,11 +619,11 @@ export function ClaudeSciencePrimerWorkspace({
             <div className="motif-cs-primer-field-grid">
               <label>
                 <span>Target start</span>
-                <input aria-describedby={statusId} name="primer-target-start" type="number" inputMode="numeric" autoComplete="off" min={1} max={normalizedSequence.length} value={targetStart} onChange={(event) => { setTargetStart(Number(event.target.value)); markCustom(); }} />
+                <input aria-invalid={targetRangeInvalid || undefined} aria-describedby={fieldDescription(targetRangeInvalid)} name="primer-target-start" type="number" inputMode="numeric" autoComplete="off" min={1} max={normalizedSequence.length} value={targetStart} onChange={(event) => { setTargetStart(Number(event.target.value)); markCustom(); }} />
               </label>
               <label>
                 <span>Target end</span>
-                <input aria-describedby={statusId} name="primer-target-end" type="number" inputMode="numeric" autoComplete="off" min={1} max={normalizedSequence.length} value={targetEnd} onChange={(event) => { setTargetEnd(Number(event.target.value)); markCustom(); }} />
+                <input aria-invalid={targetRangeInvalid || undefined} aria-describedby={fieldDescription(targetRangeInvalid)} name="primer-target-end" type="number" inputMode="numeric" autoComplete="off" min={1} max={normalizedSequence.length} value={targetEnd} onChange={(event) => { setTargetEnd(Number(event.target.value)); markCustom(); }} />
               </label>
             </div>
             {selectedRange ? (
@@ -627,19 +638,19 @@ export function ClaudeSciencePrimerWorkspace({
             <div className="motif-cs-primer-field-grid">
               <label>
                 <span>Target Tm <small>°C</small></span>
-                <input name="primer-target-tm" type="number" inputMode="decimal" autoComplete="off" min={40} max={80} step={1} value={targetTm} onChange={(event) => { setTargetTm(Number(event.target.value)); markCustom(); }} />
+                <input aria-invalid={targetTmInvalid || undefined} aria-describedby={fieldDescription(targetTmInvalid)} name="primer-target-tm" type="number" inputMode="decimal" autoComplete="off" min={40} max={80} step={1} value={targetTm} onChange={(event) => { setTargetTm(Number(event.target.value)); markCustom(); }} />
               </label>
               <label>
                 <span>Tolerance <small>± °C</small></span>
-                <input name="primer-tm-tolerance" type="number" inputMode="decimal" autoComplete="off" min={1} max={15} step={1} value={tmTolerance} onChange={(event) => { setTmTolerance(clamp(Number(event.target.value), 1, 15)); markCustom(); }} />
+                <input aria-describedby={statusId} name="primer-tm-tolerance" type="number" inputMode="decimal" autoComplete="off" min={1} max={15} step={1} value={tmTolerance} onChange={(event) => { setTmTolerance(clamp(Number(event.target.value), 1, 15)); markCustom(); }} />
               </label>
               <label>
                 <span>Minimum length</span>
-                <input name="primer-min-length" type="number" inputMode="numeric" autoComplete="off" min={12} max={60} step={1} value={minLength} onChange={(event) => { setMinLength(Number(event.target.value)); markCustom(); }} />
+                <input aria-invalid={lengthInvalid || undefined} aria-describedby={fieldDescription(lengthInvalid)} name="primer-min-length" type="number" inputMode="numeric" autoComplete="off" min={12} max={60} step={1} value={minLength} onChange={(event) => { setMinLength(Number(event.target.value)); markCustom(); }} />
               </label>
               <label>
                 <span>Maximum length</span>
-                <input name="primer-max-length" type="number" inputMode="numeric" autoComplete="off" min={12} max={60} step={1} value={maxLength} onChange={(event) => { setMaxLength(Number(event.target.value)); markCustom(); }} />
+                <input aria-invalid={lengthInvalid || undefined} aria-describedby={fieldDescription(lengthInvalid)} name="primer-max-length" type="number" inputMode="numeric" autoComplete="off" min={12} max={60} step={1} value={maxLength} onChange={(event) => { setMaxLength(Number(event.target.value)); markCustom(); }} />
               </label>
             </div>
           </section>
@@ -650,11 +661,11 @@ export function ClaudeSciencePrimerWorkspace({
               <div className="motif-cs-primer-field-grid">
                 <label>
                   <span>Minimum GC <small>%</small></span>
-                  <input name="primer-min-gc" type="number" inputMode="decimal" autoComplete="off" min={0} max={100} value={minGC} onChange={(event) => { setMinGC(Number(event.target.value)); markCustom(); }} />
+                  <input aria-invalid={gcInvalid || undefined} aria-describedby={fieldDescription(gcInvalid)} name="primer-min-gc" type="number" inputMode="decimal" autoComplete="off" min={0} max={100} value={minGC} onChange={(event) => { setMinGC(Number(event.target.value)); markCustom(); }} />
                 </label>
                 <label>
                   <span>Maximum GC <small>%</small></span>
-                  <input name="primer-max-gc" type="number" inputMode="decimal" autoComplete="off" min={0} max={100} value={maxGC} onChange={(event) => { setMaxGC(Number(event.target.value)); markCustom(); }} />
+                  <input aria-invalid={gcInvalid || undefined} aria-describedby={fieldDescription(gcInvalid)} name="primer-max-gc" type="number" inputMode="decimal" autoComplete="off" min={0} max={100} value={maxGC} onChange={(event) => { setMaxGC(Number(event.target.value)); markCustom(); }} />
                 </label>
                 <label>
                   <span>Flanking scan <small>nt</small></span>
@@ -668,7 +679,7 @@ export function ClaudeSciencePrimerWorkspace({
               <div className="motif-cs-primer-tail-grid">
                 <label>
                   <span>Forward 5′ tail</span>
-                  <input className="motif-cs-primer-sequence-input" autoComplete="off" spellCheck={false} value={forwardTail} onChange={(event) => { setForwardTail(event.target.value.replace(/[^A-Za-z]/g, '')); markCustom(); }} placeholder="Optional sequence" />
+                  <input className="motif-cs-primer-sequence-input" autoComplete="off" spellCheck={false} value={forwardTail} onChange={(event) => { setForwardTail(event.target.value.replace(/\s+/g, '').toUpperCase()); markCustom(); }} placeholder="Optional sequence" />
                 </label>
                 <label>
                   <span>Tail preset</span>
@@ -679,7 +690,7 @@ export function ClaudeSciencePrimerWorkspace({
                 </label>
                 <label>
                   <span>Reverse 5′ tail</span>
-                  <input className="motif-cs-primer-sequence-input" autoComplete="off" spellCheck={false} value={reverseTail} onChange={(event) => { setReverseTail(event.target.value.replace(/[^A-Za-z]/g, '')); markCustom(); }} placeholder="Optional sequence" />
+                  <input className="motif-cs-primer-sequence-input" autoComplete="off" spellCheck={false} value={reverseTail} onChange={(event) => { setReverseTail(event.target.value.replace(/\s+/g, '').toUpperCase()); markCustom(); }} placeholder="Optional sequence" />
                 </label>
                 <label>
                   <span>Tail preset</span>
@@ -704,7 +715,7 @@ export function ClaudeSciencePrimerWorkspace({
           </div>
 
           {validationMessage ? (
-            <div className="motif-cs-primer-empty" role="alert"><strong>Cannot design primers</strong><p>{validationMessage}</p></div>
+            <div className="motif-cs-primer-empty" role="alert" id={validationMessageId}><strong>Cannot design primers</strong><p>{validationMessage}</p></div>
           ) : pairs.length === 0 ? (
             <div className="motif-cs-primer-empty" role="status"><strong>No passing pair</strong><p>{result ? diagnosticMessage(result) : 'Adjust the design conditions.'}</p></div>
           ) : (
@@ -739,8 +750,8 @@ export function ClaudeSciencePrimerWorkspace({
                   </div>
 
                   {([
-                    ['Forward', selectedPair.forward, selectedDiagnostics.forwardHairpin.deltaG, selectedDiagnostics.forwardDimer.deltaG],
-                    ['Reverse', selectedPair.reverse, selectedDiagnostics.reverseHairpin.deltaG, selectedDiagnostics.reverseDimer.deltaG],
+                    ['Forward', selectedPair.forward, selectedDiagnostics.forwardHairpin, selectedDiagnostics.forwardDimer],
+                    ['Reverse', selectedPair.reverse, selectedDiagnostics.reverseHairpin, selectedDiagnostics.reverseDimer],
                   ] as const).map(([label, candidate, hairpin, dimer]) => (
                     <div className="motif-cs-primer-oligo" key={label}>
                       <div className="motif-cs-primer-oligo-name"><strong>{label}</strong><span>{candidate.start + 1}–{candidate.end}</span></div>
@@ -750,16 +761,16 @@ export function ClaudeSciencePrimerWorkspace({
                         <Metric label="GC" value={`${candidate.gcPercent.toFixed(0)}%`} />
                         <Metric label="Length" value={`${candidate.fullLength} nt`} />
                         <Metric label="3′ clamp" value={hasClamp(candidate) ? 'Yes' : 'No'} state={hasClamp(candidate) ? 'pass' : 'review'} />
-                        <Metric label="Hairpin ΔG" value={`${hairpin.toFixed(1)}`} state={qualityState(hairpin, -3)} />
-                        <Metric label="Self-dimer ΔG" value={`${dimer.toFixed(1)}`} state={qualityState(dimer, -5)} />
+                        <Metric label="Hairpin ΔG" value={`${hairpin.deltaG.toFixed(1)}${hairpin.status === 'exact' ? '' : ' · review'}`} state={qualityState(hairpin.deltaG, -3, hairpin.status)} />
+                        <Metric label="Self-dimer ΔG" value={`${dimer.deltaG.toFixed(1)}${dimer.status === 'exact' ? '' : ' · review'}`} state={qualityState(dimer.deltaG, -5, dimer.status)} />
                       </div>
                     </div>
                   ))}
 
-                  <div className="motif-cs-primer-cross-check" data-state={qualityState(selectedDiagnostics.crossDimer.deltaG, -5)}>
+                  <div className="motif-cs-primer-cross-check" data-state={qualityState(selectedDiagnostics.crossDimer.deltaG, -5, selectedDiagnostics.crossDimer.status)}>
                     <span>Cross-dimer check</span>
-                    <strong>ΔG {selectedDiagnostics.crossDimer.deltaG.toFixed(1)} kcal/mol</strong>
-                    <small>{selectedDiagnostics.crossDimer.deltaG < -5 ? 'Review before ordering' : 'No strong pair interaction predicted'}</small>
+                    <strong>ΔG {selectedDiagnostics.crossDimer.deltaG.toFixed(1)} kcal/mol{selectedDiagnostics.crossDimer.status === 'exact' ? '' : ' · review'}</strong>
+                    <small>{selectedDiagnostics.crossDimer.status !== 'exact' || selectedDiagnostics.crossDimer.deltaG < -5 ? 'Review before ordering' : 'No strong pair interaction predicted'}</small>
                   </div>
                 </section>
               ) : null}

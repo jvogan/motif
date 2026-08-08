@@ -16,8 +16,20 @@ function feature(name: string, overrides: Partial<Feature>): Feature {
   };
 }
 
+function expectBoundedFeatures(result: { sequence: string; features: Feature[] }): void {
+  for (const candidate of result.features) {
+    expect(candidate.start).toBeGreaterThanOrEqual(0);
+    expect(candidate.end).toBeLessThanOrEqual(result.sequence.length);
+    for (const range of candidate.subRanges ?? []) {
+      expect(range.start).toBeGreaterThanOrEqual(0);
+      expect(range.end).toBeLessThanOrEqual(result.sequence.length);
+      expect(range.end).toBeGreaterThan(range.start);
+    }
+  }
+}
+
 describe('Gibson assembly feature locations', () => {
-  it('clips authoritative multipart pieces and rebuilds their product envelope', () => {
+  it('maps deduplicated overlap pieces and rebuilds their product envelope', () => {
     const result = gibsonAssemble([
       {
         name: 'A',
@@ -66,17 +78,26 @@ describe('Gibson assembly feature locations', () => {
       ],
     });
     expect(result.features.find(({ name }) => name === 'trimmed multipart')).toMatchObject({
-      start: 7,
+      start: 4,
       end: 12,
       subRanges: [
         { start: 10, end: 12, strand: -1 },
-        { start: 7, end: 9, strand: -1 },
+        { start: 4, end: 6, strand: -1 },
+        { start: 6, end: 9, strand: -1 },
       ],
     });
-    expect(result.features.some(({ name }) => name === 'overlap-only multipart')).toBe(false);
+    expect(result.features.find(({ name }) => name === 'overlap-only multipart')).toMatchObject({
+      start: 4,
+      end: 6,
+      subRanges: [{ start: 4, end: 6, strand: 1 }],
+    });
+    const trimmed = result.features.find(({ name }) => name === 'trimmed multipart');
+    expect(trimmed).toMatchObject({ id: 'trimmed multipart-id' });
+    expect(trimmed?.metadata.partial).toBeUndefined();
+    expectBoundedFeatures(result);
   });
 
-  it('clips features after removing the duplicate closing overlap', () => {
+  it('maps the removed closing overlap to the retained origin seam', () => {
     const result = gibsonAssemble([
       { name: 'A', sequence: 'TTTAAAACCC' },
       {
@@ -105,15 +126,50 @@ describe('Gibson assembly feature locations', () => {
     expect(result.success).toBe(true);
     expect(result.sequence).toBe('TTTAAAACCCGGG');
     expect(result.features.find(({ name }) => name === 'closing-tail multipart')).toMatchObject({
-      start: 11,
+      start: 0,
       end: 13,
-      subRanges: [{ start: 11, end: 13, strand: -1 }],
+      subRanges: [
+        { start: 0, end: 3, strand: -1 },
+        { start: 11, end: 13, strand: -1 },
+      ],
     });
     expect(result.features.find(({ name }) => name === 'closing-tail crossing')).toMatchObject({
-      start: 12,
+      start: 0,
       end: 13,
+      subRanges: [
+        { start: 12, end: 13, strand: 1 },
+        { start: 0, end: 2, strand: 1 },
+      ],
     });
-    expect(result.features.some(({ name }) => name === 'closing-tail only')).toBe(false);
-    expect(result.features.every(({ start, end }) => start >= 0 && end <= result.sequence.length)).toBe(true);
+    expect(result.features.find(({ name }) => name === 'closing-tail only')).toMatchObject({
+      start: 0,
+      end: 3,
+      subRanges: [{ start: 0, end: 3, strand: 1 }],
+    });
+    const crossing = result.features.find(({ name }) => name === 'closing-tail crossing');
+    expect(crossing?.metadata.partial).toBeUndefined();
+    expectBoundedFeatures(result);
+  });
+
+  it.each([1, -1] as const)('keeps full-length forward/reverse features bounded through both seams (strand %s)', (strand) => {
+    const result = gibsonAssemble([
+      {
+        name: 'head',
+        sequence: 'TTTAAAACCC',
+        features: [feature('head feature', { start: 0, end: 10, strand })],
+      },
+      {
+        name: 'tail',
+        sequence: 'CCCGGGTTT',
+        features: [feature('tail feature', { start: 0, end: 9, strand })],
+      },
+    ], 3, 3, 'circular');
+
+    expect(result.success).toBe(true);
+    expectBoundedFeatures(result);
+    expect(result.features.filter(({ name }) => name.endsWith('feature'))).toHaveLength(2);
+    expect(result.features.filter(({ name }) => name.endsWith('feature')).every(({ metadata }) => (
+      metadata.partial === undefined
+    ))).toBe(true);
   });
 });

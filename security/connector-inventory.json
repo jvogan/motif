@@ -1,0 +1,22 @@
+{
+  "schema": "motif.reviewed-connector-inventory.v1",
+  "packages": [
+    {
+      "name": "@modelcontextprotocol/ext-apps",
+      "packagePath": ["@modelcontextprotocol", "ext-apps"],
+      "licenseFile": "mcp-ext-apps-LICENSE.txt"
+    },
+    {
+      "name": "@modelcontextprotocol/sdk",
+      "packagePath": ["@modelcontextprotocol", "sdk"],
+      "licenseFile": "mcp-sdk-LICENSE.txt"
+    },
+    { "name": "ajv", "packagePath": ["ajv"], "licenseFile": "ajv-LICENSE.txt" },
+    { "name": "ajv-formats", "packagePath": ["ajv-formats"], "licenseFile": "ajv-formats-LICENSE.txt" },
+    { "name": "fast-deep-equal", "packagePath": ["fast-deep-equal"], "licenseFile": "fast-deep-equal-LICENSE.txt" },
+    { "name": "fast-uri", "packagePath": ["fast-uri"], "licenseFile": "fast-uri-LICENSE.txt" },
+    { "name": "json-schema-traverse", "packagePath": ["json-schema-traverse"], "licenseFile": "json-schema-traverse-LICENSE.txt" },
+    { "name": "zod", "packagePath": ["zod"], "licenseFile": "zod-LICENSE.txt" },
+    { "name": "zod-to-json-schema", "packagePath": ["zod-to-json-schema"], "licenseFile": "zod-to-json-schema-LICENSE.txt" }
+  ]
+}

@@ -153,3 +153,10 @@ Records edited in the browser are session-only until an exported file is
 verified on disk. Database JSON and ZIP preserve the complete artifact record;
 GenBank and GFF3 are intentionally basic interchange exports. A browser
 download request is not itself proof that a checkpoint was saved.
+
+GenBank import preserves repeated qualifiers and raw locations with
+feature-specific diagnostics. Fuzzy bounds remain guarded when their
+coordinates are still representable; valid between-base and remote-accession
+locations are retained but quarantined because Motif cannot project them onto
+the local sequence. Do not describe the Basic GenBank export as full INSDC
+support; use Database JSON or ZIP for a complete checkpoint.

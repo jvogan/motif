@@ -30,6 +30,12 @@ const STRUCTURED_PREVIEW_MAX_OBJECT_KEYS = 40;
 const STRUCTURED_PREVIEW_MAX_STRING_LENGTH = 600;
 const STRUCTURED_PREVIEW_MAX_CHARACTERS = 6_000;
 
+type DeleteFocusRestore = {
+  id: string;
+  index: number;
+  mode: 'same' | 'next';
+};
+
 function resultTimestamp(value: string): string {
   const timestamp = Date.parse(value);
   if (!Number.isFinite(timestamp)) return value;
@@ -134,9 +140,11 @@ export function ClaudeScienceWorkflowHistoryPanel({
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [visibleCount, setVisibleCount] = useState(RESULT_PAGE_SIZE);
   const [status, setStatus] = useState('');
+  const historyRef = useRef<HTMLElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
   const deleteRefs = useRef(new Map<string, HTMLButtonElement>());
   const restoreFocusIdRef = useRef<string | null>(null);
+  const restoreAfterDeleteRef = useRef<DeleteFocusRestore | null>(null);
   const ordered = useMemo(() => [...results].sort((left, right) => (
     Date.parse(right.createdAt) - Date.parse(left.createdAt) || left.id.localeCompare(right.id)
   )), [results]);
@@ -148,10 +156,26 @@ export function ClaudeScienceWorkflowHistoryPanel({
       cancelRef.current?.focus();
       return;
     }
+    const afterDelete = restoreAfterDeleteRef.current;
+    restoreAfterDeleteRef.current = null;
+    if (afterDelete) {
+      if (afterDelete.mode === 'same') {
+        deleteRefs.current.get(afterDelete.id)?.focus();
+        return;
+      }
+      const currentIds = visibleResults.map((result) => result.id);
+      const nextId = currentIds[Math.min(afterDelete.index, currentIds.length - 1)];
+      if (nextId) {
+        deleteRefs.current.get(nextId)?.focus();
+      } else {
+        historyRef.current?.focus({ preventScroll: true });
+      }
+      return;
+    }
     const id = restoreFocusIdRef.current;
     restoreFocusIdRef.current = null;
     if (id) deleteRefs.current.get(id)?.focus();
-  }, [pendingDeleteId]);
+  }, [ordered.length, pendingDeleteId, visibleResults]);
 
   const cancelDelete = (resultId: string) => {
     restoreFocusIdRef.current = resultId;
@@ -159,13 +183,15 @@ export function ClaudeScienceWorkflowHistoryPanel({
   };
 
   const confirmDelete = (resultId: string) => {
+    const index = Math.max(0, visibleResults.findIndex((result) => result.id === resultId));
     const removed = onRemove(resultId);
+    restoreAfterDeleteRef.current = { id: resultId, index, mode: removed === false ? 'same' : 'next' };
     setPendingDeleteId(null);
     setStatus(removed === false ? 'Remove linked results first.' : 'Workflow result removed.');
   };
 
   return (
-    <section className="motif-cs-workflow-history" aria-label="Saved workflow results">
+    <section ref={historyRef} className="motif-cs-workflow-history" aria-label="Saved workflow results" tabIndex={-1}>
       {ordered.length === 0 ? (
         <div className="motif-cs-workflow-empty">
           <strong>No saved results</strong>

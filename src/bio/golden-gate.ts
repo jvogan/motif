@@ -1,6 +1,15 @@
-import type { Feature, RestrictionEnzyme } from './types';
+import type { CodonTable, Feature, RestrictionEnzyme } from './types';
 import { RESTRICTION_ENZYMES } from './restriction-sites';
 import { reverseComplement } from './reverse-complement';
+import { getAminoAcidToCodons, resolveTranslationTable } from './codon-tables';
+import { featureLocationSegments } from './feature-location';
+import { translateCompleteCds } from './translate';
+import {
+  aliasRemovedProductCoordinates,
+  emptySourceToProductMap,
+  mapFeatureThroughSourceCoordinates,
+  type SourceToProductCoordinateMap,
+} from './assembly-feature-mapping';
 
 export interface GoldenGatePart {
   id?: string;
@@ -66,7 +75,7 @@ export interface OverhangValidation {
   valid: boolean;
   overhangs: string[];
   issues: Array<{
-    type: 'duplicate' | 'palindromic' | 'near_identical' | 'open_chain';
+    type: 'duplicate' | 'palindromic' | 'near_identical' | 'open_chain' | 'preparation';
     overhangs: string[];
     description: string;
   }>;
@@ -130,6 +139,7 @@ function unsupportedEnzymeError(enzymeName: string): string {
  * Look up a supported Golden Gate Type IIS enzyme by name.
  */
 function getEnzyme(enzymeName: string): RestrictionEnzyme | null {
+  if (typeof enzymeName !== 'string') return null;
   const normalized = enzymeName.trim().toLowerCase();
   if (!GOLDEN_GATE_ENZYME_NAME_SET.has(normalized)) return null;
   return (
@@ -137,6 +147,11 @@ function getEnzyme(enzymeName: string): RestrictionEnzyme | null {
     GOLDEN_GATE_EXTRA_ENZYMES.find((e) => e.name.toLowerCase() === normalized) ??
     null
   );
+}
+
+/** Public lookup used by typed cloning adapters and validation clients. */
+export function getGoldenGateEnzyme(enzymeName: string): RestrictionEnzyme | null {
+  return getEnzyme(enzymeName);
 }
 
 /**
@@ -225,44 +240,40 @@ function hammingDistance(a: string, b: string): number {
   return d;
 }
 
-/**
- * Keep the portions of a feature that fall inside one source span and place
- * them in product coordinates. Multipart locations are authoritative: their
- * stored biological order is preserved, empty pieces are removed, and the
- * aggregate bounds are rebuilt from the surviving pieces.
- */
-function clipFeatureToSpan(
-  feature: Feature,
-  sourceStart: number,
-  sourceEnd: number,
-  destinationStart: number,
-  rekey = false,
-): Feature | null {
-  if (sourceEnd <= sourceStart) return null;
+function sourceMapForInsert(
+  sourceLength: number,
+  insertStart: number,
+  insertLength: number,
+): SourceToProductCoordinateMap {
+  const map = emptySourceToProductMap(sourceLength, insertLength);
+  for (let source = 0; source < insertLength; source++) map.sourceToProduct[insertStart + source] = source;
+  return map;
+}
 
-  const hasSubRanges = feature.subRanges !== undefined;
-  const sourceRanges = hasSubRanges
-    ? feature.subRanges!
-    : [{ start: feature.start, end: feature.end, strand: feature.strand }];
-  const mappedRanges = sourceRanges.flatMap((range) => {
-    const clippedStart = Math.max(range.start, sourceStart);
-    const clippedEnd = Math.min(range.end, sourceEnd);
-    if (clippedEnd <= clippedStart) return [];
-    return [{
-      ...range,
-      start: destinationStart + clippedStart - sourceStart,
-      end: destinationStart + clippedEnd - sourceStart,
-    }];
-  });
-  if (mappedRanges.length === 0) return null;
+function fillFirstInsertMap(map: SourceToProductCoordinateMap): void {
+  for (let source = 0; source < map.sourceLength; source++) map.sourceToProduct[source] = source;
+}
 
-  const { subRanges: _subRanges, ...featureWithoutSubRanges } = feature;
+function fillNextInsertMap(
+  map: SourceToProductCoordinateMap,
+  productOffset: number,
+  overlapLength: number,
+): void {
+  for (let source = 0; source < map.sourceLength; source++) {
+    map.sourceToProduct[source] = source < overlapLength
+      ? productOffset - overlapLength + source
+      : productOffset + source - overlapLength;
+  }
+}
+
+function finalProductMapForAssembly(length: number, removedLength: number): SourceToProductCoordinateMap {
+  const productLength = length - removedLength;
   return {
-    ...featureWithoutSubRanges,
-    ...(rekey ? { id: crypto.randomUUID() } : {}),
-    start: Math.min(...mappedRanges.map((range) => range.start)),
-    end: Math.max(...mappedRanges.map((range) => range.end)),
-    ...(hasSubRanges ? { subRanges: mappedRanges } : {}),
+    sourceLength: length,
+    productLength,
+    sourceToProduct: Array.from({ length }, (_, source) => (
+      source < productLength ? source : source - productLength
+    )),
   };
 }
 
@@ -358,16 +369,6 @@ function createJunctionFeature(
   );
 }
 
-function clampFeatureToLength(feature: Feature, length: number): Feature | null {
-  return clipFeatureToSpan(feature, 0, length, 0);
-}
-
-function clampFeaturesToLength(features: Feature[], length: number): Feature[] {
-  return features
-    .map((feature) => clampFeatureToLength(feature, length))
-    .filter((feature): feature is Feature => feature !== null);
-}
-
 interface DigestedAssemblyPart {
   id?: string;
   name: string;
@@ -443,12 +444,14 @@ function digestGoldenGateParts(
       continue;
     }
 
-    // Shift features to be relative to the insert, clamping those that
-    // partially overlap the overhang regions instead of dropping them.
+    // Map features from the full source part into the released insert. Bases
+    // outside the digest window are genuinely absent and therefore, and only
+    // therefore, mark a surviving feature partial.
     const insertLength = insert.length;
+    const insertMap = sourceMapForInsert(part.sequence.length, leftCut, insertLength);
     const shiftedFeatures: Feature[] = [];
     for (const feat of part.features ?? []) {
-      const shifted = clipFeatureToSpan(feat, leftCut, leftCut + insertLength, 0, true);
+      const shifted = mapFeatureThroughSourceCoordinates(feat, insertMap);
       if (shifted) shiftedFeatures.push(shifted);
     }
 
@@ -776,7 +779,28 @@ export function validateGoldenGateOverhangs(
     return { valid: false, overhangs: [], issues };
   }
 
-  const { digested } = digestGoldenGateParts(parts, enz);
+  const { digested, errors: digestErrors } = digestGoldenGateParts(parts, enz);
+  for (const error of digestErrors) {
+    issues.push({
+      type: 'preparation',
+      overhangs: [],
+      description: error,
+    });
+  }
+
+  if (parts.length === 0) {
+    issues.push({
+      type: 'preparation',
+      overhangs: [],
+      description: 'Golden Gate validation requires at least one part',
+    });
+  } else if (digested.length === 0) {
+    issues.push({
+      type: 'preparation',
+      overhangs: [],
+      description: 'No analyzable Golden Gate parts were found',
+    });
+  }
   const leftOverhangs = digested.map((d) => d.oh5);
   const rightOverhangs = digested.map((d) => d.rightOverhang);
   const unique = [...new Set([...leftOverhangs, ...rightOverhangs])];
@@ -969,10 +993,13 @@ export function goldenGateAssemble(
 
   // --- Step 3: Assemble by ligating inserts, joining at matching overhangs ---
   // Each insert starts with oh5 and ends with the complement of oh3.
-  // Adjacent inserts share one overhang sequence so trim the duplicate.
+  // Adjacent inserts share one overhang sequence so trim the duplicate. Keep
+  // an explicit map for every insert so features in the retained-equivalent
+  // overlap resolve to the existing product bases instead of disappearing.
   const overhangLength = overhangLengthFor(enz);
   let sequence = ordered[0].insert;
-  const features: Feature[] = [...ordered[0].features];
+  const insertMaps = ordered.map((part) => emptySourceToProductMap(part.insert.length, 0));
+  fillFirstInsertMap(insertMaps[0]);
   const productFeatures: Feature[] = [];
   const firstPartSpan = createPartSpanFeature(ordered[0], 0, 0, sequence.length);
   if (firstPartSpan) productFeatures.push(firstPartSpan);
@@ -995,6 +1022,7 @@ export function goldenGateAssemble(
     // Scarless joining: trim the oh5 of curr.insert (already represented by end of sequence).
     const trimmedInsert = curr.insert.slice(overhangLength);
     const offset = sequence.length;
+    fillNextInsertMap(insertMaps[i], offset, overhangLength);
     const junctionStart = Math.max(0, offset - overhangLength);
     const junctionFeature = createJunctionFeature(prev.name, curr.name, curr.oh5, junctionStart, offset, { overhangLength });
     if (junctionFeature) productFeatures.push(junctionFeature);
@@ -1004,11 +1032,6 @@ export function goldenGateAssemble(
 
     const partSpan = createPartSpanFeature(curr, i, offset, sequence.length);
     if (partSpan) productFeatures.push(partSpan);
-
-    for (const feat of curr.features) {
-      const shifted = clipFeatureToSpan(feat, overhangLength, curr.insert.length, offset, true);
-      if (shifted) features.push(shifted);
-    }
   }
 
   if (errors.length > 0) {
@@ -1025,15 +1048,25 @@ export function goldenGateAssemble(
     return { sequence: '', features: [], parts: ordered.map((p) => p.name), ...(orderedPartIds ? { partIds: orderedPartIds } : {}), overhangs, enzyme: enz.name, topology: 'linear', success: false, errors, warnings };
   }
 
-  const circularSequence = sequence.slice(0, Math.max(0, sequence.length - overhangLength));
-  const circularFeatures = clampFeaturesToLength(features, circularSequence.length);
-  const circularProductFeatures = clampFeaturesToLength(productFeatures, circularSequence.length);
+  const preClosureLength = sequence.length;
+  const productLength = Math.max(0, sequence.length - overhangLength);
+  const circularSequence = sequence.slice(0, productLength);
+  aliasRemovedProductCoordinates(insertMaps, productLength, preClosureLength);
+  const finalProductMap = finalProductMapForAssembly(preClosureLength, overhangLength);
+  const circularFeatures = ordered.flatMap((part, index) => part.features.flatMap((feature) => {
+    const mapped = mapFeatureThroughSourceCoordinates(feature, insertMaps[index]);
+    return mapped ? [mapped] : [];
+  }));
+  const circularProductFeatures = productFeatures.flatMap((feature) => {
+    const mapped = mapFeatureThroughSourceCoordinates(feature, finalProductMap);
+    return mapped ? [mapped] : [];
+  });
   const finalJunction = createJunctionFeature(
     last.name,
     first.name,
     first.oh5,
-    0,
-    Math.min(overhangLength, circularSequence.length),
+    Math.max(0, circularSequence.length - overhangLength),
+    circularSequence.length,
     { circular: true, sequenceLength: circularSequence.length, overhangLength },
   );
   if (finalJunction) circularProductFeatures.push(finalJunction);
@@ -1064,6 +1097,7 @@ export function checkInternalSites(
 }
 
 const DEFAULT_VECTOR_FILLER_LENGTH = 50;
+export const MAX_SYNTHETIC_VECTOR_FILLER_LENGTH = 100_000;
 // A neutral filler that avoids encoding any restriction recognition sequence,
 // any 4-mer that could collide with common MoClo overhangs, and any homopolymer
 // long enough to cause assembly artifacts. Generated as ACTG repeats which
@@ -1107,8 +1141,19 @@ export function buildSyntheticGoldenGateVector(
     throw new Error('Vector overhangs must contain only A/C/G/T');
   }
 
-  const fillerLen = Math.max(0, Math.floor(options.fillerLength ?? DEFAULT_VECTOR_FILLER_LENGTH));
+  const fillerLen = options.filler === undefined
+    ? options.fillerLength ?? DEFAULT_VECTOR_FILLER_LENGTH
+    : options.fillerLength ?? options.filler.length;
+  if (!Number.isInteger(fillerLen) || fillerLen < 0 || fillerLen > MAX_SYNTHETIC_VECTOR_FILLER_LENGTH) {
+    throw new Error(`fillerLength must be an integer between 0 and ${MAX_SYNTHETIC_VECTOR_FILLER_LENGTH.toLocaleString()}.`);
+  }
   let filler = options.filler?.toUpperCase() ?? VECTOR_FILLER_TEMPLATE.slice(0, fillerLen);
+  if (options.filler !== undefined && !/^[ACGT]*$/.test(filler)) {
+    throw new Error('Synthetic vector filler must contain only A/C/G/T.');
+  }
+  if (options.filler !== undefined && filler.length !== fillerLen) {
+    throw new Error('fillerLength must match the supplied filler length.');
+  }
   if (!options.filler && filler.length < fillerLen) {
     // Extend filler by tiling the template if a longer filler was requested.
     while (filler.length < fillerLen) {
@@ -1117,12 +1162,27 @@ export function buildSyntheticGoldenGateVector(
     filler = filler.slice(0, fillerLen);
   }
 
-  // Layout: AAAA <sense site> N <leftOverhang> <filler> <rightOverhang> N <antisense site> AAAA
-  // Mirrors the test buildGoldenGatePart helper so the same cut geometry applies.
   const recog = enz.recognitionSequence.toUpperCase();
   const recogRC = reverseComplement(recog).toUpperCase();
+  const leftSpacerLength = enz.cutOffset - recog.length;
+  // The antisense cut is measured from the right edge of the recognition
+  // sequence. Leave the requested overhang between the spacer and that site,
+  // so the vector exposes the same geometry on both flanks.
+  const rightSpacerLength = enz.complementCutOffset - recog.length - overhangLength;
+  if (
+    !Number.isInteger(leftSpacerLength)
+    || !Number.isInteger(rightSpacerLength)
+    || leftSpacerLength < 0
+    || rightSpacerLength < 0
+  ) {
+    throw new Error(`Unsupported ${enz.name} synthetic-vector cut geometry`);
+  }
+  const leftSpacer = 'N'.repeat(leftSpacerLength);
+  const rightSpacer = 'N'.repeat(rightSpacerLength);
   const padding = 'AAAA';
-  const sequence = `${padding}${recog}N${left}${filler}${right}N${recogRC}${padding}`;
+  // Layout: padding + sense site + left spacer + left overhang + filler
+  //       + right overhang + right spacer + antisense site + padding.
+  const sequence = `${padding}${recog}${leftSpacer}${left}${filler}${right}${rightSpacer}${recogRC}${padding}`;
 
   // Verify the synthetic part has no internal Type IIS sites that would
   // sabotage the assembly. If the filler accidentally contains one, the
@@ -1140,109 +1200,586 @@ export function buildSyntheticGoldenGateVector(
   };
 }
 
-// Standard genetic code for silent mutation lookup
-const GENETIC_CODE: Record<string, string> = {
-  TTT: 'F', TTC: 'F', TTA: 'L', TTG: 'L',
-  CTT: 'L', CTC: 'L', CTA: 'L', CTG: 'L',
-  ATT: 'I', ATC: 'I', ATA: 'I', ATG: 'M',
-  GTT: 'V', GTC: 'V', GTA: 'V', GTG: 'V',
-  TCT: 'S', TCC: 'S', TCA: 'S', TCG: 'S',
-  CCT: 'P', CCC: 'P', CCA: 'P', CCG: 'P',
-  ACT: 'T', ACC: 'T', ACA: 'T', ACG: 'T',
-  GCT: 'A', GCC: 'A', GCA: 'A', GCG: 'A',
-  TAT: 'Y', TAC: 'Y', TAA: '*', TAG: '*',
-  CAT: 'H', CAC: 'H', CAA: 'Q', CAG: 'Q',
-  AAT: 'N', AAC: 'N', AAA: 'K', AAG: 'K',
-  GAT: 'D', GAC: 'D', GAA: 'E', GAG: 'E',
-  TGT: 'C', TGC: 'C', TGA: '*', TGG: 'W',
-  CGT: 'R', CGC: 'R', CGA: 'R', CGG: 'R',
-  AGT: 'S', AGC: 'S', AGA: 'R', AGG: 'R',
-  GGT: 'G', GGC: 'G', GGA: 'G', GGG: 'G',
-};
-
-/** Build reverse mapping: amino acid → list of synonymous codons */
-function buildSynonymousMap(): Map<string, string[]> {
-  const map = new Map<string, string[]>();
-  for (const [codon, aa] of Object.entries(GENETIC_CODE)) {
-    const list = map.get(aa) ?? [];
-    list.push(codon);
-    map.set(aa, list);
-  }
-  return map;
+export interface GoldenGateDomesticationSite {
+  kind: 'enzyme' | 'site';
+  enzyme?: string;
+  motif: string;
+  /** Lower coordinate in the supplied source sequence (0-based). */
+  position: number;
+  /** Coordinate in the oriented authoritative feature sequence (0-based). */
+  featurePosition: number;
+  strand: 1 | -1;
 }
 
-const SYNONYMOUS_CODONS = buildSynonymousMap();
+export type GoldenGateDomesticationFailureCode =
+  | 'invalid_cds_location'
+  | 'invalid_codon_start'
+  | 'unsupported_translation_table'
+  | 'invalid_cds_frame'
+  | 'untranslatable_cds'
+  | 'invalid_forbidden_enzyme'
+  | 'invalid_forbidden_site'
+  | 'no_synonymous_change'
+  | 'unmodifiable_authoritative_site'
+  | 'remaining_forbidden_site'
+  | 'introduced_forbidden_site'
+  | 'protein_identity_mismatch';
+
+export interface GoldenGateDomesticationFailure {
+  code: GoldenGateDomesticationFailureCode;
+  message: string;
+  position?: number;
+  enzyme?: string;
+  motif?: string;
+}
+
+/** A feature location is authoritative only when every stored segment is valid. */
+export type GoldenGateCdsFeature = Pick<Feature, 'start' | 'end' | 'strand' | 'subRanges'> & {
+  type?: Feature['type'];
+};
+
+export interface DomesticateGoldenGateFeatureOptions {
+  /** Complete source record; bases outside `feature` are structural context and are preserved. */
+  sequence: string;
+  /** Every base in this location, including codon_start-excluded bases, is authoritative. */
+  feature: GoldenGateCdsFeature;
+  /** INSDC codon_start semantics: 1, 2, or 3. */
+  codonStart: number | string;
+  /** Omitted/null means the registry's standard code; explicit unsupported ids fail closed. */
+  translationTableId?: number | null;
+  forbiddenEnzymes?: readonly string[];
+  forbiddenSites?: readonly string[];
+}
+
+export interface DomesticateGoldenGateFeatureResult {
+  sequence: string;
+  mutations: Array<{ position: number; original: string; replacement: string }>;
+  /** The complete feature location is the scan/guarantee scope. */
+  authoritativeScope: 'feature';
+  authoritativeBaseCount: number;
+  /** Range in the oriented feature sequence translated for protein identity. */
+  translatedBaseRange: { start: number; end: number } | null;
+  complete: boolean;
+  remainingSites: GoldenGateDomesticationSite[];
+  introducedSites: GoldenGateDomesticationSite[];
+  failures: GoldenGateDomesticationFailure[];
+  sourceProtein: string | null;
+  productProtein: string | null;
+  proteinIdentity: boolean;
+}
+
+function domesticationFailure(
+  code: GoldenGateDomesticationFailureCode,
+  message: string,
+  details: Partial<GoldenGateDomesticationFailure> = {},
+): GoldenGateDomesticationFailure {
+  return { code, message, ...details };
+}
+
+function domesticationSiteKey(site: GoldenGateDomesticationSite): string {
+  return [site.kind, site.enzyme ?? '', site.motif, site.position, site.featurePosition, site.strand].join('|');
+}
+
+interface DomesticationFeatureSegment {
+  /** Offset of this contiguous source segment in the oriented feature. */
+  featureStart: number;
+  coordinates: number[];
+  strands: Array<1 | -1>;
+}
+
+interface DomesticationFeatureLocation {
+  coordinates: number[];
+  strands: Array<1 | -1>;
+  segments: DomesticationFeatureSegment[];
+  failures: GoldenGateDomesticationFailure[];
+}
+
+function sourceCoordinatesForFeature(
+  sequenceLength: number,
+  feature: GoldenGateCdsFeature,
+): DomesticationFeatureLocation {
+  const failures: GoldenGateDomesticationFailure[] = [];
+  if (feature.type !== undefined && feature.type !== 'cds') {
+    failures.push(domesticationFailure('invalid_cds_location', 'Domestication requires a CDS feature location.'));
+    return { coordinates: [], strands: [], segments: [], failures };
+  }
+  if (feature.strand !== 1 && feature.strand !== -1) {
+    failures.push(domesticationFailure(
+      'invalid_cds_location',
+      'CDS feature strand must be explicitly +1 or -1.',
+    ));
+  }
+  if (feature.subRanges !== undefined) {
+    for (const range of feature.subRanges) {
+      if (
+        !Number.isInteger(range.start)
+        || !Number.isInteger(range.end)
+        || range.start < 0
+        || range.end > sequenceLength
+        || range.end <= range.start
+        || (range.strand !== undefined && range.strand !== 1 && range.strand !== -1)
+      ) {
+        failures.push(domesticationFailure(
+          'invalid_cds_location',
+          'Every CDS subRange must have bounded integer coordinates and either an inherited or explicit +1/-1 strand.',
+        ));
+      }
+    }
+  }
+  if (failures.length > 0) return { coordinates: [], strands: [], segments: [], failures };
+
+  const segments = featureLocationSegments(feature);
+  if (segments.length === 0) {
+    failures.push(domesticationFailure('invalid_cds_location', 'CDS location must contain at least one non-empty segment.'));
+    return { coordinates: [], strands: [], segments: [], failures };
+  }
+
+  const coordinates: number[] = [];
+  const strands: Array<1 | -1> = [];
+  const segmentSpans: DomesticationFeatureSegment[] = [];
+  const seen = new Set<number>();
+  let featureStart = 0;
+  for (const segment of segments) {
+    if (
+      !Number.isInteger(segment.start)
+      || !Number.isInteger(segment.end)
+      || segment.start < 0
+      || segment.end > sequenceLength
+      || segment.end <= segment.start
+      || (segment.strand !== 1 && segment.strand !== -1)
+    ) {
+      failures.push(domesticationFailure(
+        'invalid_cds_location',
+        'Every CDS segment must have bounded integer coordinates and an explicit +1 or -1 strand.',
+      ));
+      continue;
+    }
+    const segmentCoordinates = segment.strand === 1
+      ? Array.from({ length: segment.end - segment.start }, (_, offset) => segment.start + offset)
+      : Array.from({ length: segment.end - segment.start }, (_, offset) => segment.end - 1 - offset);
+    const segmentSpan: DomesticationFeatureSegment = {
+      featureStart,
+      coordinates: segmentCoordinates,
+      strands: segmentCoordinates.map(() => segment.strand as 1 | -1),
+    };
+    featureStart += segmentCoordinates.length;
+    for (const coordinate of segmentCoordinates) {
+      if (seen.has(coordinate)) {
+        failures.push(domesticationFailure(
+          'invalid_cds_location',
+          `CDS segments overlap at source coordinate ${coordinate}.`,
+          { position: coordinate },
+        ));
+      } else {
+        seen.add(coordinate);
+        coordinates.push(coordinate);
+        strands.push(segment.strand);
+      }
+    }
+    if (segmentCoordinates.every((coordinate) => seen.has(coordinate))) segmentSpans.push(segmentSpan);
+  }
+  return { coordinates, strands, segments: segmentSpans, failures };
+}
+
+function scanDomesticationSites(
+  coding: string,
+  enzymes: readonly RestrictionEnzyme[],
+  explicitMotifs: readonly string[],
+): GoldenGateDomesticationSite[] {
+  const sites: GoldenGateDomesticationSite[] = [];
+  for (const enzyme of enzymes) {
+    const recognition = enzyme.recognitionSequence.toUpperCase();
+    for (const site of findGoldenGateSites(coding, enzyme.name, { includeOutOfBounds: true })) {
+      sites.push({
+        kind: 'enzyme',
+        enzyme: enzyme.name,
+        motif: site.strand === 1 ? recognition : reverseComplement(recognition).toUpperCase(),
+        position: site.position,
+        featurePosition: site.position,
+        strand: site.strand,
+      });
+    }
+  }
+  for (const motif of explicitMotifs) {
+    const reverse = reverseComplement(motif).toUpperCase();
+    const motifs: Array<readonly [string, 1 | -1]> = reverse === motif
+      ? [[motif, 1]]
+      : [[motif, 1], [reverse, -1]];
+    for (const [orientedMotif, strand] of motifs) {
+      let position = coding.indexOf(orientedMotif);
+      while (position !== -1) {
+        sites.push({ kind: 'site', motif: orientedMotif, position, featurePosition: position, strand });
+        position = coding.indexOf(orientedMotif, position + 1);
+      }
+    }
+  }
+  return sites.sort((left, right) => left.featurePosition - right.featurePosition || left.motif.localeCompare(right.motif));
+}
 
 /**
- * Domesticate a CDS by removing internal Type IIS restriction sites via
- * silent (synonymous) codon substitutions.
+ * Scan only contiguous authoritative source pieces. Concatenating multipart
+ * pieces before scanning would invent restriction sites across genomic gaps.
+ * Translation still uses the concatenated biological product, but physical
+ * recognition remains segment-local.
+ */
+function scanDomesticationSitesBySegments(
+  oriented: string,
+  segments: readonly DomesticationFeatureSegment[],
+  enzymes: readonly RestrictionEnzyme[],
+  explicitMotifs: readonly string[],
+): GoldenGateDomesticationSite[] {
+  return segments.flatMap((segment) => scanDomesticationSites(
+    oriented.slice(segment.featureStart, segment.featureStart + segment.coordinates.length),
+    enzymes,
+    explicitMotifs,
+  ).map((site) => ({
+    ...site,
+    featurePosition: site.featurePosition + segment.featureStart,
+  })));
+}
+
+function mapDomesticationSites(
+  sites: readonly GoldenGateDomesticationSite[],
+  coordinates: readonly number[],
+): GoldenGateDomesticationSite[] {
+  return sites.flatMap((site) => {
+    const covered = coordinates.slice(site.featurePosition, site.featurePosition + site.motif.length);
+    if (covered.length !== site.motif.length) return [];
+    const sourcePosition = Math.min(...covered);
+    const sourceStrand = covered.length < 2 || covered[covered.length - 1] > covered[0] ? 1 : -1;
+    return [{ ...site, position: sourcePosition, strand: sourceStrand as 1 | -1 }];
+  });
+}
+
+/**
+ * Domesticate an authoritative CDS without editing sequence outside its
+ * feature location.
  *
- * Assumes seq is a valid CDS (multiple of 3, starts at codon 0).
- * Returns the mutated sequence and a list of positions changed.
+ * The complete feature location is the guarantee scope, including bases
+ * excluded by `codon_start` and every stored multipart piece. Gaps between
+ * multipart pieces and sequence outside the feature are not in scope and are
+ * preserved byte-for-byte. Restriction recognition is segment-local so a site
+ * is never invented across a multipart gap. Codon synonyms come exclusively
+ * from `codon-tables.ts`; the selected table is used for both source and
+ * product translation identity checks.
+ */
+export function domesticateGoldenGateFeature(
+  options: DomesticateGoldenGateFeatureOptions,
+): DomesticateGoldenGateFeatureResult {
+  const source = options.sequence.toUpperCase();
+  const location = sourceCoordinatesForFeature(source.length, options.feature);
+  const failures = [...location.failures];
+  const authoritativeBaseCount = location.coordinates.length;
+  const emptyResult = (extra: Partial<DomesticateGoldenGateFeatureResult> = {}): DomesticateGoldenGateFeatureResult => ({
+    sequence: source,
+    mutations: [],
+    authoritativeScope: 'feature',
+    authoritativeBaseCount,
+    translatedBaseRange: null,
+    complete: false,
+    remainingSites: [],
+    introducedSites: [],
+    failures,
+    sourceProtein: null,
+    productProtein: null,
+    proteinIdentity: false,
+    ...extra,
+  });
+  if (failures.length > 0 || location.coordinates.length === 0) return emptyResult();
+
+  const codonStart = Number(options.codonStart);
+  if (!Number.isInteger(codonStart) || codonStart < 1 || codonStart > 3) {
+    failures.push(domesticationFailure('invalid_codon_start', 'codon_start must be exactly 1, 2, or 3.'));
+    return emptyResult();
+  }
+  const tableId = options.translationTableId == null ? options.translationTableId : Number(options.translationTableId);
+  const tableResolution = resolveTranslationTable(tableId);
+  if (!tableResolution.supported) {
+    failures.push(domesticationFailure('unsupported_translation_table', tableResolution.message));
+    return emptyResult();
+  }
+  const table: CodonTable = tableResolution.table;
+  const frame = codonStart - 1;
+  const oriented = location.coordinates.map((coordinate, index) => (
+    location.strands[index] === -1 ? reverseComplement(source[coordinate]).toUpperCase() : source[coordinate]
+  )).join('');
+  const coding = oriented.slice(frame);
+  const translatedBaseRange = { start: frame, end: oriented.length };
+  if (coding.length === 0 || coding.length % 3 !== 0) {
+    failures.push(domesticationFailure('invalid_cds_frame', 'CDS sequence after codon_start must contain complete codons.'));
+    return emptyResult({ translatedBaseRange });
+  }
+  let sourceProtein: string;
+  try {
+    sourceProtein = translateCompleteCds(coding, 0, table);
+  } catch (error) {
+    failures.push(domesticationFailure('untranslatable_cds', error instanceof Error ? error.message : 'CDS could not be translated.'));
+    return emptyResult({ translatedBaseRange });
+  }
+
+  const selectedEnzymes: RestrictionEnzyme[] = [];
+  for (const rawName of options.forbiddenEnzymes ?? []) {
+    const name = String(rawName);
+    const enzyme = typeof rawName === 'string' ? getEnzyme(rawName) : null;
+    if (!enzyme) {
+      failures.push(domesticationFailure('invalid_forbidden_enzyme', unsupportedEnzymeError(name), { enzyme: name }));
+    } else if (!selectedEnzymes.some((entry) => entry.name.toLowerCase() === enzyme.name.toLowerCase())) {
+      selectedEnzymes.push(enzyme);
+    }
+  }
+  const selectedMotifs: string[] = [];
+  for (const rawMotif of options.forbiddenSites ?? []) {
+    const motif = String(rawMotif).toUpperCase();
+    if (!/^[ACGT]+$/.test(motif)) {
+      failures.push(domesticationFailure(
+        'invalid_forbidden_site',
+        `Forbidden site "${rawMotif}" must contain only A/C/G/T.`,
+        { motif: String(rawMotif) },
+      ));
+    } else if (!selectedMotifs.includes(motif)) {
+      selectedMotifs.push(motif);
+    }
+  }
+  if (failures.length > 0) {
+    return emptyResult({
+      sourceProtein,
+      productProtein: sourceProtein,
+      proteinIdentity: true,
+      translatedBaseRange,
+    });
+  }
+
+  const initialSites = scanDomesticationSitesBySegments(
+    oriented,
+    location.segments,
+    selectedEnzymes,
+    selectedMotifs,
+  );
+  let workingOriented = oriented;
+  const mutationByPosition = new Map<number, { position: number; original: string; replacement: string }>();
+  const aminoAcidToCodons = getAminoAcidToCodons(table);
+
+  const codonOffsetsForSite = (site: GoldenGateDomesticationSite): number[] => {
+    // A recognition site that touches codon_start-excluded sequence is not
+    // safely editable through a synonymous CDS substitution. Even if changing
+    // a later coding base would happen to erase the motif, that would silently
+    // turn a mixed structural/coding site into a different feature contract.
+    if (
+      site.featurePosition < frame
+      || site.featurePosition + site.motif.length > oriented.length
+    ) return [];
+    const offsets = new Set<number>();
+    for (let offset = 0; offset < site.motif.length; offset += 1) {
+      const featurePosition = site.featurePosition + offset;
+      if (featurePosition < frame || featurePosition >= oriented.length) continue;
+      const codonOffset = frame + Math.floor((featurePosition - frame) / 3) * 3;
+      if (codonOffset >= frame && codonOffset + 3 <= oriented.length) offsets.add(codonOffset);
+    }
+    return [...offsets].sort((left, right) => left - right);
+  };
+
+  const recordCodonMutation = (codonOffset: number, replacement: string): void => {
+    for (let offset = 0; offset < 3; offset += 1) {
+      const featurePosition = codonOffset + offset;
+      const sourcePosition = location.coordinates[featurePosition];
+      const productBase = location.strands[featurePosition] === -1
+        ? reverseComplement(replacement[offset]).toUpperCase()
+        : replacement[offset];
+      const originalBase = source[sourcePosition];
+      if (originalBase === productBase) mutationByPosition.delete(sourcePosition);
+      else mutationByPosition.set(sourcePosition, {
+        position: sourcePosition,
+        original: originalBase,
+        replacement: productBase,
+      });
+    }
+  };
+
+  for (let pass = 0; pass < 100; pass += 1) {
+    const sites = scanDomesticationSitesBySegments(
+      workingOriented,
+      location.segments,
+      selectedEnzymes,
+      selectedMotifs,
+    );
+    if (sites.length === 0) break;
+    let changed = false;
+    for (const site of sites) {
+      let replacement: string | null = null;
+      let replacementOffset: number | null = null;
+      for (const codonOffset of codonOffsetsForSite(site)) {
+        const originalCodon = workingOriented.slice(codonOffset, codonOffset + 3);
+        const aminoAcid = table.codons[originalCodon];
+        const alternatives = aminoAcid ? aminoAcidToCodons[aminoAcid] ?? [] : [];
+        for (const candidateCodon of alternatives) {
+          if (candidateCodon === originalCodon) continue;
+          const candidateOriented = `${workingOriented.slice(0, codonOffset)}${candidateCodon}${workingOriented.slice(codonOffset + 3)}`;
+          if (translateCompleteCds(candidateOriented.slice(frame), 0, table) !== sourceProtein) continue;
+          const candidateSites = scanDomesticationSitesBySegments(
+            candidateOriented,
+            location.segments,
+            selectedEnzymes,
+            selectedMotifs,
+          );
+          if (candidateSites.some((candidate) => domesticationSiteKey(candidate) === domesticationSiteKey(site))) continue;
+          replacement = candidateCodon;
+          replacementOffset = codonOffset;
+          break;
+        }
+        if (replacement !== null) break;
+      }
+      if (replacement === null || replacementOffset === null) continue;
+      workingOriented = `${workingOriented.slice(0, replacementOffset)}${replacement}${workingOriented.slice(replacementOffset + 3)}`;
+      recordCodonMutation(replacementOffset, replacement);
+      changed = true;
+    }
+    if (!changed) break;
+  }
+
+  const mutations = [...mutationByPosition.values()].sort((left, right) => left.position - right.position);
+  const productChars = source.split('');
+  for (const mutation of mutations) productChars[mutation.position] = mutation.replacement;
+  const productSequence = productChars.join('');
+  const finalSitesOriented = scanDomesticationSitesBySegments(
+    workingOriented,
+    location.segments,
+    selectedEnzymes,
+    selectedMotifs,
+  );
+  const initialSiteKeys = new Set(initialSites.map(domesticationSiteKey));
+  const remainingSites = mapDomesticationSites(finalSitesOriented, location.coordinates);
+  const introducedSites = mapDomesticationSites(
+    finalSitesOriented.filter((site) => !initialSiteKeys.has(domesticationSiteKey(site))),
+    location.coordinates,
+  );
+  for (const site of remainingSites) {
+    const whollyWithinTranslatedCds = site.featurePosition >= translatedBaseRange.start
+      && site.featurePosition + site.motif.length <= translatedBaseRange.end;
+    failures.push(domesticationFailure(
+      'no_synonymous_change',
+      whollyWithinTranslatedCds
+        ? `No synonymous codon substitution could remove the forbidden site at source coordinate ${site.position}.`
+        : `Forbidden site at source coordinate ${site.position} overlaps authoritative feature sequence outside the translated CDS and cannot be changed safely.`,
+      { position: site.position, enzyme: site.enzyme, motif: site.motif },
+    ));
+    if (!whollyWithinTranslatedCds) {
+      failures.push(domesticationFailure(
+        'unmodifiable_authoritative_site',
+        `Forbidden site at source coordinate ${site.position} remains in authoritative feature sequence outside the translated CDS.`,
+        { position: site.position, enzyme: site.enzyme, motif: site.motif },
+      ));
+    }
+    failures.push(domesticationFailure(
+      'remaining_forbidden_site',
+      `Forbidden ${site.enzyme ?? 'sequence'} site remains at source coordinate ${site.position}.`,
+      { position: site.position, enzyme: site.enzyme, motif: site.motif },
+    ));
+  }
+  for (const site of introducedSites) {
+    failures.push(domesticationFailure(
+      'introduced_forbidden_site',
+      `Domestication introduced a forbidden site at source coordinate ${site.position}.`,
+      { position: site.position, enzyme: site.enzyme, motif: site.motif },
+    ));
+  }
+  const productCoding = workingOriented.slice(frame);
+  let productProtein: string | null = null;
+  try {
+    productProtein = translateCompleteCds(productCoding, 0, table);
+  } catch {
+    failures.push(domesticationFailure('untranslatable_cds', 'Domesticated CDS could not be translated.'));
+  }
+  const proteinIdentity = productProtein !== null && productProtein === sourceProtein;
+  if (!proteinIdentity) failures.push(domesticationFailure('protein_identity_mismatch', 'Domesticated product protein differs from the source protein.'));
+  return {
+    sequence: productSequence,
+    mutations,
+    authoritativeScope: 'feature',
+    authoritativeBaseCount,
+    translatedBaseRange,
+    complete: failures.length === 0 && remainingSites.length === 0 && introducedSites.length === 0 && proteinIdentity,
+    remainingSites,
+    introducedSites,
+    failures,
+    sourceProtein,
+    productProtein,
+    proteinIdentity,
+  };
+}
+
+export interface LegacyDomesticateOptions {
+  /** Authoritative CDS location; no implicit whole-sequence assumption. */
+  feature: GoldenGateCdsFeature;
+  /** Explicit INSDC codon_start value. */
+  codonStart: number | string;
+  /** Explicit NCBI genetic-code id. */
+  translationTableId: number | null;
+}
+
+/**
+ * The deliberately narrow shape retained for integrations that still need the
+ * pre-feature-aware domestication payload.  Callers should migrate to
+ * `domesticate()` or, preferably, `domesticateGoldenGateFeature()` so typed
+ * failures and protein identity receipts cannot be discarded.
+ */
+export interface GoldenGateLegacyDomesticationProjection {
+  sequence: string;
+  mutations: Array<{ position: number; original: string; replacement: string }>;
+  /** Explicit migration warning carried with every deprecated projection. */
+  warning: string;
+  deprecated: true;
+}
+
+export const GOLDEN_GATE_LEGACY_PROJECTION_WARNING =
+  'Deprecated Golden Gate domestication projection: complete/failure/site/protein receipt fields are omitted; use domesticate() or domesticateGoldenGateFeature().';
+
+export class GoldenGateLegacyDomesticationError extends Error {
+  readonly code = 'legacy_domestication_requires_authoritative_context' as const;
+
+  constructor() {
+    super('domesticate() requires explicit feature, codonStart, and translationTableId; use domesticateGoldenGateFeature() directly for the typed result, or domesticateLegacyProjection() only for the deprecated narrow payload.');
+    this.name = 'GoldenGateLegacyDomesticationError';
+  }
+}
+
+/**
+ * Compatibility wrapper retained only for callers that can provide explicit
+ * CDS context. The former implicit whole-sequence/standard-code/frame-1
+ * assumptions are intentionally rejected.
  */
 export function domesticate(
   seq: string,
   enzyme = DEFAULT_ENZYME,
-): { sequence: string; mutations: Array<{ position: number; original: string; replacement: string }> } {
-  const mutations: Array<{ position: number; original: string; replacement: string }> = [];
-  let mutSeq = seq.toUpperCase();
-  const enz = getEnzyme(enzyme);
-  if (!enz) return { sequence: mutSeq, mutations };
+  options?: LegacyDomesticateOptions,
+): DomesticateGoldenGateFeatureResult {
+  if (!options) throw new GoldenGateLegacyDomesticationError();
+  return domesticateGoldenGateFeature({
+    sequence: seq,
+    feature: options.feature,
+    codonStart: options.codonStart,
+    translationTableId: options.translationTableId,
+    forbiddenEnzymes: [enzyme],
+  });
+}
 
-  // Iterate until no internal sites remain (max 100 passes to avoid infinite loops)
-  for (let pass = 0; pass < 100; pass++) {
-    const sites = findGoldenGateSites(mutSeq, enzyme, { includeOutOfBounds: true });
-    if (sites.length === 0) break;
-
-    let changed = false;
-    for (const site of sites) {
-      // Find which codon(s) overlap this recognition site and try to mutate one
-      const recog = enz.recognitionSequence;
-      const siteEnd = site.position + recog.length;
-
-      // Try each codon overlapping the site
-      const firstCodon = Math.floor(site.position / 3);
-      const lastCodon = Math.floor((siteEnd - 1) / 3);
-
-      let mutated = false;
-      for (let ci = firstCodon; ci <= lastCodon && !mutated; ci++) {
-        const codonStart = ci * 3;
-        if (codonStart + 3 > mutSeq.length) break;
-
-        const originalCodon = mutSeq.slice(codonStart, codonStart + 3);
-        const aa = GENETIC_CODE[originalCodon];
-        if (!aa || aa === '*') continue; // don't mutate stop codons
-
-        const synonyms = SYNONYMOUS_CODONS.get(aa) ?? [];
-        for (const alt of synonyms) {
-          if (alt === originalCodon) continue;
-          // Test if swapping this codon removes the site
-          const candidate = mutSeq.slice(0, codonStart) + alt + mutSeq.slice(codonStart + 3);
-          const newSites = findGoldenGateSites(candidate, enzyme, { includeOutOfBounds: true });
-          // Check the specific site is gone
-          const siteGone = !newSites.some(
-            (s) => s.position === site.position && s.strand === site.strand,
-          );
-          if (siteGone) {
-            mutations.push({ position: codonStart, original: originalCodon, replacement: alt });
-            mutSeq = candidate;
-            mutated = true;
-            changed = true;
-            break;
-          }
-        }
-      }
-
-      if (!mutated) {
-        // Could not remove this site silently — skip (non-CDS region or stop codon)
-        break;
-      }
-    }
-
-    if (!changed) break;
-  }
-
-  return { sequence: mutSeq, mutations };
+/**
+ * @deprecated Use `domesticate()` (typed feature result) or
+ * `domesticateGoldenGateFeature()`. This named adapter is the only supported
+ * way to request the historical `{ sequence, mutations }` projection, and it
+ * carries a warning so a lossy compatibility boundary is visible in receipts.
+ */
+export function domesticateLegacyProjection(
+  seq: string,
+  enzyme = DEFAULT_ENZYME,
+  options?: LegacyDomesticateOptions,
+): GoldenGateLegacyDomesticationProjection {
+  const result = domesticate(seq, enzyme, options);
+  return {
+    sequence: result.sequence,
+    mutations: result.mutations,
+    warning: GOLDEN_GATE_LEGACY_PROJECTION_WARNING,
+    deprecated: true,
+  };
 }
 
 /**
@@ -1270,11 +1807,24 @@ export function domesticatePartInternals(
   ) {
     const insertStart = boundary.insertStart;
     const insert = seq.slice(insertStart, boundary.insertEnd);
-    const cleaned = domesticate(insert, enzyme);
+    const cleaned = domesticateGoldenGateFeature({
+      sequence: insert,
+      feature: { start: 0, end: insert.length, strand: 1, type: 'cds' },
+      codonStart: 1,
+      translationTableId: 1,
+      forbiddenEnzymes: [enzyme],
+    });
     return {
       sequence: seq.slice(0, insertStart) + cleaned.sequence + seq.slice(boundary.insertEnd),
       mutations: cleaned.mutations.map((m) => ({ ...m, position: m.position + insertStart })),
     };
   }
-  return domesticate(seq, enzyme);
+  const cleaned = domesticateGoldenGateFeature({
+    sequence: seq,
+    feature: { start: 0, end: seq.length, strand: 1, type: 'cds' },
+    codonStart: 1,
+    translationTableId: 1,
+    forbiddenEnzymes: [enzyme],
+  });
+  return { sequence: cleaned.sequence, mutations: cleaned.mutations };
 }

@@ -126,6 +126,7 @@ export function ClaudeScienceNotesPanel({
   const titleId = useId();
   const bodyId = useId();
   const scopeId = useId();
+  const editBodyId = useId();
   const [filter, setFilter] = useState<ArtifactNoteFilter>('all');
   const [createScope, setCreateScope] = useState<ArtifactNoteScope>(() => defaultScope(activeRecordId, selectedRange));
   const [createDraft, setCreateDraft] = useState<NoteDraft>(EMPTY_DRAFT);
@@ -187,13 +188,12 @@ export function ClaudeScienceNotesPanel({
     ));
   }, [activeRecordId, filter, notes]);
 
-  const openAddNote = useCallback(() => {
+  const prepareAddNote = useCallback(() => {
     setCreateScope(defaultScope(activeRecordId, selectedRange));
     setCreateDraft(EMPTY_DRAFT);
     setCreateError('');
     setPendingDeleteId(null);
     setEditingId(null);
-    createTitleRef.current?.focus();
   }, [activeRecordId, selectedRange]);
 
   const closeAddNote = useCallback(() => {
@@ -324,10 +324,16 @@ export function ClaudeScienceNotesPanel({
         ref={addDetailsRef}
         className="motif-cs-annotation-editor-drawer"
         onToggle={(event) => {
-          if (event.currentTarget.open) openAddNote();
+          if (event.currentTarget.open) createTitleRef.current?.focus();
         }}
       >
-        <summary ref={addSummaryRef} className="motif-cs-annotation-editor-summary">
+        <summary
+          ref={addSummaryRef}
+          className="motif-cs-annotation-editor-summary"
+          onClick={() => {
+            if (!addDetailsRef.current?.open) prepareAddNote();
+          }}
+        >
           <span>Add note</span>
           <span className="motif-cs-chip">{defaultScope(activeRecordId, selectedRange)}</span>
         </summary>
@@ -447,6 +453,7 @@ export function ClaudeScienceNotesPanel({
                       event.currentTarget.form?.requestSubmit();
                     }}
                     aria-invalid={Boolean(editError)}
+                    aria-describedby={editError ? `${editBodyId}-error` : undefined}
                     rows={3}
                   />
                 </label>
@@ -459,7 +466,7 @@ export function ClaudeScienceNotesPanel({
                   <button className="motif-cs-mini-button motif-cs-mini-button-accent" type="submit">Update</button>
                   <button className="motif-cs-mini-button" type="button" onClick={() => cancelEdit(note.id)}>Cancel</button>
                 </div>
-                {editError ? <p className="motif-cs-inline-error" role="alert">{editError}</p> : null}
+                {editError ? <p id={`${editBodyId}-error`} className="motif-cs-inline-error" role="alert">{editError}</p> : null}
               </form>
             ) : (
               <div>

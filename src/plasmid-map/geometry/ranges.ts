@@ -50,7 +50,13 @@ export function normalizeSpan(
   // correctly (e.g. -10..10 and 110..140 on a 100bp circle).
   const s = mod(start, length);
   const rawLen = end - start;
-  const spanLen = rawLen < 0 ? rawLen + length : rawLen; // wrap convention for end < start
+  // Normalize the span length independently of the endpoint. Adding one
+  // molecule length is insufficient for arbitrary offsets such as 110..-50;
+  // true modulo preserves the intended wrapped remainder and treats an exact
+  // multiple as one full circle rather than an empty span.
+  const spanLen = rawLen < 0
+    ? ((rawLen % length) + length) % length || length
+    : rawLen;
   if (spanLen <= 0) return []; // zero-length / degenerate
   if (spanLen >= length) return [{ start: 0, end: length }]; // full circle
   const e = s + spanLen;

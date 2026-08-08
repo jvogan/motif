@@ -1,4 +1,10 @@
 import { getGoldenGatePartBoundary } from '../bio/golden-gate';
+import {
+  assessGoldenGateAssemblyFidelity,
+  type GoldenGateFidelityAssessment,
+  type GoldenGateFidelityCondition,
+  type GoldenGateFidelityJunction,
+} from '../bio/golden-gate-fidelity';
 import { reverseComplement } from '../bio/reverse-complement';
 import type { Topology } from '../bio/types';
 import {
@@ -160,6 +166,8 @@ export type ArtifactGoldenGatePlan = {
   inputSha256s?: string[];
   parts: ArtifactGoldenGatePartPlan[];
   junctions: ArtifactGoldenGateJunction[];
+  /** Empirical fidelity is unknown until an exact published condition is selected. */
+  fidelity: GoldenGateFidelityAssessment;
   domesticationRequiredRecordIds: string[];
   productSequence: string | null;
   errors: ArtifactAssemblyIssue[];
@@ -710,10 +718,43 @@ function duplicateFusionWarnings(
   return warnings;
 }
 
+function goldenGateFidelityJunction(junction: ArtifactGoldenGateJunction): GoldenGateFidelityJunction {
+  // The artifact planner stores one fusion-site identity on both compatible
+  // ends.  The empirical tables use the physical two-strand pair, so expose
+  // the reverse-complement strand only after compatibility has been proven.
+  const left = junction.compatible ? junction.leftOverhang : null;
+  return {
+    leftOverhang: left,
+    rightOverhang: left === null ? null : reverseComplement(left).toUpperCase(),
+    label: `${junction.leftRecordId} → ${junction.rightRecordId}${junction.closing ? ' (closing)' : ''}`,
+  };
+}
+
+function enzymeFamily(value: string): string {
+  return value.trim().toLowerCase().replace(/[-\s]?(?:hf(?:v2)?|v2)$/i, '');
+}
+
+function fidelityRequestedEnzyme(
+  enzyme: ArtifactTypeIISEnzymeGeometry | null,
+  condition: GoldenGateFidelityCondition | null | undefined,
+): string | undefined {
+  if (!enzyme) return condition ? '__unsupported_type_iis_enzyme__' : undefined;
+  // The artifact geometry names BsaI/BbsI/BsmBI while the published assay
+  // names the tested high-fidelity variants (BsaI-HFv2, BbsI-HF, BsmBI-v2).
+  // Permit only these explicit family aliases; never make a cross-family
+  // substitution such as BsaI data for BbsI.
+  if (condition && enzymeFamily(enzyme.name) === enzymeFamily(condition.enzyme)) return condition.enzyme;
+  return enzyme.name;
+}
+
 export function planArtifactGoldenGateAssembly(input: {
   parts: readonly ArtifactGoldenGatePartInput[];
   enzyme: string;
   topology: Topology;
+  /** Exact published assay condition; omitted means no empirical score is claimed. */
+  fidelityCondition?: GoldenGateFidelityCondition | null;
+  /** Explicitly opt into the non-probabilistic Hamming comparison fallback. */
+  fidelityFallback?: 'none' | 'hamming';
 }): ArtifactGoldenGatePlan {
   const rawParts = Array.isArray(input?.parts) ? input.parts : [];
   const topology: Topology = input?.topology === 'linear' ? 'linear' : 'circular';
@@ -861,6 +902,17 @@ export function planArtifactGoldenGateAssembly(input: {
     }
   });
 
+  const fidelity = assessGoldenGateAssemblyFidelity({
+    condition: input?.fidelityCondition,
+    enzyme: fidelityRequestedEnzyme(enzyme, input?.fidelityCondition),
+    fallback: input?.fidelityFallback,
+    junctions: junctions.map(goldenGateFidelityJunction),
+  });
+  if ((input?.fidelityCondition !== undefined || input?.fidelityFallback !== undefined)
+    && fidelity.warnings[0]) {
+    warnings.push(issue('golden_gate_fidelity', fidelity.warnings[0]));
+  }
+
   let candidateProduct: string | null = null;
   if (enzyme && parts.length === rawParts.length && parts.every((part) => part.releasedSequence !== null)) {
     candidateProduct = parts[0]?.releasedSequence ?? null;
@@ -894,6 +946,7 @@ export function planArtifactGoldenGateAssembly(input: {
     ...(hashes.hashes === undefined ? {} : { inputSha256s: hashes.hashes }),
     parts,
     junctions,
+    fidelity,
     domesticationRequiredRecordIds: parts
       .filter((part) => part.domesticationRequired)
       .map((part) => part.recordId),
@@ -909,6 +962,71 @@ function assemblyIssueJson(value: ArtifactAssemblyIssue): ArtifactJsonObject {
     message: value.message,
     ...(value.recordId === undefined ? {} : { recordId: value.recordId }),
     ...(value.junctionIndex === undefined ? {} : { junctionIndex: value.junctionIndex }),
+  };
+}
+
+function goldenGateFidelityJson(assessment: GoldenGateFidelityAssessment): ArtifactJsonObject {
+  const condition = assessment.condition === null ? null : {
+    enzyme: assessment.condition.enzyme,
+    ligase: assessment.condition.ligase,
+    enzymeAmount: assessment.condition.enzymeAmount,
+    buffer: assessment.condition.buffer,
+    reactionVolumeUl: assessment.condition.reactionVolumeUl,
+    substrateConcentrationNm: assessment.condition.substrateConcentrationNm,
+    cycles: assessment.condition.cycles,
+    cycleSteps: assessment.condition.cycleSteps.map((step) => ({
+      temperatureC: step.temperatureC,
+      minutes: step.minutes,
+    })),
+    finalHeatSoak: {
+      temperatureC: assessment.condition.finalHeatSoak.temperatureC,
+      minutes: assessment.condition.finalHeatSoak.minutes,
+    },
+  } satisfies ArtifactJsonObject;
+  const provenance = assessment.provenance === null ? null : {
+    datasetId: assessment.provenance.datasetId,
+    datasetVersion: assessment.provenance.datasetVersion,
+    citation: assessment.provenance.citation,
+    doi: assessment.provenance.doi,
+    articleUrl: assessment.provenance.articleUrl,
+    dataUrl: assessment.provenance.dataUrl,
+    table: assessment.provenance.table,
+    license: assessment.provenance.license,
+    sourceSha256: assessment.provenance.sourceSha256,
+  } satisfies ArtifactJsonObject;
+  return {
+    status: assessment.status,
+    method: assessment.method,
+    datasetId: assessment.datasetId,
+    condition,
+    provenance,
+    junctions: assessment.junctions.map((junction) => ({
+      index: junction.index,
+      ...(junction.label === undefined ? {} : { label: junction.label }),
+      leftOverhang: junction.leftOverhang,
+      rightOverhang: junction.rightOverhang,
+      status: junction.status,
+      correctCount: junction.correctCount,
+      mismatchCount: junction.mismatchCount,
+      totalCount: junction.totalCount,
+      counts: junction.counts === null ? null : { ...junction.counts },
+      fidelity: junction.fidelity,
+      estimatedFidelity: junction.estimatedFidelity,
+      heuristicScore: junction.heuristicScore,
+      nearestMismatchDistance: junction.nearestMismatchDistance,
+      ...(junction.reason === undefined ? {} : { reason: junction.reason }),
+    })),
+    assembly: {
+      junctionCount: assessment.assembly.junctionCount,
+      knownJunctions: assessment.assembly.knownJunctions,
+      unknownJunctions: assessment.assembly.unknownJunctions,
+      coverage: assessment.assembly.coverage,
+      estimatedFidelity: assessment.assembly.estimatedFidelity,
+      heuristicScore: assessment.assembly.heuristicScore,
+      assumptions: [...assessment.assembly.assumptions],
+      unknownReasons: [...assessment.assembly.unknownReasons],
+    },
+    warnings: [...assessment.warnings],
   };
 }
 
@@ -955,11 +1073,12 @@ function assemblyParameters(plan: ArtifactAssemblyPlan): ArtifactJsonObject {
       insertEnd: part.insertEnd,
       internalSiteCount: part.internalSiteCount,
     })),
+    fidelity: goldenGateFidelityJson(plan.fidelity),
   };
 }
 
 function assemblyResult(plan: ArtifactAssemblyPlan): ArtifactJsonObject {
-  return {
+  const result: ArtifactJsonObject = {
     status: plan.status,
     topology: plan.topology,
     productLength: plan.productSequence?.length ?? null,
@@ -974,6 +1093,8 @@ function assemblyResult(plan: ArtifactAssemblyPlan): ArtifactJsonObject {
       reason: junction.reason,
     })),
   };
+  if (plan.kind === 'golden_gate') result.fidelity = goldenGateFidelityJson(plan.fidelity);
+  return result;
 }
 
 function validIsoTimestamp(value: unknown): value is string {

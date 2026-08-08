@@ -117,6 +117,7 @@ describe('Claude Science alignment normalization', () => {
       referenceRowId: 'row-1',
       engine: { id: 'mafft', label: 'MAFFT', version: '7.526', mode: 'local-command' },
     });
+    expect(alignment.comparison).toMatchObject({ route: 'local-command', method: 'alignment', algorithm: 'MAFFT' });
     expect(alignment.rows.map(({ name, aligned }) => ({ name, aligned }))).toEqual([
       { name: 'Alpha', aligned: 'ACG-T' },
       { name: 'Beta', aligned: 'ACG-T' },
@@ -256,6 +257,12 @@ describe('Claude Science alignment normalization', () => {
         { name: 'RNA', aligned: 'ACGU' },
       ],
     }), 'invalid_alignment');
+
+    expectAlignmentError(() => normalizeArtifactAlignment({
+      molecule: 'dna',
+      comparison: { route: 'browser', method: 'x', algorithm: 'x', fallback: 'no' },
+      rows: rows(2, 'ACGT'),
+    } as unknown), 'invalid_alignment');
   });
 
   it('computes majority consensus, strict conservation, gap-only columns, and row identity', () => {
@@ -367,6 +374,30 @@ describe('Claude Science bounded local alignment', () => {
     });
     expect(alignment.rows.map((row) => row.sourceRecordId)).toEqual(['a', 'b', 'c']);
     expect(alignment.note).toMatch(/computed locally in this browser/i);
+    expect(alignment.comparison).toMatchObject({
+      route: 'browser',
+      method: 'star',
+      algorithm: 'needleman-wunsch',
+      fallback: false,
+      warnings: [],
+    });
+  });
+
+  it('keeps imported and browser identity semantics identical for ambiguous DNA and protein rows', () => {
+    const browser = createLocalArtifactAlignment([
+      record('a', 'AN'),
+      record('b', 'AA'),
+    ]);
+    const imported = parseAlignedFasta('>A\nAN\n>B\nAA\n', {
+      molecule: 'dna',
+      engine: { id: 'imported', label: 'Imported alignment', mode: 'imported' },
+    });
+    expect(browser.rows.map((row) => row.identity)).toEqual(imported.rows.map((row) => row.identity));
+    expect(imported.comparison).toMatchObject({ route: 'imported', method: 'imported-alignment' });
+    expect(artifactAlignmentResult(imported).method).toBe('imported-alignment');
+
+    const protein = parseAlignedFasta('>A\nBZXJ\n>B\nD EQI\n'.replace(/ /g, ''), { molecule: 'protein' });
+    expect(protein.rows.map((row) => row.identity)).toEqual([100, 100]);
   });
 
   it('requires 2–10 records of one molecule type within the sequence and work budgets', () => {
@@ -452,6 +483,26 @@ describe('Claude Science alignment handoff formats', () => {
     expect(restored.rows.map((row) => row.name)).toEqual(identifiers);
   });
 
+  it('retains explicit external execution provenance through normalization and serialization', () => {
+    const source = normalizeArtifactAlignment({
+      molecule: 'dna',
+      rows: rows(2, 'ACGT'),
+      engine: { id: 'mafft', label: 'MAFFT', mode: 'local-command', version: '7.5' },
+      comparison: { route: 'local-command', method: 'external-engine', algorithm: 'mafft', fallback: false, warnings: [] },
+      provenance: {
+        runner: 'run-msa.mjs',
+        executable: 'mafft',
+        executableSha256: 'a'.repeat(64),
+        executableSource: 'PATH',
+        argv: ['mafft', '--auto'],
+        runtimePathsRedacted: true,
+      },
+    });
+    const restored = normalizeArtifactAlignment(serializeArtifactAlignment(source));
+    expect(restored.provenance).toEqual(source.provenance);
+    expect(restored.comparison).toEqual(source.comparison);
+  });
+
   it('serializes a restorable alignment without smuggling derived arrays into durable data', () => {
     const serialized = serializeArtifactAlignment(alignment);
     expect(serialized).toEqual({
@@ -463,6 +514,14 @@ describe('Claude Science alignment handoff formats', () => {
         { id: 'alpha', name: 'Alpha', aligned: 'ACGTAC', sourceRecordId: 'record-a', inputSha256: 'sha-a' },
         { id: 'beta', name: 'Beta', aligned: 'ACGTTC', sourceRecordId: 'record-b', inputSha256: 'sha-b' },
       ],
+      comparison: {
+        route: 'local-command',
+        method: 'alignment',
+        algorithm: 'MAFFT',
+        fallback: false,
+        warnings: [],
+        ambiguityCount: 0,
+      },
       engine: {
         id: 'mafft', label: 'MAFFT', mode: 'local-command', version: '7.526', parameters: ['--auto'], usedFallback: false,
       },

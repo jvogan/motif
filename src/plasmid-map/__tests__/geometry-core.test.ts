@@ -132,6 +132,14 @@ describe('ranges: normalizeSpan circular', () => {
       { start: 0, end: 10 },
     ]);
   });
+  it('uses true modulo for arbitrary out-of-range reverse offsets', () => {
+    expect(normalizeSpan(110, -50, 100, 'circular')).toEqual([
+      { start: 10, end: 50 },
+    ]);
+    expect(normalizeSpan(150, -50, 100, 'circular')).toEqual([
+      { start: 0, end: 100 },
+    ]);
+  });
 });
 
 describe('ranges: featureSpans / featureSegments', () => {

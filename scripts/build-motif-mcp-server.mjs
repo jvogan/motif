@@ -18,6 +18,10 @@ export async function buildMotifMcpServer({ entry = entryPath, out = outputPath 
     platform: 'node',
     format: 'esm',
     target: 'node22',
+    // The connector server is a self-contained offline artifact. Whitespace
+    // minification removes repeated esbuild module-path comments and padding
+    // without changing the executable module or its dependency inventory.
+    minifyWhitespace: true,
     legalComments: 'none',
     logLevel: 'info',
   });

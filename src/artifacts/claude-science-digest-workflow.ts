@@ -121,6 +121,8 @@ export type DigestDerivedRecordProvenance = ArtifactJsonObject & {
   wrapsOrigin: boolean;
   leftEnzyme: string | null;
   rightEnzyme: string | null;
+  leftEnzymes?: string[];
+  rightEnzymes?: string[];
   overhang5: string;
   overhang3: string;
   overhang5Type: 'blunt' | '5prime' | '3prime';
@@ -282,9 +284,15 @@ function expectedFragmentSequence(
 }
 
 function validateFragmentEnds(fragment: DigestFragment, index: number, enzymeNames: ReadonlySet<string>): void {
-  for (const [side, enzyme] of [['left', fragment.leftEnzyme], ['right', fragment.rightEnzyme]] as const) {
-    if (enzyme !== null && !enzymeNames.has(enzyme)) {
-      fail('incoherent-recipe', `Digest fragment ${index + 1} has an unknown ${side} enzyme "${enzyme}".`);
+  for (const [side, enzyme, enzymes] of [
+    ['left', fragment.leftEnzyme, fragment.leftEnzymes],
+    ['right', fragment.rightEnzyme, fragment.rightEnzymes],
+  ] as const) {
+    const identities = enzymes && enzymes.length > 0 ? enzymes : enzyme === null ? [] : [enzyme];
+    for (const identity of identities) {
+      if (!enzymeNames.has(identity)) {
+        fail('incoherent-recipe', `Digest fragment ${index + 1} has an unknown ${side} enzyme "${identity}".`);
+      }
     }
   }
   for (const [side, overhang, type] of [
@@ -324,7 +332,14 @@ function validateRecipe(source: DigestWorkflowSourceRecord, recipe: DigestRecipe
     );
   }
 
-  const distinctCuts = new Set(recipe.sites.map((site) => site.cutPosition));
+  // Recognition sites that are nicks, methylation-conditional, or physically
+  // out of bounds are not ordinary double-strand digest boundaries.
+  const distinctCuts = new Set(recipe.sites
+    .filter((site) => (
+      (site.cleavageMode ?? 'double-strand') === 'double-strand'
+      && (site.cleavageStatus ?? 'ok') === 'ok'
+    ))
+    .map((site) => site.cutPosition));
   if (distinctCuts.size !== recipe.cutCount) {
     fail('incoherent-recipe', 'Digest recipe cut count does not match its distinct physical cut coordinates.');
   }
@@ -459,8 +474,10 @@ function defaultRecordName(
   index: number,
   outcome: DigestRecipe['outcome'],
 ): string {
-  const enzymeLabel = [fragment.leftEnzyme, fragment.rightEnzyme]
-    .filter((value): value is string => Boolean(value))
+  const enzymeLabel = [
+    ...(fragment.leftEnzymes && fragment.leftEnzymes.length > 0 ? fragment.leftEnzymes : fragment.leftEnzyme ? [fragment.leftEnzyme] : []),
+    ...(fragment.rightEnzymes && fragment.rightEnzymes.length > 0 ? fragment.rightEnzymes : fragment.rightEnzyme ? [fragment.rightEnzyme] : []),
+  ]
     .filter((value, valueIndex, values) => values.indexOf(value) === valueIndex)
     .join('–');
   if (outcome === 'linearized') {
@@ -545,6 +562,8 @@ function fragmentSummary(
     wrapsOrigin: fragment.endInOriginal > sourceLength,
     leftEnzyme: fragment.leftEnzyme,
     rightEnzyme: fragment.rightEnzyme,
+    leftEnzymes: fragment.leftEnzymes ? [...fragment.leftEnzymes] : [],
+    rightEnzymes: fragment.rightEnzymes ? [...fragment.rightEnzymes] : [],
     overhang5: fragment.overhang5,
     overhang3: fragment.overhang3,
     overhang5Type: fragment.overhang5Type,
@@ -613,6 +632,8 @@ export function materializeDigestWorkflow(
       wrapsOrigin,
       leftEnzyme: fragment.leftEnzyme,
       rightEnzyme: fragment.rightEnzyme,
+      leftEnzymes: fragment.leftEnzymes ? [...fragment.leftEnzymes] : [],
+      rightEnzymes: fragment.rightEnzymes ? [...fragment.rightEnzymes] : [],
       overhang5: fragment.overhang5,
       overhang3: fragment.overhang3,
       overhang5Type: fragment.overhang5Type,
@@ -662,14 +683,53 @@ export function materializeDigestWorkflow(
     cutCount: input.recipe.cutCount,
     recognitionSiteCount: input.recipe.recognitionSiteCount,
     outcome: input.recipe.outcome,
-    enzymeGeometry: input.recipe.enzymes.map((entry) => ({
+    ...(input.recipe.methylationAssumptions === undefined
+      ? {}
+      : { methylationAssumptions: input.recipe.methylationAssumptions }),
+    enzymeGeometry: input.recipe.enzymes.map((entry): ArtifactJsonObject => ({
       name: entry.name,
       type: entry.type,
       cutCount: entry.cutCount,
+      nickCount: entry.nickCount,
       recognitionSequence: entry.enzyme.recognitionSequence,
       cutOffset: entry.enzyme.cutOffset,
       complementCutOffset: entry.enzyme.complementCutOffset,
       overhang: entry.enzyme.overhang,
+      ...(entry.methylationRequirement === undefined
+        ? {}
+        : {
+            methylationRequirement: {
+              target: entry.methylationRequirement.target,
+              state: entry.methylationRequirement.state,
+              ...(entry.methylationRequirement.evidence === undefined
+                ? {}
+                : {
+                    evidence: {
+                      source: entry.methylationRequirement.evidence.source,
+                      sourceLabel: entry.methylationRequirement.evidence.sourceLabel,
+                      conditions: entry.methylationRequirement.evidence.conditions,
+                      ...(entry.methylationRequirement.evidence.limitation === undefined
+                        ? {}
+                        : { limitation: entry.methylationRequirement.evidence.limitation }),
+                    },
+                  }),
+            },
+          }),
+      ...(entry.methylationBehavior === undefined
+        ? {}
+        : { methylationBehavior: entry.methylationBehavior }),
+      ...(entry.methylationEvidence === undefined
+        ? {}
+        : {
+            methylationEvidence: {
+              source: entry.methylationEvidence.source,
+              sourceLabel: entry.methylationEvidence.sourceLabel,
+              conditions: entry.methylationEvidence.conditions,
+              ...(entry.methylationEvidence.limitation === undefined
+                ? {}
+                : { limitation: entry.methylationEvidence.limitation }),
+            },
+          }),
     })),
   };
   const result: ArtifactJsonObject = {

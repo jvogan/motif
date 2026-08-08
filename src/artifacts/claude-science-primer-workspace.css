@@ -809,8 +809,14 @@
   }
 
   .motif-cs-primer-footer-actions {
-    overflow-x: auto;
-    padding-bottom: 2px;
+    flex-wrap: wrap;
+    width: 100%;
+    min-width: 0;
+    overflow: visible;
+  }
+
+  .motif-cs-primer-footer-actions button {
+    flex: 1 1 140px;
   }
 }
 

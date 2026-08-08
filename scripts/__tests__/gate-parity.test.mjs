@@ -10,10 +10,11 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const workflow = readFileSync(resolve(root, '.github/workflows/ci.yml'), 'utf8');
 const pkg = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'));
 
-// Steps that set the machine up rather than check the source. `npm ci` installs
-// dependencies and `npx playwright install` fetches a browser; neither is
+// Steps that set the machine up rather than check the source. `npm ci
+// --ignore-scripts` installs dependencies and `npx playwright install` fetches
+// a browser; neither is
 // something a local run should repeat on every commit.
-const SETUP_ONLY = new Set(['npm ci']);
+const SETUP_ONLY = new Set(['npm ci --ignore-scripts']);
 
 function npmCommands(script) {
   return script
@@ -46,6 +47,13 @@ describe('npm run gate matches CI', () => {
     // green CI into an unreliable signal about what the gate proved.
     const extra = gateCommands.filter((command) => !ciCommands.includes(command));
     expect(extra, 'in `npm run gate` but not in CI').toEqual([]);
+  });
+
+  it('disables npm lifecycle execution until the reviewed policy has passed', () => {
+    expect(workflow).toContain('run: npm ci --ignore-scripts');
+    expect(workflow.indexOf('run: npm ci --ignore-scripts')).toBeLessThan(workflow.indexOf('run: npm run security:policy'));
+    expect(workflow.indexOf('run: npm run security:policy')).toBeLessThan(workflow.indexOf('run: npm run security:lifecycle'));
+    expect(gateCommands.indexOf('npm run security:policy')).toBeLessThan(gateCommands.indexOf('npm run security:lifecycle'));
   });
 });
 

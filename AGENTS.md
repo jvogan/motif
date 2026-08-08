@@ -40,7 +40,7 @@ A passing DOM assertion is not proof that a control is legible or reachable.
 
 - Product name: **Motif for Claude Science**
 - Package/plugin slug: `motif-for-claude-science`
-- Current release version is `0.3.0` and must stay aligned in runtime, package, manifest,
+- Current release version is `0.3.1` and must stay aligned in runtime, package, manifest,
   and changelog.
 - New schemas, environment variables, page APIs, output files, and provenance
   identifiers use `motif` / `MOTIF_` names.
@@ -83,4 +83,7 @@ specs also self-skip when their environment variable is unset, so an exit code
 of 0 can mean nothing ran.
 
 Also run `npm run validate:plugin` when the Claude CLI is available. Report any
-skips, external-tool assumptions, and generated output hashes explicitly.
+skips, external-tool assumptions, and generated output hashes explicitly. The
+canonical gate ends with `npm run report:gate-coverage`, which distinguishes
+executed checks from checks gated on non-vendored demo, sequencing, or alignment
+fixtures.

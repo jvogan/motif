@@ -360,15 +360,69 @@ export const NCBI_TRANSLATION_TABLES: Record<number, CodonTable> = {
   33: CEPHALODISCIDAE_MITO_CODE,
 };
 
+export type TranslationTableResolution =
+  | Readonly<{
+      supported: true;
+      id: number;
+      name: string;
+      source: 'default' | 'explicit';
+      table: CodonTable;
+    }>
+  | Readonly<{
+      supported: false;
+      id: null;
+      requestedId: number | null;
+      source: 'explicit';
+      message: string;
+    }>;
+
 /**
- * Get a translation table by id; falls back to Standard if unknown. Resolves
- * built-in NCBI tables (1–33) and registered custom tables (ids ≥
- * CUSTOM_TRANSLATION_ID_BASE) alike. (customTranslationRegistry is defined lower
- * in the file; this function only reads it at call time, long after load.)
+ * Resolve a translation-table id without silently changing an explicit code.
+ * Omission deliberately selects Standard; an explicit unsupported id returns a
+ * typed failure so import and analysis callers can fail closed.
  */
-export function getTranslationTable(id: number | undefined | null): CodonTable {
-  if (id == null) return STANDARD_CODE;
-  return NCBI_TRANSLATION_TABLES[id] ?? customTranslationRegistry.get(id) ?? STANDARD_CODE;
+export function resolveTranslationTable(id?: number | null): TranslationTableResolution {
+  if (id == null) {
+    return {
+      supported: true,
+      id: STANDARD_CODE.id,
+      name: STANDARD_CODE.name,
+      source: 'default',
+      table: STANDARD_CODE,
+    };
+  }
+
+  const table = Number.isInteger(id)
+    ? NCBI_TRANSLATION_TABLES[id] ?? customTranslationRegistry.get(id)
+    : undefined;
+  if (table) {
+    return {
+      supported: true,
+      id: table.id,
+      name: table.name,
+      source: 'explicit',
+      table,
+    };
+  }
+
+  return {
+    supported: false,
+    id: null,
+    requestedId: Number.isInteger(id) ? id : null,
+    source: 'explicit',
+    message: `Unsupported NCBI translation table ${String(id)}. Choose a supported genetic code or omit the id to use Standard.`,
+  };
+}
+
+/**
+ * Get a translation table by id. Omission defaults to Standard; explicit
+ * unsupported ids throw instead of silently changing the genetic code. Use
+ * {@link resolveTranslationTable} when a result is preferable to an exception.
+ */
+export function getTranslationTable(id?: number | null): CodonTable {
+  const resolved = resolveTranslationTable(id);
+  if (!resolved.supported) throw new Error(resolved.message);
+  return resolved.table;
 }
 
 /**

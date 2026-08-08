@@ -1,5 +1,6 @@
 /** @vitest-environment jsdom */
 
+import { useState } from 'react';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -615,5 +616,50 @@ describe('ClaudeScienceAgentResultsPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Remove Result' }));
     expect(onRemove).toHaveBeenCalledWith('primer-1');
     expect(screen.getByRole('status').textContent).toBe('Analysis result removed.');
+  });
+
+  it('returns focus to the results landmark after a confirmed removal', async () => {
+    const user = userEvent.setup();
+    function Harness() {
+      const [results, setResults] = useState<ArtifactAnalysisResult[]>([primerResult]);
+      return (
+        <ClaudeScienceAgentResultsPanel
+          results={results}
+          assets={[]}
+          recordNames={{ puc19: 'pUC19' }}
+          onRevealRecord={vi.fn()}
+          onRemove={(resultId) => {
+            setResults((current) => current.filter((entry) => entry.id !== resultId));
+            return true;
+          }}
+        />
+      );
+    }
+
+    const view = render(<Harness />);
+    const remove = screen.getByRole('button', { name: 'Remove pUC19 verification primers' });
+    await user.click(remove);
+    await user.click(screen.getByRole('button', { name: 'Remove Result' }));
+
+    await screen.findByText('No analysis results yet');
+    expect(document.activeElement).toBe(view.container.querySelector('.motif-cs-agent-results'));
+  });
+
+  it('restores focus to a blocked result removal control', async () => {
+    const user = userEvent.setup();
+    render(
+      <ClaudeScienceAgentResultsPanel
+        results={[primerResult]}
+        assets={[]}
+        recordNames={{ puc19: 'pUC19' }}
+        onRevealRecord={vi.fn()}
+        onRemove={() => false}
+      />,
+    );
+
+    const remove = screen.getByRole('button', { name: 'Remove pUC19 verification primers' });
+    await user.click(remove);
+    await user.click(screen.getByRole('button', { name: 'Remove Result' }));
+    expect(document.activeElement).toBe(remove);
   });
 });

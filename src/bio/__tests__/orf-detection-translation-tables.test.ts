@@ -69,4 +69,26 @@ describe('translation-table-aware ORF detection', () => {
 
     expect(orf).toMatchObject({ end: 9, stopCodon: 'AGA' });
   });
+
+  it('accepts every IUPAC DNA ambiguity symbol instead of treating it as protein input', () => {
+    for (const symbol of 'ACGTRYSWKMBDHVN') {
+      const orfs = findORFs(`ATG${symbol}AATGA`, 1, STANDARD_CODE);
+      expect(orfs.some((orf) => orf.strand === 1 && orf.start === 0), symbol).toBe(true);
+    }
+  });
+
+  it('reports partial circular ORFs without inventing a second revolution or stop', () => {
+    const orfs = findORFs('ATGAAA', 1, STANDARD_CODE, { topology: 'circular' });
+    const forward = orfs.find((orf) => orf.strand === 1 && orf.start === 0);
+
+    expect(forward).toMatchObject({
+      start: 0,
+      end: 6,
+      length: 6,
+      stopCodon: '',
+      status: 'partial',
+    });
+    expect(forward?.warnings).toContain('No in-frame stop codon within one complete circular revolution');
+    expect(orfs.every((orf) => orf.end <= orf.start + 6)).toBe(true);
+  });
 });

@@ -84,6 +84,18 @@ describe('artifact translation-code resolution', () => {
     });
   });
 
+  it('resolves the selected code while leaving transl_except materialization to the feature-aware translator', () => {
+    expect(resolveArtifactTranslationCode(2, { transl_except: '(pos:1..3,aa:Sec)' })).toMatchObject({
+      supported: true,
+      id: 2,
+      source: 'record',
+    });
+    expect(resolveArtifactTranslationCode(undefined, { translExcept: true })).toMatchObject({
+      supported: true,
+      source: 'default',
+    });
+  });
+
   it('normalizes supported ids without admitting context-dependent or custom ids', () => {
     expect(normalizeArtifactTranslationTableId(' 32 ')).toBe(32);
     expect(isSupportedArtifactTranslationTableId(15)).toBe(true);

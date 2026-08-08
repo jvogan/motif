@@ -1,4 +1,10 @@
 import { computeMSA, isMSAError, MSA_MAX_SEQ_LEN, type MSAResult } from '../bio/msa';
+import {
+  alignmentResiduesMatch,
+  classifyAlignmentResidues,
+  isValidAlignmentSequence,
+  type AlignmentMolecule,
+} from '../bio/alignment-semantics';
 import { STANDARD_CODE } from '../bio/codon-tables';
 import type { SequenceType } from '../bio/types';
 
@@ -122,6 +128,35 @@ export type ArtifactAlignmentEngineInput = {
   usedFallback?: boolean;
 };
 
+export type ArtifactAlignmentComparison = {
+  /** The route that produced or supplied the aligned rows. */
+  route: ArtifactAlignmentMode;
+  /** Human-readable comparison route, e.g. star or imported-alignment. */
+  method: string;
+  /** Concrete algorithm identity, never inferred from row shape or size. */
+  algorithm: string;
+  /** True only when the declared route had to use a bounded alternative. */
+  fallback: boolean;
+  /** Warnings that must remain visible with the durable alignment. */
+  warnings: string[];
+  /** Compatible but non-literal residue comparisons in the core result. */
+  ambiguityCount: number;
+};
+
+export type ArtifactAlignmentProvenance = {
+  runner?: string;
+  executable?: string;
+  executableSha256?: string;
+  executableSource?: string;
+  version?: string;
+  versionArgv?: string[];
+  argv?: string[];
+  runtimePathsRedacted?: boolean;
+  inputFastaSha256?: string;
+  outputFastaSha256?: string;
+  stderrSha256?: string;
+};
+
 export type ArtifactAlignmentRowInput = {
   id?: string;
   name?: string;
@@ -147,6 +182,8 @@ export type ArtifactAlignmentInput = {
   sequences?: ArtifactAlignmentRowInput[];
   alignedFasta?: string;
   engine?: ArtifactAlignmentEngineInput | string;
+  comparison?: Partial<ArtifactAlignmentComparison>;
+  provenance?: ArtifactAlignmentProvenance;
   createdAt?: string;
   outputSha256?: string;
   note?: string;
@@ -178,6 +215,9 @@ export type ArtifactAlignment = {
   referenceNumbering?: ArtifactAlignmentReferenceNumbering;
   rows: ArtifactAlignmentRow[];
   engine: ArtifactAlignmentEngine;
+  /** Present on normalized results; optional for legacy in-memory callers. */
+  comparison?: ArtifactAlignmentComparison;
+  provenance?: ArtifactAlignmentProvenance;
   createdAt?: string;
   outputSha256?: string;
   note?: string;
@@ -194,6 +234,17 @@ export type ArtifactMsaRecord = {
   sequence: string;
   type: SequenceType;
 };
+
+export function alignmentComparisonOf(alignment: Pick<ArtifactAlignment, 'engine' | 'comparison'>): ArtifactAlignmentComparison {
+  return alignment.comparison ?? {
+    route: alignment.engine.mode,
+    method: alignment.engine.mode === 'imported' ? 'imported-alignment' : 'alignment',
+    algorithm: alignment.engine.label,
+    fallback: alignment.engine.usedFallback ?? false,
+    warnings: [],
+    ambiguityCount: 0,
+  };
+}
 
 export class ArtifactAlignmentError extends Error {
   readonly code:
@@ -250,9 +301,9 @@ function normalizeMolecule(value: unknown): SequenceType | null {
 }
 
 function validAlphabet(sequence: string, molecule: SequenceType): boolean {
-  if (molecule === 'dna') return /^[ACGTRYSWKMBDHVN?-]+$/.test(sequence);
-  if (molecule === 'rna') return /^[ACGURYSWKMBDHVN?-]+$/.test(sequence);
-  return /^[A-Z*?-]+$/.test(sequence);
+  return molecule === 'dna' || molecule === 'rna' || molecule === 'protein'
+    ? isValidAlignmentSequence(sequence, molecule, { gapped: true })
+    : false;
 }
 
 function cleanAlignedSequence(value: unknown, field: string): string {
@@ -261,17 +312,6 @@ function cleanAlignedSequence(value: unknown, field: string): string {
     throw new ArtifactAlignmentError('too_large', `${field} cannot exceed ${ARTIFACT_MSA_MAX_IMPORT_CHARACTERS.toLocaleString()} raw characters.`);
   }
   return value.toUpperCase().replace(/\./g, '-').replace(/\s+/g, '');
-}
-
-const IUPAC_PROTEINS: Record<string, string> = {
-  B: 'DN', Z: 'EQ', J: 'IL', X: 'ACDEFGHIKLMNPQRSTVWY',
-};
-
-function proteinResiduesMatch(left: string, right: string): boolean {
-  const leftSet = IUPAC_PROTEINS[left] ?? left;
-  const rightSet = IUPAC_PROTEINS[right] ?? right;
-  for (const residue of leftSet) if (rightSet.includes(residue)) return true;
-  return false;
 }
 
 export type MsaAlphabetAnomaly = {
@@ -330,9 +370,7 @@ function summarizeRows(
     for (let column = 0; column < alignmentLength; column += 1) {
       if (consensus[column] === '-') continue;
       total += 1;
-      if (molecule === 'protein'
-        ? proteinResiduesMatch(row.aligned[column], consensus[column])
-        : row.aligned[column] === consensus[column]) matches += 1;
+      if (alignmentResiduesMatch(row.aligned[column], consensus[column], molecule as AlignmentMolecule)) matches += 1;
     }
     return {
       ...row,
@@ -375,6 +413,71 @@ function normalizeEngine(value: ArtifactAlignmentInput['engine']): ArtifactAlign
     parameters,
     usedFallback: typeof input.usedFallback === 'boolean' ? input.usedFallback : undefined,
   };
+}
+
+function normalizeComparison(
+  value: ArtifactAlignmentInput['comparison'],
+  engine: ArtifactAlignmentEngine,
+  index: number,
+): ArtifactAlignmentComparison {
+  if (value !== undefined && !plainObject(value)) {
+    throw new ArtifactAlignmentError('invalid_alignment', `alignments[${index}].comparison must be an object.`);
+  }
+  const raw = (value ?? {}) as Partial<ArtifactAlignmentComparison>;
+  const route = raw.route ?? engine.mode;
+  if (route !== 'browser' && route !== 'local-command' && route !== 'imported') {
+    throw new ArtifactAlignmentError('invalid_alignment', `alignments[${index}].comparison.route must be browser, local-command, or imported.`);
+  }
+  if (raw.route !== undefined && raw.route !== engine.mode) {
+    throw new ArtifactAlignmentError('invalid_alignment', `alignments[${index}].comparison.route must agree with alignment.engine.mode.`);
+  }
+  const method = normalizedText(raw.method, route === 'imported' ? 'imported-alignment' : 'alignment', `alignments[${index}].comparison.method`);
+  const algorithm = normalizedText(raw.algorithm, engine.label, `alignments[${index}].comparison.algorithm`);
+  if (raw.fallback !== undefined && typeof raw.fallback !== 'boolean') {
+    throw new ArtifactAlignmentError('invalid_alignment', `alignments[${index}].comparison.fallback must be a boolean.`);
+  }
+  if (raw.ambiguityCount !== undefined && (!Number.isSafeInteger(raw.ambiguityCount) || raw.ambiguityCount < 0)) {
+    throw new ArtifactAlignmentError('invalid_alignment', `alignments[${index}].comparison.ambiguityCount must be a non-negative safe integer.`);
+  }
+  const warnings = raw.warnings === undefined
+    ? []
+    : Array.isArray(raw.warnings) && raw.warnings.every((warning) => typeof warning === 'string')
+      ? raw.warnings.map((warning) => normalizedText(warning, '', `alignments[${index}].comparison.warnings`) ).filter(Boolean)
+      : (() => { throw new ArtifactAlignmentError('invalid_alignment', `alignments[${index}].comparison.warnings must be an array of strings.`); })();
+  if (warnings.length > 32) throw new ArtifactAlignmentError('too_large', `alignments[${index}].comparison.warnings cannot contain more than 32 entries.`);
+  return {
+    route,
+    method,
+    algorithm,
+    fallback: raw.fallback ?? engine.usedFallback ?? false,
+    warnings,
+    ambiguityCount: raw.ambiguityCount ?? 0,
+  };
+}
+
+function normalizeProvenance(
+  value: ArtifactAlignmentInput['provenance'],
+  index: number,
+): ArtifactAlignmentProvenance | undefined {
+  if (value === undefined) return undefined;
+  if (!plainObject(value)) throw new ArtifactAlignmentError('invalid_alignment', `alignments[${index}].provenance must be an object.`);
+  const raw = value as ArtifactAlignmentProvenance;
+  const result: ArtifactAlignmentProvenance = {};
+  for (const field of ['runner', 'executable', 'executableSha256', 'executableSource', 'version', 'inputFastaSha256', 'outputFastaSha256', 'stderrSha256'] as const) {
+    if (raw[field] !== undefined) result[field] = normalizedText(raw[field], '', `alignments[${index}].provenance.${field}`) || undefined;
+  }
+  if (raw.runtimePathsRedacted !== undefined) {
+    if (typeof raw.runtimePathsRedacted !== 'boolean') throw new ArtifactAlignmentError('invalid_alignment', `alignments[${index}].provenance.runtimePathsRedacted must be a boolean.`);
+    result.runtimePathsRedacted = raw.runtimePathsRedacted;
+  }
+  for (const field of ['versionArgv', 'argv'] as const) {
+    if (raw[field] === undefined) continue;
+    if (!Array.isArray(raw[field]) || raw[field].length > 64 || raw[field].some((argument) => typeof argument !== 'string')) {
+      throw new ArtifactAlignmentError('invalid_alignment', `alignments[${index}].provenance.${field} must contain at most 64 bounded strings.`);
+    }
+    result[field] = raw[field].map((argument) => normalizedText(argument, '', `alignments[${index}].provenance.${field}`));
+  }
+  return result;
 }
 
 function rowsFromAlignedFasta(text: string): ArtifactAlignmentRowInput[] {
@@ -544,6 +647,9 @@ export function normalizeArtifactAlignment(
   }
 
   const summary = summarizeRows(rows, molecule);
+  const engine = normalizeEngine(raw.engine);
+  const comparison = normalizeComparison(raw.comparison, engine, index);
+  const provenance = normalizeProvenance(raw.provenance, index);
   const id = safeId(raw.id, `alignment-${index + 1}`, `alignments[${index}].id`);
   let referenceRowId = rows[0].id;
   if (raw.referenceRowId !== undefined) {
@@ -584,7 +690,9 @@ export function normalizeArtifactAlignment(
     referenceRowId,
     ...(referenceNumbering ? { referenceNumbering } : {}),
     ...summary,
-    engine: normalizeEngine(raw.engine),
+    engine,
+    comparison,
+    ...(provenance ? { provenance } : {}),
     createdAt: raw.createdAt === undefined ? undefined : normalizedText(raw.createdAt, '', `alignments[${index}].createdAt`) || undefined,
     outputSha256: raw.outputSha256 === undefined ? undefined : normalizedText(raw.outputSha256, '', `alignments[${index}].outputSha256`) || undefined,
     note: raw.note === undefined ? undefined : normalizedText(raw.note, '', `alignments[${index}].note`) || undefined,
@@ -656,8 +764,22 @@ export function createLocalArtifactAlignment(
     throw new ArtifactAlignmentError('invalid_alignment', `Select 2–${ARTIFACT_MSA_MAX_LOCAL_SEQUENCES} records for a browser alignment.`);
   }
   const molecule = records[0].type;
+  if (molecule !== 'dna' && molecule !== 'rna' && molecule !== 'protein') {
+    throw new ArtifactAlignmentError('invalid_alignment', 'Browser alignment supports DNA, RNA, and protein records only.');
+  }
   if (records.some((record) => record.type !== molecule)) {
     throw new ArtifactAlignmentError('mixed_molecule', 'Browser alignment requires records with the same molecule type.');
+  }
+  const recordNames = new Set<string>();
+  for (const [index, record] of records.entries()) {
+    if (typeof record.name !== 'string' || !record.name.trim()) {
+      throw new ArtifactAlignmentError('invalid_alignment', `Record ${index + 1} needs a non-empty name.`);
+    }
+    const key = record.name.trim().toLocaleLowerCase();
+    if (recordNames.has(key)) {
+      throw new ArtifactAlignmentError('invalid_alignment', `Record names must be unique; “${record.name.trim()}” appears more than once.`);
+    }
+    recordNames.add(key);
   }
   const longest = Math.max(...records.map((record) => record.sequence.replace(/\s+/g, '').length));
   if (longest > MSA_MAX_SEQ_LEN) {
@@ -670,15 +792,12 @@ export function createLocalArtifactAlignment(
       `This selection is too expensive for a responsive browser preview (${Math.round(work / 1_000_000)}M estimated cells). Import a MAFFT, MUSCLE, or Clustal alignment instead.`,
     );
   }
-  const usedNames = new Map<string, number>();
-  const displayNames = records.map((record) => {
-    const key = record.name.toLocaleLowerCase();
-    const count = (usedNames.get(key) ?? 0) + 1;
-    usedNames.set(key, count);
-    return count === 1 ? record.name : `${record.name} (${count})`;
-  });
-  const result = computeMSA(records.map((record) => record.sequence), displayNames);
-  if (isMSAError(result)) throw new ArtifactAlignmentError(result.type === 'too_large' ? 'too_large' : 'invalid_alignment', result.message);
+  const displayNames = records.map((record) => record.name.trim());
+  const result = computeMSA(records.map((record) => record.sequence), displayNames, { molecule });
+  if (isMSAError(result)) {
+    const code = result.type === 'too_large' ? 'too_large' : result.type === 'work_limit' ? 'work_budget' : 'invalid_alignment';
+    throw new ArtifactAlignmentError(code, result.message);
+  }
   const rows: ArtifactAlignmentRowInput[] = result.rows.map((row, index) => ({
     id: `row-${index + 1}`,
     name: row.name,
@@ -698,12 +817,21 @@ export function createLocalArtifactAlignment(
       mode: 'browser',
       usedFallback: false,
     },
+    comparison: {
+      route: 'browser',
+      method: result.method,
+      algorithm: result.algorithm,
+      fallback: result.fallback,
+      warnings: result.warnings,
+      ambiguityCount: result.ambiguities,
+    },
     createdAt: options.createdAt ?? new Date().toISOString(),
     note: 'Computed locally in this browser with Motif’s bounded star alignment.',
   });
 }
 
 export function artifactAlignmentResult(alignment: ArtifactAlignment): MSAResult {
+  const comparison = alignmentComparisonOf(alignment);
   return {
     rows: alignment.rows.map((row) => ({ name: row.name, aligned: row.aligned, identity: row.identity })),
     consensus: alignment.consensus,
@@ -711,6 +839,11 @@ export function artifactAlignmentResult(alignment: ArtifactAlignment): MSAResult
     gapOnly: [...alignment.gapOnly],
     alignmentLength: alignment.alignmentLength,
     centerIdx: alignment.centerIdx,
+    method: comparison.method,
+    algorithm: comparison.algorithm,
+    fallback: comparison.fallback,
+    warnings: [...comparison.warnings],
+    ambiguities: comparison.ambiguityCount,
   };
 }
 
@@ -734,6 +867,13 @@ export function serializeArtifactAlignment(alignment: ArtifactAlignment): Artifa
       ...alignment.engine,
       parameters: alignment.engine.parameters ? [...alignment.engine.parameters] : undefined,
     },
+    ...(alignment.comparison ? {
+      comparison: {
+        ...alignment.comparison,
+        warnings: [...alignment.comparison.warnings],
+      },
+    } : {}),
+    ...(alignment.provenance ? { provenance: { ...alignment.provenance, ...(alignment.provenance.versionArgv ? { versionArgv: [...alignment.provenance.versionArgv] } : {}), ...(alignment.provenance.argv ? { argv: [...alignment.provenance.argv] } : {}) } } : {}),
     createdAt: alignment.createdAt,
     outputSha256: alignment.outputSha256,
     note: alignment.note,
@@ -1197,29 +1337,6 @@ export const MSA_MOTIF_SEARCH_MAX_RETAINED_COLUMNS = 200_000;
 // stops and reports `truncated` instead of running to completion.
 export const MSA_MOTIF_SEARCH_MAX_COMPARISONS = 2_000_000;
 
-// IUPAC nucleotide ambiguity → the concrete bases each code covers.
-const IUPAC_NUCLEOTIDES: Record<string, string> = {
-  A: 'A', C: 'C', G: 'G', T: 'T', U: 'T',
-  R: 'AG', Y: 'CT', S: 'CG', W: 'AT', K: 'GT', M: 'AC',
-  B: 'CGT', D: 'AGT', H: 'ACT', V: 'ACG', N: 'ACGT',
-};
-
-function nucleotidesMatch(query: string, target: string): boolean {
-  const querySet = IUPAC_NUCLEOTIDES[query] ?? query;
-  const targetSet = IUPAC_NUCLEOTIDES[target] ?? target;
-  for (const base of querySet) if (targetSet.includes(base)) return true;
-  return false;
-}
-
-function residueMatch(query: string, target: string, molecule: SequenceType): boolean {
-  if (molecule === 'protein') return proteinResiduesMatch(query, target);
-  return nucleotidesMatch(query, target);
-}
-
-function isWildcardResidue(symbol: string, molecule: SequenceType): boolean {
-  return symbol === '?' || symbol === (molecule === 'protein' ? 'X' : 'N');
-}
-
 /** Compare two present residues for difference highlighting without conflating
  * compatible ambiguity codes with literal identity or hard substitutions. */
 export function classifyResidueDifference(
@@ -1227,12 +1344,8 @@ export function classifyResidueDifference(
   rowResidue: string,
   molecule: SequenceType,
 ): 'match' | 'ambiguous' | 'substitution' {
-  const reference = molecule !== 'protein' && referenceResidue === 'U' ? 'T' : referenceResidue;
-  const row = molecule !== 'protein' && rowResidue === 'U' ? 'T' : rowResidue;
-  if (reference === row && !isWildcardResidue(reference, molecule)) return 'match';
-  if (reference === '?' || row === '?') return 'ambiguous';
-  if (!residueMatch(reference, row, molecule)) return 'substitution';
-  return 'ambiguous';
+  if (molecule !== 'dna' && molecule !== 'rna' && molecule !== 'protein') return 'substitution';
+  return classifyAlignmentResidues(referenceResidue, rowResidue, molecule);
 }
 
 function normalizeMotifResidue(symbol: string, molecule: SequenceType): string {
@@ -1340,11 +1453,12 @@ export function findMsaMotifMatches(
   const trimmed = query.trim();
   if (!trimmed || /[-.]/.test(trimmed)) return { matches: [], truncated: false };
   const { molecule } = options;
+  const alignmentType: AlignmentMolecule = molecule === 'protein' || molecule === 'rna' ? molecule : 'dna';
   const maxMatches = Math.max(0, Math.floor(options.maxMatches ?? MSA_MOTIF_SEARCH_MAX_MATCHES));
   const maxComparisons = Math.max(1, Math.floor(options.maxComparisons ?? MSA_MOTIF_SEARCH_MAX_COMPARISONS));
   const maxQueryLength = Math.max(1, Math.floor(options.maxQueryLength ?? MSA_MOTIF_SEARCH_MAX_QUERY_LENGTH));
   const maxRetainedColumns = Math.max(0, Math.floor(options.maxRetainedColumns ?? MSA_MOTIF_SEARCH_MAX_RETAINED_COLUMNS));
-  const needle = Array.from(trimmed, (symbol) => normalizeMotifResidue(symbol, molecule));
+  const needle = Array.from(trimmed, (symbol) => normalizeMotifResidue(symbol, alignmentType));
   if (needle.length > maxQueryLength) return { matches: [], truncated: true };
   // Every retained match owns one alignment-column index per query residue.
   // Bound that aggregate independently of the match count so long motifs cannot
@@ -1362,7 +1476,7 @@ export function findMsaMotifMatches(
     for (let column = 0; column < row.aligned.length; column += 1) {
       const symbol = row.aligned[column];
       if (symbol === '-' || symbol === '.') continue;
-      residues.push(normalizeMotifResidue(symbol, molecule));
+      residues.push(normalizeMotifResidue(symbol, alignmentType));
       columns.push(column);
     }
     const limit = residues.length - needle.length;
@@ -1371,7 +1485,7 @@ export function findMsaMotifMatches(
       for (let offset = 0; offset < needle.length; offset += 1) {
         comparisons += 1;
         if (comparisons > maxComparisons) { truncated = true; break scan; }
-        if (!residueMatch(needle[offset], residues[start + offset], molecule)) { ok = false; break; }
+        if (!alignmentResiduesMatch(needle[offset], residues[start + offset], alignmentType)) { ok = false; break; }
       }
       if (!ok) continue;
       if (collector.push({

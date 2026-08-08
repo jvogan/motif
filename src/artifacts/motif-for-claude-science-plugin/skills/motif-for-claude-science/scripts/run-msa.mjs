@@ -190,8 +190,8 @@ function validateHeader(value, label) {
 }
 
 function validInputAlphabet(sequence, molecule) {
-  if (molecule === 'dna') return /^[ACGTRYSWKMBDHVN]+$/i.test(sequence);
-  return /^[ACDEFGHIKLMNPQRSTVWYOUJBXZ*]+$/i.test(sequence);
+  if (molecule === 'dna') return /^[ACGTRYSWKMBDHVN?]+$/i.test(sequence);
+  return /^[ACDEFGHIKLMNPQRSTVWYOUJBXZ*?]+$/i.test(sequence);
 }
 
 export function parseUnalignedFasta(text, molecule) {
@@ -474,8 +474,8 @@ function parseToolAlignment(text, records, molecule) {
     const aligned = String(alignedById.get(record.toolId)).toUpperCase().replace(/\./g, '-');
     if (!aligned || !aligned.replace(/-/g, '')) throw new Error(`MSA output row “${record.name}” is empty or gaps only`);
     const valid = molecule === 'dna'
-      ? /^[ACGTRYSWKMBDHVN-]+$/.test(aligned)
-      : /^[ACDEFGHIKLMNPQRSTVWYOUJBXZ*-]+$/.test(aligned);
+      ? /^[ACGTRYSWKMBDHVN?-]+$/.test(aligned)
+      : /^[ACDEFGHIKLMNPQRSTVWYOUJBXZ*?-]+$/.test(aligned);
     if (!valid) throw new Error(`MSA output row “${record.name}” contains invalid ${molecule.toUpperCase()} symbols`);
     if (aligned.replace(/-/g, '') !== record.sequence.toUpperCase()) {
       throw new Error(`MSA output row “${record.name}” no longer matches its input sequence`);
@@ -573,6 +573,14 @@ export function runExternalMsa(options) {
           mode: 'local-command',
           parameters: portableArgs,
           usedFallback: false,
+        },
+        comparison: {
+          route: 'local-command',
+          method: 'external-engine',
+          algorithm: config.id,
+          fallback: false,
+          warnings: [],
+          ambiguityCount: 0,
         },
         createdAt,
         outputSha256: outputFastaSha256,

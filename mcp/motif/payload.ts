@@ -3,6 +3,7 @@ import { basename } from 'node:path';
 import { VALID_NCBI_TABLE_IDS } from '../../src/bio/codon-tables.js';
 import { parseFasta } from '../../src/bio/fasta-parser.js';
 import { parseGenBank } from '../../src/bio/genbank-parser.js';
+import { normalizeSequenceStrict } from '../../src/bio/sequence-normalization.js';
 import type { Feature, SequenceType, Topology } from '../../src/bio/types.js';
 import { normalizeArtifactAnalysisWorkspace } from '../../src/artifacts/claude-science-analysis-results.js';
 import { normalizeArtifactAlignments } from '../../src/artifacts/claude-science-msa.js';
@@ -206,23 +207,7 @@ function uniqueRuntimeRecordId(base: string, usedIds: Set<string>): string {
 function cleanSequence(value: unknown, molecule: unknown, path: string): string {
   if (typeof value !== 'string') throw new Error(`${path} must be a sequence string.`);
   if (value.length > 1_000_000) throw new Error(`${path} cannot exceed 1,000,000 formatted characters.`);
-  const normalized = value.toUpperCase().replace(/[^A-Z*]/gu, '');
-  const withoutStops = normalized.replace(/\*/gu, '');
-  const looksLikeImplicitProtein = !/[a-z]/u.test(value.trim()) && !/[A-Z*][\t ]+[A-Z*]/u.test(value.trim());
-  const sequence = molecule === 'dna'
-    ? (DNA_ALPHABET.test(withoutStops) ? withoutStops : '')
-    : molecule === 'rna'
-      ? (RNA_ALPHABET.test(withoutStops) ? withoutStops : '')
-      : molecule === 'protein'
-        ? (PROTEIN_ALPHABET.test(normalized) ? normalized : '')
-        : normalized.includes('*')
-          ? (PROTEIN_ALPHABET.test(normalized) ? normalized : '')
-          : NUCLEOTIDE_ALPHABET.test(withoutStops)
-            ? withoutStops
-            : PROTEIN_ALPHABET.test(withoutStops) && looksLikeImplicitProtein
-              ? withoutStops
-              : '';
-  if (!sequence) throw new Error(`${path} must contain at least one valid residue.`);
+  const sequence = normalizeSequenceStrict(value, molecule, path);
   if (sequence.length > MOTIF_MCP_LIMITS.maxRecordResidues) {
     throw new Error(`${path} cannot exceed ${MOTIF_MCP_LIMITS.maxRecordResidues.toLocaleString()} residues.`);
   }
@@ -736,6 +721,7 @@ function recordsFromGenBank(content: string): RecordLike[] {
       ...(record.definition ? { description: record.definition.slice(0, MOTIF_MCP_LIMITS.maxTextLength) } : {}),
       ...(record.organism ? { organism: record.organism.slice(0, 1_024) } : {}),
       source: record.source?.slice(0, 1_024) || 'GenBank opened in Motif for Claude Science',
+      ...(record.importDiagnostics ? { provenance: { genbankImportDiagnostics: record.importDiagnostics } } : {}),
       active: true,
     };
   });

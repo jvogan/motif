@@ -1,5 +1,6 @@
 /** @vitest-environment jsdom */
 
+import { useState } from 'react';
 import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -179,5 +180,32 @@ describe('ClaudeScienceWorkflowHistoryPanel', () => {
     await user.click(within(row).getByRole('button', { name: 'Remove <Digest result>' }));
     await user.click(within(row).getByRole('button', { name: 'Remove result' }));
     expect(screen.getByRole('status').textContent).toContain('Remove linked results first.');
+    expect(document.activeElement).toBe(within(row).getByRole('button', { name: 'Remove <Digest result>' }));
+  });
+
+  it('returns focus to the history landmark after the last result is confirmed', async () => {
+    const user = userEvent.setup();
+    function Harness() {
+      const [results, setResults] = useState<ArtifactWorkflowResult[]>([result]);
+      return (
+        <ClaudeScienceWorkflowHistoryPanel
+          results={results}
+          recordNames={{ source: 'Source', fragment: 'Fragment 1' }}
+          onRevealRecord={vi.fn()}
+          onRemove={(resultId) => {
+            setResults((current) => current.filter((entry) => entry.id !== resultId));
+            return true;
+          }}
+        />
+      );
+    }
+
+    const view = render(<Harness />);
+    const row = screen.getByTestId('workflow-result-digest-1');
+    await user.click(within(row).getByRole('button', { name: 'Remove <Digest result>' }));
+    await user.click(within(row).getByRole('button', { name: 'Remove result' }));
+
+    await screen.findByText('No saved results');
+    expect(document.activeElement).toBe(view.container.querySelector('.motif-cs-workflow-history'));
   });
 });

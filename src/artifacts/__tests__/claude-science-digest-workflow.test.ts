@@ -173,6 +173,56 @@ describe('Claude Science digest workflow materialization', () => {
     })).toThrow(/identity count.*must match.*0/i);
   });
 
+  it('records the explicit methylation assumption used for a conditional cutter', () => {
+    const source = sourceRecord('AAAAGATCAAAA');
+    const recipe = buildDigestRecipe({
+      sequence: source.sequence,
+      sequenceType: source.type,
+      topology: source.topology,
+      enzymeText: 'DpnI',
+      enzymeCatalog: RESTRICTION_ENZYMES_FULL,
+      methylationState: 'methylated',
+    });
+
+    const result = materialize(source, recipe);
+
+    expect(recipe.isValid).toBe(true);
+    expect(result.workflowResult.parameters).toMatchObject({
+      enzymes: ['DpnI'],
+      methylationAssumptions: 'methylated',
+      enzymeGeometry: [expect.objectContaining({
+        name: 'DpnI',
+        nickCount: 0,
+        methylationRequirement: expect.objectContaining({ target: 'dam', state: 'methylated' }),
+        methylationEvidence: expect.objectContaining({ source: expect.stringContaining('neb.com') }),
+      })],
+    });
+  });
+
+  it('preserves independent methylation assumptions and provenance for mixed workflows', () => {
+    const source = sourceRecord('AAAAGATCAAAACCGGAAAA');
+    const recipe = buildDigestRecipe({
+      sequence: source.sequence,
+      sequenceType: source.type,
+      topology: source.topology,
+      enzymeText: 'DpnI, HpaII, MspI',
+      enzymeCatalog: RESTRICTION_ENZYMES_FULL,
+      methylationAssumptions: { dam: 'methylated', cpg: 'unmethylated' },
+    });
+    const result = materialize(source, recipe);
+
+    expect(recipe.isValid).toBe(true);
+    expect(result.workflowResult.parameters).toMatchObject({
+      enzymes: ['DpnI', 'HpaII', 'MspI'],
+      methylationAssumptions: { dam: 'methylated', cpg: 'unmethylated' },
+      enzymeGeometry: expect.arrayContaining([
+        expect.objectContaining({ name: 'DpnI', methylationRequirement: expect.any(Object) }),
+        expect.objectContaining({ name: 'HpaII', methylationRequirement: expect.any(Object) }),
+        expect.objectContaining({ name: 'MspI', methylationBehavior: 'context_dependent', methylationEvidence: expect.any(Object) }),
+      ]),
+    });
+  });
+
   it('linearizes a one-cut circular molecule with the exact wrap-around sequence', () => {
     const source = sourceRecord('AAAAGAATTCTTTT', 'circular');
     const recipe = recipeFor(source, 'EcoRI');

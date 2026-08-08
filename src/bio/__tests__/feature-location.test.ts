@@ -7,6 +7,7 @@ import {
   isAmbiguousFeatureLocation,
   isMaterializableFeatureLocation,
   isMultipartFeature,
+  isQuarantinedFeatureLocation,
   remapFeatureLocation,
 } from '../feature-location';
 import { parseFeatures } from '../genbank-parser';
@@ -201,7 +202,7 @@ describe('feature location semantics', () => {
     expect(featureGenBankLocation(contiguous)).toBe('1..12');
   });
 
-  it.each(['100^101', '1.3', 'AB123:1..3', '1..3junk'])(
+  it.each(['1.3', '1..3junk'])(
     'surfaces unsupported location syntax %s instead of truncating it',
     (location) => {
       expect(() => parseFeatures([
@@ -219,5 +220,70 @@ describe('feature location semantics', () => {
       motifOriginalLocation: '<1..>3',
       motifLocationFuzzy: true,
     });
+  });
+
+  it('retains valid but unprojectable INSDC locations as feature-specific quarantines', () => {
+    const features = parseFeatures([
+      '     misc_feature    100^101',
+      '                     /label="between"',
+      '     misc_feature    J00194.1:100..200',
+      '                     /label="remote"',
+      '     misc_feature    1..3',
+      '                     /label="local"',
+    ].join('\n'));
+
+    expect(features).toHaveLength(3);
+    expect(features.slice(0, 2).every(isQuarantinedFeatureLocation)).toBe(true);
+    expect(features[0].metadata).toMatchObject({
+      motifOriginalLocation: '100^101',
+      motifLocationQuarantined: true,
+      motifImportDiagnostics: [expect.objectContaining({ code: 'between_base_location', featureKey: 'misc_feature' })],
+    });
+    expect(features[1].metadata).toMatchObject({
+      motifOriginalLocation: 'J00194.1:100..200',
+      motifLocationQuarantined: true,
+      motifImportDiagnostics: [expect.objectContaining({ code: 'remote_location', featureKey: 'misc_feature' })],
+    });
+    expect(features[2].metadata.motifLocationQuarantined).toBeUndefined();
+  });
+
+  it.each([
+    'one-of(6,9)',
+    'one-of(6,9)..12',
+    'complement(one-of(6,9)..12)',
+    'join(1..2,one-of(6,9)..12)',
+  ])('quarantines valid ambiguous INSDC location %s without aborting the record', (location) => {
+    const [feature] = parseFeatures([
+      `     misc_feature    ${location}`,
+      '                     /label="ambiguous"',
+    ].join('\n'));
+
+    expect(isQuarantinedFeatureLocation(feature)).toBe(true);
+    expect(feature.metadata).toMatchObject({
+      motifOriginalLocation: location,
+      motifLocationQuarantined: true,
+      motifLocationAmbiguous: true,
+      motifImportDiagnostics: [expect.objectContaining({
+        code: 'ambiguous_location',
+        location,
+      })],
+    });
+  });
+
+  it('preserves repeated qualifier order, multiline values, and escaped quotes', () => {
+    const [feature] = parseFeatures([
+      '     misc_feature    1..3',
+      '                     /note="first line',
+      '                     second ""quoted"" line"',
+      '                     /note="second"',
+      '                     /pseudo',
+    ].join('\n'));
+
+    expect(feature.metadata.note).toBe('second');
+    expect(feature.metadata.motifQualifiers).toEqual([
+      { key: 'note', value: 'first line second "quoted" line' },
+      { key: 'note', value: 'second' },
+      { key: 'pseudo', value: true },
+    ]);
   });
 });

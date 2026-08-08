@@ -5,6 +5,12 @@
  * All functions are pure — no side effects.
  */
 
+import {
+  inspectNucleotideSequence,
+  isCanonicalDna,
+  normalizeNucleotideSequence,
+} from './nucleotide';
+
 // ─── Constants ─────────────────────────────────────────────────────────────
 
 /** Gas constant (cal/mol·K) */
@@ -54,6 +60,12 @@ export interface TmResult {
   deltaS: number;
   /** Duplex free energy at 37°C in cal/mol */
   deltaG37: number;
+  /** Whether the result is exact, ambiguity-limited, or invalid. */
+  status: 'exact' | 'ambiguous' | 'invalid';
+  /** Exact sequence after formatting whitespace/case/RNA normalization. */
+  evaluatedSequence: string;
+  /** Human-readable reason when an exact Tm was not evaluated. */
+  message?: string;
 }
 
 export interface TmOptions {
@@ -71,6 +83,72 @@ export interface TmOptions {
   saltCorrection?: 'owczarzy' | 'santalucia' | 'wetmur';
 }
 
+const MAX_NA_CONCENTRATION_MILLIMOLAR = 1_000;
+const MAX_DIVALENT_CONCENTRATION_MILLIMOLAR = 100;
+const MAX_PRIMER_CONCENTRATION_NANOMOLAR = 1_000_000_000;
+
+function invalidTmResult(
+  evaluatedSequence: string,
+  status: 'ambiguous' | 'invalid',
+  message: string,
+): TmResult {
+  return {
+    tm: 0,
+    method: 'none',
+    deltaH: 0,
+    deltaS: 0,
+    deltaG37: 0,
+    status,
+    evaluatedSequence,
+    message,
+  };
+}
+
+function validateFiniteConcentration(
+  name: string,
+  value: number,
+  minimum: number,
+  maximum: number,
+  allowZero: boolean,
+): string | null {
+  if (!Number.isFinite(value)) return `${name} must be finite.`;
+  if (allowZero ? value < minimum : value <= minimum) return `${name} must be ${allowZero ? 'non-negative' : 'greater than zero'}.`;
+  if (value > maximum) return `${name} exceeds the supported physical bound of ${maximum}.`;
+  return null;
+}
+
+function validateTmOptions(options: TmOptions | undefined): string | null {
+  const method = options?.method ?? 'nearest-neighbor';
+  if (!['nearest-neighbor', 'wallace', 'gc-adjusted'].includes(method)) {
+    return `Unsupported Tm method: ${String(method)}.`;
+  }
+  const saltCorrection = options?.saltCorrection ?? 'owczarzy';
+  if (!['owczarzy', 'santalucia', 'wetmur'].includes(saltCorrection)) {
+    return `Unsupported salt-correction method: ${String(saltCorrection)}.`;
+  }
+  const na = options?.naConcentration ?? 50;
+  const mg = options?.mgConcentration ?? 0;
+  const dntp = options?.dntpConcentration ?? 0;
+  const primer = options?.primerConcentration ?? 250;
+  return validateFiniteConcentration('Na+ concentration', na, 0, MAX_NA_CONCENTRATION_MILLIMOLAR, false)
+    ?? validateFiniteConcentration('Mg2+ concentration', mg, 0, MAX_DIVALENT_CONCENTRATION_MILLIMOLAR, true)
+    ?? validateFiniteConcentration('dNTP concentration', dntp, 0, MAX_DIVALENT_CONCENTRATION_MILLIMOLAR, true)
+    ?? validateFiniteConcentration('primer concentration', primer, 0, MAX_PRIMER_CONCENTRATION_NANOMOLAR, false);
+}
+
+function validateThermoInput(
+  thermo: { deltaH: number; deltaS: number; ctMolar: number } | undefined,
+): string | null {
+  if (!thermo) return null;
+  if (!Number.isFinite(thermo.deltaH) || !Number.isFinite(thermo.deltaS)) {
+    return 'Thermodynamic enthalpy and entropy must be finite.';
+  }
+  if (!Number.isFinite(thermo.ctMolar) || thermo.ctMolar <= 0 || thermo.ctMolar > 1) {
+    return 'Thermodynamic strand concentration must be finite, greater than zero, and at most 1 M.';
+  }
+  return null;
+}
+
 // ─── Core thermodynamics ───────────────────────────────────────────────────
 
 /**
@@ -83,7 +161,10 @@ export function duplexThermodynamics(seq: string): {
   deltaS: number;
   deltaG37: number;
 } {
-  const upper = seq.toUpperCase().replace(/U/g, 'T');
+  const upper = normalizeNucleotideSequence(seq);
+  if (!isCanonicalDna(upper)) {
+    throw new Error('Nearest-neighbor thermodynamics requires an unambiguous A/C/G/T sequence.');
+  }
 
   // Initiation: 2 terminal base-pairs
   // dH in kcal/mol → convert to cal/mol for consistency
@@ -246,17 +327,31 @@ export function saltCorrectedTm(
   method: 'owczarzy' | 'santalucia' | 'wetmur' = 'owczarzy',
   thermo?: { deltaH: number; deltaS: number; ctMolar: number },
 ): number {
+  if (!Number.isFinite(tmK) || tmK <= 0) throw new RangeError('Tm must be a finite temperature in Kelvin.');
+  const naError = validateFiniteConcentration('Na+ concentration', naConc, 0, MAX_NA_CONCENTRATION_MILLIMOLAR, false);
+  if (naError) throw new RangeError(naError);
+  const mgError = validateFiniteConcentration('Mg2+ concentration', mgConc, 0, MAX_DIVALENT_CONCENTRATION_MILLIMOLAR, true);
+  if (mgError) throw new RangeError(mgError);
+  if (!Number.isFinite(gcFraction) || gcFraction < 0 || gcFraction > 1) {
+    throw new RangeError('GC fraction must be finite and between 0 and 1.');
+  }
+  if (!Number.isInteger(seqLength) || seqLength < 2) {
+    throw new RangeError('Sequence length must be an integer of at least 2 bases.');
+  }
+  const thermoError = validateThermoInput(thermo);
+  if (thermoError) throw new RangeError(thermoError);
   switch (method) {
     case 'santalucia':
       return santaluciaSaltCorrection(tmK, naConc, seqLength, thermo);
     case 'wetmur':
       return wetmurSaltCorrection(tmK, naConc);
     case 'owczarzy':
-    default:
       if (mgConc > 0) {
         return owczarzyMg(tmK, naConc, mgConc, gcFraction, seqLength);
       }
       return owczarzyNa(tmK, naConc, gcFraction);
+    default:
+      throw new RangeError(`Unsupported salt-correction method: ${String(method)}.`);
   }
 }
 
@@ -300,10 +395,30 @@ function gcAdjustedTm(seq: string): number {
  * (nearest-neighbor is inaccurate for very short oligos).
  */
 export function calculateTm(seq: string, options?: TmOptions): TmResult {
-  const upper = seq.toUpperCase().replace(/U/g, 'T').replace(/[^ATGC]/g, '');
+  const inspected = inspectNucleotideSequence(seq);
+  const upper = inspected.sequence;
+
+  const optionError = validateTmOptions(options);
+  if (optionError) return invalidTmResult(upper, 'invalid', optionError);
+
+  if (inspected.invalidCharacters.length > 0) {
+    return invalidTmResult(
+      upper,
+      'invalid',
+      `Tm requires nucleotide characters only; invalid input: ${inspected.invalidCharacters.join(', ')}.`,
+    );
+  }
+
+  if (inspected.ambiguous) {
+    return invalidTmResult(
+      upper,
+      'ambiguous',
+      'Tm was not evaluated because the oligo contains IUPAC ambiguity symbols. Use an unambiguous ordered sequence or evaluate an explicit range externally.',
+    );
+  }
 
   if (upper.length === 0) {
-    return { tm: 0, method: 'none', deltaH: 0, deltaS: 0, deltaG37: 0 };
+    return invalidTmResult(upper, 'invalid', 'Tm requires a non-empty oligonucleotide.');
   }
 
   const method = options?.method ?? 'nearest-neighbor';
@@ -335,6 +450,8 @@ export function calculateTm(seq: string, options?: TmOptions): TmResult {
       deltaH: 0,
       deltaS: 0,
       deltaG37: 0,
+      status: 'exact',
+      evaluatedSequence: upper,
     };
   }
   if (method === 'wallace') {
@@ -350,6 +467,8 @@ export function calculateTm(seq: string, options?: TmOptions): TmResult {
       deltaH: 0,
       deltaS: 0,
       deltaG37: 0,
+      status: 'exact',
+      evaluatedSequence: upper,
     };
   }
 
@@ -365,6 +484,8 @@ export function calculateTm(seq: string, options?: TmOptions): TmResult {
       deltaH: 0,
       deltaS: 0,
       deltaG37: 0,
+      status: 'exact',
+      evaluatedSequence: upper,
     };
   }
 
@@ -395,6 +516,8 @@ export function calculateTm(seq: string, options?: TmOptions): TmResult {
     deltaH,
     deltaS,
     deltaG37,
+    status: 'exact',
+    evaluatedSequence: upper,
   };
 }
 
@@ -407,8 +530,26 @@ export function primerTm(
   template: string,
   options?: TmOptions,
 ): TmResult {
-  const p = primer.toUpperCase().replace(/U/g, 'T').replace(/[^ATGC]/g, '');
-  const t = template.toUpperCase().replace(/U/g, 'T').replace(/[^ATGC]/g, '');
+  const inspectedPrimer = inspectNucleotideSequence(primer);
+  const inspectedTemplate = inspectNucleotideSequence(template);
+  const baseTm = calculateTm(primer, options);
+  const invalid = [...new Set([
+    ...inspectedPrimer.invalidCharacters,
+    ...inspectedTemplate.invalidCharacters,
+  ])];
+  const ambiguous = inspectedPrimer.ambiguous || inspectedTemplate.ambiguous;
+  if (invalid.length > 0 || ambiguous) {
+    return {
+      ...baseTm,
+      status: invalid.length > 0 ? 'invalid' : 'ambiguous',
+      evaluatedSequence: inspectedPrimer.sequence,
+      message: invalid.length > 0
+        ? `Primer/template comparison contains invalid nucleotide input: ${invalid.join(', ')}.`
+        : 'Primer/template comparison was not evaluated because the primer or template contains IUPAC ambiguity symbols.',
+    };
+  }
+  const p = inspectedPrimer.sequence;
+  const t = inspectedTemplate.sequence;
 
   // Count mismatches over the shorter of the two
   const compareLen = Math.min(p.length, t.length);
@@ -418,9 +559,6 @@ export function primerTm(
   }
   // Length difference counts as mismatches
   mismatches += Math.abs(p.length - t.length);
-
-  // Calculate base Tm for the primer
-  const baseTm = calculateTm(primer, options);
 
   // Penalize: each mismatch ≈ -1 kcal/mol dH, roughly -2–3°C Tm penalty
   // Approximate: ~3°C per mismatch (heuristic, position-dependent effects ignored)

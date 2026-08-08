@@ -9,6 +9,10 @@ import {
 } from 'react';
 import type { Topology } from '../bio/types';
 import {
+  GOLDEN_GATE_FIDELITY_CONDITIONS,
+  GOLDEN_GATE_FIDELITY_DATASETS,
+} from '../bio/golden-gate-fidelity';
+import {
   createArtifactAssemblyArtifacts,
   MAX_ARTIFACT_ASSEMBLY_PARTS,
   planArtifactGoldenGateAssembly,
@@ -60,6 +64,7 @@ export type ClaudeScienceAssemblyWorkspaceProps = {
 type OrderedPart = { key: string; recordId: string };
 
 const TYPE_IIS_ENZYMES = ['BsaI', 'BbsI', 'BsmBI', 'Esp3I', 'SapI', 'BspQI'] as const;
+const ASSEMBLY_MODES: readonly ClaudeScienceAssemblyMode[] = ['golden_gate', 'ligation'];
 const FOCUSABLE_SELECTOR = [
   'button:not([disabled])',
   'select:not([disabled])',
@@ -146,6 +151,7 @@ export function ClaudeScienceAssemblyWorkspace({
   ));
   const [candidateRecordId, setCandidateRecordId] = useState(records[0]?.id ?? '');
   const [enzyme, setEnzyme] = useState<(typeof TYPE_IIS_ENZYMES)[number]>('BsaI');
+  const [fidelityDatasetId, setFidelityDatasetId] = useState('');
   const [topologies, setTopologies] = useState<Record<ClaudeScienceAssemblyMode, Topology>>({
     golden_gate: 'circular',
     ligation: 'linear',
@@ -190,6 +196,9 @@ export function ClaudeScienceAssemblyWorkspace({
     return record ? [record] : [];
   }), [orderedParts, recordsById]);
   const topology = topologies[mode];
+  const fidelityCondition = fidelityDatasetId
+    ? GOLDEN_GATE_FIDELITY_CONDITIONS[fidelityDatasetId] ?? null
+    : undefined;
 
   const plan = useMemo<ArtifactAssemblyPlan>(() => {
     if (mode === 'golden_gate') {
@@ -201,7 +210,12 @@ export function ClaudeScienceAssemblyWorkspace({
         ...(record.topology === undefined ? {} : { sourceTopology: record.topology }),
         ...(record.sha256 === undefined ? {} : { sha256: record.sha256 }),
       }));
-      return planArtifactGoldenGateAssembly({ parts, enzyme, topology });
+      return planArtifactGoldenGateAssembly({
+        parts,
+        enzyme,
+        topology,
+        fidelityCondition,
+      });
     }
     const parts: ArtifactLigationPartInput[] = selectedRecords.map((record) => ({
       recordId: record.id,
@@ -215,11 +229,12 @@ export function ClaudeScienceAssemblyWorkspace({
       ...(record.overhang3Type === undefined ? {} : { overhang3Type: record.overhang3Type }),
     }));
     return planArtifactLigation({ parts, topology });
-  }, [enzyme, mode, selectedRecords, topology]);
+  }, [enzyme, fidelityCondition, mode, selectedRecords, topology]);
 
   const planFingerprint = useMemo(() => compactFingerprint(JSON.stringify({
     mode,
     enzyme: mode === 'golden_gate' ? enzyme : null,
+    fidelityDatasetId: mode === 'golden_gate' ? fidelityDatasetId || null : null,
     topology,
     parts: selectedRecords.map((record) => ({
       id: record.id,
@@ -230,7 +245,7 @@ export function ClaudeScienceAssemblyWorkspace({
       overhang3Type: record.overhang3Type,
     })),
     status: plan.status,
-  })), [enzyme, mode, plan.status, selectedRecords, topology]);
+  })), [enzyme, fidelityDatasetId, mode, plan.status, selectedRecords, topology]);
   const resultSaveSignature = `${planFingerprint}:result:${productNames[mode].trim()}`;
   const productSaveSignature = `${planFingerprint}:product:${productNames[mode].trim()}`;
   const resultSaved = savedSignatures.has(resultSaveSignature);
@@ -271,6 +286,22 @@ export function ClaudeScienceAssemblyWorkspace({
     event.preventDefault();
     movePart(index, event.key === 'ArrowUp' ? -1 : 1);
   }, [movePart]);
+
+  const handleModeTabKeyDown = useCallback((event: KeyboardEvent<HTMLButtonElement>, currentMode: ClaudeScienceAssemblyMode) => {
+    const currentIndex = ASSEMBLY_MODES.indexOf(currentMode);
+    let nextIndex: number | null = null;
+    if (event.key === 'Home') nextIndex = 0;
+    if (event.key === 'End') nextIndex = ASSEMBLY_MODES.length - 1;
+    if (event.key === 'ArrowRight' || event.key === 'ArrowDown') nextIndex = (currentIndex + 1) % ASSEMBLY_MODES.length;
+    if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') nextIndex = (currentIndex - 1 + ASSEMBLY_MODES.length) % ASSEMBLY_MODES.length;
+    if (nextIndex === null) return;
+    event.preventDefault();
+    const nextMode = ASSEMBLY_MODES[nextIndex];
+    setMode(nextMode);
+    event.currentTarget.parentElement
+      ?.querySelector<HTMLButtonElement>(`[data-assembly-mode="${nextMode}"]`)
+      ?.focus();
+  }, []);
 
   const handleWorkspaceKeyDown = useCallback((event: KeyboardEvent<HTMLElement>) => {
     if (event.key !== 'Tab') return;
@@ -369,9 +400,12 @@ export function ClaudeScienceAssemblyWorkspace({
             role="tab"
             aria-selected={mode === 'golden_gate'}
             aria-controls={tabPanelId}
+            tabIndex={mode === 'golden_gate' ? 0 : -1}
             data-active={mode === 'golden_gate' || undefined}
+            data-assembly-mode="golden_gate"
             data-testid="assembly-mode-golden-gate"
             onClick={() => setMode('golden_gate')}
+            onKeyDown={(event) => handleModeTabKeyDown(event, 'golden_gate')}
           >
             Golden Gate
           </button>
@@ -381,9 +415,12 @@ export function ClaudeScienceAssemblyWorkspace({
             role="tab"
             aria-selected={mode === 'ligation'}
             aria-controls={tabPanelId}
+            tabIndex={mode === 'ligation' ? 0 : -1}
             data-active={mode === 'ligation' || undefined}
+            data-assembly-mode="ligation"
             data-testid="assembly-mode-ligation"
             onClick={() => setMode('ligation')}
+            onKeyDown={(event) => handleModeTabKeyDown(event, 'ligation')}
           >
             Traditional ligation
           </button>
@@ -549,12 +586,32 @@ export function ClaudeScienceAssemblyWorkspace({
             <section className="motif-cs-assembly-settings">
               <span className="motif-cs-kicker">Settings</span>
               {mode === 'golden_gate' ? (
-                <label className="motif-cs-assembly-field">
-                  <span>Type IIS enzyme</span>
-                  <select value={enzyme} onChange={(event) => setEnzyme(event.target.value as typeof enzyme)}>
-                    {TYPE_IIS_ENZYMES.map((name) => <option key={name} value={name}>{name}</option>)}
-                  </select>
-                </label>
+                <>
+                  <label className="motif-cs-assembly-field">
+                    <span>Type IIS enzyme</span>
+                    <select value={enzyme} onChange={(event) => setEnzyme(event.target.value as typeof enzyme)}>
+                      {TYPE_IIS_ENZYMES.map((name) => <option key={name} value={name}>{name}</option>)}
+                    </select>
+                  </label>
+                  <label className="motif-cs-assembly-field">
+                    <span>Empirical ligation condition</span>
+                    <select
+                      value={fidelityDatasetId}
+                      onChange={(event) => setFidelityDatasetId(event.target.value)}
+                      data-testid="assembly-fidelity-condition"
+                    >
+                      <option value="">Not selected — report unknown</option>
+                      {GOLDEN_GATE_FIDELITY_DATASETS.map((dataset) => (
+                        <option key={dataset.id} value={dataset.id}>
+                          {dataset.condition.enzyme} · {dataset.provenance.table}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <p className="motif-cs-assembly-enzyme-detail">
+                    Scores are available only for an exact published enzyme, ligase, buffer, concentration, and cycling condition.
+                  </p>
+                </>
               ) : null}
               <fieldset className="motif-cs-assembly-topology">
                 <legend>Product topology</legend>
@@ -600,6 +657,33 @@ export function ClaudeScienceAssemblyWorkspace({
                   <span>Selected boundaries passed the {enzyme} site check.</span>
                 </div>
               ) : null}
+              {mode === 'golden_gate' && plan.kind === 'golden_gate' ? (
+                <div className="motif-cs-assembly-fidelity" data-state={plan.fidelity.status} role="note" data-testid="assembly-fidelity-receipt">
+                  <strong>Empirical ligation fidelity</strong>
+                  <span>
+                    {plan.fidelity.assembly.estimatedFidelity === null
+                      ? plan.fidelity.status === 'unknown'
+                        ? 'Unknown — select an exact published condition to evaluate.'
+                        : `${plan.fidelity.status[0].toUpperCase()}${plan.fidelity.status.slice(1)} — no complete empirical estimate.`
+                      : `${(plan.fidelity.assembly.estimatedFidelity * 100).toFixed(1)}% estimated whole-assembly fidelity (${Math.round(plan.fidelity.assembly.coverage * 100)}% junction coverage).`}
+                  </span>
+                  {plan.fidelity.provenance ? (
+                    <small>
+                      {plan.fidelity.provenance.table} · {plan.fidelity.provenance.datasetId} · source SHA-256 {plan.fidelity.provenance.sourceSha256}
+                      {' · '}
+                      <a href={plan.fidelity.provenance.dataUrl} target="_blank" rel="noreferrer">published data</a>
+                    </small>
+                  ) : null}
+                  {plan.fidelity.warnings.length > 0 ? <small>{plan.fidelity.warnings[0]}</small> : null}
+                  {plan.fidelity.junctions.some((junction) => junction.estimatedFidelity !== null) ? (
+                    <small>
+                      Per-junction estimates: {plan.fidelity.junctions.map((junction) => (
+                        junction.estimatedFidelity === null ? 'unknown' : `${(junction.estimatedFidelity * 100).toFixed(1)}%`
+                      )).join(' · ')}
+                    </small>
+                  ) : null}
+                </div>
+              ) : null}
               {plan.errors.length > 0 ? (
                 <div className="motif-cs-assembly-issues" data-level="error">
                   <strong>Blocking issues</strong>
@@ -612,6 +696,18 @@ export function ClaudeScienceAssemblyWorkspace({
                   <ul>{plan.warnings.map((entry, index) => <li key={`${entry.code}-${index}`}>{entry.message}</li>)}</ul>
                 </div>
               ) : null}
+              <div
+                className="motif-cs-visually-hidden"
+                aria-live={plan.errors.length > 0 ? 'assertive' : 'polite'}
+                aria-atomic="true"
+                data-testid="assembly-plan-live-status"
+              >
+                {plan.errors.length > 0
+                  ? `Assembly blocked. ${plan.errors.length} blocking issue${plan.errors.length === 1 ? '' : 's'} need review.`
+                  : plan.warnings.length > 0
+                    ? `Assembly warning. ${plan.warnings.length} warning${plan.warnings.length === 1 ? '' : 's'} need review.`
+                    : 'Assembly has no blocking issues or warnings.'}
+              </div>
             </section>
           </aside>
         </div>

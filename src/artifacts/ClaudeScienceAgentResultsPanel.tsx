@@ -81,6 +81,12 @@ const ASSET_PAGE_SIZE = 25;
 const TEXT_PAGE_CHARACTERS = 20_000;
 const ASSET_PREVIEW_CHARACTERS = 12_000;
 
+type DeleteFocusRestore = {
+  id: string;
+  index: number;
+  mode: 'same' | 'next';
+};
+
 function boundedTextPreview(text: string, maxCharacters: number): string {
   const preview = text.slice(0, maxCharacters);
   const lastCodeUnit = preview.charCodeAt(preview.length - 1);
@@ -723,9 +729,11 @@ export function ClaudeScienceAgentResultsPanel({
   const [visibleCount, setVisibleCount] = useState(RESULT_PAGE_SIZE);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [status, setStatus] = useState('');
+  const resultsPanelRef = useRef<HTMLElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
   const deleteRefs = useRef(new Map<string, HTMLButtonElement>());
   const restoreFocusIdRef = useRef<string | null>(null);
+  const restoreAfterDeleteRef = useRef<DeleteFocusRestore | null>(null);
   const showFirstResultsRef = useRef<HTMLButtonElement>(null);
   const showMoreResultsRef = useRef<HTMLButtonElement>(null);
   const paginationFocusTargetRef = useRef<'first' | 'more' | null>(null);
@@ -759,10 +767,26 @@ export function ClaudeScienceAgentResultsPanel({
       cancelRef.current?.focus();
       return;
     }
+    const afterDelete = restoreAfterDeleteRef.current;
+    restoreAfterDeleteRef.current = null;
+    if (afterDelete) {
+      if (afterDelete.mode === 'same') {
+        deleteRefs.current.get(afterDelete.id)?.focus();
+        return;
+      }
+      const currentIds = visibleResults.map((result) => result.id);
+      const nextId = currentIds[Math.min(afterDelete.index, currentIds.length - 1)];
+      if (nextId) {
+        deleteRefs.current.get(nextId)?.focus();
+      } else {
+        resultsPanelRef.current?.focus({ preventScroll: true });
+      }
+      return;
+    }
     const id = restoreFocusIdRef.current;
     restoreFocusIdRef.current = null;
     if (id) deleteRefs.current.get(id)?.focus();
-  }, [pendingDeleteId]);
+  }, [ordered.length, pendingDeleteId, visibleResults]);
 
   useLayoutEffect(() => {
     const target = paginationFocusTargetRef.current;
@@ -777,7 +801,9 @@ export function ClaudeScienceAgentResultsPanel({
   };
 
   const confirmDelete = (resultId: string) => {
+    const index = Math.max(0, visibleResults.findIndex((result) => result.id === resultId));
     const removed = onRemove(resultId);
+    restoreAfterDeleteRef.current = { id: resultId, index, mode: removed === false ? 'same' : 'next' };
     setPendingDeleteId(null);
     setStatus(removed === false ? 'Remove dependent analysis results first.' : 'Analysis result removed.');
   };
@@ -817,7 +843,7 @@ export function ClaudeScienceAgentResultsPanel({
   };
 
   return (
-    <section className="motif-cs-agent-results" aria-label="Agent and analysis results">
+    <section ref={resultsPanelRef} className="motif-cs-agent-results" aria-label="Agent and analysis results" tabIndex={-1}>
       <div className="motif-cs-agent-results-toolbar">
         <label>
           <span>Show</span>

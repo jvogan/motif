@@ -6,14 +6,16 @@ import {
 } from '../bio/golden-gate';
 import {
   buildGoldenGateOrganizationPlan,
+  classifyValidatedGoldenBraidBoundary,
   type GoldenGateOrganizationMode,
 } from '../bio/golden-braid';
 import {
   checkPartAgainstKit,
   getGoldenGateKit,
   type GoldenGateKit,
+  type GoldenGateKitLevelDefinition,
 } from '../bio/golden-gate-kits';
-import { findOverlap, gibsonAssemble } from '../bio/gibson-assembly';
+import { analyzeOverlap, gibsonAssemble, type OverlapSearchResult } from '../bio/gibson-assembly';
 import { reverseComplement } from '../bio/reverse-complement';
 import { sha256HexSync } from './claude-science-sha256';
 
@@ -168,6 +170,7 @@ export type ArtifactGoldenGateProfileSummary = {
   fusionSiteLength: 3 | 4;
   fusionSites: string[];
   prototype: Array<{ role: string; left: string; right: string }>;
+  levels: Array<GoldenGateKitLevelDefinition>;
   citation: string;
   citationUrl: string;
 };
@@ -236,10 +239,13 @@ export type ArtifactGibsonJunctionPlan = {
   leftRecordId: string;
   rightRecordId: string;
   closing: boolean;
-  status: 'ready' | 'missing_overlap' | 'low_tm';
+  status: 'ready' | 'missing_overlap' | 'low_tm' | 'ambiguous_overlap';
   overlapSequence: string | null;
   overlapLength: number;
   overlapTm: number | null;
+  overlapUnique: boolean;
+  alternateOverlapLengths: number[];
+  overlapState: OverlapSearchResult['reason'];
   issues: ArtifactCloningIssue[];
 };
 
@@ -458,6 +464,11 @@ function summarizeKit(
     // they must not inherit that set even when their alternating enzyme is BsaI.
     fusionSites: usesPrimaryLevel ? [...kit.fusionSites] : [],
     prototype: usesPrimaryLevel ? kit.prototype?.map((entry) => ({ ...entry })) ?? [] : [],
+    levels: kit.levels?.map((level) => ({
+      ...level,
+      acceptedFusionSites: [...level.acceptedFusionSites],
+      grammar: level.grammar.map((entry) => ({ ...entry })),
+    })) ?? [],
     citation: kit.citation,
     citationUrl: kit.citationUrl,
   };
@@ -478,19 +489,17 @@ function goldenBraidDirectionConfig(direction: ArtifactGoldenBraidDirection): {
   enzyme: GoldenGateEnzymeName;
   nextEnzyme: GoldenGateEnzymeName;
 } {
-  return direction === 'alpha_to_omega'
-    ? {
-      sourceLevel: 'alpha',
-      destinationLevel: 'omega',
-      enzyme: 'BsmBI',
-      nextEnzyme: 'BsaI',
-    }
-    : {
-      sourceLevel: 'omega',
-      destinationLevel: 'alpha',
-      enzyme: 'BsaI',
-      nextEnzyme: 'BsmBI',
-    };
+  const kit = getGoldenGateKit('goldenbraid-3');
+  const sourceLevel = direction === 'alpha_to_omega' ? 'alpha' : 'omega';
+  const destinationLevel = direction === 'alpha_to_omega' ? 'omega' : 'alpha';
+  const source = kit?.levels?.find((level) => level.level === sourceLevel);
+  const destination = kit?.levels?.find((level) => level.level === destinationLevel);
+  return {
+    sourceLevel,
+    destinationLevel,
+    enzyme: source?.enzyme ?? (direction === 'alpha_to_omega' ? 'BsmBI' : 'BsaI'),
+    nextEnzyme: source?.transitionEnzyme ?? destination?.enzyme ?? (direction === 'alpha_to_omega' ? 'BsaI' : 'BsmBI'),
+  };
 }
 
 type GoldenBraidIdentityValidation = {
@@ -891,6 +900,13 @@ export function planArtifactGoldenGateDesign(input: ArtifactGoldenGateProfileInp
       normalized.inputs.map((part) => ({ id: part.recordId, name: part.name, sequence: part.sequence })),
       enzyme,
       organizationMode,
+      organizationMode === 'golden_braid_binary'
+        ? normalized.inputs.map(() => 'transcription_unit' as const)
+        : organizationMode === 'golden_braid_tu'
+          ? normalized.inputs.map((part) => classifyValidatedGoldenBraidBoundary(
+            getGoldenGatePartBoundary({ name: part.name, sequence: part.sequence }, enzyme),
+          ))
+          : undefined,
     )
     : null;
   organization?.warnings.forEach((message) => {
@@ -1212,13 +1228,18 @@ export function planArtifactGibsonDesign(input: ArtifactGibsonDesignInput): Arti
       const left = normalized.inputs[index];
       const right = normalized.inputs[(index + 1) % normalized.inputs.length];
       const closing = index === normalized.inputs.length - 1;
-      const overlap = findOverlap(left.sequence, right.sequence, minOverlap, maxOverlap);
+      const overlapSearch = analyzeOverlap(left.sequence, right.sequence, minOverlap, maxOverlap);
+      const overlap = overlapSearch.selected;
       const junctionIssues: ArtifactCloningIssue[] = [];
       if (!overlap) {
         junctionIssues.push(issue(
           'error',
-          closing ? 'missing_closing_overlap' : 'missing_overlap',
-          `No ${minOverlap}–${maxOverlap} bp exact overlap was found for ${left.name} → ${right.name}.`,
+          overlapSearch.reason === 'ambiguous_symbols'
+            ? 'ambiguous_overlap_symbols'
+            : closing ? 'missing_closing_overlap' : 'missing_overlap',
+          overlapSearch.reason === 'ambiguous_symbols'
+            ? `${left.name} → ${right.name} contains IUPAC ambiguity symbols; exact homology must be resolved before assembly.`
+            : `No ${minOverlap}–${maxOverlap} bp exact overlap was found for ${left.name} → ${right.name}.`,
           { junctionIndex: index },
         ));
       } else if (overlap.tm < 50) {
@@ -1229,15 +1250,30 @@ export function planArtifactGibsonDesign(input: ArtifactGibsonDesignInput): Arti
           { junctionIndex: index },
         ));
       }
+      if (overlapSearch.candidates.length > 1) {
+        junctionIssues.push(issue(
+          'warning',
+          'alternate_overlap_lengths',
+          `${left.name} → ${right.name} has alternate exact overlap lengths (${overlapSearch.candidates.map((candidate) => candidate.length).join(', ')} bp); the longest is selected and uniqueness is disclosed.`,
+          { junctionIndex: index },
+        ));
+      }
       junctions.push({
         index,
         leftRecordId: left.recordId,
         rightRecordId: right.recordId,
         closing,
-        status: !overlap ? 'missing_overlap' : overlap.tm < 50 ? 'low_tm' : 'ready',
+        status: !overlap
+          ? overlapSearch.reason === 'ambiguous_symbols' ? 'ambiguous_overlap' : 'missing_overlap'
+          : overlap.tm < 50 ? 'low_tm' : 'ready',
         overlapSequence: overlap?.sequence ?? null,
         overlapLength: overlap?.length ?? 0,
         overlapTm: overlap?.tm ?? null,
+        overlapUnique: overlapSearch.unique,
+        alternateOverlapLengths: overlapSearch.candidates
+          .slice(1)
+          .map((candidate) => candidate.length),
+        overlapState: overlapSearch.reason,
         issues: junctionIssues,
       });
     }
@@ -1247,13 +1283,17 @@ export function planArtifactGibsonDesign(input: ArtifactGibsonDesignInput): Arti
   junctions.forEach((junction) => {
     const left = normalized.inputs.find((entry) => entry.recordId === junction.leftRecordId);
     const right = normalized.inputs.find((entry) => entry.recordId === junction.rightRecordId);
-    if (junction.status === 'missing_overlap') {
+    if (junction.status === 'missing_overlap' || junction.status === 'ambiguous_overlap') {
       preparation.push({
         id: `homology:${junction.index}`,
         status: 'required',
         kind: 'add_homology',
-        label: `Add homology for ${left?.name ?? junction.leftRecordId} → ${right?.name ?? junction.rightRecordId}`,
-        detail: `Add a unique ${minOverlap}–${maxOverlap} bp homology arm; then revalidate the exact junction.`,
+        label: junction.status === 'ambiguous_overlap'
+          ? `Resolve ambiguous homology for ${left?.name ?? junction.leftRecordId} → ${right?.name ?? junction.rightRecordId}`
+          : `Add homology for ${left?.name ?? junction.leftRecordId} → ${right?.name ?? junction.rightRecordId}`,
+        detail: junction.status === 'ambiguous_overlap'
+          ? 'Replace ambiguity symbols with an explicitly verified A/C/G/T overlap before assembly.'
+          : `Add a unique ${minOverlap}–${maxOverlap} bp homology arm; then revalidate the exact junction.`,
         recordIds: [junction.leftRecordId, junction.rightRecordId],
         junctionIndex: junction.index,
       });

@@ -405,6 +405,12 @@ globals were called.
   ZIP retain the complete artifact record; FASTA, basic GenBank/GFF3, CSV, and
   reports are also available for interchange. A browser download request is
   not itself proof that a checkpoint was saved.
+- GenBank import preserves repeated qualifiers and raw locations with
+  feature-specific diagnostics. Fuzzy bounds remain guarded when their
+  coordinates are representable; valid between-base and remote-accession
+  locations are retained but quarantined because Motif cannot project them onto
+  the local sequence. Basic GenBank is not full INSDC support; use Database JSON
+  or ZIP for a complete checkpoint.
 - For Sanger review, report that AB1 calls were imported and visually checked;
   do not claim the artifact re-base-called the raw electropherogram. State
   whether the read was aligned forward or reverse to the selected template.

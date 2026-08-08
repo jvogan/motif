@@ -3,8 +3,13 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
+  MAX_ARTIFACT_DATABASE_JSON_CHARACTERS,
+  parseArtifactDatabaseJson,
+} from '../claude-science-session';
+import {
   MOTIF_MAX_FEATURES_PER_RECORD,
   MOTIF_MAX_HITS_PER_SITE,
+  MOTIF_MAX_DATABASE_IMPORT_FILE_BYTES,
   MOTIF_MAX_METADATA_JSON_DEPTH,
   MOTIF_MAX_METADATA_JSON_NODES,
   MOTIF_MAX_PAYLOAD_JSON_BYTES,
@@ -18,6 +23,7 @@ import {
   createArtifactDatabaseSnapshot,
   createDefensiveRuntimeSnapshot,
   describePayloadSnapshot,
+  normalizeCustomEnzymeRecognitionInput,
   inventoryReportHtml,
   normalizeRecord,
   normalizeSequence,
@@ -34,6 +40,32 @@ const here = dirname(fileURLToPath(import.meta.url));
 const artifactSource = readFileSync(resolve(here, '..', 'motif-artifact.tsx'), 'utf8');
 
 describe('Claude Science runtime data-integrity behavior', () => {
+  it('round-trips Unicode Database JSON within the character/UTF-8 transport contract', () => {
+    const database = {
+      schema: 'motif.claude-science.inventory.v2',
+      records: [{ id: 'unicode', name: '🧬 checkpoint', molecule: 'dna', topology: 'linear', seq: 'ACGT', description: '😀'.repeat(1_024) }],
+    };
+    const serialized = JSON.stringify(database);
+    const bytes = new TextEncoder().encode(serialized).byteLength;
+    expect(bytes).toBeGreaterThan(serialized.length);
+    expect(bytes).toBeLessThanOrEqual(MOTIF_MAX_DATABASE_IMPORT_FILE_BYTES);
+    expect(MOTIF_MAX_DATABASE_IMPORT_FILE_BYTES).toBe(MAX_ARTIFACT_DATABASE_JSON_CHARACTERS * 3);
+    // An astral Unicode string uses two JavaScript characters but four UTF-8
+    // bytes. This boundary calculation demonstrates why the old 1:1 file
+    // gate could reject a character-legal checkpoint before parsing it.
+    const legalAstralCodeUnitCount = Math.floor(MAX_ARTIFACT_DATABASE_JSON_CHARACTERS / 2) * 2;
+    const astralUtf8Bytes = legalAstralCodeUnitCount * 2;
+    expect(legalAstralCodeUnitCount).toBeLessThanOrEqual(MAX_ARTIFACT_DATABASE_JSON_CHARACTERS);
+    expect(astralUtf8Bytes).toBeGreaterThan(MAX_ARTIFACT_DATABASE_JSON_CHARACTERS);
+    expect(astralUtf8Bytes).toBeLessThanOrEqual(MOTIF_MAX_DATABASE_IMPORT_FILE_BYTES);
+    const worstCaseUtf8Bytes = MAX_ARTIFACT_DATABASE_JSON_CHARACTERS * 3;
+    expect(worstCaseUtf8Bytes).toBe(MOTIF_MAX_DATABASE_IMPORT_FILE_BYTES);
+    expect(parseArtifactDatabaseJson(serialized)).toMatchObject({
+      schema: database.schema,
+      records: [{ id: 'unicode', description: database.records[0].description }],
+    });
+  });
+
   it('permits only an explicit empty replacement to clear and rejects invalid non-empty batches', () => {
     expect(prepareInventoryReplacement([]).records).toEqual([]);
     expect(prepareInventoryReplacement({ records: [] }).records).toEqual([]);
@@ -726,6 +758,25 @@ describe('Claude Science runtime data-integrity behavior', () => {
     expect(normalizeSequence('M U O J B X Z *', 'protein')).toBe('MUOJBXZ*');
   });
 
+  it('reports direct-payload invalid characters before feature-coordinate validation', () => {
+    expect(() => validateRuntimeRecordInputs([{
+      molecule: 'dna',
+      sequence: 'AT-GC',
+      features: [{ start: 0, end: 99 }],
+    }], 'motifAddRecords')).toThrowError(
+      expect.objectContaining({
+        details: expect.objectContaining({
+          issues: expect.arrayContaining([
+            expect.objectContaining({
+              path: 'records[0].sequence',
+              message: expect.stringMatching(/invalid character "-" at offset 2/i),
+            }),
+          ]),
+        }),
+      }),
+    );
+  });
+
   it('keeps ordinary FASTA records JSON-compatible for atomic UI imports', () => {
     const [record] = parseImportedRecords(
       '>Wave3 Enzyme Probe\nAAAACCGGTCTCAAAATTTTCGTCTCGGGGAAAACCGAGACCAAAA',
@@ -741,6 +792,15 @@ describe('Claude Science runtime data-integrity behavior', () => {
     });
     expect(Object.prototype.hasOwnProperty.call(record, 'provenance')).toBe(false);
     expect(() => validateRuntimeRecordInputs([record], 'motifAddRecords')).not.toThrow();
+  });
+
+  it('rejects invalid FASTA characters before import can change sequence coordinates', () => {
+    expect(() => parseImportedRecords(
+      '>invalid FASTA\nACGT?ACGT',
+      '',
+      'auto',
+      'linear',
+    )).toThrow(/FASTA sequence contains invalid character "\?" at line 2, column 5/i);
   });
 
   it('reimports the bare object emitted by Record JSON export', () => {
@@ -800,6 +860,23 @@ describe('Claude Science runtime data-integrity behavior', () => {
       cutOffset: 3,
       complementCutOffset: 3,
       overhang: 'blunt',
+    });
+  });
+
+  it('rejects custom recognition punctuation without sanitizing the requested motif', () => {
+    expect(normalizeCustomEnzymeRecognitionInput('GAATTC')).toEqual({ sequence: 'GAATTC' });
+    expect(normalizeCustomEnzymeRecognitionInput('GAA TTC')).toEqual({ sequence: 'GAATTC' });
+    expect(normalizeCustomEnzymeRecognitionInput('GAATTC?')).toMatchObject({
+      sequence: '',
+      error: expect.stringMatching(/invalid character "\?" at offset 6/i),
+    });
+    expect(normalizeCustomEnzymeRecognitionInput('GAATTC-')).toMatchObject({
+      sequence: '',
+      error: expect.stringMatching(/invalid character "-" at offset 6/i),
+    });
+    expect(normalizeCustomEnzymeRecognitionInput('GAATTC1')).toMatchObject({
+      sequence: '',
+      error: expect.stringMatching(/invalid character "1" at offset 6/i),
     });
   });
 
@@ -963,5 +1040,18 @@ describe('Claude Science runtime data-integrity behavior', () => {
     expect(artifactSource).toContain('Session data is not durable across reloads.');
     expect(artifactSource).toContain('Database JSON restores directly; ZIP contains the same inventory.json plus interchange exports');
     expect(artifactSource).toContain('artifactState,');
+    expect(artifactSource).toContain('data-testid="export-loss-receipt"');
+    expect(artifactSource).toContain("<strong>{exportLossReport.faithful ? 'Faithful export' : 'Lossy export'}</strong>");
+    expect(artifactSource).toContain('Use Database JSON or ZIP for the complete Motif checkpoint.');
+    expect(artifactSource).toContain('MOTIF_MAX_DATABASE_IMPORT_FILE_BYTES');
+    expect(artifactSource).toContain('isDatabaseJsonFile(file)');
+    const importSizeCheck = artifactSource.indexOf('const maxImportBytes = isDatabaseJsonFile(file)');
+    const importTextRead = artifactSource.indexOf('const text = await file.text();', importSizeCheck);
+    expect(importSizeCheck).toBeGreaterThanOrEqual(0);
+    expect(importSizeCheck).toBeLessThan(importTextRead);
+    const restoreSizeCheck = artifactSource.indexOf('if (file.size > MOTIF_MAX_DATABASE_IMPORT_FILE_BYTES)', importSizeCheck + 1);
+    const restoreTextRead = artifactSource.indexOf('parseArtifactDatabaseJson(await file.text())', restoreSizeCheck);
+    expect(restoreSizeCheck).toBeGreaterThan(importSizeCheck);
+    expect(restoreSizeCheck).toBeLessThan(restoreTextRead);
   });
 });

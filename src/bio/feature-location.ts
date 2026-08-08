@@ -87,8 +87,16 @@ export function isAmbiguousFeatureLocation(feature: FeatureLocation): boolean {
     && feature.metadata?.motifSubRangeOrderAmbiguous === true;
 }
 
+/** A valid INSDC location retained verbatim but not projectable onto this record. */
+export function isQuarantinedFeatureLocation(feature: FeatureLocation): boolean {
+  return feature.metadata?.motifLocationQuarantined === true
+    && typeof feature.metadata?.motifOriginalLocation === 'string';
+}
+
 export function isMaterializableFeatureLocation(feature: FeatureLocation): boolean {
-  return !isOrderedFeatureLocation(feature) && !isAmbiguousFeatureLocation(feature);
+  return !isQuarantinedFeatureLocation(feature)
+    && !isOrderedFeatureLocation(feature)
+    && !isAmbiguousFeatureLocation(feature);
 }
 
 /**
@@ -167,6 +175,7 @@ function genBankRange(start: number, end: number): string {
  * explicit per-piece orientation inside `join(...)`.
  */
 export function featureGenBankLocation(feature: FeatureLocation): string {
+  if (isQuarantinedFeatureLocation(feature)) return feature.metadata!.motifOriginalLocation as string;
   const segments = featureLocationSegments(feature);
   if (segments.length === 0) {
     if (feature.subRanges !== undefined) {

@@ -106,6 +106,10 @@ export function applySubstitution(
   pos: number,
   newBase: string,
 ): MutationResult {
+  if (typeof newBase !== 'string' || !/^[A-Za-z*]$/.test(newBase)) {
+    throw new Error('Substitution requires exactly one valid residue; use insertion or deletion for length-changing edits.');
+  }
+
   // Guard: pos out of range — return unchanged
   if (pos < 0 || pos >= raw.length) {
     return { raw, scars: [...scars], features: [...features] };

@@ -1,11 +1,78 @@
 import type { CodonTable } from './types';
 import { STANDARD_CODE } from './codon-tables';
 
+/** IUPAC DNA/RNA symbols expanded to canonical DNA bases. */
+export const IUPAC_BASE_EXPANSIONS: Readonly<Record<string, readonly string[]>> = {
+  A: ['A'], C: ['C'], G: ['G'], T: ['T'], U: ['T'],
+  R: ['A', 'G'], Y: ['C', 'T'], S: ['G', 'C'], W: ['A', 'T'],
+  K: ['G', 'T'], M: ['A', 'C'], B: ['C', 'G', 'T'], D: ['A', 'G', 'T'],
+  H: ['A', 'C', 'T'], V: ['A', 'C', 'G'], N: ['A', 'C', 'G', 'T'],
+};
+
 /**
  * Convert RNA to DNA (U → T) for codon lookup.
  */
 function rnaToDna(seq: string): string {
   return seq.replace(/[Uu]/g, m => m === 'U' ? 'T' : 't');
+}
+
+/**
+ * Normalize only sequence formatting whitespace and RNA uracil. Any gap,
+ * punctuation, or other character is rejected because deleting it would shift
+ * codon boundaries and change the translation.
+ */
+export function normalizeTranslationInput(seq: string): string {
+  const withoutFormattingWhitespace = seq.replace(/\s+/g, '');
+  const dna = rnaToDna(withoutFormattingWhitespace.toUpperCase());
+  const invalid = new Set<string>();
+  for (const base of dna) {
+    if (!Object.prototype.hasOwnProperty.call(IUPAC_BASE_EXPANSIONS, base)) invalid.add(base);
+  }
+  if (invalid.size > 0) {
+    throw new Error(`Invalid nucleotide character${invalid.size === 1 ? '' : 's'}: ${[...invalid].join(', ')}`);
+  }
+  return dna;
+}
+
+/** Expand one IUPAC codon into canonical DNA codons. */
+export function expandIupacCodon(codon: string): string[] {
+  const normalized = rnaToDna(codon.toUpperCase());
+  if (normalized.length !== 3) return [];
+  let expansions = [''];
+  for (const base of normalized) {
+    const choices = IUPAC_BASE_EXPANSIONS[base];
+    if (!choices) return [];
+    expansions = expansions.flatMap((prefix) => choices.map((choice) => `${prefix}${choice}`));
+  }
+  return expansions;
+}
+
+export interface IupacCodonResolution {
+  codon: string;
+  expansions: string[];
+  residues: string[];
+  residue: string | null;
+  ambiguous: boolean;
+}
+
+/**
+ * Resolve an IUPAC codon against a genetic code. A single residue is returned
+ * when every concrete expansion agrees; divergent expansions remain explicit
+ * as `null` so callers can render `X` and attach an ambiguity warning.
+ */
+export function resolveIupacCodon(codon: string, table: CodonTable = STANDARD_CODE): IupacCodonResolution {
+  const normalized = rnaToDna(codon.toUpperCase());
+  const expansions = expandIupacCodon(normalized);
+  const expandedResidues = expansions.map((concreteCodon) => table.codons[concreteCodon]);
+  const residues = [...new Set(expandedResidues
+    .filter((residue): residue is string => residue !== undefined))];
+  return {
+    codon: normalized,
+    expansions,
+    residues,
+    residue: expandedResidues.length === expansions.length && residues.length === 1 ? residues[0] : null,
+    ambiguous: expansions.length > 1,
+  };
 }
 
 /**
@@ -21,15 +88,13 @@ export function translate(
   table: CodonTable = STANDARD_CODE,
   stopAtFirst = false,
 ): string {
-  const dna = rnaToDna(seq.toUpperCase());
+  const dna = normalizeTranslationInput(seq);
   const protein: string[] = [];
 
   for (let i = frame; i + 2 < dna.length; i += 3) {
     const codon = dna.slice(i, i + 3);
-    const aa = table.codons[codon];
-    if (aa === undefined) {
-      protein.push('X'); // unknown codon
-    } else if (aa === '*' && stopAtFirst) {
+    const aa = resolveIupacCodon(codon, table).residue ?? 'X';
+    if (aa === '*' && stopAtFirst) {
       protein.push('*');
       break;
     } else {
@@ -54,7 +119,7 @@ export function translateCompleteCds(
 ): string {
   const protein = translate(seq, frame, table, stopAtFirst);
   if (!protein) return protein;
-  const dna = rnaToDna(seq.toUpperCase());
+  const dna = normalizeTranslationInput(seq);
   const initiator = dna.slice(frame, frame + 3);
   return table.starts.includes(initiator) ? `M${protein.slice(1)}` : protein;
 }
@@ -74,14 +139,23 @@ export function translateAllFrames(
 }
 
 /**
- * Translate starting from the first ATG (or AUG).
+ * Translate starting from the first initiator recognized by the selected
+ * table. The historical name is retained for API compatibility; bacterial and
+ * organellar tables can therefore start at GTG, TTG, or another alternative
+ * initiator instead of silently searching only for ATG.
  */
 export function translateFromFirstATG(
   seq: string,
   table: CodonTable = STANDARD_CODE,
 ): string | null {
-  const dna = rnaToDna(seq.toUpperCase());
-  const atgIndex = dna.indexOf('ATG');
-  if (atgIndex === -1) return null;
-  return translate(dna.slice(atgIndex), 0, table, true);
+  const dna = normalizeTranslationInput(seq);
+  let startIndex = -1;
+  for (let index = 0; index + 2 < dna.length; index += 1) {
+    if (table.starts.includes(dna.slice(index, index + 3))) {
+      startIndex = index;
+      break;
+    }
+  }
+  if (startIndex === -1) return null;
+  return translateCompleteCds(dna.slice(startIndex), 0, table, true);
 }

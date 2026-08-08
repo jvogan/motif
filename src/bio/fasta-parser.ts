@@ -4,12 +4,35 @@ import type { FastaRecord } from './types';
  * Parse a FASTA-format string into records.
  * Handles multi-line sequences and multiple records.
  *
- * Phase 35 P-I (P2-A22): if the input contained `-` or `.` characters
- * (CLUSTAL / MAFFT alignment gaps), they are stripped from the sequence and
- * a `gapsRemoved` count is attached to the resulting record so callers can
- * surface a "aligned input was degapped" warning. Other non-letter chars
- * are stripped silently (whitespace / digits / punctuation noise).
+ * If the input contained `-` or `.` characters (CLUSTAL / MAFFT alignment
+ * gaps), they are stripped from the sequence and a `gapsRemoved` count is
+ * attached to the resulting record so callers can surface an "aligned input
+ * was degapped" warning. Formatting whitespace is also ignored. Every other
+ * non-residue character is rejected with its original line, column, and
+ * input offset; silently deleting digits or punctuation can shift feature
+ * coordinates and change the biological sequence.
  */
+export class FastaParseError extends Error {
+  readonly code = 'invalid_sequence_character';
+  readonly line: number;
+  readonly column: number;
+  readonly offset: number;
+  readonly character: string;
+
+  constructor(line: number, column: number, offset: number, character: string) {
+    super(
+      `FASTA sequence contains invalid character ${JSON.stringify(character)} at `
+      + `line ${line}, column ${column} (input offset ${offset}). `
+      + 'Only residue characters, alignment gaps (- or .), and formatting whitespace are allowed.',
+    );
+    this.name = 'FastaParseError';
+    this.line = line;
+    this.column = column;
+    this.offset = offset;
+    this.character = character;
+  }
+}
+
 export function parseFasta(input: string): FastaRecord[] {
   const records: FastaRecord[] = [];
   const lines = input.split(/\r?\n/);
@@ -19,6 +42,15 @@ export function parseFasta(input: string): FastaRecord[] {
   let currentSeq: string[] = [];
   let hasActiveHeader = false;
   let gapsInCurrent = 0;
+  let inputOffset = 0;
+
+  const advanceInputOffset = (line: string) => {
+    inputOffset += line.length;
+    if (inputOffset < input.length) {
+      if (input[inputOffset] === '\r' && input[inputOffset + 1] === '\n') inputOffset += 2;
+      else inputOffset += 1;
+    }
+  };
 
   const finalizeRecord = () => {
     const sequence = currentSeq.join('');
@@ -40,12 +72,15 @@ export function parseFasta(input: string): FastaRecord[] {
     gapsInCurrent = 0;
   };
 
-  for (const line of lines) {
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const line = lines[lineIndex];
+    const lineStartOffset = inputOffset;
     const trimmed = line.trim();
     // VOG-1812: legacy NBRF/PIR FASTA convention — `;` at line start is a
     // comment. Skip these everywhere so they don't get treated as sequence
     // text and bleed AA-only letters into composition analysis downstream.
     if (trimmed.startsWith(';')) {
+      advanceInputOffset(line);
       continue;
     }
     if (trimmed.startsWith('>')) {
@@ -67,39 +102,34 @@ export function parseFasta(input: string): FastaRecord[] {
       }
       currentSeq = [];
       hasActiveHeader = true;
-    } else if (trimmed.length > 0 && hasActiveHeader) {
-      // Sequence line — keep only ASCII letters plus the protein-FASTA stop
-      // glyph `*`. Phase 34 P-F P1-A7: prior regex stripped only whitespace
-      // and digits, leaking arbitrary punctuation / control chars into the
-      // sequence string. Downstream validateAndCleanSequence would catch
-      // and flag them, surfacing spurious "invalid characters" warnings
-      // for legitimate protein FASTA with terminal stop codons or DNA
-      // FASTA with stray punctuation from copy-paste. By stripping at the
-      // parser level we keep the IUPAC + protein alphabet intact (incl.
-      // ambiguity codes and `*`) without letting garbage bytes through.
-      //
-      // Phase 35 P-I (P2-A22): aligned input (CLUSTAL/MAFFT MSA output) has
-      // `-` or `.` gap characters which we silently strip below. We still
-      // strip them so downstream consumers see ungapped sequences, but we
-      // bump a counter and surface it as `_gapsRemoved` on the record so a
-      // caller (intake validator, FASTA importer) can warn the user that
-      // an aligned sequence was degapped.
-      const beforeLen = trimmed.length;
-      const cleaned = trimmed.replace(/[^A-Za-z*]/g, '');
-      const removed = beforeLen - cleaned.length;
-      if (removed > 0) {
-        // We track gaps separately from arbitrary noise: gap characters are
-        // a meaningful signal ("this was aligned"), other stripped chars
-        // (spaces, digits, punctuation) are just FASTA noise. Count only
-        // the gap-like chars to keep the warning specific.
-        const gapMatches = trimmed.match(/[-.]/g);
-        if (gapMatches && gapMatches.length > 0) {
-          // Attach to the last record-in-progress; finalizeRecord folds it in.
-          gapsInCurrent += gapMatches.length;
+    } else if (line.length > 0 && hasActiveHeader) {
+      // Sequence lines accept ASCII formatting whitespace and the historical
+      // alignment-gap convention (`-` / `.`). All other characters are
+      // retained as residues only when they are ASCII letters or `*`; an
+      // invalid byte is rejected before it can change the sequence length.
+      let cleaned = '';
+      for (let columnIndex = 0; columnIndex < line.length; columnIndex += 1) {
+        const character = line[columnIndex];
+        if (character === ' ' || character === '\t' || character === '\r') continue;
+        if (character === '-' || character === '.') {
+          gapsInCurrent += 1;
+          continue;
         }
+        if (/^[A-Za-z*]$/.test(character)) {
+          cleaned += character;
+          continue;
+        }
+        throw new FastaParseError(
+          lineIndex + 1,
+          columnIndex + 1,
+          lineStartOffset + columnIndex,
+          character,
+        );
       }
       currentSeq.push(cleaned);
     }
+
+    advanceInputOffset(line);
   }
 
   // Save last record
@@ -243,6 +273,9 @@ function sanitizeFastaHeaderField(value: string): string {
  * Convert records back to FASTA format string.
  */
 export function toFasta(records: FastaRecord[], lineWidth = 80): string {
+  if (!Number.isInteger(lineWidth) || lineWidth <= 0) {
+    throw new Error('lineWidth must be a positive integer.');
+  }
   return records
     .map(r => {
       // VOG-1983: collapse newlines so a multi-line block name does not

@@ -1,6 +1,6 @@
 # Motif + Claude Science troubleshooting
 
-Last reviewed: July 29, 2026. Motif connector version: `0.3.0`.
+Last reviewed: August 8, 2026. Motif connector version: `0.3.1`.
 
 This guide covers the local `motif-local` connector only. It does not assume
 another application, connector, database, or product identity.
@@ -66,7 +66,7 @@ must reload its sandbox configuration and spawn a new MCP subprocess.
 
 If the denied path points to a Node installation under a version manager such
 as `nvm` or `asdf`, the host may also be unable to execute that private binary.
-Prefer a system or Homebrew Node.js 22.12+ installation, or grant only the
+Prefer a system or Homebrew Node.js 22.13+ (22.x) or 24+ installation, or grant only the
 exact Node installation folder and rerun setup with an explicit binary:
 
 ```bash

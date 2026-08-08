@@ -696,6 +696,7 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
           {CLONING_METHODS.map((value) => (
             <button
               key={value}
+              id={`${tabPanelId}-${value}-tab`}
               type="button"
               role="tab"
               aria-selected={method === value}
@@ -712,7 +713,12 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
           ))}
         </div>
 
-        <div id={tabPanelId} className="motif-cs-cloning-design-body" role="tabpanel">
+        <div
+          id={tabPanelId}
+          className="motif-cs-cloning-design-body"
+          role="tabpanel"
+          aria-labelledby={`${tabPanelId}-${method}-tab`}
+        >
           <main className="motif-cs-cloning-design-main">
             <section className="motif-cs-cloning-design-setup" aria-labelledby={`${titleId}-setup`}>
               <div className="motif-cs-cloning-design-section-head">

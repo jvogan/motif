@@ -1,0 +1,63 @@
+#!/usr/bin/env node
+
+import { readFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const root = resolve(new URL('..', import.meta.url).pathname);
+
+function readJson(relativePath) {
+  return JSON.parse(readFileSync(join(root, relativePath), 'utf8'));
+}
+
+function read(relativePath) {
+  return readFileSync(join(root, relativePath), 'utf8');
+}
+
+export function checkReleaseAlignment() {
+  const packageVersion = readJson('package.json').version;
+  if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(packageVersion)) {
+    throw new Error(`package.json has an invalid release version: ${packageVersion}`);
+  }
+  const lock = readJson('package-lock.json');
+  const plugin = readJson('src/artifacts/motif-for-claude-science-plugin/.claude-plugin/plugin.json');
+  const stdioServer = read('mcp/motif/stdio-server.ts');
+  const surfaces = [
+    ['package-lock.json', lock.version],
+    ['package-lock root entry', lock.packages?.['']?.version],
+    ['plugin manifest', plugin.version],
+    ['artifact runtime', read('src/artifacts/motif-artifact.tsx').match(/const MOTIF_ARTIFACT_VERSION = '([^']+)'/u)?.[1]],
+    ['MCP App bridge', read('src/mcp-app/motif-workbench-bridge.ts').match(/name: 'Motif for Claude Science', version: '([^']+)'/u)?.[1]],
+    ['MCP stdio fallback', stdioServer.match(/async function readVersion\(\): Promise<string>[\s\S]*?return '([^']+)'[;]?\s*\}\s*async function readRuntimeBuildId/u)?.[1]],
+  ];
+  for (const [label, value] of surfaces) {
+    if (value !== packageVersion) throw new Error(`${label} is ${String(value)}, expected ${packageVersion}`);
+  }
+  const changelogs = [
+    ['CHANGELOG.md', read('CHANGELOG.md')],
+    ['plugin CHANGELOG.md', read('src/artifacts/motif-for-claude-science-plugin/CHANGELOG.md')],
+  ];
+  for (const [label, contents] of changelogs) {
+    if (!new RegExp(`^## ${packageVersion}(?:\\s|$)`, 'mu').test(contents)) {
+      throw new Error(`${label} has no release entry for ${packageVersion}`);
+    }
+  }
+  const requiredDocs = [
+    ['AGENTS.md', `Current release version is \`${packageVersion}\``],
+    ['docs/CLAUDE_SCIENCE_INTEGRATION.md', `Connector version: \`${packageVersion}\``],
+  ];
+  for (const [relativePath, marker] of requiredDocs) {
+    if (!read(relativePath).includes(marker)) throw new Error(`${relativePath} does not declare ${packageVersion}`);
+  }
+  return { version: packageVersion, surfaces: surfaces.length + changelogs.length + requiredDocs.length };
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try {
+    const result = checkReleaseAlignment();
+    console.log(`Release alignment passed: ${result.version} across ${result.surfaces} surfaces.`);
+  } catch (error) {
+    console.error(`Release alignment failed: ${error instanceof Error ? error.message : String(error)}`);
+    process.exitCode = 1;
+  }
+}

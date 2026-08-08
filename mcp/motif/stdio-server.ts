@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 
 import { createMotifClaudeScienceServer } from './server.js';
+import { artifactTemplateCandidates } from './stdio-paths.js';
 
 type PackageManifest = { version?: unknown };
 
@@ -42,7 +43,7 @@ async function readVersion(): Promise<string> {
       // Fall through to the next supported manifest location.
     }
   }
-  return '0.3.0';
+  return '0.3.1';
 }
 
 async function readRuntimeBuildId(workbenchPath: string): Promise<string> {
@@ -63,11 +64,10 @@ async function main(): Promise<void> {
     resolve(moduleDirectory, 'motif-mcp-app.html'),
     resolve(inferredRoot, 'dist-motif/claude-science/motif-mcp-app.html'),
   ], 'Motif MCP App resource');
-  const artifactTemplatePath = await firstExistingPath([
-    ...(configuredRoot ? [resolve(configuredRoot, 'dist-motif/motif-template.html')] : []),
-    resolve(moduleDirectory, 'motif-template.html'),
-    resolve(inferredRoot, 'dist-motif/motif-template.html'),
-  ], 'Motif artifact template');
+  const artifactTemplatePath = await firstExistingPath(
+    artifactTemplateCandidates(moduleDirectory, configuredRoot, inferredRoot),
+    'Motif artifact template',
+  );
   const runtimeBuildId = await readRuntimeBuildId(workbenchPath);
   const server = createMotifClaudeScienceServer({
     version,

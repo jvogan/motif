@@ -65,6 +65,13 @@ describe('Motif MCP payload boundary', () => {
     ]);
   });
 
+  it('rejects invalid FASTA characters instead of silently shortening the record', () => {
+    expect(() => prepareMotifWorkbench({
+      content: '>invalid\nACGT?ACGT',
+      filename: 'invalid.fasta',
+    })).toThrow(/invalid character "\?" at line 2, column 5/i);
+  });
+
   it('treats FASTA as linear unless circular topology is explicit', () => {
     const defaultResult = prepareMotifWorkbench({ content: '>dna\nATGCGT', filename: 'dna.fna' });
     expect(defaultResult.payload?.records).toEqual([
@@ -106,6 +113,66 @@ describe('Motif MCP payload boundary', () => {
         }],
       },
     });
+  });
+
+  it('keeps valid unprojectable GenBank locations with feature and record diagnostics', () => {
+    const genBank = [
+      'LOCUS       diagnostic                 12 bp    DNA     linear   SYN 01-JAN-2026',
+      'ACCESSION   DIAG1',
+      'FEATURES             Location/Qualifiers',
+      '     misc_feature    100^101',
+      '                     /label="between"',
+      '     misc_feature    J00194.1:100..200',
+      '                     /label="remote"',
+      'ORIGIN',
+      '        1 atggccgcttaa',
+      '//',
+    ].join('\n');
+    const result = prepareMotifWorkbench({ content: genBank, filename: 'diagnostic.gb' });
+    const records =
+      (result.payload as { records?: Array<Record<string, unknown>> } | undefined)?.records ?? [];
+    expect(records).toHaveLength(1);
+    expect(records[0].features).toEqual([
+      expect.objectContaining({
+        metadata: expect.objectContaining({ motifLocationQuarantined: true }),
+      }),
+      expect.objectContaining({
+        metadata: expect.objectContaining({ motifLocationQuarantined: true }),
+      }),
+    ]);
+    expect(records[0].provenance).toEqual({
+      genbankImportDiagnostics: [
+        expect.objectContaining({ code: 'between_base_location' }),
+        expect.objectContaining({ code: 'remote_location' }),
+      ],
+    });
+  });
+
+  it('quarantines ambiguous valid GenBank locations instead of aborting the record', () => {
+    const genBank = [
+      'LOCUS       ambiguous                 12 bp    DNA     linear   SYN 01-JAN-2026',
+      'ACCESSION   AMBIG1',
+      'FEATURES             Location/Qualifiers',
+      '     misc_feature    one-of(6,9)..12',
+      '                     /label="ambiguous"',
+      'ORIGIN',
+      '        1 atggccgcttaa',
+      '//',
+    ].join('\n');
+    const result = prepareMotifWorkbench({ content: genBank, filename: 'ambiguous.gb' });
+    expect(result.payload?.records).toEqual([
+      expect.objectContaining({
+        features: [expect.objectContaining({
+          metadata: expect.objectContaining({
+            motifLocationQuarantined: true,
+            motifLocationAmbiguous: true,
+          }),
+        })],
+        provenance: {
+          genbankImportDiagnostics: [expect.objectContaining({ code: 'ambiguous_location' })],
+        },
+      }),
+    ]);
   });
 
   it('honors the GenPept aa unit even when a protein uses only nucleotide letters', () => {
@@ -246,6 +313,12 @@ describe('Motif MCP payload boundary', () => {
     })).toThrow(/alignment rows reference unknown record id: missing/i);
   });
 
+  it('rejects invalid sequence characters with their original offset before coordinates', () => {
+    expect(() => validateMotifPayload({
+      records: [{ molecule: 'dna', sequence: 'AT-GC', features: [{ start: 0, end: 99 }] }],
+    })).toThrow(/invalid character "-" at offset 2/i);
+  });
+
   it('matches browser record validation for nested metadata and DNA end chemistry', () => {
     const base = { id: 'record-a', molecule: 'dna' as const, sequence: 'ATGC' };
     expect(() => validateMotifPayload({ records: [{ ...base, overhang5: 'AATT', overhang5Type: '5prime', overhang3: '', overhang3Type: 'blunt' }] }))
@@ -286,7 +359,7 @@ describe('Motif MCP payload boundary', () => {
       records: { malformed: true },
     })).toThrow(/records must be an array/i);
     expect(() => validateMotifPayload({
-      records: [{ ...base, sequence: 'AT*GC' }],
+      records: [{ ...base, sequence: 'ATGC' }],
       artifactState: {
         translationLayersByRecord: {
           'record-a': [{ id: 'too-long', label: 'Too long', start: 0, end: 5, strand: 1, frame: 0 }],
