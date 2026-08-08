@@ -8,6 +8,7 @@ import type {
 import {
   calculateRestrictionCleavageGeometry,
   findRestrictionSites,
+  isActiveDoubleStrandRestrictionSite,
   normalizeRestrictionSequence,
   scanRestrictionSites,
   type FindRestrictionSitesOptions,
@@ -27,7 +28,7 @@ export interface RestrictionDigestOptions {
   methylationAssumptions?: RestrictionMethylationState | Partial<Record<RestrictionMethylationTarget, RestrictionMethylationState>>;
 }
 
-export type RestrictionDigestIssueCode = RestrictionIssueCode | 'unknown_enzyme';
+export type RestrictionDigestIssueCode = RestrictionIssueCode | 'unknown_enzyme' | 'incompatible_colocated_cleavage';
 
 export interface RestrictionDigestIssue {
   code: RestrictionDigestIssueCode;
@@ -195,8 +196,7 @@ function resolveRequestedEnzymes(
 }
 
 function activeDoubleStrandSite(site: ReturnType<typeof findRestrictionSites>[number]): boolean {
-  const mode = site.cleavageMode ?? 'double-strand';
-  return mode === 'double-strand' && (site.cleavageStatus ?? 'ok') === 'ok';
+  return isActiveDoubleStrandRestrictionSite(site);
 }
 
 function restrictionDigestResultFor(
@@ -270,17 +270,56 @@ function restrictionDigestResultFor(
       },
     };
   });
-  const uniqueCutRecords = allCutRecords.filter((record, index) => (
-    index === allCutRecords.findIndex((candidate) => candidate.site.cutPosition === record.site.cutPosition)
-  ));
-  const enzymeNamesAtCut = (position: number): string[] => Array.from(new Set(
-    allCutRecords
-      .filter((record) => record.site.cutPosition === position)
-      .map((record) => record.enzyme.name),
-  ));
+
+  // A legacy top-strand coordinate is only a compatibility boundary. Two
+  // enzymes can share it while cleaving the opposite strand at different
+  // coordinates (and therefore producing different sticky ends). Group by
+  // the complete physical geometry and fail closed when one boundary has
+  // incompatible co-located cleavage records.
+  const geometryKey = (record: typeof allCutRecords[number]): string => JSON.stringify([
+    record.geometry.mode,
+    record.geometry.topCutPosition,
+    record.geometry.bottomCutPosition,
+    record.geometry.cutPosition,
+    record.geometry.overhangStart,
+    record.geometry.overhangEnd,
+    record.geometry.overhangLength,
+    record.geometry.valid,
+    record.enzyme.overhang,
+  ]);
+  const recordsByLegacyCut = new Map<number, typeof allCutRecords>();
+  for (const record of allCutRecords) {
+    const records = recordsByLegacyCut.get(record.site.cutPosition) ?? [];
+    records.push(record);
+    recordsByLegacyCut.set(record.site.cutPosition, records);
+  }
+  const uniqueCutRecords: typeof allCutRecords = [];
+  const enzymeNamesAtGeometry = new Map<string, string[]>();
+  for (const [legacyCutPosition, records] of recordsByLegacyCut) {
+    const byGeometry = new Map<string, typeof allCutRecords>();
+    for (const record of records) {
+      const key = geometryKey(record);
+      const matching = byGeometry.get(key) ?? [];
+      matching.push(record);
+      byGeometry.set(key, matching);
+    }
+    if (byGeometry.size > 1) {
+      const enzymes = Array.from(new Set(records.map((record) => record.enzyme.name)));
+      issues.push({
+        code: 'incompatible_colocated_cleavage',
+        position: legacyCutPosition,
+        enzyme: enzymes[0],
+        message: `Restriction enzymes ${enzymes.join(', ')} share cut coordinate ${legacyCutPosition} but have incompatible colocated cleavage geometry.`,
+      });
+    }
+    for (const [key, matching] of byGeometry) {
+      uniqueCutRecords.push(matching[0]);
+      enzymeNamesAtGeometry.set(key, Array.from(new Set(matching.map((record) => record.enzyme.name))));
+    }
+  }
   const cuts: RestrictionCleavageGeometry[] = uniqueCutRecords.map((record) => ({
     ...record.geometry,
-    enzymes: enzymeNamesAtCut(record.site.cutPosition),
+    enzymes: enzymeNamesAtGeometry.get(geometryKey(record)) ?? [record.enzyme.name],
   }));
 
   const base: RestrictionDigestResult = {
@@ -361,8 +400,8 @@ function restrictionDigestResultFor(
         endInOriginal: end,
         leftEnzyme: leftRecord?.enzyme.name ?? null,
         rightEnzyme: rightRecord?.enzyme.name ?? null,
-        leftEnzymes: leftRecord ? enzymeNamesAtCut(leftRecord.site.cutPosition) : [],
-        rightEnzymes: rightRecord ? enzymeNamesAtCut(rightRecord.site.cutPosition) : [],
+        leftEnzymes: leftRecord ? enzymeNamesAtGeometry.get(geometryKey(leftRecord)) ?? [leftRecord.enzyme.name] : [],
+        rightEnzymes: rightRecord ? enzymeNamesAtGeometry.get(geometryKey(rightRecord)) ?? [rightRecord.enzyme.name] : [],
         overhang5: left.overhang,
         overhang3: right.overhang,
         overhang5Type: left.type,
@@ -387,8 +426,8 @@ function restrictionDigestResultFor(
         endInOriginal: end > start ? end : end + normalized.length,
         leftEnzyme: current.enzyme.name,
         rightEnzyme: next.enzyme.name,
-        leftEnzymes: enzymeNamesAtCut(current.site.cutPosition),
-        rightEnzymes: enzymeNamesAtCut(next.site.cutPosition),
+        leftEnzymes: enzymeNamesAtGeometry.get(geometryKey(current)) ?? [current.enzyme.name],
+        rightEnzymes: enzymeNamesAtGeometry.get(geometryKey(next)) ?? [next.enzyme.name],
         overhang5: left.overhang,
         overhang3: right.overhang,
         overhang5Type: left.type,

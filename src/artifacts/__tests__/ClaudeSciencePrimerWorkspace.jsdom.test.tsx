@@ -2,6 +2,7 @@
 
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ClaudeSciencePrimerWorkspace,
@@ -42,6 +43,18 @@ function preparationContext(overrides: Partial<ClaudeSciencePrimerPreparationCon
     fusionSites: { left: 'AATG', right: 'GCTT' },
     ...overrides,
   };
+}
+
+function EchoingPrimerHost() {
+  const [selectedRange, setSelectedRange] = useState({ start: 350, end: 750 });
+  return (
+    <ClaudeSciencePrimerWorkspace
+      {...props({
+        selectedRange,
+        onSelectRange: (start, end) => setSelectedRange({ start, end }),
+      })}
+    />
+  );
 }
 
 afterEach(() => {
@@ -179,6 +192,26 @@ describe('ClaudeSciencePrimerWorkspace', () => {
     expect(options[1].getAttribute('aria-selected')).toBe('true');
     expect(onSelectRange).toHaveBeenCalledTimes(1);
     expect(onSelectRange.mock.calls[0][0]).toBeLessThan(onSelectRange.mock.calls[0][1]);
+  });
+
+  it('keeps the explicit target and focus when the host echoes a pair preview selection', async () => {
+    const user = userEvent.setup();
+    render(<EchoingPrimerHost />);
+    const workspace = screen.getByRole('dialog', { name: 'Primer design' });
+    const listbox = within(workspace).getByRole('listbox', { name: 'Ranked primer pairs' });
+    const options = within(listbox).getAllByRole('option');
+
+    options[0].focus();
+    await user.keyboard('{ArrowDown}');
+
+    await waitFor(() => {
+      expect((screen.getByLabelText('Target start') as HTMLInputElement).value).toBe('351');
+      expect((screen.getByLabelText('Target end') as HTMLInputElement).value).toBe('750');
+      expect(within(listbox).getAllByRole('option')[1].getAttribute('aria-selected')).toBe('true');
+      expect(screen.getByRole('region', { name: 'Primer pair 2 evidence' })).toBeTruthy();
+      expect(screen.getByRole('status').textContent).toContain('Pair 2 selected on the sequence.');
+      expect(within(listbox).getAllByRole('option')[1]).toBe(document.activeElement);
+    });
   });
 
   it('hands the selected pair to copy, export, annotations, PCR, and cloning callbacks', async () => {

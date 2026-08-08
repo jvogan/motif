@@ -17,7 +17,7 @@ Report suspected vulnerabilities through the private process in
 
 Motif requires Node.js 22.13 or newer (22.x) or Node.js 24 or newer. Install
 the locked dependencies with lifecycle scripts disabled, then run the checked
-policy and reviewed lifecycle steps:
+policy and the Motif-owned dependency preparation step:
 
 ```bash
 npm ci --ignore-scripts

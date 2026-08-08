@@ -36,9 +36,9 @@ git status --short
 installation requirement. Scripts remain disabled until
 `npm run security:policy` has checked exact lockfile identities, registry
 origins, integrity values, lifecycle metadata, binding files, and the bundled
-inventory. `npm run security:lifecycle` then runs only the reviewed exact
-install-time commands through the bounded helper; an unknown package, version,
-script, or binding fails before any lifecycle command executes.
+inventory. `npm run security:lifecycle` then runs the Motif-owned deterministic
+esbuild preparation through the bounded helper; an unknown package, version,
+manifest, binary, or binding fails before any dependency lifecycle script runs.
 `npm run build:motif` produces the dependency-free release bundle. The checked-in
 `.npmrc` asks npm versions that support `min-release-age` to keep new dependency
 resolutions seven days old; `npm run security:cooling-off` independently checks
@@ -84,7 +84,11 @@ Create the GitHub release as a draft with `--verify-tag`, and attach exactly:
 - `motif-for-claude-science-release.zip`
 - `motif-for-claude-science-release.manifest.sha256`
 
-The release ZIP is the supported no-npm end-user path. Its extracted root
+The release ZIP is the supported no-npm end-user path. Users verify both release
+assets against the immutable GitHub release before executing bundled code. The
+installer additionally requires the separately downloaded release-manifest
+checksum as an external integrity anchor; it does not claim to authenticate
+itself. Its extracted root
 contains the installer, doctor, rollback helper, compiled `motif-local`
 connector, self-contained App/template, checksums, SBOM, and dependency
 license inventory. The installer never runs npm or reads outside the bundle

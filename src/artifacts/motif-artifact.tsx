@@ -228,7 +228,7 @@ import {
 } from './claude-science-download';
 import './motif-artifact.css';
 
-const MOTIF_ARTIFACT_VERSION = '0.3.1';
+const MOTIF_ARTIFACT_VERSION = '0.3.2';
 const MOTIF_ARTIFACT_BUILD_ID = (() => {
   if (typeof document === 'undefined') return 'development';
   const value = document.querySelector<HTMLMetaElement>('meta[name="motif-build-id"]')?.content.trim() ?? '';
@@ -622,7 +622,13 @@ function restrictionEnzymesForSources(
   if (sources.length > 0) {
     for (const enzyme of resolveEnzymeUnion(sources)) byName.set(enzyme.name.toLowerCase(), enzyme);
   }
-  for (const enzyme of customEnzymes) byName.set(enzyme.name.toLowerCase(), enzyme);
+  for (const enzyme of customEnzymes) {
+    const key = enzyme.name.toLowerCase();
+    // Restored legacy custom state may contain a catalog name without the
+    // catalog's physical or methylation metadata. Built-in identities always
+    // win; only genuinely custom names are accepted from this layer.
+    byName.set(key, fullEnzymeByLowerName.get(key) ?? enzyme);
+  }
   return Array.from(byName.values());
 }
 
@@ -1866,6 +1872,15 @@ function normalizeSitePosition(position: unknown, defaultIndexBase: 0 | 1): numb
   return raw === 0 ? 0 : raw - 1;
 }
 
+/** Preserve signed physical cut coordinates so out-of-bounds sites remain
+ * explicitly unsafe instead of losing their safety receipt during restore. */
+function normalizeSiteCutCoordinate(position: unknown, defaultIndexBase: 0 | 1): number | null | undefined {
+  if (position === null) return null;
+  if (!Number.isFinite(position)) return undefined;
+  const raw = Math.floor(Number(position));
+  return defaultIndexBase === 0 ? raw : raw === 0 ? 0 : raw - 1;
+}
+
 function normalizeSites(sites: readonly InventorySiteInput[] | undefined, sequenceLength: number): RestrictionSite[] {
   if (!Array.isArray(sites) || sequenceLength <= 0) return [];
   const normalized: RestrictionSite[] = [];
@@ -1886,12 +1901,17 @@ function normalizeSites(sites: readonly InventorySiteInput[] | undefined, sequen
       const hitIndexBase = hit.indexBase === 0 || hit.indexBase === 1 ? hit.indexBase : defaultIndexBase;
       const position = normalizeSitePosition(hit.position, hitIndexBase);
       if (position === null || position >= sequenceLength) continue;
-      const cutPosition = normalizeSitePosition(hit.cutPosition, hitIndexBase)
-        ?? ((position + (enzyme?.cutOffset ?? 0)) % sequenceLength);
+      const normalizedCutPosition = normalizeSiteCutCoordinate(hit.cutPosition, hitIndexBase);
+      const cutPosition = normalizedCutPosition === undefined || normalizedCutPosition === null
+        ? ((position + (enzyme?.cutOffset ?? 0)) % sequenceLength)
+        : normalizedCutPosition;
+      const topCutPosition = normalizeSiteCutCoordinate(hit.topCutPosition, hitIndexBase);
+      const bottomCutPosition = normalizeSiteCutCoordinate(hit.bottomCutPosition, hitIndexBase);
       const cleavageStatus = hit.cleavageStatus === 'ok'
         || hit.cleavageStatus === 'insufficient_flanking_bases'
         || hit.cleavageStatus === 'methylation_unknown'
         || hit.cleavageStatus === 'methylation_unmethylated'
+        || hit.cleavageStatus === 'methylation_context_unknown'
         || hit.cleavageStatus === 'invalid_geometry'
         ? hit.cleavageStatus
         : undefined;
@@ -1907,12 +1927,8 @@ function normalizeSites(sites: readonly InventorySiteInput[] | undefined, sequen
         ...(site.cleavageMode === 'double-strand' || site.cleavageMode === 'nick_top' || site.cleavageMode === 'nick_bottom'
           ? { cleavageMode: site.cleavageMode }
           : {}),
-        ...(hit.topCutPosition === null || (typeof hit.topCutPosition === 'number' && Number.isFinite(hit.topCutPosition))
-          ? { topCutPosition: hit.topCutPosition }
-          : {}),
-        ...(hit.bottomCutPosition === null || (typeof hit.bottomCutPosition === 'number' && Number.isFinite(hit.bottomCutPosition))
-          ? { bottomCutPosition: hit.bottomCutPosition }
-          : {}),
+        ...(topCutPosition !== undefined ? { topCutPosition } : {}),
+        ...(bottomCutPosition !== undefined ? { bottomCutPosition } : {}),
         ...(cleavageStatus === undefined ? {} : { cleavageStatus }),
       });
     }
@@ -5314,6 +5330,10 @@ function App() {
   const [translationsWin, setTranslationsWin] = useState<WindowRect>(defaultTranslationsWindowRect);
   const [showPrimerDesign, setShowPrimerDesign] = useState(false);
   const [primerWin, setPrimerWin] = useState<WindowRect>(defaultPrimerWindowRect);
+  // Primer design owns its target once the workspace opens. Pair previews still
+  // update the shared sequence selection for context, but that preview must not
+  // become a new design target and reorder the ranked pairs underneath focus.
+  const [primerTargetRange, setPrimerTargetRange] = useState<MapSelectionRange | null>(null);
   const [cloningPrimerRequest, setCloningPrimerRequest] = useState<ClaudeScienceCloningPrimerRequest | null>(null);
   const [cloningPrimerRecordIndex, setCloningPrimerRecordIndex] = useState(0);
   const [completedCloningPrimerActionIds, setCompletedCloningPrimerActionIds] = useState<string[]>([]);
@@ -5651,6 +5671,7 @@ function App() {
   const cloningPrimerInitialTails = useMemo(() => {
     if (
       !cloningPrimerRequest
+      || cloningPrimerRequest.autoInferHomologyTails !== true
       || cloningPrimerRequest.plan.kind !== 'gibson_design'
       || !activeCloningPrimerItem
       || cloningPrimerContext?.orientation !== 'forward'
@@ -5659,6 +5680,12 @@ function App() {
       ? null
       : cloningPrimerRequest.plan.junctions[activeCloningPrimerItem.action.junctionIndex] ?? null;
     if (!junction?.overlapSequence) return { forward: undefined, reverse: undefined };
+    if (
+      !/^[ACGT]+$/.test(junction.overlapSequence)
+      || junction.overlapLength !== junction.overlapSequence.length
+      || junction.overlapState !== 'exact'
+      || junction.overlapUnique !== true
+    ) return { forward: undefined, reverse: undefined };
     if (activeCloningPrimerItem.recordId === junction.rightRecordId) {
       return { forward: junction.overlapSequence, reverse: undefined };
     }
@@ -9665,12 +9692,14 @@ function App() {
     setShowCloningDesign(false);
     setShowConstructVerification(false);
     setCloningPrimerRequest(null);
+    setPrimerTargetRange(guideScopeRange ? { ...guideScopeRange } : null);
     setShowPrimerDesign(true);
-  }, [closeOpenToolDetails, isEditable]);
+  }, [closeOpenToolDetails, guideScopeRange, isEditable]);
 
   const closePrimerWorkspace = useCallback(() => {
     const returnsToCloningDraft = cloningPrimerRequest !== null;
     setShowPrimerDesign(false);
+    setPrimerTargetRange(null);
     if (returnsToCloningDraft) showWorkbenchNotice('Returned to the existing cloning draft.');
   }, [cloningPrimerRequest, showWorkbenchNotice]);
 
@@ -9823,6 +9852,7 @@ function App() {
     selectRecord(targetId);
     setSelection(null);
     setMapRangesByRecord((current) => current[targetId] ? { ...current, [targetId]: null } : current);
+    setPrimerTargetRange(null);
     setCloningPrimerRecordIndex(0);
     setCompletedCloningPrimerActionIds([]);
     setCloningPrimerRequest(request);
@@ -12779,6 +12809,7 @@ function App() {
               molecule: sequenceType === 'rna' ? 'rna' : 'dna',
             }}
             selectedRange={cloningPrimerRequest ? null : guideScopeRange}
+            targetRange={cloningPrimerRequest ? null : primerTargetRange}
             initialIntent={cloningPrimerRequest ? 'cloning' : 'pcr'}
             preparationContext={cloningPrimerContext}
             initialForwardTail={cloningPrimerInitialTails.forward}

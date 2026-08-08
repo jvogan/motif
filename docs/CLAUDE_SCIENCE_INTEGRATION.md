@@ -1,6 +1,6 @@
 # Motif + Claude Science integration
 
-Last reviewed: August 8, 2026. Connector version: `0.3.1`.
+Last reviewed: August 8, 2026. Connector version: `0.3.2`.
 
 This is the maintainer and technical reference for the Motif-owned local
 connector. End users should start with the
@@ -75,12 +75,15 @@ npm run claude-science:setup
 ```
 
 For an end-user release, extract `motif-for-claude-science-release.zip` into a
-stable folder, compare its `release-manifest.json` with the published
+stable folder, verify both downloaded assets against the immutable GitHub
+release, and compare its `release-manifest.json` with the published
 `.manifest.sha256` file, then run the bundled standard-library-only installer:
 
 ```bash
-node install-motif-claude-science-release.mjs --bundle .
-node doctor-motif-claude-science-release.mjs --bundle .
+node install-motif-claude-science-release.mjs --bundle . \
+  --manifest-sha256-file /path/to/motif-for-claude-science-release.manifest.sha256
+node doctor-motif-claude-science-release.mjs --bundle . \
+  --manifest-sha256-file /path/to/motif-for-claude-science-release.manifest.sha256
 ```
 
 This path does not require `npm`, `npm ci`, or access to the source checkout.

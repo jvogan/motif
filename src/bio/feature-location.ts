@@ -136,6 +136,11 @@ export function remapFeatureLocation(
   feature: FeatureLocation,
   sourceSpans: readonly FeatureCoordinateMapSpan[],
 ): RemappedFeatureLocation | null {
+  // A quarantined, ordered, or otherwise ambiguous location may have a
+  // bounded placeholder envelope solely to keep it visible in the source
+  // record. Never turn that placeholder into an authoritative feature in a
+  // derived digest/PCR/child sequence.
+  if (!isMaterializableFeatureLocation(feature)) return null;
   const hasStoredSubRanges = feature.subRanges !== undefined;
   const sourceSegments = hasStoredSubRanges
     ? feature.subRanges!

@@ -8,10 +8,12 @@ import { loadDependencyPolicy } from './lib/supply-chain-policy.mjs';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const DAY_MS = 24 * 60 * 60 * 1000;
-// npm's full packument is required because its abbreviated representation and
-// exact-version endpoint omit publish timestamps. Keep the response bounded,
-// but allow established packages with long release histories.
-const MAX_METADATA_BYTES = 8 * 1024 * 1024;
+const MAX_METADATA_BYTES = 2 * 1024 * 1024;
+const IMMUTABLE_COMMIT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/iu;
+
+function isImmutableCommitId(value) {
+  return typeof value === 'string' && IMMUTABLE_COMMIT_ID.test(value) && !/^0+$/u.test(value);
+}
 
 function readJson(path, label) {
   try {
@@ -41,9 +43,24 @@ function lockEntries(lock) {
 }
 
 function readBaselineLockfile(workspace, options) {
+  const environment = options.environment ?? process.env;
+  const configuredRef = options.baseRef
+    ?? environment.MOTIF_COOLING_OFF_BASE_SHA
+    ?? environment.MOTIF_COOLING_OFF_BASE_REF;
+  const hasExplicitBaseline = options.baseLockfileText !== undefined
+    || options.baseLockfilePath !== undefined;
+  if (environment.CI && !hasExplicitBaseline && !configuredRef) {
+    throw new Error('Cooling-off policy requires the event base commit in CI; it must be a full immutable 40- or 64-hex commit ID');
+  }
+  if (environment.CI && configuredRef !== undefined && !isImmutableCommitId(configuredRef)) {
+    throw new Error('Cooling-off policy requires a valid nonzero baseline reference: the event base commit must be a full immutable 40- or 64-hex commit ID');
+  }
   if (options.baseLockfileText) return JSON.parse(options.baseLockfileText);
   if (options.baseLockfilePath) return readJson(resolve(workspace, options.baseLockfilePath), 'Cooling-off baseline lockfile');
-  const ref = options.baseRef ?? process.env.MOTIF_COOLING_OFF_BASE_REF ?? 'HEAD^';
+  const ref = configuredRef ?? 'HEAD^';
+  if (typeof ref !== 'string' || !ref.trim() || /^0+$/u.test(ref)) {
+    throw new Error('Cooling-off policy requires a valid nonzero baseline reference');
+  }
   try {
     const text = execFileSync('git', ['show', `${ref}:package-lock.json`], {
       cwd: workspace,
@@ -107,33 +124,8 @@ async function readRegistryMetadata(fetchImpl, url) {
     throw new Error(`Registry metadata request failed for ${url}: ${error instanceof Error ? error.message : String(error)}`);
   }
   if (!response?.ok) throw new Error(`Registry metadata request failed for ${url}: HTTP ${response?.status ?? 'unknown'}`);
-  const declaredBytes = Number(response.headers?.get?.('content-length'));
-  if (Number.isFinite(declaredBytes) && declaredBytes > MAX_METADATA_BYTES) {
-    throw new Error(`Registry metadata response exceeded ${MAX_METADATA_BYTES} bytes for ${url}`);
-  }
-  let text;
-  if (response.body?.getReader) {
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    const chunks = [];
-    let total = 0;
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.byteLength;
-      if (total > MAX_METADATA_BYTES) {
-        await reader.cancel().catch(() => undefined);
-        throw new Error(`Registry metadata response exceeded ${MAX_METADATA_BYTES} bytes for ${url}`);
-      }
-      chunks.push(decoder.decode(value, { stream: true }));
-    }
-    text = chunks.join('') + decoder.decode();
-  } else {
-    text = await response.text();
-    if (new TextEncoder().encode(text).byteLength > MAX_METADATA_BYTES) {
-      throw new Error(`Registry metadata response exceeded ${MAX_METADATA_BYTES} bytes for ${url}`);
-    }
-  }
+  const text = await response.text();
+  if (new TextEncoder().encode(text).byteLength > MAX_METADATA_BYTES) throw new Error(`Registry metadata response exceeded ${MAX_METADATA_BYTES} bytes for ${url}`);
   try {
     return JSON.parse(text);
   } catch (error) {
@@ -157,6 +149,7 @@ function assertRegistryIdentity(entry, metadata, registry) {
 
 export async function checkDependencyCoolingOff(rootPath = root, options = {}) {
   const workspace = resolve(rootPath);
+  const environment = options.environment ?? process.env;
   const { policy } = loadDependencyPolicy(workspace);
   const current = readJson(join(workspace, 'package-lock.json'), 'package-lock.json');
   const baseline = readBaselineLockfile(workspace, options);
@@ -184,7 +177,11 @@ export async function checkDependencyCoolingOff(rootPath = root, options = {}) {
     coolingOffDays: Number(policy.coolingOffDays ?? 7),
     changedPackageCount: unique.length,
     checked,
-    baseline: options.baseLockfilePath ?? options.baseRef ?? process.env.MOTIF_COOLING_OFF_BASE_REF ?? 'HEAD^',
+    baseline: options.baseLockfilePath
+      ?? options.baseRef
+      ?? environment.MOTIF_COOLING_OFF_BASE_SHA
+      ?? environment.MOTIF_COOLING_OFF_BASE_REF
+      ?? 'HEAD^',
   };
 }
 

@@ -18,6 +18,7 @@ import {
 import { analyzeOverlap, gibsonAssemble, type OverlapSearchResult } from '../bio/gibson-assembly';
 import { reverseComplement } from '../bio/reverse-complement';
 import { sha256HexSync } from './claude-science-sha256';
+import { materializeGoldenGateFlankSpacers } from './claude-science-golden-gate-normalization';
 
 /**
  * Store-free cloning adapters for the standalone Claude Science artifact.
@@ -904,7 +905,10 @@ export function planArtifactGoldenGateDesign(input: ArtifactGoldenGateProfileInp
         ? normalized.inputs.map(() => 'transcription_unit' as const)
         : organizationMode === 'golden_braid_tu'
           ? normalized.inputs.map((part) => classifyValidatedGoldenBraidBoundary(
-            getGoldenGatePartBoundary({ name: part.name, sequence: part.sequence }, enzyme),
+            getGoldenGatePartBoundary({
+              name: part.name,
+              sequence: materializeGoldenGateFlankSpacers(part.sequence, enzyme).sequence,
+            }, enzyme),
           ))
           : undefined,
     )
@@ -920,7 +924,10 @@ export function planArtifactGoldenGateDesign(input: ArtifactGoldenGateProfileInp
 
   const parts: ArtifactGoldenGatePartPreparation[] = canEvaluate && organization
     ? normalized.inputs.map((part, index) => {
-      const boundary = getGoldenGatePartBoundary({ name: part.name, sequence: part.sequence }, enzyme);
+      const boundary = getGoldenGatePartBoundary({
+        name: part.name,
+        sequence: materializeGoldenGateFlankSpacers(part.sequence, enzyme).sequence,
+      }, enzyme);
       const assignment = organization.assignments[index];
       const rawPart = rawParts[index];
       const requestedBoundary = requestedFusionBoundaries[index] ?? { left: null, right: null };
@@ -1064,7 +1071,11 @@ export function planArtifactGoldenGateDesign(input: ArtifactGoldenGateProfileInp
     && parts.every((part) => part.status === 'ready')
     && (organizationMode === 'freeform' || identityValidation.valid)
     ? goldenGateAssemble(
-      normalized.inputs.map((part) => ({ id: part.recordId, name: part.name, sequence: part.sequence })),
+      normalized.inputs.map((part) => ({
+        id: part.recordId,
+        name: part.name,
+        sequence: materializeGoldenGateFlankSpacers(part.sequence, enzyme).sequence,
+      })),
       enzyme,
     )
     : null;

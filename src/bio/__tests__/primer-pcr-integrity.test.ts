@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { findPrimerBindings, simulatePCR } from '../pcr';
+import {
+  findPrimerBindings,
+  MAX_PCR_OLIGO_LENGTH,
+  MAX_PCR_PRODUCT_LENGTH,
+  simulatePCR,
+} from '../pcr';
 import { designForwardPrimerWithDiagnostics } from '../primer-design';
 import { predictHairpin, predictPrimerDimer } from '../primer-thermodynamics';
 import { calculateTm, saltCorrectedTm } from '../tm-calculator';
@@ -35,8 +40,13 @@ describe('primer, PCR, and Tm integrity', () => {
 
   it('enumerates repeated binding sites and exposes a configurable mismatch policy', () => {
     const template = `${binding}GGGG${binding}`;
-    const candidates = findPrimerBindings(template, `GGGG${binding}`, { minMatched3PrimeLength: 10 });
-    expect(candidates.map((candidate) => candidate.bindStart)).toEqual(expect.arrayContaining([0, 14]));
+    const exactOnly = findPrimerBindings(template, `GGGG${binding}`, { minMatched3PrimeLength: 10 });
+    expect(exactOnly.map((candidate) => candidate.bindStart)).toEqual([10]);
+    const candidates = findPrimerBindings(template, `GGGG${binding}`, {
+      minMatched3PrimeLength: 10,
+      allowImplicitTails: true,
+    });
+    expect(candidates.map((candidate) => candidate.bindStart)).toEqual(expect.arrayContaining([0, 10, 14]));
     expect(candidates.length).toBeGreaterThan(2);
     expect(candidates.every((candidate) => candidate.status === 'exact')).toBe(true);
 
@@ -98,6 +108,88 @@ describe('primer, PCR, and Tm integrity', () => {
     expect(competing?.warnings.join(' ')).toMatch(/competing/i);
   });
 
+  it('materializes permitted primer mismatches over the template interval with an edit receipt', () => {
+    const reverseBinding = 'TTGCAACGTA';
+    const template = `TCGTTGCAACGGGG${reverseBinding}`;
+    const result = simulatePCR(
+      template,
+      binding,
+      reverseComplement(reverseBinding),
+      [],
+      'linear',
+      {
+        forward: { start: 0, end: 10 },
+        reverse: { start: 14, end: 24 },
+      },
+      { minMatched3PrimeLength: 9, maxMismatches: 1 },
+    );
+
+    expect(result).not.toBeNull();
+    expect(result?.status).toBe('mismatch');
+    expect(result?.templateProduct.slice(0, binding.length)).toBe('TCGTTGCAAC');
+    expect(result?.product.slice(0, binding.length)).toBe(binding);
+    expect(result?.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'primer_bases_overwrote_template',
+      positions: [0],
+    }));
+    expect(result?.provenance.bindingEdits).toContainEqual(expect.objectContaining({
+      productOffset: 0,
+      templatePosition: 0,
+      original: 'T',
+      replacement: 'A',
+      primer: 'forward',
+    }));
+  });
+
+  it('requires explicit selection or opt-in before inferring 5\u2032 tails', () => {
+    const reverseBinding = 'TTGCAACGTA';
+    const template = `${binding}GGGG${reverseBinding}`;
+    const forwardWithTail = `GGGG${binding}`;
+    const reversePrimer = reverseComplement(reverseBinding);
+
+    expect(simulatePCR(template, forwardWithTail, reversePrimer)).toBeNull();
+
+    const inferred = simulatePCR(
+      template,
+      forwardWithTail,
+      reversePrimer,
+      [],
+      'linear',
+      undefined,
+      { allowImplicitTails: true },
+    );
+    expect(inferred).not.toBeNull();
+    expect(inferred?.forward.tail).toBe('GGGG');
+    expect(inferred?.forward.tailSource).toBe('inferred');
+    expect(inferred?.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'implicit_tail',
+      primer: 'forward',
+    }));
+    expect(inferred?.provenance.implicitTails.forward).toBe(true);
+  });
+
+  it('bounds oligos, inferred tails, and the final tailed amplicon', () => {
+    const oversizedPrimer = 'A'.repeat(MAX_PCR_OLIGO_LENGTH + 1);
+    expect(findPrimerBindings('A'.repeat(MAX_PCR_OLIGO_LENGTH + 20), oversizedPrimer)).toEqual([]);
+
+    const terminalBinding = 'ACGTTGCAAC';
+    const template = terminalBinding
+      + 'A'.repeat(MAX_PCR_PRODUCT_LENGTH - terminalBinding.length * 2)
+      + reverseComplement(terminalBinding);
+    const tail = 'A'.repeat(250);
+    expect(simulatePCR(
+      template,
+      tail + terminalBinding,
+      tail + terminalBinding,
+      [],
+      'linear',
+      {
+        forward: { start: 0, end: terminalBinding.length },
+        reverse: { start: template.length - terminalBinding.length, end: template.length },
+      },
+    )).toBeNull();
+  });
+
   it('does not fabricate a contiguous template from invalid characters', () => {
     expect(findPrimerBindings(`AAA-${binding}`, binding)).toEqual([]);
     expect(simulatePCR(`AAA-${binding}`, binding, reverseComplement(binding))).toBeNull();
@@ -146,6 +238,27 @@ describe('primer, PCR, and Tm integrity', () => {
     expect(hairpin.evaluatedSequence).toContain('N');
     expect(dimer.status).toBe('ambiguous');
     expect(dimer.evaluatedSequence).toContain('|');
+  });
+
+  it('reports the strongest dimer run and its 3′-end participation', () => {
+    const primer1 = 'GCGTACGGA';
+    const primer2 = reverseComplement(primer1);
+    const dimer = predictPrimerDimer(primer1, primer2);
+
+    expect(dimer.status).toBe('exact');
+    expect(dimer.pairLength).toBe(primer1.length);
+    expect(dimer.threePrimeOverlap).toEqual({ primer1: 5, primer2: 5 });
+    expect(dimer.threePrimeParticipation).toBe('both');
+  });
+
+  it('evaluates every contiguous dimer run instead of only the longest at an offset', () => {
+    const primer1 = 'AAAAATTTGCGC';
+    const alignedComplement = 'AAAAAGGGGCGC';
+    const dimer = predictPrimerDimer(primer1, reverseComplement(alignedComplement));
+
+    expect(dimer.structure).toContain('GCGC');
+    expect(dimer.pairLength).toBe(4);
+    expect(dimer.deltaG).toBeLessThan(0);
   });
 
   it('splits a circular origin feature into product coordinates', () => {

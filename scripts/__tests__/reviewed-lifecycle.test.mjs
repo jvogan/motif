@@ -1,86 +1,113 @@
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { arch, endianness, platform, tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
-import { runReviewedLifecycle } from '../run-reviewed-lifecycle.mjs';
+import { prepareEsbuild } from '../run-reviewed-lifecycle.mjs';
 
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const temporaryDirectories = [];
 
-function fixture({ version = '1.0.0', policyVersion = version, allowed = true } = {}) {
-  const root = mkdtempSync(join(tmpdir(), 'motif-reviewed-lifecycle-test-'));
-  temporaryDirectories.push(root);
-  const packageDirectory = join(root, 'node_modules', 'reviewed-package');
-  mkdirSync(packageDirectory, { recursive: true });
-  mkdirSync(join(root, 'security'), { recursive: true });
-  const markerPath = join(root, 'marker.txt');
-  writeFileSync(join(packageDirectory, 'write-marker.mjs'), `import { writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(markerPath)}, process.env.npm_package_name + '@' + process.env.npm_package_version + ':' + process.env.npm_lifecycle_event);\n`);
-  writeFileSync(join(packageDirectory, 'package.json'), JSON.stringify({
-    name: 'reviewed-package',
-    version,
-    scripts: { postinstall: 'node write-marker.mjs' },
-  }));
-  writeFileSync(join(root, 'package.json'), JSON.stringify({
-    name: 'lifecycle-fixture',
-    version: '1.0.0',
-    private: true,
-    dependencies: { 'reviewed-package': version },
-    allowScripts: allowed ? { [`reviewed-package@${policyVersion}`]: true } : {},
-  }));
-  writeFileSync(join(root, 'package-lock.json'), JSON.stringify({
-    lockfileVersion: 3,
-    packages: {
-      '': { dependencies: { 'reviewed-package': version } },
-      'node_modules/reviewed-package': {
-        version,
-        resolved: `https://registry.npmjs.org/reviewed-package/-/reviewed-package-${version}.tgz`,
-        integrity: 'sha512-AAAA=',
-        hasInstallScript: true,
-      },
-    },
-  }));
-  writeFileSync(join(root, 'security', 'dependency-policy.json'), JSON.stringify({
-    schema: 'motif.dependency-policy.v1',
-    registry: 'https://registry.npmjs.org/',
-    directDependenciesMustBeExact: true,
-    allowedLifecycleScripts: allowed ? { [`reviewed-package@${policyVersion}`]: ['postinstall'] } : {},
-    allowedBindingGyp: [],
-    reviewedConnectorInventory: 'security/connector-inventory.json',
-  }));
-  writeFileSync(join(root, 'security', 'connector-inventory.json'), JSON.stringify({
-    schema: 'motif.reviewed-connector-inventory.v1',
-    packages: [{ name: 'reviewed-package', packagePath: ['reviewed-package'], licenseFile: 'reviewed-LICENSE.txt' }],
-  }));
-  return { root, markerPath };
+function platformKey() {
+  return `${platform()} ${arch()} ${endianness()}`;
+}
+
+function fixture() {
+  const directory = mkdtempSync(join(tmpdir(), 'motif-esbuild-preparation-test-'));
+  temporaryDirectories.push(directory);
+  cpSync(join(root, 'package.json'), join(directory, 'package.json'));
+  cpSync(join(root, 'package-lock.json'), join(directory, 'package-lock.json'));
+  cpSync(join(root, 'security'), join(directory, 'security'), { recursive: true });
+
+  const platformPackageName = ({
+    'darwin arm64 LE': '@esbuild/darwin-arm64',
+    'darwin x64 LE': '@esbuild/darwin-x64',
+    'linux x64 LE': '@esbuild/linux-x64',
+    'linux arm64 LE': '@esbuild/linux-arm64',
+  }[platformKey()]);
+  if (!platformPackageName) throw new Error(`Test fixture does not support ${platformKey()}`);
+
+  const esbuildDirectory = join(directory, 'node_modules/esbuild');
+  const platformDirectory = join(directory, 'node_modules', platformPackageName);
+  mkdirSync(join(esbuildDirectory, 'bin'), { recursive: true });
+  mkdirSync(join(platformDirectory, 'bin'), { recursive: true });
+  cpSync(join(root, 'node_modules/esbuild/package.json'), join(esbuildDirectory, 'package.json'));
+  cpSync(join(root, 'node_modules/esbuild/bin/esbuild'), join(esbuildDirectory, 'bin/esbuild'));
+  cpSync(join(root, 'node_modules', platformPackageName, 'package.json'), join(platformDirectory, 'package.json'));
+  cpSync(
+    join(root, 'node_modules', platformPackageName, platformPackageName.startsWith('@esbuild/win32-') ? 'esbuild.exe' : 'bin/esbuild'),
+    join(platformDirectory, platformPackageName.startsWith('@esbuild/win32-') ? 'esbuild.exe' : 'bin/esbuild'),
+  );
+
+  const markerPath = join(directory, 'install-js-ran.txt');
+  writeFileSync(join(esbuildDirectory, 'install.js'), `require('node:fs').writeFileSync(${JSON.stringify(markerPath)}, 'ran');\n`);
+  return {
+    directory,
+    markerPath,
+    manifestPath: join(esbuildDirectory, 'package.json'),
+    binaryPath: join(platformDirectory, platformPackageName.startsWith('@esbuild/win32-') ? 'esbuild.exe' : 'bin/esbuild'),
+  };
 }
 
 afterEach(() => {
   for (const directory of temporaryDirectories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
-describe('bounded reviewed lifecycle execution', () => {
-  it('fails policy before an unreviewed script can execute', () => {
-    const { root, markerPath } = fixture({ allowed: false });
-    expect(() => runReviewedLifecycle(root)).toThrow(/Lifecycle-script policy violation/);
-    expect(existsSync(markerPath)).toBe(false);
+describe('Motif-owned esbuild preparation', () => {
+  it('prepares the exact current-platform binary without executing install.js', () => {
+    const fixtureData = fixture();
+    const result = prepareEsbuild(fixtureData.directory);
+    expect(result.prepared).toHaveLength(1);
+    expect(result.prepared[0].version).toBe('0.28.1');
+    expect(existsSync(fixtureData.markerPath)).toBe(false);
+    expect(readFileSync(join(fixtureData.directory, 'node_modules/esbuild/bin/esbuild'))).toHaveLength(
+      readFileSync(fixtureData.binaryPath).length,
+    );
   });
 
-  it('executes only the exact approved package/version lifecycle command', () => {
-    const { root, markerPath } = fixture();
-    const result = runReviewedLifecycle(root);
-    expect(result.executed).toEqual([{ identity: 'reviewed-package@1.0.0', key: 'postinstall' }]);
-    expect(readFileSync(markerPath, 'utf8')).toBe('reviewed-package@1.0.0:postinstall');
+  it('rejects an esbuild manifest tamper before trusting its binary hash map', () => {
+    const fixtureData = fixture();
+    const manifest = JSON.parse(readFileSync(fixtureData.manifestPath, 'utf8'));
+    const key = Object.keys(manifest['esbuild.binaryHashes'])[0];
+    manifest['esbuild.binaryHashes'][key] = '0'.repeat(64);
+    writeFileSync(fixtureData.manifestPath, JSON.stringify(manifest));
+    expect(() => prepareEsbuild(fixtureData.directory)).toThrow(/esbuild package\.json SHA-256 mismatch/);
+    expect(existsSync(fixtureData.markerPath)).toBe(false);
   });
 
-  it('rejects a changed lifecycle version before execution', () => {
-    const { root, markerPath } = fixture({ version: '1.0.1', policyVersion: '1.0.0' });
-    expect(() => runReviewedLifecycle(root)).toThrow(/stale or unreviewed/);
-    expect(existsSync(markerPath)).toBe(false);
+  it('rejects current-platform binary tampering before materialization or execution', () => {
+    const fixtureData = fixture();
+    writeFileSync(fixtureData.binaryPath, Buffer.concat([readFileSync(fixtureData.binaryPath), Buffer.from('tampered')]));
+    expect(() => prepareEsbuild(fixtureData.directory)).toThrow(/current-platform esbuild binary SHA-256 mismatch/);
+    expect(existsSync(fixtureData.markerPath)).toBe(false);
+  });
+
+  it('rejects an esbuild lockfile integrity change', () => {
+    const fixtureData = fixture();
+    const lockPath = join(fixtureData.directory, 'package-lock.json');
+    const lock = JSON.parse(readFileSync(lockPath, 'utf8'));
+    lock.packages['node_modules/esbuild'].integrity = 'sha512-AAAA=';
+    writeFileSync(lockPath, JSON.stringify(lock));
+    expect(() => prepareEsbuild(fixtureData.directory)).toThrow(/lockfile entry does not match policy/);
+    expect(existsSync(fixtureData.markerPath)).toBe(false);
+  });
+
+  it('accepts no arbitrary command arguments', () => {
+    const result = spawnSync(process.execPath, [join(root, 'scripts/run-reviewed-lifecycle.mjs'), '--arbitrary'], {
+      cwd: root,
+      encoding: 'utf8',
+    });
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout ?? ''}${result.stderr ?? ''}`).toMatch(/accepts no command arguments/);
+  });
+
+  it('passes the repository lifecycle security command after ignore-scripts installation', () => {
+    const result = spawnSync(process.execPath, [join(root, 'scripts/run-reviewed-lifecycle.mjs')], {
+      cwd: root,
+      encoding: 'utf8',
+    });
+    expect(result.status).toBe(0);
+    expect(`${result.stdout ?? ''}${result.stderr ?? ''}`).toMatch(/Motif-owned dependency preparation passed/);
   });
 });

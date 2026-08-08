@@ -12,6 +12,6 @@ describe('release security defaults', () => {
   });
 
   it('includes the MCP stdio fallback in release-version alignment', () => {
-    expect(checkReleaseAlignment()).toMatchObject({ version: '0.3.1', surfaces: 10 });
+    expect(checkReleaseAlignment()).toMatchObject({ version: '0.3.2', surfaces: 10 });
   });
 });

@@ -8,8 +8,11 @@ import {
 import { join, relative, resolve, sep } from 'node:path';
 
 const LIFECYCLE_KEYS = ['preinstall', 'install', 'postinstall', 'prepare'];
+const EXECUTED_LIFECYCLE_KEYS = new Set(['preinstall', 'install', 'postinstall']);
 const SHA512_INTEGRITY = /^sha512-[A-Za-z0-9+/=]+$/u;
+const SHA256_HEX = /^[a-f0-9]{64}$/u;
 const EXACT_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u;
+const SAFE_POLICY_PATH = /^[^/\\][^\\]*$/u;
 
 function packageIdentity(name, version) {
   return `${name}@${version}`;
@@ -136,6 +139,9 @@ export function loadDependencyPolicy(root) {
   const inventory = readJson(inventoryPath, 'Reviewed connector inventory');
   if (policy.schema !== 'motif.dependency-policy.v1') throw new Error('Dependency policy schema is unsupported');
   if (policy.reviewedConnectorInventory !== 'security/connector-inventory.json') throw new Error('Dependency policy must point to the reviewed connector inventory');
+  if (policy.reviewedLifecycleCommands !== undefined) {
+    throw new Error('Dependency policy cannot contain generic lifecycle command approvals');
+  }
   if (inventory.schema !== 'motif.reviewed-connector-inventory.v1') throw new Error('Connector inventory schema is unsupported');
   if (!Array.isArray(inventory.packages) || inventory.packages.length === 0) throw new Error('Connector inventory must contain packages');
   return { policy, inventory, policyPath, inventoryPath };
@@ -151,6 +157,7 @@ export function checkLockfilePolicy(rootPath = process.cwd()) {
   if (!rootPackage) throw new Error('package-lock.json is missing its root package entry');
 
   const lifecyclePolicy = policy.allowedLifecycleScripts ?? {};
+  const ownedPreparations = policy.ownedPreparations ?? {};
   for (const [identity, scripts] of Object.entries(lifecyclePolicy)) {
     const parsed = splitPackageIdentity(identity);
     if (!parsed || !Array.isArray(scripts) || scripts.some(key => !LIFECYCLE_KEYS.includes(key))) {
@@ -158,6 +165,48 @@ export function checkLockfilePolicy(rootPath = process.cwd()) {
     }
     if (!lockContainsIdentity(lock, parsed.name, parsed.version)) {
       throw new Error(`Lifecycle policy entry is stale or unreviewed: ${identity}`);
+    }
+  }
+  for (const [identity, preparation] of Object.entries(ownedPreparations)) {
+    const parsed = splitPackageIdentity(identity);
+    if (!parsed || !preparation || typeof preparation !== 'object' || Array.isArray(preparation) || !lockContainsIdentity(lock, parsed.name, parsed.version)) {
+      throw new Error(`Owned dependency preparation entry is stale or unreviewed: ${identity}`);
+    }
+    if (preparation.lifecycle !== 'postinstall'
+      || typeof preparation.manifestPath !== 'string'
+      || preparation.manifestPath !== 'node_modules/esbuild/package.json'
+      || !SHA256_HEX.test(preparation.manifestSha256)
+      || !preparation.lockfile
+      || typeof preparation.lockfile !== 'object'
+      || preparation.lockfile.path !== 'node_modules/esbuild'
+      || preparation.lockfile.version !== parsed.version
+      || typeof preparation.lockfile.resolved !== 'string'
+      || typeof preparation.lockfile.integrity !== 'string'
+      || !SHA512_INTEGRITY.test(preparation.lockfile.integrity)
+      || !preparation.platforms
+      || typeof preparation.platforms !== 'object'
+      || Array.isArray(preparation.platforms)
+      || Object.keys(preparation.platforms).length === 0) {
+      throw new Error(`Owned dependency preparation entry is not an exact safe preparation: ${identity}`);
+    }
+    const lockedPreparation = lock.packages[preparation.lockfile.path];
+    if (!lockedPreparation
+      || lockedPreparation.version !== preparation.lockfile.version
+      || lockedPreparation.resolved !== preparation.lockfile.resolved
+      || lockedPreparation.integrity !== preparation.lockfile.integrity) {
+      throw new Error(`Owned dependency preparation lockfile entry does not match policy: ${identity}`);
+    }
+    for (const [platform, spec] of Object.entries(preparation.platforms)) {
+      if (!platform || !spec || typeof spec !== 'object' || Array.isArray(spec)
+        || typeof spec.package !== 'string'
+        || !spec.package.startsWith('@esbuild/')
+        || spec.version !== parsed.version
+        || !SHA256_HEX.test(spec.manifestSha256)
+        || typeof spec.binaryPath !== 'string'
+        || !SAFE_POLICY_PATH.test(spec.binaryPath)
+        || spec.binaryPath.includes('..')) {
+        throw new Error(`Owned dependency preparation platform entry is unsafe: ${identity} ${platform}`);
+      }
     }
   }
   const npmAllowScripts = packageJsonAllowScripts(packageJson);
@@ -206,12 +255,25 @@ export function checkLockfilePolicy(rootPath = process.cwd()) {
     const lifecycleKeys = LIFECYCLE_KEYS.filter(key => typeof scripts[key] === 'string' && scripts[key].trim());
     const identity = packageIdentity(name, version);
     if (metadata.hasInstallScript || lifecycleKeys.length > 0) {
-      const allowed = lifecyclePolicy[identity];
-      if (!Array.isArray(allowed)) lifecycleFindings.push(`${identity} is not in allowedLifecycleScripts`);
-      for (const key of lifecycleKeys) {
-        if (!allowed?.includes(key)) lifecycleFindings.push(`${identity} lifecycle script ${key} is not allowlisted`);
+      const ownedPreparation = ownedPreparations[identity];
+      if (ownedPreparation) {
+        if (lifecycleKeys.length !== 1 || lifecycleKeys[0] !== ownedPreparation.lifecycle) {
+          lifecycleFindings.push(`${identity} lifecycle entries do not match its exact Motif-owned preparation`);
+        }
+        if (metadata.hasInstallScript && npmAllowScripts[identity] !== false) {
+          lifecycleFindings.push(`${identity} must explicitly disable npm lifecycle execution`);
+        }
+      } else {
+        const allowed = lifecyclePolicy[identity];
+        if (!Array.isArray(allowed)) lifecycleFindings.push(`${identity} is not in allowedLifecycleScripts`);
+        for (const key of lifecycleKeys) {
+          if (!allowed?.includes(key)) lifecycleFindings.push(`${identity} lifecycle script ${key} is not allowlisted`);
+          if (EXECUTED_LIFECYCLE_KEYS.has(key)) {
+            lifecycleFindings.push(`${identity} lifecycle script ${key} has no exact Motif-owned preparation`);
+          }
+        }
+        if (metadata.hasInstallScript && npmAllowScripts[identity] === undefined) lifecycleFindings.push(`${identity} has an install script but no exact package.json allowScripts decision`);
       }
-      if (metadata.hasInstallScript && npmAllowScripts[identity] === undefined) lifecycleFindings.push(`${identity} has an install script but no exact package.json allowScripts decision`);
     }
     const packageDirectory = join(root, lockPath);
     const hasBinding = packageFiles(packageDirectory).some(path => path.endsWith('/binding.gyp') || path.endsWith('\\binding.gyp'));
@@ -238,6 +300,7 @@ export function checkLockfilePolicy(rootPath = process.cwd()) {
     packageCount: packages.length,
     connectorPackageCount: inventory.packages.length,
     lifecycleAllowlist: Object.keys(policy.allowedLifecycleScripts ?? {}).sort(),
+    ownedPreparationAllowlist: Object.keys(policy.ownedPreparations ?? {}).sort(),
     bindingAllowlist: [...(policy.allowedBindingGyp ?? [])].sort(),
   };
 }

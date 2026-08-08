@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## 0.3.2 — 2026-08-08
+
+- Unified restriction-enzyme sources, serialized complete cleavage geometry,
+  rejected incompatible co-located cuts, and prevented quarantined feature
+  placeholders from propagating into derived records.
+- Corrected mismatch-aware PCR materialization, made primer tails explicit,
+  bounded oligo and product sizes, and incorporated full cross-dimer evidence
+  into primer-pair ranking.
+- Strengthened Golden Gate normalization, exact synthetic-vector sequences,
+  feature-aware domestication, translation-exception handling, and ambiguous
+  initiator interpretation.
+- Preserved primer-pair state across preview changes and expanded responsive,
+  keyboard, theme, provenance, checkpoint, and pane-state browser coverage.
+- Replaced third-party lifecycle execution with Motif-owned, hash-verified
+  esbuild preparation; tightened connector environments, immutable dependency
+  baselines, GitHub metadata policy, and external release-trust messaging.
+
 ## 0.3.1 — 2026-08-08
 
 - Corrected restriction-digest geometry at linear boundaries, represented

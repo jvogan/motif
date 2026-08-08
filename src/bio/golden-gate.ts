@@ -5,17 +5,58 @@ import { getAminoAcidToCodons, resolveTranslationTable } from './codon-tables';
 import { featureLocationSegments } from './feature-location';
 import { translateCompleteCds } from './translate';
 import {
+  materializeTranslationExceptions,
+  type TranslationException,
+  type TranslationExceptionDiagnostic,
+  type TranslationExceptionReceipt,
+} from './transl-except';
+import {
   aliasRemovedProductCoordinates,
   emptySourceToProductMap,
   mapFeatureThroughSourceCoordinates,
   type SourceToProductCoordinateMap,
 } from './assembly-feature-mapping';
+import { inspectNucleotideSequence } from './nucleotide';
 
 export interface GoldenGatePart {
   id?: string;
   name: string;
   sequence: string;
   features?: Feature[];
+}
+
+export type GoldenGateNormalizationDiagnosticCode =
+  | 'formatting_normalized'
+  | 'invalid_character'
+  | 'ambiguous_base'
+  | 'unsupported_enzyme';
+
+export interface GoldenGateNormalizationDiagnostic {
+  code: GoldenGateNormalizationDiagnosticCode;
+  partName?: string;
+  partId?: string;
+  message: string;
+  characters?: string[];
+}
+
+export interface GoldenGateNormalizationProvenance {
+  engine: 'motif-golden-gate';
+  engineVersion: '2';
+  parts: Array<{
+    name: string;
+    id?: string;
+    sourceLength: number;
+    normalizedLength: number;
+    formattingNormalized: boolean;
+  }>;
+}
+
+export interface GoldenGateSiteScanResult {
+  sequence: string;
+  enzyme: string;
+  sites: GoldenGateSite[];
+  diagnostics: GoldenGateNormalizationDiagnostic[];
+  provenance: GoldenGateNormalizationProvenance;
 }
 
 export interface GoldenGateSite {
@@ -49,6 +90,8 @@ export interface GoldenGatePartBoundary {
   siteCount: number;
   internalSiteCount: number;
   errors: string[];
+  normalizationDiagnostics?: GoldenGateNormalizationDiagnostic[];
+  provenance?: GoldenGateNormalizationProvenance;
 }
 
 export interface GoldenGateResult {
@@ -62,6 +105,8 @@ export interface GoldenGateResult {
   success: boolean;
   errors: string[];
   warnings: string[];
+  normalizationDiagnostics?: GoldenGateNormalizationDiagnostic[];
+  provenance?: GoldenGateNormalizationProvenance;
   /**
    * Populated when a unique part-ordering exists but its endpoints do not
    * close to a circle. The caller can ligate a destination vector backbone
@@ -81,6 +126,8 @@ export interface OverhangValidation {
   }>;
   /** When the open-chain issue is reported, the overhangs a vector must expose. */
   missingVectorOverhangs?: { left: string; right: string };
+  normalizationDiagnostics?: GoldenGateNormalizationDiagnostic[];
+  provenance?: GoldenGateNormalizationProvenance;
 }
 
 const DEFAULT_ENZYME = 'BsaI';
@@ -154,6 +201,85 @@ export function getGoldenGateEnzyme(enzymeName: string): RestrictionEnzyme | nul
   return getEnzyme(enzymeName);
 }
 
+function normalizeGoldenGatePart(part: GoldenGatePart): {
+  part: GoldenGatePart | null;
+  diagnostics: GoldenGateNormalizationDiagnostic[];
+  provenance: NonNullable<GoldenGateNormalizationProvenance['parts']>[number];
+} {
+  const inspected = inspectNucleotideSequence(part.sequence);
+  const diagnostics: GoldenGateNormalizationDiagnostic[] = [];
+  const sourceLength = part.sequence.length;
+  const sourceWithoutWhitespace = part.sequence.replace(/\s+/g, '').toUpperCase();
+  const invalidRna = sourceWithoutWhitespace.includes('U');
+  if (inspected.invalidCharacters.length > 0 || invalidRna) {
+    const invalidCharacters = [...new Set([
+      ...inspected.invalidCharacters,
+      ...(invalidRna ? ['U'] : []),
+    ])];
+    diagnostics.push({
+      code: 'invalid_character',
+      partName: part.name,
+      ...(part.id ? { partId: part.id } : {}),
+      characters: invalidCharacters,
+      message: `Part "${part.name}" contains invalid DNA nucleotide characters: ${invalidCharacters.join(', ')}.`,
+    });
+  } else if (inspected.ambiguous) {
+    diagnostics.push({
+      code: 'ambiguous_base',
+      partName: part.name,
+      ...(part.id ? { partId: part.id } : {}),
+      message: `Part "${part.name}" contains IUPAC ambiguity symbols; Golden Gate boundaries require canonical A/C/G/T bases.`,
+    });
+  }
+  const formattingNormalized = inspected.sequence !== part.sequence;
+  if (formattingNormalized && diagnostics.length === 0) {
+    diagnostics.push({
+      code: 'formatting_normalized',
+      partName: part.name,
+      ...(part.id ? { partId: part.id } : {}),
+      message: `Part "${part.name}" was normalized by removing formatting whitespace and uppercasing bases before boundary analysis.`,
+    });
+  }
+  return {
+    part: diagnostics.some((diagnostic) => diagnostic.code !== 'formatting_normalized')
+      ? null
+      : { ...part, sequence: inspected.sequence },
+    diagnostics,
+    provenance: {
+      name: part.name,
+      ...(part.id ? { id: part.id } : {}),
+      sourceLength,
+      normalizedLength: inspected.sequence.length,
+      formattingNormalized,
+    },
+  };
+}
+
+function normalizationProvenance(
+  parts: readonly NonNullable<ReturnType<typeof normalizeGoldenGatePart>['part']>[],
+  entries: GoldenGateNormalizationProvenance['parts'],
+): GoldenGateNormalizationProvenance {
+  return {
+    engine: 'motif-golden-gate',
+    engineVersion: '2',
+    parts: entries.length > 0
+      ? entries
+      : parts.map((part) => ({
+        name: part.name,
+        ...(part.id ? { id: part.id } : {}),
+        sourceLength: part.sequence.length,
+        normalizedLength: part.sequence.length,
+        formattingNormalized: false,
+      })),
+  };
+}
+
+function normalizationProvenanceForParts(
+  entries: GoldenGateNormalizationProvenance['parts'],
+): GoldenGateNormalizationProvenance {
+  return normalizationProvenance([], entries);
+}
+
 /**
  * Find Type IIS recognition sites in a sequence and compute the overhangs
  * they would produce after digestion. Overhang length is per-enzyme (4 bp for
@@ -165,14 +291,11 @@ export function getGoldenGateEnzyme(enzymeName: string): RestrictionEnzyme | nul
  * enzyme reads the complement in the 5'→3' direction and cuts upstream,
  * producing an overhang that is the reverse complement of the sense-strand bases.
  */
-export function findGoldenGateSites(
-  seq: string,
-  enzyme = DEFAULT_ENZYME,
+function findGoldenGateSitesInNormalizedSequence(
+  upper: string,
+  enz: RestrictionEnzyme,
   options: FindGoldenGateSitesOptions = {},
 ): GoldenGateSite[] {
-  const enz = getEnzyme(enzyme);
-  if (!enz) return [];
-  const upper = seq.toUpperCase();
   const recog = enz.recognitionSequence.toUpperCase();
   const recogRC = reverseComplement(recog).toUpperCase();
   const overhangLength = overhangLengthFor(enz);
@@ -227,6 +350,64 @@ export function findGoldenGateSites(
 
   sites.sort((a, b) => a.position - b.position);
   return sites;
+}
+
+/**
+ * Strict, typed Golden Gate scan boundary. Formatting whitespace and case are
+ * normalized with provenance; ambiguity, invalid characters, and unsupported
+ * enzyme identities fail closed with machine-readable diagnostics.
+ */
+export function scanGoldenGateSites(
+  seq: string,
+  enzyme = DEFAULT_ENZYME,
+  options: FindGoldenGateSitesOptions = {},
+): GoldenGateSiteScanResult {
+  const normalized = normalizeGoldenGatePart({ name: 'sequence', sequence: seq });
+  const provenance = normalizationProvenance([], [normalized.provenance]);
+  const enz = getEnzyme(enzyme);
+  if (!enz) {
+    return {
+      sequence: normalized.part?.sequence ?? seq.replace(/\s+/g, '').toUpperCase(),
+      enzyme,
+      sites: [],
+      diagnostics: [
+        ...normalized.diagnostics,
+        {
+          code: 'unsupported_enzyme',
+          message: `Unsupported Golden Gate enzyme: ${enzyme}`,
+        },
+      ],
+      provenance,
+    };
+  }
+  if (!normalized.part) {
+    return {
+      sequence: seq.replace(/\s+/g, '').toUpperCase(),
+      enzyme: enz.name,
+      sites: [],
+      diagnostics: normalized.diagnostics,
+      provenance,
+    };
+  }
+  return {
+    sequence: normalized.part.sequence,
+    enzyme: enz.name,
+    sites: findGoldenGateSitesInNormalizedSequence(normalized.part.sequence, enz, options),
+    diagnostics: normalized.diagnostics,
+    provenance,
+  };
+}
+
+/**
+ * Compatibility projection for callers that need only sites. Invalid or
+ * ambiguous input returns no sites; use `scanGoldenGateSites` for diagnostics.
+ */
+export function findGoldenGateSites(
+  seq: string,
+  enzyme = DEFAULT_ENZYME,
+  options: FindGoldenGateSitesOptions = {},
+): GoldenGateSite[] {
+  return scanGoldenGateSites(seq, enzyme, options).sites;
 }
 
 /**
@@ -383,6 +564,8 @@ interface DigestedAssemblyPart {
 interface DigestPartsResult {
   digested: DigestedAssemblyPart[];
   errors: string[];
+  normalizationDiagnostics: GoldenGateNormalizationDiagnostic[];
+  provenanceParts: GoldenGateNormalizationProvenance['parts'];
 }
 
 /**
@@ -398,17 +581,27 @@ function digestGoldenGateParts(
 ): DigestPartsResult {
   const errors: string[] = [];
   const digested: DigestedAssemblyPart[] = [];
+  const normalizationDiagnostics: GoldenGateNormalizationDiagnostic[] = [];
+  const provenanceParts: GoldenGateNormalizationProvenance['parts'] = [];
   const recog = enz.recognitionSequence.toUpperCase();
   const recogRC = reverseComplement(recog).toUpperCase();
   const overhangLength = overhangLengthFor(enz);
 
   for (const part of parts) {
-    const upper = part.sequence.toUpperCase();
+    const normalized = normalizeGoldenGatePart(part);
+    normalizationDiagnostics.push(...normalized.diagnostics);
+    provenanceParts.push(normalized.provenance);
+    if (!normalized.part) {
+      errors.push(`Part "${part.name}": Golden Gate input must be canonical A/C/G/T after normalization.`);
+      continue;
+    }
+    const normalizedPart = normalized.part;
+    const upper = normalizedPart.sequence;
     const senseIdx = upper.indexOf(recog);
     const antiIdx = senseIdx !== -1 ? upper.indexOf(recogRC, senseIdx + recog.length) : -1;
 
     if (senseIdx === -1 || antiIdx === -1 || senseIdx >= antiIdx) {
-      const foundSites = findGoldenGateSites(part.sequence, enz.name);
+      const foundSites = findGoldenGateSites(normalizedPart.sequence, enz.name);
       const foundSummary = foundSites.length > 0
         ? `found ${foundSites.length} site${foundSites.length !== 1 ? 's' : ''}, but not a valid sense/antisense flank pair`
         : 'found none';
@@ -418,7 +611,7 @@ function digestGoldenGateParts(
       continue;
     }
 
-    const internalSites = findInternalGoldenGateSites(part.sequence, enz.name);
+    const internalSites = findInternalGoldenGateSites(normalizedPart.sequence, enz.name);
     if (internalSites.length > 0) {
       errors.push(
         `Part "${part.name}": contains ${internalSites.length} internal ${enz.name} site${internalSites.length !== 1 ? 's' : ''}`,
@@ -448,17 +641,17 @@ function digestGoldenGateParts(
     // outside the digest window are genuinely absent and therefore, and only
     // therefore, mark a surviving feature partial.
     const insertLength = insert.length;
-    const insertMap = sourceMapForInsert(part.sequence.length, leftCut, insertLength);
+    const insertMap = sourceMapForInsert(normalizedPart.sequence.length, leftCut, insertLength);
     const shiftedFeatures: Feature[] = [];
-    for (const feat of part.features ?? []) {
+    for (const feat of normalizedPart.features ?? []) {
       const shifted = mapFeatureThroughSourceCoordinates(feat, insertMap);
       if (shifted) shiftedFeatures.push(shifted);
     }
 
-    digested.push({ id: part.id, name: part.name, insert, oh5, oh3, rightOverhang, features: shiftedFeatures, insertStart: leftCut });
+    digested.push({ id: normalizedPart.id, name: normalizedPart.name, insert, oh5, oh3, rightOverhang, features: shiftedFeatures, insertStart: leftCut });
   }
 
-  return { digested, errors };
+  return { digested, errors, normalizationDiagnostics, provenanceParts };
 }
 
 export type GoldenGateChainReason =
@@ -674,11 +867,30 @@ export function getGoldenGatePartBoundary(
       errors: [unsupportedEnzymeError(enzyme)],
     };
   }
-  const upper = part.sequence.toUpperCase();
+  const normalized = normalizeGoldenGatePart({ name: part.name, sequence: part.sequence });
+  const normalizationDiagnostics = normalized.diagnostics;
+  const provenance = normalizationProvenance([], [normalized.provenance]);
+  if (!normalized.part) {
+    return {
+      valid: false,
+      enzyme: enz.name,
+      leftOverhang: null,
+      rightOverhang: null,
+      rightOverhangComplement: null,
+      insertStart: null,
+      insertEnd: null,
+      siteCount: 0,
+      internalSiteCount: 0,
+      errors: [`Part "${part.name}" must contain only canonical A/C/G/T bases.`],
+      normalizationDiagnostics,
+      provenance,
+    };
+  }
+  const upper = normalized.part.sequence;
   const recog = enz.recognitionSequence.toUpperCase();
   const recogRC = reverseComplement(recog).toUpperCase();
   const overhangLength = overhangLengthFor(enz);
-  const sites = findGoldenGateSites(part.sequence, enzyme, { includeOutOfBounds: true });
+  const sites = findGoldenGateSites(upper, enzyme, { includeOutOfBounds: true });
   const errors: string[] = [];
 
   const senseIdx = upper.indexOf(recog);
@@ -697,6 +909,8 @@ export function getGoldenGatePartBoundary(
       siteCount: sites.length,
       internalSiteCount: sites.length,
       errors,
+      normalizationDiagnostics,
+      provenance,
     };
   }
 
@@ -733,6 +947,8 @@ export function getGoldenGatePartBoundary(
     siteCount: sites.length,
     internalSiteCount: internalSites.length,
     errors,
+    normalizationDiagnostics,
+    provenance,
   };
 }
 
@@ -779,7 +995,12 @@ export function validateGoldenGateOverhangs(
     return { valid: false, overhangs: [], issues };
   }
 
-  const { digested, errors: digestErrors } = digestGoldenGateParts(parts, enz);
+  const {
+    digested,
+    errors: digestErrors,
+    normalizationDiagnostics,
+    provenanceParts,
+  } = digestGoldenGateParts(parts, enz);
   for (const error of digestErrors) {
     issues.push({
       type: 'preparation',
@@ -861,6 +1082,8 @@ export function validateGoldenGateOverhangs(
     valid: issues.length === 0,
     overhangs: unique,
     issues,
+    normalizationDiagnostics,
+    provenance: normalizationProvenance([], provenanceParts),
     ...(missingVectorOverhangs ? { missingVectorOverhangs } : {}),
   };
 }
@@ -924,11 +1147,17 @@ export function goldenGateAssemble(
   }
 
   // --- Step 1: Digest each part to extract the insert with its overhangs ---
-  const { digested, errors: digestErrors } = digestGoldenGateParts(parts, enz);
+  const {
+    digested,
+    errors: digestErrors,
+    normalizationDiagnostics,
+    provenanceParts,
+  } = digestGoldenGateParts(parts, enz);
+  const normalizationProvenance = normalizationProvenanceForParts(provenanceParts);
   errors.push(...digestErrors);
 
   if (errors.length > 0) {
-    return { sequence: '', features: [], parts: parts.map((p) => p.name), ...(inputPartIds ? { partIds: inputPartIds } : {}), overhangs: [], enzyme: enz.name, topology: 'linear', success: false, errors, warnings };
+    return { sequence: '', features: [], parts: parts.map((p) => p.name), ...(inputPartIds ? { partIds: inputPartIds } : {}), overhangs: [], enzyme: enz.name, topology: 'linear', success: false, errors, warnings, normalizationDiagnostics, provenance: normalizationProvenance };
   }
 
   // --- Step 2: Resolve the unique part ordering via chain analysis ---
@@ -941,7 +1170,7 @@ export function goldenGateAssemble(
         ? `Overhang ${oh} appears at every junction — ambiguous ligation order (every part can self-ligate or swap with another).`
         : 'Parts can be self-ligated or reordered — ambiguous ligation order.',
     );
-    return { sequence: '', features: [], parts: parts.map((p) => p.name), ...(inputPartIds ? { partIds: inputPartIds } : {}), overhangs: [], enzyme: enz.name, topology: 'linear', success: false, errors, warnings };
+    return { sequence: '', features: [], parts: parts.map((p) => p.name), ...(inputPartIds ? { partIds: inputPartIds } : {}), overhangs: [], enzyme: enz.name, topology: 'linear', success: false, errors, warnings, normalizationDiagnostics, provenance: normalizationProvenance };
   }
 
   if (analysis.reason === 'ambiguous-multiple-chains') {
@@ -957,14 +1186,14 @@ export function goldenGateAssemble(
         'Could not form a complete assembly chain — parts can be ordered in multiple ways.',
       );
     }
-    return { sequence: '', features: [], parts: parts.map((p) => p.name), ...(inputPartIds ? { partIds: inputPartIds } : {}), overhangs: [], enzyme: enz.name, topology: 'linear', success: false, errors, warnings };
+    return { sequence: '', features: [], parts: parts.map((p) => p.name), ...(inputPartIds ? { partIds: inputPartIds } : {}), overhangs: [], enzyme: enz.name, topology: 'linear', success: false, errors, warnings, normalizationDiagnostics, provenance: normalizationProvenance };
   }
 
   if (analysis.reason === 'no-chain' || !analysis.ordered) {
     errors.push(
       'Could not form a complete assembly chain — check that overhangs are unique and form a linear (or circular) order',
     );
-    return { sequence: '', features: [], parts: parts.map((p) => p.name), ...(inputPartIds ? { partIds: inputPartIds } : {}), overhangs: [], enzyme: enz.name, topology: 'linear', success: false, errors, warnings };
+    return { sequence: '', features: [], parts: parts.map((p) => p.name), ...(inputPartIds ? { partIds: inputPartIds } : {}), overhangs: [], enzyme: enz.name, topology: 'linear', success: false, errors, warnings, normalizationDiagnostics, provenance: normalizationProvenance };
   }
 
   const ordered = analysis.ordered;
@@ -987,6 +1216,8 @@ export function goldenGateAssemble(
       success: false,
       errors,
       warnings,
+      normalizationDiagnostics,
+      provenance: normalizationProvenance,
       missingVectorOverhangs: missing,
     };
   }
@@ -1035,7 +1266,7 @@ export function goldenGateAssemble(
   }
 
   if (errors.length > 0) {
-    return { sequence: '', features: [], parts: ordered.map((p) => p.name), ...(orderedPartIds ? { partIds: orderedPartIds } : {}), overhangs, enzyme: enz.name, topology: 'linear', success: false, errors, warnings };
+    return { sequence: '', features: [], parts: ordered.map((p) => p.name), ...(orderedPartIds ? { partIds: orderedPartIds } : {}), overhangs, enzyme: enz.name, topology: 'linear', success: false, errors, warnings, normalizationDiagnostics, provenance: normalizationProvenance };
   }
 
   const last = ordered[ordered.length - 1];
@@ -1045,7 +1276,7 @@ export function goldenGateAssemble(
     errors.push(
       `Assembly chain is open: "${last.name}" 3' overhang ${last.rightOverhang} does not close to "${first.name}" 5' overhang ${first.oh5}`,
     );
-    return { sequence: '', features: [], parts: ordered.map((p) => p.name), ...(orderedPartIds ? { partIds: orderedPartIds } : {}), overhangs, enzyme: enz.name, topology: 'linear', success: false, errors, warnings };
+    return { sequence: '', features: [], parts: ordered.map((p) => p.name), ...(orderedPartIds ? { partIds: orderedPartIds } : {}), overhangs, enzyme: enz.name, topology: 'linear', success: false, errors, warnings, normalizationDiagnostics, provenance: normalizationProvenance };
   }
 
   const preClosureLength = sequence.length;
@@ -1082,6 +1313,8 @@ export function goldenGateAssemble(
     success: true,
     errors: [],
     warnings,
+    normalizationDiagnostics,
+    provenance: normalizationProvenance,
   };
 }
 
@@ -1177,12 +1410,20 @@ export function buildSyntheticGoldenGateVector(
   ) {
     throw new Error(`Unsupported ${enz.name} synthetic-vector cut geometry`);
   }
-  const leftSpacer = 'N'.repeat(leftSpacerLength);
-  const rightSpacer = 'N'.repeat(rightSpacerLength);
+  // Materialize every otherwise unspecified cut spacer with canonical bases.
+  // Ambiguous `N` spacers make the synthetic vector impossible to hash or
+  // rescreen deterministically. `A` is the stable canonical choice; the full
+  // construct is rescanned below before it is returned.
+  const leftSpacer = 'A'.repeat(leftSpacerLength);
+  const rightSpacer = 'A'.repeat(rightSpacerLength);
   const padding = 'AAAA';
   // Layout: padding + sense site + left spacer + left overhang + filler
   //       + right overhang + right spacer + antisense site + padding.
   const sequence = `${padding}${recog}${leftSpacer}${left}${filler}${right}${rightSpacer}${recogRC}${padding}`;
+
+  if (!/^[ACGT]+$/.test(sequence)) {
+    throw new Error('Synthetic Golden Gate vector must be canonical A/C/G/T after spacer materialization.');
+  }
 
   // Verify the synthetic part has no internal Type IIS sites that would
   // sabotage the assembly. If the filler accidentally contains one, the
@@ -1223,7 +1464,8 @@ export type GoldenGateDomesticationFailureCode =
   | 'unmodifiable_authoritative_site'
   | 'remaining_forbidden_site'
   | 'introduced_forbidden_site'
-  | 'protein_identity_mismatch';
+  | 'protein_identity_mismatch'
+  | 'invalid_translation_exception';
 
 export interface GoldenGateDomesticationFailure {
   code: GoldenGateDomesticationFailureCode;
@@ -1231,11 +1473,13 @@ export interface GoldenGateDomesticationFailure {
   position?: number;
   enzyme?: string;
   motif?: string;
+  diagnostics?: TranslationExceptionDiagnostic[];
 }
 
 /** A feature location is authoritative only when every stored segment is valid. */
 export type GoldenGateCdsFeature = Pick<Feature, 'start' | 'end' | 'strand' | 'subRanges'> & {
   type?: Feature['type'];
+  metadata?: Feature['metadata'];
 };
 
 export interface DomesticateGoldenGateFeatureOptions {
@@ -1266,6 +1510,8 @@ export interface DomesticateGoldenGateFeatureResult {
   sourceProtein: string | null;
   productProtein: string | null;
   proteinIdentity: boolean;
+  /** Translation-exception receipt used for the protein-identity guarantee. */
+  translationReceipt?: TranslationExceptionReceipt;
 }
 
 function domesticationFailure(
@@ -1510,12 +1756,52 @@ export function domesticateGoldenGateFeature(
     return emptyResult({ translatedBaseRange });
   }
   let sourceProtein: string;
+  let translationReceipt: TranslationExceptionReceipt | undefined;
+  let translationExceptions: TranslationException[] = [];
   try {
     sourceProtein = translateCompleteCds(coding, 0, table);
   } catch (error) {
     failures.push(domesticationFailure('untranslatable_cds', error instanceof Error ? error.message : 'CDS could not be translated.'));
     return emptyResult({ translatedBaseRange });
   }
+
+  const rawTranslationException = options.feature.metadata?.transl_except
+    ?? options.feature.metadata?.translExcept;
+  if (rawTranslationException !== undefined) {
+    const materialized = materializeTranslationExceptions({
+      sequence: source,
+      feature: options.feature,
+      qualifier: rawTranslationException,
+      codonStart,
+      translationTableId: table.id,
+    });
+    if (!materialized.ok) {
+      failures.push(...materialized.diagnostics.map((entry) => domesticationFailure(
+        'invalid_translation_exception',
+        entry.message,
+        { diagnostics: [entry] },
+      )));
+      return emptyResult({
+        translatedBaseRange,
+        sourceProtein,
+        productProtein: null,
+        proteinIdentity: false,
+      });
+    }
+    translationReceipt = materialized.receipt;
+    translationExceptions = materialized.exceptions;
+    sourceProtein = materialized.materializedProtein;
+  }
+
+  const proteinForOrientedSequence = (orientedSequence: string): string => {
+    const translated = translateCompleteCds(orientedSequence.slice(frame), 0, table);
+    if (translationExceptions.length === 0) return translated;
+    return translationExceptions.reduce((protein, exception) => (
+      exception.codonIndex < 0 || exception.codonIndex >= protein.length
+        ? protein
+        : `${protein.slice(0, exception.codonIndex)}${exception.residue}${protein.slice(exception.codonIndex + 1)}`
+    ), translated);
+  };
 
   const selectedEnzymes: RestrictionEnzyme[] = [];
   for (const rawName of options.forbiddenEnzymes ?? []) {
@@ -1614,7 +1900,7 @@ export function domesticateGoldenGateFeature(
         for (const candidateCodon of alternatives) {
           if (candidateCodon === originalCodon) continue;
           const candidateOriented = `${workingOriented.slice(0, codonOffset)}${candidateCodon}${workingOriented.slice(codonOffset + 3)}`;
-          if (translateCompleteCds(candidateOriented.slice(frame), 0, table) !== sourceProtein) continue;
+          if (proteinForOrientedSequence(candidateOriented) !== sourceProtein) continue;
           const candidateSites = scanDomesticationSitesBySegments(
             candidateOriented,
             location.segments,
@@ -1682,10 +1968,9 @@ export function domesticateGoldenGateFeature(
       { position: site.position, enzyme: site.enzyme, motif: site.motif },
     ));
   }
-  const productCoding = workingOriented.slice(frame);
   let productProtein: string | null = null;
   try {
-    productProtein = translateCompleteCds(productCoding, 0, table);
+    productProtein = proteinForOrientedSequence(workingOriented);
   } catch {
     failures.push(domesticationFailure('untranslatable_cds', 'Domesticated CDS could not be translated.'));
   }
@@ -1704,6 +1989,7 @@ export function domesticateGoldenGateFeature(
     sourceProtein,
     productProtein,
     proteinIdentity,
+    ...(translationReceipt ? { translationReceipt } : {}),
   };
 }
 
@@ -1783,6 +2069,10 @@ export function domesticateLegacyProjection(
 }
 
 /**
+ * @deprecated Use `domesticateGoldenGateFeature()` with an explicit feature,
+ * frame, and translation table. This compatibility adapter is contained behind
+ * the same authoritative context requirement as `domesticate()`.
+ *
  * Domesticate ONLY the internal insert of a flanked Type IIS part, preserving
  * the structural flanking recognition sites the assembly depends on.
  *
@@ -1798,7 +2088,9 @@ export function domesticateLegacyProjection(
 export function domesticatePartInternals(
   seq: string,
   enzyme = DEFAULT_ENZYME,
-): { sequence: string; mutations: Array<{ position: number; original: string; replacement: string }> } {
+  options?: LegacyDomesticateOptions,
+): GoldenGateLegacyDomesticationProjection {
+  if (!options) throw new GoldenGateLegacyDomesticationError();
   const boundary = getGoldenGatePartBoundary({ name: 'part', sequence: seq }, enzyme);
   if (
     boundary.insertStart != null &&
@@ -1806,25 +2098,32 @@ export function domesticatePartInternals(
     boundary.insertEnd > boundary.insertStart
   ) {
     const insertStart = boundary.insertStart;
-    const insert = seq.slice(insertStart, boundary.insertEnd);
+    const insert = seq.toUpperCase().slice(insertStart, boundary.insertEnd);
     const cleaned = domesticateGoldenGateFeature({
       sequence: insert,
-      feature: { start: 0, end: insert.length, strand: 1, type: 'cds' },
-      codonStart: 1,
-      translationTableId: 1,
+      feature: options.feature,
+      codonStart: options.codonStart,
+      translationTableId: options.translationTableId,
       forbiddenEnzymes: [enzyme],
     });
     return {
-      sequence: seq.slice(0, insertStart) + cleaned.sequence + seq.slice(boundary.insertEnd),
+      sequence: seq.toUpperCase().slice(0, insertStart) + cleaned.sequence + seq.toUpperCase().slice(boundary.insertEnd),
       mutations: cleaned.mutations.map((m) => ({ ...m, position: m.position + insertStart })),
+      warning: GOLDEN_GATE_LEGACY_PROJECTION_WARNING,
+      deprecated: true,
     };
   }
   const cleaned = domesticateGoldenGateFeature({
-    sequence: seq,
-    feature: { start: 0, end: seq.length, strand: 1, type: 'cds' },
-    codonStart: 1,
-    translationTableId: 1,
+    sequence: seq.toUpperCase(),
+    feature: options.feature,
+    codonStart: options.codonStart,
+    translationTableId: options.translationTableId,
     forbiddenEnzymes: [enzyme],
   });
-  return { sequence: cleaned.sequence, mutations: cleaned.mutations };
+  return {
+    sequence: cleaned.sequence,
+    mutations: cleaned.mutations,
+    warning: GOLDEN_GATE_LEGACY_PROJECTION_WARNING,
+    deprecated: true,
+  };
 }

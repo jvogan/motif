@@ -2,22 +2,7 @@
   "schema": "motif.dependency-policy.v1",
   "registry": "https://registry.npmjs.org/",
   "coolingOffDays": 7,
-  "coolingOffExceptions": [
-    {
-      "name": "hono",
-      "version": "4.13.1",
-      "rationale": "Security maintenance release required to clear current Hono advisories before the seven-day window closes.",
-      "reviewer": "release-maintainer",
-      "expiresAt": "2026-08-15T07:00:00.000Z"
-    },
-    {
-      "name": "nanoid",
-      "version": "3.3.18",
-      "rationale": "Security maintenance release required to clear the current nanoid advisory before the seven-day window closes.",
-      "reviewer": "release-maintainer",
-      "expiresAt": "2026-08-15T17:00:00.000Z"
-    }
-  ],
+  "coolingOffExceptions": [],
   "directDependenciesMustBeExact": true,
   "allowedLifecycleScripts": {
     "@axe-core/playwright@4.11.1": ["prepare"],
@@ -31,7 +16,6 @@
     "balanced-match@4.0.4": ["prepare"],
     "brace-expansion@5.0.9": ["prepare"],
     "content-type@1.0.5": ["prepare"],
-    "esbuild@0.28.1": ["postinstall"],
     "eslint-visitor-keys@5.0.1": ["prepare"],
     "eventsource@3.0.7": ["prepare"],
     "express-rate-limit@8.5.2": ["prepare"],
@@ -54,6 +38,177 @@
     "zod-validation-error@4.0.2": ["prepare"],
     "content-type@2.0.0": ["prepare"],
     "eslint-visitor-keys@3.4.3": ["prepare"]
+  },
+  "ownedPreparations": {
+    "esbuild@0.28.1": {
+      "lifecycle": "postinstall",
+      "manifestPath": "node_modules/esbuild/package.json",
+      "manifestSha256": "d55d1d19fcc5b6079e4a71dd4111340c79c682bc36835ac7058a0c364c7db58a",
+      "lockfile": {
+        "path": "node_modules/esbuild",
+        "version": "0.28.1",
+        "resolved": "https://registry.npmjs.org/esbuild/-/esbuild-0.28.1.tgz",
+        "integrity": "sha512-HrJrvZv5ayxBzPfwphOoNzkzOIIlifzk0KJrGK2c8R4+LKpMtpYLQeUdjnwjWv/LZlkH2laZk+4w78pi99D4Vw=="
+      },
+      "platforms": {
+        "aix ppc64 BE": {
+          "package": "@esbuild/aix-ppc64",
+          "version": "0.28.1",
+          "manifestSha256": "c1edcdae4e205c937d4388898214151952d4f91f2b54b581e0cc3fe8b20c6972",
+          "binaryPath": "bin/esbuild"
+        },
+        "android arm LE": {
+          "package": "@esbuild/android-arm",
+          "version": "0.28.1",
+          "manifestSha256": "1dbe7a9d9aa3ca653a242e16fc20fd22078f2f7fdf71017fbc23f1a66d6db2a9",
+          "binaryPath": "bin/esbuild"
+        },
+        "android arm64 LE": {
+          "package": "@esbuild/android-arm64",
+          "version": "0.28.1",
+          "manifestSha256": "2b2092d3b64a478d1e12e5ddd7089e4467c188fab9d10c06f43d4565278b332e",
+          "binaryPath": "bin/esbuild"
+        },
+        "android x64 LE": {
+          "package": "@esbuild/android-x64",
+          "version": "0.28.1",
+          "manifestSha256": "15b54f3923932994b318c9f18d01ed3eca1c79e5ace09bd11782cc67b69c4a4f",
+          "binaryPath": "bin/esbuild"
+        },
+        "darwin arm64 LE": {
+          "package": "@esbuild/darwin-arm64",
+          "version": "0.28.1",
+          "manifestSha256": "4741fe8d75953474f275402d367368cf49c242b2bc04b85e25bad14bfd26eaad",
+          "binaryPath": "bin/esbuild"
+        },
+        "darwin x64 LE": {
+          "package": "@esbuild/darwin-x64",
+          "version": "0.28.1",
+          "manifestSha256": "a81c32a64667a9319c0cf8037094060f76e51cc8a847f7fa877623dd52bbcd1e",
+          "binaryPath": "bin/esbuild"
+        },
+        "freebsd arm64 LE": {
+          "package": "@esbuild/freebsd-arm64",
+          "version": "0.28.1",
+          "manifestSha256": "457b7275d91fd02d57f13799975c082b7eea3d9934cf7c2734a3c8950a3b8cb9",
+          "binaryPath": "bin/esbuild"
+        },
+        "freebsd x64 LE": {
+          "package": "@esbuild/freebsd-x64",
+          "version": "0.28.1",
+          "manifestSha256": "e0d180385a3abbdcf699b418948d5613cb33cc88e370fa7a7edaad722d53882a",
+          "binaryPath": "bin/esbuild"
+        },
+        "linux arm LE": {
+          "package": "@esbuild/linux-arm",
+          "version": "0.28.1",
+          "manifestSha256": "adc308e0459da082e2f69138ae0acaa74e2bf8a69f985282fac15ac90baddffb",
+          "binaryPath": "bin/esbuild"
+        },
+        "linux arm64 LE": {
+          "package": "@esbuild/linux-arm64",
+          "version": "0.28.1",
+          "manifestSha256": "92e8de40ebe8c9ecacec55a3ef23dc796aadba48015390af9e5c6798e87802de",
+          "binaryPath": "bin/esbuild"
+        },
+        "linux ia32 LE": {
+          "package": "@esbuild/linux-ia32",
+          "version": "0.28.1",
+          "manifestSha256": "d6139a19ea7a763671952808a9c0bf9c932be525754b441e84db9f9fb9542b46",
+          "binaryPath": "bin/esbuild"
+        },
+        "linux loong64 LE": {
+          "package": "@esbuild/linux-loong64",
+          "version": "0.28.1",
+          "manifestSha256": "8fe27efef2260c80909677718d00d7df6cae359f68a07d38743e3880706fa6dc",
+          "binaryPath": "bin/esbuild"
+        },
+        "linux mips64el LE": {
+          "package": "@esbuild/linux-mips64el",
+          "version": "0.28.1",
+          "manifestSha256": "5a9873c35926488a1d41009ac6881ec8a9410b5a499cfe239649269503db8158",
+          "binaryPath": "bin/esbuild"
+        },
+        "linux ppc64 LE": {
+          "package": "@esbuild/linux-ppc64",
+          "version": "0.28.1",
+          "manifestSha256": "f117c1fcfdf2ea5d6ed35c22058678a4ac3fb269d923252aa55127aee4e67bd7",
+          "binaryPath": "bin/esbuild"
+        },
+        "linux riscv64 LE": {
+          "package": "@esbuild/linux-riscv64",
+          "version": "0.28.1",
+          "manifestSha256": "f1d849e980474836849b1d04c3ab3e60d681c73edf704fcc03ab84d631bf92f5",
+          "binaryPath": "bin/esbuild"
+        },
+        "linux s390x BE": {
+          "package": "@esbuild/linux-s390x",
+          "version": "0.28.1",
+          "manifestSha256": "161386c2aa7326763740d2b5e414cc127c98e01ce47b32a49c5bb5878e4c2d96",
+          "binaryPath": "bin/esbuild"
+        },
+        "linux x64 LE": {
+          "package": "@esbuild/linux-x64",
+          "version": "0.28.1",
+          "manifestSha256": "2332dc7d04175b16730f136b5bf32b31203eecea5be03b66e9453a4658b3d971",
+          "binaryPath": "bin/esbuild"
+        },
+        "netbsd arm64 LE": {
+          "package": "@esbuild/netbsd-arm64",
+          "version": "0.28.1",
+          "manifestSha256": "28a59c1a2bd06e4094965d237663ca02760aec2cf0d5e121937ddf71465a54a0",
+          "binaryPath": "bin/esbuild"
+        },
+        "netbsd x64 LE": {
+          "package": "@esbuild/netbsd-x64",
+          "version": "0.28.1",
+          "manifestSha256": "e2f8202d1cc9b6c506db2f89bf4b46b60f7cb0566593b481f7a18bfbd8d7bfa6",
+          "binaryPath": "bin/esbuild"
+        },
+        "openbsd arm64 LE": {
+          "package": "@esbuild/openbsd-arm64",
+          "version": "0.28.1",
+          "manifestSha256": "8945e19e2acc6096985464fa2ed12ecf26991d9bc10073a9a61353cfd6ad0b6f",
+          "binaryPath": "bin/esbuild"
+        },
+        "openbsd x64 LE": {
+          "package": "@esbuild/openbsd-x64",
+          "version": "0.28.1",
+          "manifestSha256": "7daae7ac079d46a97aa0ccfaa7011dded7b0f62db5155009c8c01ba1713abc8d",
+          "binaryPath": "bin/esbuild"
+        },
+        "openharmony arm64 LE": {
+          "package": "@esbuild/openharmony-arm64",
+          "version": "0.28.1",
+          "manifestSha256": "2b687919e64fb175a08a0b08dfeaff72421f1f6eca00bd34157a2b38092bcd4d",
+          "binaryPath": "bin/esbuild"
+        },
+        "sunos x64 LE": {
+          "package": "@esbuild/sunos-x64",
+          "version": "0.28.1",
+          "manifestSha256": "38cf4162a527cfa9c5773bce2fcb7533f3ac1c38ee8bd596ff33c88dfda2a689",
+          "binaryPath": "bin/esbuild"
+        },
+        "win32 arm64 LE": {
+          "package": "@esbuild/win32-arm64",
+          "version": "0.28.1",
+          "manifestSha256": "3fd5be3bed3cec3847eceac5f2af62db5ae43097a4644a9641a8669048ca8cac",
+          "binaryPath": "esbuild.exe"
+        },
+        "win32 ia32 LE": {
+          "package": "@esbuild/win32-ia32",
+          "version": "0.28.1",
+          "manifestSha256": "338c5cfca02c73521a88fa5d831534d2022cc26c0929fa7b8ab1cd730177ae49",
+          "binaryPath": "esbuild.exe"
+        },
+        "win32 x64 LE": {
+          "package": "@esbuild/win32-x64",
+          "version": "0.28.1",
+          "manifestSha256": "4a63b84fa1059fef348e29e3a39c26168213bb7f0aa1ac0174e439cc1e62a9f8",
+          "binaryPath": "esbuild.exe"
+        }
+      }
+    }
   },
   "allowedBindingGyp": [],
   "reviewedConnectorInventory": "security/connector-inventory.json"

@@ -17,12 +17,48 @@ function primerBindingTm(seq: string): number | null {
 
 export const DEFAULT_MIN_MATCHED_3_PRIME_LENGTH = 10;
 export const DEFAULT_MAX_PRIMER_MISMATCHES = 0;
-const MAX_PRODUCT_LENGTH = 50_000;
+export const MAX_PCR_OLIGO_LENGTH = 500;
+export const MAX_PCR_TAIL_LENGTH = 250;
+export const MAX_PCR_PRODUCT_LENGTH = 50_000;
 const DEFAULT_MAX_BINDING_CANDIDATES = 10_000;
 const DEFAULT_MAX_COMPETING_PRODUCTS = 100;
 const MAX_PRODUCT_COMBINATIONS = 100_000;
 
 export type PCRBindingStatus = 'exact' | 'ambiguous' | 'mismatch';
+
+export type PCRTailSource = 'none' | 'explicit-selection' | 'inferred';
+
+export interface PCRBindingEdit {
+  /** Offset in the final 5′→3′ product (including the forward tail). */
+  productOffset: number;
+  /** Coordinate in the original forward-strand template. */
+  templatePosition: number;
+  original: string;
+  replacement: string;
+  primer: 'forward' | 'reverse';
+}
+
+export type PCRDiagnosticCode =
+  | 'implicit_tail'
+  | 'primer_bases_overwrote_template'
+  | 'overlapping_binding_regions';
+
+export interface PCRDiagnostic {
+  code: PCRDiagnosticCode;
+  message: string;
+  primer?: 'forward' | 'reverse';
+  positions?: number[];
+}
+
+export interface PCRProductProvenance {
+  engine: 'motif-pcr';
+  engineVersion: '2';
+  /** Product bases are the template interval overlaid with primer bases. */
+  productAssembly: 'template-plus-primer-binding';
+  tailPolicy: 'explicit-only' | 'allow-implicit';
+  implicitTails: { forward: boolean; reverse: boolean };
+  bindingEdits: PCRBindingEdit[];
+}
 
 export interface PCRSimulationOptions {
   /** Minimum consecutive compatible bases at the primer's 3′ end. */
@@ -33,6 +69,8 @@ export interface PCRSimulationOptions {
   maxBindingCandidates?: number;
   /** Number of competing product descriptions retained in the result. */
   maxCompetingProducts?: number;
+  /** Permit an unmatched 5′ primer prefix to be inferred as a tail. */
+  allowImplicitTails?: boolean;
 }
 
 export interface PCRBindingCandidate {
@@ -50,6 +88,8 @@ export interface PCRBindingCandidate {
   matched3PrimeLength: number;
   /** Exact/conditional/mismatch confidence for this candidate. */
   status: PCRBindingStatus;
+  /** Whether the prefix was selected explicitly or inferred from a shorter suffix. */
+  tailSource: PCRTailSource;
 }
 
 export interface PCRPrimerBinding {
@@ -62,6 +102,7 @@ export interface PCRPrimerBinding {
   mismatchCount?: number;
   matched3PrimeLength?: number;
   status?: PCRBindingStatus;
+  tailSource?: PCRTailSource;
   /** Melting temperature of the binding region only. */
   tm: number | null;
   /** GC% of the binding region; ambiguity is retained in status. */
@@ -98,12 +139,17 @@ export interface PCRResult {
   status: PCRBindingStatus;
   /** Explicit caveats; an ambiguous result must not be presented as exact. */
   warnings: string[];
+  /** Machine-readable caveats and product-overlay evidence. */
+  diagnostics: PCRDiagnostic[];
+  /** Deterministic product construction and primer/template edit receipt. */
+  provenance: PCRProductProvenance;
   /** Other valid products/sites found under the selected policy. */
   competingProducts: PCRCompetingProduct[];
   /** Search/policy evidence retained with the result. */
   policy: {
     minMatched3PrimeLength: number;
     maxMismatches: number;
+    allowImplicitTails: boolean;
   };
 }
 
@@ -121,15 +167,17 @@ function normalizePolicy(options?: PCRSimulationOptions): {
   maxMismatches: number;
   maxBindingCandidates: number;
   maxCompetingProducts: number;
+  allowImplicitTails: boolean;
 } | null {
   const minMatched3PrimeLength = options?.minMatched3PrimeLength ?? DEFAULT_MIN_MATCHED_3_PRIME_LENGTH;
   const maxMismatches = options?.maxMismatches ?? DEFAULT_MAX_PRIMER_MISMATCHES;
   const maxBindingCandidates = options?.maxBindingCandidates ?? DEFAULT_MAX_BINDING_CANDIDATES;
   const maxCompetingProducts = options?.maxCompetingProducts ?? DEFAULT_MAX_COMPETING_PRODUCTS;
+  const allowImplicitTails = options?.allowImplicitTails ?? false;
   if (
     !Number.isInteger(minMatched3PrimeLength)
     || minMatched3PrimeLength < 1
-    || minMatched3PrimeLength > 10_000
+    || minMatched3PrimeLength > MAX_PCR_OLIGO_LENGTH
     || !Number.isInteger(maxMismatches)
     || maxMismatches < 0
     || maxMismatches > 10_000
@@ -139,8 +187,9 @@ function normalizePolicy(options?: PCRSimulationOptions): {
     || !Number.isInteger(maxCompetingProducts)
     || maxCompetingProducts < 0
     || maxCompetingProducts > 10_000
+    || typeof allowImplicitTails !== 'boolean'
   ) return null;
-  return { minMatched3PrimeLength, maxMismatches, maxBindingCandidates, maxCompetingProducts };
+  return { minMatched3PrimeLength, maxMismatches, maxBindingCandidates, maxCompetingProducts, allowImplicitTails };
 }
 
 function statusForBinding(
@@ -162,8 +211,17 @@ function bindingAt(
   bindingLength: number,
   minMatched3PrimeLength: number,
   maxMismatches: number,
+  allowImplicitTails: boolean,
 ): PCRSearchCandidate | null {
-  if (bindingLength < minMatched3PrimeLength || position < 0 || position + bindingLength > template.length) return null;
+  if (
+    bindingLength < minMatched3PrimeLength
+    || bindingLength > primer.length
+    || primer.length > MAX_PCR_OLIGO_LENGTH
+    || primer.length - bindingLength > MAX_PCR_TAIL_LENGTH
+    || position < 0
+    || position + bindingLength > template.length
+  ) return null;
+  if (!allowImplicitTails && bindingLength !== primer.length) return null;
   const bindingSequence = primer.slice(primer.length - bindingLength);
   const templateSequence = template.slice(position, position + bindingLength);
   let mismatchCount = 0;
@@ -184,6 +242,7 @@ function bindingAt(
     mismatchCount,
     matched3PrimeLength,
     status: statusForBinding(bindingSequence, templateSequence, mismatchCount),
+    tailSource: bindingLength === primer.length ? 'none' : 'inferred',
   };
 }
 
@@ -202,6 +261,7 @@ export function findPrimerBindings(
   const templateInspection = inspectNucleotideSequence(template);
   const primerInspection = inspectNucleotideSequence(primer);
   if (templateInspection.invalidCharacters.length > 0 || primerInspection.invalidCharacters.length > 0) return [];
+  if (primerInspection.sequence.length > MAX_PCR_OLIGO_LENGTH) return [];
   const tmpl = templateInspection.sequence;
   const oligo = primerInspection.sequence;
   if (oligo.length < policy.minMatched3PrimeLength || tmpl.length === 0) return [];
@@ -210,8 +270,8 @@ export function findPrimerBindings(
   const seen = new Set<string>();
   const minBindingLength = Math.min(oligo.length, policy.minMatched3PrimeLength);
   // Prefer the full oligo when a safety cap is reached. Short suffixes are
-  // still retained as explicit tail alternatives, but must not crowd out the
-  // strongest/full-length binding evidence.
+  // considered only after an explicit allowImplicitTails opt-in and must not
+  // crowd out the strongest/full-length binding evidence.
   for (let bindingLength = oligo.length; bindingLength >= minBindingLength; bindingLength -= 1) {
     for (let position = 0; position + bindingLength <= tmpl.length; position += 1) {
       const candidate = bindingAt(
@@ -221,6 +281,7 @@ export function findPrimerBindings(
         bindingLength,
         policy.minMatched3PrimeLength,
         policy.maxMismatches,
+        policy.allowImplicitTails,
       );
       if (!candidate) continue;
       const key = `${candidate.bindStart}:${candidate.bindEnd}:${candidate.mismatchCount}`;
@@ -256,8 +317,11 @@ function selectedBindingCandidate(
     range.end - range.start,
     policy.minMatched3PrimeLength,
     policy.maxMismatches,
+    true,
   );
-  return candidate ? { ...candidate } : null;
+  return candidate
+    ? { ...candidate, tailSource: candidate.tail.length > 0 ? 'explicit-selection' : 'none' }
+    : null;
 }
 
 function asReverseBinding(
@@ -332,7 +396,72 @@ function productStatusWarnings(
   if (status === 'ambiguous') warnings.push('IUPAC ambiguity occurs in the binding or amplified template region; this product is conditional, not an exact sequence claim.');
   const mismatchCount = forward.mismatchCount + reverse.mismatchCount;
   if (mismatchCount > 0) warnings.push(`Primer binding uses ${mismatchCount} permitted mismatch${mismatchCount === 1 ? '' : 'es'}; review the 3′-end policy before ordering.`);
+  if (forward.tailSource === 'inferred' || reverse.tailSource === 'inferred') {
+    warnings.push('A 5′ primer tail was inferred from a shorter binding suffix; select binding coordinates or provide an explicit tail before ordering.');
+  }
   return warnings;
+}
+
+function materializeTemplateProduct(
+  template: string,
+  forward: PCRBindingCandidate,
+  reverse: PCRBindingCandidate,
+  wrapsOrigin: boolean,
+  forwardTailLength: number,
+): {
+  templateProduct: string;
+  bindingEdits: PCRBindingEdit[];
+  overlappingBindingPositions: number[];
+} {
+  const originalProduct = wrapsOrigin
+    ? template.slice(forward.bindStart) + template.slice(0, reverse.bindEnd)
+    : template.slice(forward.bindStart, reverse.bindEnd);
+  const segments = wrapsOrigin
+    ? [
+        { start: forward.bindStart, end: template.length, productStart: 0 },
+        { start: 0, end: reverse.bindEnd, productStart: template.length - forward.bindStart },
+      ]
+    : [{ start: forward.bindStart, end: reverse.bindEnd, productStart: 0 }];
+  const chars = originalProduct.split('');
+  const bindingEdits: PCRBindingEdit[] = [];
+  const touchedBy = new Map<number, 'forward' | 'reverse'>();
+  const overlappingBindingPositions: number[] = [];
+  const apply = (
+    templatePosition: number,
+    replacement: string,
+    primer: 'forward' | 'reverse',
+  ): void => {
+    const segment = segments.find((candidate) => (
+      templatePosition >= candidate.start && templatePosition < candidate.end
+    ));
+    if (!segment) return;
+    const productOffset = segment.productStart + templatePosition - segment.start;
+    const previousPrimer = touchedBy.get(productOffset);
+    if (previousPrimer && previousPrimer !== primer && !overlappingBindingPositions.includes(templatePosition)) {
+      overlappingBindingPositions.push(templatePosition);
+    }
+    touchedBy.set(productOffset, primer);
+    const original = chars[productOffset] ?? '';
+    if (original !== replacement) {
+      bindingEdits.push({
+        productOffset: forwardTailLength + productOffset,
+        templatePosition,
+        original,
+        replacement,
+        primer,
+      });
+      chars[productOffset] = replacement;
+    }
+  };
+
+  for (let offset = 0; offset < forward.bindingSequence.length; offset += 1) {
+    apply(forward.bindStart + offset, forward.bindingSequence[offset], 'forward');
+  }
+  const reversePlus = reverseComplement(reverse.bindingSequence);
+  for (let offset = 0; offset < reversePlus.length; offset += 1) {
+    apply(reverse.bindStart + offset, reversePlus[offset], 'reverse');
+  }
+  return { templateProduct: chars.join(''), bindingEdits, overlappingBindingPositions };
 }
 
 /**
@@ -363,6 +492,7 @@ export function simulatePCR(
   const tmpl = templateInspection.sequence;
   const fwd = forwardInspection.sequence;
   const rev = reverseInspection.sequence;
+  if (fwd.length > MAX_PCR_OLIGO_LENGTH || rev.length > MAX_PCR_OLIGO_LENGTH) return null;
   if (fwd.length < policy.minMatched3PrimeLength || rev.length < policy.minMatched3PrimeLength || tmpl.length === 0) return null;
 
   const validRange = (range: { start: number; end: number }) => (
@@ -413,7 +543,13 @@ export function simulatePCR(
       const templateProduct = wrapsOrigin
         ? tmpl.slice(forward.bindStart) + tmpl.slice(0, reverse.bindEnd)
         : tmpl.slice(forward.bindStart, reverse.bindEnd);
-      if (templateProduct.length === 0 || templateProduct.length > MAX_PRODUCT_LENGTH) continue;
+      const productLength = templateProduct.length + forward.tail.length + reverse.tail.length;
+      if (
+        templateProduct.length === 0
+        || forward.tail.length > MAX_PCR_TAIL_LENGTH
+        || reverse.tail.length > MAX_PCR_TAIL_LENGTH
+        || productLength > MAX_PCR_PRODUCT_LENGTH
+      ) continue;
       const productInspection = inspectNucleotideSequence(templateProduct);
       const candidateStatus = bindingStatus(forward, reverse);
       products.push({
@@ -422,7 +558,7 @@ export function simulatePCR(
         reverseRc,
         wrapsOrigin,
         templateProduct,
-        productLength: templateProduct.length + forward.tail.length + reverse.tail.length,
+        productLength,
         status: candidateStatus === 'exact' && productInspection.ambiguous ? 'ambiguous' : candidateStatus,
       });
     }
@@ -468,7 +604,41 @@ export function simulatePCR(
   if (productsTruncated) warnings.push(`PCR product enumeration stopped at ${MAX_PRODUCT_COMBINATIONS.toLocaleString()} combinations; narrow the binding policy before treating the result as exhaustive.`);
   const fwdTail = selected.forward.tail;
   const revTailRC = selected.reverse.tail.length > 0 ? reverseComplement(selected.reverse.tail) : '';
-  const product = fwdTail + selected.templateProduct + revTailRC;
+  const materialized = materializeTemplateProduct(
+    tmpl,
+    selected.forward,
+    selected.reverse,
+    selected.wrapsOrigin,
+    fwdTail.length,
+  );
+  const diagnostics: PCRDiagnostic[] = [];
+  const implicitForward = selected.forward.tailSource === 'inferred';
+  const implicitReverse = selected.reverse.tailSource === 'inferred';
+  if (implicitForward) diagnostics.push({
+    code: 'implicit_tail',
+    primer: 'forward',
+    message: 'The forward 5′ tail was inferred from a shorter binding suffix; an explicit binding selection is required for safe materialization.',
+  });
+  if (implicitReverse) diagnostics.push({
+    code: 'implicit_tail',
+    primer: 'reverse',
+    message: 'The reverse 5′ tail was inferred from a shorter binding suffix; an explicit binding selection is required for safe materialization.',
+  });
+  if (materialized.bindingEdits.length > 0) {
+    diagnostics.push({
+      code: 'primer_bases_overwrote_template',
+      message: `${materialized.bindingEdits.length} product base${materialized.bindingEdits.length === 1 ? '' : 's'} came from permitted primer/template mismatches rather than the template interval.`,
+      positions: materialized.bindingEdits.map((edit) => edit.templatePosition),
+    });
+  }
+  if (materialized.overlappingBindingPositions.length > 0) {
+    diagnostics.push({
+      code: 'overlapping_binding_regions',
+      message: 'Forward and reverse binding regions overlap; the reverse primer base was applied last at overlapping product coordinates.',
+      positions: materialized.overlappingBindingPositions,
+    });
+  }
+  const product = fwdTail + materialized.templateProduct + revTailRC;
   const sourceSpans: FeatureCoordinateMapSpan[] = selected.wrapsOrigin
     ? [
         { start: selected.forward.bindStart, end: tmpl.length, targetStart: fwdTail.length },
@@ -493,6 +663,15 @@ export function simulatePCR(
     wrapsOrigin: selected.wrapsOrigin,
     status,
     warnings,
+    diagnostics,
+    provenance: {
+      engine: 'motif-pcr',
+      engineVersion: '2',
+      productAssembly: 'template-plus-primer-binding',
+      tailPolicy: policy.allowImplicitTails ? 'allow-implicit' : 'explicit-only',
+      implicitTails: { forward: implicitForward, reverse: implicitReverse },
+      bindingEdits: materialized.bindingEdits,
+    },
     competingProducts: competing.map((candidate) => ({
       forward: candidate.forward,
       reverse: candidate.reverse,
@@ -503,6 +682,7 @@ export function simulatePCR(
     policy: {
       minMatched3PrimeLength: policy.minMatched3PrimeLength,
       maxMismatches: policy.maxMismatches,
+      allowImplicitTails: policy.allowImplicitTails,
     },
   };
 }

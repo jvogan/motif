@@ -52,6 +52,8 @@ export type ClaudeScienceCloningPrimerRequest = {
   actionIds: string[];
   recordIds: string[];
   junctionIndexes: number[];
+  /** Explicit opt-in for preloading exact Gibson overlaps as editable tails. */
+  autoInferHomologyTails?: boolean;
 };
 
 export type ClaudeScienceCloningSavePayload = {
@@ -272,6 +274,7 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
   const [gibsonTopology, setGibsonTopology] = useState<'linear' | 'circular'>('linear');
   const [minOverlap, setMinOverlap] = useState(20);
   const [maxOverlap, setMaxOverlap] = useState(60);
+  const [autoInferHomologyTails, setAutoInferHomologyTails] = useState(false);
   const [search, setSearch] = useState('');
   const [candidateId, setCandidateId] = useState('');
   const [dragIndex, setDragIndex] = useState<number | null>(null);
@@ -579,6 +582,7 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
         junctionIndexes: unique(actions.flatMap((action) => (
           action.junctionIndex === undefined ? [] : [String(action.junctionIndex)]
         ))).map(Number),
+        ...(autoInferHomologyTails ? { autoInferHomologyTails: true } : {}),
       });
       setStatus(actions.length === 1
         ? 'Primer workspace opened for the selected preparation item.'
@@ -588,7 +592,7 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
     } finally {
       setBusy(null);
     }
-  }, [busy, method, onDesignPrimers, plan]);
+  }, [autoInferHomologyTails, busy, method, onDesignPrimers, plan]);
 
   const save = useCallback(async (intent: SaveIntent) => {
     const name = currentName.trim();
@@ -876,6 +880,15 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
                       />
                       <small>bp</small>
                     </span>
+                  </label>
+                  <label className="motif-cs-cloning-design-check-field">
+                    <input
+                      type="checkbox"
+                      name="gibson-auto-infer-homology-tails"
+                      checked={autoInferHomologyTails}
+                      onChange={(event) => setAutoInferHomologyTails(event.target.checked)}
+                    />
+                    <span>Preload exact overlaps as editable 5′ tails <small>(opt in)</small></span>
                   </label>
                 </div>
               )}

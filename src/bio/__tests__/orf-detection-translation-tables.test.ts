@@ -25,6 +25,15 @@ describe('translation-table-aware ORF detection', () => {
     });
   });
 
+  it('recognizes a deterministic ambiguous initiator codon', () => {
+    expect(forwardOrfAtOrigin('ATHAAATAA', getTranslationTable(2))).toMatchObject({
+      start: 0,
+      end: 9,
+      startCodon: 'ATH',
+      stopCodon: 'TAA',
+    });
+  });
+
   it('ends an ORF at a table-specific mitochondrial stop', () => {
     const sequence = 'ATGAAAAGATTTTAA';
 

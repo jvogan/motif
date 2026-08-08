@@ -13,6 +13,7 @@ import type {
   SequenceType,
   Topology,
 } from '../bio/types';
+import { isActiveDoubleStrandRestrictionSite } from '../bio/restriction-sites';
 
 export type DigestRecipeIssueCode =
   | 'empty-enzyme-list'
@@ -25,7 +26,8 @@ export type DigestRecipeIssueCode =
   | 'methylation_unknown'
   | 'methylation_unmethylated'
   | 'methylation_context_unknown'
-  | 'invalid_geometry';
+  | 'invalid_geometry'
+  | 'incompatible_colocated_cleavage';
 
 export interface DigestRecipeIssue {
   code: DigestRecipeIssueCode;
@@ -227,12 +229,12 @@ export function buildDigestRecipe(input: BuildDigestRecipeInput): DigestRecipe {
   const enzymes = resolution.enzymes.map((enzyme): DigestRecipeEnzyme => {
     const enzymeSites = sites.filter((site) => site.enzyme.toLocaleLowerCase() === enzyme.name.toLocaleLowerCase());
     const cutSites = enzymeSites.filter((site) => (
-      (site.cleavageMode ?? 'double-strand') === 'double-strand'
-      && (site.cleavageStatus ?? 'ok') === 'ok'
+      isActiveDoubleStrandRestrictionSite(site)
     ));
     const nickSites = enzymeSites.filter((site) => (
-      (site.cleavageMode ?? 'double-strand') !== 'double-strand'
-      && (site.cleavageStatus ?? 'ok') === 'ok'
+      site.cleavageMode !== undefined
+      && site.cleavageStatus === 'ok'
+      && !isActiveDoubleStrandRestrictionSite(site)
     ));
     const methylationEvidence = enzyme.methylationEvidence ?? enzyme.methylationRequirement?.evidence;
     return {

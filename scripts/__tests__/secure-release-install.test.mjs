@@ -9,6 +9,7 @@ import {
   realpathSync,
   rmSync,
   symlinkSync,
+  truncateSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -22,6 +23,7 @@ import {
   RELEASE_MAX_BUNDLE_ENTRIES,
   RELEASE_MAX_DIRECTORY_DEPTH,
   RELEASE_MAX_DIRECTORY_NODES,
+  RELEASE_MAX_TOTAL_BYTES,
   resolveReleaseBundleRoot,
   verifyReleaseBundle,
 } from '../lib/motif-release-bundle.mjs';
@@ -36,6 +38,22 @@ const runtimeBuildId = 'a'.repeat(64);
 
 function sha256(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
+}
+
+function trustedManifestDigest(bundle) {
+  return sha256(readFileSync(join(bundle, 'release-manifest.json')));
+}
+
+function trustedManifestArgs(bundle) {
+  return ['--manifest-sha256', trustedManifestDigest(bundle)];
+}
+
+function trustedManifestFile(bundle) {
+  const directory = mkdtempSync(join(tmpdir(), 'motif-release-digest-test-'));
+  temporaryDirectories.push(directory);
+  const path = join(directory, 'motif-for-claude-science-release.manifest.sha256');
+  writeFileSync(path, `${trustedManifestDigest(bundle)}  release-manifest.json\n`);
+  return path;
 }
 
 function writeFixture({ wrongProduct = false, unsafePath = false } = {}) {
@@ -137,7 +155,8 @@ describe('checksum-verified Motif release installation', () => {
       servers: [{ name: 'unrelated', command: '/private/unrelated', args: [] }],
     });
     expect(existsSync(join(bundle, 'node_modules'))).toBe(false);
-    const result = installRelease(['--bundle', bundle, '--config', configPath, '--node', process.execPath]);
+    const digestFile = trustedManifestFile(bundle);
+    const result = installRelease(['--bundle', bundle, '--manifest-sha256-file', digestFile, '--config', configPath, '--node', process.execPath]);
     expect(result.changed).toBe(true);
     expect(result.backupPath).toBeTruthy();
     expect(readFileSync(result.backupPath, 'utf8')).toBe(bytes);
@@ -148,7 +167,18 @@ describe('checksum-verified Motif release installation', () => {
       name: 'motif-local',
       env: { MOTIF_ROOT: canonicalBundle, MOTIF_NODE_BIN: process.execPath },
     });
-    expect(doctorRelease(['--bundle', bundle, '--config', configPath, '--node', process.execPath]).config).toBe('matched');
+    expect(result.externalManifestDigestMatched).toBe(true);
+    expect(doctorRelease(['--bundle', bundle, '--manifest-sha256-file', digestFile, '--config', configPath, '--node', process.execPath])).toMatchObject({ config: 'matched', externalManifestDigestMatched: true });
+  });
+
+  it('requires an external manifest digest and rejects a mismatch before configuration changes', () => {
+    const bundle = writeFixture();
+    const { configPath, bytes } = temporaryConfig({ servers: [] });
+    expect(() => installRelease(['--bundle', bundle, '--config', configPath, '--node', process.execPath]))
+      .toThrow(/externally trusted release-manifest SHA-256/);
+    expect(() => installRelease(['--bundle', bundle, '--manifest-sha256', '0'.repeat(64), '--config', configPath, '--node', process.execPath]))
+      .toThrow(/does not match the externally trusted SHA-256/);
+    expect(readFileSync(configPath, 'utf8')).toBe(bytes);
   });
 
   it('reports dry-run registration without claiming the configuration changed', () => {
@@ -156,6 +186,7 @@ describe('checksum-verified Motif release installation', () => {
     const { configPath, bytes } = temporaryConfig({ servers: [] });
     const result = installRelease([
       '--bundle', bundle,
+      ...trustedManifestArgs(bundle),
       '--config', configPath,
       '--node', process.execPath,
       '--dry-run',
@@ -177,6 +208,7 @@ describe('checksum-verified Motif release installation', () => {
     const { configPath, bytes } = temporaryConfig({ servers: [] });
 
     const install = runReleaseCli(aliasBundle, 'install-motif-claude-science-release.mjs', [
+      ...trustedManifestArgs(bundle),
       '--config', configPath,
       '--node', process.execPath,
     ]);
@@ -195,6 +227,7 @@ describe('checksum-verified Motif release installation', () => {
 
     const dryRun = runReleaseCli(aliasBundle, 'install-motif-claude-science-release.mjs', [
       '--bundle', aliasBundle,
+      ...trustedManifestArgs(bundle),
       '--config', configPath,
       '--node', process.execPath,
       '--dry-run',
@@ -222,7 +255,7 @@ describe('checksum-verified Motif release installation', () => {
     const bundle = writeFixture();
     const { configPath, bytes } = temporaryConfig({ servers: [] });
     writeFileSync(join(bundle, 'installer.mjs'), 'tampered\n');
-    expect(() => installRelease(['--bundle', bundle, '--config', configPath, '--node', process.execPath])).toThrow(/checksum mismatch/);
+    expect(() => installRelease(['--bundle', bundle, ...trustedManifestArgs(bundle), '--config', configPath, '--node', process.execPath])).toThrow(/checksum mismatch/);
     expect(readFileSync(configPath, 'utf8')).toBe(bytes);
   });
 
@@ -266,10 +299,21 @@ describe('checksum-verified Motif release installation', () => {
     expect(() => verifyReleaseBundle(bundle)).toThrow(/entry count exceeds/);
   });
 
+  it('rejects aggregate release size before hashing payload files', () => {
+    const bundle = writeFixture();
+    const first = join(bundle, 'oversized-total-a.bin');
+    const second = join(bundle, 'oversized-total-b.bin');
+    writeFileSync(first, '');
+    writeFileSync(second, '');
+    truncateSync(first, RELEASE_MAX_TOTAL_BYTES / 2);
+    truncateSync(second, RELEASE_MAX_TOTAL_BYTES / 2);
+    expect(() => verifyReleaseBundle(bundle)).toThrow(/total size limit/);
+  });
+
   it('restores the exact private backup and preserves the current state as a new backup', () => {
     const bundle = writeFixture();
     const { configPath, bytes } = temporaryConfig({ servers: [{ name: 'unrelated', command: '/private/unrelated', args: [] }] });
-    const installed = installRelease(['--bundle', bundle, '--config', configPath, '--node', process.execPath]);
+    const installed = installRelease(['--bundle', bundle, ...trustedManifestArgs(bundle), '--config', configPath, '--node', process.execPath]);
     const rollback = rollbackRelease(['--bundle', bundle, '--config', configPath, '--backup', installed.backupPath]);
     expect(rollback.changed).toBe(true);
     expect(readFileSync(configPath, 'utf8')).toBe(bytes);

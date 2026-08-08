@@ -1,3 +1,4 @@
+import { isMaterializableFeatureLocation } from './feature-location';
 import type { Feature } from './types';
 
 /**
@@ -67,6 +68,10 @@ export function mapFeatureThroughSourceCoordinates(
   feature: Feature,
   map: SourceToProductCoordinateMap,
 ): Feature | null {
+  // Imported quarantines and non-materializable multipart locations may carry
+  // a bounded placeholder range for display. A source-to-product map must not
+  // promote that placeholder into a derived record annotation.
+  if (!isMaterializableFeatureLocation(feature)) return null;
   const hasSubRanges = feature.subRanges !== undefined;
   const sourceRanges = hasSubRanges
     ? feature.subRanges!

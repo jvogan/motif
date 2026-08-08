@@ -196,4 +196,48 @@ describe('physical restriction model', () => {
     expect(edge.issues).toContainEqual(expect.objectContaining({ code: 'insufficient_flanking_bases' }));
     expect(nick).toMatchObject({ isValid: true, outcome: 'uncut', cutCount: 0, fragments: [{ length: 19 }] });
   });
+
+  it('reports incompatible co-located strand geometry instead of deduping on top cut', () => {
+    const first: RestrictionEnzyme = {
+      name: 'CoLocatedA',
+      recognitionSequence: 'GAATTC',
+      cutOffset: 1,
+      complementCutOffset: 5,
+      overhang: '5prime',
+    };
+    const second: RestrictionEnzyme = {
+      ...first,
+      name: 'CoLocatedB',
+      complementCutOffset: 4,
+    };
+    const result = restrictionDigestDetailed(
+      'AAAAAGAATTCAAAA',
+      [first.name, second.name],
+      'linear',
+      undefined,
+      [first, second],
+    );
+
+    expect(result.issues).toContainEqual(expect.objectContaining({
+      code: 'incompatible_colocated_cleavage',
+      position: 6,
+    }));
+    expect(result.cuts).toHaveLength(2);
+    expect(result.fragments).toEqual([]);
+  });
+
+  it('deduplicates only fully compatible co-located isoschizomer geometry', () => {
+    const result = restrictionDigestDetailed(
+      'AAAACCGGAAAA',
+      ['HpaII', 'MspI'],
+      'linear',
+      undefined,
+      RESTRICTION_ENZYMES_FULL,
+      { methylationAssumptions: { cpg: 'unmethylated' } },
+    );
+    expect(result.issues).toEqual([]);
+    expect(result.cuts).toHaveLength(1);
+    expect(result.cuts[0].enzymes).toEqual(['HpaII', 'MspI']);
+    expect(result.fragments).toHaveLength(2);
+  });
 });

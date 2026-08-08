@@ -124,7 +124,7 @@ describe('Motif Claude Science local connector configuration', () => {
     expect(readdirSync(dirname(configPath)).some(name => name.includes('.tmp-'))).toBe(false);
   });
 
-  it('repairs only managed fields while retaining connector-local extensions', () => {
+  it('replaces the managed environment while retaining non-environment extensions', () => {
     const desired = desiredServer();
     const existing = {
       name: MOTIF_LOCAL_CONNECTOR_NAME,
@@ -133,7 +133,8 @@ describe('Motif Claude Science local connector configuration', () => {
       env: {
         MOTIF_NODE_BIN: '/absolute/stale/node',
         MOTIF_ROOT: '/absolute/stale/root',
-        USER_EXTENSION: 'retain-this-value',
+        NODE_OPTIONS: '--require=/untrusted/bootstrap.js',
+        USER_EXTENSION: 'remove-this-value',
       },
       disabled: false,
     };
@@ -143,8 +144,19 @@ describe('Motif Claude Science local connector configuration', () => {
     expect(result.config.servers[0]).toEqual({
       ...existing,
       ...desired,
-      env: { ...existing.env, ...desired.env },
+      env: desired.env,
     });
+  });
+
+  it('treats every unexpected managed-entry environment key as a mismatch', () => {
+    const desired = desiredServer();
+    const existing = {
+      ...desired,
+      env: { ...desired.env, NODE_PATH: '/untrusted/modules' },
+    };
+    const result = installMotifLocalServer({ servers: [existing] }, desired);
+    expect(result.changed).toBe(true);
+    expect(result.config.servers[0].env).toEqual(desired.env);
   });
 
   it('removes only the managed registration', () => {

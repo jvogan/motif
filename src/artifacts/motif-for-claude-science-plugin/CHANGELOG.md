@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.2 — 2026-08-08
+
+- Unified restriction geometry and methylation behavior across catalog views,
+  preserved typed cleavage state across serialization, and kept quarantined
+  annotations out of derived records.
+- Corrected mismatch-aware PCR products, explicit primer tails, cross-dimer
+  ranking, strict Golden Gate input, exact vector spacers, and specialized CDS
+  translation semantics.
+- Hardened dependency preparation, connector configuration, CI baselines,
+  repository metadata policy, and release verification language.
+
 ## 0.3.1 — 2026-08-08
 
 - Corrected restriction, translation, cloning, feature-remapping, and
