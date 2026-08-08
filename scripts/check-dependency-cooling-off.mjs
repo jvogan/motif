@@ -47,10 +47,12 @@ function readBaselineLockfile(workspace, options) {
   const configuredRef = options.baseRef
     ?? environment.MOTIF_COOLING_OFF_BASE_SHA
     ?? environment.MOTIF_COOLING_OFF_BASE_REF;
-  if (environment.CI && !configuredRef) {
+  const hasExplicitBaseline = options.baseLockfileText !== undefined
+    || options.baseLockfilePath !== undefined;
+  if (environment.CI && !hasExplicitBaseline && !configuredRef) {
     throw new Error('Cooling-off policy requires the event base commit in CI; it must be a full immutable 40- or 64-hex commit ID');
   }
-  if (environment.CI && !isImmutableCommitId(configuredRef)) {
+  if (environment.CI && configuredRef !== undefined && !isImmutableCommitId(configuredRef)) {
     throw new Error('Cooling-off policy requires a valid nonzero baseline reference: the event base commit must be a full immutable 40- or 64-hex commit ID');
   }
   if (options.baseLockfileText) return JSON.parse(options.baseLockfileText);

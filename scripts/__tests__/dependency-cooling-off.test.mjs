@@ -85,6 +85,17 @@ describe('dependency cooling-off policy', () => {
     rmSync(fixtureData.directory, { recursive: true, force: true });
   });
 
+  it('accepts an explicitly supplied baseline under ambient CI', async () => {
+    const fixtureData = fixture({ publishedAt: '2026-07-01T00:00:00.000Z' });
+    await expect(checkDependencyCoolingOff(fixtureData.directory, {
+      baseLockfileText: fixtureData.baseline,
+      environment: { CI: 'true' },
+      now: NOW,
+      fetchImpl: fetchFrom(fixtureData.metadata),
+    })).resolves.toMatchObject({ changedPackageCount: 1 });
+    rmSync(fixtureData.directory, { recursive: true, force: true });
+  });
+
   it('rejects abbreviated, malformed, and all-zero CI baselines', async () => {
     const fixtureData = fixture();
     for (const baseSha of ['a'.repeat(39), 'a'.repeat(41), `${'a'.repeat(63)}g`, '0'.repeat(64)]) {
