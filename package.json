@@ -46,6 +46,7 @@
     "preview:claude-science": "npm run preview:motif",
     "typecheck": "tsc -b --pretty false",
     "lint": "eslint .",
+    "check:repository-language": "node scripts/check-repository-language.mjs",
     "test": "vitest run",
     "security:audit": "npm audit --audit-level=moderate",
     "security:policy": "node scripts/check-supply-chain-policy.mjs",
@@ -75,7 +76,7 @@
     "claude-science:setup": "npm run claude-science:build && npm run claude-science:doctor:unregistered && npm run claude-science:install-local && npm run claude-science:check-local",
     "check:css-tokens": "node scripts/check-css-tokens.mjs",
     "check:aria-controls": "node scripts/check-aria-controls.mjs",
-    "gate": "npm run typecheck && npm run lint && npm test && npm run check:release-alignment && npm run check:runtime-compatibility && npm run security:audit && npm run security:policy && npm run security:lifecycle && npm run security:cooling-off && npm run test:plugin && npm run test:connector && npm run check:css-tokens && npm run check:aria-controls && npm run build:motif && npm run security:reproducibility && npm run security:budgets && npm run test:e2e && npm run test:e2e:msa && npm run report:gate-coverage"
+    "gate": "npm run typecheck && npm run lint && npm run check:repository-language && npm test && npm run check:release-alignment && npm run check:runtime-compatibility && npm run security:audit && npm run security:policy && npm run security:lifecycle && npm run security:cooling-off && npm run test:plugin && npm run test:connector && npm run check:css-tokens && npm run check:aria-controls && npm run build:motif && npm run security:reproducibility && npm run security:budgets && npm run test:e2e && npm run test:e2e:msa && npm run report:gate-coverage"
   },
   "dependencies": {
     "@modelcontextprotocol/ext-apps": "1.7.5",
