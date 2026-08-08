@@ -87,6 +87,10 @@ export interface ORF {
   aminoAcids: number;
   startCodon: string;
   stopCodon: string;
+  /** Complete when a table-recognized stop was found; partial at a boundary. */
+  status?: 'complete' | 'partial';
+  /** Explicit ambiguity or boundary caveats for this ORF call. */
+  warnings?: string[];
 }
 
 export interface RestrictionSite {
@@ -95,6 +99,17 @@ export interface RestrictionSite {
   cutPosition: number;
   recognitionSequence: string;
   overhang: 'blunt' | '5prime' | '3prime';
+  /**
+   * The strand-level cleavage model. Missing values are treated as the
+   * historical double-strand cutter for callers that construct legacy sites.
+   */
+  cleavageMode?: RestrictionCleavageMode;
+  /** Physical cut coordinate on the forward/top strand, when applicable. */
+  topCutPosition?: number | null;
+  /** Physical cut coordinate on the reverse/bottom strand, when applicable. */
+  bottomCutPosition?: number | null;
+  /** Structured scanner outcome for a site that cannot be treated as a cut. */
+  cleavageStatus?: RestrictionCleavageStatus;
   /**
    * Strand on which the recognition sequence was matched.
    * `1` (or undefined for forward) — recognition is on the forward (sense) strand.
@@ -107,12 +122,56 @@ export interface RestrictionSite {
   strand?: 1 | -1;
 }
 
+export type RestrictionCleavageMode = 'double-strand' | 'nick_top' | 'nick_bottom';
+
+export type RestrictionCleavageStatus =
+  | 'ok'
+  | 'insufficient_flanking_bases'
+  | 'methylation_unknown'
+  | 'methylation_unmethylated'
+  | 'methylation_context_unknown'
+  | 'invalid_geometry';
+
+export type RestrictionMethylationTarget = 'dam' | 'dcm' | 'cpg' | 'custom';
+
+export type RestrictionMethylationState = 'unknown' | 'methylated' | 'unmethylated';
+
+export type RestrictionMethylationAssumptions =
+  | RestrictionMethylationState
+  | Partial<Record<RestrictionMethylationTarget, RestrictionMethylationState>>;
+
+/** Metadata describing the molecular state required for an enzyme to cut. */
+export interface RestrictionMethylationRequirement {
+  target: RestrictionMethylationTarget;
+  state: Exclude<RestrictionMethylationState, 'unknown'>;
+  /** First-party evidence and the assay conditions represented by this rule. */
+  evidence?: RestrictionMethylationEvidence;
+}
+
+export interface RestrictionMethylationEvidence {
+  source: string;
+  sourceLabel: string;
+  conditions: string;
+  limitation?: string;
+}
+
 export interface RestrictionEnzyme {
   name: string;
   recognitionSequence: string;
   cutOffset: number;
   complementCutOffset: number;
   overhang: 'blunt' | '5prime' | '3prime';
+  /** Defaults to `double-strand` for existing catalog/custom entries. */
+  cleavageMode?: RestrictionCleavageMode;
+  /** Optional methylation state required for a physical cut. */
+  methylationRequirement?: RestrictionMethylationRequirement;
+  /**
+   * A context-dependent methylation rule cannot be reduced to one global
+   * target state. Scanners must report it as conditional unless the caller
+   * supplies an explicitly representable state.
+   */
+  methylationBehavior?: 'context_dependent';
+  methylationEvidence?: RestrictionMethylationEvidence;
 }
 
 export interface SequenceAnalysis {

@@ -1,5 +1,12 @@
 import type { Feature } from './types';
 import { meltingTemperature } from './gc-content';
+import {
+  aliasRemovedProductCoordinates,
+  emptySourceToProductMap,
+  mapFeatureThroughSourceCoordinates,
+  type SourceToProductCoordinateMap,
+} from './assembly-feature-mapping';
+import { IUPAC_BASE_EXPANSIONS } from './translate';
 
 export interface GibsonFragment {
   name: string;
@@ -17,6 +24,20 @@ export interface Overlap {
   position2: number;
 }
 
+export type OverlapSearchReason = 'none' | 'exact' | 'multiple_exact' | 'ambiguous_symbols';
+
+/** Complete overlap evidence, including alternatives that the legacy helper hid. */
+export interface OverlapSearchResult {
+  candidates: Overlap[];
+  maximalCandidates: Overlap[];
+  selected: Overlap | null;
+  /** True only when one maximal exact overlap is supported by the inputs. */
+  unique: boolean;
+  /** True when IUPAC ambiguity or multiple exact lengths require review. */
+  ambiguous: boolean;
+  reason: OverlapSearchReason;
+}
+
 export interface GibsonResult {
   sequence: string;
   features: Feature[];
@@ -25,50 +46,68 @@ export interface GibsonResult {
   success: boolean;
   errors: string[];
   warnings: string[];
+  /** One entry per tested junction, including the circular closing seam. */
+  overlapSearches?: OverlapSearchResult[];
 }
 
 const DEFAULT_MIN_OVERLAP = 15;
 const DEFAULT_MAX_OVERLAP = 60;
 const IDEAL_OVERLAP_TM = 50; // °C minimum recommended Tm
 
-/**
- * Keep the portions of a feature that fall inside one source span and place
- * them in product coordinates. Multipart locations are authoritative: their
- * stored biological order is preserved, empty pieces are removed, and the
- * aggregate bounds are rebuilt from the surviving pieces.
- */
-function clipFeatureToSpan(
-  feature: Feature,
-  sourceStart: number,
-  sourceEnd: number,
-  destinationStart: number,
-  rekey = false,
+function fillFirstFragmentMap(map: SourceToProductCoordinateMap): void {
+  for (let source = 0; source < map.sourceLength; source++) map.sourceToProduct[source] = source;
+}
+
+function fillNextFragmentMap(
+  map: SourceToProductCoordinateMap,
+  productOffset: number,
+  overlapLength: number,
+): void {
+  for (let source = 0; source < map.sourceLength; source++) {
+    map.sourceToProduct[source] = source < overlapLength
+      ? productOffset - overlapLength + source
+      : productOffset + source - overlapLength;
+  }
+}
+
+function productCoordinateMap(
+  length: number,
+  closingOverlapLength: number,
+): SourceToProductCoordinateMap {
+  const productLength = length - closingOverlapLength;
+  const sourceToProduct = Array.from({ length }, (_, source) => (
+    source < productLength ? source : source - productLength
+  ));
+  return { sourceLength: length, productLength, sourceToProduct };
+}
+
+function closingJunctionFeature(
+  leftName: string,
+  rightName: string,
+  overlap: Overlap,
+  productLength: number,
 ): Feature | null {
-  if (sourceEnd <= sourceStart) return null;
-
-  const hasSubRanges = feature.subRanges !== undefined;
-  const sourceRanges = hasSubRanges
-    ? feature.subRanges!
-    : [{ start: feature.start, end: feature.end, strand: feature.strand }];
-  const mappedRanges = sourceRanges.flatMap((range) => {
-    const clippedStart = Math.max(range.start, sourceStart);
-    const clippedEnd = Math.min(range.end, sourceEnd);
-    if (clippedEnd <= clippedStart) return [];
-    return [{
-      ...range,
-      start: destinationStart + clippedStart - sourceStart,
-      end: destinationStart + clippedEnd - sourceStart,
-    }];
-  });
-  if (mappedRanges.length === 0) return null;
-
-  const { subRanges: _subRanges, ...featureWithoutSubRanges } = feature;
+  if (overlap.length <= 0 || productLength <= 0) return null;
+  const seamLength = Math.min(overlap.length, productLength);
   return {
-    ...featureWithoutSubRanges,
-    ...(rekey ? { id: crypto.randomUUID() } : {}),
-    start: Math.min(...mappedRanges.map((range) => range.start)),
-    end: Math.max(...mappedRanges.map((range) => range.end)),
-    ...(hasSubRanges ? { subRanges: mappedRanges } : {}),
+    id: crypto.randomUUID(),
+    name: `Junction: ${leftName}×${rightName} (${overlap.length} bp, closing)`,
+    type: 'misc_feature',
+    start: 0,
+    end: productLength,
+    strand: 1,
+    color: '#8F4842',
+    metadata: {
+      source: 'gibson_assembly',
+      overlapLength: overlap.length,
+      overlapTm: overlap.tm,
+      overlapSequence: overlap.sequence,
+      closing: true,
+    },
+    subRanges: [
+      { start: productLength - seamLength, end: productLength, strand: 1 },
+      { start: 0, end: seamLength, strand: 1 },
+    ],
   };
 }
 
@@ -82,27 +121,80 @@ export function findOverlap(
   minOverlap = DEFAULT_MIN_OVERLAP,
   maxOverlap = DEFAULT_MAX_OVERLAP,
 ): Overlap | null {
+  return analyzeOverlap(seq1, seq2, minOverlap, maxOverlap).selected;
+}
+
+function isUnambiguousDna(value: string): boolean {
+  return /^[ACGT]+$/.test(value);
+}
+
+function iupacCompatible(left: string, right: string): boolean {
+  const leftBases = IUPAC_BASE_EXPANSIONS[left];
+  const rightBases = IUPAC_BASE_EXPANSIONS[right];
+  if (!leftBases || !rightBases) return false;
+  return leftBases.some((base) => rightBases.includes(base));
+}
+
+function makeOverlap(sequence: string, seq1Length: number): Overlap {
+  return {
+    sequence,
+    length: sequence.length,
+    tm: meltingTemperature(sequence) ?? 0,
+    position1: seq1Length - sequence.length,
+    position2: sequence.length,
+  };
+}
+
+/**
+ * Enumerate every exact tail/head length in the requested range. Ambiguous
+ * IUPAC symbols are reported as a separate state and never treated as exact
+ * homology; callers can choose to enumerate concrete expansions explicitly.
+ */
+export function analyzeOverlap(
+  seq1: string,
+  seq2: string,
+  minOverlap = DEFAULT_MIN_OVERLAP,
+  maxOverlap = DEFAULT_MAX_OVERLAP,
+): OverlapSearchResult {
   const upper1 = seq1.toUpperCase();
   const upper2 = seq2.toUpperCase();
-
   const effectiveMax = Math.min(maxOverlap, upper1.length, upper2.length);
-
-  for (let len = effectiveMax; len >= minOverlap; len--) {
-    const tail = upper1.slice(upper1.length - len);
-    const head = upper2.slice(0, len);
-    if (tail === head) {
-      const tm = meltingTemperature(tail) ?? 0;
-      return {
-        sequence: tail,
-        length: len,
-        tm,
-        position1: upper1.length - len,
-        position2: len,
-      };
+  const candidates: Overlap[] = [];
+  let plausibleAmbiguous = false;
+  for (let length = effectiveMax; length >= minOverlap; length -= 1) {
+    const tail = upper1.slice(upper1.length - length);
+    const head = upper2.slice(0, length);
+    if (tail === head && isUnambiguousDna(tail)) {
+      candidates.push(makeOverlap(tail, upper1.length));
+      continue;
+    }
+    if (tail.length === head.length && tail.length > 0 && [...tail].every((base, index) => {
+      return iupacCompatible(base, head[index]);
+    }) && (!isUnambiguousDna(tail) || !isUnambiguousDna(head))) {
+      plausibleAmbiguous = true;
     }
   }
-
-  return null;
+  const maxLength = candidates[0]?.length ?? 0;
+  const maximalCandidates = candidates.filter((candidate) => candidate.length === maxLength);
+  const selected = maximalCandidates[0] ?? null;
+  if (candidates.length > 0) {
+    return {
+      candidates,
+      maximalCandidates,
+      selected,
+      unique: maximalCandidates.length === 1 && candidates.length === 1,
+      ambiguous: maximalCandidates.length !== 1 || candidates.length !== 1,
+      reason: candidates.length === 1 ? 'exact' : 'multiple_exact',
+    };
+  }
+  return {
+    candidates: [],
+    maximalCandidates: [],
+    selected: null,
+    unique: false,
+    ambiguous: plausibleAmbiguous,
+    reason: plausibleAmbiguous ? 'ambiguous_symbols' : 'none',
+  };
 }
 
 /**
@@ -118,6 +210,7 @@ export function gibsonAssemble(
   const errors: string[] = [];
   const warnings: string[] = [];
   const overlaps: Overlap[] = [];
+  const overlapSearches: OverlapSearchResult[] = [];
 
   if (fragments.length < 2) {
     return {
@@ -128,6 +221,7 @@ export function gibsonAssemble(
       success: false,
       errors: ['Gibson Assembly requires at least 2 fragments'],
       warnings: [],
+      overlapSearches,
     };
   }
 
@@ -147,10 +241,14 @@ export function gibsonAssemble(
   for (let i = 0; i < fragments.length - 1; i++) {
     const a = fragments[i];
     const b = fragments[i + 1];
-    const ov = findOverlap(a.sequence, b.sequence, minOverlap, maxOverlap);
+    const search = analyzeOverlap(a.sequence, b.sequence, minOverlap, maxOverlap);
+    overlapSearches.push(search);
+    const ov = search.selected;
     if (ov === null) {
       errors.push(
-        `No overlap found between fragment "${a.name}" and "${b.name}" (need ${minOverlap}–${maxOverlap} bp exact match)`,
+        search.reason === 'ambiguous_symbols'
+          ? `Overlap between fragment "${a.name}" and "${b.name}" contains IUPAC ambiguity symbols; exact homology cannot be certified.`
+          : `No overlap found between fragment "${a.name}" and "${b.name}" (need ${minOverlap}–${maxOverlap} bp exact match)`,
       );
       warnings.push(`No overlap detected for "${a.name}" → "${b.name}". Add ${minOverlap}–${maxOverlap} bp homology arms before assembly.`);
       overlaps.push({
@@ -161,6 +259,9 @@ export function gibsonAssemble(
         position2: 0,
       });
     } else {
+      if (!search.unique) {
+        warnings.push(`Overlap "${a.name}" → "${b.name}" has alternate exact lengths (${search.candidates.map((candidate) => candidate.length).join(', ')} bp); the longest is selected.`);
+      }
       if (ov.tm < IDEAL_OVERLAP_TM) {
         warnings.push(
           `Overlap "${a.name}" → "${b.name}" has low Tm (${ov.tm.toFixed(1)} °C; recommended ≥ ${IDEAL_OVERLAP_TM} °C).`,
@@ -181,15 +282,22 @@ export function gibsonAssemble(
   if (topology === 'circular' && fragments.length >= 2) {
     const last = fragments[fragments.length - 1];
     const first = fragments[0];
-    closingOverlap = findOverlap(last.sequence, first.sequence, minOverlap, maxOverlap);
+    const closingSearch = analyzeOverlap(last.sequence, first.sequence, minOverlap, maxOverlap);
+    overlapSearches.push(closingSearch);
+    closingOverlap = closingSearch.selected;
     if (closingOverlap === null) {
       errors.push(
-        `No closing overlap found between fragment "${last.name}" and "${first.name}" — required for circular assembly (need ${minOverlap}–${maxOverlap} bp exact match)`,
+        closingSearch.reason === 'ambiguous_symbols'
+          ? `Closing overlap between fragment "${last.name}" and "${first.name}" contains IUPAC ambiguity symbols; exact homology cannot be certified.`
+          : `No closing overlap found between fragment "${last.name}" and "${first.name}" — required for circular assembly (need ${minOverlap}–${maxOverlap} bp exact match)`,
       );
       warnings.push(
         `No closing overlap for circular assembly ("${last.name}" → "${first.name}"). Add ${minOverlap}–${maxOverlap} bp homology between the last and first fragments, or assemble as linear.`,
       );
     } else {
+      if (!closingSearch.unique) {
+        warnings.push(`Closing overlap "${last.name}" → "${first.name}" has alternate exact lengths (${closingSearch.candidates.map((candidate) => candidate.length).join(', ')} bp); the longest is selected.`);
+      }
       if (closingOverlap.tm < IDEAL_OVERLAP_TM) {
         warnings.push(
           `Closing overlap "${last.name}" → "${first.name}" has low Tm (${closingOverlap.tm.toFixed(1)} °C; recommended ≥ ${IDEAL_OVERLAP_TM} °C).`,
@@ -213,19 +321,16 @@ export function gibsonAssemble(
   }
 
   if (errors.length > 0) {
-    return { sequence: '', features: [], overlaps, topology, success: false, errors, warnings };
+    return { sequence: '', features: [], overlaps, topology, success: false, errors, warnings, overlapSearches };
   }
 
-  // Assemble: start with first fragment, for each subsequent fragment
-  // trim the overlap from its beginning before appending
+  // Assemble: start with the first fragment, then append each fragment after
+  // its already-present overlap. The per-fragment maps explicitly alias every
+  // deduplicated overlap to the retained product copy.
   let sequence = fragments[0].sequence.toUpperCase();
-  const features: Feature[] = [];
-
-  // Carry features from fragment 0
-  for (const feat of fragments[0].features ?? []) {
-    const copied = clipFeatureToSpan(feat, 0, fragments[0].sequence.length, 0, true);
-    if (copied) features.push(copied);
-  }
+  const sourceMaps = fragments.map((fragment) => emptySourceToProductMap(fragment.sequence.length, 0));
+  fillFirstFragmentMap(sourceMaps[0]);
+  const junctions: Feature[] = [];
 
   for (let i = 1; i < fragments.length; i++) {
     const overlap = overlaps[i - 1];
@@ -234,11 +339,14 @@ export function gibsonAssemble(
     // skip it from the start of the next fragment
     const trimmed = frag.sequence.slice(overlap.length).toUpperCase();
 
-    // Junction feature: the overlap region as it sits at the end of the current
-    // accumulated sequence (before we append the trimmed portion).
+    const offset = sequence.length;
+    fillNextFragmentMap(sourceMaps[i], offset, overlap.length);
+
+    // Junction feature: the overlap region as it sits at the end of the
+    // current accumulated sequence (before we append the trimmed portion).
     const junctionStart = sequence.length - overlap.length;
     const junctionEnd = sequence.length;
-    features.push({
+    junctions.push({
       id: crypto.randomUUID(),
       name: `Junction: ${fragments[i - 1].name}×${frag.name} (${overlap.length} bp)`,
       type: 'misc_feature',
@@ -254,49 +362,62 @@ export function gibsonAssemble(
       },
     });
 
-    const offset = sequence.length;
     sequence += trimmed;
-
-    // Shift features: coordinates in frag are relative to frag.sequence[0].
-    // Features entirely within the overlap belong to the previous fragment
-    // and are skipped. Features spanning the overlap boundary are truncated.
-    const overlapLength = overlap.length;
-    for (const feat of frag.features ?? []) {
-      const copied = clipFeatureToSpan(feat, overlapLength, frag.sequence.length, offset, true);
-      if (copied) features.push(copied);
-    }
   }
 
   // Close the circle: the closing overlap currently sits at BOTH the start
   // (head of fragment 0) and the end (tail of the last fragment) of the linear
   // accumulator. Trim the trailing copy so the overlap appears exactly once,
   // and annotate the seam (which physically sits at [0, len) on the product).
-  let productFeatures = features;
+  const preClosureLength = sequence.length;
+  let productLength = preClosureLength;
   if (topology === 'circular' && closingOverlap && closingOverlap.length > 0) {
-    sequence = sequence.slice(0, sequence.length - closingOverlap.length);
-    productFeatures = features.flatMap((feature) => {
-      const clipped = clipFeatureToSpan(feature, 0, sequence.length, 0);
-      return clipped ? [clipped] : [];
-    });
-    productFeatures.push({
-      id: crypto.randomUUID(),
-      name: `Junction: ${fragments[fragments.length - 1].name}×${fragments[0].name} (${closingOverlap.length} bp, closing)`,
-      type: 'misc_feature',
-      start: 0,
-      end: closingOverlap.length,
-      strand: 1,
-      color: '#8F4842',
-      metadata: {
-        source: 'gibson_assembly',
-        overlapLength: closingOverlap.length,
-        overlapTm: closingOverlap.tm,
-        overlapSequence: closingOverlap.sequence,
-        closing: true,
-      },
-    });
+    productLength = Math.max(0, sequence.length - closingOverlap.length);
+    if (productLength === 0) {
+      return {
+        sequence: '',
+        features: [],
+        overlaps,
+        topology,
+        success: false,
+        errors: ['Circular Gibson assembly closing overlap consumes the entire assembled product; at least one non-overlap base is required.'],
+        warnings,
+        overlapSearches,
+      };
+    }
+    sequence = sequence.slice(0, productLength);
   }
 
-  return { sequence, features: productFeatures, overlaps, topology, success: true, errors: [], warnings };
+  aliasRemovedProductCoordinates(sourceMaps, productLength, preClosureLength);
+  const finalProductMap = productCoordinateMap(preClosureLength, preClosureLength - productLength);
+  const sourceFeatures = fragments.flatMap((fragment, index) => (fragment.features ?? []).flatMap((feature) => {
+    const mapped = mapFeatureThroughSourceCoordinates(feature, sourceMaps[index]);
+    return mapped ? [mapped] : [];
+  }));
+  const productFeatures = junctions.flatMap((junction) => {
+    const mapped = mapFeatureThroughSourceCoordinates(junction, finalProductMap);
+    return mapped ? [mapped] : [];
+  });
+  const closingJunction = topology === 'circular' && closingOverlap
+    ? closingJunctionFeature(
+      fragments[fragments.length - 1].name,
+      fragments[0].name,
+      closingOverlap,
+      productLength,
+    )
+    : null;
+  if (closingJunction) productFeatures.push(closingJunction);
+
+  return {
+    sequence,
+    features: [...sourceFeatures, ...productFeatures],
+    overlaps,
+    topology,
+    success: true,
+    errors: [],
+    warnings,
+    overlapSearches,
+  };
 }
 
 /**
@@ -316,12 +437,16 @@ export function validateOverlaps(
   for (let i = 0; i < fragments.length - 1; i++) {
     const a = fragments[i];
     const b = fragments[i + 1];
-    const overlap = findOverlap(a.sequence, b.sequence, minOverlap, maxOverlap);
+    const search = analyzeOverlap(a.sequence, b.sequence, minOverlap, maxOverlap);
+    const overlap = search.selected;
     const issues: string[] = [];
 
     if (overlap === null) {
-      issues.push(`No overlap found (need ${minOverlap}–${maxOverlap} bp exact match)`);
+      issues.push(search.reason === 'ambiguous_symbols'
+        ? 'Overlap contains IUPAC ambiguity symbols and is not certified as exact homology.'
+        : `No overlap found (need ${minOverlap}–${maxOverlap} bp exact match)`);
     } else {
+      if (!search.unique) issues.push(`Alternate exact overlaps found: ${search.candidates.map((candidate) => `${candidate.length} bp`).join(', ')}.`);
       if (overlap.length < minOverlap) {
         issues.push(`Overlap too short: ${overlap.length} bp (minimum ${minOverlap} bp)`);
       }

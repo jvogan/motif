@@ -1,4 +1,5 @@
 import { getGoldenGatePartBoundary, type GoldenGatePart, type GoldenGatePartBoundary } from './golden-gate';
+import { getGoldenGateKit } from './golden-gate-kits';
 
 export type GoldenGateOrganizationMode = 'freeform' | 'golden_braid_tu' | 'golden_braid_binary';
 export type GoldenBraidRole = 'promoter' | 'coding_sequence' | 'terminator' | 'transcription_unit' | 'unknown';
@@ -92,11 +93,6 @@ const UNKNOWN_ROLE: GoldenBraidRoleDefinition = {
   order: 1000,
 };
 
-function normalizeOverhang(value: string | null | undefined): string | null {
-  const normalized = value?.trim().toUpperCase() ?? '';
-  return normalized.length > 0 ? normalized : null;
-}
-
 function matchesExpected(actual: string | null, expected: string | undefined): boolean | null {
   if (!expected) return null;
   return actual === expected;
@@ -106,14 +102,27 @@ function definitionForRole(role: GoldenBraidRole): GoldenBraidRoleDefinition {
   return GOLDEN_BRAID_TU_ROLES.find((definition) => definition.role === role) ?? UNKNOWN_ROLE;
 }
 
-export function inferGoldenBraidRole(boundary: GoldenGatePartBoundary): GoldenBraidRole {
-  const left = normalizeOverhang(boundary.leftOverhang);
-  const right = normalizeOverhang(boundary.rightOverhang);
-
+/**
+ * Adapter-only boundary classification. This is intentionally not available
+ * through the deprecated organization helper; the validated adapter owns the
+ * kit/identity/hash context before using it for presentation ordering.
+ */
+export function classifyValidatedGoldenBraidBoundary(boundary: GoldenGatePartBoundary): GoldenBraidRole {
+  const left = boundary.leftOverhang?.trim().toUpperCase() ?? null;
+  const right = boundary.rightOverhang?.trim().toUpperCase() ?? null;
   if (left === 'GATG' && right === 'TGAG') return 'coding_sequence';
   if (right === 'GATG') return 'promoter';
   if (left === 'TGAG') return 'terminator';
   return 'unknown';
+}
+
+export class GoldenBraidLegacyValidationError extends Error {
+  readonly code = 'legacy_golden_braid_identity_required' as const;
+
+  constructor() {
+    super('buildGoldenGateOrganizationPlan() is deprecated for GoldenBraid modes; use the identity-aware cloning-design adapter with explicit kit, level, role, slot, and hash validation.');
+    this.name = 'GoldenBraidLegacyValidationError';
+  }
 }
 
 function assignmentWarnings(
@@ -139,14 +148,24 @@ function assignmentWarnings(
   return warnings;
 }
 
+/**
+ * @deprecated Prefer `planArtifactGoldenGateDesign`, which validates input
+ * identity, orientation, hashes, and explicit GoldenBraid levels. This legacy
+ * role planner remains as a read-only UI helper and publishes the same kit
+ * level contract in its metadata.
+ */
 export function buildGoldenGateOrganizationPlan(
   parts: GoldenGateOrganizationPart[],
   enzyme = 'BsaI',
   mode: GoldenGateOrganizationMode = 'freeform',
+  validatedRoles?: readonly GoldenBraidRole[],
 ): GoldenGateOrganizationPlan {
+  if (mode !== 'freeform' && (!validatedRoles || validatedRoles.length !== parts.length)) {
+    throw new GoldenBraidLegacyValidationError();
+  }
   const assignments = parts.map((part, index): GoldenGateOrganizationAssignment => {
     const boundary = getGoldenGatePartBoundary({ name: part.name, sequence: part.sequence } satisfies GoldenGatePart, enzyme);
-    const role = mode === 'golden_braid_tu' ? inferGoldenBraidRole(boundary) : mode === 'golden_braid_binary' ? 'transcription_unit' : 'unknown';
+    const role = mode === 'freeform' ? 'unknown' : validatedRoles![index];
     const roleDefinition = mode === 'golden_braid_binary'
       ? {
         role: 'transcription_unit' as const,
@@ -183,6 +202,9 @@ export function buildGoldenGateOrganizationPlan(
     ? sortedAssignments.map((assignment) => assignment.id)
     : assignments.map((assignment) => assignment.id);
   const warnings: string[] = [];
+  const kit = getGoldenGateKit('goldenbraid-3');
+  const activeLevel = mode === 'golden_braid_tu' ? 'entry' : mode === 'golden_braid_binary' ? 'alpha' : null;
+  const levelDefinition = activeLevel && kit?.levels?.find((level) => level.level === activeLevel);
 
   if (mode === 'golden_braid_tu') {
     const roleCounts = new Map<GoldenBraidRole, number>();
@@ -210,7 +232,12 @@ export function buildGoldenGateOrganizationPlan(
     metadata: {
       organizationMode: mode,
       organizationLabel: GOLDEN_GATE_ORGANIZATION_LABELS[mode],
-      nextLevel: mode === 'golden_braid_tu' ? 'alpha' : mode === 'golden_braid_binary' ? 'omega' : null,
+      adapter: 'motif-for-claude-science-cloning-design',
+      kitId: kit?.id ?? 'goldenbraid-3',
+      level: activeLevel,
+      enzyme: levelDefinition?.enzyme ?? enzyme,
+      nextLevel: levelDefinition?.nextLevel ?? (mode === 'golden_braid_tu' ? 'alpha' : mode === 'golden_braid_binary' ? 'omega' : null),
+      transitionEnzyme: levelDefinition?.transitionEnzyme ?? null,
       assignments: assignments.map((assignment) => ({
         blockId: assignment.id,
         name: assignment.name,

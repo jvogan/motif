@@ -113,6 +113,33 @@ describe('ClaudeScienceAssemblyWorkspace', () => {
     expect(screen.getAllByText(/Digest or linearize it first/)).toHaveLength(2);
   });
 
+  it('implements roving method-tab focus and announces blocking chemistry issues', async () => {
+    const user = userEvent.setup();
+    render(<ClaudeScienceAssemblyWorkspace {...props()} />);
+
+    const goldenGate = screen.getByRole('tab', { name: 'Golden Gate' });
+    const ligation = screen.getByRole('tab', { name: 'Traditional ligation' });
+    expect(goldenGate.getAttribute('tabindex')).toBe('0');
+    expect(ligation.getAttribute('tabindex')).toBe('-1');
+    goldenGate.focus();
+    await user.keyboard('{ArrowRight}');
+    expect(ligation.getAttribute('aria-selected')).toBe('true');
+    expect(ligation.getAttribute('tabindex')).toBe('0');
+    expect(document.activeElement).toBe(ligation);
+
+    const panel = screen.getByRole('tabpanel');
+    expect(panel.getAttribute('aria-labelledby')).toBe(ligation.id);
+    const liveStatus = screen.getByTestId('assembly-plan-live-status');
+    expect(liveStatus.getAttribute('aria-live')).toBe('polite');
+    expect(liveStatus.textContent).toContain('Assembly warning.');
+
+    await user.keyboard('{ArrowLeft}');
+    expect(goldenGate.getAttribute('aria-selected')).toBe('true');
+    expect(document.activeElement).toBe(goldenGate);
+    expect(screen.getByTestId('assembly-plan-live-status').getAttribute('aria-live')).toBe('assertive');
+    expect(screen.getByTestId('assembly-plan-live-status').textContent).toContain('Assembly blocked.');
+  });
+
   it('adds, removes, and reorders parts with both pointer and keyboard controls', async () => {
     const user = userEvent.setup();
     render(<ClaudeScienceAssemblyWorkspace {...props({

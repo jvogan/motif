@@ -50,9 +50,26 @@ export interface GoldenGateKit {
   citation: string;
   /** URL (DOI or publisher page) for the citation. */
   citationUrl: string;
+  /** Explicit assembly-level contract consumed by identity-aware adapters. */
+  levels: readonly GoldenGateKitLevelDefinition[];
 }
 
-const MOCLO_PLANT: GoldenGateKit = {
+export type GoldenGateKitLevel = 'entry' | 'alpha' | 'omega' | 'upper';
+
+export interface GoldenGateKitLevelDefinition {
+  level: GoldenGateKitLevel;
+  enzyme: GoldenGateEnzymeName;
+  fusionSiteLength: 3 | 4;
+  acceptedFusionSites: readonly string[];
+  /** Ordered role/slot grammar; an empty array means a non-positional level. */
+  grammar: readonly { role: string; left: string; right: string }[];
+  nextLevel: GoldenGateKitLevel | null;
+  transitionEnzyme: GoldenGateEnzymeName | null;
+}
+
+type GoldenGateKitDefinition = Omit<GoldenGateKit, 'levels'>;
+
+const MOCLO_PLANT: GoldenGateKitDefinition = {
   id: 'moclo-plant',
   name: 'MoClo Plant',
   description: 'Plant MoClo Tool Kit (Engler/Marillonnet) — BsaI L0 fusion sites.',
@@ -68,7 +85,7 @@ const MOCLO_PLANT: GoldenGateKit = {
   citationUrl: 'https://doi.org/10.1021/sb4001504',
 };
 
-const MOCLO_YEAST_TOOLKIT: GoldenGateKit = {
+const MOCLO_YEAST_TOOLKIT: GoldenGateKitDefinition = {
   id: 'moclo-ytk',
   name: 'MoClo Yeast Toolkit (YTK)',
   description: 'Yeast Tool Kit (Lee/Dueber) — BsmBI standard with 8-position transcription units.',
@@ -86,7 +103,7 @@ const MOCLO_YEAST_TOOLKIT: GoldenGateKit = {
   citationUrl: 'https://doi.org/10.1021/sb500366v',
 };
 
-const MOCLO_MAMMALIAN: GoldenGateKit = {
+const MOCLO_MAMMALIAN: GoldenGateKitDefinition = {
   id: 'moclo-mammalian',
   name: 'MoClo Mammalian (MoClo-MAM)',
   description: 'Mammalian MoClo toolkit — BsaI with plant-compatible standard fusion sites.',
@@ -102,7 +119,7 @@ const MOCLO_MAMMALIAN: GoldenGateKit = {
   citationUrl: 'https://doi.org/10.1021/acssynbio.7b00016',
 };
 
-const EMMA: GoldenGateKit = {
+const EMMA: GoldenGateKitDefinition = {
   id: 'emma',
   name: 'EMMA (Mammalian)',
   description: 'Extensible Mammalian Modular Assembly — BsaI, 11 fusion sites.',
@@ -119,7 +136,7 @@ const EMMA: GoldenGateKit = {
   citationUrl: 'https://doi.org/10.1021/acssynbio.7b00016',
 };
 
-const LOOP_ASSEMBLY: GoldenGateKit = {
+const LOOP_ASSEMBLY: GoldenGateKitDefinition = {
   id: 'loop',
   name: 'Loop Assembly',
   description: 'Loop Assembly (Pollak et al.) — alternates BsaI (L0/even) and SapI (L1+/odd).',
@@ -136,7 +153,7 @@ const LOOP_ASSEMBLY: GoldenGateKit = {
   citationUrl: 'https://doi.org/10.1111/nph.15625',
 };
 
-const GOLDENBRAID_3: GoldenGateKit = {
+const GOLDENBRAID_3: GoldenGateKitDefinition = {
   id: 'goldenbraid-3',
   name: 'GoldenBraid 3.0',
   description: 'GoldenBraid α/Ω assembly — alternates BsaI (Ω→α) and BsmBI/Esp3I (α→Ω), both with 4-nt overhangs.',
@@ -153,7 +170,7 @@ const GOLDENBRAID_3: GoldenGateKit = {
   citationUrl: 'https://doi.org/10.1104/pp.113.217661',
 };
 
-const GREENGATE: GoldenGateKit = {
+const GREENGATE: GoldenGateKitDefinition = {
   id: 'greengate',
   name: 'GreenGate',
   description: 'GreenGate (Lampropoulos et al.) — BsaI plant kit with 7 modules in a fixed order.',
@@ -172,7 +189,7 @@ const GREENGATE: GoldenGateKit = {
   citationUrl: 'https://doi.org/10.1371/journal.pone.0083043',
 };
 
-const MOCLO_CIDAR: GoldenGateKit = {
+const MOCLO_CIDAR: GoldenGateKitDefinition = {
   id: 'moclo-cidar',
   name: 'MoClo-CIDAR',
   description: 'CIDAR MoClo (Iverson et al.) — BsaI bacterial-circuit standard parts (Promoter / RBS / CDS / Terminator).',
@@ -202,7 +219,54 @@ export const GOLDEN_GATE_KITS: readonly GoldenGateKit[] = [
   MOCLO_MAMMALIAN,
   GREENGATE,
   MOCLO_CIDAR,
-];
+].map((kit): GoldenGateKit => {
+  if (kit.id === 'goldenbraid-3') {
+    return {
+      ...kit,
+      levels: [
+        {
+          level: 'entry',
+          enzyme: 'BsaI',
+          fusionSiteLength: 4,
+          acceptedFusionSites: [...kit.fusionSites],
+          grammar: kit.prototype ? kit.prototype.map((entry) => ({ ...entry })) : [],
+          nextLevel: 'alpha',
+          transitionEnzyme: 'BsmBI',
+        },
+        {
+          level: 'alpha',
+          enzyme: 'BsmBI',
+          fusionSiteLength: 4,
+          acceptedFusionSites: [...kit.fusionSites],
+          grammar: kit.prototype ? kit.prototype.map((entry) => ({ ...entry })) : [],
+          nextLevel: 'omega',
+          transitionEnzyme: 'BsaI',
+        },
+        {
+          level: 'omega',
+          enzyme: 'BsaI',
+          fusionSiteLength: 4,
+          acceptedFusionSites: [...kit.fusionSites],
+          grammar: kit.prototype ? kit.prototype.map((entry) => ({ ...entry })) : [],
+          nextLevel: 'alpha',
+          transitionEnzyme: 'BsmBI',
+        },
+      ],
+    };
+  }
+  return {
+    ...kit,
+    levels: [{
+      level: 'entry',
+      enzyme: kit.enzyme,
+      fusionSiteLength: kit.fusionSiteLength,
+      acceptedFusionSites: [...kit.fusionSites],
+      grammar: kit.prototype ? kit.prototype.map((entry) => ({ ...entry })) : [],
+      nextLevel: kit.upperLevelEnzyme ? 'upper' : null,
+      transitionEnzyme: kit.upperLevelEnzyme ?? null,
+    }],
+  };
+});
 
 const KIT_BY_ID = new Map<string, GoldenGateKit>(
   GOLDEN_GATE_KITS.map((kit) => [kit.id, kit]),

@@ -16,6 +16,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  MAX_LOCAL_MCP_CONFIG_BYTES,
   MOTIF_LOCAL_CONNECTOR_NAME,
   installMotifLocalServer,
   readLocalMcpConfig,
@@ -184,6 +185,38 @@ describe('Motif Claude Science local connector configuration', () => {
 
     expect(() => readLocalMcpConfig(configPath)).toThrow(/must not be a symbolic link/);
     expect(readFileSync(targetPath, 'utf8')).toBe(targetBytes);
+  });
+
+  it('rejects an oversized config before reading or parsing it', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'motif-local-mcp-size-test-'));
+    temporaryDirectories.push(directory);
+    const configPath = join(directory, 'local-mcp.json');
+    writeFileSync(configPath, Buffer.alloc(MAX_LOCAL_MCP_CONFIG_BYTES + 1, 0x20));
+
+    expect(() => readLocalMcpConfig(configPath)).toThrowError(expect.objectContaining({ code: 'config_too_large' }));
+  });
+
+  it('refuses a serialized install that would cross the config size limit', () => {
+    const initial = {
+      // Leave only enough room for the existing document; registering the
+      // connector makes the serialized document larger than the reader bound.
+      padding: 'x'.repeat(MAX_LOCAL_MCP_CONFIG_BYTES - 200),
+      servers: [],
+    };
+    const { configPath, bytes } = temporaryConfig(initial);
+    expect(Buffer.byteLength(bytes, 'utf8')).toBeLessThanOrEqual(MAX_LOCAL_MCP_CONFIG_BYTES);
+
+    expect(() => updateLocalMcpConfigFile({
+      configPath,
+      desired: desiredServer(),
+      now: new Date('2026-07-13T20:03:30.000Z'),
+      nonce: 'serialized-limit',
+    })).toThrowError(expect.objectContaining({
+      code: 'config_too_large',
+      limit: MAX_LOCAL_MCP_CONFIG_BYTES,
+    }));
+    expect(readFileSync(configPath, 'utf8')).toBe(bytes);
+    expect(backupFiles(configPath)).toHaveLength(0);
   });
 
   it('does not disclose malformed JSON or config values in errors and CLI output', () => {

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.1 — 2026-08-08
+
+- Corrected restriction, translation, cloning, feature-remapping, and
+  sequence-normalization behavior while making conditional and incomplete
+  scientific outcomes explicit in the workbench.
+- Improved responsive controls, keyboard navigation, pane-state retention,
+  provenance display, and portable import/export fidelity.
+- Cleared current dependency advisories and added a checksum-verified no-npm
+  release installer, SBOM, reviewed lifecycle policy, and reproducible-build
+  checks.
+
 ## 0.3.0 — 2026-07-29
 
 - Expanded the full Motif workbench with more robust MSA and Sanger review,
@@ -20,7 +31,7 @@
   public support docs in the standalone plugin archive.
 - Included bounded record names and IDs in connector summaries so agents can
   verify the intended records without guessing.
-- Aligned setup and launcher checks on Node.js 22.12 or newer.
+- Aligned setup and launcher checks on Node.js 22.13 or newer (22.x), or 24 or newer.
 - Made the connector-created HTML workbench the documented first-success path
   and completed license notices for every dependency bundled into the server.
 

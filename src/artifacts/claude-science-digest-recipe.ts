@@ -1,8 +1,14 @@
-import { restrictionDigest, type DigestFragment } from '../bio/restriction-digest';
-import { findRestrictionSites } from '../bio/restriction-sites';
+import {
+  restrictionDigestDetailed,
+  type DigestFragment,
+  type RestrictionDigestIssue,
+  type RestrictionDigestOptions,
+} from '../bio/restriction-digest';
 import type {
   Feature,
   RestrictionEnzyme,
+  RestrictionMethylationEvidence,
+  RestrictionMethylationRequirement,
   RestrictionSite,
   SequenceType,
   Topology,
@@ -12,12 +18,24 @@ export type DigestRecipeIssueCode =
   | 'empty-enzyme-list'
   | 'empty-sequence'
   | 'unresolved-enzyme'
-  | 'unsupported-sequence-type';
+  | 'unsupported-sequence-type'
+  | 'invalid_sequence'
+  | 'invalid_recognition_sequence'
+  | 'insufficient_flanking_bases'
+  | 'methylation_unknown'
+  | 'methylation_unmethylated'
+  | 'methylation_context_unknown'
+  | 'invalid_geometry';
 
 export interface DigestRecipeIssue {
   code: DigestRecipeIssueCode;
   message: string;
   names?: string[];
+  enzyme?: string;
+  position?: number;
+  required?: string;
+  observed?: string;
+  evidence?: RestrictionDigestIssue['evidence'];
 }
 
 export interface DigestEnzymeResolution {
@@ -35,8 +53,15 @@ export interface DigestRecipeEnzyme {
   enzyme: RestrictionEnzyme;
   name: string;
   cutCount: number;
+  /** Recognized single-strand cleavage events that preserve molecule continuity. */
+  nickCount: number;
   sites: RestrictionSite[];
-  type: 'traditional' | 'type-iis';
+  type: 'traditional' | 'type-iis' | 'nickase';
+  /** Per-enzyme methylation rule retained in the saved receipt. */
+  methylationRequirement?: RestrictionMethylationRequirement;
+  /** Context-dependent rules cannot be reduced to a single global state. */
+  methylationBehavior?: RestrictionEnzyme['methylationBehavior'];
+  methylationEvidence?: RestrictionMethylationEvidence;
 }
 
 export type DigestMoleculeOutcome =
@@ -59,6 +84,8 @@ export interface DigestRecipe {
   cutCount: number;
   /** Number of recognition sites, before co-located cuts are collapsed. */
   recognitionSiteCount: number;
+  /** Explicit state assumptions used for methylation-sensitive enzymes. */
+  methylationAssumptions?: RestrictionDigestOptions['methylationAssumptions'];
   outcome: DigestMoleculeOutcome;
   fragments: DigestFragment[];
 }
@@ -70,6 +97,9 @@ export interface BuildDigestRecipeInput {
   enzymeText: string;
   enzymeCatalog: readonly RestrictionEnzyme[];
   features?: readonly Feature[];
+  methylation?: RestrictionDigestOptions['methylation'];
+  methylationState?: RestrictionDigestOptions['methylationState'];
+  methylationAssumptions?: RestrictionDigestOptions['methylationAssumptions'];
 }
 
 function isTypeIISEnzyme(enzyme: RestrictionEnzyme): boolean {
@@ -168,33 +198,69 @@ export function buildDigestRecipe(input: BuildDigestRecipeInput): DigestRecipe {
   const canScan = input.sequenceType === 'dna'
     && input.sequence.length > 0
     && resolution.enzymes.length > 0;
-  const sites = canScan
-    ? findRestrictionSites(input.sequence, [...resolution.enzymes], { topology: input.topology })
-    : [];
-
-  const enzymes = resolution.enzymes.map((enzyme): DigestRecipeEnzyme => {
-    const enzymeSites = sites.filter((site) => site.enzyme.toLocaleLowerCase() === enzyme.name.toLocaleLowerCase());
-    return {
-      enzyme,
-      name: enzyme.name,
-      cutCount: enzymeSites.length,
-      sites: enzymeSites,
-      type: isTypeIISEnzyme(enzyme) ? 'type-iis' : 'traditional',
-    };
-  });
-
-  const isValid = issues.length === 0;
-  const fragments = isValid
-    ? restrictionDigest(
+  const digestResult = canScan
+    ? restrictionDigestDetailed(
       input.sequence,
       resolution.enzymes.map((enzyme) => enzyme.name),
       input.topology,
       input.features ? [...input.features] : undefined,
       resolution.enzymes,
+      {
+        methylation: input.methylation,
+        methylationState: input.methylationState,
+        methylationAssumptions: input.methylationAssumptions,
+      },
     )
-    : [];
-  const distinctCutPositions = new Set(sites.map((site) => site.cutPosition));
-  const cutCount = distinctCutPositions.size;
+    : null;
+  const sites = digestResult?.sites ?? [];
+  const digestIssues = digestResult?.issues ?? [];
+  issues.push(...digestIssues.map((issue: RestrictionDigestIssue): DigestRecipeIssue => ({
+    code: issue.code === 'unknown_enzyme' ? 'unresolved-enzyme' : issue.code,
+    message: issue.message,
+    ...(issue.enzyme === undefined ? {} : { enzyme: issue.enzyme }),
+    ...(issue.position === undefined ? {} : { position: issue.position }),
+    ...(issue.required === undefined ? {} : { required: issue.required }),
+    ...(issue.observed === undefined ? {} : { observed: issue.observed }),
+    ...(issue.evidence === undefined ? {} : { evidence: issue.evidence }),
+  })));
+
+  const enzymes = resolution.enzymes.map((enzyme): DigestRecipeEnzyme => {
+    const enzymeSites = sites.filter((site) => site.enzyme.toLocaleLowerCase() === enzyme.name.toLocaleLowerCase());
+    const cutSites = enzymeSites.filter((site) => (
+      (site.cleavageMode ?? 'double-strand') === 'double-strand'
+      && (site.cleavageStatus ?? 'ok') === 'ok'
+    ));
+    const nickSites = enzymeSites.filter((site) => (
+      (site.cleavageMode ?? 'double-strand') !== 'double-strand'
+      && (site.cleavageStatus ?? 'ok') === 'ok'
+    ));
+    const methylationEvidence = enzyme.methylationEvidence ?? enzyme.methylationRequirement?.evidence;
+    return {
+      enzyme,
+      name: enzyme.name,
+      cutCount: cutSites.length,
+      nickCount: nickSites.length,
+      sites: enzymeSites,
+      type: (enzyme.cleavageMode ?? 'double-strand') !== 'double-strand'
+        ? 'nickase'
+        : isTypeIISEnzyme(enzyme)
+          ? 'type-iis'
+          : 'traditional',
+      ...(enzyme.methylationRequirement === undefined
+        ? {}
+        : { methylationRequirement: enzyme.methylationRequirement }),
+      ...(enzyme.methylationBehavior === undefined
+        ? {}
+        : { methylationBehavior: enzyme.methylationBehavior }),
+      ...(methylationEvidence === undefined
+        ? {}
+        : { methylationEvidence }),
+    };
+  });
+
+  const isValid = issues.length === 0;
+  const fragments = isValid ? (digestResult?.fragments ?? []) : [];
+  const cutCount = digestResult?.cutCount ?? 0;
 
   let outcome: DigestMoleculeOutcome = 'not-run';
   if (isValid) {
@@ -215,6 +281,11 @@ export function buildDigestRecipe(input: BuildDigestRecipeInput): DigestRecipe {
     sites,
     cutCount,
     recognitionSiteCount: sites.length,
+    ...(input.methylation === undefined && input.methylationState === undefined && input.methylationAssumptions === undefined
+      ? {}
+      : {
+          methylationAssumptions: input.methylationAssumptions ?? input.methylation ?? input.methylationState,
+        }),
     outcome,
     fragments,
   };

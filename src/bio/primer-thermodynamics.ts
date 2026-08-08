@@ -26,6 +26,7 @@
 
 import { NN_PARAMS } from './tm-calculator';
 import { reverseComplement } from './reverse-complement';
+import { inspectNucleotideSequence, isCanonicalDna } from './nucleotide';
 
 /** Defaults — Primer3-compatible rejection thresholds. */
 export const DEFAULT_MAX_HAIRPIN_DG = -3.0;
@@ -45,6 +46,11 @@ export interface HairpinResult {
   loopSize: number;
   /** ASCII rendering of the hairpin structure. */
   structure: string;
+  /** Exact sequence after formatting normalization; no bases are discarded. */
+  evaluatedSequence: string;
+  /** Ambiguity/invalid-input state for this heuristic diagnostic. */
+  status: 'exact' | 'ambiguous' | 'invalid';
+  warning?: string;
 }
 
 export interface DimerResult {
@@ -56,6 +62,41 @@ export interface DimerResult {
   offset: number;
   /** ASCII rendering of the duplex alignment. */
   structure: string;
+  /** Exact sequence after formatting normalization; no bases are discarded. */
+  evaluatedSequence: string;
+  /** Ambiguity/invalid-input state for this heuristic diagnostic. */
+  status: 'exact' | 'ambiguous' | 'invalid';
+  warning?: string;
+}
+
+function inspectedThermoSequence(primer: string): {
+  sequence: string;
+  status: 'exact' | 'ambiguous' | 'invalid';
+  warning?: string;
+} {
+  const inspected = inspectNucleotideSequence(primer);
+  if (inspected.invalidCharacters.length > 0) {
+    return {
+      sequence: inspected.sequence,
+      status: 'invalid',
+      warning: `Secondary-structure diagnostics require nucleotide characters only; invalid input: ${inspected.invalidCharacters.join(', ')}.`,
+    };
+  }
+  if (inspected.sequence.length === 0) {
+    return {
+      sequence: inspected.sequence,
+      status: 'invalid',
+      warning: 'Secondary-structure diagnostics require a non-empty oligo.',
+    };
+  }
+  if (inspected.ambiguous) {
+    return {
+      sequence: inspected.sequence,
+      status: 'ambiguous',
+      warning: 'Secondary-structure diagnostics were not evaluated exactly because the oligo contains IUPAC ambiguity symbols.',
+    };
+  }
+  return { sequence: inspected.sequence, status: 'exact' };
 }
 
 /** Compute ΔG37 (kcal/mol) for a Watson-Crick duplex from its 5′→3′ top strand. */
@@ -92,15 +133,19 @@ function nnDeltaG(topStrand: string): number {
  * returns ΔG = 0 (no hairpin penalty).
  */
 export function predictHairpin(primer: string): HairpinResult {
-  const seq = primer.toUpperCase().replace(/U/g, 'T').replace(/[^ATGC]/g, '');
+  const inspected = inspectedThermoSequence(primer);
+  const seq = inspected.sequence;
   const n = seq.length;
   let best: HairpinResult = {
     deltaG: 0,
     stemLength: 0,
     loopSize: 0,
     structure: '',
+    evaluatedSequence: seq,
+    status: inspected.status,
+    ...(inspected.warning ? { warning: inspected.warning } : {}),
   };
-  if (n < 8) return best; // need stem ≥3 + loop ≥3 + stem ≥3 → ≥9 nt minimum (allow 8 with very short loop)
+  if (inspected.status !== 'exact' || !isCanonicalDna(seq) || n < 8) return best;
 
   const MIN_LOOP = 3;
   const MIN_STEM = 3;
@@ -121,6 +166,8 @@ export function predictHairpin(primer: string): HairpinResult {
             stemLength: stemLen,
             loopSize,
             structure: `5'-${left}-${dots}-${right}-3'`,
+            evaluatedSequence: seq,
+            status: 'exact',
           };
         }
       }
@@ -144,15 +191,26 @@ export function predictHairpin(primer: string): HairpinResult {
  * "3′-end overlap" as a flag.
  */
 export function predictPrimerDimer(p1: string, p2: string): DimerResult {
-  const a = p1.toUpperCase().replace(/U/g, 'T').replace(/[^ATGC]/g, '');
-  const b = p2.toUpperCase().replace(/U/g, 'T').replace(/[^ATGC]/g, '');
+  const inspectedA = inspectedThermoSequence(p1);
+  const inspectedB = inspectedThermoSequence(p2);
+  const a = inspectedA.sequence;
+  const b = inspectedB.sequence;
+  const status = inspectedA.status === 'invalid' || inspectedB.status === 'invalid'
+    ? 'invalid'
+    : inspectedA.status === 'ambiguous' || inspectedB.status === 'ambiguous'
+      ? 'ambiguous'
+      : 'exact';
+  const warning = inspectedA.warning ?? inspectedB.warning;
   let best: DimerResult = {
     deltaG: 0,
     pairLength: 0,
     offset: 0,
     structure: '',
+    evaluatedSequence: `${a}|${b}`,
+    status,
+    ...(warning ? { warning } : {}),
   };
-  if (a.length < 3 || b.length < 3) return best;
+  if (status !== 'exact' || !isCanonicalDna(a) || !isCanonicalDna(b) || a.length < 3 || b.length < 3) return best;
 
   // The dimer alignment is p1 (5′→3′ top) vs p2 reverse-complement aligned at offset.
   const b_rc = reverseComplement(b);
@@ -187,6 +245,8 @@ export function predictPrimerDimer(p1: string, p2: string): DimerResult {
           pairLength: bestRunLen,
           offset,
           structure: `5'-${matched}-3' (${bestRunLen} bp duplex, offset ${offset})`,
+          evaluatedSequence: `${a}|${b}`,
+          status: 'exact',
         };
       }
     }

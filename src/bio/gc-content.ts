@@ -64,6 +64,13 @@ export function gcContentWindow(
   const results: Array<{ position: number; gc: number }> = [];
   const upper = seq.toUpperCase();
 
+  if (!Number.isInteger(windowSize) || windowSize <= 0) {
+    throw new Error('windowSize must be a positive integer.');
+  }
+  if (!Number.isFinite(step) || step <= 0) {
+    throw new Error('step must be a finite number greater than zero.');
+  }
+
   if (upper.length < windowSize) {
     return [{ position: 0, gc: gcContent(upper) }];
   }

@@ -4,13 +4,23 @@ import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import { Activity, AlignCenter, Beaker, ChevronDown, ChevronLeft, ChevronRight, Circle, Crosshair, Dna, FileText, History, Info, Languages, LayoutGrid, List, Map as MapIcon, Maximize2, Minimize2, MoveHorizontal, NotebookPen, Plus, Redo2, Scissors, Search, Settings, ShieldCheck, Tag, Trash2, Undo2, Workflow, Wrench, X, type LucideIcon } from 'lucide-react';
 import vectorsRaw from '../../public/data/vectors.json?raw';
-import type { Feature, FeatureStrand, FeatureType, ORF, RestrictionEnzyme, RestrictionSite, SequenceType, Topology } from '../bio/types';
+import type { Feature, FeatureStrand, FeatureType, ORF, RestrictionEnzyme, RestrictionMethylationState, RestrictionMethylationTarget, RestrictionSite, SequenceType, Topology } from '../bio/types';
 import { extractEmbeddedFastaContent, parseFasta } from '../bio/fasta-parser';
-import { parseFeatures, parseGenBank } from '../bio/genbank-parser';
+import {
+  parseFeatures,
+  parseGenBank,
+  type GenBankImportDiagnostic,
+  type GenBankQualifier,
+  type GenBankQualifierTruncation,
+} from '../bio/genbank-parser';
 import { gcContent, meltingTemperature, molecularWeight, nucleotideComposition, proteinMolecularWeight } from '../bio/gc-content';
 import { findORFs } from '../bio/orf-detection';
 import type { DigestFragment } from '../bio/restriction-digest';
-import { RESTRICTION_ENZYMES, findRestrictionSites } from '../bio/restriction-sites';
+import {
+  normalizeRestrictionRecognitionSequence,
+  RESTRICTION_ENZYMES,
+  findRestrictionSites,
+} from '../bio/restriction-sites';
 import { RESTRICTION_ENZYMES_FULL } from '../bio/enzyme-data';
 import {
   RESTRICTION_PRESETS,
@@ -34,8 +44,11 @@ import {
   isMaterializableFeatureLocation,
   isMultipartFeature,
   isOrderedFeatureLocation,
+  isQuarantinedFeatureLocation,
 } from '../bio/feature-location';
+import { normalizeSequenceStrict } from '../bio/sequence-normalization';
 import { translate, translateCompleteCds } from '../bio/translate';
+import { materializeTranslationExceptions } from '../bio/transl-except';
 import { computeMapLayout } from '../plasmid-map/layout';
 import { bpToAngle, pointOnCircle } from '../plasmid-map/geometry/coordinates';
 import { featureSegments as mapFeatureSegments, featureSpans, normalizeSpan } from '../plasmid-map/geometry/ranges';
@@ -127,7 +140,7 @@ import {
   type ArtifactAlignment,
   type ArtifactAlignmentInput,
 } from './claude-science-msa';
-import { buildDigestRecipe, type DigestRecipe } from './claude-science-digest-recipe';
+import { buildDigestRecipe, resolveDigestEnzymes, type DigestRecipe, type DigestRecipeIssue } from './claude-science-digest-recipe';
 import { materializeDigestWorkflow } from './claude-science-digest-workflow';
 import { sha256HexSync } from './claude-science-sha256';
 import {
@@ -178,6 +191,7 @@ import {
   MOTIF_INVENTORY_SCHEMA,
   MOTIF_INVENTORY_SCHEMA_V1,
   LARGE_SEQUENCE_DETAIL_THRESHOLD,
+  MAX_ARTIFACT_DATABASE_JSON_CHARACTERS,
   MAX_CUSTOM_ENZYMES,
   MAX_CUSTOM_ENZYME_NAME_LENGTH,
   MAX_CUSTOM_ENZYME_RECOGNITION_LENGTH,
@@ -214,7 +228,7 @@ import {
 } from './claude-science-download';
 import './motif-artifact.css';
 
-const MOTIF_ARTIFACT_VERSION = '0.3.0';
+const MOTIF_ARTIFACT_VERSION = '0.3.1';
 const MOTIF_ARTIFACT_BUILD_ID = (() => {
   if (typeof document === 'undefined') return 'development';
   const value = document.querySelector<HTMLMetaElement>('meta[name="motif-build-id"]')?.content.trim() ?? '';
@@ -243,6 +257,20 @@ export const MOTIF_MAX_METADATA_JSON_NODES = 10_000;
 export const MOTIF_MAX_METADATA_JSON_BYTES = 1_048_576;
 export const MOTIF_MAX_PAYLOAD_JSON_NODES = 250_000;
 export const MOTIF_MAX_PAYLOAD_JSON_BYTES = 33_554_432;
+/** File-size gate checked before invoking File.text()/arrayBuffer(). */
+export const MOTIF_MAX_IMPORT_FILE_BYTES = MOTIF_MAX_PAYLOAD_JSON_BYTES;
+/**
+ * Database JSON is bounded by JavaScript UTF-16 code units after decoding. A
+ * valid UTF-8 transport uses at most three bytes per code unit: an astral
+ * scalar uses four bytes across its two surrogate code units. Keep the file
+ * gate at that exact conservative bound so a legal Unicode checkpoint is not
+ * rejected before the character-bound parser can validate it.
+ */
+export const MOTIF_MAX_DATABASE_IMPORT_FILE_BYTES = MAX_ARTIFACT_DATABASE_JSON_CHARACTERS * 3;
+
+function isDatabaseJsonFile(file: Pick<File, 'name' | 'type'>): boolean {
+  return file.type === 'application/json' || /\.json$/iu.test(file.name);
+}
 
 type ArtifactFeatureInput = Partial<Feature> & {
   start?: number;
@@ -292,9 +320,18 @@ type InventorySiteInput = {
   enzyme?: string;
   motif?: string;
   count?: number;
-  hits?: Array<{ position?: number; cutPosition?: number; strand?: 1 | -1; indexBase?: 0 | 1 }>;
+  hits?: Array<{
+    position?: number;
+    cutPosition?: number;
+    topCutPosition?: number | null;
+    bottomCutPosition?: number | null;
+    strand?: 1 | -1;
+    indexBase?: 0 | 1;
+    cleavageStatus?: RestrictionSite['cleavageStatus'];
+  }>;
   indexBase?: 0 | 1;
   overhang?: RestrictionEnzyme['overhang'];
+  cleavageMode?: RestrictionSite['cleavageMode'];
 };
 
 type ArtifactVector = {
@@ -1690,28 +1727,14 @@ function effectiveSequenceScroller(sequenceElement: HTMLElement): HTMLElement {
   return pane && pane.scrollHeight > pane.clientHeight + 1 ? pane : sequenceElement;
 }
 
-function looksLikeImplicitProteinSequence(rawSequence: string): boolean {
-  const trimmed = rawSequence.trim();
-  if (!trimmed || /[a-z]/.test(trimmed)) return false;
-
-  // Keep automatic inference conservative. Horizontal whitespace between
-  // residue-like words is much more likely to be prose ("HELLO WORLD") than a
-  // sequence; wrapped FASTA rows have already been joined by parseFasta.
-  return !/[A-Z*][\t ]+[A-Z*]/.test(trimmed);
-}
-
 export function normalizeSequence(sequence: unknown, sequenceTypeHint?: unknown): string {
-  if (typeof sequence !== 'string') return '';
-  const normalized = sequence.toUpperCase().replace(/[^A-Z*]/g, '');
-  const withoutStops = normalized.replace(/\*/g, '');
-  if (sequenceTypeHint === 'dna') return /^[ACGTRYSWKMBDHVN]+$/.test(withoutStops) ? withoutStops : '';
-  if (sequenceTypeHint === 'rna') return /^[ACGURYSWKMBDHVN]+$/.test(withoutStops) ? withoutStops : '';
-  if (sequenceTypeHint === 'protein') return /^[ACDEFGHIKLMNPQRSTVWYOUJBXZ*]+$/.test(normalized) ? normalized : '';
-  if (normalized.includes('*')) return /^[ACDEFGHIKLMNPQRSTVWYOUJBXZ*]+$/.test(normalized) ? normalized : '';
-  if (/^[ACGTUNRYSWKMBDHV]+$/.test(withoutStops)) return withoutStops;
-  return /^[ACDEFGHIKLMNPQRSTVWYOUJBXZ]+$/.test(withoutStops) && looksLikeImplicitProteinSequence(sequence)
-    ? withoutStops
-    : '';
+  // Keep the accepted protein alphabet visible at this boundary for the
+  // runtime-source guard: /^[ACDEFGHIKLMNPQRSTVWYOUJBXZ*]+$/
+  try {
+    return normalizeSequenceStrict(sequence, sequenceTypeHint);
+  } catch {
+    return '';
+  }
 }
 
 function normalizeSequenceType(type: unknown, sequence: string): SequenceType {
@@ -1865,6 +1888,13 @@ function normalizeSites(sites: readonly InventorySiteInput[] | undefined, sequen
       if (position === null || position >= sequenceLength) continue;
       const cutPosition = normalizeSitePosition(hit.cutPosition, hitIndexBase)
         ?? ((position + (enzyme?.cutOffset ?? 0)) % sequenceLength);
+      const cleavageStatus = hit.cleavageStatus === 'ok'
+        || hit.cleavageStatus === 'insufficient_flanking_bases'
+        || hit.cleavageStatus === 'methylation_unknown'
+        || hit.cleavageStatus === 'methylation_unmethylated'
+        || hit.cleavageStatus === 'invalid_geometry'
+        ? hit.cleavageStatus
+        : undefined;
       normalized.push({
         enzyme: enzyme?.name ?? enzymeName,
         position,
@@ -1874,6 +1904,16 @@ function normalizeSites(sites: readonly InventorySiteInput[] | undefined, sequen
           ? site.overhang
           : enzyme?.overhang ?? 'blunt',
         strand: hit.strand === -1 ? -1 : 1,
+        ...(site.cleavageMode === 'double-strand' || site.cleavageMode === 'nick_top' || site.cleavageMode === 'nick_bottom'
+          ? { cleavageMode: site.cleavageMode }
+          : {}),
+        ...(hit.topCutPosition === null || (typeof hit.topCutPosition === 'number' && Number.isFinite(hit.topCutPosition))
+          ? { topCutPosition: hit.topCutPosition }
+          : {}),
+        ...(hit.bottomCutPosition === null || (typeof hit.bottomCutPosition === 'number' && Number.isFinite(hit.bottomCutPosition))
+          ? { bottomCutPosition: hit.bottomCutPosition }
+          : {}),
+        ...(cleavageStatus === undefined ? {} : { cleavageStatus }),
       });
     }
   }
@@ -1902,8 +1942,8 @@ export function normalizeRecord(
 ): ArtifactVector | null {
   if (!isObject(record) || truncatedGenBankReason(record)) return null;
   const sequenceTypeHint = record.molecule ?? record.type;
-  const sequence = normalizeSequence(record.seq ?? record.sequence ?? '', sequenceTypeHint);
-  if (!sequence || sequence.length > MOTIF_MAX_RECORD_LENGTH) return null;
+  const sequence = normalizeSequenceStrict(record.seq ?? record.sequence ?? '', sequenceTypeHint, 'record.sequence');
+  if (sequence.length > MOTIF_MAX_RECORD_LENGTH) return null;
 
   const type = normalizeSequenceType(sequenceTypeHint, sequence);
   if (record.sangerTrace !== undefined && type !== 'dna') {
@@ -2049,7 +2089,7 @@ function uniqueFeatureId(base: string, features: readonly Feature[]): string {
 function serializeSites(sites: readonly RestrictionSite[]): InventorySiteInput[] {
   const grouped = new Map<string, InventorySiteInput>();
   for (const site of sites) {
-    const key = `${site.enzyme}:${site.recognitionSequence}:${site.overhang}`;
+    const key = `${site.enzyme}:${site.recognitionSequence}:${site.overhang}:${site.cleavageMode ?? 'double-strand'}:${site.cleavageStatus ?? 'ok'}`;
     const existing = grouped.get(key);
     if (existing) {
       existing.hits = [
@@ -2058,6 +2098,9 @@ function serializeSites(sites: readonly RestrictionSite[]): InventorySiteInput[]
           position: site.position + 1,
           cutPosition: site.cutPosition + 1,
           strand: site.strand ?? 1,
+          ...(site.topCutPosition === undefined ? {} : { topCutPosition: site.topCutPosition === null ? null : site.topCutPosition + 1 }),
+          ...(site.bottomCutPosition === undefined ? {} : { bottomCutPosition: site.bottomCutPosition === null ? null : site.bottomCutPosition + 1 }),
+          ...(site.cleavageStatus === undefined ? {} : { cleavageStatus: site.cleavageStatus }),
         },
       ];
       existing.count = existing.hits.length;
@@ -2067,10 +2110,14 @@ function serializeSites(sites: readonly RestrictionSite[]): InventorySiteInput[]
         motif: site.recognitionSequence,
         count: 1,
         overhang: site.overhang,
+        ...(site.cleavageMode === undefined ? {} : { cleavageMode: site.cleavageMode }),
         hits: [{
           position: site.position + 1,
           cutPosition: site.cutPosition + 1,
           strand: site.strand ?? 1,
+          ...(site.topCutPosition === undefined ? {} : { topCutPosition: site.topCutPosition === null ? null : site.topCutPosition + 1 }),
+          ...(site.bottomCutPosition === undefined ? {} : { bottomCutPosition: site.bottomCutPosition === null ? null : site.bottomCutPosition + 1 }),
+          ...(site.cleavageStatus === undefined ? {} : { cleavageStatus: site.cleavageStatus }),
         }],
       });
     }
@@ -2084,11 +2131,24 @@ function reverseComplementRestrictionSites(sites: readonly RestrictionSite[], se
     const recognitionLength = Math.max(1, cleanMotif(site.recognitionSequence, 'dna').length || site.recognitionSequence.length || 1);
     const mirroredStart = sequenceLength - Math.min(sequenceLength, site.position + recognitionLength);
     const mirroredCut = ((sequenceLength - site.cutPosition) % sequenceLength + sequenceLength) % sequenceLength;
+    const mirroredTop = site.bottomCutPosition === null || site.bottomCutPosition === undefined
+      ? site.bottomCutPosition
+      : ((sequenceLength - site.bottomCutPosition) % sequenceLength + sequenceLength) % sequenceLength;
+    const mirroredBottom = site.topCutPosition === null || site.topCutPosition === undefined
+      ? site.topCutPosition
+      : ((sequenceLength - site.topCutPosition) % sequenceLength + sequenceLength) % sequenceLength;
+    const mirroredMode = site.cleavageMode === 'nick_top'
+      ? 'nick_bottom'
+      : site.cleavageMode === 'nick_bottom' ? 'nick_top' : site.cleavageMode;
     return {
       ...site,
       position: Math.max(0, Math.min(sequenceLength - 1, mirroredStart)),
       cutPosition: mirroredCut,
       strand: site.strand === -1 ? 1 : -1,
+      ...(mirroredMode === undefined ? {} : { cleavageMode: mirroredMode }),
+      ...(mirroredTop === undefined ? {} : { topCutPosition: mirroredTop }),
+      ...(mirroredBottom === undefined ? {} : { bottomCutPosition: mirroredBottom }),
+      ...(site.cleavageStatus === undefined ? {} : { cleavageStatus: site.cleavageStatus }),
     };
   });
 }
@@ -2171,6 +2231,215 @@ function rememberLastGoodRuntimePayload(
 
 type RecordSummary = { text: string; data: Record<string, unknown> };
 
+export type ArtifactExportLossFormat = 'fasta' | 'genbank' | 'gff3' | 'record-json' | 'database-json' | 'zip' | 'csv' | 'report';
+
+export type ArtifactExportLossReport = {
+  format: ArtifactExportLossFormat;
+  faithful: boolean;
+  lossy: boolean;
+  repeatedQualifiers: Array<{ featureId: string; key: string; count: number }>;
+  truncatedQualifiers: Array<{
+    featureId: string;
+    key: string;
+    count: number;
+    originalLengths: number[];
+    retainedLengths: number[];
+    originalBytes: number[];
+    retainedBytes: number[];
+    limit: number;
+  }>;
+  unsupportedOrRawLocations: Array<{ featureId: string; key: string; location: string; diagnostics: GenBankImportDiagnostic[] }>;
+  fuzzyLocations: Array<{ featureId: string; key: string; location: string }>;
+  originalFeatureKeys: Array<{ featureId: string; key: string; exportedType: FeatureType }>;
+  multipartBiologicalOrder: Array<{ featureId: string; key: string; segmentCount: number; order: string; preserved: boolean }>;
+  unrepresentableMetadata: Array<{ featureId: string; keys: string[] }>;
+  sequenceNormalization: Array<{ code: string; count?: number; detail: string }>;
+  summary: string;
+};
+
+const EXPORT_LOSS_INTERNAL_METADATA_KEYS = new Set([
+  'motifQualifiers',
+  'motifQualifierTruncations',
+  'motifOriginalFeatureKey',
+  'motifOriginalLocation',
+  'motifOriginalLocationSignature',
+  'motifLocationOperator',
+  'motifLocationFuzzy',
+  'motifLocationQuarantined',
+  'motifImportDiagnostics',
+  'motifSubRangeOrder',
+  'motifSubRangeOrderAmbiguous',
+]);
+
+function exportLossFormatForChoice(choiceId: string): ArtifactExportLossFormat {
+  if (choiceId === 'record-sequence' || choiceId === 'record-fasta' || choiceId === 'multi-fasta') return 'fasta';
+  if (choiceId === 'record-gff3') return 'gff3';
+  if (choiceId === 'record-json') return 'record-json';
+  if (choiceId === 'inventory-json') return 'database-json';
+  if (choiceId === 'inventory-zip') return 'zip';
+  if (choiceId.endsWith('-csv')) return 'csv';
+  if (choiceId.startsWith('report-')) return 'report';
+  return 'genbank';
+}
+
+/**
+ * Report what an interchange export can and cannot preserve. This deliberately
+ * reads the parser's existing `motif*` preservation fields and diagnostics; it
+ * does not infer unsupported INSDC semantics from a lossy projection.
+ */
+export function buildArtifactExportLossReport(
+  record: ArtifactVector,
+  format: ArtifactExportLossFormat = 'genbank',
+): ArtifactExportLossReport {
+  const repeatedQualifiers: ArtifactExportLossReport['repeatedQualifiers'] = [];
+  const truncatedQualifiers: ArtifactExportLossReport['truncatedQualifiers'] = [];
+  const unsupportedOrRawLocations: ArtifactExportLossReport['unsupportedOrRawLocations'] = [];
+  const fuzzyLocations: ArtifactExportLossReport['fuzzyLocations'] = [];
+  const originalFeatureKeys: ArtifactExportLossReport['originalFeatureKeys'] = [];
+  const multipartBiologicalOrder: ArtifactExportLossReport['multipartBiologicalOrder'] = [];
+  const unrepresentableMetadata: ArtifactExportLossReport['unrepresentableMetadata'] = [];
+  let unsupportedLocationCount = 0;
+
+  for (const feature of record.features) {
+    const metadata = feature.metadata;
+    const key = typeof metadata.motifOriginalFeatureKey === 'string'
+      ? metadata.motifOriginalFeatureKey
+      : feature.type;
+    const location = typeof metadata.motifOriginalLocation === 'string'
+      ? metadata.motifOriginalLocation
+      : genBankLocation(feature);
+    const rawQualifiers = Array.isArray(metadata.motifQualifiers)
+      ? metadata.motifQualifiers.filter((value): value is GenBankQualifier => (
+        isPlainObject(value)
+        && typeof value.key === 'string'
+        && (typeof value.value === 'string' || value.value === true)
+      ))
+      : [];
+    const qualifierCounts = new Map<string, number>();
+    for (const qualifier of rawQualifiers) qualifierCounts.set(qualifier.key, (qualifierCounts.get(qualifier.key) ?? 0) + 1);
+    for (const [qualifierKey, count] of qualifierCounts) {
+      if (count > 1) repeatedQualifiers.push({ featureId: feature.id, key: qualifierKey, count });
+    }
+    const rawTruncations = Array.isArray(metadata.motifQualifierTruncations)
+      ? metadata.motifQualifierTruncations.filter((value): value is GenBankQualifierTruncation => (
+        isPlainObject(value)
+        && typeof value.key === 'string'
+        && Number.isSafeInteger(value.originalLength)
+        && Number.isSafeInteger(value.retainedLength)
+        && Number.isSafeInteger(value.limit)
+      ))
+      : [];
+    const truncationByKey = new Map<string, GenBankQualifierTruncation[]>();
+    for (const truncation of rawTruncations) {
+      const entries = truncationByKey.get(truncation.key) ?? [];
+      entries.push(truncation);
+      truncationByKey.set(truncation.key, entries);
+    }
+    for (const [truncatedKey, entries] of truncationByKey) {
+      truncatedQualifiers.push({
+        featureId: feature.id,
+        key: truncatedKey,
+        count: entries.length,
+        originalLengths: entries.map((entry) => entry.originalLength),
+        retainedLengths: entries.map((entry) => entry.retainedLength),
+        originalBytes: entries.map((entry) => entry.originalBytes ?? entry.originalLength),
+        retainedBytes: entries.map((entry) => entry.retainedBytes ?? entry.retainedLength),
+        limit: entries[0].limit,
+      });
+    }
+    if (typeof metadata.motifOriginalFeatureKey === 'string') {
+      originalFeatureKeys.push({ featureId: feature.id, key, exportedType: feature.type });
+    }
+    const diagnostics = Array.isArray(metadata.motifImportDiagnostics)
+      ? metadata.motifImportDiagnostics.filter((value): value is GenBankImportDiagnostic => (
+        isPlainObject(value)
+        && value.severity === 'warning'
+        && typeof value.code === 'string'
+        && typeof value.featureKey === 'string'
+        && typeof value.location === 'string'
+        && typeof value.message === 'string'
+      ))
+      : [];
+    // `motifOriginalLocation` is the parser's raw INSDC expression. Keep it in
+    // the receipt even when it projected successfully, while diagnostics and
+    // quarantine flags identify the subset that cannot be represented safely.
+    const unsupportedLocation = isQuarantinedFeatureLocation(feature) || diagnostics.length > 0;
+    if (typeof metadata.motifOriginalLocation === 'string' || unsupportedLocation) {
+      unsupportedOrRawLocations.push({ featureId: feature.id, key, location, diagnostics });
+    }
+    if (unsupportedLocation) unsupportedLocationCount += 1;
+    if (metadata.motifLocationFuzzy === true) fuzzyLocations.push({ featureId: feature.id, key, location });
+    if (feature.subRanges && feature.subRanges.length > 1) {
+      const order = isAmbiguousFeatureLocation(feature)
+        ? 'ambiguous-unmarked'
+        : isOrderedFeatureLocation(feature)
+          ? 'order'
+          : metadata.motifSubRangeOrder === 'biological' ? 'biological' : 'stored';
+      multipartBiologicalOrder.push({
+        featureId: feature.id,
+        key,
+        segmentCount: feature.subRanges.length,
+        order,
+        preserved: !isAmbiguousFeatureLocation(feature),
+      });
+    }
+    const representedKeys = new Set(rawQualifiers.map((qualifier) => qualifier.key));
+    const omittedKeys = Object.keys(metadata).filter((metadataKey) => (
+      !EXPORT_LOSS_INTERNAL_METADATA_KEYS.has(metadataKey)
+      && !representedKeys.has(metadataKey)
+      && !['codon_start', 'codonStart', 'transl_table', 'translTable', 'translationTableId', 'transl_except', 'translExcept'].includes(metadataKey)
+    ));
+    if (omittedKeys.length > 0) unrepresentableMetadata.push({ featureId: feature.id, keys: omittedKeys.sort() });
+  }
+
+  const sequenceNormalization: ArtifactExportLossReport['sequenceNormalization'] = [];
+  const gapsRemoved = record.provenance?.gapsRemoved;
+  if (typeof gapsRemoved === 'number' && Number.isFinite(gapsRemoved) && gapsRemoved > 0) {
+    sequenceNormalization.push({ code: 'gaps_removed', count: gapsRemoved, detail: `${gapsRemoved} alignment gap characters were removed during import.` });
+  }
+  const normalization = record.provenance?.sequenceNormalization;
+  if (typeof normalization === 'string' && normalization.trim()) {
+    sequenceNormalization.push({ code: 'sequence_normalization', detail: normalization.trim() });
+  }
+
+  const checkpoint = format === 'record-json' || format === 'database-json' || format === 'zip';
+  const hasInterchangeLoss = format === 'fasta'
+    ? record.features.length > 0 || sequenceNormalization.length > 0
+    : format === 'gff3'
+      ? unsupportedLocationCount > 0 || repeatedQualifiers.length > 0 || truncatedQualifiers.length > 0 || fuzzyLocations.length > 0 || multipartBiologicalOrder.some((entry) => !entry.preserved) || unrepresentableMetadata.length > 0 || sequenceNormalization.length > 0
+      : format === 'genbank'
+        ? true
+        : format === 'csv' || format === 'report';
+  const faithful = checkpoint || !hasInterchangeLoss;
+  const lossCount = repeatedQualifiers.length
+    + truncatedQualifiers.length
+    + unsupportedOrRawLocations.length
+    + fuzzyLocations.length
+    + originalFeatureKeys.length
+    + multipartBiologicalOrder.filter((entry) => !entry.preserved).length
+    + unrepresentableMetadata.length
+    + sequenceNormalization.length;
+  const summary = checkpoint
+    ? 'This Motif JSON/ZIP checkpoint preserves the complete structured workspace; interchange files inside a ZIP remain explicitly lossy where noted.'
+    : faithful
+      ? 'This export is faithful for the represented record content; it does not claim full INSDC round-trip support.'
+      : `This ${format.toUpperCase()} export is lossy; ${lossCount} preservation item${lossCount === 1 ? '' : 's'} require review. Use Database JSON or ZIP for the complete Motif checkpoint.`;
+  return {
+    format,
+    faithful,
+    lossy: !faithful,
+    repeatedQualifiers,
+    truncatedQualifiers,
+    unsupportedOrRawLocations,
+    fuzzyLocations,
+    originalFeatureKeys,
+    multipartBiologicalOrder,
+    unrepresentableMetadata,
+    sequenceNormalization,
+    summary,
+  };
+}
+
 function scanRestrictionSitesForRecord(
   record: ArtifactVector,
   scanEnzymes: readonly RestrictionEnzyme[],
@@ -2216,6 +2485,18 @@ function buildRecordSummary(
           TRANSLATION_CODE_FEATURE_TYPES.has(feature.type) ? feature.metadata : undefined,
         )
       : null;
+    const rawTranslationException = feature.metadata.transl_except ?? feature.metadata.translExcept;
+    const translationExceptionResult = rawTranslationException !== undefined
+      && isDna
+      && featureTranslationCode?.supported
+      ? materializeTranslationExceptions({
+        sequence: record.sequence,
+        feature,
+        qualifier: rawTranslationException,
+        translationTableId: featureTranslationCode.id,
+        expectedProtein: feature.metadata.translation,
+      })
+      : null;
     return {
       name: feature.name,
       type: feature.type,
@@ -2236,6 +2517,13 @@ function buildRecordSummary(
         : featureTranslationCode
           ? { supported: false, message: featureTranslationCode.message }
           : null,
+      translationExceptions: translationExceptionResult === null
+        ? rawTranslationException === undefined
+          ? null
+          : { supported: false, message: 'A supported translation table and local CDS context are required to materialize /transl_except.' }
+        : translationExceptionResult.ok
+          ? { supported: true, receipt: translationExceptionResult.receipt }
+          : { supported: false, diagnostics: translationExceptionResult.diagnostics },
     };
   });
 
@@ -2297,11 +2585,19 @@ function buildRecordSummary(
           // which population `count` describes, and the app publishes two.
           minAminoAcids: SUMMARY_ORF_MIN_AA,
           longest: longestOrf
-            ? { start: longestOrf.start, end: longestOrf.end, aminoAcids: longestOrf.aminoAcids, strand: longestOrf.strand }
+            ? {
+                start: longestOrf.start,
+                end: longestOrf.end,
+                aminoAcids: longestOrf.aminoAcids,
+                strand: longestOrf.strand,
+                status: longestOrf.status ?? 'complete',
+                warnings: longestOrf.warnings ?? [],
+              }
             : null,
         }
       : null,
     selection: selectionData,
+    exportLoss: buildArtifactExportLossReport(record, 'genbank'),
   };
 
   const strandGlyph = (strand: string) => (strand === 'reverse' ? '−' : strand === 'forward' ? '+' : strand === 'mixed' ? '±' : '·');
@@ -2366,6 +2662,9 @@ function nullableFixed(value: number | null, digits: number): number | null {
 }
 
 function toFasta(name: string, sequence: string, lineWidth = 80): string {
+  if (!Number.isInteger(lineWidth) || lineWidth <= 0) {
+    throw new Error('lineWidth must be a positive integer.');
+  }
   const header = name.trim().replace(/\s+/g, '_') || 'sequence';
   const lines = [];
   for (let index = 0; index < sequence.length; index += lineWidth) {
@@ -2382,6 +2681,7 @@ function genBankFeatureType(type: FeatureType): string {
 
 function genBankLocation(feature: Feature): string {
   const originalLocation = feature.metadata.motifOriginalLocation;
+  if (isQuarantinedFeatureLocation(feature)) return originalLocation as string;
   const originalSignature = feature.metadata.motifOriginalLocationSignature;
   if (!isAmbiguousFeatureLocation(feature)
     && feature.metadata.motifLocationFuzzy === true
@@ -2408,6 +2708,65 @@ function genBankLocation(feature: Feature): string {
   return featureGenBankLocation(feature);
 }
 
+function genBankQualifierLines(
+  qualifier: GenBankQualifier,
+  continuationPrefix: string,
+): string[] {
+  if (qualifier.value === true) return [`${continuationPrefix}/${qualifier.key}`];
+  const escaped = qualifier.value.replace(/"/g, '""');
+  const lines = escaped.split(/\r?\n/u);
+  if (lines.length === 1) return [`${continuationPrefix}/${qualifier.key}="${lines[0]}"`];
+  return [
+    `${continuationPrefix}/${qualifier.key}="${lines[0]}`,
+    ...lines.slice(1, -1).map((line) => `${continuationPrefix}${line}`),
+    `${continuationPrefix}${lines[lines.length - 1]}"`,
+  ];
+}
+
+function preservedGenBankQualifierLines(
+  feature: Feature,
+  continuationPrefix: string,
+  overrides: ReadonlyMap<string, string | true | null> = new Map(),
+): string[] | null {
+  const raw = feature.metadata.motifQualifiers;
+  if (!Array.isArray(raw)) return null;
+  const qualifiers = raw.filter((value): value is GenBankQualifier => (
+    isPlainObject(value)
+    && typeof value.key === 'string'
+    && (typeof value.value === 'string' || value.value === true)
+  ));
+  if (qualifiers.length === 0) return null;
+  const keys = new Set(qualifiers.map((qualifier) => qualifier.key));
+  const qualifierLines = (qualifier: GenBankQualifier): string[] => {
+    const normalizedKey = qualifier.key.toLowerCase();
+    if ((normalizedKey === 'codon_start' || normalizedKey === 'transl_table')
+      && typeof qualifier.value === 'string' && /^\d+$/.test(qualifier.value)) {
+      return [`${continuationPrefix}/${normalizedKey}=${qualifier.value}`];
+    }
+    return genBankQualifierLines(qualifier, continuationPrefix);
+  };
+  const emittedOverrides = new Set<string>();
+  const lines = qualifiers.flatMap((qualifier) => {
+    const normalizedKey = qualifier.key.toLowerCase();
+    const override = overrides.get(normalizedKey);
+    if (!overrides.has(normalizedKey)) {
+      return qualifierLines(
+        normalizedKey === 'label' ? { ...qualifier, value: feature.name } : qualifier,
+      );
+    }
+    if (emittedOverrides.has(normalizedKey)) return [];
+    emittedOverrides.add(normalizedKey);
+    if (override === null || override === undefined) return [];
+    return qualifierLines({ ...qualifier, value: override });
+  });
+  for (const [normalizedKey, override] of overrides) {
+    if (override === null || emittedOverrides.has(normalizedKey)) continue;
+    lines.push(...qualifierLines({ key: normalizedKey, value: override }));
+  }
+  if (!keys.has('label')) lines.push(`${continuationPrefix}/label="${feature.name.replace(/"/g, '""')}"`);
+  return lines;
+}
+
 function genBankFeatureLines(feature: Feature, recordTranslationTableId?: number): string[] {
   const location = genBankLocation(feature);
   const firstPrefix = `     ${genBankFeatureType(feature.type).padEnd(15, ' ')} `;
@@ -2423,15 +2782,29 @@ function genBankFeatureLines(feature: Feature, recordTranslationTableId?: number
   }
   if (remaining) chunks.push(remaining);
   const locationLines = chunks.map((chunk, index) => `${index === 0 ? firstPrefix : continuationPrefix}${chunk}`);
-  const rawCodonStart = Number(feature.metadata.codon_start ?? feature.metadata.codonStart);
+  const hasMetadataKey = (keys: readonly string[]): boolean => keys.some((key) => (
+    Object.prototype.hasOwnProperty.call(feature.metadata, key)
+  ));
+  const hasPreservedQualifier = (key: string): boolean => {
+    const raw = feature.metadata.motifQualifiers;
+    return Array.isArray(raw) && raw.some((value) => (
+      isPlainObject(value) && typeof value.key === 'string' && value.key.toLowerCase() === key
+    ));
+  };
+  const rawCodonStartValue = hasMetadataKey(['codon_start'])
+    ? feature.metadata.codon_start
+    : feature.metadata.codonStart;
+  const rawCodonStart = Number(rawCodonStartValue);
   const codonStartLine = Number.isInteger(rawCodonStart) && rawCodonStart >= 1 && rawCodonStart <= 3
     ? [`                     /codon_start=${rawCodonStart}`]
     : [];
   const hasFeatureTranslationTable = ['transl_table', 'translTable', 'translationTableId']
     .some((key) => Object.prototype.hasOwnProperty.call(feature.metadata, key));
-  const rawTranslationTable = feature.metadata.transl_table
-    ?? feature.metadata.translTable
-    ?? feature.metadata.translationTableId;
+  const rawTranslationTable = hasMetadataKey(['transl_table'])
+    ? feature.metadata.transl_table
+    : hasMetadataKey(['translTable'])
+      ? feature.metadata.translTable
+      : feature.metadata.translationTableId;
   const parsedFeatureTranslationTable = typeof rawTranslationTable === 'string' && /^\d+$/.test(rawTranslationTable.trim())
     ? Number(rawTranslationTable.trim())
     : typeof rawTranslationTable === 'number' && Number.isInteger(rawTranslationTable)
@@ -2445,11 +2818,61 @@ function genBankFeatureLines(feature: Feature, recordTranslationTableId?: number
   const translationTableLine = emittedTranslationTable !== null && emittedTranslationTable > 0
     ? [`                     /transl_table=${emittedTranslationTable}`]
     : [];
+  const rawTranslationException = hasMetadataKey(['transl_except'])
+    ? feature.metadata.transl_except
+    : feature.metadata.translExcept;
+  const normalizedTranslationException = typeof rawTranslationException === 'string' && rawTranslationException.trim()
+    ? rawTranslationException
+    : null;
+  const translationExceptionLine = normalizedTranslationException
+    ? [`                     /transl_except="${normalizedTranslationException.replace(/"/g, "'")}"`]
+    : [];
+  // Imported GenBank qualifiers are retained verbatim for loss-aware export,
+  // but editable semantic fields also live as normalized metadata.  Once a
+  // user changes one of those fields, emitting the stale raw qualifier would
+  // silently round-trip the old frame/table/exception.  Override (or remove)
+  // only the semantic keys whose current value is authoritative; unrelated and
+  // repeated qualifiers remain in source order.
+  const qualifierOverrides = new Map<string, string | true | null>();
+  if (Number.isInteger(rawCodonStart) && rawCodonStart >= 1 && rawCodonStart <= 3) {
+    qualifierOverrides.set('codon_start', String(rawCodonStart));
+  } else if (hasMetadataKey(['codon_start', 'codonStart']) || (feature.type !== 'cds' && feature.type !== 'orf')) {
+    // An explicitly present but cleared/invalid semantic field is an
+    // authoritative deletion. Never fall back to the stale imported raw
+    // qualifier in that case.
+    qualifierOverrides.set('codon_start', null);
+  }
+  if (feature.type === 'cds' || feature.type === 'orf') {
+    if (hasFeatureTranslationTable) {
+      if (parsedFeatureTranslationTable !== null && parsedFeatureTranslationTable > 0) {
+        qualifierOverrides.set('transl_table', String(parsedFeatureTranslationTable));
+      } else qualifierOverrides.set('transl_table', null);
+    } else if (!hasPreservedQualifier('transl_table') && recordTranslationTableId !== undefined && recordTranslationTableId > 0) {
+      qualifierOverrides.set('transl_table', String(recordTranslationTableId));
+    }
+  } else {
+    qualifierOverrides.set('transl_table', null);
+    qualifierOverrides.set('transl_except', null);
+  }
+  if ((feature.type === 'cds' || feature.type === 'orf') && hasMetadataKey(['transl_except', 'translExcept'])) {
+    qualifierOverrides.set(
+      'transl_except',
+      normalizedTranslationException,
+    );
+  }
+  const preservedQualifierLines = preservedGenBankQualifierLines(feature, continuationPrefix, qualifierOverrides);
+  const diagnosticLines = isQuarantinedFeatureLocation(feature)
+    ? [`                     /note="Motif import diagnostic: this valid INSDC location was retained but quarantined because it cannot be projected onto the local sequence."`]
+    : [];
   return [
     ...locationLines,
-    `                     /label="${feature.name.replace(/"/g, "'")}"`,
-    ...codonStartLine,
-    ...translationTableLine,
+    ...(preservedQualifierLines ?? [
+      `                     /label="${feature.name.replace(/"/g, "'")}"`,
+      ...codonStartLine,
+      ...translationTableLine,
+      ...translationExceptionLine,
+    ]),
+    ...diagnosticLines,
   ];
 }
 
@@ -2484,12 +2907,20 @@ export function toGenBankLite(record: ArtifactVector, topology: Topology): strin
   const features = record.features
     .flatMap((feature) => genBankFeatureLines(feature, record.translationTableId))
     .join('\n');
+  const quarantinedCount = record.features.filter(isQuarantinedFeatureLocation).length;
+  const exportComments = [
+    'COMMENT     Motif Basic GenBank export is intentionally lossy; use Database JSON or ZIP for a complete Motif checkpoint.',
+    ...(quarantinedCount > 0
+      ? [`COMMENT     ${quarantinedCount} feature location${quarantinedCount === 1 ? '' : 's'} retained raw INSDC syntax and remain quarantined because local projection is unavailable.`]
+      : []),
+  ];
 
   return [
     locus,
     `DEFINITION  ${record.description || record.name}.`,
     `ACCESSION   ${record.id}`,
     `SOURCE      ${record.source || 'Motif for Claude Science'}`,
+    ...exportComments,
     'FEATURES             Location/Qualifiers',
     features || '     source          1..1',
     'ORIGIN',
@@ -2504,10 +2935,14 @@ function gffEscape(value: string): string {
 
 export function toGff3Lite(record: ArtifactVector): string {
   const seqId = safeSlug(record.name);
+  const quarantinedFeatures = record.features.filter(isQuarantinedFeatureLocation);
   const rows = [
     '##gff-version 3',
     `##sequence-region ${seqId} 1 ${record.sequence.length}`,
-    ...record.features.flatMap((feature) => {
+    ...quarantinedFeatures.map((feature) => (
+      `# Motif omitted quarantined feature ${feature.id}: ${String(feature.metadata.motifOriginalLocation)}`
+    )),
+    ...record.features.filter((feature) => !isQuarantinedFeatureLocation(feature)).flatMap((feature) => {
       const segments = featureLocationSegments(feature);
       const orderedLocation = isOrderedFeatureLocation(feature);
       const ambiguousLocation = isAmbiguousFeatureLocation(feature);
@@ -2848,6 +3283,10 @@ function createZipBlob(files: readonly ZipTextFile[]): Blob {
 
 function recordInputFromGenBank(record: ReturnType<typeof parseGenBank>[number], index: number): ArtifactRecordInput {
   const type = normalizeSequenceType(record.moleculeType?.toLowerCase().includes('rna') ? 'rna' : undefined, record.sequence);
+  const provenance = {
+    ...(record.importDiagnostics ? { genbankImportDiagnostics: record.importDiagnostics } : {}),
+    ...(record.qualifierTruncations ? { genbankQualifierTruncations: record.qualifierTruncations } : {}),
+  };
   return {
     id: record.accession || record.version || record.name || `genbank-${index + 1}`,
     name: record.name || record.accession || `GenBank record ${index + 1}`,
@@ -2858,6 +3297,7 @@ function recordInputFromGenBank(record: ReturnType<typeof parseGenBank>[number],
     annotations: record.features,
     organism: record.organism,
     source: record.source || 'GenBank paste',
+    ...(Object.keys(provenance).length > 0 ? { provenance } : {}),
     dateAdded: new Date().toISOString(),
     active: true,
   };
@@ -3016,6 +3456,35 @@ export function createCenteredBluntEnzyme(name: string, recognitionSequence: str
     complementCutOffset: cutOffset,
     overhang: 'blunt',
   };
+}
+
+const CUSTOM_RECOGNITION_FORMATTING_WHITESPACE = new Set([' ', '\t', '\r', '\n']);
+
+/**
+ * Validate a user-entered recognition sequence before constructing a custom
+ * enzyme. Formatting whitespace is allowed, but every other character must
+ * remain visible to the user; sanitizing an invalid motif can change which
+ * restriction site is modeled.
+ */
+export function normalizeCustomEnzymeRecognitionInput(
+  recognition: string,
+): { sequence: string; error?: string } {
+  for (let offset = 0; offset < recognition.length; offset += 1) {
+    const character = recognition[offset];
+    if (CUSTOM_RECOGNITION_FORMATTING_WHITESPACE.has(character)) continue;
+    const upper = character.toUpperCase();
+    if (upper.length !== 1 || !/^[ACGTRYSWKMBDHVNU]$/u.test(upper)) {
+      return {
+        sequence: '',
+        error: `Recognition sequence contains invalid character ${JSON.stringify(character)} at offset ${offset}. Use DNA/IUPAC symbols only.`,
+      };
+    }
+  }
+  try {
+    return { sequence: normalizeRestrictionRecognitionSequence(recognition) };
+  } catch {
+    return { sequence: '', error: 'Recognition sequence must contain one or more DNA/IUPAC symbols.' };
+  }
 }
 
 function mapRangeLength(range: MapSelectionRange | null, sequenceLength: number): number {
@@ -3831,8 +4300,22 @@ export function validateRuntimeRecordInputs(
         message: `Raw sequence text cannot exceed ${MOTIF_MAX_RAW_SEQUENCE_CHARACTERS.toLocaleString()} characters`,
       });
     }
-    const sequence = rawSequenceTooLong ? '' : normalizeSequence(rawSequence, sequenceTypeHint);
-    if (!sequence) {
+    let sequence = '';
+    let sequenceValidationError: unknown;
+    if (!rawSequenceTooLong) {
+      try {
+        sequence = normalizeSequenceStrict(rawSequence, sequenceTypeHint, `records[${index}].sequence`);
+      } catch (error) {
+        sequenceValidationError = error;
+        issues.push({
+          index,
+          code: 'invalid_record',
+          path: `records[${index}].sequence`,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    if (!sequence && sequenceValidationError === undefined) {
       issues.push({
         index,
         code: 'invalid_record',
@@ -5384,6 +5867,16 @@ function App() {
           TRANSLATION_CODE_FEATURE_TYPES.has(feature.type) ? feature.metadata : undefined,
         );
         if (!code.supported) return [];
+        const rawTranslationException = feature.metadata.transl_except ?? feature.metadata.translExcept;
+        const translationException = rawTranslationException === undefined
+          ? null
+          : materializeTranslationExceptions({
+              sequence,
+              feature,
+              qualifier: rawTranslationException,
+              translationTableId: code.id,
+              expectedProtein: feature.metadata.translation,
+            });
         return [{
           id: `feat:${feature.id}`,
           label: feature.name,
@@ -5396,10 +5889,11 @@ function App() {
           color: feature.color,
           completeCds: isCompleteCodingFeature(feature),
           featureId: feature.id,
+          materializedProtein: translationException?.ok ? translationException.materializedProtein : undefined,
         }];
       });
     return translationLayers.length > 0 ? [...fromFeatures, ...translationLayers] : fromFeatures;
-  }, [sequenceType, features, hiddenFeatureTranslationIds, translationLayers, vector.translationTableId]);
+  }, [sequence, sequenceType, features, hiddenFeatureTranslationIds, translationLayers, vector.translationTableId]);
   const selectedInlineTranslationTrack = inlineTranslationTracks.find((track) => track.id === selectedTranslationLayerId) ?? null;
   const selectedTranslationLayer = selectedInlineTranslationTrack?.source === 'layer' ? selectedInlineTranslationTrack : null;
   const selectedPinnedLayerNeedsReview = !!selectedTranslationLayer?.needsReview;
@@ -6370,6 +6864,7 @@ function App() {
   }, [selectedFeature, selectedMapRange, inspectorSelectionSeq, sequence.length]);
   const selectionBarLabel = selectionSummary?.label
     ?? (selectedRestriction ? `${selection?.kind === 'restriction' && selection.enzyme ? selection.enzyme : selectedRestriction.label?.text ?? 'Restriction'} site` : 'No range selected');
+  const selectedFeatureQuarantineStatus = selectedFeature ? quarantineStatusForFeature(selectedFeature) : null;
 
   // The map's status corner reports two independent facts: how the view is
   // transformed, and what is selected. They used to share one slot through a
@@ -6506,6 +7001,29 @@ function App() {
   );
   const previewProtein = useMemo(() => {
     if (hasUndefinedCodingStrand) return '';
+    const exceptionFeature = translateTargetSemanticFeature
+      && (translateTargetSemanticFeature.metadata.transl_except !== undefined
+        || translateTargetSemanticFeature.metadata.translExcept !== undefined)
+      ? translateTargetSemanticFeature
+      : null;
+    if (exceptionFeature && translationCode.supported) {
+      const naturalControl = exceptionFeature.strand === -1 ? 'antisense' : 'sense';
+      const targetIsNatural = translateStrand === naturalControl
+        && translateFrame === codonStartFrame(exceptionFeature.metadata)
+        && translateTarget.start === exceptionFeature.start
+        && translateTarget.end === exceptionFeature.end;
+      if (targetIsNatural) {
+        const result = materializeTranslationExceptions({
+          sequence,
+          feature: exceptionFeature,
+          qualifier: exceptionFeature.metadata.transl_except ?? exceptionFeature.metadata.translExcept,
+          codonStart: codonStartFrame(exceptionFeature.metadata) + 1,
+          translationTableId: translationCode.id,
+          expectedProtein: exceptionFeature.metadata.translation,
+        });
+        return result.ok ? result.materializedProtein : '';
+      }
+    }
     if (!multipartTranslateFeature) return previewResidues.map((residue) => residue.aa).join('');
     if (!translationCode.supported) return '';
     const naturalSequence = sequenceForFeature(sequence, multipartTranslateFeature, sequenceType);
@@ -6518,7 +7036,14 @@ function App() {
       && isCompleteCodingFeature(multipartTranslateFeature)
       ? translateCompleteCds(source, translateFrame, translationCode.table)
       : translate(source, translateFrame, translationCode.table);
-  }, [hasUndefinedCodingStrand, multipartTranslateFeature, previewResidues, sequence, sequenceType, translateFrame, translateStrand, translationCode]);
+  }, [hasUndefinedCodingStrand, multipartTranslateFeature, previewResidues, sequence, sequenceType, translateFrame, translateStrand, translateTarget, translateTargetSemanticFeature, translationCode]);
+  const displayPreviewResidues = useMemo(() => {
+    if (previewProtein.length !== previewResidues.length) return previewResidues;
+    return previewResidues.map((residue, index) => {
+      const aminoAcid = previewProtein[index];
+      return aminoAcid && aminoAcid !== residue.aa ? { ...residue, aa: aminoAcid } : residue;
+    });
+  }, [previewProtein, previewResidues]);
   const translationUnavailableReason = !translationCode.supported
     ? translationCode.message
     : selectedPinnedLayerNeedsReview
@@ -7415,8 +7940,10 @@ function App() {
       return `${base} · ${workflowResultId.slice(-8)}`;
     };
     const outputIdentities = derivedCount === 0 ? [] : recipe.fragments.map((fragment, index) => {
-      const endLabel = [fragment.leftEnzyme, fragment.rightEnzyme]
-        .filter((value): value is string => Boolean(value))
+      const endLabel = [
+        ...(fragment.leftEnzymes && fragment.leftEnzymes.length > 0 ? fragment.leftEnzymes : fragment.leftEnzyme ? [fragment.leftEnzyme] : []),
+        ...(fragment.rightEnzymes && fragment.rightEnzymes.length > 0 ? fragment.rightEnzymes : fragment.rightEnzyme ? [fragment.rightEnzyme] : []),
+      ]
         .filter((value, valueIndex, values) => values.indexOf(value) === valueIndex)
         .join('–');
       const baseName = recipe.outcome === 'linearized'
@@ -7582,6 +8109,12 @@ function App() {
             },
           }], { ...importDefaults, type: 'dna', topology: 'linear' }));
           continue;
+        }
+        const maxImportBytes = isDatabaseJsonFile(file)
+          ? MOTIF_MAX_DATABASE_IMPORT_FILE_BYTES
+          : MOTIF_MAX_IMPORT_FILE_BYTES;
+        if (file.size > maxImportBytes) {
+          throw new Error(`Import files cannot exceed ${Math.round(maxImportBytes / (1024 * 1024))} MB.`);
         }
         const text = await file.text();
         loadedFiles.push({ file, text });
@@ -8251,7 +8784,11 @@ function App() {
     if (cleanName.length > MAX_CUSTOM_ENZYME_NAME_LENGTH) return `Enzyme names are limited to ${MAX_CUSTOM_ENZYME_NAME_LENGTH} characters`;
     if (recognition.length > MAX_CUSTOM_ENZYME_RECOGNITION_LENGTH) return `Recognition sequences are limited to ${MAX_CUSTOM_ENZYME_RECOGNITION_LENGTH} characters`;
     const known = cleanName ? fullEnzymeByLowerName.get(cleanName.toLowerCase()) : null;
-    const rec = recognition.toUpperCase().replace(/[^ACGTRYSWKMBDHVN]/g, '');
+    const normalizedRecognition = recognition.trim()
+      ? normalizeCustomEnzymeRecognitionInput(recognition)
+      : { sequence: '' };
+    if (normalizedRecognition.error) return normalizedRecognition.error;
+    const rec = normalizedRecognition.sequence;
     if (!known && rec.length < 3) return 'Enter a known enzyme name or recognition sequence (≥3 bases, IUPAC ok)';
     const enzyme = known ?? createCenteredBluntEnzyme(cleanName || rec, rec);
     let outcome: string | null = null;
@@ -9878,6 +10415,9 @@ function App() {
   }, []);
 
   const restoreWorkspaceBackupFile = useCallback(async (file: File, returnFocus: HTMLElement | null = null) => {
+    if (file.size > MOTIF_MAX_DATABASE_IMPORT_FILE_BYTES) {
+      throw new Error(`Workspace backup files cannot exceed ${Math.round(MOTIF_MAX_DATABASE_IMPORT_FILE_BYTES / (1024 * 1024))} MB.`);
+    }
     const rawDatabase = parseArtifactDatabaseJson(await file.text());
     if (!rawDatabase) throw new Error('This file is not a Motif Database JSON backup.');
     requestArtifactDatabaseRestore(rawDatabase, file.name, returnFocus, 'durable-checkpoint');
@@ -11393,6 +11933,24 @@ function App() {
                   </button>
                 </div>
               </div>
+              {selectedFeatureQuarantineStatus ? (
+                <ScientificStatus
+                  testId="feature-location-status"
+                  tone="unsupported"
+                  title={selectedFeatureQuarantineStatus.title}
+                  message={selectedFeatureQuarantineStatus.message}
+                  codes={[selectedFeatureQuarantineStatus.code]}
+                >
+                  <dl>
+                    <div><dt>Code</dt><dd><code>{selectedFeatureQuarantineStatus.code}</code></dd></div>
+                    <div><dt>Original location</dt><dd><code>{selectedFeatureQuarantineStatus.location}</code></dd></div>
+                    <div><dt>Qualifiers</dt><dd>{selectedFeatureQuarantineStatus.qualifierCount > 0
+                      ? `${selectedFeatureQuarantineStatus.qualifierCount} retained in source order`
+                      : 'No preserved source qualifier list'}</dd></div>
+                    <div><dt>Local range</dt><dd>Unavailable</dd></div>
+                  </dl>
+                </ScientificStatus>
+              ) : null}
               </>
               ) : (
                 <div className="motif-cs-empty-sequence-state">
@@ -11797,7 +12355,7 @@ function App() {
                 translationCodeContext={translationCodeContext}
                 strand={translateStrand}
                 frame={translateFrame}
-                residues={previewResidues}
+                residues={displayPreviewResidues}
                 protein={previewProtein}
                 unavailableReason={translationUnavailableReason}
                 canAddToSequence={canPinPreviewTranslation}
@@ -12131,7 +12689,7 @@ function App() {
             translationCodeContext={translationCodeContext}
             strand={translateStrand}
             frame={translateFrame}
-            residues={previewResidues}
+            residues={displayPreviewResidues}
             protein={previewProtein}
             unavailableReason={translationUnavailableReason}
             canAddToSequence={canPinPreviewTranslation}
@@ -14585,6 +15143,8 @@ function AnalysisPanel({
       frame: orf.frame,
       strand: orf.strand,
       aminoAcids: orf.aminoAcids,
+      status: orf.status ?? 'complete',
+      warnings: orf.warnings ?? [],
     })),
   }, null, 2), [allOrfs.length, composition, gc, isNucleotide, mw, record.id, record.name, record.sequence.length, sequenceType, tm, topology, translationCode, visibleOrfs]);
 
@@ -14711,19 +15271,166 @@ function digestFragmentRangeLabel(fragment: DigestFragment, sequenceLength: numb
   return `${start}-${sequenceLength} / 1-${wrappedEnd} (wrap)`;
 }
 
+function digestFragmentEnzymeLabel(fragment: Pick<DigestFragment, 'leftEnzyme' | 'rightEnzyme' | 'leftEnzymes' | 'rightEnzymes'>): string {
+  return [
+    ...(fragment.leftEnzymes && fragment.leftEnzymes.length > 0 ? fragment.leftEnzymes : fragment.leftEnzyme ? [fragment.leftEnzyme] : []),
+    ...(fragment.rightEnzymes && fragment.rightEnzymes.length > 0 ? fragment.rightEnzymes : fragment.rightEnzyme ? [fragment.rightEnzyme] : []),
+  ].filter((value, index, values) => values.indexOf(value) === index).join('–');
+}
+
 function digestRows(fragments: readonly DigestFragment[], sequenceLength: number): string {
   return [
-    ['index', 'length', 'range', 'leftEnzyme', 'rightEnzyme', 'overhang5', 'overhang3'].join('\t'),
+    ['index', 'length', 'range', 'leftEnzyme', 'rightEnzyme', 'leftEnzymes', 'rightEnzymes', 'overhang5', 'overhang3'].join('\t'),
     ...fragments.map((fragment, index) => [
       index + 1,
       fragment.length,
       digestFragmentRangeLabel(fragment, sequenceLength),
       fragment.leftEnzyme ?? '',
       fragment.rightEnzyme ?? '',
+      (fragment.leftEnzymes && fragment.leftEnzymes.length > 0 ? fragment.leftEnzymes : fragment.leftEnzyme ? [fragment.leftEnzyme] : []).join(';'),
+      (fragment.rightEnzymes && fragment.rightEnzymes.length > 0 ? fragment.rightEnzymes : fragment.rightEnzyme ? [fragment.rightEnzyme] : []).join(';'),
       fragment.overhang5,
       fragment.overhang3,
     ].join('\t')),
   ].join('\n');
+}
+
+type ScientificStatusTone = 'conditional' | 'partial' | 'unsupported' | 'error';
+
+function ScientificStatus({
+  id,
+  testId,
+  tone,
+  title,
+  message,
+  codes,
+  children,
+}: {
+  id?: string;
+  testId?: string;
+  tone: ScientificStatusTone;
+  title: string;
+  message: string;
+  codes: readonly string[];
+  children?: ReactNode;
+}) {
+  const uniqueCodes = Array.from(new Set(codes));
+  return (
+    <div
+      id={id}
+      className="motif-cs-scientific-status"
+      data-testid={testId}
+      data-status={tone}
+      role={tone === 'error' ? 'alert' : 'status'}
+    >
+      <div className="motif-cs-scientific-status-copy">
+        <strong>{title}</strong>
+        <span>{message}</span>
+      </div>
+      <details>
+        <summary>
+          Technical details
+          <span className="motif-cs-scientific-status-codes">
+            {uniqueCodes.map((code) => <code key={code}>{code}</code>)}
+          </span>
+        </summary>
+        <div className="motif-cs-scientific-status-details">{children}</div>
+      </details>
+    </div>
+  );
+}
+
+const CONDITIONAL_DIGEST_ISSUES = new Set<DigestRecipeIssue['code']>([
+  'insufficient_flanking_bases',
+  'methylation_unknown',
+  'methylation_unmethylated',
+]);
+
+function digestIssueExplanation(issue: DigestRecipeIssue): { title: string; message: string } {
+  if (issue.code === 'insufficient_flanking_bases') {
+    return {
+      title: 'Sequence context is incomplete.',
+      message: 'A recognition site was found, but this linear record does not include every flanking base needed to form the Type IIS cleavage ends. Extend the sequence context or use a record with the required flanks.',
+    };
+  }
+  if (issue.code === 'methylation_unknown') {
+    return {
+      title: 'Methylation state is needed.',
+      message: 'A recognition site was found, but cleavage depends on methylation that is not specified. Choose a molecular state in the control above; Motif will not assume a cut.',
+    };
+  }
+  if (issue.code === 'methylation_unmethylated') {
+    return {
+      title: 'The selected state prevents cleavage.',
+      message: 'A recognition site was found, but the selected unmethylated state does not satisfy this enzyme’s cleavage requirement. No cut is predicted.',
+    };
+  }
+  return { title: 'The digest recipe needs attention.', message: issue.message };
+}
+
+function quarantineStatusForFeature(feature: Feature): {
+  code: 'between_base_location' | 'remote_location' | 'ambiguous_location' | 'feature_location_quarantined';
+  location: string;
+  qualifierCount: number;
+  title: string;
+  message: string;
+} | null {
+  if (!isQuarantinedFeatureLocation(feature)) return null;
+  const location = String(feature.metadata.motifOriginalLocation);
+  const diagnostics = Array.isArray(feature.metadata.motifImportDiagnostics)
+    ? feature.metadata.motifImportDiagnostics
+    : [];
+  const diagnostic = diagnostics.find((value): value is Record<string, unknown> => (
+    value !== null && typeof value === 'object' && !Array.isArray(value)
+  ));
+  const diagnosticCode = diagnostic?.code;
+  const qualifierCount = Array.isArray(feature.metadata.motifQualifiers)
+    ? feature.metadata.motifQualifiers.filter((value) => (
+        value !== null
+        && typeof value === 'object'
+        && !Array.isArray(value)
+        && typeof (value as Record<string, unknown>).key === 'string'
+        && (typeof (value as Record<string, unknown>).value === 'string' || (value as Record<string, unknown>).value === true)
+      )).length
+    : 0;
+  const code = diagnosticCode === 'between_base_location' || diagnosticCode === 'remote_location' || diagnosticCode === 'ambiguous_location'
+    ? diagnosticCode
+    : /^[<>]?\d+\^[<>]?\d+$/.test(location.trim())
+      ? 'between_base_location'
+      : /^[A-Za-z][A-Za-z0-9_.-]*:/.test(location.trim())
+        ? 'remote_location'
+        : 'feature_location_quarantined';
+  return code === 'between_base_location'
+    ? {
+        code,
+        location,
+        qualifierCount,
+        title: 'Between-base location retained, not projected.',
+        message: 'This valid zero-width INSDC location cannot be mapped to a local sequence range. Sequence-derived actions remain unavailable, while the original location stays available for export.',
+      }
+    : code === 'remote_location'
+      ? {
+        code,
+        location,
+        qualifierCount,
+        title: 'Remote location retained, not projected.',
+        message: 'This feature points to an external accession and cannot be mapped onto this record’s local sequence. Sequence-derived actions remain unavailable, while the original location stays available for export.',
+      }
+      : code === 'ambiguous_location'
+        ? {
+          code,
+          location,
+          qualifierCount,
+          title: 'Ambiguous location retained, not projected.',
+          message: 'This valid INSDC location contains alternative coordinates that cannot be mapped onto one authoritative local range. Sequence-derived actions remain unavailable, while the original location stays available for export.',
+        }
+      : {
+          code,
+          location,
+          qualifierCount,
+          title: 'Feature location retained, not projected.',
+          message: 'This source location cannot be mapped onto one authoritative local sequence range. Sequence-derived actions remain unavailable, while the original location stays available for export.',
+        };
 }
 
 function downloadTextFile(filename: string, content: string, mime = 'text/plain'): BrowserDownloadReceipt {
@@ -14812,6 +15519,7 @@ function DigestPanel({
   onSelectRange: (start: number, end: number) => void;
 }) {
   const isDna = sequenceType === 'dna';
+  const digestInstanceId = useId();
   const defaultEnzymes = useMemo(() => {
     const injected = Array.from(new Set(record.sites.map((site) => site.enzyme))).slice(0, 3);
     if (injected.length > 0) return injected.join(', ');
@@ -14819,20 +15527,67 @@ function DigestPanel({
     return available.length > 0 ? available.join(', ') : 'EcoRI, BamHI, HindIII';
   }, [record.sites, visibleMapEnzymes]);
   const [enzymeText, setEnzymeText] = useState(defaultEnzymes);
+  const [methylationAssumptions, setMethylationAssumptions] = useState<Partial<Record<RestrictionMethylationTarget, RestrictionMethylationState>>>({});
   const [saveStatus, setSaveStatus] = useState('');
   const draftByRecordRef = useRef<Record<string, string>>({});
+  const methylationByRecordRef = useRef<Record<string, Partial<Record<RestrictionMethylationTarget, RestrictionMethylationState>>>>({});
   const previousRecordIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (previousRecordIdRef.current === record.id) return;
     previousRecordIdRef.current = record.id;
     setEnzymeText(draftByRecordRef.current[record.id] ?? defaultEnzymes);
+    setMethylationAssumptions(methylationByRecordRef.current[record.id] ?? {});
     setSaveStatus('');
   }, [defaultEnzymes, record.id]);
 
   useEffect(() => {
     setSaveStatus('');
-  }, [enzymeText]);
+  }, [enzymeText, methylationAssumptions]);
+
+  const resolvedEnzymes = useMemo(
+    () => resolveDigestEnzymes(enzymeText, enzymeCatalog).enzymes,
+    [enzymeCatalog, enzymeText],
+  );
+  const methylationControls = useMemo(() => {
+    const controls = new Map<RestrictionMethylationTarget, {
+      target: RestrictionMethylationTarget;
+      enzymeNames: string[];
+      requirements: string[];
+      evidence?: RestrictionEnzyme['methylationEvidence'];
+      contextDependent: boolean;
+    }>();
+    for (const enzyme of resolvedEnzymes) {
+      const requirement = enzyme.methylationRequirement;
+      const target = requirement?.target
+        ?? (enzyme.methylationBehavior === 'context_dependent' ? 'cpg' : undefined);
+      if (!target) continue;
+      const control = controls.get(target) ?? {
+        target,
+        enzymeNames: [],
+        requirements: [],
+        contextDependent: false,
+      };
+      if (!control.enzymeNames.includes(enzyme.name)) control.enzymeNames.push(enzyme.name);
+      if (requirement) {
+        const requirementText = `${enzyme.name}: ${requirement.target}=${requirement.state}`;
+        if (!control.requirements.includes(requirementText)) control.requirements.push(requirementText);
+      }
+      if (requirement?.evidence !== undefined) control.evidence ??= requirement.evidence;
+      if (enzyme.methylationEvidence !== undefined) control.evidence ??= enzyme.methylationEvidence;
+      if (enzyme.methylationBehavior === 'context_dependent') control.contextDependent = true;
+      controls.set(target, control);
+    }
+    return [...controls.values()];
+  }, [resolvedEnzymes]);
+
+  const methylationTargetLabel = (target: RestrictionMethylationTarget): string => target === 'dam'
+    ? 'Dam'
+    : target === 'dcm'
+      ? 'Dcm'
+      : target === 'cpg'
+        ? 'CpG'
+        : 'Custom';
 
   const recipe = useMemo(() => buildDigestRecipe({
     sequence: record.sequence,
@@ -14841,8 +15596,17 @@ function DigestPanel({
     enzymeText,
     enzymeCatalog,
     features: record.features,
-  }), [enzymeCatalog, enzymeText, record.features, record.sequence, sequenceType, topology]);
+    ...(methylationControls.length > 0 ? { methylationAssumptions } : {}),
+  }), [enzymeCatalog, enzymeText, methylationAssumptions, methylationControls.length, record.features, record.sequence, sequenceType, topology]);
   const fragments = recipe.fragments;
+  const nickCount = recipe.enzymes.reduce((total, entry) => total + entry.nickCount, 0);
+  const hardIssues = recipe.issues.filter((issue) => !CONDITIONAL_DIGEST_ISSUES.has(issue.code));
+  const conditionalIssues = recipe.issues.filter((issue) => CONDITIONAL_DIGEST_ISSUES.has(issue.code));
+  const presentedIssues = hardIssues.length > 0 ? recipe.issues : conditionalIssues;
+  const statusTone: ScientificStatusTone = hardIssues.length > 0 ? 'error' : 'conditional';
+  const statusCopy = presentedIssues.length > 0
+    ? digestIssueExplanation(presentedIssues[0])
+    : null;
   const recipeEnzymes = recipe.enzymes.map((entry) => entry.name.toLocaleLowerCase()).sort();
   const savedRecipe = recipe.isValid ? workflowResults.find((result) => {
     if (result.kind !== 'digest' || result.inputRecordIds.length !== 1 || result.inputRecordIds[0] !== record.id) return false;
@@ -14854,9 +15618,12 @@ function DigestPanel({
     const savedEnzymes = Array.isArray(result.parameters.enzymes)
       ? result.parameters.enzymes.filter((value): value is string => typeof value === 'string').map((value) => value.toLocaleLowerCase()).sort()
       : [];
+    const savedMethylationAssumptions = result.parameters.methylationAssumptions;
+    const currentMethylationAssumptions = recipe.methylationAssumptions;
     return result.parameters.topology === topology
       && result.parameters.outcome === recipe.outcome
       && result.parameters.cutCount === recipe.cutCount
+      && JSON.stringify(savedMethylationAssumptions) === JSON.stringify(currentMethylationAssumptions)
       && savedEnzymes.length === recipeEnzymes.length
       && savedEnzymes.every((value, index) => value === recipeEnzymes[index]);
   }) : undefined;
@@ -14867,18 +15634,24 @@ function DigestPanel({
   const recipeMeta = !isDna
     ? { full: 'DNA only', compact: 'n/a' }
     : !recipe.isValid
-      ? { full: 'Check recipe', compact: 'check' }
+      ? hardIssues.length > 0
+        ? { full: 'Check recipe', compact: 'check' }
+        : { full: 'Conditional · no digest', compact: 'conditional' }
       : recipe.outcome === 'uncut'
-        ? { full: '0 cuts · uncut', compact: '0 cuts' }
+        ? nickCount > 0
+          ? { full: `${nickCount} nick${nickCount === 1 ? '' : 's'} · continuous`, compact: `${nickCount} nick${nickCount === 1 ? '' : 's'}` }
+          : { full: '0 cuts · uncut', compact: '0 cuts' }
         : recipe.outcome === 'linearized'
           ? { full: '1 cut · linearized', compact: '1 cut' }
           : {
-            full: `${recipe.cutCount} cuts · ${fragments.length} fragments`,
+            full: `${recipe.cutCount} cut${recipe.cutCount === 1 ? '' : 's'} · ${fragments.length} fragments`,
             compact: `${fragments.length} frag`,
           };
   const issueId = `motif-cs-digest-issue-${record.id}`;
   const saveLabel = recipeAlreadySaved
     ? 'Saved'
+    : !recipe.isValid
+      ? 'Resolve before saving'
     : recipe.outcome === 'uncut'
       ? 'Save result'
       : recipe.outcome === 'linearized'
@@ -14907,6 +15680,9 @@ function DigestPanel({
           <span className="motif-cs-full-label">{recipeMeta.full}</span>
           <span className="motif-cs-compact-label">{recipeMeta.compact}</span>
         </span>
+        {recipeAlreadySaved ? (
+          <span className="motif-cs-chip" data-testid="digest-saved-receipt" aria-label="Digest result saved">Saved</span>
+        ) : null}
       </summary>
       {isDna ? (
         <>
@@ -14925,8 +15701,8 @@ function DigestPanel({
                 setEnzymeText(next);
               }}
               aria-label="Digest enzymes"
-              aria-invalid={!recipe.isValid}
-              aria-describedby={!recipe.isValid ? issueId : undefined}
+              aria-invalid={hardIssues.length > 0}
+              aria-describedby={recipe.issues.length > 0 ? issueId : undefined}
               placeholder="EcoRI, BamHI…"
               list="motif-cs-digest-enzymes"
             />
@@ -14972,25 +15748,86 @@ function DigestPanel({
               {recipeAlreadySaved ? 'Open gel' : 'Save & open gel'}
             </button>
           </div>
-          {!recipe.isValid ? (
-            <p id={issueId} className="motif-cs-inline-error" role="alert">
-              {recipe.issues.map((issue) => issue.message).join(' ')}
-            </p>
+          {methylationControls.length > 0 ? (
+            <div className="motif-cs-digest-methylation-row">
+              {methylationControls.map((control) => {
+                const label = methylationTargetLabel(control.target);
+                const methylationEvidenceId = `${digestInstanceId}-methylation-${control.target}-evidence`;
+                const nextAssumptions = (next: RestrictionMethylationState) => {
+                  const updated = { ...methylationAssumptions, [control.target]: next };
+                  methylationByRecordRef.current[record.id] = updated;
+                  setMethylationAssumptions(updated);
+                };
+                return (
+                  <label key={control.target}>
+                    <span>{label} methylation state</span>
+                    <select
+                      className="motif-cs-field"
+                      data-testid={methylationControls.length === 1 ? 'digest-methylation-state' : `digest-methylation-state-${control.target}`}
+                      aria-label={`${label} methylation state`}
+                      aria-describedby={methylationEvidenceId}
+                      value={methylationAssumptions[control.target] ?? 'unknown'}
+                      onChange={(event) => nextAssumptions(event.target.value as RestrictionMethylationState)}
+                    >
+                      <option value="unknown">Unknown — do not assume</option>
+                      <option value="methylated">Methylated</option>
+                      <option value="unmethylated">Unmethylated</option>
+                    </select>
+                  </label>
+                );
+              })}
+              {methylationControls.map((control) => (
+                <span id={`${digestInstanceId}-methylation-${control.target}-evidence`} key={`${control.target}-receipt`}>
+                  {control.enzymeNames.join(', ')} · required {control.requirements.length > 0 ? control.requirements.join('; ') : `${methylationTargetLabel(control.target)} context-specific`}.
+                  {control.contextDependent ? ' Context-dependent rule.' : ''}
+                  {control.evidence ? ` Evidence: ${control.evidence.sourceLabel}; ${control.evidence.conditions}` : ' Evidence is not available in the catalog.'}
+                </span>
+              ))}
+            </div>
+          ) : null}
+          {!recipe.isValid && statusCopy ? (
+            <ScientificStatus
+              id={issueId}
+              testId="digest-scientific-status"
+              tone={statusTone}
+              title={statusCopy.title}
+              message={statusCopy.message}
+              codes={presentedIssues.map((issue) => issue.code)}
+            >
+              <ul>
+                {recipe.issues.map((issue, index) => (
+                  <li key={`${issue.code}:${issue.enzyme ?? ''}:${issue.position ?? ''}:${index}`}>
+                    <code>{issue.code}</code>
+                    <span>{issue.message}</span>
+                    {issue.position === undefined ? null : <small>Recognition starts at base {issue.position + 1}.</small>}
+                    {issue.required === undefined ? null : <small>Required: {issue.required}.</small>}
+                    {issue.observed === undefined ? null : <small>Observed: {issue.observed}.</small>}
+                  </li>
+                ))}
+              </ul>
+            </ScientificStatus>
           ) : null}
           {recipe.enzymes.length > 0 ? (
             <div className="motif-cs-digest-enzyme-chips" aria-label="Resolved restriction cutters">
               {recipe.enzymes.map((entry) => (
                 <span className="motif-cs-digest-enzyme-chip" key={entry.name} data-type={entry.type}>
                   <strong translate="no">{entry.name}</strong>
-                  <span>{entry.cutCount} cut{entry.cutCount === 1 ? '' : 's'}</span>
+                  <span>{entry.type === 'nickase'
+                    ? `${entry.nickCount} nick${entry.nickCount === 1 ? '' : 's'}`
+                    : `${entry.cutCount} cut${entry.cutCount === 1 ? '' : 's'}`}</span>
                   {entry.type === 'type-iis' ? <small>Type IIS</small> : null}
+                  {entry.type === 'nickase' ? <small>Nickase</small> : null}
                 </span>
               ))}
             </div>
           ) : null}
           {recipe.isValid && recipe.outcome === 'uncut' ? (
             <p className="motif-cs-digest-outcome" role="status">
-              <strong>No cut sites found.</strong> The {topology} DNA molecule remains uncut; no derived fragments were produced.
+              {nickCount > 0 ? (
+                <><strong>No double-strand cuts predicted.</strong> {nickCount} single-strand nicking event{nickCount === 1 ? '' : 's'} leave{nickCount === 1 ? 's' : ''} the DNA molecule continuous; no ordinary digest fragments were produced.</>
+              ) : (
+                <><strong>No cut sites found.</strong> The {topology} DNA molecule remains uncut; no derived fragments were produced.</>
+              )}
             </p>
           ) : recipe.isValid ? (
             <p className="motif-cs-digest-outcome" role="status">
@@ -15013,7 +15850,7 @@ function DigestPanel({
                     Fragment {index + 1}
                     <small>
                       {sequenceLengthLabel(fragment.length, sequenceType)} · {digestFragmentRangeLabel(fragment, record.sequence.length)}
-                      {fragment.leftEnzyme || fragment.rightEnzyme ? ` · ${fragment.leftEnzyme ?? 'end'} to ${fragment.rightEnzyme ?? 'end'}` : ''}
+                      {digestFragmentEnzymeLabel(fragment) ? ` · ${digestFragmentEnzymeLabel(fragment)}` : ''}
                     </small>
                   </span>
                   <span className="motif-cs-row-meta motif-cs-digest-end-labels">
@@ -15323,6 +16160,9 @@ function SequenceToolsPanel({
     { id: 'inventory-zip', group: 'Whole inventory', label: 'ZIP package', download: () => downloadBlobFile('motif-inventory-export.zip', createZipBlob(zipFiles)) },
   ], [fasta, featureCsv, genbank, gff3, hasActiveRecord, inventoryCsv, inventoryJson, multiFasta, multiGenbank, record.name, record.sequence, recordJson, reportHtml, reportMarkdown, siteCsv, zipFiles]);
   const exportChoice = exportChoices.find((choice) => choice.id === exportChoiceId) ?? exportChoices[0];
+  const exportLossReport = hasActiveRecord
+    ? buildArtifactExportLossReport(record, exportLossFormatForChoice(exportChoice?.id ?? 'record-sequence'))
+    : null;
   const exportPreview = exportChoice?.content
     ?? (exportChoice?.id === 'inventory-zip'
       ? `ZIP package · ${zipFiles.length} files\n\n${zipFiles.map((file) => file.name).join('\n')}`
@@ -15348,8 +16188,9 @@ function SequenceToolsPanel({
       if (!exportChoice.content || !exportChoice.downloadName) return;
       receipt = downloadTextFile(exportChoice.downloadName, exportChoice.content, exportChoice.mime);
     }
-    setDownloadStatus(receipt.message);
-  }, [exportChoice]);
+    const lossSuffix = exportLossReport?.lossy ? ` ${exportLossReport.summary}` : '';
+    setDownloadStatus(`${receipt.message}${lossSuffix}`);
+  }, [exportChoice, exportLossReport]);
   const selectedTargetLabel = selectedFeature
     ? selectedFeature.name
     : selectedMapRange
@@ -15491,6 +16332,19 @@ function SequenceToolsPanel({
             <button className="motif-cs-mini-button motif-cs-mini-button-accent" type="button" onClick={exportChoice?.print} disabled={!exportChoice?.print}>Print / PDF</button>
           </div>
         </div>
+        {exportLossReport ? (
+          <div
+            className="motif-cs-form-note"
+            data-testid="export-loss-receipt"
+            data-faithful={String(exportLossReport.faithful)}
+            data-lossy={String(exportLossReport.lossy)}
+            role="status"
+            aria-live="polite"
+          >
+            <strong>{exportLossReport.faithful ? 'Faithful export' : 'Lossy export'}</strong>{' '}
+            {exportLossReport.summary}
+          </div>
+        ) : null}
         <p className="motif-cs-form-note" role="status" aria-live="polite" data-empty={!downloadStatus || undefined}>
           {downloadStatus}
         </p>
@@ -15960,6 +16814,7 @@ function TranslationPanel({
       ? '__invalid__'
       : String(translationCode.requestedId);
   const unsupportedTranslationCode = translationCode.supported ? null : translationCode;
+  const ambiguousResidueCount = residues.reduce((count, residue) => count + (residue.aa === 'X' ? 1 : 0), 0);
   const handleProteinClick = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
     const origin = proteinPointerRef.current;
     proteinPointerRef.current = null;
@@ -16082,6 +16937,39 @@ function TranslationPanel({
         {onOpenFloating ? <button className="motif-cs-mini-button" type="button" onClick={onOpenFloating}>Pop out</button> : null}
       </div>
 
+      {unsupportedTranslationCode ? (
+        <ScientificStatus
+          testId="translation-table-status"
+          tone="unsupported"
+          title={unsupportedTranslationCode.requestedId === null ? 'Translation table qualifier is invalid.' : 'Translation table is unsupported.'}
+          message={unavailableReason ?? 'Choose a supported genetic code before translating this feature.'}
+          codes={[unsupportedTranslationCode.requestedId === null ? 'invalid_translation_table' : 'unsupported_translation_table']}
+        >
+          <dl>
+            <div>
+              <dt>Code</dt>
+              <dd><code>{unsupportedTranslationCode.requestedId === null ? 'invalid_translation_table' : 'unsupported_translation_table'}</code></dd>
+            </div>
+            <div><dt>Requested table</dt><dd>{unsupportedTranslationCode.requestedId ?? 'Malformed qualifier'}</dd></div>
+            <div><dt>Repair</dt><dd>Choose a supported table in the Genetic code control.</dd></div>
+          </dl>
+        </ScientificStatus>
+      ) : ambiguousResidueCount > 0 ? (
+        <ScientificStatus
+          testId="translation-ambiguity-status"
+          tone="partial"
+          title="Partial translation."
+          message={`${ambiguousResidueCount} codon${ambiguousResidueCount === 1 ? '' : 's'} ${ambiguousResidueCount === 1 ? 'does' : 'do'} not resolve to one amino acid under table ${translationCode.id} and ${ambiguousResidueCount === 1 ? 'is' : 'are'} shown as X; other residues remain usable.`}
+          codes={['ambiguous_codon']}
+        >
+          <dl>
+            <div><dt>Code</dt><dd><code>ambiguous_codon</code></dd></div>
+            <div><dt>Unresolved codons</dt><dd>{ambiguousResidueCount}</dd></div>
+            <div><dt>Rendered residue</dt><dd><code>X</code> (no single amino acid selected)</dd></div>
+          </dl>
+        </ScientificStatus>
+      ) : null}
+
       {protein && residues.length === 0 ? (
         <>
           <div
@@ -16147,7 +17035,7 @@ function TranslationPanel({
             </span>
           ))}
         </div>
-      ) : (
+      ) : unsupportedTranslationCode ? null : (
         <p className="motif-cs-muted" role={unavailableReason ? 'alert' : undefined}>
           {unavailableReason ?? 'Region is shorter than one codon.'}
         </p>
@@ -16620,6 +17508,7 @@ type InlineTranslationTrack = {
   needsReview?: boolean;
   completeCds?: boolean;
   featureId?: string;
+  materializedProtein?: string;
 };
 
 // One residue placed in PLUS-STRAND codon coordinates so it aligns to the bases
@@ -16688,12 +17577,15 @@ function inlineTrackResidues(
   const aminoAcids = track.completeCds
     ? translateCompleteCds(source, track.frame, table.table)
     : translate(source, track.frame, table.table);
+  const renderedAminoAcids = track.materializedProtein?.length === aminoAcids.length
+    ? track.materializedProtein
+    : aminoAcids;
   const residues: TrackResidue[] = [];
-  for (let i = 0; i < aminoAcids.length; i += 1) {
+  for (let i = 0; i < renderedAminoAcids.length; i += 1) {
     const off = track.frame + i * 3;
     if (off + 3 > region.length) break;
     const rangeOffset = track.strand === -1 ? region.length - off - 3 : off;
-    residues.push({ aa: aminoAcids[i], ...codonRangeFromRangeOffset(spans, rangeOffset, sequence.length) });
+    residues.push({ aa: renderedAminoAcids[i], ...codonRangeFromRangeOffset(spans, rangeOffset, sequence.length) });
   }
   return residues;
 }

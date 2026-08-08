@@ -10,7 +10,13 @@
  * Handles DNA, RNA, and protein sequences.
  */
 
-import { sequenceDiff } from './sequence-diff';
+import {
+  alignmentResiduesMatch,
+  classifyAlignmentResidues,
+  normalizeAlignmentSequence,
+  type AlignmentMolecule,
+} from './alignment-semantics';
+import { sequenceDiff, type DiffMethod } from './sequence-diff';
 
 // ===== Public types =====
 
@@ -27,20 +33,62 @@ export interface MSAResult {
   gapOnly: boolean[];     // per-column: every sequence has a gap
   alignmentLength: number;
   centerIdx: number;      // index of the "center" (anchor) sequence in rows
+  /** Explicit comparison route metadata for browser/import parity. */
+  method: string;
+  algorithm: string;
+  fallback: boolean;
+  warnings: string[];
+  ambiguities: number;
 }
 
 export interface MSAError {
-  type: 'too_large' | 'insufficient_sequences';
+  type: 'too_large' | 'insufficient_sequences' | 'invalid_input' | 'work_limit';
   message: string;
+  warnings?: string[];
 }
 
 /** Type guard */
-export function isMSAError(r: MSAResult | MSAError): r is MSAError {
-  return 'type' in r && 'message' in r;
+export function isMSAError<T>(r: T | MSAError): r is MSAError {
+  return typeof r === 'object' && r !== null && 'type' in r && 'message' in r;
 }
 
 // ===== Per-sequence length limit =====
 export const MSA_MAX_SEQ_LEN = 3000;
+export const MSA_MAX_WORK_UNITS = 250_000_000;
+
+export type ComputeMSAOptions = {
+  molecule?: AlignmentMolecule;
+  maxWorkUnits?: number;
+};
+
+function msaError(type: MSAError['type'], message: string, warnings?: string[]): MSAError {
+  return { type, message, ...(warnings?.length ? { warnings } : {}) };
+}
+
+function inferMolecule(sequences: readonly string[]): AlignmentMolecule | null {
+  const dna = sequences.every((sequence) => /^[ACGTRYSWKMBDHVN?]+$/u.test(sequence));
+  if (dna) return 'dna';
+  const rna = sequences.every((sequence) => /^[ACGURYSWKMBDHVN?]+$/u.test(sequence));
+  if (rna) return 'rna';
+  const protein = sequences.every((sequence) => /^[ACDEFGHIKLMNPQRSTVWYOUJBXZ*?]+$/u.test(sequence));
+  return protein ? 'protein' : null;
+}
+
+function estimateMsaWork(lengths: readonly number[]): number {
+  let pairwise = 0;
+  for (let i = 0; i < lengths.length; i += 1) {
+    for (let j = i + 1; j < lengths.length; j += 1) pairwise += lengths[i] * lengths[j];
+  }
+  const maxLength = Math.max(0, ...lengths);
+  const centerPass = lengths.reduce((sum, length) => sum + maxLength * length, 0) - maxLength * maxLength;
+  return pairwise + Math.max(0, centerPass);
+}
+
+function diffMethods(values: readonly DiffMethod[]): string {
+  const methods = Array.from(new Set(values));
+  if (methods.length === 0) return 'none';
+  return methods.join(' + ');
+}
 
 // ===== Internal helpers =====
 
@@ -172,19 +220,30 @@ function buildConsensus(
  * the per-row "% identity" honest for sequences with indels (a row missing a
  * stretch of bases no longer reads as 100% identical to the consensus).
  */
-function computeIdentity(aligned: string, consensus: string): number {
+function computeIdentityWithSemantics(
+  aligned: string,
+  consensus: string,
+  molecule: AlignmentMolecule,
+): { identity: number; ambiguities: number } {
   let matches = 0;
   let total = 0;
-  for (let i = 0; i < aligned.length; i++) {
-    // Skip gap-only columns (consensus is '-' only when every sequence is gapped
-    // there) — they belong to no single sequence and should not dilute identity.
+  let ambiguities = 0;
+  for (let i = 0; i < aligned.length; i += 1) {
     if (consensus[i] === '-') continue;
-    total++;
-    // aligned[i] === '-' can never equal a non-gap consensus char, so a gap in
-    // this row is correctly scored as a mismatch.
-    if (aligned[i] === consensus[i]) matches++;
+    total += 1;
+    if (aligned[i] === '-') continue;
+    const residue = classifyAlignmentResidues(aligned[i], consensus[i], molecule);
+    if (residue === 'match') {
+      matches += 1;
+    } else if (residue === 'ambiguous' || alignmentResiduesMatch(aligned[i], consensus[i], molecule)) {
+      matches += 1;
+      ambiguities += 1;
+    }
   }
-  return total > 0 ? Math.round((matches / total) * 1000) / 10 : 0;
+  return {
+    identity: total > 0 ? Math.round((matches / total) * 1000) / 10 : 0,
+    ambiguities,
+  };
 }
 
 // ===== Public API =====
@@ -196,23 +255,75 @@ function computeIdentity(aligned: string, consensus: string): number {
 export function computeMSA(
   sequences: string[],
   names: string[],
+  options: ComputeMSAOptions = {},
 ): MSAResult | MSAError {
+  if (!Array.isArray(sequences) || !Array.isArray(names)) {
+    return msaError('invalid_input', 'MSA sequences and names must both be arrays.');
+  }
   if (sequences.length < 2) {
-    return {
-      type: 'insufficient_sequences',
-      message: 'MSA requires at least 2 sequences.',
-    };
+    return msaError('insufficient_sequences', 'MSA requires at least 2 sequences.');
   }
 
-  const upper = sequences.map((s) => s.toUpperCase().replace(/\s/g, ''));
+  if (names.length !== sequences.length) {
+    return msaError('invalid_input', `MSA requires one unique name for each sequence (got ${names.length} names for ${sequences.length} sequences).`);
+  }
+
+  const seenNames = new Set<string>();
+  for (let index = 0; index < names.length; index += 1) {
+    if (typeof names[index] !== 'string' || !names[index].trim()) {
+      return msaError('invalid_input', `Sequence name ${index + 1} must be a non-empty string.`);
+    }
+    const key = names[index].trim().toLocaleLowerCase();
+    if (seenNames.has(key)) return msaError('invalid_input', `Sequence names must be unique; “${names[index]}” appears more than once.`);
+    seenNames.add(key);
+  }
+
+  let upper: string[];
+  try {
+    upper = sequences.map((sequence, index) => normalizeAlignmentSequence(
+      sequence,
+      options.molecule ?? 'dna',
+      { gapped: false, field: `Sequence ${index + 1}` },
+    ));
+  } catch (error) {
+    // If no molecule was supplied, infer a protein alphabet before rejecting a
+    // non-DNA sequence; browser callers still pass their declared type.
+    if (options.molecule) return msaError('invalid_input', error instanceof Error ? error.message : 'Invalid sequence input.');
+    if (sequences.some((sequence) => typeof sequence !== 'string')) {
+      return msaError('invalid_input', 'Every MSA sequence must be a string.');
+    }
+    const candidate = sequences.map((sequence) => sequence.toUpperCase().replace(/[ \t\r\n]/g, ''));
+    const inferred = inferMolecule(candidate);
+    if (!inferred) return msaError('invalid_input', error instanceof Error ? error.message : 'Sequences contain symbols outside the supported alignment alphabets.');
+    try {
+      upper = candidate.map((sequence, index) => normalizeAlignmentSequence(
+        sequence,
+        inferred,
+        { gapped: false, field: `Sequence ${index + 1}` },
+      ));
+    } catch (retryError) {
+      return msaError('invalid_input', retryError instanceof Error ? retryError.message : 'Invalid sequence input.');
+    }
+  }
+  const molecule = options.molecule ?? inferMolecule(upper);
+  if (!molecule) return msaError('invalid_input', 'Sequences contain symbols outside the supported DNA, RNA, and protein alignment alphabets.');
+  if (upper.some((sequence) => sequence.length === 0)) {
+    return msaError('invalid_input', 'Every MSA sequence must contain at least one residue.');
+  }
 
   // Length guard
   const maxLen = Math.max(...upper.map((s) => s.length));
   if (maxLen > MSA_MAX_SEQ_LEN) {
-    return {
-      type: 'too_large',
-      message: `Sequences must be ≤ ${MSA_MAX_SEQ_LEN} characters for MSA (longest: ${maxLen} bp/aa).`,
-    };
+    return msaError('too_large', `Sequences must be ≤ ${MSA_MAX_SEQ_LEN} characters for MSA (longest: ${maxLen} bp/aa).`);
+  }
+
+  const estimatedWork = estimateMsaWork(upper.map((sequence) => sequence.length));
+  const maxWorkUnits = options.maxWorkUnits ?? MSA_MAX_WORK_UNITS;
+  if (!Number.isFinite(maxWorkUnits) || maxWorkUnits < 0) {
+    return msaError('invalid_input', 'MSA maxWorkUnits must be a finite non-negative number.');
+  }
+  if (estimatedWork > maxWorkUnits) {
+    return msaError('work_limit', `MSA requires ${estimatedWork.toLocaleString()} comparison cells, above the ${maxWorkUnits.toLocaleString()}-cell work limit.`);
   }
 
   const n = upper.length;
@@ -220,11 +331,15 @@ export function computeMSA(
   // ── 1. Find center sequence (max average pairwise identity) ──────────────
   // For up to 10 sequences do all-pairs; beyond that use median length.
   const scores = new Array<number>(n).fill(0);
+  const methods: DiffMethod[] = [];
+  const warnings: string[] = [];
+  let ambiguities = 0;
 
   if (n <= 10) {
     for (let i = 0; i < n; i++) {
       for (let j = i + 1; j < n; j++) {
-        const diff = sequenceDiff(upper[i], upper[j]);
+        const diff = sequenceDiff(upper[i], upper[j], { molecule });
+        if (diff.status !== 'ok') return msaError(diff.status === 'work-limit' ? 'work_limit' : 'invalid_input', diff.warnings[0] ?? 'Pairwise comparison failed.');
         scores[i] += diff.identity;
         scores[j] += diff.identity;
       }
@@ -248,7 +363,11 @@ export function computeMSA(
       // Center aligned with itself: no gaps
       pairAligns.push({ alignedCenter: center, alignedSeq: center });
     } else {
-      const diff = sequenceDiff(center, upper[i]);
+      const diff = sequenceDiff(center, upper[i], { molecule });
+      if (diff.status !== 'ok') return msaError(diff.status === 'work-limit' ? 'work_limit' : 'invalid_input', diff.warnings[0] ?? 'Pairwise comparison failed.');
+      methods.push(diff.method);
+      ambiguities += diff.ambiguousMatches;
+      warnings.push(...diff.warnings);
       pairAligns.push({ alignedCenter: diff.aligned1, alignedSeq: diff.aligned2 });
     }
   }
@@ -282,10 +401,12 @@ export function computeMSA(
   const { consensus, conserved, gapOnly } = buildConsensus(aligned);
 
   const rows: MSARow[] = aligned.map((a, i) => ({
-    name: names[i],
+    name: names[i].trim(),
     aligned: a,
-    identity: computeIdentity(a, consensus),
+    identity: computeIdentityWithSemantics(a, consensus, molecule).identity,
   }));
+
+  const uniqueWarnings = Array.from(new Set(warnings));
 
   return {
     rows,
@@ -294,6 +415,11 @@ export function computeMSA(
     gapOnly,
     alignmentLength: aligned[0]?.length ?? 0,
     centerIdx,
+    method: 'star',
+    algorithm: diffMethods(methods),
+    fallback: methods.some((method) => method !== 'needleman-wunsch'),
+    warnings: uniqueWarnings,
+    ambiguities,
   };
 }
 
@@ -324,17 +450,9 @@ export interface LegacyMSAResult {
  */
 export function multipleAlign(
   sequences: Array<{ name: string; sequence: string }>,
-): LegacyMSAResult {
-  if (sequences.length === 0) {
-    return {
-      sequences: [],
-      consensusSequence: '',
-      conservationScores: [],
-      identity: 0,
-      gaps: 0,
-      alignmentLength: 0,
-      conservedColumns: 0,
-    };
+): LegacyMSAResult | MSAError {
+  if (!Array.isArray(sequences) || sequences.length < 2) {
+    return msaError('insufficient_sequences', 'MSA requires at least 2 sequences; an empty result is not a valid alignment.');
   }
 
   const seqs = sequences.map((s) => s.sequence);
@@ -342,16 +460,7 @@ export function multipleAlign(
   const result = computeMSA(seqs, names);
 
   if (isMSAError(result)) {
-    // Return empty result on error
-    return {
-      sequences: [],
-      consensusSequence: '',
-      conservationScores: [],
-      identity: 0,
-      gaps: 0,
-      alignmentLength: 0,
-      conservedColumns: 0,
-    };
+    return result;
   }
 
   const alignedSeqs: AlignedSequence[] = result.rows.map((row, i) => ({

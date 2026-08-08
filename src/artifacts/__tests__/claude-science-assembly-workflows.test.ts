@@ -9,6 +9,7 @@ import {
   type ArtifactLigationPartInput,
 } from '../claude-science-assembly-workflows';
 import { sha256HexSync } from '../claude-science-sha256';
+import { GOLDEN_GATE_FIDELITY_CONDITIONS } from '../../bio/golden-gate-fidelity';
 
 const SHA_A = sha256HexSync('AAAA');
 const SHA_B = sha256HexSync('CCCC');
@@ -483,6 +484,35 @@ describe('planArtifactGoldenGateAssembly', () => {
     ]));
     expect(plan.errors).toContainEqual(expect.objectContaining({ code: 'ambiguous_fusion_overhang' }));
   });
+
+  it('records exact empirical condition provenance without borrowing across enzymes', () => {
+    const first = bsaIPart('first', 'AAAA', 'CCCC', 'GATG');
+    const second = bsaIPart('second', 'GATG', 'GGGG', 'AAAA');
+    const condition = GOLDEN_GATE_FIDELITY_CONDITIONS['pryor-2020-bsai-hfv2'];
+    const supported = planArtifactGoldenGateAssembly({
+      parts: [first, second],
+      enzyme: 'BsaI',
+      topology: 'circular',
+      fidelityCondition: condition,
+    });
+
+    expect(supported.fidelity).toMatchObject({
+      status: 'supported',
+      method: 'empirical',
+      datasetId: 'pryor-2020-bsai-hfv2',
+      provenance: { table: 'S1 Table', license: 'CC BY 4.0' },
+    });
+    expect(supported.fidelity.assembly.coverage).toBe(1);
+
+    const borrowed = planArtifactGoldenGateAssembly({
+      parts: [first, second],
+      enzyme: 'BbsI',
+      topology: 'circular',
+      fidelityCondition: condition,
+    });
+    expect(borrowed.fidelity.status).toBe('unsupported');
+    expect(borrowed.fidelity.assembly.estimatedFidelity).toBeNull();
+  });
 });
 
 describe('createArtifactAssemblyArtifacts', () => {
@@ -574,6 +604,40 @@ describe('createArtifactAssemblyArtifacts', () => {
     expect(artifacts.workflowResult.outputRecordIds).toEqual([]);
     expect(artifacts.workflowResult.result).toMatchObject({ status: 'blocked', productLength: null });
     expect(artifacts.derivedRecord).toBeUndefined();
+  });
+
+  it('surfaces per-junction fidelity and source provenance in the portable receipt', () => {
+    const plan = planArtifactGoldenGateAssembly({
+      parts: [
+        bsaIPart('first', 'AAAA', 'CCCC', 'GATG'),
+        bsaIPart('second', 'GATG', 'GGGG', 'AAAA'),
+      ],
+      enzyme: 'BsaI',
+      topology: 'circular',
+      fidelityCondition: GOLDEN_GATE_FIDELITY_CONDITIONS['pryor-2020-bsai-hfv2'],
+    });
+    const artifacts = createArtifactAssemblyArtifacts(plan, {
+      workflowResultId: 'fidelity-workflow',
+      createdAt: '2026-07-12T12:34:56.000Z',
+      name: 'Fidelity receipt',
+      provenance: { source: 'claude-science' },
+    });
+
+    expect(artifacts.workflowResult.parameters).toMatchObject({
+      fidelity: {
+        datasetId: 'pryor-2020-bsai-hfv2',
+        provenance: { sourceSha256: expect.stringMatching(/^[0-9a-f]{64}$/i) },
+      },
+    });
+    expect(artifacts.workflowResult.result).toMatchObject({
+      fidelity: {
+        status: 'supported',
+        junctions: expect.arrayContaining([
+          expect.objectContaining({ estimatedFidelity: expect.any(Number), counts: expect.any(Object) }),
+        ]),
+        provenance: { table: 'S1 Table', license: 'CC BY 4.0' },
+      },
+    });
   });
 
   it('carries honest terminal overhang metadata onto a derived linear Golden Gate record', () => {

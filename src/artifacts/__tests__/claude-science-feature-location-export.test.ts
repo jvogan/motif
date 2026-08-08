@@ -4,11 +4,18 @@ import {
   featureLocationCoordinateSignature,
   isAmbiguousFeatureLocation,
   isMaterializableFeatureLocation,
+  isQuarantinedFeatureLocation,
 } from '../../bio/feature-location';
-import { parseFeatures, parseGenBank } from '../../bio/genbank-parser';
+import {
+  parseFeatures,
+  parseGenBank,
+  QUALIFIER_VALUE_MAX_BYTES,
+  type GenBankQualifier,
+  type GenBankQualifierTruncation,
+} from '../../bio/genbank-parser';
 import { reverseComplement, reverseComplementFeatures } from '../../bio/reverse-complement';
 import type { Feature } from '../../bio/types';
-import { featuresToCsv, normalizeRecord, toGenBankLite, toGff3Lite } from '../motif-artifact';
+import { featuresToCsv, normalizeRecord, parseImportedRecords, toGenBankLite, toGff3Lite } from '../motif-artifact';
 
 const sequence = 'ATGCCCGGGCCATTTAAA';
 
@@ -208,6 +215,161 @@ describe('multipart feature interchange exports', () => {
     expect(reparsed.metadata.codon_start).toBe('2');
   });
 
+  it('round-trips repeated GenBank qualifiers in source order with escaped and multiline values', () => {
+    const parsed = parseFeatures([
+      '     misc_feature    1..3',
+      '                     /label="qualifier"',
+      '                     /note="first line',
+      '                     second ""quoted"" line"',
+      '                     /note="second"',
+      '                     /pseudo',
+    ].join('\n'))[0];
+    const normalized = normalizeRecord({
+      id: 'qualifier-record',
+      name: 'Qualifier record',
+      molecule: 'dna',
+      topology: 'linear',
+      seq: sequence,
+      annotations: [parsed],
+    }, 0)!;
+
+    const genbank = toGenBankLite(normalized, 'linear');
+    expect(genbank.indexOf('/note="first line')).toBeLessThan(genbank.indexOf('/note="second"'));
+    expect(genbank).toContain('second ""quoted"" line"');
+    expect(genbank).toContain('/pseudo');
+    const reparsed = parseGenBank(genbank)[0].features[0];
+    expect(reparsed.metadata.motifQualifiers).toEqual([
+      { key: 'label', value: 'qualifier' },
+      { key: 'note', value: 'first line second "quoted" line' },
+      { key: 'note', value: 'second' },
+      { key: 'pseudo', value: true },
+    ]);
+  });
+
+  it('records qualifier truncation in both feature metadata and the parsed import receipt', () => {
+    const value = 'x'.repeat(QUALIFIER_VALUE_MAX_BYTES + 10);
+    const parsed = parseFeatures([
+      '     misc_feature    1..3',
+      `                     /note="${value}"`,
+    ].join('\n'))[0];
+    expect(parsed.metadata.motifQualifierTruncations).toEqual([
+      expect.objectContaining({
+        key: 'note',
+        originalLength: QUALIFIER_VALUE_MAX_BYTES + 10,
+        limit: QUALIFIER_VALUE_MAX_BYTES,
+      }),
+    ]);
+
+    const imported = parseGenBank([
+      'LOCUS       TRUNCATED     3 bp    DNA     linear   SYN 08-AUG-2026',
+      'FEATURES             Location/Qualifiers',
+      '     misc_feature    1..3',
+      `                     /note="${value}"`,
+      'ORIGIN',
+      '        1 aaa',
+      '//',
+    ].join('\n'))[0];
+    expect(imported.qualifierTruncations).toEqual([
+      expect.objectContaining({ key: 'note', featureIndex: 0, limit: QUALIFIER_VALUE_MAX_BYTES }),
+    ]);
+    const [recordInput] = parseImportedRecords([
+      'LOCUS       TRUNCATED     3 bp    DNA     linear   SYN 08-AUG-2026',
+      'FEATURES             Location/Qualifiers',
+      '     misc_feature    1..3',
+      `                     /note="${value}"`,
+      'ORIGIN',
+      '        1 aaa',
+      '//',
+    ].join('\n'), '', 'auto', 'linear');
+    expect(recordInput.provenance).toMatchObject({
+      genbankQualifierTruncations: [expect.objectContaining({ key: 'note', featureIndex: 0 })],
+    });
+  });
+
+  it('bounds qualifier receipts by UTF-8 bytes without splitting Unicode or retaining malformed surrogates', () => {
+    const byteLength = (value: string) => new TextEncoder().encode(value).byteLength;
+    const isWellFormed = (value: string) => {
+      for (let index = 0; index < value.length; index += 1) {
+        const code = value.charCodeAt(index);
+        if (code >= 0xd800 && code <= 0xdbff) {
+          const next = value.charCodeAt(index + 1);
+          if (next < 0xdc00 || next > 0xdfff) return false;
+          index += 1;
+        } else if (code >= 0xdc00 && code <= 0xdfff) return false;
+      }
+      return true;
+    };
+    const parseNote = (value: string) => parseFeatures([
+      '     misc_feature    1..3',
+      `                     /note="${value}"`,
+    ].join('\n'))[0];
+    const qualifiers = (feature: Feature) => feature.metadata.motifQualifiers as GenBankQualifier[] | undefined;
+    const truncations = (feature: Feature) => feature.metadata.motifQualifierTruncations as GenBankQualifierTruncation[] | undefined;
+
+    const emojiValue = '😀'.repeat(Math.ceil((QUALIFIER_VALUE_MAX_BYTES + 32) / 4));
+    const emojiFeature = parseNote(emojiValue);
+    const emojiNote = qualifiers(emojiFeature)?.find((entry) => entry.key === 'note')?.value;
+    const emojiReceipt = truncations(emojiFeature)?.[0];
+    expect(typeof emojiNote).toBe('string');
+    expect(byteLength(emojiNote as string)).toBeLessThanOrEqual(QUALIFIER_VALUE_MAX_BYTES);
+    expect(isWellFormed(emojiNote as string)).toBe(true);
+    expect(emojiReceipt).toMatchObject({
+      key: 'note',
+      originalBytes: byteLength(emojiValue),
+      originalLength: byteLength(emojiValue),
+      retainedBytes: byteLength(emojiNote as string),
+      retainedLength: byteLength(emojiNote as string),
+      limit: QUALIFIER_VALUE_MAX_BYTES,
+    });
+
+    const combiningValue = `${'e\u0301'.repeat(Math.ceil((QUALIFIER_VALUE_MAX_BYTES + 8) / 3))}`;
+    const combiningFeature = parseNote(combiningValue);
+    const combiningNote = qualifiers(combiningFeature)?.find((entry) => entry.key === 'note')?.value;
+    expect(byteLength(combiningNote as string)).toBeLessThanOrEqual(QUALIFIER_VALUE_MAX_BYTES);
+    expect(isWellFormed(combiningNote as string)).toBe(true);
+
+    const malformedValue = `${'a'.repeat(QUALIFIER_VALUE_MAX_BYTES)}\ud800`;
+    const malformedFeature = parseNote(malformedValue);
+    const malformedNote = qualifiers(malformedFeature)?.find((entry) => entry.key === 'note')?.value;
+    expect(byteLength(malformedNote as string)).toBeLessThanOrEqual(QUALIFIER_VALUE_MAX_BYTES);
+    expect(isWellFormed(malformedNote as string)).toBe(true);
+    expect(truncations(malformedFeature)?.[0]).toMatchObject({
+      originalBytes: QUALIFIER_VALUE_MAX_BYTES + 3,
+      limit: QUALIFIER_VALUE_MAX_BYTES,
+    });
+
+    const exactBoundary = 'a'.repeat(QUALIFIER_VALUE_MAX_BYTES);
+    const exactFeature = parseNote(exactBoundary);
+    expect(qualifiers(exactFeature)?.find((entry) => entry.key === 'note')?.value).toBe(exactBoundary);
+    expect(truncations(exactFeature)).toBeUndefined();
+  });
+
+  it('retains and diagnoses quarantined raw locations without materializing them', () => {
+    const parsed = parseFeatures([
+      '     misc_feature    J00194.1:100..200',
+      '                     /label="remote feature"',
+    ].join('\n'))[0];
+    const normalized = normalizeRecord({
+      id: 'remote-record',
+      name: 'Remote record',
+      molecule: 'dna',
+      topology: 'linear',
+      seq: sequence,
+      annotations: [parsed],
+    }, 0)!;
+
+    expect(isQuarantinedFeatureLocation(normalized.features[0])).toBe(true);
+    expect(extractFeatureSequence(normalized.sequence, normalized.features[0], 'dna')).toBe('');
+    const genbank = toGenBankLite(normalized, 'linear');
+    expect(genbank).toContain('J00194.1:100..200');
+    expect(genbank).toContain('retained raw INSDC syntax');
+    expect(toGff3Lite(normalized)).toContain('omitted quarantined feature');
+    const reparsed = parseGenBank(genbank)[0];
+    expect(reparsed.importDiagnostics).toEqual([
+      expect.objectContaining({ code: 'remote_location', location: 'J00194.1:100..200' }),
+    ]);
+  });
+
   it('preserves explicit translation tables and emits a record default on coding features', () => {
     const explicitUnsupported = record(joinedFeature({ transl_table: '27' }));
     const explicitGenbank = toGenBankLite(explicitUnsupported, explicitUnsupported.topology);
@@ -223,6 +385,94 @@ describe('multipart feature interchange exports', () => {
     expect(overriddenGenbank).toContain('/transl_table=15');
     expect(overriddenGenbank).not.toContain('/transl_table=2');
     expect(toGff3Lite(overridden)).toContain(';transl_table=15');
+  });
+
+  it('updates preserved coding qualifiers after feature metadata edits', () => {
+    const parsed = parseFeatures([
+      '     CDS             1..12',
+      '                     /label="editable CDS"',
+      '                     /codon_start=1',
+      '                     /transl_table=1',
+      '                     /transl_except="(pos:4..6,aa:Sec)"',
+    ].join('\n'))[0];
+    const normalized = normalizeRecord({
+      id: 'edited-qualifiers',
+      name: 'Edited qualifiers',
+      molecule: 'dna',
+      topology: 'linear',
+      seq: sequence,
+      annotations: [parsed],
+    }, 0)!;
+    normalized.features[0].metadata.codon_start = '2';
+    normalized.features[0].metadata.transl_table = 11;
+    normalized.features[0].metadata.transl_except = '(pos:7..9,aa:Pyl)';
+
+    const edited = toGenBankLite(normalized, 'linear');
+    expect(edited).toContain('/codon_start=2');
+    expect(edited).not.toContain('/codon_start=1');
+    expect(edited).toContain('/transl_table=11');
+    expect(edited).not.toMatch(/\/transl_table=1(?:\r?\n|$)/);
+    expect(edited).toContain('/transl_except="(pos:7..9,aa:Pyl)"');
+    expect(edited).not.toContain('/transl_except="(pos:4..6,aa:Sec)"');
+  });
+
+  it('emits an inherited coding translation table alongside preserved qualifiers', () => {
+    const parsed = parseFeatures([
+      '     CDS             1..12',
+      '                     /label="inherited CDS"',
+      '                     /note="kept"',
+    ].join('\n'))[0];
+    const normalized = normalizeRecord({
+      id: 'inherited-qualifiers',
+      name: 'Inherited qualifiers',
+      molecule: 'dna',
+      topology: 'linear',
+      seq: sequence,
+      translationTableId: 11,
+      annotations: [parsed],
+    }, 0)!;
+
+    const exported = toGenBankLite(normalized, 'linear');
+    expect(exported).toContain('/transl_table=11');
+  });
+
+  it('removes stale semantic qualifiers when their authoritative metadata is cleared', () => {
+    const parsed = parseFeatures([
+      '     CDS             1..12',
+      '                     /label="cleared CDS"',
+      '                     /codon_start=1',
+      '                     /transl_table=1',
+      '                     /transl_except="(pos:4..6,aa:Sec)"',
+    ].join('\n'))[0];
+    const normalized = normalizeRecord({
+      id: 'cleared-qualifiers',
+      name: 'Cleared qualifiers',
+      molecule: 'dna',
+      topology: 'linear',
+      seq: sequence,
+      annotations: [parsed],
+    }, 0)!;
+    normalized.features[0].metadata.codon_start = null;
+    normalized.features[0].metadata.transl_table = 'not-a-table';
+    normalized.features[0].metadata.transl_except = '';
+    // Alias fields must not resurrect a canonical field that was explicitly
+    // cleared or invalidated.
+    normalized.features[0].metadata.codonStart = 3;
+    normalized.features[0].metadata.translTable = 11;
+    normalized.features[0].metadata.translExcept = '(pos:7..9,aa:Pyl)';
+
+    const exported = toGenBankLite(normalized, 'linear');
+    expect(exported).toContain('/label="cleared CDS"');
+    expect(exported).not.toContain('/codon_start=1');
+    expect(exported).not.toContain('/transl_table=1');
+    expect(exported).not.toContain('/transl_except="(pos:4..6,aa:Sec)"');
+    expect(exported).not.toContain('/transl_except=""');
+
+    // The same cleared value must stay absent when there is no raw qualifier
+    // array to override (the ordinary generated-qualifier path).
+    delete normalized.features[0].metadata.motifQualifiers;
+    const generatedOnly = toGenBankLite(normalized, 'linear');
+    expect(generatedOnly).not.toContain('/transl_except=');
   });
 
   it('does not invent or export translation-table semantics for noncoding features', () => {

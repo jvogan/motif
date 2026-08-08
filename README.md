@@ -42,10 +42,12 @@ this repository and the following request:
 Install the latest released version of Motif for Claude Science from
 https://github.com/jvogan/motif.
 
-Follow docs/CLAUDE_SCIENCE_QUICKSTART.md. Place the checkout in a stable local
-folder, run npm ci and npm run claude-science:setup, and use only the bundled
-examples/motif-demo.gb file for the first test. Verify any downloaded release
-assets against the published checksums. Preserve unrelated local connectors.
+Follow docs/CLAUDE_SCIENCE_QUICKSTART.md. Use the published
+motif-for-claude-science-release.zip in a stable local folder and run its
+dependency-free Node installer; do not run npm for an end-user release
+install. Use only the bundled examples/motif-demo.gb file from a source
+checkout for the first test, verify downloaded release assets, and preserve
+unrelated local connectors.
 Tell me when I need to grant folder access, restart Claude Science, or
 reconnect motif-local.
 ```
@@ -78,12 +80,14 @@ For manual installation, follow the
 
 ## Develop from source
 
-Requires Git and Node.js 22.12 or newer. From a source checkout:
+Requires Git and Node.js 22.13 or newer (22.x), or Node.js 24 or newer. From a source checkout:
 
 ```bash
 git clone https://github.com/jvogan/motif.git
 cd motif
-npm ci
+npm ci --ignore-scripts
+npm run security:policy
+npm run security:lifecycle
 npm run preview:motif
 ```
 
@@ -160,6 +164,9 @@ dist-motif/
 ├── motif-for-claude-science/
 ├── motif-for-claude-science.zip
 ├── motif-for-claude-science.checksums.json
+├── motif-for-claude-science-release/
+├── motif-for-claude-science-release.zip
+├── motif-for-claude-science-release.manifest.sha256
 └── motif-for-claude-science-skill/SKILL.md
 ```
 
@@ -169,8 +176,9 @@ template, and artifact resource. The ZIP is deterministic and its file/archive
 SHA-256 values are recorded beside it.
 
 The plugin ZIP is for Claude/plugin hosts. It does not install the Claude
-Science local connector. Run `npm run claude-science:setup` from a source
-checkout instead.
+Science local connector. End users should extract the release ZIP and run its
+bundled `node install-motif-claude-science-release.mjs --bundle .` command;
+maintainers can run `npm run claude-science:setup` from a source checkout.
 
 To generate an additional repo-local artifact with preloaded data:
 

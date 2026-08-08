@@ -155,9 +155,51 @@ function validateOptionalString(object, field, path, maxLength = MAX_SHORT_TEXT_
   }
 }
 
+const PAYLOAD_FORMATTING_WHITESPACE = new Set([' ', '\t', '\r', '\n']);
+
+/**
+ * Normalize a payload sequence without changing its residue coordinates.
+ *
+ * Payload records are unaligned biological sequences, so only explicit
+ * formatting whitespace may be discarded. In particular, gaps, digits, and
+ * punctuation must fail with their original offset instead of being removed
+ * before the alphabet and feature-coordinate checks run.
+ */
+function normalizePayloadSequence(sequence, sequenceTypeHint, path = 'sequence') {
+  if (typeof sequence !== 'string') {
+    throw new Error(`${path} must be a sequence string`);
+  }
+  let normalized = '';
+  for (let offset = 0; offset < sequence.length; offset += 1) {
+    const character = sequence[offset];
+    if (PAYLOAD_FORMATTING_WHITESPACE.has(character)) continue;
+    const upper = character.toUpperCase();
+    if (upper.length !== 1 || !/^[A-Z*]$/.test(upper)) {
+      throw new Error(
+        `${path} contains invalid character ${JSON.stringify(character)} at offset ${offset}; `
+        + 'only residue characters and spaces, tabs, CR, or LF formatting whitespace are allowed',
+      );
+    }
+    normalized += upper;
+  }
+  if (!normalized) throw new Error(`${path} must contain at least one residue`);
+
+  const withoutStops = normalized.replace(/\*/g, '');
+  if (sequenceTypeHint === 'dna' && !/^[ACGTRYSWKMBDHVN]+$/.test(withoutStops)) {
+    throw new Error(`${path} contains residues outside the DNA alphabet`);
+  }
+  if (sequenceTypeHint === 'rna' && !/^[ACGURYSWKMBDHVN]+$/.test(withoutStops)) {
+    throw new Error(`${path} contains residues outside the RNA alphabet`);
+  }
+  if (sequenceTypeHint === 'protein' && !/^[ACDEFGHIKLMNPQRSTVWYOUJBXZ*]+$/.test(normalized)) {
+    throw new Error(`${path} contains residues outside the protein alphabet`);
+  }
+  return normalized;
+}
+
 function normalizedRecordType(value, sequence) {
   if (['dna', 'rna', 'protein', 'misc', 'unknown', 'mixed'].includes(value)) return value;
-  const normalized = typeof sequence === 'string' ? sequence.toUpperCase().replace(/[^A-Z*]/g, '') : '';
+  const normalized = typeof sequence === 'string' ? normalizePayloadSequence(sequence, value, 'sequence') : '';
   if (normalized.includes('*')) return 'protein';
   if (/^[ACGTUNRYSWKMBDHV]+$/.test(normalized)) {
     return normalized.includes('U') && !normalized.includes('T') ? 'rna' : 'dna';
@@ -309,7 +351,7 @@ function validateSangerTrace(trace, path, recordSequence, recordType) {
     throw new Error(`${path}.baseCalls and ${path}.sequence must be strings`);
   }
   const calls = trace.baseCalls.toUpperCase();
-  const normalizedRecord = recordSequence.toUpperCase().replace(/[^A-Z]/g, '');
+  const normalizedRecord = normalizePayloadSequence(recordSequence, 'dna', `${path} owning record sequence`);
   if (!calls || calls.length > MAX_SANGER_BASE_CALLS || !/^[ACGTRYSWKMBDHVN]+$/.test(calls)) {
     throw new Error(`${path}.baseCalls must contain bounded IUPAC DNA calls`);
   }
@@ -442,9 +484,9 @@ function looksLikeImplicitProteinSequence(rawSequence) {
   return !/[A-Z*][\t ]+[A-Z*]/.test(trimmed);
 }
 
-function isValidSequence(sequence, sequenceTypeHint) {
+function isValidSequence(sequence, sequenceTypeHint, path = 'sequence') {
   if (typeof sequence !== 'string') return false;
-  const normalized = sequence.toUpperCase().replace(/[^A-Z*]/g, '');
+  const normalized = normalizePayloadSequence(sequence, sequenceTypeHint, path);
   const withoutStops = normalized.replace(/\*/g, '');
   if (!normalized) return false;
   if (sequenceTypeHint === 'dna') return /^[ACGTRYSWKMBDHVN]+$/.test(withoutStops);
@@ -456,9 +498,9 @@ function isValidSequence(sequence, sequenceTypeHint) {
     && looksLikeImplicitProteinSequence(sequence);
 }
 
-function normalizedSequenceLength(sequence, sequenceTypeHint) {
+function normalizedSequenceLength(sequence, sequenceTypeHint, path = 'sequence') {
   if (typeof sequence !== 'string') return 0;
-  const normalized = sequence.toUpperCase().replace(/[^A-Z*]/g, '');
+  const normalized = normalizePayloadSequence(sequence, sequenceTypeHint, path);
   return sequenceTypeHint === 'dna' || sequenceTypeHint === 'rna'
     ? normalized.replace(/\*/g, '').length
     : normalized.length;
@@ -611,6 +653,53 @@ function validateAlignmentEngine(engine, path) {
   }
 }
 
+function validateAlignmentComparison(comparison, path) {
+  if (comparison === undefined) return;
+  if (!isPlainObject(comparison)) throw new Error(`${path} must be a plain object`);
+  if (!ALIGNMENT_MODES.has(comparison.route)) {
+    throw new Error(`${path}.route must be browser, local-command, or imported`);
+  }
+  for (const field of ['method', 'algorithm']) {
+    if (typeof comparison[field] !== 'string' || !comparison[field].trim()) {
+      throw new Error(`${path}.${field} must be a non-empty string`);
+    }
+    if (comparison[field].length > MAX_SHORT_TEXT_LENGTH) {
+      throw new Error(`${path}.${field} cannot exceed ${MAX_SHORT_TEXT_LENGTH.toLocaleString()} characters`);
+    }
+  }
+  if (comparison.fallback !== undefined && typeof comparison.fallback !== 'boolean') {
+    throw new Error(`${path}.fallback must be a boolean when provided`);
+  }
+  if (comparison.ambiguityCount !== undefined
+    && (!Number.isSafeInteger(comparison.ambiguityCount) || comparison.ambiguityCount < 0)) {
+    throw new Error(`${path}.ambiguityCount must be a non-negative safe integer when provided`);
+  }
+  if (comparison.warnings !== undefined) {
+    if (!Array.isArray(comparison.warnings) || comparison.warnings.length > 32
+      || comparison.warnings.some((warning) => typeof warning !== 'string' || warning.length > MAX_SHORT_TEXT_LENGTH)) {
+      throw new Error(`${path}.warnings must contain at most 32 bounded strings`);
+    }
+  }
+}
+
+function validateAlignmentProvenance(provenance, path) {
+  if (provenance === undefined) return;
+  if (!isPlainObject(provenance)) throw new Error(`${path} must be a plain object`);
+  for (const field of ['runner', 'executable', 'executableSha256', 'executableSource', 'version', 'inputFastaSha256', 'outputFastaSha256', 'stderrSha256']) {
+    validateOptionalString(provenance, field, path);
+  }
+  if (provenance.runtimePathsRedacted !== undefined && typeof provenance.runtimePathsRedacted !== 'boolean') {
+    throw new Error(`${path}.runtimePathsRedacted must be a boolean when provided`);
+  }
+  for (const field of ['versionArgv', 'argv']) {
+    if (provenance[field] !== undefined) {
+      if (!Array.isArray(provenance[field]) || provenance[field].length > 64 || provenance[field].some((argument) => typeof argument !== 'string' || argument.length > MAX_SHORT_TEXT_LENGTH)) {
+        throw new Error(`${path}.${field} must contain at most 64 bounded strings`);
+      }
+    }
+  }
+}
+
 function validateAlignment(alignment, index, remainingCells = MAX_ALIGNMENT_CELLS) {
   const path = `Payload alignment ${index + 1}`;
   if (!isPlainObject(alignment)) throw new Error(`${path} must be a plain object`);
@@ -707,6 +796,8 @@ function validateAlignment(alignment, index, remainingCells = MAX_ALIGNMENT_CELL
     throw new Error(`${path}.referenceRowId must match one of the aligned row ids`);
   }
   validateAlignmentEngine(alignment.engine, `${path}.engine`);
+  validateAlignmentComparison(alignment.comparison, `${path}.comparison`);
+  validateAlignmentProvenance(alignment.provenance, `${path}.provenance`);
   return { id: alignmentId(alignment.id, `alignment-${index + 1}`), cells };
 }
 
@@ -846,10 +937,10 @@ export function validatePayload(payload) {
     if (typeof sequence === 'string' && sequence.length > MAX_RAW_SEQUENCE_CHARACTERS) {
       throw new Error(`${recordPath}.sequence cannot exceed ${MAX_RAW_SEQUENCE_CHARACTERS.toLocaleString()} raw characters`);
     }
-    if (!isValidSequence(sequence, type)) {
+    if (!isValidSequence(sequence, type, `${recordPath}.sequence`)) {
       throw new Error(`Payload record ${index + 1} does not contain a valid DNA, RNA, or sequence-like protein value`);
     }
-    const length = normalizedSequenceLength(sequence, type);
+    const length = normalizedSequenceLength(sequence, type, `${recordPath}.sequence`);
     if (length > MAX_RECORD_LENGTH) {
       throw new Error(`${recordPath} contains ${length.toLocaleString()} residues; the artifact supports at most ${MAX_RECORD_LENGTH.toLocaleString()} per record`);
     }

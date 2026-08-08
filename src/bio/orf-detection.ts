@@ -1,47 +1,75 @@
 import type { ORF, CodonTable, Topology } from './types';
 import { STANDARD_CODE } from './codon-tables';
+import { expandIupacCodon, normalizeTranslationInput, resolveIupacCodon } from './translate';
 import { reverseComplement } from './reverse-complement';
 
 /**
- * Options for [`findORFs`]. Phase 34 P-B B3: topology added so circular
- * plasmids can find ORFs that wrap around the origin.
+ * Options for [`findORFs`]. Circular scans may cross the origin, but never
+ * inspect more than one complete revolution for a single candidate.
  */
 export interface FindORFsOptions {
   /** Minimum ORF length in amino acids (default 30 = 90bp). */
   minAminoAcids?: number;
   /** Codon table (defaults to standard). */
   table?: CodonTable;
-  /**
-   * Sequence topology. When `'circular'`, scans a virtual buffer of length
-   * `2 * seq.length` and keeps ORFs whose start position is in
-   * `[0, seq.length)`. ORFs that wrap report `end > seq.length`.
-   * Defaults to `'linear'`.
-   */
+  /** Sequence topology. Defaults to `'linear'`. */
   topology?: Topology;
 }
 
-/**
- * Regex matching characters that appear exclusively in protein sequences but
- * never in valid DNA/RNA. If the input contains any of these, treat it as a
- * protein and return early with an empty array to avoid garbage ORF results.
- */
-const PROTEIN_ONLY_CHARS = /[DEFHIKLMPQRSVWYZ]/i;
+function isDefiniteCodonMember(codon: string, accepted: ReadonlySet<string>): boolean {
+  const first = codon[0];
+  const second = codon[1];
+  const third = codon[2];
+  if (
+    (first === 'A' || first === 'C' || first === 'G' || first === 'T')
+    && (second === 'A' || second === 'C' || second === 'G' || second === 'T')
+    && (third === 'A' || third === 'C' || third === 'G' || third === 'T')
+  ) {
+    return accepted.has(codon);
+  }
+  const expansions = expandIupacCodon(codon);
+  return expansions.length > 0 && expansions.every((concreteCodon) => accepted.has(concreteCodon));
+}
+
+function addWarning(warnings: string[], warning: string): void {
+  if (!warnings.includes(warning)) warnings.push(warning);
+}
+
+function ambiguityWarnings(
+  seq: string,
+  start: number,
+  end: number,
+  table: CodonTable,
+  hasAmbiguity: boolean,
+): string[] {
+  const warnings: string[] = [];
+  if (!hasAmbiguity) return warnings;
+  for (let position = start; position + 2 < end; position += 3) {
+    const codon = seq.slice(position, position + 3);
+    const resolution = resolveIupacCodon(codon, table);
+    if (!resolution.ambiguous) continue;
+    if (resolution.residue !== null) {
+      addWarning(warnings, `Ambiguous codon ${codon} resolves deterministically to ${resolution.residue}`);
+    } else {
+      const possibilities = resolution.residues.length > 0 ? resolution.residues.join('/') : 'an unknown residue';
+      addWarning(warnings, `Ambiguous codon ${codon} is indeterminate (${possibilities})`);
+    }
+  }
+  return warnings;
+}
+
+function boundaryWarning(topology: Topology): string {
+  return topology === 'circular'
+    ? 'No in-frame stop codon within one complete circular revolution'
+    : 'No in-frame stop codon before the sequence boundary';
+}
 
 /**
  * Find all ORFs in a DNA sequence across all 3 reading frames on both strands.
- *
- * Phase 34 P-B B3: when `options.topology === 'circular'`, the scanner builds
- * a virtual buffer `seq + seq` (with a max scan range of `2 * seq.length`) so
- * an ORF spanning the origin can be detected. Wrap-spanning ORFs are reported
- * with the canonical `start` in `[0, seq.length)` and an `end` that may exceed
- * `seq.length` (callers can render the wrap accordingly).
- *
- * @param seq - DNA sequence
- * @param minAminoAcids - Minimum ORF length in amino acids (default 30 = 90bp).
- *                       Backward-compatible positional argument.
- * @param table - Codon table (defaults to standard). Backward-compatible.
- * @param options - Optional topology / overrides. New in Phase 34 P-B B3.
- * @returns Array of ORFs sorted by length descending
+ * Valid IUPAC DNA ambiguity symbols are accepted. Each result explicitly
+ * reports whether a table-recognized stop completed it or whether it is a
+ * partial boundary-limited candidate; ambiguity warnings explain any codons
+ * whose concrete expansions do not agree.
  */
 export function findORFs(
   seq: string,
@@ -49,83 +77,57 @@ export function findORFs(
   table: CodonTable = STANDARD_CODE,
   options?: FindORFsOptions,
 ): ORF[] {
-  // Guard: reject protein sequences before doing any nucleotide-specific work.
-  if (PROTEIN_ONLY_CHARS.test(seq)) {
+  let upper: string;
+  try {
+    upper = normalizeTranslationInput(seq);
+  } catch {
+    // Protein sequences, gaps, and punctuation are not nucleotide input. Keep
+    // the historical empty-result contract while translate() fails loudly.
     return [];
   }
 
-  // Allow overriding the positional args via the options object so callers
-  // that want only the topology hint don't have to repeat the defaults.
   const effectiveMinAa = options?.minAminoAcids ?? minAminoAcids;
   const effectiveTable = options?.table ?? table;
   const topology: Topology = options?.topology ?? 'linear';
-
-  const orfs: ORF[] = [];
-  const upper = seq.toUpperCase().replace(/U/g, 'T');
   const seqLen = upper.length;
+  if (seqLen < 3) return [];
 
-  if (seqLen < 3) {
-    return orfs;
-  }
+  const circular = topology === 'circular';
+  const forwardScanBuffer = circular ? upper + upper : upper;
+  const reverseSequence = reverseComplement(upper);
+  const reverseScanBuffer = circular ? reverseSequence + reverseSequence : reverseSequence;
+  const orfs: ORF[] = [];
 
-  // For circular topology we scan a doubled buffer so an ORF spanning the
-  // origin can be detected. We only keep ORFs whose start lies in
-  // [0, seqLen) — anything starting in the wrap region is a shadow of an
-  // ORF earlier in the linear sequence.
-  const forwardScanBuffer = topology === 'circular' ? upper + upper : upper;
-  const reverseScanBuffer =
-    topology === 'circular'
-      ? reverseComplement(upper) + reverseComplement(upper)
-      : reverseComplement(upper);
-
-  // Search forward strand
-  for (let frame = 0; frame < 3; frame++) {
+  for (let frame = 0; frame < 3; frame += 1) {
     const found = findORFsInFrame(
       forwardScanBuffer,
       frame,
-      1 as const,
+      1,
       effectiveTable,
       effectiveMinAa,
-      topology === 'circular' ? seqLen : seqLen,
+      seqLen,
+      topology,
     );
-    if (topology === 'circular') {
-      for (const orf of found) {
-        // Keep only ORFs that start within the original sequence range.
-        // Skip wrap-shadow ORFs whose start is in [seqLen, 2*seqLen).
-        if (orf.start < seqLen) {
-          orfs.push(orf);
-        }
-      }
-    } else {
-      orfs.push(...found);
-    }
+    orfs.push(...(circular ? found.filter((orf) => orf.start < seqLen) : found));
   }
 
-  // Search reverse strand
-  for (let frame = 0; frame < 3; frame++) {
+  for (let frame = 0; frame < 3; frame += 1) {
     const found = findORFsInFrame(
       reverseScanBuffer,
       frame,
-      -1 as const,
+      -1,
       effectiveTable,
       effectiveMinAa,
-      topology === 'circular' ? seqLen : seqLen,
+      seqLen,
+      topology,
     );
-    // Convert positions back to forward-strand coordinates.
     for (const orf of found) {
-      if (topology === 'circular') {
-        // Reverse-scan buffer is 2*seqLen long; forward-strand origin sits at
-        // (2*seqLen - 1) ... 0. The mapping is the same as linear but the
-        // wrap-shadow filter is applied AFTER mapping so we measure the
-        // forward-strand start position.
+      if (circular) {
         const origStart = 2 * seqLen - orf.end;
         const origEnd = 2 * seqLen - orf.start;
         orf.start = origStart;
         orf.end = origEnd;
-        if (orf.start >= 0 && orf.start < seqLen) {
-          orfs.push(orf);
-        }
-        // else: wrap shadow — drop.
+        if (orf.start >= 0 && orf.start < seqLen) orfs.push(orf);
       } else {
         const origStart = seqLen - orf.end;
         const origEnd = seqLen - orf.start;
@@ -136,7 +138,6 @@ export function findORFs(
     }
   }
 
-  // Sort by length descending
   orfs.sort((a, b) => b.length - a.length);
   return orfs;
 }
@@ -147,31 +148,22 @@ function findORFsInFrame(
   strand: 1 | -1,
   table: CodonTable,
   minAminoAcids: number,
-  /**
-   * Phase 34 P-B B3: for circular topology, the seq buffer is `seq + seq`
-   * but ORFs whose start is past `originalLen` are wrap shadows. This is
-   * computed at the caller after this function returns, but we still pass
-   * the length so this function can keep its existing logic verbatim.
-   * (unused by this function — kept for future use / signature consistency)
-   */
-  _originalLen: number,
+  originalLength: number,
+  topology: Topology,
 ): ORF[] {
   const orfs: ORF[] = [];
   const stops = new Set(table.stops);
   const starts = new Set(table.starts);
-
-  // Collect all start and stop codon positions in this frame
   const startPositions: number[] = [];
   const stopPositions: number[] = [];
+  const hasAmbiguity = /[RYSWKMBDHVN]/.test(seq);
 
-  for (let i = frameOffset; i + 2 < seq.length; i += 3) {
-    const codon = seq.slice(i, i + 3);
-    if (starts.has(codon)) startPositions.push(i);
-    if (stops.has(codon)) stopPositions.push(i);
+  for (let position = frameOffset; position + 2 < seq.length; position += 3) {
+    const codon = seq.slice(position, position + 3);
+    if (isDefiniteCodonMember(codon, starts)) startPositions.push(position);
+    if (isDefiniteCodonMember(codon, stops)) stopPositions.push(position);
   }
 
-  // Starts and stops are already collected in ascending order for this frame,
-  // so a monotonic stop index avoids rescanning earlier stop codons per ORF.
   let nextStopIndex = 0;
   for (const startPos of startPositions) {
     while (nextStopIndex < stopPositions.length && stopPositions[nextStopIndex] <= startPos) {
@@ -179,10 +171,12 @@ function findORFsInFrame(
     }
 
     const stopPos = stopPositions[nextStopIndex];
-    if (stopPos !== undefined) {
-      const bpLength = stopPos + 3 - startPos; // include stop codon
-      const aaLength = Math.floor(bpLength / 3) - 1; // exclude stop
+    const revolutionEnd = startPos + originalLength;
+    if (stopPos !== undefined && (!topology || stopPos + 3 <= (topology === 'circular' ? revolutionEnd : seq.length))) {
+      const bpLength = stopPos + 3 - startPos;
+      const aaLength = Math.floor(bpLength / 3) - 1;
       if (aaLength >= minAminoAcids) {
+        const warnings = ambiguityWarnings(seq, startPos, stopPos + 3, table, hasAmbiguity);
         orfs.push({
           start: startPos,
           end: stopPos + 3,
@@ -192,38 +186,43 @@ function findORFsInFrame(
           aminoAcids: aaLength,
           startCodon: seq.slice(startPos, startPos + 3),
           stopCodon: seq.slice(stopPos, stopPos + 3),
+          status: 'complete',
+          warnings,
         });
+        continue;
       }
       continue;
     }
 
-    // If no stop codon remains, treat end of sequence as implicit stop.
-    {
-      // Only count complete codons when the ORF runs to the terminal boundary.
-      const implicitEnd = seq.length - ((seq.length - startPos) % 3);
-      const bpLength = implicitEnd - startPos;
-      const aaLength = bpLength / 3;
-      if (aaLength >= minAminoAcids) {
-        orfs.push({
-          start: startPos,
-          end: implicitEnd,
-          frame: ((frameOffset % 3) + 1) as 1 | 2 | 3,
-          strand,
-          length: bpLength,
-          aminoAcids: aaLength,
-          startCodon: seq.slice(startPos, startPos + 3),
-          stopCodon: '',
-        });
-      }
+    // A partial ORF is bounded by the sequence end in a linear record and by
+    // one complete revolution in a circular record. No synthetic stop codon is
+    // claimed at that boundary.
+    const boundary = topology === 'circular' ? revolutionEnd : seq.length;
+    const implicitEnd = startPos + Math.floor(Math.max(0, boundary - startPos) / 3) * 3;
+    const bpLength = implicitEnd - startPos;
+    const aaLength = bpLength / 3;
+    if (aaLength >= minAminoAcids) {
+      const warnings = ambiguityWarnings(seq, startPos, implicitEnd, table, hasAmbiguity);
+      addWarning(warnings, boundaryWarning(topology));
+      orfs.push({
+        start: startPos,
+        end: implicitEnd,
+        frame: ((frameOffset % 3) + 1) as 1 | 2 | 3,
+        strand,
+        length: bpLength,
+        aminoAcids: aaLength,
+        startCodon: seq.slice(startPos, startPos + 3),
+        stopCodon: '',
+        status: 'partial',
+        warnings,
+      });
     }
   }
 
   return orfs;
 }
 
-/**
- * Find the longest ORF in a sequence.
- */
+/** Find the longest ORF in a sequence. */
 export function findLongestORF(
   seq: string,
   table: CodonTable = STANDARD_CODE,

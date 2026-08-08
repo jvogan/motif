@@ -15,10 +15,14 @@ Report suspected vulnerabilities through the private process in
 
 ## Set up and validate
 
-Motif requires Node.js 22.12 or newer. Install the locked dependencies with:
+Motif requires Node.js 22.13 or newer (22.x) or Node.js 24 or newer. Install
+the locked dependencies with lifecycle scripts disabled, then run the checked
+policy and reviewed lifecycle steps:
 
 ```bash
-npm ci
+npm ci --ignore-scripts
+npm run security:policy
+npm run security:lifecycle
 ```
 
 Before opening a pull request, run:

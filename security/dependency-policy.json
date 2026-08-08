@@ -1,0 +1,60 @@
+{
+  "schema": "motif.dependency-policy.v1",
+  "registry": "https://registry.npmjs.org/",
+  "coolingOffDays": 7,
+  "coolingOffExceptions": [
+    {
+      "name": "hono",
+      "version": "4.13.1",
+      "rationale": "Security maintenance release required to clear current Hono advisories before the seven-day window closes.",
+      "reviewer": "release-maintainer",
+      "expiresAt": "2026-08-15T07:00:00.000Z"
+    },
+    {
+      "name": "nanoid",
+      "version": "3.3.18",
+      "rationale": "Security maintenance release required to clear the current nanoid advisory before the seven-day window closes.",
+      "reviewer": "release-maintainer",
+      "expiresAt": "2026-08-15T17:00:00.000Z"
+    }
+  ],
+  "directDependenciesMustBeExact": true,
+  "allowedLifecycleScripts": {
+    "@axe-core/playwright@4.11.1": ["prepare"],
+    "@humanfs/core@0.19.1": ["prepare"],
+    "@humanfs/node@0.16.7": ["prepare"],
+    "@humanwhocodes/module-importer@1.0.1": ["prepare"],
+    "@humanwhocodes/retry@0.4.3": ["prepare"],
+    "@modelcontextprotocol/ext-apps@1.7.5": ["prepare"],
+    "acorn@8.18.0": ["prepare"],
+    "axe-core@4.11.2": ["prepare"],
+    "balanced-match@4.0.4": ["prepare"],
+    "brace-expansion@5.0.9": ["prepare"],
+    "content-type@1.0.5": ["prepare"],
+    "esbuild@0.28.1": ["postinstall"],
+    "eslint-visitor-keys@5.0.1": ["prepare"],
+    "eventsource@3.0.7": ["prepare"],
+    "express-rate-limit@8.5.2": ["prepare"],
+    "fsevents@2.3.2": [],
+    "fsevents@2.3.3": [],
+    "globals@17.4.0": ["prepare"],
+    "ip-address@10.4.0": ["prepare"],
+    "istanbul-reports@3.2.0": ["prepare"],
+    "jsdom@29.1.1": ["prepare"],
+    "keyv@4.5.4": ["prepare"],
+    "lightningcss@1.32.0": ["prepare"],
+    "lru-cache@11.3.6": ["prepare"],
+    "lru-cache@5.1.1": ["prepare"],
+    "minimatch@10.2.6": ["prepare"],
+    "path-to-regexp@8.4.2": ["prepare"],
+    "tinyexec@1.0.4": ["prepare"],
+    "ts-api-utils@2.5.0": ["prepare"],
+    "undici@7.29.0": ["prepare"],
+    "whatwg-url@16.0.1": ["prepare"],
+    "zod-validation-error@4.0.2": ["prepare"],
+    "content-type@2.0.0": ["prepare"],
+    "eslint-visitor-keys@3.4.3": ["prepare"]
+  },
+  "allowedBindingGyp": [],
+  "reviewedConnectorInventory": "security/connector-inventory.json"
+}

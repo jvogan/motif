@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import {
   copyFileSync,
   cpSync,
+  chmodSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -16,6 +17,8 @@ import { fileURLToPath } from 'node:url';
 import { buildSync } from 'esbuild';
 import { validatePayload as validateArtifactPayload } from '../src/artifacts/motif-for-claude-science-plugin/skills/motif-for-claude-science/scripts/create-artifact.mjs';
 import { stampMotifBuildIdentity } from './motif-build-identity.mjs';
+import { createDeterministicSbom } from './generate-sbom.mjs';
+import { RELEASE_MANIFEST_FILENAME } from './lib/motif-release-bundle.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const outDir = join(root, 'dist-motif');
@@ -36,6 +39,12 @@ const pluginResourcePath = join(
 );
 const pluginZipPath = join(outDir, `${pluginName}.zip`);
 const pluginChecksumPath = join(outDir, `${pluginName}.checksums.json`);
+const releaseDirectoryName = `${pluginName}-release`;
+const releaseDistPath = join(outDir, releaseDirectoryName);
+const releaseZipPath = join(outDir, `${releaseDirectoryName}.zip`);
+const releaseChecksumPath = join(releaseDistPath, `${releaseDirectoryName}.checksums.json`);
+const releaseManifestPath = join(releaseDistPath, 'release-manifest.json');
+const releaseManifestShaPath = join(outDir, `${releaseDirectoryName}.manifest.sha256`);
 const connectorDistPath = join(outDir, 'claude-science');
 const connectorServerPath = join(connectorDistPath, 'motif-mcp-server.mjs');
 const connectorAppPath = join(connectorDistPath, 'motif-mcp-app.html');
@@ -52,17 +61,8 @@ const publicPluginExamples = [
   'synthetic-proteins.aln',
   'synthetic-alignment-workspace.json',
 ];
-const bundledConnectorLicenses = [
-  { packagePath: ['@modelcontextprotocol', 'ext-apps'], filename: 'mcp-ext-apps-LICENSE.txt' },
-  { packagePath: ['@modelcontextprotocol', 'sdk'], filename: 'mcp-sdk-LICENSE.txt' },
-  { packagePath: ['ajv'], filename: 'ajv-LICENSE.txt' },
-  { packagePath: ['ajv-formats'], filename: 'ajv-formats-LICENSE.txt' },
-  { packagePath: ['fast-deep-equal'], filename: 'fast-deep-equal-LICENSE.txt' },
-  { packagePath: ['fast-uri'], filename: 'fast-uri-LICENSE.txt' },
-  { packagePath: ['json-schema-traverse'], filename: 'json-schema-traverse-LICENSE.txt' },
-  { packagePath: ['zod'], filename: 'zod-LICENSE.txt' },
-  { packagePath: ['zod-to-json-schema'], filename: 'zod-to-json-schema-LICENSE.txt' },
-];
+const reviewedConnectorInventory = JSON.parse(readFileSync(join(root, 'security/connector-inventory.json'), 'utf8'));
+const bundledConnectorLicenses = reviewedConnectorInventory.packages.map(({ packagePath, licenseFile }) => ({ packagePath, filename: licenseFile }));
 
 const ZIP_UTF8_FLAG = 0x0800;
 const ZIP_STORE_METHOD = 0;
@@ -380,6 +380,115 @@ export function copyBundledConnectorLicenses(pluginPath) {
   }
 }
 
+function createReleaseConnectorInventory() {
+  const lock = JSON.parse(readFileSync(join(root, 'package-lock.json'), 'utf8'));
+  const packages = reviewedConnectorInventory.packages.map((entry) => {
+    const packageName = entry.name;
+    const lockEntry = lock.packages?.[`node_modules/${packageName}`];
+    if (!lockEntry) throw new Error(`Connector inventory package is missing from the lockfile: ${packageName}`);
+    const packageManifestPath = join(root, 'node_modules', ...entry.packagePath, 'package.json');
+    const packageManifest = JSON.parse(readFileSync(packageManifestPath, 'utf8'));
+    const licensePath = join(root, 'node_modules', ...entry.packagePath, 'LICENSE');
+    return {
+      name: packageName,
+      packagePath: entry.packagePath,
+      version: lockEntry.version,
+      resolved: lockEntry.resolved,
+      integrity: lockEntry.integrity,
+      license: packageManifest.license ?? null,
+      licenseFile: `licenses/${entry.licenseFile}`,
+      licenseSha256: sha256(readFileSync(licensePath)),
+    };
+  });
+  return {
+    schema: 'motif.release.connector-inventory.v1',
+    product: 'Motif for Claude Science',
+    packages: packages.sort((left, right) => left.name.localeCompare(right.name)),
+  };
+}
+
+function copyReleaseScript(filename, destination) {
+  const target = join(releaseDistPath, destination ?? filename);
+  mkdirSync(dirname(target), { recursive: true });
+  copyFileSync(join(root, 'scripts', filename), target);
+  chmodSync(target, 0o755);
+}
+
+function writeReleaseBundle(runtimeBuildId) {
+  const packageJson = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+  rmSync(releaseDistPath, { recursive: true, force: true });
+  rmSync(releaseZipPath, { force: true });
+  rmSync(releaseManifestShaPath, { force: true });
+  mkdirSync(releaseDistPath, { recursive: true });
+
+  writeFileSync(
+    join(releaseDistPath, 'package.json'),
+    `${JSON.stringify({
+      name: packageJson.name,
+      version: packageJson.version,
+      product: 'Motif for Claude Science',
+      connectorName: 'motif-local',
+      private: false,
+    }, null, 2)}\n`,
+  );
+  mkdirSync(join(releaseDistPath, 'dist-motif', 'claude-science'), { recursive: true });
+  mkdirSync(join(releaseDistPath, 'dist-motif'), { recursive: true });
+  copyFileSync(connectorServerPath, join(releaseDistPath, 'dist-motif', 'claude-science', 'motif-mcp-server.mjs'));
+  copyFileSync(connectorAppPath, join(releaseDistPath, 'dist-motif', 'claude-science', 'motif-mcp-app.html'));
+  copyFileSync(templateHtml, join(releaseDistPath, 'dist-motif', 'motif-template.html'));
+
+  copyReleaseScript('run-motif-claude-science-mcp.sh', 'scripts/run-motif-claude-science-mcp.sh');
+  copyReleaseScript('install-motif-claude-science-release.mjs');
+  copyReleaseScript('doctor-motif-claude-science-release.mjs');
+  copyReleaseScript('rollback-motif-claude-science-release.mjs');
+  mkdirSync(join(releaseDistPath, 'lib'), { recursive: true });
+  copyFileSync(join(root, 'scripts', 'lib', 'motif-local-mcp-config.mjs'), join(releaseDistPath, 'lib', 'motif-local-mcp-config.mjs'));
+  copyFileSync(join(root, 'scripts', 'lib', 'motif-release-bundle.mjs'), join(releaseDistPath, 'lib', 'motif-release-bundle.mjs'));
+  copyFileSync(join(root, 'scripts', 'lib', 'direct-script.mjs'), join(releaseDistPath, 'lib', 'direct-script.mjs'));
+
+  writeFileSync(
+    join(releaseDistPath, 'sbom.json'),
+    // Keep the complete deterministic SBOM, but avoid carrying indentation
+    // overhead in the installed release bundle.
+    `${JSON.stringify(createDeterministicSbom(root))}\n`,
+  );
+  writeFileSync(
+    join(releaseDistPath, 'connector-inventory.json'),
+    `${JSON.stringify(createReleaseConnectorInventory(), null, 2)}\n`,
+  );
+  copyBundledConnectorLicenses(releaseDistPath);
+
+  const checksumFiles = listFilesRecursively(releaseDistPath);
+  const files = Object.fromEntries(
+    checksumFiles.map((file) => [file.archivePath, sha256(readFileSync(file.absolutePath))]),
+  );
+  const checksumManifest = {
+    schema: 'motif.release.checksums.v1',
+    algorithm: 'sha256',
+    files,
+  };
+  writeFileSync(releaseChecksumPath, `${JSON.stringify(checksumManifest, null, 2)}\n`);
+  const manifest = {
+    schema: 'motif.release.manifest.v1',
+    product: 'Motif for Claude Science',
+    connectorName: 'motif-local',
+    version: packageJson.version,
+    runtimeBuildId,
+    checksumsFile: `${releaseDirectoryName}.checksums.json`,
+    checksumsSha256: sha256(readFileSync(releaseChecksumPath)),
+    requiredFiles: checksumFiles.map((file) => file.archivePath),
+    paths: {
+      launcher: 'scripts/run-motif-claude-science-mcp.sh',
+      server: 'dist-motif/claude-science/motif-mcp-server.mjs',
+      app: 'dist-motif/claude-science/motif-mcp-app.html',
+      template: 'dist-motif/motif-template.html',
+    },
+  };
+  writeFileSync(releaseManifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  writeFileSync(releaseManifestShaPath, `${sha256(readFileSync(releaseManifestPath))}  ${RELEASE_MANIFEST_FILENAME}\n`);
+  writeFileSync(releaseZipPath, createDeterministicZipBuffer(releaseDistPath));
+}
+
 function writePluginBundle(html) {
   validatePluginSource();
   rmSync(pluginDistPath, { recursive: true, force: true });
@@ -389,7 +498,8 @@ function writePluginBundle(html) {
   mkdirSync(connectorPluginPath, { recursive: true });
   copyFileSync(connectorServerPath, join(connectorPluginPath, 'motif-mcp-server.mjs'));
   copyFileSync(connectorAppPath, join(connectorPluginPath, 'motif-mcp-app.html'));
-  copyFileSync(templateHtml, join(connectorPluginPath, 'motif-template.html'));
+  // The bundled server resolves the identical standalone resource from the
+  // skill directory. Do not add a second 2 MB HTML copy to the plugin.
   copyPublicPluginDocs(pluginDistPath);
   copyBundledConnectorLicenses(connectorPluginPath);
 
@@ -470,6 +580,7 @@ export function runBuild(args = process.argv.slice(2)) {
     writeStandaloneSkillCopy(join(dirname(finalPath), 'motif-for-claude-science-skill/SKILL.md'));
   }
   writePluginBundle(html);
+  writeReleaseBundle(runtimeBuildId);
 
   if (handoffPath) {
     mkdirSync(dirname(handoffPath), { recursive: true });
@@ -485,6 +596,9 @@ export function runBuild(args = process.argv.slice(2)) {
   console.log(`Wrote Claude Science connector ${connectorDistPath}`);
   console.log(`Wrote plugin archive ${pluginZipPath}`);
   console.log(`Wrote checksums ${pluginChecksumPath}`);
+  console.log(`Wrote release ${releaseDistPath}`);
+  console.log(`Wrote release archive ${releaseZipPath}`);
+  console.log(`Wrote release manifest checksum ${releaseManifestShaPath}`);
   console.log(`Runtime build ${runtimeBuildId}`);
   if (handoffPath) console.log(`Wrote explicit handoff ${handoffPath}`);
 }

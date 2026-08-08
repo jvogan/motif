@@ -1,6 +1,6 @@
 import {
-  getTranslationTable,
   listTranslationTables,
+  resolveTranslationTable,
   VALID_NCBI_TABLE_IDS,
 } from '../bio/codon-tables';
 import type { CodonTable } from '../bio/types';
@@ -110,8 +110,17 @@ export function resolveArtifactTranslationCode(
           : `This feature requests unsupported NCBI translation table ${requestedId}. Choose a supported genetic code before translating.`,
       };
     }
-    const table = getTranslationTable(qualifier.id);
-    return { supported: true, id: table.id, name: table.name, source: 'feature', table };
+    const resolved = resolveTranslationTable(qualifier.id);
+    if (!resolved.supported) {
+      return {
+        supported: false,
+        id: null,
+        requestedId: resolved.requestedId,
+        source: 'feature',
+        message: resolved.message,
+      };
+    }
+    return { supported: true, id: resolved.id, name: resolved.name, source: 'feature', table: resolved.table };
   }
 
   if (recordTranslationTableId !== undefined && recordTranslationTableId !== null) {
@@ -128,12 +137,33 @@ export function resolveArtifactTranslationCode(
           : `This record requests unsupported NCBI translation table ${requestedId}. Choose a supported genetic code before translating.`,
       };
     }
-    const table = getTranslationTable(recordId);
-    return { supported: true, id: table.id, name: table.name, source: 'record', table };
+    const resolved = resolveTranslationTable(recordId);
+    if (!resolved.supported) {
+      return {
+        supported: false,
+        id: null,
+        requestedId: resolved.requestedId,
+        source: 'record',
+        message: resolved.message,
+      };
+    }
+    return { supported: true, id: resolved.id, name: resolved.name, source: 'record', table: resolved.table };
   }
 
-  const table = getTranslationTable(DEFAULT_ARTIFACT_TRANSLATION_TABLE_ID);
-  return { supported: true, id: table.id, name: table.name, source: 'default', table };
+  const resolved = resolveTranslationTable(DEFAULT_ARTIFACT_TRANSLATION_TABLE_ID);
+  if (!resolved.supported) {
+    // The default is a shipped constant, so this is defensive rather than an
+    // expected runtime branch. Keep the discriminated result honest if the
+    // registry is ever changed independently.
+    return {
+      supported: false,
+      id: null,
+      requestedId: resolved.requestedId,
+      source: 'record',
+      message: resolved.message,
+    };
+  }
+  return { supported: true, id: resolved.id, name: resolved.name, source: 'default', table: resolved.table };
 }
 
 export function artifactTranslationCodeLabel(

@@ -1,6 +1,27 @@
 import { expect, test, type Page } from '@playwright/test';
 
 const artifactUrl = process.env.MOTIF_ARTIFACT_URL ?? '/motif.html';
+test.use({ trace: 'retain-on-failure' });
+
+type PaneDraftAuditEvent = {
+  sequence: number;
+  type: string;
+  target: string;
+  trusted: boolean;
+  value?: string;
+  open?: boolean;
+  placement?: string;
+};
+
+type PaneDraftAuditResult = {
+  events: PaneDraftAuditEvent[];
+  paneRemovals: number;
+  notesRemovals: number;
+  editorRemovals: number;
+  samePaneOwner: boolean;
+  sameNotesOwner: boolean;
+  sameEditorOwner: boolean;
+};
 
 async function openArtifact(page: Page, width: number, height: number) {
   await page.setViewportSize({ width, height });
@@ -12,15 +33,124 @@ async function openArtifact(page: Page, width: number, height: number) {
   await expect(page.locator('.motif-cs-shell')).toBeVisible();
 }
 
+async function installPaneDraftAudit(page: Page) {
+  await page.evaluate(() => {
+    type AuditState = {
+      pane: Element;
+      notes: Element;
+      editor: Element;
+      events: PaneDraftAuditEvent[];
+      paneRemovals: number;
+      notesRemovals: number;
+      editorRemovals: number;
+    };
+    const auditWindow = window as Window & { __motifPaneDraftAudit?: AuditState };
+    const pane = document.querySelector('[data-pane-key="tools"]');
+    const notes = pane?.querySelector('details[data-rail-tool="notes"]');
+    const editor = notes?.querySelector('.motif-cs-annotation-editor-drawer');
+    if (!pane || !notes || !editor) throw new Error('Pane draft audit targets are unavailable.');
+    const audit: AuditState = {
+      pane,
+      notes,
+      editor,
+      events: [],
+      paneRemovals: 0,
+      notesRemovals: 0,
+      editorRemovals: 0,
+    };
+    auditWindow.__motifPaneDraftAudit = audit;
+    let sequence = 0;
+    const describeTarget = (target: EventTarget | null) => {
+      if (!(target instanceof Element)) return 'unknown';
+      if (target.closest('[data-pane-popout]')) return 'popout';
+      if (target.closest('[data-pane-dock]')) return 'dock';
+      if (target.closest('[data-testid="floating-pane-resize-tools"]')) return 'resize';
+      if (target.closest('.motif-cs-pane-title')) return 'move';
+      if (target.closest('.motif-cs-annotation-editor-drawer > summary')) return 'editor-summary';
+      if (target.closest('details[data-rail-tool="notes"] > summary')) return 'notes-summary';
+      if (target instanceof HTMLInputElement && target.labels?.[0]?.textContent?.includes('Title')) return 'title';
+      if (target instanceof HTMLTextAreaElement) return 'body';
+      return target.tagName.toLowerCase();
+    };
+    const record = (event: Event) => {
+      const target = event.target;
+      audit.events.push({
+        sequence: ++sequence,
+        type: event.type,
+        target: describeTarget(target),
+        trusted: event.isTrusted,
+        ...((target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) ? { value: target.value } : {}),
+        ...(target instanceof HTMLDetailsElement ? { open: target.open } : {}),
+        placement: pane.getAttribute('data-pane-placement') ?? undefined,
+      });
+    };
+    for (const type of ['click', 'input', 'keydown', 'pointerdown']) {
+      document.addEventListener(type, record, true);
+    }
+    editor.addEventListener('toggle', record, true);
+    const removedWith = (nodes: NodeList, target: Element) => [...nodes].some((node) => (
+      node === target || (node instanceof Element && node.contains(target))
+    ));
+    const observer = new MutationObserver((records) => {
+      for (const mutation of records) {
+        if (mutation.type === 'attributes') {
+          audit.events.push({
+            sequence: ++sequence,
+            type: 'placement-ack',
+            target: 'pane',
+            trusted: false,
+            placement: pane.getAttribute('data-pane-placement') ?? undefined,
+          });
+          continue;
+        }
+        if (removedWith(mutation.removedNodes, pane)) audit.paneRemovals += 1;
+        if (removedWith(mutation.removedNodes, notes)) audit.notesRemovals += 1;
+        if (removedWith(mutation.removedNodes, editor)) audit.editorRemovals += 1;
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    observer.observe(pane, { attributes: true, attributeFilter: ['data-pane-placement'] });
+  });
+}
+
+async function readPaneDraftAudit(page: Page): Promise<PaneDraftAuditResult> {
+  return page.evaluate(() => {
+    type AuditState = {
+      pane: Element;
+      notes: Element;
+      editor: Element;
+      events: PaneDraftAuditEvent[];
+      paneRemovals: number;
+      notesRemovals: number;
+      editorRemovals: number;
+    };
+    const audit = (window as Window & { __motifPaneDraftAudit?: AuditState }).__motifPaneDraftAudit;
+    if (!audit) throw new Error('Pane draft audit was not installed.');
+    return {
+      events: audit.events,
+      paneRemovals: audit.paneRemovals,
+      notesRemovals: audit.notesRemovals,
+      editorRemovals: audit.editorRemovals,
+      samePaneOwner: audit.pane === document.querySelector('[data-pane-key="tools"]'),
+      sameNotesOwner: audit.notes === document.querySelector('[data-pane-key="tools"] details[data-rail-tool="notes"]'),
+      sameEditorOwner: audit.editor === document.querySelector('[data-pane-key="tools"] details[data-rail-tool="notes"] .motif-cs-annotation-editor-drawer'),
+    };
+  });
+}
+
 test.describe('state-preserving pane placement', () => {
-  test('Tools keeps its open workflow draft through pop out, move, resize, and dock', async ({ page }) => {
+  test.describe.configure({ retries: 0 });
+
+  test('Tools keeps its open workflow draft through pop out, move, resize, and dock', async ({ page }, testInfo) => {
     await openArtifact(page, 1180, 900);
     const toolsToggle = page.locator('[data-pane-toggle="tools"]');
     if ((await toolsToggle.getAttribute('aria-pressed')) !== 'true') await toolsToggle.click();
 
     const tools = page.locator('[data-pane-key="tools"]');
     const notes = tools.locator('details[data-rail-tool="notes"]');
+    const noteCountBefore = await notes.locator('.motif-cs-analysis-row').count();
     await notes.locator(':scope > summary').click();
+    await installPaneDraftAudit(page);
     await notes.locator('.motif-cs-annotation-editor-drawer > summary').click();
     const draftTitle = notes.getByLabel('Title');
     const draftBody = notes.locator('.motif-cs-annotation-editor-drawer textarea');
@@ -30,6 +160,12 @@ test.describe('state-preserving pane placement', () => {
     await tools.getByRole('button', { name: 'Pop out Tools pane' }).click();
     await expect(tools).toHaveAttribute('data-pane-placement', 'floating');
     await expect(notes).toHaveAttribute('open', '');
+    if (await draftTitle.inputValue() !== 'Uncommitted pane draft') {
+      await testInfo.attach('pane-draft-audit-at-loss', {
+        body: JSON.stringify(await readPaneDraftAudit(page), null, 2),
+        contentType: 'application/json',
+      });
+    }
     await expect(draftTitle).toHaveValue('Uncommitted pane draft');
     const before = await tools.boundingBox();
     expect(before).not.toBeNull();
@@ -74,6 +210,98 @@ test.describe('state-preserving pane placement', () => {
     await expect(draftTitle).toHaveValue('Uncommitted pane draft');
     await expect(draftBody).toHaveValue('This stays local while the same Tools subtree changes placement.');
     await expect(tools.getByRole('button', { name: 'Pop out Tools pane' })).toBeFocused();
+    expect(await notes.locator('.motif-cs-analysis-row').count()).toBe(noteCountBefore);
+
+    const audit = await readPaneDraftAudit(page);
+    await testInfo.attach('pane-draft-audit', {
+      body: JSON.stringify(audit, null, 2),
+      contentType: 'application/json',
+    });
+    expect(audit).toMatchObject({
+      paneRemovals: 0,
+      notesRemovals: 0,
+      editorRemovals: 0,
+      samePaneOwner: true,
+      sameNotesOwner: true,
+      sameEditorOwner: true,
+    });
+    expect(audit.events.filter((event) => ['input', 'click', 'pointerdown'].includes(event.type)).every((event) => event.trusted)).toBe(true);
+    expect(audit.events.some((event) => event.target === 'popout' && event.type === 'click')).toBe(true);
+    expect(audit.events.some((event) => event.target === 'dock' && event.type === 'click')).toBe(true);
+    expect(audit.events.filter((event) => event.type === 'placement-ack').map((event) => event.placement)).toEqual([
+      'floating',
+      'docked',
+    ]);
+  });
+
+  test('Notes retains one controlled draft owner through repeated pointer and keyboard placement changes', async ({ page }, testInfo) => {
+    await openArtifact(page, 1180, 900);
+    const tools = page.locator('[data-pane-key="tools"]');
+    const toolsToggle = page.locator('[data-pane-toggle="tools"]');
+    if ((await toolsToggle.getAttribute('aria-pressed')) !== 'true') await toolsToggle.click();
+    const notes = tools.locator('details[data-rail-tool="notes"]');
+    const noteCountBefore = await notes.locator('.motif-cs-analysis-row').count();
+    const notesSummary = notes.locator(':scope > summary');
+    await notesSummary.click();
+    await installPaneDraftAudit(page);
+    await notes.locator('.motif-cs-annotation-editor-drawer > summary').click();
+    const draftTitle = notes.getByLabel('Title');
+    const draftBody = notes.locator('.motif-cs-annotation-editor-drawer textarea');
+    const title = 'Repeated pane draft';
+    const body = 'Six placement cycles keep this controlled draft with one mounted owner.';
+    await draftTitle.fill(title);
+    await draftBody.fill(body);
+
+    for (let cycle = 0; cycle < 6; cycle += 1) {
+      await tools.getByRole('button', { name: 'Pop out Tools pane' }).click();
+      await expect(tools).toHaveAttribute('data-pane-placement', 'floating');
+      await expect(draftTitle, `title lost while floating in cycle ${cycle + 1}`).toHaveValue(title);
+      await expect(draftBody, `body lost while floating in cycle ${cycle + 1}`).toHaveValue(body);
+
+      const head = tools.locator(':scope > .motif-cs-pane-title');
+      await head.focus();
+      await head.press(cycle % 2 === 0 ? 'Alt+ArrowRight' : 'Alt+ArrowLeft');
+      const resize = tools.getByTestId('floating-pane-resize-tools');
+      await resize.focus();
+      await resize.press(cycle % 2 === 0 ? 'ArrowDown' : 'ArrowUp');
+
+      await notesSummary.click();
+      await expect(notes).not.toHaveAttribute('open', '');
+      await notesSummary.click();
+      await expect(notes).toHaveAttribute('open', '');
+      await expect(draftTitle, `title lost after Notes close/reopen in cycle ${cycle + 1}`).toHaveValue(title);
+      await expect(draftBody, `body lost after Notes close/reopen in cycle ${cycle + 1}`).toHaveValue(body);
+
+      if (cycle % 2 === 0) await tools.getByRole('button', { name: 'Dock Tools pane' }).click();
+      else await page.keyboard.press('Escape');
+      await expect(tools).toHaveAttribute('data-pane-placement', 'docked');
+      await expect(draftTitle, `title lost while docked in cycle ${cycle + 1}`).toHaveValue(title);
+      await expect(draftBody, `body lost while docked in cycle ${cycle + 1}`).toHaveValue(body);
+    }
+
+    expect(await notes.locator('.motif-cs-analysis-row').count()).toBe(noteCountBefore);
+    const audit = await readPaneDraftAudit(page);
+    await testInfo.attach('pane-draft-stress-audit', {
+      body: JSON.stringify(audit, null, 2),
+      contentType: 'application/json',
+    });
+    expect(audit).toMatchObject({
+      paneRemovals: 0,
+      notesRemovals: 0,
+      editorRemovals: 0,
+      samePaneOwner: true,
+      sameNotesOwner: true,
+      sameEditorOwner: true,
+    });
+    const placementEvents = audit.events.filter((event) => (
+      ['popout', 'dock', 'move', 'resize'].includes(event.target)
+      && ['click', 'keydown', 'pointerdown'].includes(event.type)
+    ));
+    expect(placementEvents.length).toBeGreaterThanOrEqual(24);
+    expect(placementEvents.every((event) => event.trusted)).toBe(true);
+    expect(audit.events.filter((event) => event.type === 'placement-ack').map((event) => event.placement)).toEqual(
+      Array.from({ length: 6 }, () => ['floating', 'docked']).flat(),
+    );
   });
 
   test('Escape docks a floating pane and the phone layout uses a bounded sheet', async ({ page }) => {

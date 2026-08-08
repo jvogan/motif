@@ -4530,8 +4530,164 @@ body[data-motif-cs-export-resizing] {
   border-color: color-mix(in srgb, var(--red) 68%, var(--border-strong));
 }
 
+.motif-cs-scientific-status {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--amber) 42%, var(--border-subtle));
+  border-left: 3px solid var(--amber);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--amber) 6%, var(--bg-primary));
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.motif-cs-scientific-status[data-status="error"] {
+  border-color: color-mix(in srgb, var(--red) 42%, var(--border-subtle));
+  border-left-color: var(--red);
+  background: color-mix(in srgb, var(--red) 5%, var(--bg-primary));
+}
+
+.motif-cs-scientific-status-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.motif-cs-scientific-status-copy strong {
+  color: var(--text-primary);
+  font-size: 11.5px;
+}
+
+.motif-cs-scientific-status details {
+  min-width: 0;
+}
+
+.motif-cs-scientific-status summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px 8px;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.motif-cs-scientific-status summary:focus-visible {
+  border-radius: 2px;
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.motif-cs-scientific-status-codes {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.motif-cs-scientific-status code {
+  overflow-wrap: anywhere;
+  color: var(--text-secondary);
+  font: 9.5px/1.3 var(--font-mono);
+}
+
+.motif-cs-scientific-status-codes code {
+  padding: 1px 4px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 3px;
+  background: var(--control-bg);
+}
+
+.motif-cs-scientific-status-details {
+  min-width: 0;
+  padding-top: 6px;
+}
+
+.motif-cs-scientific-status-details ul,
+.motif-cs-scientific-status-details dl {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+}
+
+.motif-cs-scientific-status-details ul {
+  padding-left: 17px;
+}
+
+.motif-cs-scientific-status-details li {
+  padding-left: 2px;
+}
+
+.motif-cs-scientific-status-details li > span,
+.motif-cs-scientific-status-details li > small {
+  display: block;
+}
+
+.motif-cs-scientific-status-details li > small {
+  color: var(--text-muted);
+}
+
+.motif-cs-scientific-status-details dl > div {
+  display: grid;
+  grid-template-columns: minmax(82px, auto) minmax(0, 1fr);
+  gap: 8px;
+}
+
+.motif-cs-scientific-status-details dt {
+  color: var(--text-muted);
+  font-weight: 700;
+}
+
+.motif-cs-scientific-status-details dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.motif-cs-panel > .motif-cs-scientific-status {
+  margin: 8px 12px;
+}
+
+.motif-cs-selection-bar + .motif-cs-scientific-status {
+  margin: 7px 10px;
+}
+
 .motif-cs-digest-recipe-row {
   align-items: flex-start;
+}
+
+.motif-cs-digest-methylation-row {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  padding: 0 12px 8px;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  font-size: 10.5px;
+}
+
+.motif-cs-digest-methylation-row label {
+  display: grid;
+  flex: 1 1 190px;
+  gap: 4px;
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: 10.5px;
+  font-weight: 700;
+}
+
+.motif-cs-digest-methylation-row .motif-cs-field {
+  width: 100%;
+  min-width: 0;
+}
+
+.motif-cs-digest-methylation-row > span {
+  flex: 1 1 180px;
+  padding-bottom: 5px;
 }
 
 .motif-cs-digest-scope {
@@ -6559,8 +6715,10 @@ summary.motif-cs-panel-head:focus-visible {
 }
 
 .motif-cs-assembly-domestication,
+.motif-cs-assembly-fidelity,
 .motif-cs-assembly-issues {
   display: grid;
+  min-width: 0;
   gap: 2px;
   padding: 8px;
   border: 1px solid var(--border-subtle);
@@ -6571,12 +6729,35 @@ summary.motif-cs-panel-head:focus-visible {
 }
 
 .motif-cs-assembly-domestication strong,
+.motif-cs-assembly-fidelity strong,
 .motif-cs-assembly-issues > strong {
   color: var(--text-primary);
 }
 
 .motif-cs-assembly-domestication[data-state="clear"] {
   background: color-mix(in srgb, var(--green) 4%, var(--bg-primary));
+}
+
+.motif-cs-assembly-fidelity[data-state="supported"] {
+  border-color: color-mix(in srgb, var(--green) 38%, var(--border-subtle));
+  background: color-mix(in srgb, var(--green) 4%, var(--bg-primary));
+}
+
+.motif-cs-assembly-fidelity[data-state="unknown"],
+.motif-cs-assembly-fidelity[data-state="unsupported"],
+.motif-cs-assembly-fidelity[data-state="partial"] {
+  border-color: color-mix(in srgb, var(--amber) 38%, var(--border-subtle));
+  background: color-mix(in srgb, var(--amber) 4%, var(--bg-primary));
+}
+
+.motif-cs-assembly-fidelity small {
+  min-width: 0;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.motif-cs-assembly-fidelity a {
+  color: var(--text-secondary);
 }
 
 .motif-cs-assembly-issues[data-level="error"] {

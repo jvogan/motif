@@ -123,6 +123,96 @@ describe('Claude Science digest recipe model', () => {
     expect(recipe.outcome).toBe(outcome);
   });
 
+  it('reports nickase recognition without inventing a double-strand fragment boundary', () => {
+    const recipe = buildDigestRecipe({
+      sequence: 'AAAACCTCAGCAAAA',
+      sequenceType: 'dna',
+      topology: 'linear',
+      enzymeText: 'Nb.BbvCI',
+      enzymeCatalog: RESTRICTION_ENZYMES_FULL,
+    });
+
+    expect(recipe.isValid).toBe(true);
+    expect(recipe.enzymes).toMatchObject([{
+      name: 'Nb.BbvCI',
+      cutCount: 0,
+      nickCount: 1,
+      type: 'nickase',
+    }]);
+    expect(recipe.recognitionSiteCount).toBe(1);
+    expect(recipe.cutCount).toBe(0);
+    expect(recipe.outcome).toBe('uncut');
+    expect(recipe.fragments).toHaveLength(1);
+  });
+
+  it('keeps DpnI conditional until methylation is explicit and preserves the assumption', () => {
+    const input = {
+      sequence: 'AAAAGATCAAAA',
+      sequenceType: 'dna' as const,
+      topology: 'linear' as const,
+      enzymeText: 'DpnI',
+      enzymeCatalog: RESTRICTION_ENZYMES_FULL,
+    };
+
+    const unknown = buildDigestRecipe({ ...input, methylationState: 'unknown' });
+    expect(unknown.isValid).toBe(false);
+    expect(unknown.issues).toContainEqual(expect.objectContaining({ code: 'methylation_unknown' }));
+    expect(unknown.methylationAssumptions).toBe('unknown');
+
+    const methylated = buildDigestRecipe({ ...input, methylationState: 'methylated' });
+    expect(methylated.isValid).toBe(true);
+    expect(methylated.cutCount).toBe(1);
+    expect(methylated.fragments).toHaveLength(2);
+    expect(methylated.methylationAssumptions).toBe('methylated');
+
+    const unmethylated = buildDigestRecipe({ ...input, methylationState: 'unmethylated' });
+    expect(unmethylated.isValid).toBe(false);
+    expect(unmethylated.issues).toContainEqual(expect.objectContaining({ code: 'methylation_unmethylated' }));
+    expect(unmethylated.methylationAssumptions).toBe('unmethylated');
+  });
+
+  it('keeps mixed dam and CpG assumptions independent, including context-dependent MspI', () => {
+    const input = {
+      sequence: 'AAAAGATCAAAACCGGAAAA',
+      sequenceType: 'dna' as const,
+      topology: 'linear' as const,
+      enzymeText: 'DpnI, HpaII, MspI',
+      enzymeCatalog: RESTRICTION_ENZYMES_FULL,
+    };
+
+    const conditional = buildDigestRecipe({
+      ...input,
+      methylationAssumptions: { dam: 'methylated', cpg: 'unknown' },
+    });
+    expect(conditional.isValid).toBe(false);
+    expect(conditional.methylationAssumptions).toEqual({ dam: 'methylated', cpg: 'unknown' });
+    expect(conditional.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'methylation_unknown', enzyme: 'HpaII' }),
+      expect.objectContaining({ code: 'methylation_context_unknown', enzyme: 'MspI' }),
+    ]));
+    expect(conditional.enzymes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'HpaII',
+        methylationRequirement: expect.objectContaining({ target: 'cpg', state: 'unmethylated' }),
+        methylationEvidence: expect.objectContaining({ source: expect.stringContaining('neb.com') }),
+      }),
+      expect.objectContaining({
+        name: 'MspI',
+        methylationBehavior: 'context_dependent',
+        methylationEvidence: expect.objectContaining({ source: expect.stringContaining('neb.com') }),
+      }),
+    ]));
+
+    const resolved = buildDigestRecipe({
+      ...input,
+      methylationAssumptions: { dam: 'methylated', cpg: 'unmethylated' },
+    });
+    expect(resolved.isValid).toBe(true);
+    expect(resolved.cutCount).toBe(2);
+    expect(resolved.recognitionSiteCount).toBe(3);
+    expect(resolved.methylationAssumptions).toEqual({ dam: 'methylated', cpg: 'unmethylated' });
+  });
+
   it.each(['rna', 'protein', 'mixed', 'unknown'] as const)(
     'rejects %s records without scanning or converting them to DNA',
     (sequenceType) => {

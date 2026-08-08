@@ -1057,7 +1057,7 @@ test.describe('Claude Science artifact workflows', () => {
 
     const mapVisibility = page.locator('details').filter({ hasText: 'Map Visibility' }).first();
     await mapVisibility.locator(':scope > summary').click();
-    await mapVisibility.getByRole('button', { name: /Full list .*154 enz/ }).click();
+    await mapVisibility.getByRole('button', { name: /Full list .*155 enz/ }).click();
     await digest.locator(':scope > summary').click();
     await expect(enzymeInput).toHaveValue('EcoRI');
     await expect(digest.locator(':scope > summary')).toContainText('1 cut · linearized');
@@ -1111,6 +1111,10 @@ test.describe('Claude Science artifact workflows', () => {
     await expect(digest.locator('.motif-cs-digest-save-status')).toContainText('Saved 2 fragments');
     await expect(digest.getByTestId('digest-save')).toBeDisabled();
     await expect(digest.getByTestId('digest-save')).toHaveText('Saved');
+    await digest.locator(':scope > summary').click();
+    await expect(digest.getByTestId('digest-saved-receipt')).toBeVisible();
+    await expect(digest).not.toHaveAttribute('open', '');
+    await digest.locator(':scope > summary').click();
 
     const saved = await page.evaluate(() => ({
       records: window.motifGetInventory?.(),
@@ -1268,6 +1272,38 @@ test.describe('Claude Science artifact workflows', () => {
     const after = await Promise.all([layout.boundingBox(), preview.boundingBox()]);
     expect(after[1]!.y).toBeGreaterThanOrEqual(after[0]!.y - 1);
     expect(after[1]!.y).toBeLessThan(after[0]!.y + after[0]!.height);
+  });
+
+  test('phone assembly keeps method navigation and save controls reachable without horizontal overflow', async ({ page }) => {
+    await openArtifact(page, 390, 760);
+    const cloning = page.locator('details[data-rail-tool="cloning"]');
+    await cloning.locator(':scope > summary').click();
+    await cloning.getByTestId('open-assembly-workspace').click();
+
+    const assembly = page.getByTestId('assembly-workspace');
+    const assemblyWindow = page.locator('.motif-cs-window').filter({ has: assembly });
+    await expect(assemblyWindow).toBeVisible();
+    const bounds = await assemblyWindow.boundingBox();
+    expect(bounds).toBeTruthy();
+    expect(bounds!.x).toBeGreaterThanOrEqual(-1);
+    expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(391);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+
+    const body = assembly.locator('.motif-cs-assembly-body');
+    await expect.poll(() => body.evaluate((element) => getComputedStyle(element).overflowY)).toMatch(/auto|scroll/);
+    const goldenGate = assembly.getByRole('tab', { name: 'Golden Gate' });
+    const ligation = assembly.getByRole('tab', { name: 'Traditional ligation' });
+    await goldenGate.focus();
+    await page.keyboard.press('ArrowRight');
+    await expect(ligation).toBeFocused();
+    await expect(assembly.getByRole('tabpanel')).toHaveAttribute('aria-labelledby', await ligation.getAttribute('id'));
+
+    const productName = assembly.getByRole('textbox', { name: 'Product name' });
+    await productName.scrollIntoViewIfNeeded();
+    await expect(productName).toBeVisible();
+    const saveResult = assembly.getByTestId('assembly-save-result');
+    await saveResult.scrollIntoViewIfNeeded();
+    await expect(saveResult).toBeVisible();
   });
 
   test('digest saved state follows durable history across recipes, removal, and restore', async ({ page }) => {
@@ -1440,6 +1476,63 @@ test.describe('Claude Science artifact workflows', () => {
       active: true,
     }] }, { discardUnsavedChanges: true }));
     await expect(assemblyWindow).toHaveCount(0);
+  });
+
+  test('empirical Golden Gate fidelity provenance stays contained in its validation sidebar', async ({ page }) => {
+    await openArtifact(page, 1200, 900);
+    await page.evaluate(() => window.motifRenderInventory?.([
+      {
+        id: 'fidelity-promoter',
+        name: 'Fidelity promoter',
+        molecule: 'dna',
+        topology: 'linear',
+        seq: 'GGTCTCNAAAACCCCGATGNGAGACC',
+        active: true,
+      },
+      {
+        id: 'fidelity-backbone',
+        name: 'Fidelity backbone',
+        molecule: 'dna',
+        topology: 'linear',
+        seq: 'GGTCTCNGATGGGGGAAAANGAGACC',
+      },
+    ]));
+
+    const cloning = page.locator('details[data-rail-tool="cloning"]');
+    await cloning.locator(':scope > summary').click();
+    await cloning.getByTestId('open-assembly-workspace').click();
+    const assembly = page.getByTestId('assembly-workspace');
+    await assembly.getByLabel('Part 2').selectOption('fidelity-backbone');
+    await assembly.getByTestId('assembly-fidelity-condition').selectOption('pryor-2020-bsai-hfv2');
+
+    const sidebar = assembly.locator('.motif-cs-assembly-sidebar');
+    const receipt = assembly.getByTestId('assembly-fidelity-receipt');
+    await expect(receipt).toContainText('source SHA-256');
+    await expect(receipt).toContainText('100.0% estimated whole-assembly fidelity');
+
+    const assertContained = async () => {
+      await receipt.scrollIntoViewIfNeeded();
+      const geometry = await sidebar.evaluate((element) => {
+        const receiptElement = element.querySelector<HTMLElement>('[data-testid="assembly-fidelity-receipt"]')!;
+        const sidebarRect = element.getBoundingClientRect();
+        const receiptRect = receiptElement.getBoundingClientRect();
+        return {
+          clientWidth: element.clientWidth,
+          scrollWidth: element.scrollWidth,
+          sidebarLeft: sidebarRect.left,
+          sidebarRight: sidebarRect.right,
+          receiptLeft: receiptRect.left,
+          receiptRight: receiptRect.right,
+        };
+      });
+      expect(geometry.scrollWidth - geometry.clientWidth).toBeLessThanOrEqual(1);
+      expect(geometry.receiptLeft).toBeGreaterThanOrEqual(geometry.sidebarLeft - 1);
+      expect(geometry.receiptRight).toBeLessThanOrEqual(geometry.sidebarRight + 1);
+    };
+
+    await assertContained();
+    await page.setViewportSize({ width: 390, height: 760 });
+    await assertContained();
   });
 
   test('guided cloning design switches from GoldenBraid ordering to Gibson preparation and opens primer design', async ({ page }) => {
@@ -2332,6 +2425,14 @@ test.describe('Claude Science artifact workflows', () => {
           { id: 'restored-row', name: 'Restored reference', aligned: 'ATGGAA-TTCTAA', sourceRecordId: 'restored-record' },
           { id: 'variant-row', name: 'Restored variant', aligned: 'ATGGAATTTCTAA' },
         ],
+        comparison: {
+          route: 'local-command',
+          method: 'alignment',
+          algorithm: 'MAFFT',
+          fallback: false,
+          warnings: [],
+          ambiguityCount: 0,
+        },
         engine: { id: 'mafft', label: 'MAFFT', version: '7.526', mode: 'local-command', parameters: ['--auto'] },
       }],
       notes: [{

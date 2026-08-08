@@ -63,6 +63,22 @@ describe('ClaudeSciencePrimerWorkspace', () => {
     expect(screen.getByText('Cross-dimer check')).toBeTruthy();
   });
 
+  it('associates each invalid numeric field with the current validation message', async () => {
+    const user = userEvent.setup();
+    render(<ClaudeSciencePrimerWorkspace {...props()} />);
+
+    const targetTm = screen.getByLabelText('Target Tm °C');
+    await user.clear(targetTm);
+    await user.type(targetTm, '90');
+
+    const error = screen.getByRole('alert');
+    expect(targetTm.getAttribute('aria-invalid')).toBe('true');
+    const describedBy = targetTm.getAttribute('aria-describedby')?.split(/\s+/) ?? [];
+    expect(describedBy).toContain(error.id);
+    expect(screen.getByLabelText('Minimum length').getAttribute('aria-invalid')).toBeNull();
+    expect(screen.getByLabelText('Minimum length').getAttribute('aria-describedby')).not.toContain(error.id);
+  });
+
   it('applies a cloning preset and exposes advanced tail controls without making them prominent by default', async () => {
     const user = userEvent.setup();
     const view = render(<ClaudeSciencePrimerWorkspace {...props()} />);

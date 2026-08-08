@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -124,6 +124,25 @@ describe('ClaudeScienceNotesPanel', () => {
     expect(screen.getByRole('status').textContent).toContain('Note added.');
   });
 
+  it('does not let a delayed drawer-open acknowledgement reset a controlled draft', async () => {
+    const user = userEvent.setup();
+    render(<ClaudeScienceNotesPanel {...props({ notes: [] })} />);
+
+    await user.click(screen.getByText('Add note', { selector: 'summary span' }));
+    const title = screen.getByLabelText('Title') as HTMLInputElement;
+    const body = screen.getByLabelText('Note') as HTMLTextAreaElement;
+    await user.type(title, 'Pane draft');
+    await user.type(body, 'Keep this text through placement changes.');
+
+    const drawer = title.closest('details');
+    expect(drawer?.open).toBe(true);
+    fireEvent(drawer!, new Event('toggle', { bubbles: true }));
+
+    expect(title.value).toBe('Pane draft');
+    expect(body.value).toBe('Keep this text through placement changes.');
+    expect(document.activeElement).toBe(title);
+  });
+
   it('requires note text and falls back from record scope to workspace without an active record', async () => {
     const user = userEvent.setup();
     const onAdd = vi.fn();
@@ -158,6 +177,11 @@ describe('ClaudeScienceNotesPanel', () => {
     await user.type(title, 'Updated QC');
     const body = within(note).getByLabelText('Note');
     await user.clear(body);
+    await user.click(within(note).getByRole('button', { name: 'Update' }));
+    const editError = within(note).getByRole('alert');
+    expect(body.getAttribute('aria-invalid')).toBe('true');
+    expect(body.getAttribute('aria-describedby')).toBe(editError.id);
+    expect(editError.id).toMatch(/-error$/);
     await user.type(body, 'Orientation confirmed.');
     await user.click(within(note).getByRole('button', { name: 'Update' }));
     expect(onUpdate).toHaveBeenCalledWith('record-note', {

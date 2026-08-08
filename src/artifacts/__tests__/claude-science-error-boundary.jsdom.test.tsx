@@ -5,6 +5,8 @@ import { createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ArtifactRuntimeErrorBoundary, MotifArtifactRuntimeError } from '../motif-artifact';
 
+(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
 function Crash(): never {
   throw new Error('render exploded');
 }
@@ -17,6 +19,15 @@ function PreloadCrash(): never {
   );
 }
 
+function mockExpectedBoundaryError(expected: RegExp): void {
+  vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+    const message = args.map((argument) => String(argument)).join(' ');
+    if (!expected.test(message)) {
+      throw new Error(`Unexpected console.error in runtime-boundary test: ${message}`);
+    }
+  });
+}
+
 describe('ArtifactRuntimeErrorBoundary', () => {
   afterEach(() => {
     document.body.innerHTML = '';
@@ -24,7 +35,7 @@ describe('ArtifactRuntimeErrorBoundary', () => {
   });
 
   it('keeps a usable recovery shell when a descendant render fails', () => {
-    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    mockExpectedBoundaryError(/render exploded/);
     const container = document.createElement('div');
     document.body.appendChild(container);
     const root = createRoot(container);
@@ -47,7 +58,7 @@ describe('ArtifactRuntimeErrorBoundary', () => {
   });
 
   it('reports preload rejection without claiming samples or recovery data were loaded', () => {
-    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    mockExpectedBoundaryError(/MOTIF_INVALID_PRELOAD|malformed state|Preloaded workspace could not be opened/);
     const container = document.createElement('div');
     document.body.appendChild(container);
     const root = createRoot(container);

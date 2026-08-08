@@ -149,6 +149,7 @@ else writeFileSync(outputPath, output);
 check('plugin source has a matching, bounded manifest and skill', () => {
   validatePluginSource(pluginSource);
   const manifest = JSON.parse(readFileSync(join(pluginSource, '.claude-plugin/plugin.json'), 'utf8'));
+  const packageVersion = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version;
   const skill = readFileSync(join(pluginSource, 'skills/motif-for-claude-science/SKILL.md'), 'utf8');
   const changelog = readFileSync(join(pluginSource, 'CHANGELOG.md'), 'utf8');
   const artifactSource = readFileSync(join(root, 'src/artifacts/motif-artifact.tsx'), 'utf8');
@@ -163,7 +164,7 @@ check('plugin source has a matching, bounded manifest and skill', () => {
   assert.match(skill, /A request to open, show, reload, or retry an existing construct is a display\s+request/u);
   assert.match(skill, /Reuse the exact latest sequence, annotations, colors, and provenance/u);
   assert.match(manifest.version, /^\d+\.\d+\.\d+$/);
-  assert.equal(manifest.version, '0.3.0');
+  assert.equal(manifest.version, packageVersion);
   assert.equal(manifest.version, artifactVersion);
   assert.ok(changelog.split(/\r?\n/u).some((line) => (
     line === `## ${manifest.version}` || line.startsWith(`## ${manifest.version} `)
@@ -724,6 +725,22 @@ check('bundled helper accepts linked Sanger traces and rejects detached or malfo
     },
   };
   assert.equal(validatePayload(payload), payload);
+  for (const [sequence, character, offset] of [
+    ['AC-GT', '-', 2],
+    ['AC1GT', '1', 2],
+    ['AC?GT', '?', 2],
+  ]) {
+    const escapedCharacter = character.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    assert.throws(
+      () => validatePayload({ records: [{ id: 'invalid-sequence', type: 'dna', sequence }] }),
+      new RegExp(`invalid character "${escapedCharacter}" at offset ${offset}`),
+    );
+  }
+  assert.doesNotThrow(() => validatePayload({ records: [{ id: 'formatted-sequence', type: 'dna', sequence: 'AC GT' }] }));
+  assert.throws(
+    () => validatePayload({ records: [{ id: 'invalid-trace-owner', type: 'dna', sequence: 'AC-GT', sangerTrace }] }),
+    /invalid character "-" at offset 2/,
+  );
   assert.throws(
     () => validatePayload({ records: [{ id: 'read-01', type: 'dna', sequence: 'AAAA', sangerTrace }] }),
     /calls must exactly match/,

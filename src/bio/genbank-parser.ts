@@ -3,10 +3,130 @@ import { featureLocationCoordinateSignature } from './feature-location';
 
 // Phase 35 P-H (P2-E2): individual qualifier values larger than 1 MB are
 // truncated to this cap and tagged with a suffix so consumers can detect
-// the truncation. The accumulator soft-caps at 2x this value to avoid
-// quadratic string concat on adversarial input.
+// the truncation. The retained accumulator is bounded in UTF-8 bytes and the
+// original byte count is tracked separately so huge values cannot grow it.
 export const QUALIFIER_VALUE_MAX_BYTES = 1_048_576;
 export const QUALIFIER_TRUNCATED_SUFFIX = '...[truncated]';
+
+/**
+ * Browser-safe UTF-8 accounting. TextEncoder's replacement behavior for lone
+ * surrogates is reproduced explicitly so parsing does not depend on Buffer or
+ * retain malformed UTF-16 in a supposedly bounded exported value.
+ */
+function utf8ByteLength(value: string): number {
+  let bytes = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x7f) bytes += 1;
+    else if (code <= 0x7ff) bytes += 2;
+    else if (code >= 0xd800 && code <= 0xdbff && index + 1 < value.length) {
+      const next = value.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        bytes += 4;
+        index += 1;
+      } else bytes += 3;
+    } else if (code >= 0xd800 && code <= 0xdfff) bytes += 3;
+    else bytes += 3;
+  }
+  return bytes;
+}
+
+/** Append complete Unicode scalars, replacing malformed surrogates. */
+function appendUtf8WithinLimit(current: string, incoming: string, limit: number): string {
+  let output = current;
+  let bytes = utf8ByteLength(current);
+  if (bytes >= limit) return output;
+  for (let index = 0; index < incoming.length; index += 1) {
+    const code = incoming.charCodeAt(index);
+    let fragment = incoming[index];
+    let fragmentBytes: number;
+    if (code <= 0x7f) {
+      fragmentBytes = 1;
+    } else if (code <= 0x7ff) {
+      fragmentBytes = 2;
+    } else if (code >= 0xd800 && code <= 0xdbff && index + 1 < incoming.length) {
+      const next = incoming.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        fragment = incoming.slice(index, index + 2);
+        fragmentBytes = 4;
+        index += 1;
+      } else {
+        fragment = '\ufffd';
+        fragmentBytes = 3;
+      }
+    } else if (code >= 0xd800 && code <= 0xdfff) {
+      fragment = '\ufffd';
+      fragmentBytes = 3;
+    } else if (code <= 0xffff) {
+      fragmentBytes = 3;
+    } else {
+      // Unreachable for UTF-16 code units, retained as a defensive fallback.
+      fragment = '\ufffd';
+      fragmentBytes = 3;
+    }
+    if (bytes + fragmentBytes > limit) break;
+    output += fragment;
+    bytes += fragmentBytes;
+  }
+  return output;
+}
+
+function truncateUtf8(value: string, limit: number): string {
+  return appendUtf8WithinLimit('', value, limit);
+}
+
+const QUALIFIER_TRUNCATED_SUFFIX_BYTES = utf8ByteLength(QUALIFIER_TRUNCATED_SUFFIX);
+
+function hasOddTrailingQuoteRun(value: string): boolean {
+  let count = 0;
+  for (let index = value.length - 1; index >= 0 && value[index] === '"'; index -= 1) count += 1;
+  return count > 0 && count % 2 === 1;
+}
+
+function qualifierChunkStats(value: string, opening: boolean, closing: boolean): { bytes: number; retained: string } {
+  const start = opening && value.startsWith('"') ? 1 : 0;
+  let end = value.length;
+  if (closing && end > start && value.endsWith('"')) end -= 1;
+  if (end < start) end = start;
+  let bytes = 0;
+  let retainedBytes = 0;
+  const retained: string[] = [];
+  for (let index = start; index < end; index += 1) {
+    let fragment = value[index];
+    let fragmentBytes: number;
+    if (fragment === '"' && index + 1 < end && value[index + 1] === '"') {
+      fragment = '"';
+      fragmentBytes = 1;
+      index += 1;
+    } else {
+      const code = value.charCodeAt(index);
+      if (code <= 0x7f) fragmentBytes = 1;
+      else if (code <= 0x7ff) fragmentBytes = 2;
+      else if (code >= 0xd800 && code <= 0xdbff && index + 1 < end) {
+        const next = value.charCodeAt(index + 1);
+        if (next >= 0xdc00 && next <= 0xdfff) {
+          fragment = value.slice(index, index + 2);
+          fragmentBytes = 4;
+          index += 1;
+        } else {
+          fragment = '\ufffd';
+          fragmentBytes = 3;
+        }
+      } else if (code >= 0xd800 && code <= 0xdfff) {
+        fragment = '\ufffd';
+        fragmentBytes = 3;
+      } else {
+        fragmentBytes = 3;
+      }
+    }
+    bytes += fragmentBytes;
+    if (retainedBytes + fragmentBytes <= QUALIFIER_VALUE_MAX_BYTES) {
+      retained.push(fragment);
+      retainedBytes += fragmentBytes;
+    }
+  }
+  return { bytes, retained: retained.join('') };
+}
 
 /**
  * NCBI strand qualifier from the LOCUS line: `ss-` (single-stranded),
@@ -36,6 +156,32 @@ export interface GenBankTruncationInfo {
   parsedSequenceLength: number;
   /** Human-readable reason — empty when not truncated. */
   reason: string;
+}
+
+export interface GenBankQualifier {
+  key: string;
+  value: string | true;
+}
+
+/** Structured evidence that an imported qualifier exceeded the parser cap. */
+export interface GenBankQualifierTruncation {
+  key: string;
+  /** UTF-8 byte count before truncation. Kept as `originalLength` for API compatibility. */
+  originalLength: number;
+  /** UTF-8 byte count after truncation and the detection suffix. */
+  retainedLength: number;
+  /** Explicit aliases for consumers that should not infer the unit from Length. */
+  originalBytes?: number;
+  retainedBytes?: number;
+  limit: number;
+}
+
+export interface GenBankImportDiagnostic {
+  severity: 'warning';
+  code: 'between_base_location' | 'remote_location' | 'ambiguous_location';
+  featureKey: string;
+  location: string;
+  message: string;
 }
 
 export interface GenBankRecord {
@@ -87,6 +233,10 @@ export interface GenBankRecord {
   division?: string;
   /** LOCUS date in `DD-MMM-YYYY` form, preserved verbatim. VOG-1974. */
   date?: string;
+  /** Feature-specific warnings raised while retaining valid but unprojectable locations. */
+  importDiagnostics?: GenBankImportDiagnostic[];
+  /** Qualifiers capped during import, retained as a structured loss receipt. */
+  qualifierTruncations?: Array<GenBankQualifierTruncation & { featureIndex: number }>;
 }
 
 /**
@@ -219,6 +369,67 @@ function splitTopLevel(expr: string): string[] {
   return parts;
 }
 
+function splitTopLevelRange(expr: string): [string, string] | null {
+  let depth = 0;
+  for (let index = 0; index < expr.length - 1; index += 1) {
+    const character = expr[index];
+    if (character === '(') depth += 1;
+    else if (character === ')') depth -= 1;
+    if (depth === 0 && character === '.' && expr[index + 1] === '.') {
+      const left = expr.slice(0, index).trim();
+      const right = expr.slice(index + 2).trim();
+      return left && right ? [left, right] : null;
+    }
+  }
+  return null;
+}
+
+type LocationSyntaxAnalysis = {
+  valid: boolean;
+  hasOneOf: boolean;
+};
+
+const INVALID_LOCATION_SYNTAX: LocationSyntaxAnalysis = { valid: false, hasOneOf: false };
+
+function analyzeUnprojectableLocationSyntax(expression: string, depth = 0): LocationSyntaxAnalysis {
+  if (depth > 32) return INVALID_LOCATION_SYNTAX;
+  const inner = expression.trim();
+  if (/^[<>]?\d+\^[<>]?\d+$/.test(inner)) return { valid: true, hasOneOf: false };
+  if (/^[<>]?\d+$/.test(inner)) return { valid: true, hasOneOf: false };
+
+  const oneOf = inner.match(/^one-of\((.*)\)$/i);
+  if (oneOf) {
+    const alternatives = splitTopLevel(oneOf[1]);
+    const valid = alternatives.length >= 2 && alternatives.every((part) => /^[<>]?\d+$/.test(part.trim()));
+    return { valid, hasOneOf: valid };
+  }
+
+  const range = splitTopLevelRange(inner);
+  if (range) {
+    const left = analyzeUnprojectableLocationSyntax(range[0], depth + 1);
+    const right = analyzeUnprojectableLocationSyntax(range[1], depth + 1);
+    return {
+      valid: left.valid && right.valid,
+      hasOneOf: left.hasOneOf || right.hasOneOf,
+    };
+  }
+
+  if (inner.startsWith('complement(') && inner.endsWith(')')) {
+    return analyzeUnprojectableLocationSyntax(inner.slice(11, -1), depth + 1);
+  }
+  for (const [operator, offset] of [['join(', 5], ['order(', 6]] as const) {
+    if (!inner.startsWith(operator) || !inner.endsWith(')')) continue;
+    const parts = splitTopLevel(inner.slice(offset, -1)).map((part) => (
+      analyzeUnprojectableLocationSyntax(part, depth + 1)
+    ));
+    return {
+      valid: parts.length > 0 && parts.every((part) => part.valid),
+      hasOneOf: parts.some((part) => part.hasOneOf),
+    };
+  }
+  return INVALID_LOCATION_SYNTAX;
+}
+
 function invertParsedLocation(location: ParsedLocation): ParsedLocation {
   return {
     ...location,
@@ -251,6 +462,66 @@ function assertValidLocation(location: ParsedLocation, rawLocation: string): Par
     throw new Error(`Invalid GenBank location: ${rawLocation}`);
   }
   return location;
+}
+
+function isCoordinateExpression(expression: string, depth = 0): boolean {
+  if (depth > 16) return false;
+  const inner = expression.trim();
+  if (/^[<>]?\d+\^[<>]?\d+$/.test(inner) || /^[<>]?\d+(?:\.\.[<>]?\d+)?$/.test(inner)) return true;
+  for (const [operator, offset] of [['complement(', 11], ['join(', 5], ['order(', 6]] as const) {
+    if (!inner.startsWith(operator) || !inner.endsWith(')')) continue;
+    const body = inner.slice(offset, -1);
+    if (operator === 'complement(') return isCoordinateExpression(body, depth + 1);
+    const parts = splitTopLevel(body);
+    return parts.length > 0 && parts.every((part) => isCoordinateExpression(part, depth + 1));
+  }
+  return false;
+}
+
+function unprojectableLocationDiagnostic(location: string, featureKey: string): GenBankImportDiagnostic | null {
+  const inner = location.trim();
+  if (/^[<>]?\d+\^[<>]?\d+$/.test(inner)) {
+    return {
+      severity: 'warning',
+      code: 'between_base_location',
+      featureKey,
+      location,
+      message: `Feature ${featureKey} retains valid between-base location ${location}, but that zero-width location cannot be projected onto a Motif feature range.`,
+    };
+  }
+
+  const remote = inner.match(/^[A-Za-z][A-Za-z0-9_.-]*:(.+)$/);
+  if (remote && (isCoordinateExpression(remote[1]) || analyzeUnprojectableLocationSyntax(remote[1]).valid)) {
+    return {
+      severity: 'warning',
+      code: 'remote_location',
+      featureKey,
+      location,
+      message: `Feature ${featureKey} retains remote INSDC location ${location}, but a remote accession cannot be projected onto this record's local sequence.`,
+    };
+  }
+
+  const analysis = analyzeUnprojectableLocationSyntax(inner);
+  if (analysis.valid && analysis.hasOneOf) {
+    return {
+      severity: 'warning',
+      code: 'ambiguous_location',
+      featureKey,
+      location,
+      message: `Feature ${featureKey} retains valid ambiguous INSDC location ${location}, but one-of alternatives cannot be projected onto one authoritative Motif feature range.`,
+    };
+  }
+
+  if ((inner.startsWith('complement(') && inner.endsWith(')'))
+    || (inner.startsWith('join(') && inner.endsWith(')'))
+    || (inner.startsWith('order(') && inner.endsWith(')'))) {
+    const offset = inner.startsWith('complement(') ? 11 : inner.startsWith('join(') ? 5 : 6;
+    const parts = inner.startsWith('complement(')
+      ? [inner.slice(offset, -1)]
+      : splitTopLevel(inner.slice(offset, -1));
+    return parts.map((part) => unprojectableLocationDiagnostic(part, featureKey)).find(Boolean) ?? null;
+  }
+  return null;
 }
 
 function parseLocation(loc: string, depth = 0): ParsedLocation {
@@ -355,13 +626,35 @@ export function parseFeatures(featuresText: string): Feature[] {
     // We also detect when a continuation line beginning with `/` is actually
     // INSIDE an unclosed quoted value, and treat it as a continuation.
     const qualifiers: Record<string, string | true> = Object.create(null) as Record<string, string | true>;
+    const qualifierEntries: GenBankQualifier[] = [];
+    const qualifierTruncations: GenBankQualifierTruncation[] = [];
     let currentQualKey = '';
-    let currentQualVal = '';
+    let currentQualRetainedValue = '';
+    let currentQualOriginalBytes = 0;
     let currentQualIsQuoted = false;
+    let currentQualClosed = false;
     let currentQualValueless = false;
+
+    const appendQualifierChunk = (rawChunk: string, separator = '', opening = false, closing = false) => {
+      const separatorStats = qualifierChunkStats(separator, false, false);
+      const chunkStats = qualifierChunkStats(rawChunk, opening, closing);
+      currentQualOriginalBytes += separatorStats.bytes + chunkStats.bytes;
+      const retainedLimit = currentQualOriginalBytes > QUALIFIER_VALUE_MAX_BYTES
+        ? QUALIFIER_VALUE_MAX_BYTES - QUALIFIER_TRUNCATED_SUFFIX_BYTES
+        : QUALIFIER_VALUE_MAX_BYTES;
+      if (utf8ByteLength(currentQualRetainedValue) > retainedLimit) {
+        currentQualRetainedValue = truncateUtf8(currentQualRetainedValue, retainedLimit);
+      }
+      currentQualRetainedValue = appendUtf8WithinLimit(
+        currentQualRetainedValue,
+        `${separator}${chunkStats.retained}`,
+        retainedLimit,
+      );
+    };
 
     const saveQualifier = () => {
       if (!currentQualKey) return;
+      let value: string | true;
       if (currentQualValueless) {
         // Valueless GenBank qualifier (/pseudo, /partial, /ribosomal_slippage,
         // /trans_splicing, …). Store `true` — NOT '' — so the exporter emits a
@@ -370,22 +663,28 @@ export function parseFeatures(featuresText: string): Feature[] {
         // these flags were being dropped. Feature.metadata is
         // Record<string, unknown>, so the boolean is type-safe downstream.
         // (QA2 W21, import/export agent F2.)
-        qualifiers[currentQualKey] = true;
-        return;
-      }
-      let raw = currentQualVal;
-      if (currentQualIsQuoted) {
-        if (raw.startsWith('"')) raw = raw.slice(1);
-        if (raw.endsWith('"')) raw = raw.slice(0, -1);
-        // Phase 35 P1-A7: decode `""` → `"`
-        raw = raw.replace(/""/g, '"');
+        value = true;
       } else {
-        raw = raw.replace(/^"|"$/g, '');
+        const truncated = currentQualOriginalBytes > QUALIFIER_VALUE_MAX_BYTES;
+        const raw = truncated
+          ? `${currentQualRetainedValue}${QUALIFIER_TRUNCATED_SUFFIX}`
+          : currentQualRetainedValue;
+        if (truncated) {
+          const originalBytes = currentQualOriginalBytes;
+          const retainedBytes = utf8ByteLength(raw);
+          qualifierTruncations.push({
+            key: currentQualKey,
+            originalLength: originalBytes,
+            retainedLength: retainedBytes,
+            originalBytes,
+            retainedBytes,
+            limit: QUALIFIER_VALUE_MAX_BYTES,
+          });
+        }
+        value = raw;
       }
-      if (raw.length > QUALIFIER_VALUE_MAX_BYTES) {
-        raw = raw.slice(0, QUALIFIER_VALUE_MAX_BYTES) + QUALIFIER_TRUNCATED_SUFFIX;
-      }
-      qualifiers[currentQualKey] = raw;
+      qualifiers[currentQualKey] = value;
+      qualifierEntries.push({ key: currentQualKey, value });
     };
 
     /**
@@ -409,7 +708,7 @@ export function parseFeatures(featuresText: string): Feature[] {
       // A line starting with `/` opens a new qualifier ONLY if the current
       // quoted value is closed (or we're not in a quoted value at all).
       const isQuotedAndStillOpen =
-        currentQualIsQuoted && !isQuotedValueClosed(currentQualVal);
+        currentQualIsQuoted && !currentQualClosed;
 
       if (l.startsWith('/') && !isQuotedAndStillOpen) {
         // Save previous qualifier
@@ -417,19 +716,31 @@ export function parseFeatures(featuresText: string): Feature[] {
         const eqIdx = l.indexOf('=');
         if (eqIdx === -1) {
           currentQualKey = l.slice(1);
-          currentQualVal = '';
+          currentQualRetainedValue = '';
+          currentQualOriginalBytes = 0;
           currentQualIsQuoted = false;
+          currentQualClosed = true;
           currentQualValueless = true; // no '=' → a bare flag like /pseudo
         } else {
           currentQualKey = l.slice(1, eqIdx);
-          currentQualVal = l.slice(eqIdx + 1);
-          currentQualIsQuoted = currentQualVal.startsWith('"');
+          const value = l.slice(eqIdx + 1);
+          currentQualRetainedValue = '';
+          currentQualOriginalBytes = 0;
+          currentQualIsQuoted = value.startsWith('"');
+          currentQualClosed = !currentQualIsQuoted || isQuotedValueClosed(value);
           currentQualValueless = false;
+          appendQualifierChunk(
+            value,
+            '',
+            currentQualIsQuoted || value.startsWith('"'),
+            currentQualIsQuoted ? currentQualClosed : value.endsWith('"'),
+          );
         }
       } else if (currentQualKey) {
-        // Continuation of a multi-line qualifier value. Soft-cap accumulation
-        // to avoid quadratic string concat on a malicious 100 MB qualifier;
-        // the saveQualifier truncate handles the final length.
+        // Continuation of a multi-line qualifier value. The retained value is
+        // capped in UTF-8 bytes while the original byte count continues to be
+        // measured, so a malicious 100 MB qualifier cannot grow the parser's
+        // accumulator or lose its loss receipt.
         //
         // VOG-2039 hotfix: `/translation` is a continuous protein sequence —
         // line breaks in the source are pure formatting and must NOT
@@ -439,10 +750,10 @@ export function parseFeatures(featuresText: string): Feature[] {
         // orphan single-char continuation lines). All other qualifiers
         // (/note, /product, /function, etc.) join with a space to preserve
         // word boundaries.
-        if (currentQualVal.length < QUALIFIER_VALUE_MAX_BYTES * 2) {
-          const separator = CONTINUOUS_SEQUENCE_QUALIFIERS.has(currentQualKey) ? '' : ' ';
-          currentQualVal += separator + l;
-        }
+        const separator = CONTINUOUS_SEQUENCE_QUALIFIERS.has(currentQualKey) ? '' : ' ';
+        const closes = currentQualIsQuoted ? hasOddTrailingQuoteRun(l) : true;
+        appendQualifierChunk(l, separator, false, currentQualIsQuoted && closes);
+        currentQualClosed = closes;
       }
     }
     // Save last qualifier
@@ -469,11 +780,19 @@ export function parseFeatures(featuresText: string): Feature[] {
 
     // Parse location
     let locationResult: ParsedLocation;
+    let locationDiagnostic: GenBankImportDiagnostic | null = null;
     try {
       locationResult = parseLocation(locationStr);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'unsupported syntax';
-      throw new Error(`GenBank feature ${featureKey} has an unsupported location "${locationStr}": ${message}`);
+      locationDiagnostic = unprojectableLocationDiagnostic(locationStr, featureKey);
+      if (locationDiagnostic) {
+        // A quarantined feature remains visible and exportable, but its
+        // placeholder range is never authoritative for sequence operations.
+        locationResult = { start: 0, end: 1, strand: 0 };
+      } else {
+        const message = error instanceof Error ? error.message : 'unsupported syntax';
+        throw new Error(`GenBank feature ${featureKey} has an unsupported location "${locationStr}": ${message}`);
+      }
     }
     const { start, end, strand, subRanges, locationOperator } = locationResult;
     const parsedLocationFeature = { start, end, strand, subRanges };
@@ -490,12 +809,22 @@ export function parseFeatures(featuresText: string): Feature[] {
       color: importedFeatureColor(qualifiers, strand, FEATURE_COLORS[mappedType]),
       metadata: {
         ...qualifiers,
+        ...(qualifierEntries.length > 0 ? { motifQualifiers: qualifierEntries } : {}),
+        ...(qualifierTruncations.length > 0 ? { motifQualifierTruncations: qualifierTruncations } : {}),
+        motifOriginalFeatureKey: featureKey,
+        motifOriginalLocation: locationStr,
+        motifOriginalLocationSignature: featureLocationCoordinateSignature(parsedLocationFeature),
         ...(locationOperator ? { motifLocationOperator: locationOperator } : {}),
         ...(subRanges ? { motifSubRangeOrder: 'biological' } : {}),
         ...(fuzzyLocation ? {
-          motifOriginalLocation: locationStr,
-          motifOriginalLocationSignature: featureLocationCoordinateSignature(parsedLocationFeature),
           motifLocationFuzzy: true,
+        } : {}),
+        ...(locationDiagnostic?.code === 'ambiguous_location' ? {
+          motifLocationAmbiguous: true,
+        } : {}),
+        ...(locationDiagnostic ? {
+          motifLocationQuarantined: true,
+          motifImportDiagnostics: [locationDiagnostic],
         } : {}),
       },
     });
@@ -810,6 +1139,24 @@ function parseSingleGenBankRecord(raw: string): GenBankRecord | null {
   flushAllHeaderBuffers();
 
   const features = featuresText ? parseFeatures(featuresText) : [];
+  const importDiagnostics = features.flatMap((feature) => {
+    const diagnostics = feature.metadata.motifImportDiagnostics;
+    return Array.isArray(diagnostics) ? diagnostics as GenBankImportDiagnostic[] : [];
+  });
+  const qualifierTruncations = features.flatMap((feature, featureIndex) => {
+    const raw = feature.metadata.motifQualifierTruncations;
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .filter((value): value is GenBankQualifierTruncation => (
+        value !== null
+        && typeof value === 'object'
+        && typeof (value as GenBankQualifierTruncation).key === 'string'
+        && Number.isSafeInteger((value as GenBankQualifierTruncation).originalLength)
+        && Number.isSafeInteger((value as GenBankQualifierTruncation).retainedLength)
+        && Number.isSafeInteger((value as GenBankQualifierTruncation).limit)
+      ))
+      .map((value) => ({ ...value, featureIndex }));
+  });
   let length = locus.length;
   if (!length && sequence.length > 0) {
     length = sequence.length;
@@ -879,6 +1226,8 @@ function parseSingleGenBankRecord(raw: string): GenBankRecord | null {
     division: locus.division,
     date: locus.date,
     truncated,
+    importDiagnostics: importDiagnostics.length > 0 ? importDiagnostics : undefined,
+    qualifierTruncations: qualifierTruncations.length > 0 ? qualifierTruncations : undefined,
   };
 }
 

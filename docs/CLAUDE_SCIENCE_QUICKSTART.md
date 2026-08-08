@@ -8,32 +8,66 @@ without authorization.
 ## Requirements
 
 - macOS with Claude Science installed
-- Node.js 22.12 or newer
-- a fixed local folder for the Motif checkout
+- Node.js 22.13 or newer (22.x), or Node.js 24 or newer
+- a fixed local folder for the extracted Motif release bundle or source checkout
 
 The folder path becomes part of the local connector registration. If you move
 the folder later, rerun setup and update the sandbox grant.
 
-## 1. Obtain Motif
+## 1. Install a published release without npm (recommended)
+
+Download the release asset `motif-for-claude-science-release.zip` and its
+matching `motif-for-claude-science-release.manifest.sha256` file from the same
+GitHub release. Extract the ZIP into a stable, private folder. Before running
+the installer, compare the SHA-256 of the extracted `release-manifest.json`
+with the supplied manifest checksum:
+
+```bash
+shasum -a 256 /absolute/path/to/motif-for-claude-science-release/release-manifest.json
+cat /path/to/motif-for-claude-science-release.manifest.sha256
+```
+
+The bundled verifier then checks the release identity, every installed-file
+checksum, file paths, and size bounds. It uses only Node.js's standard library;
+end users do not need `npm`, `npm ci`, or the source tree:
+
+```bash
+cd /absolute/path/to/motif-for-claude-science-release
+node install-motif-claude-science-release.mjs --bundle .
+node doctor-motif-claude-science-release.mjs --bundle .
+```
+
+The installer registers exactly `motif-local`, preserves unrelated entries,
+and creates a private same-directory configuration backup before a change.
+To restore the previous configuration, use the backup named in the installer
+output (or the newest `.before-motif-local-*` backup):
+
+```bash
+node rollback-motif-claude-science-release.mjs --bundle . --backup /path/to/local-mcp.json.before-motif-local-TIMESTAMP
+```
+
+## 2. Obtain a source checkout (maintainer/developer fallback)
 
 Use the latest published [Motif release](https://github.com/jvogan/motif/releases)
 or clone its tagged source into a fixed local folder:
 
 ```bash
-git clone --branch v0.3.0 --depth 1 https://github.com/jvogan/motif.git
+git clone --branch v0.3.1 --depth 1 https://github.com/jvogan/motif.git
 cd motif
 ```
 
-Verify the release checksum before using a downloaded plugin bundle. The
-connector is built from the source checkout; the Claude plugin ZIP alone does
-not register a Claude Science connector.
+Verify release checksums before using downloaded assets. The connector is
+built from this source checkout; the Claude plugin ZIP alone does not register
+a Claude Science connector.
 
-## 2. Install and build
+## 3. Install and build from source
 
 From the Motif checkout:
 
 ```bash
-npm ci
+npm ci --ignore-scripts
+npm run security:policy
+npm run security:lifecycle
 npm run claude-science:setup
 ```
 
@@ -42,7 +76,7 @@ and adds one connector named `motif-local`. It preserves unrelated local
 connectors and creates a private backup before changing Claude Science's local
 MCP configuration.
 
-## 3. Grant the Motif folder read access
+## 4. Grant the Motif folder read access
 
 Claude Science sandboxes local connector processes. Resolve the exact checkout
 path:
@@ -74,7 +108,7 @@ chmod 600 ~/.claude-science/config.toml
 The explicit TOML setting is read-only and therefore the least-privilege option
 for Motif's viewer connector.
 
-## 4. Relaunch and connect
+## 5. Relaunch and connect
 
 1. Fully quit Claude Science.
 2. Reopen it.
@@ -88,7 +122,17 @@ The connector should list:
 
 `Skip approvals` is optional.
 
-## 5. Verify from the checkout
+## 6. Verify the installation
+
+For a no-npm release install, run the bundled doctor and use the same
+extracted release directory as the registered root:
+
+```bash
+node /absolute/path/to/motif-for-claude-science-release/doctor-motif-claude-science-release.mjs \
+  --bundle /absolute/path/to/motif-for-claude-science-release
+```
+
+For a source checkout, use:
 
 ```bash
 npm run claude-science:check-local
@@ -139,7 +183,7 @@ fallback, not a Motif parser failure.
 | Component | Tested status |
 | --- | --- |
 | macOS | Supported local setup |
-| Node.js | 22.12 or newer |
+| Node.js | 22.13 or newer (22.x), or 24 or newer |
 | Claude Science local connector | Two tools register and execute |
 | Connector-created HTML | Opens interactively in the right pane |
 | Automatic local MCP App mount | Host-build dependent; not required |
@@ -149,7 +193,9 @@ fallback, not a Motif parser failure.
 After updating the Motif checkout:
 
 ```bash
-npm ci
+npm ci --ignore-scripts
+npm run security:policy
+npm run security:lifecycle
 npm run claude-science:setup
 ```
 

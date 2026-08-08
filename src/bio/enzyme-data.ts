@@ -19,20 +19,117 @@ export const RESTRICTION_ENZYMES_FULL: RestrictionEnzyme[] = [
   // ── 4-cutters ───────────────────────────────────────────────────────────────
   // AluI: AGCT — blunt cutter, cuts between AG and CT
   { name: 'AluI',    recognitionSequence: 'AGCT',   cutOffset: 2, complementCutOffset: 2,  overhang: 'blunt'  },
-  // DpnI: GATC — blunt cutter (requires methylation on both strands in vivo, but cut position is between GA and TC)
-  { name: 'DpnI',    recognitionSequence: 'GATC',   cutOffset: 2, complementCutOffset: 2,  overhang: 'blunt'  },
+  // DpnI: GATC — blunt cutter. DpnI requires Dam-methylated adenine at the
+  // recognition site; an unknown/unmethylated input must never be treated as
+  // an unconditional cut.
+  {
+    name: 'DpnI',
+    recognitionSequence: 'GATC',
+    cutOffset: 2,
+    complementCutOffset: 2,
+    overhang: 'blunt',
+    methylationRequirement: {
+      target: 'dam',
+      state: 'methylated',
+      evidence: {
+        source: 'https://www.neb.com/en-us/products/r0176-dpni',
+        sourceLabel: 'NEB DpnI R0176 product page',
+        conditions: 'DpnI cleaves dam-methylated GATC sites; unknown and unmethylated state are not treated as cuts.',
+        limitation: 'The global dam state does not distinguish hemi-methylated molecules or mixed populations.',
+      },
+    },
+  },
+  // DpnII: GATC — dam-sensitive isoschizomer of MboI.
+  {
+    name: 'DpnII',
+    recognitionSequence: 'GATC',
+    cutOffset: 0,
+    complementCutOffset: 4,
+    overhang: '5prime',
+    methylationRequirement: {
+      target: 'dam',
+      state: 'unmethylated',
+      evidence: {
+        source: 'https://www.neb.com/en-us/products/r0543-dpnii',
+        sourceLabel: 'NEB DpnII R0543 product page',
+        conditions: 'DpnII cleaves unmethylated GATC and is blocked by dam methylation; dcm and CpG methylation are not blocking conditions.',
+        limitation: 'The global dam state does not distinguish hemi-methylated molecules or mixed populations.',
+      },
+    },
+  },
   // HaeIII: GGCC — blunt, cuts GG|CC
   { name: 'HaeIII',  recognitionSequence: 'GGCC',   cutOffset: 2, complementCutOffset: 2,  overhang: 'blunt'  },
   // HhaI: GCGC — cuts GCG|C leaving a 2-nt 3′ overhang; cutOffset=3, compCutOffset=1 (QA2 W27: was 1/3, fragment boundary off by 2)
-  { name: 'HhaI',    recognitionSequence: 'GCGC',   cutOffset: 3, complementCutOffset: 1,  overhang: '3prime' },
+  {
+    name: 'HhaI',
+    recognitionSequence: 'GCGC',
+    cutOffset: 3,
+    complementCutOffset: 1,
+    overhang: '3prime',
+    methylationRequirement: {
+      target: 'cpg',
+      state: 'unmethylated',
+      evidence: {
+        source: 'https://www.neb.com/en-us/products/r0139-hhai',
+        sourceLabel: 'NEB HhaI R0139 product page',
+        conditions: 'HhaI is blocked by CpG methylation at its GCGC recognition site; dam and dcm methylation are not blocking conditions.',
+        limitation: 'Motif models one global CpG state, not site-specific or hemi-methylated mixtures.',
+      },
+    },
+  },
   // HpaII: CCGG — 5′ CG overhang; cuts C|CGG → cutOffset=1, compCutOffset=3
-  { name: 'HpaII',   recognitionSequence: 'CCGG',   cutOffset: 1, complementCutOffset: 3,  overhang: '5prime' },
+  {
+    name: 'HpaII',
+    recognitionSequence: 'CCGG',
+    cutOffset: 1,
+    complementCutOffset: 3,
+    overhang: '5prime',
+    methylationRequirement: {
+      target: 'cpg',
+      state: 'unmethylated',
+      evidence: {
+        source: 'https://www.neb.com/en-us/products/r0171-hpaii',
+        sourceLabel: 'NEB HpaII R0171 product page',
+        conditions: 'HpaII cleaves unmethylated CCGG and is blocked by CpG methylation; dam and dcm methylation are not blocking conditions.',
+        limitation: 'Motif models one global CpG state, not site-specific or hemi-methylated mixtures.',
+      },
+    },
+  },
   // MboI: GATC — 5′ GATC overhang (isoschizomer of Sau3AI); cuts before G → cutOffset=0
-  { name: 'MboI',    recognitionSequence: 'GATC',   cutOffset: 0, complementCutOffset: 4,  overhang: '5prime' },
+  {
+    name: 'MboI',
+    recognitionSequence: 'GATC',
+    cutOffset: 0,
+    complementCutOffset: 4,
+    overhang: '5prime',
+    methylationRequirement: {
+      target: 'dam',
+      state: 'unmethylated',
+      evidence: {
+        source: 'https://www.neb.com/en-us/products/r0147-mboi',
+        sourceLabel: 'NEB MboI R0147 product page',
+        conditions: 'MboI cleaves GATC when adenine is not dam-methylated and is blocked by dam methylation; dcm and CpG methylation are not blocking conditions.',
+        limitation: 'The global dam state does not distinguish hemi-methylated molecules or mixed populations.',
+      },
+    },
+  },
   // MseI: TTAA — 5′ TA overhang; cuts T|TAA → cutOffset=1, compCutOffset=3
   { name: 'MseI',    recognitionSequence: 'TTAA',   cutOffset: 1, complementCutOffset: 3,  overhang: '5prime' },
   // MspI: CCGG — 5′ CG overhang (isoschizomer of HpaII); cuts C|CGG
-  { name: 'MspI',    recognitionSequence: 'CCGG',   cutOffset: 1, complementCutOffset: 3,  overhang: '5prime' },
+  {
+    name: 'MspI',
+    recognitionSequence: 'CCGG',
+    cutOffset: 1,
+    complementCutOffset: 3,
+    overhang: '5prime',
+    methylationBehavior: 'context_dependent',
+    methylationEvidence: {
+      source: 'https://www.neb.com/en-us/products/r0106-mspi',
+      sourceLabel: 'NEB MspI R0106 product page',
+      conditions: 'MspI can cleave CCGG with internal-C methylation, while external-C methylation blocks MspI; the product table also reports no CpG sensitivity.',
+      limitation: 'A global CpG state cannot identify which C is methylated, so Motif accepts only an explicitly unmethylated assumption and otherwise reports conditional behavior.',
+    },
+  },
   // RsaI: GTAC — blunt; cuts GT|AC
   { name: 'RsaI',    recognitionSequence: 'GTAC',   cutOffset: 2, complementCutOffset: 2,  overhang: 'blunt'  },
   // Sau3AI: GATC — 5′ GATC overhang; cuts before G → cutOffset=0
@@ -274,14 +371,13 @@ export const RESTRICTION_ENZYMES_FULL: RestrictionEnzyme[] = [
   { name: 'BspQI',   recognitionSequence: 'GCTCTTC', cutOffset: 8,  complementCutOffset: 11, overhang: '5prime' },
 
   // ── Nicking enzymes ──────────────────────────────────────────────────────────
-  // These enzymes nick only one strand. We encode the sense-strand nick as cutOffset.
-  // Nb.BbvCI nicks the sense strand of CCTCAGC at +2 downstream → cutOffset = 7+2 = 9
-  // Note: complementCutOffset is not applicable for nicking enzymes; we set it to cutOffset.
-  { name: 'Nb.BbvCI',  recognitionSequence: 'CCTCAGC', cutOffset: 9,  complementCutOffset: 9,  overhang: 'blunt' },
-  // Nt.BbvCI nicks the antisense strand of CCTCAGC
-  { name: 'Nt.BbvCI',  recognitionSequence: 'CCTCAGC', cutOffset: 2,  complementCutOffset: 2,  overhang: 'blunt' },
-  // Nt.BstNBI: GAGTC — nicks sense strand +4 downstream → cutOffset = 5+4 = 9
-  { name: 'Nt.BstNBI', recognitionSequence: 'GAGTC',   cutOffset: 9,  complementCutOffset: 9,  overhang: 'blunt' },
+  // These enzymes nick only one strand. `Nb` denotes the bottom/antisense
+  // strand and `Nt` the top/sense strand. The legacy offsets are retained, but
+  // cleavageMode makes the one-strand geometry explicit and prevents a nick
+  // from being counted as an ordinary double-strand digest boundary.
+  { name: 'Nb.BbvCI',  recognitionSequence: 'CCTCAGC', cutOffset: 9, complementCutOffset: 9, overhang: 'blunt', cleavageMode: 'nick_bottom' },
+  { name: 'Nt.BbvCI',  recognitionSequence: 'CCTCAGC', cutOffset: 2, complementCutOffset: 2, overhang: 'blunt', cleavageMode: 'nick_top' },
+  { name: 'Nt.BstNBI', recognitionSequence: 'GAGTC',   cutOffset: 9, complementCutOffset: 9, overhang: 'blunt', cleavageMode: 'nick_top' },
 
   // ── Miscellaneous useful enzymes ─────────────────────────────────────────────
   // BseYI: CCCAGC(−5/−1) — upstream cutter (cuts 5 nt upstream on sense)
@@ -383,6 +479,13 @@ export const RESTRICTION_ENZYMES_FULL: RestrictionEnzyme[] = [
   // Tth111I: GACNNNGTC — cuts GACN^NNGTC → single-base 5′ overhang (NEB R0185; odd central spacer → 5′, unlike AhdI/DrdI 3′); 4/5 5prime (QA2 W28: was 5/4 3prime, swapped+inverted)
   { name: 'Tth111I', recognitionSequence: 'GACNNNGTC', cutOffset: 4, complementCutOffset: 5, overhang: '5prime' },
 ];
+
+// Make the default explicit for every legacy catalog record. This keeps the
+// physical model inspectable by consumers while preserving source-compatible
+// object literals for custom callers that omit the field.
+for (const enzyme of RESTRICTION_ENZYMES_FULL) {
+  enzyme.cleavageMode ??= 'double-strand';
+}
 
 // Export the count so callers can sanity-check
 export const ENZYME_COUNT = RESTRICTION_ENZYMES_FULL.length;

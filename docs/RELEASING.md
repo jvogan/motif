@@ -22,7 +22,9 @@ working tree.
 Start with a clean checkout of the merged commit:
 
 ```bash
-npm ci
+npm ci --ignore-scripts
+npm run security:policy
+npm run security:lifecycle
 npm audit
 npm run gate
 npm run validate:plugin
@@ -30,18 +32,46 @@ git diff --check
 git status --short
 ```
 
+`npm ci --ignore-scripts` is a maintainer-build requirement, not an end-user
+installation requirement. Scripts remain disabled until
+`npm run security:policy` has checked exact lockfile identities, registry
+origins, integrity values, lifecycle metadata, binding files, and the bundled
+inventory. `npm run security:lifecycle` then runs only the reviewed exact
+install-time commands through the bounded helper; an unknown package, version,
+script, or binding fails before any lifecycle command executes.
+`npm run build:motif` produces the dependency-free release bundle. The checked-in
+`.npmrc` asks npm versions that support `min-release-age` to keep new dependency
+resolutions seven days old; `npm run security:cooling-off` independently checks
+changed lockfile entries against the public registry. It is intentionally
+separate from dependency installation, so ordinary installs do not make
+hundreds of timestamp requests. A temporary exception must name one exact
+package/version and include rationale, reviewer, and a future expiry in
+`security/dependency-policy.json`.
+
+The maintainer Node 26/npm 11 toolchain exposes `min-release-age`,
+`allowScripts`, and `strict-allow-scripts`; CI is pinned to Node 22/npm 10,
+which predates those npm 11 controls. The portable `--ignore-scripts`, policy,
+and reviewed-helper sequence therefore supplies the same fail-closed behavior
+on both toolchains. The root `allowScripts` map remains an npm 11 defense in
+depth, while the repository policy is authoritative for every supported npm.
+
 Record the SHA-256 hashes:
 
 ```bash
 shasum -a 256 \
   dist-motif/motif-artifact.html \
   dist-motif/motif-for-claude-science.zip \
-  dist-motif/motif-for-claude-science.checksums.json
+  dist-motif/motif-for-claude-science.checksums.json \
+  dist-motif/motif-for-claude-science-release.zip \
+  dist-motif/motif-for-claude-science-release.manifest.sha256
 ```
 
-Inspect the ZIP file list. It must use relative paths and include
+Inspect the plugin ZIP file list. It must use relative paths and include
 `THIRD_PARTY_NOTICES.md` plus a license file for every dependency bundled into
-the connector server.
+the plugin connector. Inspect the release ZIP separately: it must contain its
+installer/doctor/rollback helpers, self-contained connector artifacts, SBOM,
+connector inventory, and one license file for every reviewed bundled
+connector dependency.
 
 ## 3. Tag and draft
 
@@ -51,6 +81,14 @@ Create the GitHub release as a draft with `--verify-tag`, and attach exactly:
 - `motif-artifact.html`
 - `motif-for-claude-science.zip`
 - `motif-for-claude-science.checksums.json`
+- `motif-for-claude-science-release.zip`
+- `motif-for-claude-science-release.manifest.sha256`
+
+The release ZIP is the supported no-npm end-user path. Its extracted root
+contains the installer, doctor, rollback helper, compiled `motif-local`
+connector, self-contained App/template, checksums, SBOM, and dependency
+license inventory. The installer never runs npm or reads outside the bundle
+except for the explicitly selected local MCP configuration path.
 
 Review the draft title, notes, tag, target commit, asset names, sizes, and
 GitHub-reported SHA-256 digests. Download the draft assets when practical and
@@ -69,6 +107,10 @@ gh release verify-asset vX.Y.Z dist-motif/motif-artifact.html
 gh release verify-asset vX.Y.Z dist-motif/motif-for-claude-science.zip
 gh release verify-asset vX.Y.Z \
   dist-motif/motif-for-claude-science.checksums.json
+gh release verify-asset vX.Y.Z \
+  dist-motif/motif-for-claude-science-release.zip
+gh release verify-asset vX.Y.Z \
+  dist-motif/motif-for-claude-science-release.manifest.sha256
 ```
 
 Finally, confirm the release is marked immutable and latest, the public

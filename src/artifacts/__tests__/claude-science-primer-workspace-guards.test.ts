@@ -66,6 +66,8 @@ describe('Claude Science primer workspace source guards', () => {
     expect(css).toContain('max-width: calc(100vw - 16px)');
     expect(css).toContain('max-height: calc(100dvh - 16px)');
     expect(css).toContain('@media (max-width: 840px)');
+    expect(css).toMatch(/\.motif-cs-primer-footer-actions\s*\{[^}]*flex-wrap:\s*wrap;[^}]*width:\s*100%;[^}]*overflow:\s*visible;/s);
+    expect(css).toMatch(/\.motif-cs-primer-footer-actions button\s*\{[^}]*flex:\s*1\s+1\s+140px;/s);
     expect(css).toContain('scrollbar-gutter: stable');
   });
 });

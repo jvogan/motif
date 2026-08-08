@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+## 0.3.1 — 2026-08-08
+
+- Corrected restriction-digest geometry at linear boundaries, represented
+  strand-specific nicking separately from double-strand cleavage, and added
+  explicit methylation assumptions and physically coherent fragment checks.
+- Strengthened Golden Gate, GoldenBraid, and Gibson planning with
+  enzyme-derived Type IIS flanks, preparation-error reporting,
+  feature-aware domestication, empirical overhang-fidelity provenance, and
+  origin-spanning annotation remapping.
+- Improved translation and ORF correctness for IUPAC nucleotide input,
+  deterministic ambiguous codons, alternative start codons, strict genetic
+  code resolution, and supported `transl_except` annotations.
+- Preserved source meaning across FASTA, GenBank, MCP, PCR, primer, MSA, and
+  mutation workflows by rejecting lossy normalization, retaining repeated
+  qualifiers, quarantining unsupported locations, and reporting incomplete
+  or conditional results explicitly.
+- Refined responsive primer actions, assembly tabs, scientific-status
+  explanations, long provenance display, translation tracks, and Notes pane
+  state across mouse, keyboard, narrow, and floating layouts.
+- Cleared current dependency advisories and added fail-closed dependency
+  policy, reviewed lifecycle execution, release reproducibility and size
+  checks, SBOM generation, and a checksum-verified no-npm end-user installer.
+
 ## 0.3.0 — 2026-07-29
 
 - Updated runtime and build dependencies to clear current npm advisories,

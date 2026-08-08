@@ -8,6 +8,7 @@ import {
   DEFAULT_MAX_HAIRPIN_DG,
   DEFAULT_MAX_DIMER_DG,
 } from './primer-thermodynamics';
+import { inspectNucleotideSequence } from './nucleotide';
 
 /**
  * Phase 35 P0-A3: realistic PCR buffer defaults. SantaLucia 1998 NN-Tm
@@ -99,6 +100,11 @@ export interface PrimerCandidate {
   // target window (forward to the 5' side of targetStart, reverse to the
   // 3' side of targetEnd). Used to rank candidates and penalize drift.
   anchorDistance: number;
+  /** Secondary-structure evidence evaluated on the full ordered oligo. */
+  hairpinDeltaG?: number;
+  selfDimerDeltaG?: number;
+  secondaryStructureStatus?: 'exact' | 'ambiguous' | 'invalid';
+  secondaryStructureWarnings?: string[];
 }
 
 export interface PrimerPair {
@@ -164,6 +170,8 @@ export interface PrimerDesignResult {
   rejections: PrimerRejectionCounts;
   /** Phase 34 P-G B1: per-rejection multi-criteria attribution counts. */
   secondaryRejections?: PrimerSecondaryRejectionCounts;
+  /** Input/tail integrity warnings that prevented exact candidate evaluation. */
+  warnings?: string[];
 }
 
 export interface PrimerPairRejections extends PrimerRejectionCounts {
@@ -184,6 +192,8 @@ export interface PrimerPairResult {
   reverseSecondary?: PrimerSecondaryRejectionCounts;
   forwardCount: number;
   reverseCount: number;
+  /** Input/tail integrity warnings carried from both directional scans. */
+  warnings?: string[];
 }
 
 const DEFAULT_MIN_LENGTH = 18;
@@ -235,6 +245,24 @@ function boundedPositiveInteger(value: number | undefined, fallback: number, max
   return Math.max(1, Math.min(max, Math.floor(value as number)));
 }
 
+function normalizedOligo(value: string | undefined): { sequence: string; warning?: string; invalid: boolean } {
+  const inspected = inspectNucleotideSequence(value ?? '');
+  if (inspected.invalidCharacters.length > 0) {
+    return {
+      sequence: inspected.sequence,
+      invalid: true,
+      warning: `Oligo input contains invalid nucleotide characters: ${inspected.invalidCharacters.join(', ')}.`,
+    };
+  }
+  return inspected.ambiguous
+    ? {
+        sequence: inspected.sequence,
+        invalid: false,
+        warning: 'Oligo tail contains IUPAC ambiguity symbols; secondary-structure diagnostics require review.',
+      }
+    : { sequence: inspected.sequence, invalid: false };
+}
+
 function pairRankScore(pair: PrimerPair, targetTm: number, enforceTargetTm: boolean): number {
   const tmPairPenalty = pair.tmDifference * 2;
   const targetPenalty = enforceTargetTm
@@ -278,11 +306,23 @@ export function designForwardPrimerWithDiagnostics(
     maxSelfDimerDeltaG = DEFAULT_MAX_DIMER_DG,
   } = params;
 
-  const upper = seq.toUpperCase();
-  const tail = forwardTail.toUpperCase().replace(/[^ACGT]/g, '');
+  const inspectedSequence = inspectNucleotideSequence(seq);
+  const upper = inspectedSequence.sequence;
+  const normalizedTail = normalizedOligo(forwardTail);
+  const tail = normalizedTail.sequence;
   const candidates: PrimerCandidate[] = [];
   const rejections = emptyRejections();
   const secondaryRejections = emptySecondaryRejections();
+  const warnings = [
+    ...(inspectedSequence.invalidCharacters.length > 0
+      ? [`Template contains invalid nucleotide characters: ${inspectedSequence.invalidCharacters.join(', ')}.`]
+      : []),
+    ...(normalizedTail.warning ? [normalizedTail.warning] : []),
+  ];
+  if (normalizedTail.invalid) {
+    rejections.invalid = 1;
+    return { candidates, rejections, secondaryRejections, warnings };
+  }
 
   // Phase 33: scan a window of start positions to the 5' side of targetStart.
   // The product MUST cover targetStart, so start positions can range from
@@ -309,7 +349,7 @@ export function designForwardPrimerWithDiagnostics(
       const primerSeq = upper.slice(start, start + len);
       const gc = gcContent(primerSeq);
       const tmResult = calculateTm(primerSeq, tmOptions);
-      if (tmResult.method === 'none') {
+      if (tmResult.status !== 'exact') {
         rejections.invalid++;
         continue;
       }
@@ -341,15 +381,28 @@ export function designForwardPrimerWithDiagnostics(
       }
 
       // Phase 35 P0-A4: hairpin + self-dimer ΔG filters.
+      const fullPrimerSeq = tail + primerSeq;
+      let hairpinDeltaG: number | undefined;
+      let selfDimerDeltaG: number | undefined;
+      let secondaryStructureStatus: PrimerCandidate['secondaryStructureStatus'] = 'exact';
+      const secondaryStructureWarnings: string[] = [];
       if (maxHairpinDeltaG != null && Number.isFinite(maxHairpinDeltaG)) {
-        const hp = predictHairpin(primerSeq);
+        const hp = predictHairpin(fullPrimerSeq);
+        hairpinDeltaG = hp.deltaG;
+        secondaryStructureStatus = hp.status;
+        if (hp.warning) secondaryStructureWarnings.push(hp.warning);
         if (hp.deltaG < maxHairpinDeltaG) {
           rejections.hairpin++;
           continue;
         }
       }
       if (maxSelfDimerDeltaG != null && Number.isFinite(maxSelfDimerDeltaG)) {
-        const dimer = predictSelfDimer(primerSeq);
+        const dimer = predictSelfDimer(fullPrimerSeq);
+        selfDimerDeltaG = dimer.deltaG;
+        if (dimer.status === 'invalid' || (dimer.status === 'ambiguous' && secondaryStructureStatus === 'exact')) {
+          secondaryStructureStatus = dimer.status;
+        }
+        if (dimer.warning) secondaryStructureWarnings.push(dimer.warning);
         if (dimer.deltaG < maxSelfDimerDeltaG) {
           rejections.dimer++;
           continue;
@@ -358,7 +411,7 @@ export function designForwardPrimerWithDiagnostics(
 
       candidates.push({
         sequence: primerSeq,
-        fullSequence: tail + primerSeq,
+        fullSequence: fullPrimerSeq,
         tail,
         start,
         end: start + len,
@@ -368,12 +421,16 @@ export function designForwardPrimerWithDiagnostics(
         gcPercent: gc * 100,
         direction: 'forward',
         anchorDistance,
+        hairpinDeltaG,
+        selfDimerDeltaG,
+        secondaryStructureStatus,
+        ...(secondaryStructureWarnings.length > 0 ? { secondaryStructureWarnings } : {}),
       });
     }
   }
 
   candidates.sort((a, b) => rankScore(a, targetTm) - rankScore(b, targetTm));
-  return { candidates, rejections, secondaryRejections };
+  return { candidates, rejections, secondaryRejections, warnings };
 }
 
 /**
@@ -404,11 +461,23 @@ export function designReversePrimerWithDiagnostics(
     maxSelfDimerDeltaG = DEFAULT_MAX_DIMER_DG,
   } = params;
 
-  const upper = seq.toUpperCase();
-  const tail = reverseTail.toUpperCase().replace(/[^ACGT]/g, '');
+  const inspectedSequence = inspectNucleotideSequence(seq);
+  const upper = inspectedSequence.sequence;
+  const normalizedTail = normalizedOligo(reverseTail);
+  const tail = normalizedTail.sequence;
   const candidates: PrimerCandidate[] = [];
   const rejections = emptyRejections();
   const secondaryRejections = emptySecondaryRejections();
+  const warnings = [
+    ...(inspectedSequence.invalidCharacters.length > 0
+      ? [`Template contains invalid nucleotide characters: ${inspectedSequence.invalidCharacters.join(', ')}.`]
+      : []),
+    ...(normalizedTail.warning ? [normalizedTail.warning] : []),
+  ];
+  if (normalizedTail.invalid) {
+    rejections.invalid = 1;
+    return { candidates, rejections, secondaryRejections, warnings };
+  }
 
   // Reverse primer's end coordinate ranges from targetEnd (on-anchor)
   // up to targetEnd + flankingWindow (clipped to sequence end).
@@ -436,7 +505,7 @@ export function designReversePrimerWithDiagnostics(
       const primerSeq = reverseComplement(templateRegion);
       const gc = gcContent(primerSeq);
       const tmResult = calculateTm(primerSeq, tmOptions);
-      if (tmResult.method === 'none') {
+      if (tmResult.status !== 'exact') {
         rejections.invalid++;
         continue;
       }
@@ -465,15 +534,28 @@ export function designReversePrimerWithDiagnostics(
       }
 
       // Phase 35 P0-A4: hairpin + self-dimer ΔG filters.
+      const fullPrimerSeq = tail + primerSeq;
+      let hairpinDeltaG: number | undefined;
+      let selfDimerDeltaG: number | undefined;
+      let secondaryStructureStatus: PrimerCandidate['secondaryStructureStatus'] = 'exact';
+      const secondaryStructureWarnings: string[] = [];
       if (maxHairpinDeltaG != null && Number.isFinite(maxHairpinDeltaG)) {
-        const hp = predictHairpin(primerSeq);
+        const hp = predictHairpin(fullPrimerSeq);
+        hairpinDeltaG = hp.deltaG;
+        secondaryStructureStatus = hp.status;
+        if (hp.warning) secondaryStructureWarnings.push(hp.warning);
         if (hp.deltaG < maxHairpinDeltaG) {
           rejections.hairpin++;
           continue;
         }
       }
       if (maxSelfDimerDeltaG != null && Number.isFinite(maxSelfDimerDeltaG)) {
-        const dimer = predictSelfDimer(primerSeq);
+        const dimer = predictSelfDimer(fullPrimerSeq);
+        selfDimerDeltaG = dimer.deltaG;
+        if (dimer.status === 'invalid' || (dimer.status === 'ambiguous' && secondaryStructureStatus === 'exact')) {
+          secondaryStructureStatus = dimer.status;
+        }
+        if (dimer.warning) secondaryStructureWarnings.push(dimer.warning);
         if (dimer.deltaG < maxSelfDimerDeltaG) {
           rejections.dimer++;
           continue;
@@ -482,7 +564,7 @@ export function designReversePrimerWithDiagnostics(
 
       candidates.push({
         sequence: primerSeq,
-        fullSequence: tail + primerSeq,
+        fullSequence: fullPrimerSeq,
         tail,
         start,
         end,
@@ -492,12 +574,16 @@ export function designReversePrimerWithDiagnostics(
         gcPercent: gc * 100,
         direction: 'reverse',
         anchorDistance,
+        hairpinDeltaG,
+        selfDimerDeltaG,
+        secondaryStructureStatus,
+        ...(secondaryStructureWarnings.length > 0 ? { secondaryStructureWarnings } : {}),
       });
     }
   }
 
   candidates.sort((a, b) => rankScore(a, targetTm) - rankScore(b, targetTm));
-  return { candidates, rejections, secondaryRejections };
+  return { candidates, rejections, secondaryRejections, warnings };
 }
 
 /**
@@ -607,6 +693,10 @@ export function designPrimerPairWithDiagnostics(
     reverseSecondary: reverseResult.secondaryRejections,
     forwardCount: forwards.length,
     reverseCount: reverses.length,
+    warnings: [...new Set([
+      ...(forwardResult.warnings ?? []),
+      ...(reverseResult.warnings ?? []),
+    ])],
   };
 }
 

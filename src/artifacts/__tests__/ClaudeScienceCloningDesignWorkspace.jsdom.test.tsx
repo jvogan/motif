@@ -65,6 +65,8 @@ describe('ClaudeScienceCloningDesignWorkspace', () => {
 
     expect(screen.getByRole('dialog', { name: 'Design Workspace' })).toBeTruthy();
     expect(screen.getByRole('tab', { name: /Golden Gate/ }).getAttribute('aria-selected')).toBe('true');
+    const initialPanel = screen.getByRole('tabpanel');
+    expect(initialPanel.getAttribute('aria-labelledby')).toBe(screen.getByRole('tab', { name: /Golden Gate/ }).id);
     expect(screen.getByLabelText('Assembly route')).toBeTruthy();
     expect(screen.getByLabelText('Golden Gate profile')).toBeTruthy();
     expect(screen.getByLabelText('Type IIS enzyme')).toBeTruthy();
@@ -75,6 +77,7 @@ describe('ClaudeScienceCloningDesignWorkspace', () => {
     await user.keyboard('{ArrowRight}');
 
     expect(screen.getByRole('tab', { name: /Gibson/ }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByRole('tabpanel').getAttribute('aria-labelledby')).toBe(screen.getByRole('tab', { name: /Gibson/ }).id);
     expect(document.activeElement).toBe(screen.getByRole('tab', { name: /Gibson/ }));
     expect(screen.queryByLabelText('Golden Gate profile')).toBeNull();
     expect(screen.getByLabelText('Minimum overlap')).toBeTruthy();

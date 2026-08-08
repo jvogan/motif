@@ -78,7 +78,7 @@ but the file is an immutable snapshot rather than a live MCP App.
 The built plugin includes `docs/CLAUDE_SCIENCE_QUICKSTART.md` and
 `docs/CLAUDE_SCIENCE_TROUBLESHOOTING.md`. The recovery guide contains the exact
 read-only sandbox grant, restart boundary, and acceptance checklist. Local
-connector development requires Node.js 22.12 or newer.
+connector development requires Node.js 22.13 or newer (22.x), or Node.js 24 or newer.
 
 ## Generate a preloaded workbench
 
@@ -142,6 +142,13 @@ scrollable chromatogram with mismatch navigation.
 Database JSON and workspace ZIP preserve the trace. FASTA and basic
 GenBank/GFF3 exports are intentionally lossy because those formats cannot carry
 an electropherogram.
+
+GenBank import keeps repeated qualifier keys in source order, retains raw
+locations and fuzzy bounds where representable, and records feature-specific
+diagnostics for valid INSDC locations that cannot be projected locally (such as
+between-base or remote-accession locations). Basic GenBank export remains a
+lossy interchange format and writes that limitation into the exported record;
+use Database JSON or ZIP for a complete Motif checkpoint.
 
 ## Runtime and persistence boundaries
 

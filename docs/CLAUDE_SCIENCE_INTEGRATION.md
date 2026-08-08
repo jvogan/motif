@@ -1,6 +1,6 @@
 # Motif + Claude Science integration
 
-Last reviewed: July 29, 2026. Connector version: `0.3.0`.
+Last reviewed: August 8, 2026. Connector version: `0.3.1`.
 
 This is the maintainer and technical reference for the Motif-owned local
 connector. End users should start with the
@@ -18,6 +18,9 @@ Motif now owns three deliberately separate deliverables:
    artifact, compiled MCP server, MCP App, and `.mcp.json` registration.
 3. `dist-motif/claude-science/` — a local Claude Science connector build for
    development and hackathon use.
+4. `motif-for-claude-science-release.zip` — a checksum-verified, dependency-free
+   release bundle for end users; its installer registers `motif-local` without
+   `npm ci` or a source build.
 
 The local connector identity is visible end to end:
 
@@ -37,7 +40,7 @@ expose DOM evaluation, a shell, or generic filesystem access.
 
 ## Build and protocol verification
 
-Requires Node.js 22.12 or newer.
+Requires Node.js 22.13 or newer (22.x), or Node.js 24 or newer.
 
 ```bash
 npm run claude-science:build
@@ -70,6 +73,20 @@ The full setup command builds, doctors, installs, and checks in that order:
 ```bash
 npm run claude-science:setup
 ```
+
+For an end-user release, extract `motif-for-claude-science-release.zip` into a
+stable folder, compare its `release-manifest.json` with the published
+`.manifest.sha256` file, then run the bundled standard-library-only installer:
+
+```bash
+node install-motif-claude-science-release.mjs --bundle .
+node doctor-motif-claude-science-release.mjs --bundle .
+```
+
+This path does not require `npm`, `npm ci`, or access to the source checkout.
+Use the private backup printed by the installer with
+`rollback-motif-claude-science-release.mjs` if a restore is needed. The
+installer only changes the `motif-local` entry and preserves unrelated config.
 
 The installer updates only the `motif-local` entry in:
 

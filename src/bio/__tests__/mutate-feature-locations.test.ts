@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { extractFeatureSequence, isMultipartFeature } from '../feature-location';
-import { applyDeletion, applyInsertion } from '../mutate';
+import { applyDeletion, applyInsertion, applySubstitution } from '../mutate';
 import type { Feature } from '../types';
 
 function joinedFeature(): Feature {
@@ -21,6 +21,13 @@ function joinedFeature(): Feature {
 }
 
 describe('mutation feature-location integrity', () => {
+  it('requires exactly one residue for substitution and rejects length-changing disguises', () => {
+    expect(applySubstitution('ATGC', [], [], 1, 'C').raw).toBe('ACGC');
+    for (const replacement of ['', 'GG', '-', ' ']) {
+      expect(() => applySubstitution('ATGC', [], [], 1, replacement)).toThrow(/exactly one valid residue/i);
+    }
+  });
+
   it('uses half-open feature affinity at insertion boundaries', () => {
     const feature: Feature = {
       id: 'feature',

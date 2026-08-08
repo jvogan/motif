@@ -26,6 +26,20 @@ export const DEFAULT_CLAUDE_SCIENCE_CONFIG_PATH = join(
 
 const MANAGED_ENVIRONMENT_KEYS = ['MOTIF_NODE_BIN', 'MOTIF_ROOT'];
 
+/** Local MCP configuration is small JSON, never an arbitrary data channel. */
+export const MAX_LOCAL_MCP_CONFIG_BYTES = 4 * 1024 * 1024;
+
+export class MotifLocalMcpConfigLimitError extends Error {
+  constructor(path, size) {
+    super(`Claude Science local MCP config exceeds the ${MAX_LOCAL_MCP_CONFIG_BYTES}-byte limit (${size} bytes): ${path}`);
+    this.name = 'MotifLocalMcpConfigLimitError';
+    this.code = 'config_too_large';
+    this.path = path;
+    this.size = size;
+    this.limit = MAX_LOCAL_MCP_CONFIG_BYTES;
+  }
+}
+
 function isPlainObject(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const prototype = Object.getPrototypeOf(value);
@@ -135,6 +149,9 @@ export function readLocalMcpConfig(configPath) {
   }
 
   const stat = assertRegularFile(configPath, 'Claude Science local MCP config');
+  if (stat.size > MAX_LOCAL_MCP_CONFIG_BYTES) {
+    throw new MotifLocalMcpConfigLimitError(configPath, stat.size);
+  }
   const originalBytes = readFileSync(configPath);
   let parsed;
   try {
@@ -259,6 +276,15 @@ export function writeLocalMcpConfigAtomically(
   { now = new Date(), nonce = randomUUID() } = {},
 ) {
   validateLocalMcpConfig(config);
+  // The reader rejects documents above MAX_LOCAL_MCP_CONFIG_BYTES.  Measure
+  // the exact bytes that will be committed before creating a backup or temp
+  // file; otherwise a near-limit input could be replaced successfully with a
+  // config that doctor/rollback can no longer read.
+  const serialized = `${JSON.stringify(config, null, 2)}\n`;
+  const serializedBytes = Buffer.byteLength(serialized, 'utf8');
+  if (serializedBytes > MAX_LOCAL_MCP_CONFIG_BYTES) {
+    throw new MotifLocalMcpConfigLimitError(configPath, serializedBytes);
+  }
   const directory = dirname(configPath);
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   chmodSync(directory, 0o700);
@@ -294,7 +320,7 @@ export function writeLocalMcpConfigAtomically(
     );
     temporaryCreated = true;
     try {
-      writeFileSync(descriptor, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+      writeFileSync(descriptor, serialized, 'utf8');
       fsyncSync(descriptor);
     } finally {
       closeSync(descriptor);

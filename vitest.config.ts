@@ -5,6 +5,7 @@ export default defineConfig({
     include: [
       'src/**/__tests__/**/*.test.ts',
       'src/**/__tests__/**/*.test.tsx',
+      'mcp/**/__tests__/**/*.test.ts',
       'scripts/**/__tests__/**/*.test.mjs',
     ],
     pool: 'forks',

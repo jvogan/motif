@@ -27,6 +27,18 @@ function requiredInsertStart(part: { name: string; sequence: string }): number {
   return boundary.insertStart;
 }
 
+function expectBoundedFeatures(result: { sequence: string; features: Feature[] }): void {
+  for (const candidate of result.features) {
+    expect(candidate.start).toBeGreaterThanOrEqual(0);
+    expect(candidate.end).toBeLessThanOrEqual(result.sequence.length);
+    for (const range of candidate.subRanges ?? []) {
+      expect(range.start).toBeGreaterThanOrEqual(0);
+      expect(range.end).toBeLessThanOrEqual(result.sequence.length);
+      expect(range.end).toBeGreaterThan(range.start);
+    }
+  }
+}
+
 describe('Golden Gate assembly feature locations', () => {
   it('preserves multipart order and rebuilds envelopes through digest, ligation, and circle closure', () => {
     const aBase = buildSyntheticGoldenGateVector('ATGC', 'GCTA', {
@@ -99,27 +111,41 @@ describe('Golden Gate assembly feature locations', () => {
         { start: 0, end: 2, strand: -1 },
       ],
     });
+    expect(result.features.find(({ name }) => name === 'A multipart')?.metadata.partial).toBe(true);
     expect(result.features.some(({ name }) => name === 'A flank-only multipart')).toBe(false);
     expect(result.features.find(({ name }) => name === 'B multipart')).toMatchObject({
-      start: 16,
+      start: 12,
       end: 22,
       subRanges: [
         { start: 20, end: 22, strand: -1 },
-        { start: 16, end: 18, strand: -1 },
+        { start: 12, end: 14, strand: -1 },
+        { start: 15, end: 18, strand: -1 },
       ],
     });
     expect(result.features.find(({ name }) => name === 'B closing-tail crossing')).toMatchObject({
-      start: 22,
+      start: 0,
       end: 24,
-      subRanges: [{ start: 22, end: 24, strand: 1 }],
+      subRanges: [
+        { start: 22, end: 24, strand: 1 },
+        { start: 0, end: 2, strand: 1 },
+      ],
     });
-    expect(result.features.some(({ name }) => name === 'B closing-tail only')).toBe(false);
-    expect(result.features.every(({ start, end }) => start >= 0 && end <= result.sequence.length)).toBe(true);
+    expect(result.features.find(({ name }) => name === 'B closing-tail only')).toMatchObject({
+      start: 0,
+      end: 4,
+      subRanges: [{ start: 0, end: 4, strand: 1 }],
+    });
+    expect(result.features.find(({ name }) => name === 'B multipart')?.metadata.partial).toBeUndefined();
+    expect(result.features.find(({ name }) => name === 'B closing-tail crossing')?.metadata.partial).toBeUndefined();
+    expectBoundedFeatures(result);
 
     const closingJunction = result.features.find((candidate) => (
       candidate.metadata.kind === 'junction_overhang' && candidate.metadata.circular === true
     ));
-    expect(closingJunction).toMatchObject({ start: 0, end: 4 });
-    expect(closingJunction?.subRanges).toBeUndefined();
+    expect(closingJunction).toMatchObject({ start: 0, end: 24 });
+    expect(closingJunction?.subRanges).toEqual([
+      { start: 20, end: 24, strand: 1 },
+      { start: 0, end: 4, strand: 1 },
+    ]);
   });
 });

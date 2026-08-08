@@ -7,6 +7,7 @@ import {
   VALID_NCBI_TABLE_IDS,
   getTranslationTable,
   listTranslationTables,
+  resolveTranslationTable,
 } from '../codon-tables';
 
 const NCBI_BASE_ORDER = ['T', 'C', 'A', 'G'];
@@ -62,6 +63,26 @@ describe('NCBI translation-table registry', () => {
       stops: ['TAA', 'TGA'],
     });
     expect(divergentCodons(BALANOPHORACEAE_PLASTID_CODE)).toEqual({ TAG: 'W' });
+  });
+
+  it('defaults only on omission and fails closed for explicit unknown ids', () => {
+    expect(resolveTranslationTable(undefined)).toMatchObject({
+      supported: true,
+      id: 1,
+      source: 'default',
+    });
+    expect(resolveTranslationTable(2)).toMatchObject({
+      supported: true,
+      id: 2,
+      source: 'explicit',
+    });
+    expect(resolveTranslationTable(999)).toMatchObject({
+      supported: false,
+      id: null,
+      requestedId: 999,
+      source: 'explicit',
+    });
+    expect(() => getTranslationTable(999)).toThrow(/unsupported.*translation table/i);
   });
 
   it.each(Object.entries(NCBI_TRANSLATION_TABLES))(

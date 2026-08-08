@@ -24,6 +24,7 @@ import {
   ARTIFACT_MSA_MAX_IMPORT_BYTES,
   ARTIFACT_MSA_LOCAL_WORK_BUDGET,
   ArtifactAlignmentError,
+  alignmentComparisonOf,
   MSA_MOTIF_SEARCH_MAX_QUERY_LENGTH,
   clampMsaClientPoint,
   classifyResidueDifference,
@@ -237,6 +238,16 @@ function sameOptionalStrings(a: readonly string[] | undefined, b: readonly strin
   return a.length === b.length && a.every((value, index) => value === b[index]);
 }
 
+function sameOptionalProvenance(
+  a: ArtifactAlignment['provenance'],
+  b: ArtifactAlignment['provenance'],
+): boolean {
+  if (!a || !b) return !a && !b;
+  const fields = ['runner', 'executable', 'executableSha256', 'executableSource', 'version', 'runtimePathsRedacted', 'inputFastaSha256', 'outputFastaSha256', 'stderrSha256'] as const;
+  if (fields.some((field) => a[field] !== b[field])) return false;
+  return sameOptionalStrings(a.versionArgv, b.versionArgv) && sameOptionalStrings(a.argv, b.argv);
+}
+
 function sameBooleans(a: readonly boolean[], b: readonly boolean[]): boolean {
   return a.length === b.length && a.every((value, index) => value === b[index]);
 }
@@ -253,6 +264,7 @@ function sameAlignmentApartFromNumbering(a: ArtifactAlignment, b: ArtifactAlignm
     && a.createdAt === b.createdAt
     && a.outputSha256 === b.outputSha256
     && a.note === b.note
+    && sameOptionalProvenance(a.provenance, b.provenance)
     && a.consensus === b.consensus
     && sameBooleans(a.conserved, b.conserved)
     && sameBooleans(a.gapOnly, b.gapOnly)
@@ -261,6 +273,16 @@ function sameAlignmentApartFromNumbering(a: ArtifactAlignment, b: ArtifactAlignm
     && a.engine.mode === b.engine.mode
     && a.engine.version === b.engine.version
     && a.engine.usedFallback === b.engine.usedFallback
+    && (() => {
+      const left = alignmentComparisonOf(a);
+      const right = alignmentComparisonOf(b);
+      return left.route === right.route
+        && left.method === right.method
+        && left.algorithm === right.algorithm
+        && left.fallback === right.fallback
+        && left.ambiguityCount === right.ambiguityCount
+        && sameOptionalStrings(left.warnings, right.warnings);
+    })()
     && sameOptionalStrings(a.engine.parameters, b.engine.parameters)
     && a.rows.length === b.rows.length
     && a.rows.every((row, index) => {
@@ -4315,6 +4337,8 @@ export function ClaudeScienceMsaViewer({
     setSourceOpen(open);
   }, [activeAlignment, hydrateInputsFromAlignment, sourceOpen]);
 
+  const activeComparison = activeAlignment ? alignmentComparisonOf(activeAlignment) : null;
+
   return (
     <div
       className="motif-cs-msa-workspace"
@@ -4968,23 +4992,32 @@ export function ClaudeScienceMsaViewer({
           <details
             className="motif-cs-msa-provenance"
             data-testid="msa-provenance"
-            data-fallback={activeAlignment.engine.usedFallback || undefined}
+            data-fallback={activeComparison?.fallback || activeAlignment.engine.usedFallback || undefined}
           >
             <summary>
               <span>Provenance</span>
               <strong>
                 {activeAlignment.engine.label}{activeAlignment.engine.version ? ` ${activeAlignment.engine.version}` : ''}
-                {activeAlignment.engine.usedFallback ? ' · fallback: Motif browser preview' : ` · ${engineModeLabel(activeAlignment.engine.mode)}`}
+                {activeAlignment.engine.usedFallback
+                  ? ' · fallback: Motif browser preview'
+                  : activeComparison?.fallback
+                    ? ' · fallback: bounded comparison route'
+                    : ` · ${engineModeLabel(activeAlignment.engine.mode)}`}
               </strong>
               <ChevronDown size={13} aria-hidden="true" />
             </summary>
             <dl>
               <div><dt>Engine</dt><dd>{activeAlignment.engine.label}{activeAlignment.engine.version ? ` ${activeAlignment.engine.version}` : ''}</dd></div>
               <div><dt>Execution</dt><dd>{engineModeLabel(activeAlignment.engine.mode)}</dd></div>
-              {activeAlignment.engine.usedFallback ? <div><dt>Fallback</dt><dd>The requested engine was not used; Motif local browser preview produced this alignment.</dd></div> : null}
+              {activeComparison ? <div><dt>Method</dt><dd>{activeComparison.method}</dd></div> : null}
+              {activeComparison ? <div><dt>Algorithm</dt><dd>{activeComparison.algorithm}</dd></div> : null}
+              {activeComparison?.fallback || activeAlignment.engine.usedFallback ? <div><dt>Fallback</dt><dd>{activeAlignment.engine.usedFallback ? 'The requested engine was not used; Motif local browser preview produced this alignment.' : 'The primary comparison route was not used; the recorded bounded route produced these aligned rows.'}</dd></div> : null}
+              {activeComparison?.warnings.length ? <div><dt>Warnings</dt><dd><ul>{activeComparison.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></dd></div> : null}
               {activeAlignment.engine.parameters?.length ? <div><dt>Parameters</dt><dd><code>{activeAlignment.engine.parameters.join(' ')}</code></dd></div> : null}
               {formatCreatedAt(activeAlignment.createdAt) ? <div><dt>Created</dt><dd><time dateTime={activeAlignment.createdAt}>{formatCreatedAt(activeAlignment.createdAt)}</time></dd></div> : null}
               {activeAlignment.outputSha256 ? <div><dt>Output SHA-256</dt><dd><code title={activeAlignment.outputSha256}>{shortHash(activeAlignment.outputSha256)}</code></dd></div> : null}
+              {activeAlignment.provenance?.executable ? <div><dt>Executable</dt><dd><code>{activeAlignment.provenance.executable}</code>{activeAlignment.provenance.executableSource ? ` · ${activeAlignment.provenance.executableSource}` : ''}</dd></div> : null}
+              {activeAlignment.provenance?.executableSha256 ? <div><dt>Executable SHA-256</dt><dd><code title={activeAlignment.provenance.executableSha256}>{shortHash(activeAlignment.provenance.executableSha256)}</code></dd></div> : null}
               {activeAlignment.rows.some((row) => row.inputSha256) ? (
                 <div>
                   <dt>Input SHA-256</dt>
