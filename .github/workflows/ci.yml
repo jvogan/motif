@@ -44,6 +44,9 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      - name: Repository language policy
+        run: npm run check:repository-language
+
       - name: Unit tests
         run: npm test
 
@@ -64,6 +67,8 @@ jobs:
 
       - name: Dependency cooling-off policy
         run: npm run security:cooling-off
+        env:
+          MOTIF_COOLING_OFF_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
 
       - name: Plugin and connector checks
         run: npm run test:plugin && npm run test:connector

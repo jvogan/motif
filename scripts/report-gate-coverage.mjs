@@ -37,7 +37,7 @@ export function reportGateCoverage(env = process.env) {
   const report = {
     schema: 'motif.gate-coverage.v1',
     executed: [
-      'typecheck', 'lint', 'unit tests', 'release alignment', 'runtime compatibility',
+      'typecheck', 'lint', 'repository language policy', 'unit tests', 'release alignment', 'runtime compatibility',
       'npm audit', 'supply-chain policy', 'reviewed lifecycle scripts', 'dependency cooling-off policy', 'plugin checks', 'connector checks',
       'style/accessibility guards', 'build', 'reproducibility', 'release budgets',
       'core browser workflows', 'MSA interaction workflows',

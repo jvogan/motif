@@ -110,7 +110,7 @@
       "source": "Motif curated reference data for common publicly documented cloning vectors",
       "license": "Included in the MIT-licensed Motif distribution as curated public reference data",
       "releaseStatus": "approved-public-reference",
-      "notes": "Bundled for workflow examples and software testing. Verify against an authoritative source before wet-lab use. No customer, sponsor, or private import data was used. Annotations are limited to valid ranges within the bundled sequence record."
+      "notes": "Bundled for workflow examples and software testing. Verify against an authoritative source before experimental use. No customer, sponsor, or private import data was used. Annotations are limited to valid ranges within the bundled sequence record."
     }
   },
   {
@@ -189,7 +189,7 @@
       "source": "Motif curated reference data for common publicly documented cloning vectors",
       "license": "Included in the MIT-licensed Motif distribution as curated public reference data",
       "releaseStatus": "approved-public-reference",
-      "notes": "Bundled for workflow examples and software testing. Verify against an authoritative source before wet-lab use. No customer, sponsor, or private import data was used. Annotations are limited to valid ranges within the bundled sequence record."
+      "notes": "Bundled for workflow examples and software testing. Verify against an authoritative source before experimental use. No customer, sponsor, or private import data was used. Annotations are limited to valid ranges within the bundled sequence record."
     }
   },
   {
@@ -231,7 +231,7 @@
       "source": "Motif curated reference data for common publicly documented cloning vectors",
       "license": "Included in the MIT-licensed Motif distribution as curated public reference data",
       "releaseStatus": "approved-public-reference",
-      "notes": "Bundled for workflow examples and software testing. Verify against an authoritative source before wet-lab use. No customer, sponsor, or private import data was used. Annotations are limited to valid ranges within the bundled sequence record."
+      "notes": "Bundled for workflow examples and software testing. Verify against an authoritative source before experimental use. No customer, sponsor, or private import data was used. Annotations are limited to valid ranges within the bundled sequence record."
     }
   },
   {
@@ -321,7 +321,7 @@
       "source": "Motif curated reference data for common publicly documented cloning vectors",
       "license": "Included in the MIT-licensed Motif distribution as curated public reference data",
       "releaseStatus": "approved-public-reference",
-      "notes": "Bundled for workflow examples and software testing. Verify against an authoritative source before wet-lab use. No customer, sponsor, or private import data was used. Annotations are limited to valid ranges within the bundled sequence record."
+      "notes": "Bundled for workflow examples and software testing. Verify against an authoritative source before experimental use. No customer, sponsor, or private import data was used. Annotations are limited to valid ranges within the bundled sequence record."
     }
   },
   {
@@ -411,7 +411,7 @@
       "source": "Motif curated reference data for common publicly documented cloning vectors",
       "license": "Included in the MIT-licensed Motif distribution as curated public reference data",
       "releaseStatus": "approved-public-reference",
-      "notes": "Bundled for workflow examples and software testing. Verify against an authoritative source before wet-lab use. No customer, sponsor, or private import data was used. Annotations are limited to valid ranges within the bundled sequence record."
+      "notes": "Bundled for workflow examples and software testing. Verify against an authoritative source before experimental use. No customer, sponsor, or private import data was used. Annotations are limited to valid ranges within the bundled sequence record."
     }
   },
   {
@@ -512,7 +512,7 @@
       "source": "Motif curated reference data for the Novagen pET-28a(+) T7lac expression vector. Nucleotide sequence obtained from the Addgene vector database (entry 2565) and cross-verified byte-for-byte against an independent repository (novoprolabs) as the same circular molecule, plus internally against the pET-28a/b/c(+) reading-frame trio.",
       "license": "Raw plasmid sequence is factual reference data, not subject to copyright; included in the MIT-licensed Motif distribution as curated public reference data. Feature annotations were generated independently by motif search, not copied from any annotated source.",
       "releaseStatus": "approved-public-reference",
-      "notes": "Bundled for workflow examples and software testing. Verify against an authoritative source before wet-lab use. Annotations are limited to valid ranges within the bundled sequence record (motif-located; KanR ORF confirmed by translation). No customer, sponsor, or private import data was used."
+      "notes": "Bundled for workflow examples and software testing. Verify against an authoritative source before experimental use. Annotations are limited to valid ranges within the bundled sequence record (motif-located; KanR ORF confirmed by translation). No customer, sponsor, or private import data was used."
     }
   },
   {
@@ -613,7 +613,7 @@
       "source": "Motif curated reference data for the Novagen pET-28b(+) T7lac expression vector. Nucleotide sequence obtained from the Addgene vector database (entry 2566) and cross-verified byte-for-byte against an independent repository (novoprolabs) as the same circular molecule, plus internally against the pET-28a/b/c(+) reading-frame trio.",
       "license": "Raw plasmid sequence is factual reference data, not subject to copyright; included in the MIT-licensed Motif distribution as curated public reference data. Feature annotations were generated independently by motif search, not copied from any annotated source.",
       "releaseStatus": "approved-public-reference",
-      "notes": "Bundled for workflow examples and software testing. Verify against an authoritative source before wet-lab use. Annotations are limited to valid ranges within the bundled sequence record (motif-located; KanR ORF confirmed by translation). No customer, sponsor, or private import data was used."
+      "notes": "Bundled for workflow examples and software testing. Verify against an authoritative source before experimental use. Annotations are limited to valid ranges within the bundled sequence record (motif-located; KanR ORF confirmed by translation). No customer, sponsor, or private import data was used."
     }
   },
   {
@@ -714,7 +714,7 @@
       "source": "Motif curated reference data for the Novagen pET-28c(+) T7lac expression vector. Nucleotide sequence obtained from the Addgene vector database (entry 2567) and cross-verified byte-for-byte against an independent repository (novoprolabs) as the same circular molecule, plus internally against the pET-28a/b/c(+) reading-frame trio.",
       "license": "Raw plasmid sequence is factual reference data, not subject to copyright; included in the MIT-licensed Motif distribution as curated public reference data. Feature annotations were generated independently by motif search, not copied from any annotated source.",
       "releaseStatus": "approved-public-reference",
-      "notes": "Bundled for workflow examples and software testing. Verify against an authoritative source before wet-lab use. Annotations are limited to valid ranges within the bundled sequence record (motif-located; KanR ORF confirmed by translation). No customer, sponsor, or private import data was used."
+      "notes": "Bundled for workflow examples and software testing. Verify against an authoritative source before experimental use. Annotations are limited to valid ranges within the bundled sequence record (motif-located; KanR ORF confirmed by translation). No customer, sponsor, or private import data was used."
     }
   },
   {
@@ -791,7 +791,7 @@
       "source": "Motif curated reference data for the Novagen pETDuet-1 dual-expression vector. Nucleotide sequence obtained byte-exact from the Addgene vector database (entry 2659); the resistance-gene ORF was translation-verified to confirm vector identity (AmpR), and the shared T7lac architecture is consistent across the pET Duet family. The Addgene extraction method was independently validated byte-for-byte (pET-28b vs a second repository).",
       "license": "Raw plasmid sequence is factual reference data, not subject to copyright; included in the MIT-licensed Motif distribution as curated public reference data. Feature annotations were generated independently by motif search, not copied from any annotated source.",
       "releaseStatus": "approved-public-reference",
-      "notes": "Bundled for workflow examples and software testing. Verify against an authoritative source before wet-lab use. Annotations are limited to valid ranges within the bundled sequence record (motif-located; resistance ORF confirmed by translation). No customer, sponsor, or private import data was used."
+      "notes": "Bundled for workflow examples and software testing. Verify against an authoritative source before experimental use. Annotations are limited to valid ranges within the bundled sequence record (motif-located; resistance ORF confirmed by translation). No customer, sponsor, or private import data was used."
     }
   },
   {
@@ -868,7 +868,7 @@
       "source": "Motif curated reference data for the Novagen pCOLADuet-1 dual-expression vector. Nucleotide sequence obtained byte-exact from the Addgene vector database (entry 2260); the resistance-gene ORF was translation-verified to confirm vector identity (KanR), and the shared T7lac architecture is consistent across the pET Duet family. The Addgene extraction method was independently validated byte-for-byte (pET-28b vs a second repository).",
       "license": "Raw plasmid sequence is factual reference data, not subject to copyright; included in the MIT-licensed Motif distribution as curated public reference data. Feature annotations were generated independently by motif search, not copied from any annotated source.",
       "releaseStatus": "approved-public-reference",
-      "notes": "Bundled for workflow examples and software testing. Verify against an authoritative source before wet-lab use. Annotations are limited to valid ranges within the bundled sequence record (motif-located; resistance ORF confirmed by translation). No customer, sponsor, or private import data was used."
+      "notes": "Bundled for workflow examples and software testing. Verify against an authoritative source before experimental use. Annotations are limited to valid ranges within the bundled sequence record (motif-located; resistance ORF confirmed by translation). No customer, sponsor, or private import data was used."
     }
   },
   {
@@ -945,7 +945,7 @@
       "source": "Motif curated reference data for the Novagen pACYCDuet-1 dual-expression vector. Nucleotide sequence obtained byte-exact from the Addgene vector database (entry 1680); the resistance-gene ORF was translation-verified to confirm vector identity (CmR), and the shared T7lac architecture is consistent across the pET Duet family. The Addgene extraction method was independently validated byte-for-byte (pET-28b vs a second repository).",
       "license": "Raw plasmid sequence is factual reference data, not subject to copyright; included in the MIT-licensed Motif distribution as curated public reference data. Feature annotations were generated independently by motif search, not copied from any annotated source.",
       "releaseStatus": "approved-public-reference",
-      "notes": "Bundled for workflow examples and software testing. Verify against an authoritative source before wet-lab use. Annotations are limited to valid ranges within the bundled sequence record (motif-located; resistance ORF confirmed by translation). No customer, sponsor, or private import data was used."
+      "notes": "Bundled for workflow examples and software testing. Verify against an authoritative source before experimental use. Annotations are limited to valid ranges within the bundled sequence record (motif-located; resistance ORF confirmed by translation). No customer, sponsor, or private import data was used."
     }
   },
   {
@@ -1022,7 +1022,7 @@
       "source": "Motif curated reference data for the Novagen pRSFDuet-1 dual-expression vector. Nucleotide sequence obtained byte-exact from the Addgene vector database (entry 4005); the resistance-gene ORF was translation-verified to confirm vector identity (KanR), and the shared T7lac architecture is consistent across the pET Duet family. The Addgene extraction method was independently validated byte-for-byte (pET-28b vs a second repository).",
       "license": "Raw plasmid sequence is factual reference data, not subject to copyright; included in the MIT-licensed Motif distribution as curated public reference data. Feature annotations were generated independently by motif search, not copied from any annotated source.",
       "releaseStatus": "approved-public-reference",
-      "notes": "Bundled for workflow examples and software testing. Verify against an authoritative source before wet-lab use. Annotations are limited to valid ranges within the bundled sequence record (motif-located; resistance ORF confirmed by translation). No customer, sponsor, or private import data was used."
+      "notes": "Bundled for workflow examples and software testing. Verify against an authoritative source before experimental use. Annotations are limited to valid ranges within the bundled sequence record (motif-located; resistance ORF confirmed by translation). No customer, sponsor, or private import data was used."
     }
   },
   {
@@ -1099,7 +1099,7 @@
       "source": "Motif curated reference data for the Novagen pCDFDuet-1 dual-expression vector. Nucleotide sequence obtained byte-exact from the Addgene vector database (entry 2080); the resistance-gene ORF was translation-verified to confirm vector identity (SmR/SpecR), and the shared T7lac architecture is consistent across the pET Duet family. The Addgene extraction method was independently validated byte-for-byte (pET-28b vs a second repository).",
       "license": "Raw plasmid sequence is factual reference data, not subject to copyright; included in the MIT-licensed Motif distribution as curated public reference data. Feature annotations were generated independently by motif search, not copied from any annotated source.",
       "releaseStatus": "approved-public-reference",
-      "notes": "Bundled for workflow examples and software testing. Verify against an authoritative source before wet-lab use. Annotations are limited to valid ranges within the bundled sequence record (motif-located; resistance ORF confirmed by translation). No customer, sponsor, or private import data was used."
+      "notes": "Bundled for workflow examples and software testing. Verify against an authoritative source before experimental use. Annotations are limited to valid ranges within the bundled sequence record (motif-located; resistance ORF confirmed by translation). No customer, sponsor, or private import data was used."
     }
   }
 ]
