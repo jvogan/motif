@@ -166,7 +166,9 @@ export function resolveRestrictionPresetEnzymes(
     : [...enzymeDb, ...RESTRICTION_ENZYMES];
 
   return preset.enzymeNames.map((name) => {
-    const enzyme = enzymeByName(name, enzymeDb) ?? enzymeByName(name, fallbackDb);
+    const enzyme = enzymeByName(name, RESTRICTION_ENZYMES_FULL)
+      ?? enzymeByName(name, enzymeDb)
+      ?? enzymeByName(name, fallbackDb);
     if (!enzyme) {
       throw new Error(`Restriction preset "${preset.id}" references unknown enzyme "${name}".`);
     }
@@ -207,7 +209,9 @@ export function resolveEnzymeUnion(
   };
   for (const source of sources) {
     if (source === 'common') {
-      for (const enzyme of RESTRICTION_ENZYMES) add(enzyme);
+      for (const enzyme of RESTRICTION_ENZYMES) {
+        add(fullByName.get(enzyme.name.toLowerCase()) ?? enzyme);
+      }
     } else if (source === 'favorites') {
       for (const name of favorites) add(fullByName.get(name.toLowerCase()));
     } else if (source.startsWith(CUSTOM_ENZYME_LIST_PREFIX)) {

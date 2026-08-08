@@ -25,6 +25,7 @@ export const RELEASE_MAX_DIRECTORY_DEPTH = 32;
 export const RELEASE_MAX_BUNDLE_ENTRIES = RELEASE_MAX_BUNDLE_FILES + RELEASE_MAX_DIRECTORY_NODES;
 export const RELEASE_MAX_FILE_BYTES = 64 * 1024 * 1024;
 export const RELEASE_MAX_TOTAL_BYTES = 128 * 1024 * 1024;
+export const RELEASE_MAX_TRUSTED_DIGEST_FILE_BYTES = 512;
 
 /**
  * Resolve the bundle root for a release helper. Source helpers live in the
@@ -39,6 +40,24 @@ export function resolveReleaseBundleRoot(scriptPath) {
 
 function sha256(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
+}
+
+function normalizeTrustedManifestDigest(value) {
+  const digest = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  if (!/^[a-f0-9]{64}$/u.test(digest)) throw new Error('Trusted release-manifest SHA-256 is invalid');
+  return digest;
+}
+
+export function readTrustedManifestDigest(digestPath) {
+  const path = resolve(digestPath);
+  if (!existsSync(path)) throw new Error('Trusted release-manifest checksum file does not exist');
+  const stat = lstatSync(path);
+  if (stat.isSymbolicLink() || !stat.isFile()) throw new Error('Trusted release-manifest checksum must be a regular file');
+  if (stat.size > RELEASE_MAX_TRUSTED_DIGEST_FILE_BYTES) throw new Error('Trusted release-manifest checksum file is oversized');
+  const line = readFileSync(path, 'utf8').trim();
+  const match = line.match(/^([a-f0-9]{64})(?:\s+\*?release-manifest\.json)?$/iu);
+  if (!match) throw new Error('Trusted release-manifest checksum file has an invalid format');
+  return normalizeTrustedManifestDigest(match[1]);
 }
 
 function canonicalRoot(bundlePath) {
@@ -86,7 +105,7 @@ function assertRegularBundleFile(root, relativePath, label = relativePath) {
   return path;
 }
 
-function listFiles(root, directory = root, output = [], state = { directoryNodes: 0, entries: 0 }, depth = 0) {
+function listFiles(root, directory = root, output = [], state = { directoryNodes: 0, entries: 0, totalBytes: 0 }, depth = 0) {
   state.directoryNodes += 1;
   if (state.directoryNodes > RELEASE_MAX_DIRECTORY_NODES) {
     throw new Error(`Release bundle directory count exceeds the ${RELEASE_MAX_DIRECTORY_NODES}-directory limit`);
@@ -117,6 +136,10 @@ function listFiles(root, directory = root, output = [], state = { directoryNodes
     if (entry.isDirectory()) listFiles(root, path, output, state, depth + 1);
     else if (entry.isFile()) {
       if (stat.size > RELEASE_MAX_FILE_BYTES) throw new Error(`Release file exceeds the size limit: ${relative(root, path)}`);
+      state.totalBytes += stat.size;
+      if (state.totalBytes > RELEASE_MAX_TOTAL_BYTES) {
+        throw new Error('Release bundle exceeds the total size limit');
+      }
       if (output.length >= RELEASE_MAX_BUNDLE_FILES) {
         throw new Error(`Release bundle file count exceeds the ${RELEASE_MAX_BUNDLE_FILES}-file limit`);
       }
@@ -140,11 +163,23 @@ function assertArrayOfStrings(value, label) {
   if (!Array.isArray(value) || value.some(item => typeof item !== 'string')) throw new Error(`${label} must be an array of strings`);
 }
 
-export function verifyReleaseBundle(bundlePath, { expectedVersion = null } = {}) {
+export function verifyReleaseBundle(bundlePath, { expectedVersion = null, expectedManifestSha256 = null } = {}) {
   const root = canonicalRoot(bundlePath);
   const manifestPath = assertRegularBundleFile(root, RELEASE_MANIFEST_FILENAME, 'Release manifest');
   const checksumPath = assertRegularBundleFile(root, RELEASE_CHECKSUM_FILENAME, 'Release checksum manifest');
-  const manifest = readJson(manifestPath, 'Release manifest');
+  if (lstatSync(manifestPath).size > 4 * 1024 * 1024) throw new Error('Release manifest exceeds the JSON size limit');
+  const manifestBytes = readFileSync(manifestPath);
+  const manifestSha256 = sha256(manifestBytes);
+  const trustedManifestSha256 = expectedManifestSha256 === null ? null : normalizeTrustedManifestDigest(expectedManifestSha256);
+  if (trustedManifestSha256 !== null && manifestSha256 !== trustedManifestSha256) {
+    throw new Error('Release manifest does not match the externally trusted SHA-256');
+  }
+  let manifest;
+  try {
+    manifest = JSON.parse(manifestBytes.toString('utf8'));
+  } catch {
+    throw new Error('Release manifest is not valid JSON');
+  }
   const checksums = readJson(checksumPath, 'Release checksum manifest');
   if (manifest.schema !== 'motif.release.manifest.v1') throw new Error('Unsupported Motif release manifest schema');
   if (manifest.product !== RELEASE_PRODUCT) throw new Error('Release product identity is not Motif for Claude Science');
@@ -162,17 +197,19 @@ export function verifyReleaseBundle(bundlePath, { expectedVersion = null } = {})
   checksumEntries.forEach(([, digest]) => {
     if (!/^[a-f0-9]{64}$/u.test(digest)) throw new Error('Release checksum entries must be SHA-256 hex digests');
   });
-  const expectedFiles = [];
-  for (const [relativePath, digest] of checksumEntries.sort(([left], [right]) => left.localeCompare(right))) {
-    const path = assertRegularBundleFile(root, relativePath);
-    if (sha256(readFileSync(path)) !== digest) throw new Error(`Release checksum mismatch: ${relativePath}`);
-    expectedFiles.push(relativePath);
-  }
-  const actualFiles = listFiles(root);
+  const expectedFiles = checksumEntries
+    .map(([relativePath]) => safeRelativePath(relativePath, 'Release checksum path'))
+    .sort((left, right) => left.localeCompare(right));
+  const traversalState = { directoryNodes: 0, entries: 0, totalBytes: 0 };
+  const actualFiles = listFiles(root, root, [], traversalState);
   const metadataFiles = [RELEASE_MANIFEST_FILENAME, RELEASE_CHECKSUM_FILENAME];
   const expectedAll = [...expectedFiles, ...metadataFiles].sort((left, right) => left.localeCompare(right));
   if (JSON.stringify(actualFiles) !== JSON.stringify(expectedAll)) {
     throw new Error('Release bundle contains an unexpected or missing file');
+  }
+  for (const [relativePath, digest] of checksumEntries.sort(([left], [right]) => left.localeCompare(right))) {
+    const path = assertRegularBundleFile(root, relativePath);
+    if (sha256(readFileSync(path)) !== digest) throw new Error(`Release checksum mismatch: ${relativePath}`);
   }
   assertArrayOfStrings(manifest.requiredFiles, 'Release requiredFiles');
   for (const required of manifest.requiredFiles) assertRegularBundleFile(root, required, `Required release artifact ${required}`);
@@ -195,7 +232,12 @@ export function verifyReleaseBundle(bundlePath, { expectedVersion = null } = {})
     if (!server.includes(marker)) throw new Error(`Release connector server is missing identity marker ${marker}`);
   }
   if (!launcher.includes('MOTIF_ROOT') || !launcher.includes('motif-claude-science')) throw new Error('Release launcher identity is missing');
-  const totalSize = actualFiles.reduce((sum, relativePath) => sum + lstatSync(resolve(root, relativePath)).size, 0);
-  if (totalSize > RELEASE_MAX_TOTAL_BYTES) throw new Error('Release bundle exceeds the total size limit');
-  return { root, manifest, checksums, paths: { launcher: launcherPath, server: serverPath, app: appPath, template: templatePath } };
+  return {
+    root,
+    manifest,
+    checksums,
+    manifestSha256,
+    externalManifestDigestMatched: trustedManifestSha256 !== null,
+    paths: { launcher: launcherPath, server: serverPath, app: appPath, template: templatePath },
+  };
 }

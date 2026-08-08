@@ -5,6 +5,7 @@ import {
   type RemappedFeatureLocation,
 } from '../bio/feature-location';
 import type { Feature, SequenceType, Topology } from '../bio/types';
+import { isActiveDoubleStrandRestrictionSite } from '../bio/restriction-sites';
 import type { DigestRecipe } from './claude-science-digest-recipe';
 import {
   MAX_ARTIFACT_ID_LENGTH,
@@ -335,10 +336,7 @@ function validateRecipe(source: DigestWorkflowSourceRecord, recipe: DigestRecipe
   // Recognition sites that are nicks, methylation-conditional, or physically
   // out of bounds are not ordinary double-strand digest boundaries.
   const distinctCuts = new Set(recipe.sites
-    .filter((site) => (
-      (site.cleavageMode ?? 'double-strand') === 'double-strand'
-      && (site.cleavageStatus ?? 'ok') === 'ok'
-    ))
+    .filter(isActiveDoubleStrandRestrictionSite)
     .map((site) => site.cutPosition));
   if (distinctCuts.size !== recipe.cutCount) {
     fail('incoherent-recipe', 'Digest recipe cut count does not match its distinct physical cut coordinates.');

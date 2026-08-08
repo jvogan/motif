@@ -75,7 +75,10 @@ export type ClaudeSciencePrimerExport = ClaudeSciencePrimerHandoff & {
 
 export type ClaudeSciencePrimerWorkspaceProps = {
   record: ClaudeSciencePrimerRecord;
+  /** Live host selection used for sequence context and the optional reset action. */
   selectedRange?: { start: number; end: number } | null;
+  /** Explicit design target owned by the workspace host; null means use the whole-record default. */
+  targetRange?: { start: number; end: number } | null;
   onClose: () => void;
   onSelectRange?: (start: number, end: number) => void;
   onCopy?: (label: string, value: string) => void | Promise<void>;
@@ -268,6 +271,7 @@ function Metric({ label, value, state }: { label: string; value: string; state?:
 export function ClaudeSciencePrimerWorkspace({
   record,
   selectedRange = null,
+  targetRange,
   onClose,
   onSelectRange,
   onCopy,
@@ -291,10 +295,13 @@ export function ClaudeSciencePrimerWorkspace({
   const validationMessageId = useId();
   const workspaceRef = useRef<HTMLElement>(null);
   const initialFocusRef = useRef<HTMLButtonElement>(null);
+  const effectiveTargetRange = targetRange === undefined ? selectedRange : targetRange;
   const initialTarget = useMemo(
-    () => defaultTarget(record.sequence.length, selectedRange, initialIntent === 'cloning'),
-    [initialIntent, record.sequence.length, selectedRange],
+    () => defaultTarget(record.sequence.length, effectiveTargetRange, initialIntent === 'cloning'),
+    [effectiveTargetRange, initialIntent, record.sequence.length],
   );
+  const selectedRangeKey = selectedRange ? `${selectedRange.start}:${selectedRange.end}` : '';
+  const previewRangeKeyRef = useRef<string | null>(null);
   const initialPreset = initialPresetForIntent(initialIntent);
   const [intent, setIntent] = useState<ClaudeSciencePrimerIntent>(initialIntent);
   const [presetId, setPresetId] = useState(initialPreset.id);
@@ -315,10 +322,15 @@ export function ClaudeSciencePrimerWorkspace({
   const [busyAction, setBusyAction] = useState('');
 
   useEffect(() => {
+    if (previewRangeKeyRef.current && previewRangeKeyRef.current === selectedRangeKey) {
+      previewRangeKeyRef.current = null;
+      return;
+    }
+    previewRangeKeyRef.current = null;
     setTargetStart(initialTarget.start);
     setTargetEnd(initialTarget.end);
     setSelectedPairIndex(0);
-  }, [initialTarget.end, initialTarget.start, record.id]);
+  }, [initialTarget.end, initialTarget.start, record.id, selectedRangeKey]);
 
   useEffect(() => {
     const preset = initialPresetForIntent(initialIntent);
@@ -448,6 +460,7 @@ export function ClaudeSciencePrimerWorkspace({
   }) : null, [intent, pairs, parameters, preparationContext, record.id, record.name, selectedPair, targetEnd, targetStart]);
 
   const applyPreset = useCallback((preset: PrimerPreset) => {
+    previewRangeKeyRef.current = null;
     setPresetId(preset.id);
     setIntent(preset.intent);
     setMinLength(preset.minLength);
@@ -462,6 +475,7 @@ export function ClaudeSciencePrimerWorkspace({
   }, []);
 
   const markCustom = useCallback(() => {
+    previewRangeKeyRef.current = null;
     setPresetId('custom');
     setSelectedPairIndex(0);
   }, []);
@@ -470,6 +484,7 @@ export function ClaudeSciencePrimerWorkspace({
     const pair = pairs[index];
     if (!pair) return;
     setSelectedPairIndex(index);
+    previewRangeKeyRef.current = `${pair.forward.start}:${pair.reverse.end}`;
     onSelectRange?.(pair.forward.start, pair.reverse.end);
     setStatus(`Pair ${index + 1} selected on the sequence.`);
   }, [onSelectRange, pairs]);
@@ -627,7 +642,7 @@ export function ClaudeSciencePrimerWorkspace({
               </label>
             </div>
             {selectedRange ? (
-              <button className="motif-cs-primer-text-button" type="button" onClick={() => { const next = defaultTarget(normalizedSequence.length, selectedRange); setTargetStart(next.start); setTargetEnd(next.end); setSelectedPairIndex(0); }}>
+              <button className="motif-cs-primer-text-button" type="button" onClick={() => { previewRangeKeyRef.current = null; const next = defaultTarget(normalizedSequence.length, selectedRange); setTargetStart(next.start); setTargetEnd(next.end); setSelectedPairIndex(0); }}>
                 Use current selection ({selectedRange.start + 1}–{selectedRange.end})
               </button>
             ) : null}

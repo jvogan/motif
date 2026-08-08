@@ -12,6 +12,7 @@ import {
 } from '../feature-location';
 import { parseFeatures } from '../genbank-parser';
 import { reverseComplement, reverseComplementFeatures } from '../reverse-complement';
+import { mapFeatureThroughSourceCoordinates } from '../assembly-feature-mapping';
 import type { Feature } from '../types';
 
 const SEQUENCE = 'ATGCCCGGGCCATTTAAA';
@@ -268,6 +269,27 @@ describe('feature location semantics', () => {
         location,
       })],
     });
+  });
+
+  it('does not remap quarantined or non-materializable placeholders into derived records', () => {
+    const [quarantined] = parseFeatures([
+      '     misc_feature    J00194.1:100..200',
+      '                     /label="remote"',
+    ].join('\n'));
+    expect(remapFeatureLocation(quarantined, [{ start: 0, end: 1, targetStart: 0 }])).toBeNull();
+    expect(mapFeatureThroughSourceCoordinates(quarantined, {
+      sourceLength: 1,
+      productLength: 1,
+      sourceToProduct: [0],
+    })).toBeNull();
+
+    const ordered = parsedFeature('order(1..3,10..12)');
+    expect(remapFeatureLocation(ordered, [{ start: 0, end: 12, targetStart: 0 }])).toBeNull();
+    expect(mapFeatureThroughSourceCoordinates(ordered, {
+      sourceLength: 12,
+      productLength: 12,
+      sourceToProduct: Array.from({ length: 12 }, (_, index) => index),
+    })).toBeNull();
   });
 
   it('preserves repeated qualifier order, multiline values, and escaped quotes', () => {

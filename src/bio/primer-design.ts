@@ -5,8 +5,10 @@ import { reverseComplement } from './reverse-complement';
 import {
   predictHairpin,
   predictSelfDimer,
+  predictPrimerDimer,
   DEFAULT_MAX_HAIRPIN_DG,
   DEFAULT_MAX_DIMER_DG,
+  type DimerResult,
 } from './primer-thermodynamics';
 import { inspectNucleotideSequence } from './nucleotide';
 
@@ -112,6 +114,8 @@ export interface PrimerPair {
   reverse: PrimerCandidate;
   productLength: number;
   tmDifference: number;
+  /** Cross-primer interaction evidence retained for deterministic ranking. */
+  crossDimer?: DimerResult;
 }
 
 /**
@@ -270,7 +274,12 @@ function pairRankScore(pair: PrimerPair, targetTm: number, enforceTargetTm: bool
     : 0;
   const anchorPenalty = (pair.forward.anchorDistance + pair.reverse.anchorDistance) * ANCHOR_DISTANCE_PENALTY;
   const gcBalancePenalty = (Math.abs(pair.forward.gcPercent - 50) + Math.abs(pair.reverse.gcPercent - 50)) * 0.01;
-  return tmPairPenalty + targetPenalty + anchorPenalty + gcBalancePenalty;
+  const crossDimer = pair.crossDimer ?? predictPrimerDimer(pair.forward.fullSequence, pair.reverse.fullSequence);
+  const crossDimerPenalty = crossDimer.status === 'exact'
+    ? Math.max(0, -crossDimer.deltaG) * 0.1
+      + (crossDimer.threePrimeOverlap.primer1 + crossDimer.threePrimeOverlap.primer2) * 0.75
+    : 0;
+  return tmPairPenalty + targetPenalty + anchorPenalty + gcBalancePenalty + crossDimerPenalty;
 }
 
 /**
@@ -671,6 +680,7 @@ export function designPrimerPairWithDiagnostics(
         reverse: rev,
         productLength,
         tmDifference: tmDiff,
+        crossDimer: predictPrimerDimer(fwd.fullSequence, rev.fullSequence),
       });
     }
   }

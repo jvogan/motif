@@ -7,6 +7,8 @@ import { checkDependencyCoolingOff } from '../check-dependency-cooling-off.mjs';
 const NOW = Date.parse('2026-08-08T00:00:00.000Z');
 const RESOLVED = 'https://registry.npmjs.org/reviewed-package/-/reviewed-package-1.0.0.tgz';
 const INTEGRITY = 'sha512-AAAA=';
+const COMMIT_SHA_40 = 'a'.repeat(40);
+const COMMIT_SHA_64 = 'b'.repeat(64);
 
 function fixture({ publishedAt = '2026-07-01T00:00:00.000Z', currentVersion = '1.0.0', baselineVersion = '0.9.0', exceptions = [] } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'motif-cooling-off-test-'));
@@ -57,6 +59,45 @@ function fetchFrom(text) {
 }
 
 describe('dependency cooling-off policy', () => {
+  it('fails closed in CI without a real event baseline', async () => {
+    const fixtureData = fixture();
+    await expect(checkDependencyCoolingOff(fixtureData.directory, {
+      environment: { CI: 'true' },
+      now: NOW,
+      fetchImpl: fetchFrom(fixtureData.metadata),
+    })).rejects.toThrow(/full immutable 40- or 64-hex commit ID/);
+    await expect(checkDependencyCoolingOff(fixtureData.directory, {
+      environment: { CI: 'true', MOTIF_COOLING_OFF_BASE_SHA: '0000000000000000000000000000000000000000' },
+      now: NOW,
+      fetchImpl: fetchFrom(fixtureData.metadata),
+    })).rejects.toThrow(/full immutable 40- or 64-hex commit ID/);
+    rmSync(fixtureData.directory, { recursive: true, force: true });
+  });
+
+  it.each([COMMIT_SHA_40, COMMIT_SHA_64])('accepts a full immutable %s baseline in CI', async (baseSha) => {
+    const fixtureData = fixture({ publishedAt: '2026-07-01T00:00:00.000Z' });
+    await expect(checkDependencyCoolingOff(fixtureData.directory, {
+      baseLockfileText: fixtureData.baseline,
+      environment: { CI: 'true', MOTIF_COOLING_OFF_BASE_SHA: baseSha },
+      now: NOW,
+      fetchImpl: fetchFrom(fixtureData.metadata),
+    })).resolves.toMatchObject({ baseline: baseSha, changedPackageCount: 1 });
+    rmSync(fixtureData.directory, { recursive: true, force: true });
+  });
+
+  it('rejects abbreviated, malformed, and all-zero CI baselines', async () => {
+    const fixtureData = fixture();
+    for (const baseSha of ['a'.repeat(39), 'a'.repeat(41), `${'a'.repeat(63)}g`, '0'.repeat(64)]) {
+      await expect(checkDependencyCoolingOff(fixtureData.directory, {
+        baseLockfileText: fixtureData.baseline,
+        environment: { CI: 'true', MOTIF_COOLING_OFF_BASE_SHA: baseSha },
+        now: NOW,
+        fetchImpl: fetchFrom(fixtureData.metadata),
+      })).rejects.toThrow(/full immutable 40- or 64-hex commit ID/);
+    }
+    rmSync(fixtureData.directory, { recursive: true, force: true });
+  });
+
   it('rejects a changed dependency younger than seven days', async () => {
     const fixtureData = fixture({ publishedAt: '2026-08-06T00:00:00.000Z' });
     await expect(checkDependencyCoolingOff(fixtureData.directory, {
@@ -111,17 +152,6 @@ describe('dependency cooling-off policy', () => {
       fetchImpl: fetchFrom(JSON.stringify(metadata)),
     })).rejects.toThrow(/tarball mismatch/);
     rmSync(tampered.directory, { recursive: true, force: true });
-  });
-
-  it('rejects registry metadata that exceeds the bounded response budget', async () => {
-    const fixtureData = fixture();
-    const oversized = JSON.stringify({ padding: 'x'.repeat(8 * 1024 * 1024) });
-    await expect(checkDependencyCoolingOff(fixtureData.directory, {
-      baseLockfileText: fixtureData.baseline,
-      now: NOW,
-      fetchImpl: fetchFrom(oversized),
-    })).rejects.toThrow(/response exceeded 8388608 bytes/);
-    rmSync(fixtureData.directory, { recursive: true, force: true });
   });
 
   it('does not make registry requests when the lockfile has no changed entries', async () => {

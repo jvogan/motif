@@ -14,6 +14,7 @@ import {
   type ArtifactWorkflowResult,
 } from './claude-science-workspace-collections';
 import { sha256HexSync } from './claude-science-sha256';
+import { materializeGoldenGateFlankSpacers } from './claude-science-golden-gate-normalization';
 
 /**
  * Pure planning helpers for the standalone Claude Science artifact.
@@ -825,7 +826,10 @@ export function planArtifactGoldenGateAssembly(input: {
     }
 
     const boundary = getGoldenGatePartBoundary(
-      { name: part.name, sequence: part.sequence },
+      {
+        name: part.name,
+        sequence: materializeGoldenGateFlankSpacers(part.sequence, enzyme.name).sequence,
+      },
       enzyme.name,
     );
     const partWarnings: ArtifactAssemblyIssue[] = [];

@@ -57,6 +57,14 @@ describe('translation-table-aware translation', () => {
     expect(translateFromFirstATG('CCCGTGAAATAA', STANDARD_CODE)).toBeNull();
   });
 
+  it('recognizes an ambiguous codon only when every expansion is an initiator', () => {
+    const mitochondrial = getTranslationTable(2);
+
+    expect(translateCompleteCds('ATHAAATAA', 0, mitochondrial)).toBe('MK*');
+    expect(translateCompleteCds('ATNAAATAA', 0, STANDARD_CODE)).toBe('XK*');
+    expect(translateFromFirstATG('CCCGTNAAAACC', mitochondrial)).toBeNull();
+  });
+
   it('applies codon_start after orienting a reverse feature into biological order', () => {
     const biological = 'AATGAAATAG';
     const genomic = reverseComplement(biological);

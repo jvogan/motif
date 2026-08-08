@@ -60,6 +60,10 @@ export interface DimerResult {
   pairLength: number;
   /** Offset of primer2 relative to primer1 (negative shifts primer2 left). */
   offset: number;
+  /** Number of paired bases touching each original primer's 3′ end. */
+  threePrimeOverlap: { primer1: number; primer2: number };
+  /** True when the strongest run reaches either extendable 3′ end. */
+  threePrimeParticipation: 'none' | 'primer1' | 'primer2' | 'both';
   /** ASCII rendering of the duplex alignment. */
   structure: string;
   /** Exact sequence after formatting normalization; no bases are discarded. */
@@ -205,6 +209,8 @@ export function predictPrimerDimer(p1: string, p2: string): DimerResult {
     deltaG: 0,
     pairLength: 0,
     offset: 0,
+    threePrimeOverlap: { primer1: 0, primer2: 0 },
+    threePrimeParticipation: 'none',
     structure: '',
     evaluatedSequence: `${a}|${b}`,
     status,
@@ -215,41 +221,59 @@ export function predictPrimerDimer(p1: string, p2: string): DimerResult {
   // The dimer alignment is p1 (5′→3′ top) vs p2 reverse-complement aligned at offset.
   const b_rc = reverseComplement(b);
 
-  // For each relative offset between [-len(b_rc)+1, len(a)-1], find the
-  // longest contiguous WC match.
+  // For each relative offset between [-len(b_rc)+1, len(a)-1], evaluate every
+  // maximal contiguous Watson-Crick run. A shorter GC-rich run at one offset
+  // can be more stable than a longer AT-rich run at the same offset.
   for (let offset = -(b_rc.length - 1); offset < a.length; offset++) {
     let runStart = -1;
-    let runLen = 0;
-    let bestRunLen = 0;
-    let bestRunStart = -1;
+    const evaluateRun = (start: number, length: number): void => {
+      if (start < 0 || length < 3) return;
+      const matched = a.slice(start, start + length);
+      const deltaG = Math.round(nnDeltaG(matched) * 100) / 100;
+      const matchedEnd = start + length;
+      const bRunStart = start + offset;
+      // Participation means the duplex reaches the actual terminal 3′ base;
+      // the overlap count is capped at the five terminal bases for ranking.
+      const primer1ThreePrime = matchedEnd === a.length ? Math.min(length, 5) : 0;
+      const primer2ThreePrime = bRunStart === 0 ? Math.min(length, 5) : 0;
+      const participation: DimerResult['threePrimeParticipation'] = primer1ThreePrime > 0 && primer2ThreePrime > 0
+        ? 'both'
+        : primer1ThreePrime > 0
+          ? 'primer1'
+          : primer2ThreePrime > 0
+            ? 'primer2'
+            : 'none';
+      const terminalBases = primer1ThreePrime + primer2ThreePrime;
+      const bestTerminalBases = best.threePrimeOverlap.primer1 + best.threePrimeOverlap.primer2;
+      const shouldReplace = deltaG < best.deltaG
+        || (deltaG === best.deltaG && (
+          terminalBases > bestTerminalBases
+          || (terminalBases === bestTerminalBases && length > best.pairLength)
+        ));
+      if (!shouldReplace) return;
+      best = {
+        deltaG,
+        pairLength: length,
+        offset,
+        threePrimeOverlap: { primer1: primer1ThreePrime, primer2: primer2ThreePrime },
+        threePrimeParticipation: participation,
+        structure: `5'-${matched}-3' (${length} bp duplex, offset ${offset})`,
+        evaluatedSequence: `${a}|${b}`,
+        status: 'exact',
+      };
+    };
     for (let i = Math.max(0, -offset); i < Math.min(a.length, b_rc.length - offset); i++) {
       const ai = a[i];
       const bi = b_rc[i + offset];
       if (ai === bi) {
-        if (runLen === 0) runStart = i;
-        runLen++;
-        if (runLen > bestRunLen) {
-          bestRunLen = runLen;
-          bestRunStart = runStart;
-        }
+        if (runStart === -1) runStart = i;
       } else {
-        runLen = 0;
+        evaluateRun(runStart, runStart === -1 ? 0 : i - runStart);
+        runStart = -1;
       }
     }
-    if (bestRunLen >= 3 && bestRunStart >= 0) {
-      const matched = a.slice(bestRunStart, bestRunStart + bestRunLen);
-      const dG = nnDeltaG(matched);
-      if (dG < best.deltaG) {
-        best = {
-          deltaG: Math.round(dG * 100) / 100,
-          pairLength: bestRunLen,
-          offset,
-          structure: `5'-${matched}-3' (${bestRunLen} bp duplex, offset ${offset})`,
-          evaluatedSequence: `${a}|${b}`,
-          status: 'exact',
-        };
-      }
-    }
+    const runEnd = Math.min(a.length, b_rc.length - offset);
+    evaluateRun(runStart, runStart === -1 ? 0 : runEnd - runStart);
   }
   return best;
 }

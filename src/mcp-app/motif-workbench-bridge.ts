@@ -64,7 +64,7 @@ export async function applyMotifToolResult(result: CallToolResult): Promise<void
 export async function startMotifMcpBridge(): Promise<App> {
   setBridgeState('connecting');
   const app = new App(
-    { name: 'Motif for Claude Science', version: '0.3.1' },
+    { name: 'Motif for Claude Science', version: '0.3.2' },
     { availableDisplayModes: ['inline', 'fullscreen'] },
     { autoResize: false },
   );

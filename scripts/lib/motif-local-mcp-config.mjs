@@ -186,6 +186,9 @@ export function describeMotifLocalMismatch(server, desired) {
   if (!isPlainObject(server.env)) {
     mismatches.push('env');
   } else {
+    const actualKeys = Object.keys(server.env).sort();
+    const desiredKeys = Object.keys(desired.env).sort();
+    if (!arraysEqual(actualKeys, desiredKeys)) mismatches.push('env.keys');
     for (const key of MANAGED_ENVIRONMENT_KEYS) {
       if (server.env[key] !== desired.env[key]) mismatches.push(`env.${key}`);
     }
@@ -214,10 +217,7 @@ export function installMotifLocalServer(config, desired) {
   const updated = {
     ...existing,
     ...desired,
-    env: {
-      ...(isPlainObject(existing.env) ? existing.env : {}),
-      ...desired.env,
-    },
+    env: { ...desired.env },
   };
   const servers = [...config.servers];
   servers[index] = updated;

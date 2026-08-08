@@ -8,6 +8,7 @@ import type {
   RestrictionSite,
   Topology,
 } from './types';
+import { RESTRICTION_ENZYMES_FULL } from './enzyme-data';
 import { reverseComplement } from './reverse-complement';
 
 /**
@@ -71,6 +72,35 @@ export interface RestrictionScanResult {
   topology: Topology;
   sites: RestrictionSite[];
   issues: RestrictionScanIssue[];
+}
+
+/**
+ * The activity category for one requested enzyme after scanning. Categories
+ * are deliberately more precise than the historical `findNonCutters`
+ * boolean: a nick, a conditional site, and a legacy record without physical
+ * safety fields are not scientifically interchangeable with no recognition
+ * site.
+ */
+export type RestrictionEnzymeScanCategory =
+  | 'no-site'
+  | 'active-double-strand'
+  | 'nick-only'
+  | 'conditional'
+  | 'insufficient-flanking-bases'
+  | 'invalid-geometry'
+  | 'legacy-unsafe';
+
+export interface RestrictionEnzymeScanReceipt {
+  enzyme: RestrictionEnzyme;
+  sites: RestrictionSite[];
+  issues: RestrictionScanIssue[];
+  category: RestrictionEnzymeScanCategory;
+  activeDoubleStrandSiteCount: number;
+  nickSiteCount: number;
+  conditionalSiteCount: number;
+  insufficientFlankingSiteCount: number;
+  invalidGeometrySiteCount: number;
+  legacyUnsafeSiteCount: number;
 }
 
 export class RestrictionInputError extends Error {
@@ -198,6 +228,50 @@ export function calculateRestrictionCleavageGeometry(
     overhangLength,
     valid,
   };
+}
+
+/**
+ * Classify one site without guessing when it came from an older serialized
+ * payload. A scanner-produced double-strand site has both safety fields and
+ * both physical cut coordinates; a legacy object missing any of those facts
+ * is not safe to use as a physical cut assertion.
+ */
+export function restrictionSiteActivity(
+  site: Pick<RestrictionSite, 'cleavageMode' | 'cleavageStatus' | 'topCutPosition' | 'bottomCutPosition'>,
+): RestrictionEnzymeScanCategory {
+  const mode = site.cleavageMode;
+  const status = site.cleavageStatus;
+  if (mode === undefined || status === undefined) return 'legacy-unsafe';
+  if (mode !== 'double-strand' && mode !== 'nick_top' && mode !== 'nick_bottom') return 'legacy-unsafe';
+
+  // An explicit scanner status is itself a safety receipt. Preserve it even
+  // when the associated coordinates are intentionally non-materializable.
+  if (status === 'invalid_geometry') return 'invalid-geometry';
+  if (status === 'insufficient_flanking_bases') return 'insufficient-flanking-bases';
+  if (
+    status === 'methylation_unknown'
+    || status === 'methylation_unmethylated'
+    || status === 'methylation_context_unknown'
+  ) return 'conditional';
+  if (status !== 'ok') return 'legacy-unsafe';
+
+  const hasInteger = (value: number | null | undefined): value is number => (
+    value !== null && value !== undefined && Number.isInteger(value) && value >= 0
+  );
+  const completeGeometry = mode === 'double-strand'
+    ? hasInteger(site.topCutPosition) && hasInteger(site.bottomCutPosition)
+    : mode === 'nick_bottom'
+      ? site.topCutPosition === null && hasInteger(site.bottomCutPosition)
+      : site.bottomCutPosition === null && hasInteger(site.topCutPosition);
+  if (!completeGeometry) return 'legacy-unsafe';
+  return mode === 'double-strand' ? 'active-double-strand' : 'nick-only';
+}
+
+/** True only for a complete, scanner-safe physical double-strand site. */
+export function isActiveDoubleStrandRestrictionSite(
+  site: Pick<RestrictionSite, 'cleavageMode' | 'cleavageStatus' | 'topCutPosition' | 'bottomCutPosition'>,
+): boolean {
+  return restrictionSiteActivity(site) === 'active-double-strand';
 }
 
 function coordinateInLinearSequence(value: number | null, length: number): boolean {
@@ -348,6 +422,18 @@ for (const enzyme of RESTRICTION_ENZYMES) {
   enzyme.cleavageMode ??= 'double-strand';
 }
 
+// The compact working set predates the expanded catalog and historically
+// carried shallow copies of several records. Resolve every overlapping name
+// to the full catalog record so methylation rules, evidence, and future
+// physical metadata cannot drift between the Common and Full sources.
+const canonicalFullEnzymes = new Map(
+  RESTRICTION_ENZYMES_FULL.map((enzyme) => [enzyme.name.toLowerCase(), enzyme] as const),
+);
+for (let index = 0; index < RESTRICTION_ENZYMES.length; index += 1) {
+  const canonical = canonicalFullEnzymes.get(RESTRICTION_ENZYMES[index].name.toLowerCase());
+  if (canonical) RESTRICTION_ENZYMES[index] = canonical;
+}
+
 // For the full 200+ enzyme database, import directly from './enzyme-data'.
 
 // Recognition is matched base-by-base rather than interpolated into a RegExp.
@@ -445,16 +531,12 @@ export function scanRestrictionSites(
       cutPosition: circularGeometry.cutPosition,
       recognitionSequence: recognition,
       overhang: enzyme.overhang,
+      cleavageMode: enzyme.cleavageMode ?? 'double-strand',
+      topCutPosition: circularGeometry.topCutPosition,
+      bottomCutPosition: circularGeometry.bottomCutPosition,
+      cleavageStatus: status,
       strand,
     };
-    // Keep legacy object serialization/equality stable while exposing the new
-    // physical fields to typed/browser callers.
-    Object.defineProperties(site, {
-      cleavageMode: { value: enzyme.cleavageMode ?? 'double-strand', enumerable: false },
-      topCutPosition: { value: circularGeometry.topCutPosition, enumerable: false },
-      bottomCutPosition: { value: circularGeometry.bottomCutPosition, enumerable: false },
-      cleavageStatus: { value: status, enumerable: false },
-    });
     sites.push(site);
   };
 
@@ -476,6 +558,51 @@ export function scanRestrictionSites(
   return { sequence: upper, topology, sites, issues };
 }
 
+function scanCategoryForSites(sites: readonly RestrictionSite[]): RestrictionEnzymeScanCategory {
+  if (sites.length === 0) return 'no-site';
+  const categories = new Set(sites.map(restrictionSiteActivity));
+  // An active double-strand site is the only category that authorizes a cut;
+  // retain that precedence when a sequence contains mixed site outcomes.
+  if (categories.has('active-double-strand')) return 'active-double-strand';
+  if (categories.has('legacy-unsafe')) return 'legacy-unsafe';
+  if (categories.has('invalid-geometry')) return 'invalid-geometry';
+  if (categories.has('insufficient-flanking-bases')) return 'insufficient-flanking-bases';
+  if (categories.has('conditional')) return 'conditional';
+  return 'nick-only';
+}
+
+/**
+ * Return a structured activity receipt for each requested enzyme. This is the
+ * unambiguous replacement for treating every enzyme without an active
+ * double-strand site as a conventional "non-cutter".
+ */
+export function classifyRestrictionEnzymes(
+  seq: string,
+  enzymes: RestrictionEnzyme[] = RESTRICTION_ENZYMES,
+  options?: FindRestrictionSitesOptions,
+): RestrictionEnzymeScanReceipt[] {
+  const scan = scanRestrictionSites(seq, enzymes, options);
+  return enzymes.map((enzyme) => {
+    const sites = scan.sites.filter((site) => site.enzyme.toLowerCase() === enzyme.name.toLowerCase());
+    const activities = sites.map(restrictionSiteActivity);
+    return {
+      enzyme,
+      sites,
+      issues: scan.issues.filter((issue) => issue.enzyme?.toLowerCase() === enzyme.name.toLowerCase()),
+      category: scanCategoryForSites(sites),
+      activeDoubleStrandSiteCount: activities.filter((activity) => activity === 'active-double-strand').length,
+      nickSiteCount: activities.filter((activity) => activity === 'nick-only').length,
+      conditionalSiteCount: activities.filter((activity) => activity === 'conditional').length,
+      insufficientFlankingSiteCount: activities.filter((activity) => activity === 'insufficient-flanking-bases').length,
+      invalidGeometrySiteCount: activities.filter((activity) => activity === 'invalid-geometry').length,
+      legacyUnsafeSiteCount: activities.filter((activity) => activity === 'legacy-unsafe').length,
+    };
+  });
+}
+
+/** Descriptive alias for integrations that call the result a receipt. */
+export const restrictionEnzymeScanReceipts = classifyRestrictionEnzymes;
+
 /**
  * Find enzymes that cut exactly once (unique cutters).
  */
@@ -485,10 +612,7 @@ export function findUniqueCutters(
   options?: FindRestrictionSitesOptions,
 ): RestrictionSite[] {
   const allSites = findRestrictionSites(seq, enzymes, options)
-    .filter((site) => (
-      (site.cleavageMode ?? 'double-strand') === 'double-strand'
-      && (site.cleavageStatus ?? 'ok') === 'ok'
-    ));
+    .filter(isActiveDoubleStrandRestrictionSite);
 
   // Group by enzyme
   const byEnzyme = new Map<string, RestrictionSite[]>();
@@ -529,19 +653,21 @@ export function countAmbiguousBases(seq: string): number {
 }
 
 /**
- * Find enzymes that do NOT cut the sequence (non-cutters).
+ * Find enzymes without an active, complete double-strand cut.
+ *
+ * @deprecated Use `classifyRestrictionEnzymes` when the distinction between
+ * no-site, nick-only, conditional, invalid, and legacy data matters. This
+ * compatibility helper deliberately keeps the historical broad meaning.
  */
 export function findNonCutters(
   seq: string,
   enzymes: RestrictionEnzyme[] = RESTRICTION_ENZYMES,
   options?: FindRestrictionSitesOptions,
 ): RestrictionEnzyme[] {
-  const allSites = findRestrictionSites(seq, enzymes, options);
-  const cuttingEnzymes = new Set(allSites
-    .filter((site) => (
-      (site.cleavageMode ?? 'double-strand') === 'double-strand'
-      && (site.cleavageStatus ?? 'ok') === 'ok'
-    ))
-    .map((site) => site.enzyme));
-  return enzymes.filter(e => !cuttingEnzymes.has(e.name));
+  const activeEnzymes = new Set(
+    classifyRestrictionEnzymes(seq, enzymes, options)
+      .filter((receipt) => receipt.category === 'active-double-strand')
+      .map((receipt) => receipt.enzyme.name.toLowerCase()),
+  );
+  return enzymes.filter((enzyme) => !activeEnzymes.has(enzyme.name.toLowerCase()));
 }

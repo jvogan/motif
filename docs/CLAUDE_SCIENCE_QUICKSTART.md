@@ -18,23 +18,37 @@ the folder later, rerun setup and update the sandbox grant.
 
 Download the release asset `motif-for-claude-science-release.zip` and its
 matching `motif-for-claude-science-release.manifest.sha256` file from the same
-GitHub release. Extract the ZIP into a stable, private folder. Before running
-the installer, compare the SHA-256 of the extracted `release-manifest.json`
-with the supplied manifest checksum:
+GitHub release. Before extracting or running anything, use GitHub CLI to verify
+both downloaded assets against the immutable release when available:
+
+```bash
+gh release verify-asset <release-tag> /path/to/motif-for-claude-science-release.zip --repo jvogan/motif
+gh release verify-asset <release-tag> /path/to/motif-for-claude-science-release.manifest.sha256 --repo jvogan/motif
+```
+
+Extract the verified ZIP into a stable, private folder. Independently compare
+the SHA-256 of its `release-manifest.json` with the separately downloaded
+manifest checksum before executing the bundled installer:
 
 ```bash
 shasum -a 256 /absolute/path/to/motif-for-claude-science-release/release-manifest.json
 cat /path/to/motif-for-claude-science-release.manifest.sha256
 ```
 
-The bundled verifier then checks the release identity, every installed-file
-checksum, file paths, and size bounds. It uses only Node.js's standard library;
-end users do not need `npm`, `npm ci`, or the source tree:
+The installer requires that separately downloaded checksum file and reports
+only that the supplied digest matched; bundled code cannot authenticate itself.
+Publisher identity comes from the independent GitHub release verification (or
+an equivalently trusted download channel). The bundled verifier then checks the
+release identity, every installed-file checksum, file paths, and size bounds.
+It uses only Node.js's standard library; end users do not need `npm`, `npm ci`,
+or the source tree:
 
 ```bash
 cd /absolute/path/to/motif-for-claude-science-release
-node install-motif-claude-science-release.mjs --bundle .
-node doctor-motif-claude-science-release.mjs --bundle .
+node install-motif-claude-science-release.mjs --bundle . \
+  --manifest-sha256-file /path/to/motif-for-claude-science-release.manifest.sha256
+node doctor-motif-claude-science-release.mjs --bundle . \
+  --manifest-sha256-file /path/to/motif-for-claude-science-release.manifest.sha256
 ```
 
 The installer registers exactly `motif-local`, preserves unrelated entries,
@@ -52,7 +66,7 @@ Use the latest published [Motif release](https://github.com/jvogan/motif/release
 or clone its tagged source into a fixed local folder:
 
 ```bash
-git clone --branch v0.3.1 --depth 1 https://github.com/jvogan/motif.git
+git clone --branch v0.3.2 --depth 1 https://github.com/jvogan/motif.git
 cd motif
 ```
 
@@ -129,7 +143,8 @@ extracted release directory as the registered root:
 
 ```bash
 node /absolute/path/to/motif-for-claude-science-release/doctor-motif-claude-science-release.mjs \
-  --bundle /absolute/path/to/motif-for-claude-science-release
+  --bundle /absolute/path/to/motif-for-claude-science-release \
+  --manifest-sha256-file /path/to/motif-for-claude-science-release.manifest.sha256
 ```
 
 For a source checkout, use:

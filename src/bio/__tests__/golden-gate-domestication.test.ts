@@ -65,6 +65,54 @@ describe('feature-aware Golden Gate domestication', () => {
     expect(result.mutations.every((mutation) => mutation.position >= 4 && mutation.position < 4 + CDS_WITH_BSAI_SITE.length)).toBe(true);
   });
 
+  it('uses transl_except identity semantics while choosing synonymous domestication changes', () => {
+    const result = domesticateGoldenGateFeature({
+      sequence: CDS_WITH_BSAI_SITE,
+      feature: {
+        start: 0,
+        end: CDS_WITH_BSAI_SITE.length,
+        strand: 1,
+        type: 'cds',
+        metadata: { transl_except: '(pos:4..6,aa:Sec)' },
+      },
+      codonStart: 1,
+      translationTableId: 1,
+      forbiddenEnzymes: ['BsaI'],
+    });
+
+    expect(result.complete).toBe(true);
+    expect(result.remainingSites).toEqual([]);
+    expect(result.proteinIdentity).toBe(true);
+    expect(result.sourceProtein).toBe('MULE*');
+    expect(result.productProtein).toBe('MULE*');
+    expect(result.translationReceipt).toMatchObject({
+      rawQualifier: '(pos:4..6,aa:Sec)',
+      codonStart: 1,
+    });
+  });
+
+  it('surfaces malformed transl_except entries as typed domestication diagnostics', () => {
+    const result = domesticateGoldenGateFeature({
+      sequence: CDS_WITH_BSAI_SITE,
+      feature: {
+        start: 0,
+        end: CDS_WITH_BSAI_SITE.length,
+        strand: 1,
+        type: 'cds',
+        metadata: { transl_except: '(pos:4..5,aa:Sec)' },
+      },
+      codonStart: 1,
+      translationTableId: 1,
+      forbiddenEnzymes: ['BsaI'],
+    });
+
+    expect(result.complete).toBe(false);
+    expect(result.failures).toContainEqual(expect.objectContaining({
+      code: 'invalid_translation_exception',
+      diagnostics: [expect.objectContaining({ code: 'not_codon' })],
+    }));
+  });
+
   it('maps reverse-strand CDS mutations back to source coordinates', () => {
     const sequence = reverseComplement(CDS_WITH_BSAI_SITE);
     const result = domesticateGoldenGateFeature({

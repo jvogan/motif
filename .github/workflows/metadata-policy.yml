@@ -1,0 +1,56 @@
+name: Metadata policy
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize, labeled, unlabeled]
+  issues:
+    types: [opened, edited, closed, reopened, labeled, unlabeled]
+  issue_comment:
+    types: [created, edited, deleted]
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+  pull_request_review_comment:
+    types: [created, edited, deleted]
+  discussion:
+    types: [created, edited, deleted]
+  discussion_comment:
+    types: [created, edited, deleted]
+  release:
+    types: [published, edited, released, prereleased]
+
+permissions:
+  contents: read
+  discussions: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      # Event payloads are untrusted input. Only the trusted default branch is
+      # checked out and executed for these metadata-only events.
+      - name: Check out trusted main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.13.0
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Repository language policy
+        run: npm run check:repository-language
+        env:
+          # The full CI job scans the PR range. This trusted-main metadata job
+          # does not require a fork head object that is absent from main.
+          MOTIF_REPOSITORY_LANGUAGE_SKIP_EVENT_RANGE: "true"

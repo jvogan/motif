@@ -12,6 +12,7 @@ const footerActionNames = [
 ] as const;
 
 test.describe('Claude Science primer workspace responsive footer', () => {
+  test.describe.configure({ retries: 0 });
   test.skip(!artifactUrl, 'Set MOTIF_ARTIFACT_URL to run the standalone artifact audit.');
 
   test('keeps every action visible and mouse- and keyboard-operable at 760px', async ({ page }) => {
@@ -91,4 +92,50 @@ test.describe('Claude Science primer workspace responsive footer', () => {
       ...footerActionNames.map((label) => ({ label, input: 'keyboard', trusted: true })),
     ]);
   });
+
+  for (const width of [1440, 760, 390]) {
+    test(`keeps the explicit target, selected pair, status, and focus stable at ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 900 });
+      await page.addInitScript(() => {
+        window.localStorage.clear();
+        window.sessionStorage.clear();
+      });
+      await page.goto(artifactUrl!);
+      await expect(page.locator('.motif-cs-shell')).toBeVisible();
+
+      const primerPanel = page.locator('details[data-rail-tool="primer-design"]');
+      await primerPanel.locator(':scope > summary').click();
+      await primerPanel.getByTestId('open-primer-workspace').click();
+
+      const workspace = page.getByTestId('primer-workspace');
+      const rows = workspace.locator('.motif-cs-primer-pair-row');
+      const targetStart = workspace.getByLabel('Target start');
+      const targetEnd = workspace.getByLabel('Target end');
+      await expect(rows).toHaveCount(10);
+      await expect(workspace).toBeVisible();
+      const initialTarget = {
+        start: await targetStart.inputValue(),
+        end: await targetEnd.inputValue(),
+      };
+
+      const pairTwo = rows.nth(1);
+      await pairTwo.scrollIntoViewIfNeeded();
+      await pairTwo.click();
+      await expect(pairTwo).toHaveAttribute('aria-selected', 'true');
+      await expect(workspace.getByRole('region', { name: 'Primer pair 2 evidence' })).toBeVisible();
+      await expect(workspace.locator('.motif-cs-primer-live-status')).toContainText('Pair 2 selected on the sequence.');
+      await expect(targetStart).toHaveValue(initialTarget.start);
+      await expect(targetEnd).toHaveValue(initialTarget.end);
+      await expect(pairTwo).toBeFocused();
+
+      const pairThree = rows.nth(2);
+      await pairTwo.press('ArrowDown');
+      await expect(pairThree).toHaveAttribute('aria-selected', 'true');
+      await expect(workspace.getByRole('region', { name: 'Primer pair 3 evidence' })).toBeVisible();
+      await expect(workspace.locator('.motif-cs-primer-live-status')).toContainText('Pair 3 selected on the sequence.');
+      await expect(targetStart).toHaveValue(initialTarget.start);
+      await expect(targetEnd).toHaveValue(initialTarget.end);
+      await expect(pairThree).toBeFocused();
+    });
+  }
 });

@@ -3,9 +3,11 @@
  *
  * These are not a copied enzyme database. The expected facts were transcribed
  * from the first-party NEB product pages cited below and are deliberately
- * limited to the behaviors exercised by the tests. NEB content remains
- * subject to NEB's terms; this file cites the relevant first-party pages but
- * does not reproduce their protocols or database.
+ * limited to the behaviors exercised by the tests. `assayConditions` records
+ * the product-page unit assay, not a claim that Motif reproduces a complete
+ * lot-specific quality-control dataset. NEB content remains subject to NEB's
+ * terms; this file contains only original metadata/assertions and is
+ * distributed under Motif's MIT license.
  */
 export interface RestrictionOracleFixture {
   readonly name: string;
@@ -17,6 +19,8 @@ export interface RestrictionOracleFixture {
   readonly methylationTarget?: 'dam' | 'dcm' | 'cpg' | 'custom';
   readonly methylationState?: 'methylated' | 'unmethylated';
   readonly methylationBehavior?: 'context_dependent';
+  /** Product-page unit assay: substrate, time, temperature, volume, buffer. */
+  readonly assayConditions: string;
   /** Limits what this small oracle does and does not establish. */
   readonly caveats: string;
   readonly sourceUrl: string;
@@ -37,6 +41,7 @@ export const RESTRICTION_ORACLE_FIXTURES: readonly RestrictionOracleFixture[] = 
     cleavageMode: 'double-strand',
     cutOffsets: [1, 5],
     overhang: '5prime',
+    assayConditions: 'NEB unit assay: 1 µg λ DNA, 1 hour at 37°C, 50 µl; 1X NEBuffer EcoRI/SspI.',
     caveats: GEOMETRY_CAVEAT,
     sourceUrl: 'https://www.neb.com/en-us/products/r0101-ecori',
     sourceAccessed: ACCESSED,
@@ -50,6 +55,7 @@ export const RESTRICTION_ORACLE_FIXTURES: readonly RestrictionOracleFixture[] = 
     cleavageMode: 'double-strand',
     cutOffsets: [7, 11],
     overhang: '5prime',
+    assayConditions: 'NEB unit assay: 1 µg pXba DNA, 1 hour at 37°C, 50 µl; 1X rCutSmart Buffer.',
     caveats: 'Current source is BsaI-HFv2, which NEB describes as having BsaI specificity; this assertion does not reproduce the Golden Gate assembly protocol or ligase conditions. ' + GEOMETRY_CAVEAT,
     sourceUrl: 'https://www.neb.com/en/products/r3733-bsai-hf-v2',
     sourceAccessed: ACCESSED,
@@ -63,6 +69,7 @@ export const RESTRICTION_ORACLE_FIXTURES: readonly RestrictionOracleFixture[] = 
     cleavageMode: 'double-strand',
     cutOffsets: [8, 12],
     overhang: '5prime',
+    assayConditions: 'NEB unit assay: 1 µg λ DNA, 1 hour at 37°C, 50 µl; 1X NEBuffer r2.1.',
     caveats: 'NEB reports GAAGAC(2/6); the stored offsets are measured from the recognition-sequence start. This does not claim BbsI-HF equivalence or a Golden Gate ligation result. ' + GEOMETRY_CAVEAT,
     sourceUrl: 'https://www.neb.com/en/products/r0539-bbsi',
     sourceAccessed: ACCESSED,
@@ -76,6 +83,7 @@ export const RESTRICTION_ORACLE_FIXTURES: readonly RestrictionOracleFixture[] = 
     cleavageMode: 'double-strand',
     cutOffsets: [7, 11],
     overhang: '5prime',
+    assayConditions: 'NEB BsmBI-v2 unit assay: 1 µg λ DNA, 1 hour at 55°C, 50 µl; 1X NEBuffer r3.1.',
     caveats: 'The catalog identity is the model’s BsmBI name while the current first-party source is engineered BsmBI-v2; this does not assert historical R0580 equivalence or Golden Gate ligase performance. ' + GEOMETRY_CAVEAT,
     sourceUrl: 'https://www.neb.com/en-gb/products/r0739-bsmbi-v2',
     sourceAccessed: ACCESSED,
@@ -89,6 +97,7 @@ export const RESTRICTION_ORACLE_FIXTURES: readonly RestrictionOracleFixture[] = 
     cleavageMode: 'double-strand',
     cutOffsets: [8, 11],
     overhang: '5prime',
+    assayConditions: 'NEB unit assay: 1 µg λ DNA, 1 hour at 37°C, 50 µl; 1X rCutSmart Buffer.',
     caveats: 'NEB reports GCTCTTC(1/4); the stored offsets are measured from the seven-base recognition-sequence start. This does not reproduce the 13-fragment Golden Gate protocol. ' + GEOMETRY_CAVEAT,
     sourceUrl: 'https://www.neb.com/en-us/products/r0569-sapi',
     sourceAccessed: ACCESSED,
@@ -104,6 +113,7 @@ export const RESTRICTION_ORACLE_FIXTURES: readonly RestrictionOracleFixture[] = 
     overhang: 'blunt',
     methylationTarget: 'dam',
     methylationState: 'methylated',
+    assayConditions: 'NEB unit assay: 1 µg pBR322 DNA (dam methylated), 1 hour at 37°C, 50 µl; 1X rCutSmart Buffer.',
     caveats: 'The oracle captures the required methylated state and blunt geometry; site-specific, hemi-methylated, and overlapping CpG cases remain outside Motif’s global-state model. ' + GEOMETRY_CAVEAT,
     sourceUrl: 'https://www.neb.com/en-us/products/r0176-dpni',
     sourceAccessed: ACCESSED,
@@ -119,6 +129,7 @@ export const RESTRICTION_ORACLE_FIXTURES: readonly RestrictionOracleFixture[] = 
     overhang: '5prime',
     methylationTarget: 'dam',
     methylationState: 'unmethylated',
+    assayConditions: 'NEB unit assay: 1 µg λ DNA (dam−), 1 hour at 37°C, 50 µl; 1X NEBuffer DpnII.',
     caveats: 'The source reports dam methylation blocked and dcm/CpG not sensitive; this fixture does not infer behavior for hemi-methylated or mixed populations. ' + GEOMETRY_CAVEAT,
     sourceUrl: 'https://www.neb.com/en-us/products/r0543-dpnii',
     sourceAccessed: ACCESSED,
@@ -134,6 +145,7 @@ export const RESTRICTION_ORACLE_FIXTURES: readonly RestrictionOracleFixture[] = 
     overhang: '5prime',
     methylationTarget: 'dam',
     methylationState: 'unmethylated',
+    assayConditions: 'NEB unit assay: 1 µg λ DNA (dam−), 1 hour at 37°C, 50 µl; 1X rCutSmart Buffer.',
     caveats: 'The source reports dam methylation blocked and dcm/CpG not sensitive; this fixture does not infer behavior for hemi-methylated or mixed populations. ' + GEOMETRY_CAVEAT,
     sourceUrl: 'https://www.neb.com/en-us/products/r0147-mboi',
     sourceAccessed: ACCESSED,
@@ -149,6 +161,7 @@ export const RESTRICTION_ORACLE_FIXTURES: readonly RestrictionOracleFixture[] = 
     overhang: '5prime',
     methylationTarget: 'cpg',
     methylationState: 'unmethylated',
+    assayConditions: 'NEB unit assay: 1 µg λ DNA, 1 hour at 37°C, 50 µl; 1X rCutSmart Buffer.',
     caveats: 'The source reports CpG methylation blocked, while dam and dcm are not sensitive; Motif models the required unmethylated CpG state globally. ' + GEOMETRY_CAVEAT,
     sourceUrl: 'https://www.neb.com/en-us/products/r0171-hpaii',
     sourceAccessed: ACCESSED,
@@ -163,6 +176,7 @@ export const RESTRICTION_ORACLE_FIXTURES: readonly RestrictionOracleFixture[] = 
     cutOffsets: [1, 3],
     overhang: '5prime',
     methylationBehavior: 'context_dependent',
+    assayConditions: 'NEB unit assay: 1 µg λ DNA, 1 hour at 37°C, 50 µl; 1X rCutSmart Buffer.',
     caveats: 'NEB notes that external-C methylation blocks cleavage while internal-C methylation can be cleaved; a global CpG state cannot identify those positions, so Motif remains conditional. ' + GEOMETRY_CAVEAT,
     sourceUrl: 'https://www.neb.com/en-us/products/r0106-mspi',
     sourceAccessed: ACCESSED,
@@ -178,6 +192,7 @@ export const RESTRICTION_ORACLE_FIXTURES: readonly RestrictionOracleFixture[] = 
     overhang: '3prime',
     methylationTarget: 'cpg',
     methylationState: 'unmethylated',
+    assayConditions: 'NEB unit assay: 1 µg λ DNA, 1 hour at 37°C, 50 µl; 1X rCutSmart Buffer.',
     caveats: 'The source reports CpG methylation blocked and a 3′ extension; Motif does not infer site-specific or hemi-methylated behavior. ' + GEOMETRY_CAVEAT,
     sourceUrl: 'https://www.neb.com/en-us/products/r0139-hhai',
     sourceAccessed: ACCESSED,
@@ -190,6 +205,7 @@ export const RESTRICTION_ORACLE_FIXTURES: readonly RestrictionOracleFixture[] = 
     recognitionSequence: 'CCTCAGC',
     cleavageMode: 'nick_bottom',
     overhang: 'blunt',
+    assayConditions: 'NEB unit assay: 1 µg supercoiled pUB DNA to open circular form, 1 hour at 37°C, 50 µl; 1X rCutSmart Buffer.',
     caveats: 'NEB reports the nicking notation CCTCAGC (none/−2); Motif records continuity and nick mode, not a double-strand fragment boundary. ' + GEOMETRY_CAVEAT,
     sourceUrl: 'https://www.neb.com/en-us/products/r0631-nbbbvci',
     sourceAccessed: ACCESSED,
@@ -202,6 +218,7 @@ export const RESTRICTION_ORACLE_FIXTURES: readonly RestrictionOracleFixture[] = 
     recognitionSequence: 'CCTCAGC',
     cleavageMode: 'nick_top',
     overhang: 'blunt',
+    assayConditions: 'NEB unit assay: 1 µg supercoiled plasmid DNA to open circular form, 1 hour at 37°C, 50 µl; 1X rCutSmart Buffer.',
     caveats: 'NEB reports the nicking notation CCTCAGC (−5/none); Motif records continuity and nick mode, not a double-strand fragment boundary. ' + GEOMETRY_CAVEAT,
     sourceUrl: 'https://www.neb.com/en-us/products/r0632-ntbbvci',
     sourceAccessed: ACCESSED,
@@ -215,6 +232,7 @@ export const RESTRICTION_ORACLE_FIXTURES: readonly RestrictionOracleFixture[] = 
     cleavageMode: 'nick_top',
     cutOffsets: [9, 9],
     overhang: 'blunt',
+    assayConditions: 'NEB unit assay: 1 µg T7 DNA, 1 hour at 55°C, 50 µl; 1X NEBuffer r3.1.',
     caveats: 'NEB describes a single-strand nick four bases beyond the 3′ side of GAGTC; the stored offset is recognition length plus four. ' + GEOMETRY_CAVEAT,
     sourceUrl: 'https://www.neb.com/en-us/products/r0607-ntbstnbi',
     sourceAccessed: ACCESSED,
@@ -228,6 +246,7 @@ export const RESTRICTION_ORACLE_FIXTURES: readonly RestrictionOracleFixture[] = 
     cleavageMode: 'double-strand',
     cutOffsets: [3, 3],
     overhang: 'blunt',
+    assayConditions: 'NEB unit assay: 1 µg HindIII-digested λ DNA, 1 hour at 37°C, 50 µl; 1X rCutSmart Buffer.',
     caveats: 'The source notes a blunt CCC/GGG cut and CpG methylation blocking; this small oracle does not add a site-specific methylation model to the catalog. ' + GEOMETRY_CAVEAT,
     sourceUrl: 'https://www.neb.com/products/r0141-smai',
     sourceAccessed: ACCESSED,
@@ -241,6 +260,7 @@ export const RESTRICTION_ORACLE_FIXTURES: readonly RestrictionOracleFixture[] = 
     cleavageMode: 'double-strand',
     cutOffsets: [3, 3],
     overhang: 'blunt',
+    assayConditions: 'NEB unit assay: 1 µg λ DNA, 1 hour at 37°C, 50 µl; 1X NEBuffer r3.1.',
     caveats: 'The source notes a blunt GAT/ATC cut; overlapping CpG effects are not represented as a global Motif methylation requirement. ' + GEOMETRY_CAVEAT,
     sourceUrl: 'https://www.neb.com/en-ca/products/r0195-ecorv',
     sourceAccessed: ACCESSED,
@@ -254,6 +274,7 @@ export const RESTRICTION_ORACLE_FIXTURES: readonly RestrictionOracleFixture[] = 
     cleavageMode: 'double-strand',
     cutOffsets: [5, 1],
     overhang: '3prime',
+    assayConditions: 'NEB unit assay: 1 µg λ DNA, 1 hour at 37°C, 50 µl; 1X NEBuffer r3.1.',
     caveats: 'The source notes CTGCA/G and no dam, dcm, or CpG sensitivity; star activity and substrate context remain outside this geometry oracle. ' + GEOMETRY_CAVEAT,
     sourceUrl: 'https://www.neb.com/en-us/products/r0140-psti',
     sourceAccessed: ACCESSED,

@@ -179,7 +179,13 @@ describe('Claude Science rail popover regression guards', () => {
     expect(artifactSource).toContain('data-testid="open-primer-workspace"');
     expect(artifactSource).toContain('<ClaudeSciencePrimerWorkspace');
     expect(artifactSource).toContain('selectedRange={cloningPrimerRequest ? null : guideScopeRange}');
+    expect(artifactSource).toContain('targetRange={cloningPrimerRequest ? null : primerTargetRange}');
+    expect(artifactSource).toContain('setPrimerTargetRange(guideScopeRange ? { ...guideScopeRange } : null);');
+    expect(artifactSource).toContain('setPrimerTargetRange(null);');
     expect(primerWorkspaceSource).toContain('targetStart: targetStart - 1');
+    expect(primerWorkspaceSource).toContain('const previewRangeKeyRef = useRef<string | null>(null);');
+    expect(primerWorkspaceSource).toContain('previewRangeKeyRef.current === selectedRangeKey');
+    expect(primerWorkspaceSource).toContain('previewRangeKeyRef.current = `${pair.forward.start}:${pair.reverse.end}`;');
     expect(artifactSource).toContain('const addFeatures = useCallback((featureInputs: readonly ArtifactFeatureInput[]) => {');
     expect(primerWorkspaceSource).toContain('primerToFeature(handoff.pair.forward');
     expect(primerWorkspaceSource).toContain('primerToFeature(handoff.pair.reverse');
@@ -269,7 +275,7 @@ describe('Claude Science rail popover regression guards', () => {
     expect(artifactSource).toContain('data-rail-tool="settings"');
     expect(artifactSource).toContain('<Settings className="motif-cs-panel-icon"');
     expect(artifactSource).toContain('<strong>Motif for Claude Science</strong>');
-    expect(artifactSource).toContain("const MOTIF_ARTIFACT_VERSION = '0.3.1';");
+    expect(artifactSource).toContain("const MOTIF_ARTIFACT_VERSION = '0.3.2';");
     expect(artifactSource).toContain('Version {MOTIF_ARTIFACT_VERSION} · Build {MOTIF_ARTIFACT_BUILD_LABEL}');
     expect(artifactSource).not.toContain('__APP_VERSION__');
     expect(artifactSource).toContain('Motif is an open-source, AI-native molecular biology suite for researchers.');

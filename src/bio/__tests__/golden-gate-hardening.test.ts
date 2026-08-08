@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildSyntheticGoldenGateVector,
+  findGoldenGateSites,
   GOLDEN_GATE_ENZYME_NAMES,
   getGoldenGatePartBoundary,
+  scanGoldenGateSites,
   validateGoldenGateOverhangs,
 } from '../golden-gate';
 
@@ -17,6 +19,7 @@ describe('Golden Gate hardening', () => {
       enzyme,
       filler: 'ACTGACTGACTGACTGACTG',
     });
+    expect(vector.sequence).toMatch(/^[ACGT]+$/);
     const boundary = getGoldenGatePartBoundary(vector, enzyme);
 
     expect(boundary).toMatchObject({
@@ -24,6 +27,73 @@ describe('Golden Gate hardening', () => {
       leftOverhang: left,
       rightOverhang: right,
     });
+    expect(boundary.provenance?.parts).toContainEqual(expect.objectContaining({
+      name: vector.name,
+      formattingNormalized: false,
+    }));
+  });
+
+  it('normalizes formatting with provenance but rejects ambiguous bases', () => {
+    const vector = buildSyntheticGoldenGateVector('ACGT', 'TGCA', {
+      enzyme: 'BsaI',
+      filler: 'ACTGACTGACTGACTGACTG',
+    });
+    const formatted = validateGoldenGateOverhangs([
+      { name: 'formatted', sequence: ` \n${vector.sequence.toLowerCase()}\t` },
+    ], 'BsaI');
+
+    expect(formatted.normalizationDiagnostics).toContainEqual(expect.objectContaining({
+      code: 'formatting_normalized',
+      partName: 'formatted',
+    }));
+    expect(formatted.provenance?.parts).toContainEqual(expect.objectContaining({
+      name: 'formatted',
+      formattingNormalized: true,
+      normalizedLength: vector.sequence.length,
+    }));
+
+    const ambiguous = getGoldenGatePartBoundary({
+      name: 'ambiguous',
+      sequence: `${vector.sequence.slice(0, 8)}N${vector.sequence.slice(9)}`,
+    }, 'BsaI');
+    expect(ambiguous.valid).toBe(false);
+    expect(ambiguous.normalizationDiagnostics).toContainEqual(expect.objectContaining({
+      code: 'ambiguous_base',
+      partName: 'ambiguous',
+    }));
+    expect(ambiguous.errors.join(' ')).toMatch(/canonical/i);
+
+    const rna = getGoldenGatePartBoundary({
+      name: 'rna',
+      sequence: `${vector.sequence.slice(0, 8)}U${vector.sequence.slice(9)}`,
+    }, 'BsaI');
+    expect(rna.valid).toBe(false);
+    expect(rna.normalizationDiagnostics).toContainEqual(expect.objectContaining({
+      code: 'invalid_character',
+      characters: ['U'],
+    }));
+  });
+
+  it('exposes strict direct-scan diagnostics instead of silently missing malformed input', () => {
+    const formatted = scanGoldenGateSites('  ggtctc aaaaa  ', 'BsaI');
+    expect(formatted.sequence).toBe('GGTCTCAAAAA');
+    expect(formatted.sites).toHaveLength(1);
+    expect(formatted.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'formatting_normalized',
+    }));
+
+    const ambiguous = scanGoldenGateSites('GGTCTCNAAAA', 'BsaI');
+    expect(ambiguous.sites).toEqual([]);
+    expect(ambiguous.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'ambiguous_base',
+    }));
+    expect(findGoldenGateSites('GGTCTC?AAAA', 'BsaI')).toEqual([]);
+
+    const unsupported = scanGoldenGateSites('GGTCTCAAAAA', 'not-an-enzyme');
+    expect(unsupported.sites).toEqual([]);
+    expect(unsupported.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'unsupported_enzyme',
+    }));
   });
 
   it('rejects an empty part set', () => {

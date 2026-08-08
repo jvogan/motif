@@ -76,6 +76,18 @@ export function resolveIupacCodon(codon: string, table: CodonTable = STANDARD_CO
 }
 
 /**
+ * Return true only when every concrete expansion of an IUPAC codon is an
+ * initiator in the selected table. This preserves a definite-start contract:
+ * a codon such as ATH is a start in tables where ATA/ATC/ATT are all starts,
+ * while ATN is not a definite standard-code start because its expansions also
+ * include non-initiators.
+ */
+export function isDefiniteInitiatorCodon(codon: string, table: CodonTable = STANDARD_CODE): boolean {
+  const expansions = expandIupacCodon(codon);
+  return expansions.length > 0 && expansions.every((concreteCodon) => table.starts.includes(concreteCodon));
+}
+
+/**
  * Translate a DNA or RNA sequence to a protein string.
  * @param seq - DNA or RNA sequence
  * @param frame - Reading frame offset (0, 1, or 2)
@@ -121,7 +133,7 @@ export function translateCompleteCds(
   if (!protein) return protein;
   const dna = normalizeTranslationInput(seq);
   const initiator = dna.slice(frame, frame + 3);
-  return table.starts.includes(initiator) ? `M${protein.slice(1)}` : protein;
+  return isDefiniteInitiatorCodon(initiator, table) ? `M${protein.slice(1)}` : protein;
 }
 
 /**
@@ -151,7 +163,7 @@ export function translateFromFirstATG(
   const dna = normalizeTranslationInput(seq);
   let startIndex = -1;
   for (let index = 0; index + 2 < dna.length; index += 1) {
-    if (table.starts.includes(dna.slice(index, index + 3))) {
+    if (isDefiniteInitiatorCodon(dna.slice(index, index + 3), table)) {
       startIndex = index;
       break;
     }

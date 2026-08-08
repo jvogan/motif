@@ -1,6 +1,6 @@
 import type { ORF, CodonTable, Topology } from './types';
 import { STANDARD_CODE } from './codon-tables';
-import { expandIupacCodon, normalizeTranslationInput, resolveIupacCodon } from './translate';
+import { expandIupacCodon, isDefiniteInitiatorCodon, normalizeTranslationInput, resolveIupacCodon } from './translate';
 import { reverseComplement } from './reverse-complement';
 
 /**
@@ -153,14 +153,13 @@ function findORFsInFrame(
 ): ORF[] {
   const orfs: ORF[] = [];
   const stops = new Set(table.stops);
-  const starts = new Set(table.starts);
   const startPositions: number[] = [];
   const stopPositions: number[] = [];
   const hasAmbiguity = /[RYSWKMBDHVN]/.test(seq);
 
   for (let position = frameOffset; position + 2 < seq.length; position += 3) {
     const codon = seq.slice(position, position + 3);
-    if (isDefiniteCodonMember(codon, starts)) startPositions.push(position);
+    if (isDefiniteInitiatorCodon(codon, table)) startPositions.push(position);
     if (isDefiniteCodonMember(codon, stops)) stopPositions.push(position);
   }
 

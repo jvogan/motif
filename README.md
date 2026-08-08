@@ -177,7 +177,7 @@ SHA-256 values are recorded beside it.
 
 The plugin ZIP is for Claude/plugin hosts. It does not install the Claude
 Science local connector. End users should extract the release ZIP and run its
-bundled `node install-motif-claude-science-release.mjs --bundle .` command;
+bundled installer with the separately downloaded release-manifest checksum;
 maintainers can run `npm run claude-science:setup` from a source checkout.
 
 To generate an additional repo-local artifact with preloaded data:

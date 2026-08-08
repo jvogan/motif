@@ -13,6 +13,11 @@ describe('first-party restriction behavior oracles', () => {
       expect(fixture.sourceLicense).toMatch(/NEB Terms of Use/u);
       expect(fixture.sourceLicense).toMatch(/terms-of-use/u);
       expect(fixture.fixtureLicense).toBe('MIT');
+      expect(fixture.assayConditions).toMatch(/1 µg/u);
+      expect(fixture.assayConditions).toMatch(/hour/u);
+      expect(fixture.assayConditions).toMatch(/°C/u);
+      expect(fixture.assayConditions).toMatch(/50 µl/u);
+      expect(fixture.assayConditions).toMatch(/1X/u);
       expect(fixture.caveats.length).toBeGreaterThan(20);
     }
   });
