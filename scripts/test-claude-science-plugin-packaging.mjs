@@ -10,6 +10,7 @@ import {
   readdirSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
@@ -54,6 +55,7 @@ import {
   MAX_MSA_SEQUENCES,
   parseRunMsaArgs,
   parseUnalignedFasta,
+  portableInvocationArgs,
   runExternalMsa,
   writeMsaPayload,
 } from '../src/artifacts/motif-for-claude-science-plugin/skills/motif-for-claude-science/scripts/run-msa.mjs';
@@ -648,6 +650,10 @@ check('bundled helper rejects malformed nested shapes and oversized records', ()
     { ...base, overhang5Type: '5prime' },
     { ...base, overhang3: 'AX' },
     { ...base, type: 'protein', sequence: 'MPEPTIDE', overhang5: 'AATT', overhang5Type: '5prime' },
+    { ...base, features: [{ start: 0.5, end: 2 }] },
+    { ...base, features: [{ start: 0, end: 2, subRanges: [{ start: 0, end: 1.5 }] }] },
+    { ...base, sites: [{ enzyme: 'EcoRI', hits: [{ position: 1.5 }] }] },
+    { ...base, sites: [{ enzyme: 'EcoRI', hits: [{ position: 1, cutPosition: 2.5 }] }] },
   ]) {
     assert.throws(() => validatePayload({ records: [record] }), /Payload record 1/);
   }
@@ -993,9 +999,33 @@ check('external MSA payload writer refuses races and preserves the old file on n
     assert.equal(writeMsaPayload(outputPath, payload, true), resolve(outputPath));
     assert.deepEqual(JSON.parse(readFileSync(outputPath, 'utf8')), payload);
     assert.equal(readdirSync(fixture).some((entry) => entry.startsWith('.motif-msa-output-')), false);
+
+    const targetDirectory = mkdtempSync(join(tmpdir(), 'motif-msa-output-target-'));
+    try {
+      const linkedDirectory = join(fixture, 'linked-output');
+      symlinkSync(targetDirectory, linkedDirectory, 'dir');
+      assert.throws(
+        () => writeMsaPayload(join(linkedDirectory, 'payload.json'), payload, true),
+        /output directory must not traverse a symbolic link/i,
+      );
+      assert.equal(existsSync(join(targetDirectory, 'payload.json')), false);
+    } finally {
+      rmSync(targetDirectory, { recursive: true, force: true });
+    }
   } finally {
     rmSync(fixture, { recursive: true, force: true });
   }
+});
+
+check('external MSA provenance redacts overlapping input and output paths completely', () => {
+  assert.deepEqual(
+    portableInvocationArgs(
+      ['--infile=/tmp/input.fasta', '--outfile=/tmp/input.fasta.bak'],
+      '/tmp/input.fasta',
+      '/tmp/input.fasta.bak',
+    ),
+    ['--infile=<input.fasta>', '--outfile=<output.fasta>'],
+  );
 });
 
 if (process.env.MOTIF_RUN_MSA_INTEGRATION === '1') {

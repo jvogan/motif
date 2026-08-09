@@ -45,8 +45,7 @@ describe('Claude Science record lifecycle guards', () => {
   });
 
   it('stores topology on the record so the UI, API, and exports agree', () => {
-    // Renamed from toggleTopology when #34 moved conversion out of the map
-    // panel: it now takes a target rather than flipping, because the two
+    // Conversion now takes a target rather than flipping because the two
     // Entry Details buttons name the state they set. The invariant this guard
     // exists for is unchanged — topology lives on the record, one copy.
     const convertTopology = sliceBetween(
@@ -63,8 +62,8 @@ describe('Claude Science record lifecycle guards', () => {
   });
 
   it('lets the map be drawn as a line without converting the molecule', () => {
-    // #34. The map's shape control used to call the conversion above, so asking
-    // for a different picture rewrote the record. The drawing is now its own
+    // The map's shape control must not call record conversion: asking for a
+    // different picture must not rewrite the molecule. Drawing is its own
     // state.
     //
     // The size of the science it moved, measured against findRestrictionSites

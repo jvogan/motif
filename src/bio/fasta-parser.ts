@@ -76,7 +76,7 @@ export function parseFasta(input: string): FastaRecord[] {
     const line = lines[lineIndex];
     const lineStartOffset = inputOffset;
     const trimmed = line.trim();
-    // VOG-1812: legacy NBRF/PIR FASTA convention — `;` at line start is a
+    // NBRF/PIR FASTA convention — `;` at line start is a
     // comment. Skip these everywhere so they don't get treated as sequence
     // text and bleed AA-only letters into composition analysis downstream.
     if (trimmed.startsWith(';')) {
@@ -251,7 +251,7 @@ export function extractEmbeddedFastaContent(input: string): string | null {
 }
 
 /**
- * VOG-1983: FASTA headers are single-line records — the spec uses an
+ * FASTA headers are single-line records — the spec uses an
  * unescaped newline as the boundary between one record and the next.
  * If a block name (`r.header`) or description contains a literal `\n`
  * or `\r`, emitting it verbatim into the header silently splits the
@@ -278,7 +278,7 @@ export function toFasta(records: FastaRecord[], lineWidth = 80): string {
   }
   return records
     .map(r => {
-      // VOG-1983: collapse newlines so a multi-line block name does not
+      // Collapse newlines so a multi-line block name does not
       // silently fragment the export into multiple FASTA records.
       const safeHeader = sanitizeFastaHeaderField(r.header);
       const safeDescription = r.description ? sanitizeFastaHeaderField(r.description) : '';

@@ -13,7 +13,7 @@ import {
 import { inspectNucleotideSequence } from './nucleotide';
 
 /**
- * Phase 35 P0-A3: realistic PCR buffer defaults. SantaLucia 1998 NN-Tm
+ * Realistic PCR buffer defaults. SantaLucia 1998 NN-Tm
  * computed at the legacy default 50 mM Na, 0 Mg, 0 dNTP undershoots
  * real-PCR Tm by 5-7 °C — a thermal cycler annealing temp set at the
  * dialog-displayed Tm will mis-anneal in the actual reaction. Common
@@ -56,30 +56,30 @@ export interface PrimerDesignParams {
   maxGC?: number;
   forwardTail?: string;
   reverseTail?: string;
-  // Phase 32: Primer3-style 3' GC clamp — require at least one G/C in the
+  // Primer3-style 3' GC clamp — require at least one G/C in the
   // last 5 nt of the primer's 3' end. Default ON: prevents AAAA-tail
   // mispriming + slippage.
   requireGcClamp?: boolean;
-  // Phase 33 (Theme-D): Primer3-style flanking-region scan. Forward primers
+  // Primer3-style flanking-region scan. Forward primers
   // may start anywhere in [targetStart - flankingWindow, targetStart];
   // reverse primers may end anywhere in [targetEnd, targetEnd + flankingWindow].
   // Default 50 nt — same window Primer3 uses out of the box. Pass 0 to fall
   // back to legacy anchor-only behavior.
   flankingWindow?: number;
   /**
-   * Phase 35 P0-A3: Tm calculation buffer conditions. Defaults to
+   * Tm calculation buffer conditions. Defaults to
    * DEFAULT_TM_OPTIONS (50 mM Na, 1.5 mM Mg, 0.2 mM dNTP, 250 nM primer).
    * Passing `{}` or {mgConcentration: 0} reproduces legacy behavior.
    */
   tmOptions?: TmOptions;
   /**
-   * Phase 35 P0-A4: hairpin ΔG37 cutoff (kcal/mol). Candidates whose
+   * Hairpin ΔG37 cutoff (kcal/mol). Candidates whose
    * predicted hairpin ΔG is MORE NEGATIVE than this value are rejected.
    * Default -3.0 (Primer3 standard). Pass `null` or `+Infinity` to disable.
    */
   maxHairpinDeltaG?: number | null;
   /**
-   * Phase 35 P0-A4: self-dimer ΔG37 cutoff (kcal/mol). Candidates whose
+   * Self-dimer ΔG37 cutoff (kcal/mol). Candidates whose
    * predicted self-dimer ΔG is MORE NEGATIVE than this value are rejected.
    * Default -5.0 (Primer3 standard). Pass `null` or `+Infinity` to disable.
    */
@@ -97,7 +97,7 @@ export interface PrimerCandidate {
   tm: number;             // Tm of binding region only
   gcPercent: number;      // GC% of binding region only
   direction: 'forward' | 'reverse';
-  // Phase 33: distance (nt) from the user's target anchor. 0 = primer
+  // Distance (nt) from the user's target anchor. 0 = primer
   // begins/ends at the anchor exactly; positive = primer sits outside the
   // target window (forward to the 5' side of targetStart, reverse to the
   // 3' side of targetEnd). Used to rank candidates and penalize drift.
@@ -119,7 +119,7 @@ export interface PrimerPair {
 }
 
 /**
- * Phase 33 (Theme-D): per-filter rejection counts.
+ * Per-filter rejection counts.
  *
  * Tracks how many candidate positions × lengths fell out of consideration at
  * each filter step. Surfaced in the dialog when 0 candidates pass so the
@@ -137,20 +137,20 @@ export interface PrimerRejectionCounts {
   /** Calculator returned no result (sequence had non-canonical bases) */
   invalid: number;
   /**
-   * Phase 35 P0-A4: predicted hairpin ΔG below threshold (too stable).
+   * Predicted hairpin ΔG below threshold (too stable).
    * Optional for backward-compat with consumers that construct this shape
    * directly without specifying the new fields.
    */
   hairpin?: number;
   /**
-   * Phase 35 P0-A4: predicted self-dimer ΔG below threshold (too stable).
+   * Predicted self-dimer ΔG below threshold (too stable).
    * Optional for backward-compat (see above).
    */
   dimer?: number;
 }
 
 /**
- * Phase 34 P-G B1: secondary rejection counts — how many candidates that were
+ * Secondary rejection counts — how many candidates that were
  * rejected by the PRIMARY filter (e.g. gc) ALSO would have failed a later
  * filter (tm, clamp). Without these counts the diagnostic message implies the
  * only problem is the primary filter, but users widening one constraint find
@@ -172,7 +172,7 @@ export interface PrimerSecondaryRejectionCounts {
 export interface PrimerDesignResult {
   candidates: PrimerCandidate[];
   rejections: PrimerRejectionCounts;
-  /** Phase 34 P-G B1: per-rejection multi-criteria attribution counts. */
+  /** Per-rejection multi-criteria attribution counts. */
   secondaryRejections?: PrimerSecondaryRejectionCounts;
   /** Input/tail integrity warnings that prevented exact candidate evaluation. */
   warnings?: string[];
@@ -191,7 +191,7 @@ export interface PrimerPairResult {
   /** Diagnostics from the underlying forward/reverse scans, in case 0 pairs */
   forwardRejections: PrimerRejectionCounts;
   reverseRejections: PrimerRejectionCounts;
-  /** Phase 34 P-G B1: secondary (multi-criteria) rejection counts. */
+  /** Secondary (multi-criteria) rejection counts. */
   forwardSecondary?: PrimerSecondaryRejectionCounts;
   reverseSecondary?: PrimerSecondaryRejectionCounts;
   forwardCount: number;
@@ -211,14 +211,14 @@ const DEFAULT_FLANKING_WINDOW = 50;
 const MAX_TM_DIFF_PAIR = 5;
 const MAX_PAIRS_RETURNED = 10;
 const MAX_PAIRING_CANDIDATES_PER_DIRECTION = 240;
-// Phase 33: distance penalty weight — each nt away from the anchor adds this
+// Distance penalty weight — each nt away from the anchor adds this
 // many degrees of "virtual Tm error" in the sort. A primer 30 nt off-anchor
 // with a perfect Tm ranks below an on-anchor primer with ΔTm = 1.5 °C.
 // Empirical: 0.05 chosen so that 50 nt of drift ≈ 2.5 °C virtual Tm
 // penalty — roughly matches Primer3's POSITION_PENALTY default behavior.
 const ANCHOR_DISTANCE_PENALTY = 0.05;
 
-// Phase 32 Pass-Primer P0: 3' GC clamp filter. Returns true if the last 5 nt
+// 3' GC clamp filter. Returns true if the last 5 nt
 // of the primer contain at least one G or C (Primer3 standard).
 function has3PrimeGcClamp(primer: string): boolean {
   const tail = primer.slice(-5);
@@ -229,7 +229,7 @@ function emptyRejections(): Required<PrimerRejectionCounts> {
   return { gc: 0, tm: 0, length: 0, clamp: 0, invalid: 0, hairpin: 0, dimer: 0 };
 }
 
-// Phase 34 P-G B1: secondary rejection counter — populated by the design loops
+// Secondary rejection counter — populated by the design loops
 // to capture multi-criteria failure attribution (e.g. "rejected by gc, also
 // would have failed tm").
 function emptySecondaryRejections(): PrimerSecondaryRejectionCounts {
@@ -238,7 +238,7 @@ function emptySecondaryRejections(): PrimerSecondaryRejectionCounts {
 
 /**
  * Score a candidate for sorting — closer to anchor and closer to target Tm wins.
- * Phase 33: combines Tm distance + anchor distance penalty into a single rank.
+ * Combines Tm distance + anchor distance penalty into a single rank.
  */
 function rankScore(c: PrimerCandidate, targetTm: number): number {
   return Math.abs(c.tm - targetTm) + c.anchorDistance * ANCHOR_DISTANCE_PENALTY;
@@ -283,7 +283,7 @@ function pairRankScore(pair: PrimerPair, targetTm: number, enforceTargetTm: bool
 }
 
 /**
- * Phase 33 (Theme-D): Primer3-style flanking-region scan for forward primers.
+ * Primer3-style flanking-region scan for forward primers.
  *
  * Forward primers may start anywhere in [targetStart - flank, targetStart] —
  * the product MUST still cover targetStart (which is the user's region of
@@ -333,7 +333,7 @@ export function designForwardPrimerWithDiagnostics(
     return { candidates, rejections, secondaryRejections, warnings };
   }
 
-  // Phase 33: scan a window of start positions to the 5' side of targetStart.
+  // Scan a window of start positions to the 5' side of targetStart.
   // The product MUST cover targetStart, so start positions can range from
   // max(0, targetStart - flankingWindow) up to and including targetStart.
   const startMin = Math.max(0, targetStart - Math.max(0, flankingWindow));
@@ -364,7 +364,7 @@ export function designForwardPrimerWithDiagnostics(
       }
       const tm = tmResult.tm;
 
-      // Phase 34 P-G B1: evaluate ALL three filters before counting so that
+      // Evaluate ALL three filters before counting so that
       // multi-criteria failures are attributed correctly. The primary count
       // still goes to the first failing filter (short-circuit-compatible),
       // but secondaryRejections capture the "would also have failed X" stats.
@@ -389,7 +389,7 @@ export function designForwardPrimerWithDiagnostics(
         continue;
       }
 
-      // Phase 35 P0-A4: hairpin + self-dimer ΔG filters.
+      // Hairpin + self-dimer ΔG filters.
       const fullPrimerSeq = tail + primerSeq;
       let hairpinDeltaG: number | undefined;
       let selfDimerDeltaG: number | undefined;
@@ -443,7 +443,7 @@ export function designForwardPrimerWithDiagnostics(
 }
 
 /**
- * Phase 33 (Theme-D): Primer3-style flanking-region scan for reverse primers.
+ * Primer3-style flanking-region scan for reverse primers.
  *
  * Reverse primers may end anywhere in [targetEnd, targetEnd + flank] — the
  * product MUST still cover targetEnd. Same filter chain + rejection
@@ -520,7 +520,7 @@ export function designReversePrimerWithDiagnostics(
       }
       const tm = tmResult.tm;
 
-      // Phase 34 P-G B1: multi-criteria attribution (see forward variant).
+      // Multi-criteria attribution (see forward variant).
       const failsGc = gc < minGC || gc > maxGC;
       const failsTm = enforceTargetTm && Math.abs(tm - targetTm) > tmTolerance;
       const failsClamp = requireGcClamp && !has3PrimeGcClamp(primerSeq);
@@ -542,7 +542,7 @@ export function designReversePrimerWithDiagnostics(
         continue;
       }
 
-      // Phase 35 P0-A4: hairpin + self-dimer ΔG filters.
+      // Hairpin + self-dimer ΔG filters.
       const fullPrimerSeq = tail + primerSeq;
       let hairpinDeltaG: number | undefined;
       let selfDimerDeltaG: number | undefined;
@@ -619,7 +619,7 @@ export function designReversePrimer(
 }
 
 /**
- * Phase 33 (Theme-D): pair design with diagnostics.
+ * Pair design with diagnostics.
  *
  * Runs both flanking scans, then pairs forward × reverse and applies pair-
  * level filters (Tm difference, product length). Surfaces per-filter
@@ -698,7 +698,7 @@ export function designPrimerPairWithDiagnostics(
     rejections,
     forwardRejections: forwardResult.rejections,
     reverseRejections: reverseResult.rejections,
-    // Phase 34 P-G B1: pass secondary attribution counts through.
+    // Pass secondary attribution counts through.
     forwardSecondary: forwardResult.secondaryRejections,
     reverseSecondary: reverseResult.secondaryRejections,
     forwardCount: forwards.length,

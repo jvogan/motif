@@ -33,6 +33,12 @@ const MAX_GEL_WIDTH = 512;
 const MIN_GEL_HEIGHT = 1;
 const MAX_GEL_HEIGHT = 1_000;
 const MAX_GEL_FRAGMENT_BP = 250_000;
+/** Input/output bounds for the standalone ASCII simulator. */
+export const MAX_GEL_SAMPLE_LANES = 64;
+export const MAX_GEL_FRAGMENTS_PER_LANE = 4_096;
+export const MAX_GEL_TOTAL_FRAGMENTS = 32_768;
+export const MAX_GEL_LABEL_LENGTH = 128;
+export const MAX_GEL_GRID_CELLS = 4_000_000;
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -115,11 +121,28 @@ export function simulateGel(
   if (!Array.isArray(ladderSizes) || ladderSizes.length === 0) {
     throw new Error('ladder must contain at least one fragment size.');
   }
+  if (ladderSizes.length > MAX_GEL_FRAGMENTS_PER_LANE) {
+    throw new Error(`ladder cannot contain more than ${MAX_GEL_FRAGMENTS_PER_LANE.toLocaleString()} fragment sizes.`);
+  }
   ladderSizes.forEach((size, index) => validateFragmentSize(size, `ladder[${index}]`));
   if (!Array.isArray(samples)) throw new Error('samples must be an array.');
+  if (samples.length > MAX_GEL_SAMPLE_LANES) {
+    throw new Error(`samples cannot contain more than ${MAX_GEL_SAMPLE_LANES.toLocaleString()} lanes.`);
+  }
+  let totalSampleFragments = 0;
   samples.forEach((sample, sampleIndex) => {
     if (!sample || typeof sample.name !== 'string') throw new Error(`samples[${sampleIndex}].name must be a string.`);
+    if (sample.name.length > MAX_GEL_LABEL_LENGTH) {
+      throw new Error(`samples[${sampleIndex}].name cannot exceed ${MAX_GEL_LABEL_LENGTH.toLocaleString()} characters.`);
+    }
     if (!Array.isArray(sample.fragments)) throw new Error(`samples[${sampleIndex}].fragments must be an array.`);
+    if (sample.fragments.length > MAX_GEL_FRAGMENTS_PER_LANE) {
+      throw new Error(`samples[${sampleIndex}].fragments cannot contain more than ${MAX_GEL_FRAGMENTS_PER_LANE.toLocaleString()} sizes.`);
+    }
+    totalSampleFragments += sample.fragments.length;
+    if (totalSampleFragments > MAX_GEL_TOTAL_FRAGMENTS) {
+      throw new Error(`samples cannot contain more than ${MAX_GEL_TOTAL_FRAGMENTS.toLocaleString()} fragment sizes in total.`);
+    }
     sample.fragments.forEach((size, fragmentIndex) => validateFragmentSize(size, `samples[${sampleIndex}].fragments[${fragmentIndex}]`));
   });
 
@@ -188,6 +211,10 @@ export function renderGelASCII(
   validateGelDimensions(laneWidth, gelHeight);
   validateGelResult(result);
   const numLanes = result.lanes.length;
+  const gridCells = numLanes * laneWidth * gelHeight;
+  if (!Number.isSafeInteger(gridCells) || gridCells > MAX_GEL_GRID_CELLS) {
+    throw new Error(`gel render grid cannot exceed ${MAX_GEL_GRID_CELLS.toLocaleString()} cells.`);
+  }
 
   // ── Build the size label column (right side) ──────────────────────────
   // Gather all unique migration distances and their size labels from ladder
@@ -224,7 +251,10 @@ export function renderGelASCII(
 
   // Header: lane labels
   const headerParts = result.lanes.map(name => {
-    const padded = name.slice(0, laneWidth).padStart(Math.floor(laneWidth / 2 + name.length / 2)).padEnd(laneWidth);
+    const boundedName = name.slice(0, laneWidth);
+    const padded = boundedName
+      .padStart(Math.floor(laneWidth / 2 + boundedName.length / 2))
+      .padEnd(laneWidth);
     return padded;
   });
   lines.push('     ' + headerParts.join(''));
@@ -285,6 +315,21 @@ function validateGelResult(result: Omit<GelResult, 'ascii'>): void {
   if (!Array.isArray(result.lanes) || result.lanes.length === 0) {
     throw new Error('lanes must contain at least one lane.');
   }
+  if (result.lanes.length > MAX_GEL_SAMPLE_LANES + 1) {
+    throw new Error(`lanes cannot contain more than ${(MAX_GEL_SAMPLE_LANES + 1).toLocaleString()} lanes including the marker.`);
+  }
+  if (!Array.isArray(result.bands) || !Array.isArray(result.ladderBands)) {
+    throw new Error('bands and ladderBands must be arrays.');
+  }
+  if (result.bands.length + result.ladderBands.length > MAX_GEL_TOTAL_FRAGMENTS + MAX_GEL_FRAGMENTS_PER_LANE) {
+    throw new Error('gel bands exceed the supported fragment limit.');
+  }
+  result.lanes.forEach((name, index) => {
+    if (typeof name !== 'string') throw new Error(`lanes[${index}] must be a string.`);
+    if (name.length > MAX_GEL_LABEL_LENGTH) {
+      throw new Error(`lanes[${index}] cannot exceed ${MAX_GEL_LABEL_LENGTH.toLocaleString()} characters.`);
+    }
+  });
   const bands = [...result.ladderBands, ...result.bands];
   for (const band of bands) {
     if (!Number.isInteger(band.size) || band.size <= 0 || band.size > MAX_GEL_FRAGMENT_BP) {

@@ -32,8 +32,8 @@ function packageManifest(lockPath) {
   return readJson(path);
 }
 
-function licenseFile(lockPath, manifest) {
-  const directory = join(root, lockPath);
+function licenseFile(workspace, lockPath, manifest) {
+  const directory = join(workspace, lockPath);
   if (!existsSync(directory)) return null;
   const candidates = readdirSync(directory)
     .filter(name => /^(?:license|copying|notice)(?:\.|$)/iu.test(name))
@@ -53,7 +53,7 @@ export function createDeterministicSbom(rootPath = root) {
       const manifestPath = join(workspace, lockPath, 'package.json');
       const manifest = existsSync(manifestPath) ? readJson(manifestPath) : {};
       const name = typeof manifest.name === 'string' && manifest.name ? manifest.name : packageNameFromLockPath(lockPath);
-      const licensePath = licenseFile(lockPath, manifest);
+      const licensePath = licenseFile(workspace, lockPath, manifest);
       return {
         name,
         version: metadata.version,

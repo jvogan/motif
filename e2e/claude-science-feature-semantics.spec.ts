@@ -133,6 +133,36 @@ test.describe('Claude Science multipart feature semantics', () => {
     await expect.poll(() => page.evaluate(() => window.motifGetActiveRecord?.()?.seq)).toBe('ATGCCA');
   });
 
+  test('describes raw sequence export receipts independently from FASTA', async ({ page }) => {
+    await page.evaluate(() => window.motifRenderInventory([{
+      id: 'raw-receipt-record',
+      name: 'Raw receipt record',
+      molecule: 'dna',
+      topology: 'linear',
+      seq: 'ACGTACGT',
+      annotations: [{
+        id: 'raw-receipt-feature',
+        name: 'annotation omitted by sequence text',
+        type: 'misc_feature',
+        start: 1,
+        end: 5,
+      }],
+    }]));
+    await expect.poll(() => page.evaluate(() => window.motifGetActiveRecord?.()?.id)).toBe('raw-receipt-record');
+
+    const exportPanel = page.locator('.motif-cs-sequence-tools-panel');
+    if ((await exportPanel.getAttribute('open')) === null) await exportPanel.locator(':scope > summary').click();
+    const exportFormat = exportPanel.locator('select[name="export-format"]');
+    const receipt = exportPanel.getByTestId('export-loss-receipt');
+
+    await exportFormat.selectOption('record-sequence');
+    await expect(receipt).toContainText('raw sequence export');
+    await expect(receipt).not.toContainText('FASTA export');
+
+    await exportFormat.selectOption('record-fasta');
+    await expect(receipt).toContainText('FASTA export');
+  });
+
   test('honors imported codon_start when translating a joined CDS', async ({ page }) => {
     await page.evaluate(() => window.motifRenderInventory([{
       id: 'frame-record',

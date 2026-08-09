@@ -8,7 +8,9 @@ import { loadDependencyPolicy } from './lib/supply-chain-policy.mjs';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const DAY_MS = 24 * 60 * 60 * 1000;
-const MAX_METADATA_BYTES = 2 * 1024 * 1024;
+const MAX_VERSION_METADATA_BYTES = 2 * 1024 * 1024;
+const MAX_PACKUMENT_BYTES = 16 * 1024 * 1024;
+const NPM_VERSION_METADATA_ACCEPT = 'application/json';
 const IMMUTABLE_COMMIT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/iu;
 
 function isImmutableCommitId(value) {
@@ -113,24 +115,133 @@ function registryUrl(registry, name) {
   return new URL(encodeURIComponent(name), base).toString();
 }
 
-async function readRegistryMetadata(fetchImpl, url) {
+function registryVersionUrl(registry, name, version) {
+  const packageUrl = registryUrl(registry, name);
+  return new URL(encodeURIComponent(version), `${packageUrl}/`).toString();
+}
+
+async function requestRegistry(fetchImpl, url, accept) {
   let response;
   try {
     response = await fetchImpl(url, {
-      headers: { accept: 'application/json' },
+      headers: { accept },
       redirect: 'error',
     });
   } catch (error) {
     throw new Error(`Registry metadata request failed for ${url}: ${error instanceof Error ? error.message : String(error)}`);
   }
   if (!response?.ok) throw new Error(`Registry metadata request failed for ${url}: HTTP ${response?.status ?? 'unknown'}`);
-  const text = await response.text();
-  if (new TextEncoder().encode(text).byteLength > MAX_METADATA_BYTES) throw new Error(`Registry metadata response exceeded ${MAX_METADATA_BYTES} bytes for ${url}`);
-  try {
-    return JSON.parse(text);
-  } catch (error) {
-    throw new Error(`Registry metadata response was not JSON for ${url}: ${error instanceof Error ? error.message : String(error)}`);
+  return response;
+}
+
+function chunkBytes(chunk) {
+  return typeof chunk === 'string' ? new TextEncoder().encode(chunk).byteLength : chunk?.byteLength ?? 0;
+}
+
+async function readBoundedResponseText(response, url, maxBytes, label) {
+  let bytes = 0;
+  const chunks = [];
+  const decoder = new TextDecoder('utf-8', { fatal: true });
+  const append = (chunk) => {
+    bytes += chunkBytes(chunk);
+    if (bytes > maxBytes) throw new Error(`Registry ${label} response exceeded ${maxBytes} bytes for ${url}`);
+    try {
+      if (typeof chunk === 'string') {
+        chunks.push(decoder.decode());
+        chunks.push(chunk);
+      } else {
+        chunks.push(decoder.decode(chunk, { stream: true }));
+      }
+    } catch (error) {
+      throw new Error(`Registry metadata response was not valid UTF-8 for ${url}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
+  if (response.body?.getReader) {
+    const reader = response.body.getReader();
+    try {
+      while (true) {
+        const next = await reader.read();
+        if (next.done) break;
+        append(next.value);
+      }
+    } catch (error) {
+      await reader.cancel().catch(() => {});
+      throw error;
+    } finally {
+      reader.releaseLock();
+    }
+  } else if (response.body?.[Symbol.asyncIterator]) {
+    for await (const chunk of response.body) append(chunk);
+  } else if (typeof response.text === 'function') {
+    append(await response.text());
+  } else {
+    throw new Error(`Registry metadata response had no readable body for ${url}`);
   }
+  try {
+    chunks.push(decoder.decode());
+  } catch (error) {
+    throw new Error(`Registry metadata response was not valid UTF-8 for ${url}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  return chunks.join('');
+}
+
+async function readRegistryPublishMetadata(fetchImpl, url, version) {
+  const response = await requestRegistry(fetchImpl, url, 'application/json');
+  let metadata;
+  try {
+    metadata = JSON.parse(await readBoundedResponseText(response, url, MAX_PACKUMENT_BYTES, 'packument'));
+  } catch (error) {
+    if (error instanceof Error && /response exceeded/u.test(error.message)) throw error;
+    throw new Error(`Registry packument response was not JSON for ${url}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+    throw new Error(`Registry packument response was not an object for ${url}`);
+  }
+  if (typeof metadata.name !== 'string') throw new Error(`Registry packument has no package name for ${url}`);
+  if (!metadata.time || typeof metadata.time !== 'object' || Array.isArray(metadata.time)) {
+    throw new Error(`Registry packument has no publish-time object for ${metadata.name}`);
+  }
+  const publishedAt = metadata.time[version];
+  if (typeof publishedAt !== 'string') throw new Error(`Registry packument has no exact ${version} publish timestamp for ${metadata.name}`);
+  return { name: metadata.name, publishedAt };
+}
+
+async function readRegistryVersionMetadata(fetchImpl, url, entry) {
+  const response = await requestRegistry(fetchImpl, url, NPM_VERSION_METADATA_ACCEPT);
+  let metadata;
+  try {
+    metadata = JSON.parse(await readBoundedResponseText(response, url, MAX_VERSION_METADATA_BYTES, 'version metadata'));
+  } catch (error) {
+    if (error instanceof Error && /response exceeded/u.test(error.message)) throw error;
+    throw new Error(`Registry version metadata response was not JSON for ${url}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+    throw new Error(`Registry version metadata was not an object for ${url}`);
+  }
+  const version = metadata.versions?.[entry.version]
+    ?? (metadata.version === entry.version ? metadata : undefined);
+  if (!version || typeof version !== 'object' || Array.isArray(version) || version.version !== entry.version) {
+    throw new Error(`Registry metadata has no exact ${entry.name}@${entry.version} version`);
+  }
+  return { name: metadata.name ?? version.name, version };
+}
+
+async function readRegistryMetadata(fetchImpl, registry, entry) {
+  const versionUrl = registryVersionUrl(registry, entry.name, entry.version);
+  const packumentUrl = registryUrl(registry, entry.name);
+  const [versionMetadata, publishMetadata] = await Promise.all([
+    readRegistryVersionMetadata(fetchImpl, versionUrl, entry),
+    readRegistryPublishMetadata(fetchImpl, packumentUrl, entry.version),
+  ]);
+  if (versionMetadata.name !== entry.name || publishMetadata.name !== entry.name) {
+    throw new Error(`Registry metadata name mismatch for ${entry.name}@${entry.version}`);
+  }
+  return {
+    name: entry.name,
+    versions: { [entry.version]: versionMetadata.version },
+    time: { [entry.version]: publishMetadata.publishedAt },
+  };
 }
 
 function assertRegistryIdentity(entry, metadata, registry) {
@@ -164,7 +275,7 @@ export async function checkDependencyCoolingOff(rootPath = root, options = {}) {
   for (const entry of unique) {
     if (typeof entry.resolved !== 'string' || typeof entry.integrity !== 'string') throw new Error(`Changed dependency ${entry.name}@${entry.version} lacks a registry source or integrity`);
     const identity = `${entry.name}@${entry.version}`;
-    const metadata = await readRegistryMetadata(fetchImpl, registryUrl(policy.registry, entry.name));
+    const metadata = await readRegistryMetadata(fetchImpl, policy.registry, entry);
     const publishedMs = assertRegistryIdentity(entry, metadata, policy.registry);
     const ageDays = (now - publishedMs) / DAY_MS;
     if (ageDays < 0) throw new Error(`Registry publish timestamp is in the future for ${identity}`);
