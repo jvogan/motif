@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import {
+  MAX_MOTIF_ARTIFACT_HTML_BYTES,
   MOTIF_ARTIFACT_EXPORT_SCHEMA,
   motifArtifactExportSummarySchema,
   type MotifArtifactExportSummary,
@@ -10,13 +11,25 @@ import {
 const DATA_TAG_PATTERN = /(<script type="application\/json" id="motif-artifact-data">)([\s\S]*?)(<\/script>)/u;
 const BUILD_ID_META_PATTERN = /<meta name="motif-build-id" content="([a-f0-9]{64})"\s*\/?>/u;
 
-function jsonForScriptTag(value: unknown): string {
-  return JSON.stringify(value)
+function escapeJsonForScriptTag(json: string): string {
+  return json
     .replace(/</gu, '\\u003C')
     .replace(/>/gu, '\\u003E')
     .replace(/&/gu, '\\u0026')
     .replace(/\u2028/gu, '\\u2028')
     .replace(/\u2029/gu, '\\u2029');
+}
+
+function escapedJsonByteLength(json: string): number {
+  let bytes = 0;
+  for (const character of json) {
+    if (character === '<' || character === '>' || character === '&' || character === '\u2028' || character === '\u2029') {
+      bytes += 6;
+    } else {
+      bytes += Buffer.byteLength(character, 'utf8');
+    }
+  }
+  return bytes;
 }
 
 function safeArtifactBase(value: string): string {
@@ -41,7 +54,8 @@ export type RenderMotifArtifactResult = {
 };
 
 export function renderMotifArtifact(request: RenderMotifArtifactRequest): RenderMotifArtifactResult {
-  if (!DATA_TAG_PATTERN.test(request.template)) {
+  const dataTag = DATA_TAG_PATTERN.exec(request.template);
+  if (!dataTag) {
     throw new Error('Motif artifact template is missing its embedded data tag.');
   }
   if (!request.workbench.payload) {
@@ -54,7 +68,18 @@ export function renderMotifArtifact(request: RenderMotifArtifactRequest): Render
   const title = request.title?.trim() || request.workbench.sourceName?.replace(/\.[^.]+$/u, '') || 'Motif workbench';
   const requestedFilename = request.filename?.trim().replace(/\.html?$/iu, '');
   const filename = `${safeArtifactBase(requestedFilename || title)}.html`;
-  const payloadJson = jsonForScriptTag(request.workbench.payload);
+  const rawPayloadJson = JSON.stringify(request.workbench.payload);
+  const escapedPayloadBytes = escapedJsonByteLength(rawPayloadJson);
+  const closingTagStart = dataTag.index + dataTag[0].length;
+  const fixedHtmlBytes = Buffer.byteLength(request.template.slice(0, dataTag.index), 'utf8')
+    + Buffer.byteLength(dataTag[1], 'utf8')
+    + Buffer.byteLength(dataTag[3], 'utf8')
+    + Buffer.byteLength(request.template.slice(closingTagStart), 'utf8');
+  const estimatedBytes = fixedHtmlBytes + escapedPayloadBytes;
+  if (estimatedBytes > MAX_MOTIF_ARTIFACT_HTML_BYTES) {
+    throw new Error(`Motif artifact HTML exceeds ${MAX_MOTIF_ARTIFACT_HTML_BYTES.toLocaleString()} bytes after safe payload escaping.`);
+  }
+  const payloadJson = escapeJsonForScriptTag(rawPayloadJson);
   const html = request.template.replace(
     DATA_TAG_PATTERN,
     (_match, openingTag: string, _payload: string, closingTag: string) => `${openingTag}${payloadJson}${closingTag}`,

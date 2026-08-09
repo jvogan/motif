@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const root = resolve(new URL('..', import.meta.url).pathname);
+const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 
 function readJson(relativePath) {
   return JSON.parse(readFileSync(join(root, relativePath), 'utf8'));
@@ -28,7 +28,7 @@ export function checkReleaseAlignment() {
     ['plugin manifest', plugin.version],
     ['artifact runtime', read('src/artifacts/motif-artifact.tsx').match(/const MOTIF_ARTIFACT_VERSION = '([^']+)'/u)?.[1]],
     ['MCP App bridge', read('src/mcp-app/motif-workbench-bridge.ts').match(/name: 'Motif for Claude Science', version: '([^']+)'/u)?.[1]],
-    ['MCP stdio fallback', stdioServer.match(/async function readVersion\(\): Promise<string>[\s\S]*?return '([^']+)'[;]?\s*\}\s*async function readRuntimeBuildId/u)?.[1]],
+    ['MCP stdio fallback', stdioServer.match(/async function readVersion\([^)]*\): Promise<string>[\s\S]*?return '([^']+)'[;]?\s*\}\s*async function readRuntimeBuildId/u)?.[1]],
   ];
   for (const [label, value] of surfaces) {
     if (value !== packageVersion) throw new Error(`${label} is ${String(value)}, expected ${packageVersion}`);

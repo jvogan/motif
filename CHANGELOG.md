@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.3.3 — 2026-08-08
+
+- Made Database JSON and workspace ZIP checkpoints provably restorable,
+  clarified active-record JSON scope, and expanded inventory-wide export-loss
+  receipts.
+- Hardened external MSA engine identity, execution isolation, executable
+  hashing, packaged-root selection, MCP output preflight, and portable paths.
+- Isolated destructive restore confirmation from background shortcuts and
+  stabilized high-zoom map and MSA edge-drag interactions.
+- Expanded canonical validation with MCP and browser typechecking, exact-commit
+  gate receipts, post-build release verification, accurate SBOM scope, Node 24
+  compatibility, and exact hosted-action pins.
+
 ## 0.3.2 — 2026-08-08
 
 - Unified restriction-enzyme sources, serialized complete cleavage geometry,

@@ -185,6 +185,17 @@ describe('Claude Science accessibility and interaction guards', () => {
     expect(artifactCss).toContain('pointer-events: none');
   });
 
+  it('makes the destructive restore confirmation modal inert and shortcut-isolated', () => {
+    const restoreDialog = sliceBetween('function RestoreWorkspaceDialog({', 'function PanePlacementControl({');
+    expect(artifactSource).toContain('data-restore-background={pendingDatabaseRestore ? \'inert\' : undefined}');
+    expect(artifactSource).toContain('inert={pendingDatabaseRestore ? true : undefined}');
+    expect(artifactSource).toContain('aria-hidden={pendingDatabaseRestore ? \'true\' : undefined}');
+    expect(restoreDialog).toContain('aria-modal="true"');
+    expect(restoreDialog).toContain("if (event.key === 'Escape')");
+    expect(restoreDialog).toContain("if (event.key !== 'Tab') return;");
+    expect(artifactSource).toContain('if (pendingDatabaseRestore) return;');
+  });
+
   it('keeps validation feedback inline and polite', () => {
     expect(artifactSource).toContain('className="motif-cs-import-status" data-error={statusError || undefined} role={statusError ? \'alert\' : \'status\'} aria-live={statusError ? \'assertive\' : \'polite\'} aria-atomic="true"');
     expect(artifactSource).toContain('className="motif-cs-chip" role="status" aria-live="polite" aria-atomic="true"');

@@ -702,7 +702,7 @@ describe('Claude Science workspace layout guards', () => {
 
   it('copies reverse features in feature orientation from the keyboard path', () => {
     expect(artifactSource).toContain('text = sequenceForFeature(sequence, selectedFeature, sequenceType);');
-    expect(artifactSource).toContain('[selectedFeature, selectedMapRange, sequence, sequenceType, topology');
+    expect(artifactSource).toContain('[copyText, handleZoomIn, handleZoomOut, handleZoomReset, pendingDatabaseRestore, recordId, selectedFeature, selectedMapRange, sequence, sequenceType, topology]');
   });
 
   it('serializes native mouse-selected bases without embedded annotation text', () => {
@@ -754,7 +754,9 @@ describe('Claude Science workspace layout guards', () => {
   });
 
   it('previews the selected export payload instead of always showing raw sequence', () => {
-    expect(artifactSource).toContain('const exportPreview = exportChoice?.content');
+    expect(artifactSource).toContain('const exportFallbackPreview = exportChoice?.id');
+    expect(artifactSource).toContain('const exportPreview = exportChoice?.blocked');
+    expect(artifactSource).toContain(': exportChoice?.content ?? exportFallbackPreview;');
     expect(artifactSource).toContain("exportChoice?.id === 'inventory-zip'");
     expect(artifactSource).toContain("exportChoice?.id === 'report-print'");
     expect(artifactSource).toContain('value={exportPreview} aria-label="Selected export preview"');

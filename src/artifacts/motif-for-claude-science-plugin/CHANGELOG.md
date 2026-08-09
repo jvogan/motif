@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.3 — 2026-08-08
+
+- Made checkpoint exports provably restorable and clarified active-record and
+  inventory-wide export receipts.
+- Hardened external MSA execution, connector-root selection, MCP output bounds,
+  portable paths, and destructive restore isolation.
+- Expanded exact-commit release validation, Node 24 coverage, action pinning,
+  and stable map and MSA browser interactions.
+
 ## 0.3.2 — 2026-08-08
 
 - Unified restriction geometry and methylation behavior across catalog views,

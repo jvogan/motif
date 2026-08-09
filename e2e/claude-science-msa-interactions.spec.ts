@@ -1261,7 +1261,8 @@ test.describe('Motif MSA viewer interactions', () => {
     const panel = page.getByTestId('msa-view-menu');
     await expect(panel).toBeVisible();
 
-    const read = () => panel.evaluate((el) => {
+    const read = () => panel.evaluate((element) => {
+      const el = element as HTMLElement;
       const host = el.closest('.motif-cs-window');
       if (!host) throw new Error('the view menu is not inside a window — this measures nothing');
       const panelBox = el.getBoundingClientRect();
@@ -1462,8 +1463,13 @@ test.describe('Motif MSA viewer interactions', () => {
     if (!box) throw new Error('export menu trigger has no box');
     const x = box.x + box.width / 2;
     const y = box.y + box.height / 2;
-    const mouse = (type: string, buttons: number) => client.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1, buttons });
-    const key = (type: string) => client.send('Input.dispatchKeyEvent', { type, key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 });
+    const mouse = (
+      type: 'mousePressed' | 'mouseReleased' | 'mouseMoved' | 'mouseWheel',
+      buttons: number,
+    ) => client.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1, buttons });
+    const key = (
+      type: 'keyDown' | 'keyUp' | 'rawKeyDown' | 'char',
+    ) => client.send('Input.dispatchKeyEvent', { type, key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 });
     await Promise.all([mouse('mousePressed', 1), mouse('mouseReleased', 0), key('keyDown'), key('keyUp')]);
     await page.waitForTimeout(400);
 

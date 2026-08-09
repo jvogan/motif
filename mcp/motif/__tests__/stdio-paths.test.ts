@@ -1,8 +1,24 @@
 import { describe, expect, it } from 'vitest';
 import { resolve } from 'node:path';
-import { artifactTemplateCandidates } from '../stdio-paths';
+import { artifactTemplateCandidates, inferredConnectorRoot, trustedConfiguredRoot } from '../stdio-paths';
 
 describe('MCP stdio packaged paths', () => {
+  it('infers roots for source, release, and packaged plugin layouts', () => {
+    expect(inferredConnectorRoot('/checkout/mcp/motif')).toBe(resolve('/checkout'));
+    expect(inferredConnectorRoot('/release/dist-motif/claude-science')).toBe(resolve('/release'));
+    expect(inferredConnectorRoot('/plugin/server')).toBe(resolve('/plugin'));
+  });
+
+  it('rejects a configured root that names another checkout', () => {
+    expect(() => trustedConfiguredRoot('/other-checkout', '/current-checkout'))
+      .toThrow(/MOTIF_ROOT must resolve to this connector root/);
+  });
+
+  it('accepts a configured root that is the inferred checkout', () => {
+    expect(trustedConfiguredRoot('/current-checkout', '/current-checkout'))
+      .toBe(resolve('/current-checkout'));
+  });
+
   it('resolves the skill resource after omitting the duplicate server template', () => {
     const moduleDirectory = '/plugin/server';
     const candidates = artifactTemplateCandidates(moduleDirectory, undefined, '/plugin');

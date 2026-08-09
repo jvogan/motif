@@ -21,8 +21,10 @@ import {
   MotifArtifactRuntimeError,
   createCenteredBluntEnzyme,
   createArtifactDatabaseSnapshot,
+  createArtifactWorkspaceZipBlob,
   createDefensiveRuntimeSnapshot,
   describePayloadSnapshot,
+  getArtifactCheckpointExportIssues,
   normalizeCustomEnzymeRecognitionInput,
   inventoryReportHtml,
   normalizeRecord,
@@ -550,6 +552,104 @@ describe('Claude Science runtime data-integrity behavior', () => {
       sequence: 'ATGGAATTCTAA',
     });
     expect(prepareArtifactDatabaseRestore(snapshot).payload.analysisResults).toEqual([]);
+  });
+
+  it('round-trips the same accepted checkpoint through Database JSON and ZIP', async () => {
+    const payload = prepareInventoryReplacement([{
+      id: 'zip-roundtrip',
+      name: 'ZIP roundtrip',
+      type: 'dna',
+      topology: 'linear',
+      sequence: 'ATGGAATTCTAA',
+      features: [{ id: 'feature-a', name: 'feature', start: 3, end: 9, type: 'misc_feature' }],
+    }]);
+    const artifactState = {
+      customEnzymes: [],
+      translationLayersByRecord: {},
+      enzymeSourcesByRecord: {},
+      hiddenEnzymesByRecord: {},
+      hiddenFeatureTranslationsByRecord: {},
+      restrictionLabelsByRecord: {},
+      motifsByRecord: {},
+    };
+    const snapshot = createArtifactDatabaseSnapshot(payload, artifactState);
+    expect(prepareArtifactDatabaseRestore(JSON.parse(JSON.stringify(snapshot))).payload.records[0]).toMatchObject({
+      id: 'zip-roundtrip',
+      sequence: 'ATGGAATTCTAA',
+      features: [expect.objectContaining({ id: 'feature-a' })],
+    });
+
+    const zip = createArtifactWorkspaceZipBlob([{
+      name: 'inventory.json',
+      content: JSON.stringify(snapshot),
+    }]);
+    const bytes = new Uint8Array(await zip.arrayBuffer());
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    expect(view.getUint32(0, true)).toBe(0x04034b50);
+    const nameLength = view.getUint16(26, true);
+    const dataLength = view.getUint32(18, true);
+    const entryName = new TextDecoder().decode(bytes.slice(30, 30 + nameLength));
+    const entryText = new TextDecoder().decode(bytes.slice(30 + nameLength, 30 + nameLength + dataLength));
+    expect(entryName).toBe('inventory.json');
+    expect(prepareArtifactDatabaseRestore(JSON.parse(entryText)).payload.records[0].id).toBe('zip-roundtrip');
+  });
+
+  it('blocks Database JSON and ZIP checkpoint creation instead of truncating a 12,000-hit EcoRI repeat', () => {
+    const repeatCount = 12_000;
+    const sequence = 'GAATTC'.repeat(repeatCount);
+    const record = normalizeRecord({
+      id: 'oversized-site-inventory',
+      name: '12k EcoRI repeat',
+      type: 'dna',
+      topology: 'linear',
+      sequence,
+      sites: [{
+        enzyme: 'EcoRI',
+        motif: 'GAATTC',
+        indexBase: 0,
+        hits: Array.from({ length: repeatCount }, (_, index) => ({ position: index * 6, cutPosition: index * 6 })),
+      }],
+    }, 0);
+    expect(record).not.toBeNull();
+    if (!record) throw new Error('large-site fixture did not normalize');
+
+    const issues = getArtifactCheckpointExportIssues([record]);
+    expect(issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        recordId: 'oversized-site-inventory',
+        path: expect.stringContaining('.sites[0].hits'),
+        message: expect.stringContaining('10,000'),
+      }),
+    ]));
+    const payload = prepareInventoryReplacement([{
+      id: 'oversized-site-inventory',
+      name: '12k EcoRI repeat',
+      type: 'dna',
+      topology: 'linear',
+      sequence,
+    }]);
+    expect(() => createArtifactDatabaseSnapshot({ ...payload, records: [record] }, {
+      customEnzymes: [],
+      translationLayersByRecord: {},
+      enzymeSourcesByRecord: {},
+      hiddenEnzymesByRecord: {},
+      hiddenFeatureTranslationsByRecord: {},
+      restrictionLabelsByRecord: {},
+      motifsByRecord: {},
+    }, [record])).toThrowError(expect.objectContaining({
+      code: 'MOTIF_INPUT_LIMIT_EXCEEDED',
+      message: expect.stringMatching(/blocked|truncated/i),
+    }));
+    const unsafeInventory = {
+      schema: 'motif.claude-science.inventory.v2',
+      records: createDefensiveRuntimeSnapshot([record]),
+    };
+    expect(() => createArtifactWorkspaceZipBlob([{
+      name: 'inventory.json',
+      content: JSON.stringify(unsafeInventory),
+    }])).toThrowError(expect.objectContaining({
+      code: 'MOTIF_INPUT_LIMIT_EXCEEDED',
+    }));
   });
 
   it('normalizes allowlisted feature fields and escapes all report markup', () => {

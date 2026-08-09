@@ -1296,7 +1296,9 @@ test.describe('Claude Science artifact workflows', () => {
     await goldenGate.focus();
     await page.keyboard.press('ArrowRight');
     await expect(ligation).toBeFocused();
-    await expect(assembly.getByRole('tabpanel')).toHaveAttribute('aria-labelledby', await ligation.getAttribute('id'));
+    const ligationId = await ligation.getAttribute('id');
+    expect(ligationId).toBeTruthy();
+    await expect(assembly.getByRole('tabpanel')).toHaveAttribute('aria-labelledby', ligationId!);
 
     const productName = assembly.getByRole('textbox', { name: 'Product name' });
     await productName.scrollIntoViewIfNeeded();
@@ -2827,10 +2829,13 @@ test.describe('Claude Science artifact workflows', () => {
     const feature = page.locator('.motif-pm-feature[data-feature-id="late-large-feature"]');
     const expectFocusedRange = async () => {
       await expect(densityView.getByTestId('large-sequence-selection')).toHaveText('Map selection: 45,001–49,000.');
-      await expect.poll(() => value.evaluate((control) => ({
-        selectionStart: control.selectionStart,
-        selectionEnd: control.selectionEnd,
-      }))).toEqual({ selectionStart: 45_000, selectionEnd: 49_000 });
+      await expect.poll(() => value.evaluate((control) => {
+        const textarea = control as HTMLTextAreaElement;
+        return {
+          selectionStart: textarea.selectionStart,
+          selectionEnd: textarea.selectionEnd,
+        };
+      })).toEqual({ selectionStart: 45_000, selectionEnd: 49_000 });
       expect(await value.evaluate((control) => control.scrollTop)).toBeGreaterThan(0);
     };
 
@@ -4309,6 +4314,32 @@ test.describe('Claude Science artifact workflows', () => {
     const mapFrame = page.locator('.motif-cs-map-frame');
     const viewport = mapFrame.locator('.motif-pm-viewport');
     const svg = mapFrame.locator('svg.motif-plasmid-map');
+    const readBackboneBox = async () => {
+      const backbone = mapFrame.locator('.motif-pm-backbone');
+      await expect(backbone).toHaveCount(1);
+      await expect.poll(() => backbone.evaluate((element) => element.getBoundingClientRect().width)).toBeGreaterThan(0);
+      return backbone.evaluate((element) => {
+        const rect = element.getBoundingClientRect();
+        return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+      });
+    };
+    const findPointerActionPoint = async (action: 'range' | 'pan') => {
+      const surface = mapFrame.locator('[data-map-interaction-surface]');
+      const box = await surface.boundingBox();
+      if (!box) throw new Error('map interaction surface has no visible box');
+      for (const yFraction of [0.05, 0.25, 0.5, 0.75, 0.95]) {
+        for (const xFraction of [0.05, 0.25, 0.5, 0.75, 0.95]) {
+          const point = {
+            x: box.x + box.width * xFraction,
+            y: box.y + box.height * yFraction,
+          };
+          await page.mouse.move(point.x, point.y);
+          await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+          if (await mapFrame.getAttribute('data-map-pointer-action') === action) return { ...point, surface: box };
+        }
+      }
+      throw new Error(`map exposes no visible ${action} interaction point at high zoom`);
+    };
 
     await page.evaluate(() => window.motifRenderInventory?.([{
       id: 'high-zoom-range-circular',
@@ -4318,8 +4349,9 @@ test.describe('Claude Science artifact workflows', () => {
       sequence: 'A'.repeat(4_000),
       annotations: [],
     }]));
-    let backbone = (await mapFrame.locator('.motif-pm-backbone').boundingBox())!;
-    let ringTop = { x: backbone.x + backbone.width / 2, y: backbone.y };
+    await expect(page.locator('.motif-cs-record-tab[data-active="true"]')).toContainText('High zoom range circular');
+    const backbone = await readBackboneBox();
+    const ringTop = { x: backbone.x + backbone.width / 2, y: backbone.y };
     await page.mouse.move(ringTop.x, ringTop.y);
     await page.mouse.down();
     await page.mouse.move(backbone.x + backbone.width, backbone.y + backbone.height / 2, { steps: 8 });
@@ -4336,15 +4368,19 @@ test.describe('Claude Science artifact workflows', () => {
       });
     }
     await expect(mapFrame.locator('.motif-cs-map-hint')).toContainText('800%');
-    backbone = (await mapFrame.locator('.motif-pm-backbone').boundingBox())!;
-    ringTop = { x: backbone.x + backbone.width / 2, y: backbone.y };
-    await page.mouse.move(ringTop.x, ringTop.y + 10);
+    const circularRangePoint = await findPointerActionPoint('range');
+    await page.mouse.move(circularRangePoint.x, circularRangePoint.y);
     await expect(mapFrame).toHaveAttribute('data-map-pointer-action', 'range');
-    await page.mouse.move(ringTop.x, ringTop.y - 50);
+    const circularPanPoint = await findPointerActionPoint('pan');
+    await page.mouse.move(circularPanPoint.x, circularPanPoint.y);
     await expect(mapFrame).toHaveAttribute('data-map-pointer-action', 'pan');
     const beforeCircularPan = await viewport.getAttribute('transform');
     await page.mouse.down();
-    await page.mouse.move(ringTop.x + 36, ringTop.y - 68, { steps: 6 });
+    await page.mouse.move(
+      Math.min(circularPanPoint.surface.x + circularPanPoint.surface.width - 4, circularPanPoint.x + 24),
+      Math.min(circularPanPoint.surface.y + circularPanPoint.surface.height - 4, circularPanPoint.y + 24),
+      { steps: 6 },
+    );
     await page.mouse.up();
     expect(await viewport.getAttribute('transform')).not.toBe(beforeCircularPan);
 
@@ -4362,7 +4398,9 @@ test.describe('Claude Science artifact workflows', () => {
       sequence: 'A'.repeat(4_000),
       annotations: [],
     }]));
-    const linearBackbone = (await mapFrame.locator('.motif-pm-backbone').boundingBox())!;
+    await expect(page.locator('.motif-cs-record-tab[data-active="true"]')).toContainText('High zoom range linear');
+    await expect(mapFrame).toHaveAttribute('data-map-mode', 'linear');
+    const linearBackbone = await readBackboneBox();
     const axis = { x: linearBackbone.x + linearBackbone.width / 2, y: linearBackbone.y + linearBackbone.height / 2 };
     await page.mouse.move(axis.x - 80, axis.y);
     await page.mouse.down();
@@ -4380,14 +4418,11 @@ test.describe('Claude Science artifact workflows', () => {
       });
     }
     await expect(mapFrame.locator('.motif-cs-map-hint')).toContainText('800%');
-    const zoomedLinearBackbone = (await mapFrame.locator('.motif-pm-backbone').boundingBox())!;
-    const zoomedAxis = {
-      x: zoomedLinearBackbone.x + zoomedLinearBackbone.width / 2,
-      y: zoomedLinearBackbone.y + zoomedLinearBackbone.height / 2,
-    };
-    await page.mouse.move(zoomedAxis.x, zoomedAxis.y + 10);
+    const linearRangePoint = await findPointerActionPoint('range');
+    await page.mouse.move(linearRangePoint.x, linearRangePoint.y);
     await expect(mapFrame).toHaveAttribute('data-map-pointer-action', 'range');
-    await page.mouse.move(zoomedAxis.x, zoomedAxis.y + 50);
+    const linearPanPoint = await findPointerActionPoint('pan');
+    await page.mouse.move(linearPanPoint.x, linearPanPoint.y);
     await expect(mapFrame).toHaveAttribute('data-map-pointer-action', 'pan');
 
     await page.getByRole('button', { name: 'Reset map view' }).click();
@@ -5694,7 +5729,6 @@ test.describe('Claude Science artifact workflows', () => {
 
     const windowPanel = page.locator('.motif-cs-window').filter({ has: page.getByTestId('msa-workspace') });
     const matrix = page.getByRole('region', { name: 'Scrollable alignment matrix viewport', exact: true });
-    const panRow = page.getByTestId('msa-horizontal-scroll-row');
     const pan = page.getByTestId('msa-horizontal-scroll');
     await expect(windowPanel).toBeVisible();
     await expect(pan).toBeVisible();

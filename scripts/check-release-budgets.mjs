@@ -5,7 +5,7 @@ import { join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { compareConnectorInventory, loadDependencyPolicy } from './lib/supply-chain-policy.mjs';
 
-const root = resolve(new URL('..', import.meta.url).pathname);
+const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const output = join(root, 'dist-motif');
 
 function readJson(path) {

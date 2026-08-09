@@ -123,8 +123,11 @@ node ./skills/motif-for-claude-science/scripts/create-artifact.mjs \
 Supported environment variables are `MOTIF_MSA_MAFFT_PATH`,
 `MOTIF_MSA_MUSCLE_PATH`, `MOTIF_MSA_CLUSTAL_OMEGA_PATH`,
 `MOTIF_MSA_EXECUTABLE`, and `MOTIF_MSA_TOOLS_DIR`. Invalid explicit
-configuration is an error. Windows batch wrappers are intentionally excluded
-because they require a shell.
+configuration is an error. Selected executables must use the exact engine
+basename, pass that engine's version-banner check, and remain hash-stable
+through execution. The child receives a minimal environment without ambient
+credentials, proxy, or agent settings. Windows batch wrappers are intentionally
+excluded because they require a shell.
 
 The HTML itself cannot start native executables. Its bounded local alignment
 preview is labeled as a Motif browser preview and must never be represented as

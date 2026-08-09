@@ -181,7 +181,7 @@ test.describe('state-preserving pane placement', () => {
     expect(moved).not.toBeNull();
     expect(Math.abs(moved!.x - before!.x) + Math.abs(moved!.y - before!.y)).toBeGreaterThan(20);
 
-    const resize = tools.getByTestId('floating-pane-resize-tools');
+    const resize = page.getByTestId('floating-pane-resize-tools');
     const resizeBox = await resize.boundingBox();
     expect(resizeBox).not.toBeNull();
     await page.mouse.move(resizeBox!.x + resizeBox!.width / 2, resizeBox!.y + resizeBox!.height / 2);
@@ -234,6 +234,78 @@ test.describe('state-preserving pane placement', () => {
     ]);
   });
 
+  test('floating resize grips remain the trusted hit target across viewport layouts', async ({ page }) => {
+    const panes = [
+      { key: 'inventory', label: 'Inventory' },
+      { key: 'map', label: 'Map' },
+      { key: 'sequence', label: 'Sequence' },
+      { key: 'tools', label: 'Tools' },
+    ] as const;
+
+    for (const viewport of [{ width: 1440, height: 900 }, { width: 820, height: 900 }]) {
+      for (const pane of panes) {
+        await openArtifact(page, viewport.width, viewport.height);
+        if (pane.key === 'tools') {
+          const railToggle = page.getByRole('button', { name: 'Tools rail' });
+          if (await railToggle.getAttribute('aria-pressed') !== 'true') await railToggle.click();
+        }
+
+        const paneElement = page.locator(`[data-pane-key="${pane.key}"]`);
+        await paneElement.getByRole('button', { name: `Pop out ${pane.label} pane` }).click();
+        const resize = page.getByTestId(`floating-pane-resize-${pane.key}`);
+        await expect(resize).toBeVisible();
+        const before = await paneElement.boundingBox();
+        const resizeBox = await resize.boundingBox();
+        expect(before).not.toBeNull();
+        expect(resizeBox).not.toBeNull();
+
+        await page.evaluate(() => {
+          window.addEventListener('pointerdown', (event) => {
+            const target = event.target instanceof Element
+              ? event.target.closest<HTMLElement>('.motif-cs-floating-pane-resize')
+              : null;
+            if (!target) return;
+            const state = window as Window & { __motifFloatingGripTrusted?: boolean[] };
+            (state.__motifFloatingGripTrusted ??= []).push(event.isTrusted);
+          }, true);
+        });
+        await page.mouse.move(resizeBox!.x + resizeBox!.width / 2, resizeBox!.y + resizeBox!.height / 2);
+        expect(await page.evaluate(({ x, y }) => (
+          document.elementFromPoint(x, y)?.closest('.motif-cs-floating-pane-resize')?.getAttribute('data-testid')
+        ), { x: resizeBox!.x + resizeBox!.width / 2, y: resizeBox!.y + resizeBox!.height / 2 })).toBe(`floating-pane-resize-${pane.key}`);
+        await page.mouse.down();
+        await page.mouse.move(resizeBox!.x + 76, resizeBox!.y + 60, { steps: 5 });
+        await page.mouse.up();
+        const after = await paneElement.boundingBox();
+        const trusted = await page.evaluate(() => (window as Window & { __motifFloatingGripTrusted?: boolean[] }).__motifFloatingGripTrusted ?? []);
+        expect(trusted).toContain(true);
+        expect(after).not.toBeNull();
+        expect(after!.width > before!.width + 1 || after!.height > before!.height + 1).toBe(true);
+      }
+    }
+
+    await openArtifact(page, 390, 760);
+    const rail = page.locator('[data-pane-key="tools"]');
+    const notes = rail.locator('details[data-rail-tool="notes"]');
+    const summary = notes.locator(':scope > summary');
+    const summaryBox = await summary.boundingBox();
+    expect(summaryBox).not.toBeNull();
+    expect(await page.evaluate(({ x, y }) => (
+      document.elementFromPoint(x, y)?.closest('details[data-rail-tool="notes"] > summary') !== null
+    ), { x: summaryBox!.x + summaryBox!.width / 2, y: summaryBox!.y + summaryBox!.height / 2 })).toBe(true);
+    await summary.click();
+    await expect(notes).toHaveAttribute('open', '');
+
+    const inventory = page.locator('[data-pane-key="inventory"]');
+    await inventory.getByRole('button', { name: 'Pop out Inventory pane' }).click();
+    await expect(page.getByTestId('floating-pane-resize-inventory')).toBeHidden();
+    const sheet = await inventory.boundingBox();
+    expect(sheet).not.toBeNull();
+    expect(sheet!.x).toBeGreaterThanOrEqual(7);
+    expect(sheet!.x + sheet!.width).toBeLessThanOrEqual(383);
+    expect(sheet!.y + sheet!.height).toBeLessThanOrEqual(753);
+  });
+
   test('Notes retains one controlled draft owner through repeated pointer and keyboard placement changes', async ({ page }, testInfo) => {
     await openArtifact(page, 1180, 900);
     const tools = page.locator('[data-pane-key="tools"]');
@@ -261,7 +333,7 @@ test.describe('state-preserving pane placement', () => {
       const head = tools.locator(':scope > .motif-cs-pane-title');
       await head.focus();
       await head.press(cycle % 2 === 0 ? 'Alt+ArrowRight' : 'Alt+ArrowLeft');
-      const resize = tools.getByTestId('floating-pane-resize-tools');
+      const resize = page.getByTestId('floating-pane-resize-tools');
       await resize.focus();
       await resize.press(cycle % 2 === 0 ? 'ArrowDown' : 'ArrowUp');
 
@@ -316,7 +388,7 @@ test.describe('state-preserving pane placement', () => {
     expect(sheet!.x + sheet!.width).toBeLessThanOrEqual(383);
     expect(sheet!.y).toBeGreaterThan(38);
     expect(sheet!.y + sheet!.height).toBeLessThanOrEqual(753);
-    await expect(inventory.getByTestId('floating-pane-resize-inventory')).toBeHidden();
+    await expect(page.getByTestId('floating-pane-resize-inventory')).toBeHidden();
 
     await inventory.getByRole('button', { name: 'Add entry' }).click();
     const addEntry = inventory.locator('#motif-cs-add-entry');

@@ -9,6 +9,7 @@ export default defineConfig({
       'scripts/**/__tests__/**/*.test.mjs',
     ],
     pool: 'forks',
+    maxWorkers: 2,
     execArgv: ['--max-old-space-size=4096'],
     testTimeout: 15_000,
     environment: 'node',

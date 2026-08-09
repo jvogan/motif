@@ -1444,6 +1444,7 @@ function AlignmentMatrix({
   const [hoverCell, setHoverCell] = useState<HoverCell | null>(null);
   const [hoverPosition, setHoverPosition] = useState<{ x: number; y: number } | null>(null);
   const [contextMenu, setContextMenu] = useState<MatrixContextMenu | null>(null);
+  const hasSelection = selection !== null;
   // The context menu's on-screen position after clamping to the viewport (raw
   // pointer coordinates in `contextMenu` would otherwise overflow near edges).
   const [menuPosition, setMenuPosition] = useState<{ x: number; y: number } | null>(null);
@@ -1479,6 +1480,9 @@ function AlignmentMatrix({
    * Measured-against-measured is the only version that holds at every width.
    */
   const [readoutHeight, setReadoutHeight] = useState(MSA_SELECTION_READOUT_FLOAT_HEIGHT);
+  // Selection drags update the range every animation frame. Keep one observer
+  // for the readout's mounted lifetime; re-subscribing and synchronously
+  // measuring on every render can re-enter the state update loop during a drag.
   useEffect(() => {
     const node = readoutRef.current;
     if (!node || typeof ResizeObserver === 'undefined') return undefined;
@@ -1490,7 +1494,7 @@ function AlignmentMatrix({
     const observer = new ResizeObserver(sync);
     observer.observe(node);
     return () => observer.disconnect();
-  });
+  }, [hasSelection]);
   useEffect(() => {
     const node = chromeRef.current;
     if (!node || typeof ResizeObserver === 'undefined') return undefined;

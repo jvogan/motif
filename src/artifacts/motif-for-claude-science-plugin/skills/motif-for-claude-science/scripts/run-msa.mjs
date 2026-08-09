@@ -58,6 +58,14 @@ const ENGINE_CONFIG = Object.freeze({
   }),
 });
 
+const ENGINE_BANNER_PATTERNS = Object.freeze({
+  mafft: /^(?:mafft\s+)?v?7\.\d+(?:\.\d+)?(?:\s|\(|$)/iu,
+  muscle: /^muscle\b.*\bv?5(?:\.\d+)+/iu,
+  'clustal-omega': /^(?:clustal\s+omega|clustalo|clustalomega)\b.*\b1\.\d+(?:\.\d+)?/iu,
+});
+const WINDOWS_CHILD_ENVIRONMENT_KEYS = Object.freeze(['SystemRoot', 'SystemDrive', 'WINDIR']);
+const INVALID_CHILD_ENVIRONMENT_KEY = /(?:TOKEN|PASSWORD|PASSWD|SECRET|CREDENTIAL|AUTH|PROXY|AGENT|NODE_OPTIONS|LD_PRELOAD|DYLD_|AWS_|SSH_)/iu;
+
 function usage() {
   return `Run a real external MSA engine and produce a Motif artifact payload.
 
@@ -268,6 +276,17 @@ function executableVariants(name, env) {
   return [name, ...extensions.map((extension) => `${name}${extension.toLowerCase()}`)];
 }
 
+function normalizedExecutableName(path) {
+  return basename(path).toLowerCase().replace(/\.(?:exe|com)$/u, '');
+}
+
+function assertExecutableIdentity(executable, config, source) {
+  const name = normalizedExecutableName(executable);
+  if (!config.binaries.includes(name)) {
+    throw new Error(`${source} must resolve to a ${config.label} executable named ${config.binaries.join(' or ')}`);
+  }
+}
+
 function checkedExecutable(candidate) {
   if (!candidate || !existsSync(candidate)) return null;
   try {
@@ -319,6 +338,7 @@ export function discoverMsaExecutable(engineValue, options = {}) {
     if (value === undefined || value === null || String(value).trim() === '') continue;
     const executable = resolveConfiguredExecutable(value, pathValue, env, cwd);
     if (!executable) throw new Error(`${source} does not resolve to an executable ${config.label} binary: ${value}`);
+    assertExecutableIdentity(executable, config, source);
     return { path: executable, source };
   }
 
@@ -326,7 +346,10 @@ export function discoverMsaExecutable(engineValue, options = {}) {
     for (const binary of config.binaries) {
       for (const variant of executableVariants(binary, env)) {
         const executable = checkedExecutable(join(resolve(cwd, env.MOTIF_MSA_TOOLS_DIR), variant));
-        if (executable) return { path: executable, source: 'MOTIF_MSA_TOOLS_DIR' };
+        if (executable) {
+          assertExecutableIdentity(executable, config, 'MOTIF_MSA_TOOLS_DIR');
+          return { path: executable, source: 'MOTIF_MSA_TOOLS_DIR' };
+        }
       }
     }
     throw new Error(`MOTIF_MSA_TOOLS_DIR does not contain an executable ${config.label} binary`);
@@ -340,13 +363,19 @@ export function discoverMsaExecutable(engineValue, options = {}) {
     for (const binary of config.binaries) {
       for (const variant of executableVariants(binary, env)) {
         const executable = checkedExecutable(join(directory, variant));
-        if (executable) return { path: executable, source: '~/.claude-science/conda/envs/msa-tools' };
+        if (executable) {
+          assertExecutableIdentity(executable, config, '~/.claude-science/conda/envs/msa-tools');
+          return { path: executable, source: '~/.claude-science/conda/envs/msa-tools' };
+        }
       }
     }
   }
 
   const fromPath = findOnPath(config.binaries, pathValue, env);
-  if (fromPath) return { path: fromPath, source: 'PATH' };
+  if (fromPath) {
+    assertExecutableIdentity(fromPath, config, 'PATH');
+    return { path: fromPath, source: 'PATH' };
+  }
   throw new Error(
     `${config.label} was not found. Use --executable, ${config.envVar}, MOTIF_MSA_TOOLS_DIR, the Claude Science msa-tools environment, or PATH.`,
   );
@@ -376,6 +405,23 @@ function spawnChecked(executable, args, options) {
   return result;
 }
 
+function minimalMsaEnvironment(sourceEnv, explicitEnv = {}) {
+  const childEnv = {};
+  if (process.platform === 'win32') {
+    for (const key of WINDOWS_CHILD_ENVIRONMENT_KEYS) {
+      if (typeof sourceEnv?.[key] === 'string' && sourceEnv[key]) childEnv[key] = sourceEnv[key];
+    }
+  }
+  for (const [key, value] of Object.entries(explicitEnv ?? {})) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(key) || INVALID_CHILD_ENVIRONMENT_KEY.test(key)) {
+      throw new Error(`MSA child environment variable ${key} is not allowed`);
+    }
+    if (typeof value !== 'string') throw new Error(`MSA child environment variable ${key} must be a string`);
+    childEnv[key] = value;
+  }
+  return childEnv;
+}
+
 function detectEngineVersion(executable, config, options) {
   const result = spawnChecked(executable, [...config.versionArgs], {
     ...options,
@@ -391,10 +437,8 @@ function detectEngineVersion(executable, config, options) {
 }
 
 function validateEngineVersion(engine, version) {
-  if (engine !== 'muscle') return;
-  const major = version.match(/\bmuscle\s+v?(\d+)(?:\.|\s|$)/i)?.[1];
-  if (!major || Number(major) < 5) {
-    throw new Error(`MUSCLE 5 or later is required; detected version text: ${version}`);
+  if (!ENGINE_BANNER_PATTERNS[engine].test(version)) {
+    throw new Error(`${ENGINE_CONFIG[engine].label} version banner is not recognized: ${version}`);
   }
 }
 
@@ -515,7 +559,8 @@ export function runExternalMsa(options) {
     homeDir: options.homeDir,
     pathValue: options.pathValue,
   });
-  const env = options.env ?? process.env;
+  const discoveryEnv = options.env ?? process.env;
+  const childEnv = minimalMsaEnvironment(discoveryEnv, options.childEnv);
   const cwd = options.cwd ?? process.cwd();
   const temporaryRoot = options.temporaryRoot ?? tmpdir();
   const temporaryDirectory = mkdtempSync(join(temporaryRoot, 'motif-msa-'));
@@ -525,12 +570,13 @@ export function runExternalMsa(options) {
     const outputPath = join(temporaryDirectory, 'output.fasta');
     const inputFasta = createToolFasta(records);
     writeFileSync(inputPath, inputFasta, { encoding: 'utf8', mode: 0o600 });
-    const version = detectEngineVersion(discovery.path, config, { cwd, env, timeoutMs });
+    const executableSha256 = sha256File(discovery.path);
+    const version = detectEngineVersion(discovery.path, config, { cwd, env: childEnv, timeoutMs });
     validateEngineVersion(engine, version);
     const invocation = engineInvocation(engine, molecule, inputPath, outputPath);
     const result = spawnChecked(discovery.path, invocation.args, {
       cwd: temporaryDirectory,
-      env,
+      env: childEnv,
       timeoutMs,
       label: config.label,
       maxBuffer: invocation.outputMode === 'stdout' ? MAX_MSA_OUTPUT_BYTES : MAX_CAPTURE_BYTES,
@@ -541,10 +587,12 @@ export function runExternalMsa(options) {
     const rows = parseToolAlignment(rawOutput, records, molecule);
     const inputFastaSha256 = sha256(inputFasta);
     const outputFastaSha256 = sha256(rawOutput);
+    if (sha256File(discovery.path) !== executableSha256) {
+      throw new Error(`${config.label} executable changed during execution`);
+    }
     const createdAt = options.createdAt ?? new Date().toISOString();
     const alignmentName = safeAlignmentName(options.name, config.label, records.length);
     const executableName = basename(discovery.path);
-    const executableSha256 = sha256File(discovery.path);
     const portableArgs = portableInvocationArgs(invocation.args, inputPath, outputPath);
     const executableArgv = [executableName, ...portableArgs];
     const payload = {
