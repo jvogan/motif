@@ -1,7 +1,7 @@
 import type { Feature, FeatureStrand, FeatureType, Topology } from './types';
 import { featureLocationCoordinateSignature } from './feature-location';
 
-// Phase 35 P-H (P2-E2): individual qualifier values larger than 1 MB are
+// Individual qualifier values larger than 1 MB are
 // truncated to this cap and tagged with a suffix so consumers can detect
 // the truncation. The retained accumulator is bounded in UTF-8 bytes and the
 // original byte count is tracked separately so huge values cannot grow it.
@@ -133,12 +133,11 @@ function qualifierChunkStats(value: string, opening: boolean, closing: boolean):
  * `ds-` (double-stranded), or `ms-` (mixed). Absent on most modern records.
  * Preserving the literal token lets a parsed-then-exported record round-trip
  * the strand field that downstream GenBank consumers read from column 22-23.
- * VOG-2000.
  */
 export type GenBankStrandedness = 'ss' | 'ds' | 'ms';
 
 /**
- * VOG-1973: a GenBank file is "truncated" when the source is cut off before
+ * A GenBank file is "truncated" when the source is cut off before
  * the ORIGIN block finishes — either no ORIGIN section at all, or ORIGIN
  * present but missing most/all sequence rows. Without a guard the parser
  * silently emits a record with a non-zero LOCUS length, partial features,
@@ -194,7 +193,7 @@ export interface GenBankRecord {
   definition?: string;
   accession?: string;
   /**
-   * VOG-1973: present only when the parser detected a truncated record.
+   * Present only when the parser detected a truncated record.
    * The intake pipeline surfaces a `partial_record` warning and refuses
    * to materialize 0-bp blocks. Absent on healthy records to keep the
    * import metadata payload lean.
@@ -202,36 +201,35 @@ export interface GenBankRecord {
   truncated?: GenBankTruncationInfo;
   /**
    * Free-form COMMENT block. Preserved as a single string with embedded
-   * newlines so multi-line comments survive a round-trip. VOG-2004.
+   * newlines so multi-line comments survive a round-trip.
    */
   comment?: string;
-  /** SOURCE line (one-line summary above ORGANISM). VOG-2004. */
+  /** SOURCE line (one-line summary above ORGANISM). */
   source?: string;
   /**
    * ORGANISM block. The first line is the organism name; subsequent
    * indented lines form the taxonomic lineage joined with `; `. We retain
    * the parsed name+lineage as a single string so the exporter can re-emit
-   * the original layout. VOG-2004.
+   * the original layout.
    */
   organism?: string;
-  /** KEYWORDS line, semicolon-separated, period-terminated upstream. VOG-2004. */
+  /** KEYWORDS line, semicolon-separated, period-terminated upstream. */
   keywords?: string;
   /**
    * VERSION line value (e.g. `NM_001234.1` or `1`). Distinct from
    * `accession` because the version suffix is independent. Protein records
    * sometimes omit VERSION entirely; we record the absence as `undefined`
    * (vs `''`) so the exporter can decide whether to emit a fallback.
-   * VOG-2001.
    */
   version?: string;
-  /** LOCUS strand qualifier (`ss-` / `ds-` / `ms-`). VOG-2000. */
+  /** LOCUS strand qualifier (`ss-` / `ds-` / `ms-`). */
   strandedness?: GenBankStrandedness;
   /**
    * LOCUS division code (3-letter NCBI division like `BCT`, `PLN`, `SYN`,
-   * or `UNK`). VOG-1974.
+   * or `UNK`).
    */
   division?: string;
-  /** LOCUS date in `DD-MMM-YYYY` form, preserved verbatim. VOG-1974. */
+  /** LOCUS date in `DD-MMM-YYYY` form, preserved verbatim. */
   date?: string;
   /** Feature-specific warnings raised while retaining valid but unprojectable locations. */
   importDiagnostics?: GenBankImportDiagnostic[];
@@ -240,7 +238,7 @@ export interface GenBankRecord {
 }
 
 /**
- * VOG-2039 hotfix: qualifiers whose value is a continuous sequence (no
+ * Qualifiers whose value is a continuous sequence (no
  * intra-value whitespace) must NOT have a space inserted when joining
  * continuation lines. Today this is just `/translation` (protein
  * sequence). Without this special-case, a parsed protein sequence ends
@@ -273,7 +271,7 @@ const FEATURE_TYPE_MAP: Record<string, FeatureType> = {
   exon: 'exon',
   polya_signal: 'polyA_signal',
   enhancer: 'enhancer',
-  // QA2 W16c (export agent F1): Motif's GenBank exporter writes these internal
+  // Motif's GenBank exporter writes these internal
   // FeatureType keys verbatim (export.ts FEATURES table). Map them back so a
   // GenBank round-trip preserves the type instead of collapsing to `custom`.
   // (`rep_origin` above still maps to `origin` for standard external files.)
@@ -573,7 +571,7 @@ function parseLocation(loc: string, depth = 0): ParsedLocation {
  * syntax as GenBank, just with an `FT` line prefix instead of 5 leading
  * spaces. `parseEmbl` rewrites the prefix to the GenBank column layout and
  * delegates here, so location parsing, multi-line qualifiers, `""` escaping,
- * and the `/label`-first naming rule stay in one place. VOG-2149.
+ * and the `/label`-first naming rule stay in one place.
  */
 export function parseFeatures(featuresText: string): Feature[] {
   const features: Feature[] = [];
@@ -615,12 +613,12 @@ export function parseFeatures(featuresText: string): Feature[] {
     }
 
     // Parse qualifiers.
-    // Phase 35 P-H (P2-E1): null-prototype map so a malicious /__proto__= or
+    // Use a null-prototype map so a malicious /__proto__= or
     // /constructor= qualifier key cannot reach Object.prototype. Not exploitable
     // in V8 today (special-cased), but defense in depth.
-    // Phase 35 P-H (P2-E2): cap individual qualifier values at 1 MB to defend
+    // Cap individual qualifier values at 1 MB to defend
     // against malicious input. Larger values are truncated with a suffix.
-    // Phase 35 P1-A7: decode embedded `""` → `"` per NCBI feature-table spec
+    // Decode embedded `""` → `"` per NCBI feature-table spec
     // §3.4.2. The previous strip-outer-quotes-only behavior preserved `""`
     // as `""` in metadata, so spec-compliant input round-tripped wrong.
     // We also detect when a continuation line beginning with `/` is actually
@@ -662,7 +660,6 @@ export function parseFeatures(featuresText: string): Feature[] {
         // '' BEFORE reaching its `value === true` bare-flag branch, which is how
         // these flags were being dropped. Feature.metadata is
         // Record<string, unknown>, so the boolean is type-safe downstream.
-        // (QA2 W21, import/export agent F2.)
         value = true;
       } else {
         const truncated = currentQualOriginalBytes > QUALIFIER_VALUE_MAX_BYTES;
@@ -742,7 +739,7 @@ export function parseFeatures(featuresText: string): Feature[] {
         // measured, so a malicious 100 MB qualifier cannot grow the parser's
         // accumulator or lose its loss receipt.
         //
-        // VOG-2039 hotfix: `/translation` is a continuous protein sequence —
+        // `/translation` is a continuous protein sequence —
         // line breaks in the source are pure formatting and must NOT
         // introduce whitespace into the parsed value (or downstream consumers
         // would see `MVSK LKFI ...` instead of `MVSKLKFI...`, and the exporter
@@ -765,7 +762,7 @@ export function parseFeatures(featuresText: string): Feature[] {
     // Determine name from qualifiers. Each read is string-guarded: a valueless
     // qualifier is stored as `true` (see saveQualifier) and `name.replace()`
     // below assumes a string, so only adopt a qualifier whose value is a string.
-    // R11: /label is the canonical display-name carrier and MUST win — the
+    // `/label` is the canonical display-name carrier and MUST win — the
     // exporter (src/persistence/export.ts) always writes feature.name to /label,
     // so reading /gene first silently reverted a user-renamed feature to its
     // gene/product name on an export→import round-trip. /label-first matches
@@ -913,7 +910,7 @@ function parseLocusLine(line: string): LocusFields {
 
   // Strandedness — `ss-`, `ds-`, `ms-` prefix on the molecule type field.
   // We strip the prefix from `moleculeType` so the rest of the codebase
-  // continues to receive plain `DNA` / `RNA`. VOG-2000.
+  // continues to receive plain `DNA` / `RNA`.
   const strandMatch = line.match(/\b(ss|ds|ms)-(DNA|RNA|mRNA)\b/i);
   if (strandMatch) {
     result.strandedness = strandMatch[1].toLowerCase() as GenBankStrandedness;
@@ -928,14 +925,14 @@ function parseLocusLine(line: string): LocusFields {
   if (/\bcircular\b/i.test(line)) result.topology = 'circular';
   else if (/\blinear\b/i.test(line)) result.topology = 'linear';
 
-  // Date — DD-MMM-YYYY in trailing column. VOG-1974.
+  // Date — DD-MMM-YYYY in trailing column.
   const dateMatch = line.match(/(\d{2}-[A-Z]{3}-\d{4})\s*$/);
   if (dateMatch) result.date = dateMatch[1];
 
   // Division — 3 uppercase letters preceding the date (or trailing if
   // date absent). NCBI divisions: BCT PRI ROD MAM VRT INV PLN BCT VRL PHG
   // RNA SYN UNA EST PAT STS GSS HTG HTC ENV CON TSA UNK. Match any
-  // 3-letter uppercase token in that slot. VOG-1974.
+  // 3-letter uppercase token in that slot.
   const divMatch = result.date
     ? line.match(/\b([A-Z]{3})\s+\d{2}-[A-Z]{3}-\d{4}\s*$/)
     : line.match(/\b([A-Z]{3})\s*$/);
@@ -975,7 +972,7 @@ function parseSingleGenBankRecord(raw: string): GenBankRecord | null {
   let inOrganism = false;
   let keywordsLines: string[] = [];
   let inKeywords = false;
-  // VOG-1973: track whether the input ever entered ORIGIN. Combined with
+  // Track whether the input ever entered ORIGIN. Combined with
   // `locus.length` (the LOCUS-declared length) we use this to detect
   // truncation. A GenBank export that was cut off
   // mid-FEATURES (or mid-ORIGIN) shows up here as `originSeen = false`
@@ -1068,10 +1065,10 @@ function parseSingleGenBankRecord(raw: string): GenBankRecord | null {
 
     if (line.startsWith('ACCESSION')) {
       const rawAccession = line.replace(/^ACCESSION\s+/, '').trim();
-      // VOG-2039 hotfix: `ACCESSION unknown` is a placeholder used by
+      // `ACCESSION unknown` is a placeholder used by
       // Motif (and other tools) when no real NCBI accession exists.
       // Treat it as no-accession so the exporter doesn't later emit a
-      // phantom `VERSION unknown.1` (the VOG-2001 pathology). NCBI uses
+      // phantom `VERSION unknown.1`. NCBI uses
       // the same convention — accession is absent when no submission ID
       // has been assigned.
       accession = rawAccession.toLowerCase() === 'unknown' ? '' : rawAccession;
@@ -1162,13 +1159,12 @@ function parseSingleGenBankRecord(raw: string): GenBankRecord | null {
     length = sequence.length;
   }
 
-  // Phase 32 (Pass-Export P0-3): preserve source case verbatim. Phase 31 W13
-  // only preserved mixed-case; uniformly UPPERCASE input was still flattened
-  // to lowercase. Exporter now also preserves verbatim (export.ts), so a
-  // round-trip through GenBank now survives case identity for all inputs.
+  // Preserve source case verbatim. The exporter also preserves it, so a
+  // round-trip through GenBank survives case identity for all inputs,
+  // including uniformly uppercase records.
   const preservedSequence = sequence;
 
-  // VOG-1973: detect truncation. Three trip-wires, in order of severity:
+  // Detect truncation with three checks, in order of severity:
   //   (1) LOCUS declared a positive length but ORIGIN never appeared —
   //       the file was cut off before (or during) FEATURES emit. This is
   //       the canonical "0-bp block with partial features" reproducer.

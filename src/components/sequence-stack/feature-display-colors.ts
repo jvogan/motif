@@ -6,7 +6,7 @@ import { getCssVar, getFeatureColorToken } from '../../lib/css-tokens';
  * Dark palette: bright colors for dark backgrounds.
  * Light palette: darkened equivalents that pass WCAG AA as small text on light sequence panels.
  *
- * Phase 32 P0-6: these constants stay as the canonical TS-side source of truth
+ * These constants stay as the canonical TS-side source of truth
  * (consumed directly by importers and tests), but `featureTypeDisplayColor()`
  * now prefers the live CSS token (`--feature-{type}`) when one is defined so
  * HC + theme switches reach the renderers. The constants serve as the SSR /
@@ -170,7 +170,7 @@ export function featureTypeDisplayColor(type: FeatureType, theme: ThemeName): st
     theme === 'light'
       ? (GENBANK_FEATURE_COLORS_LIGHT[type] ?? GENBANK_FEATURE_COLORS_LIGHT.custom)
       : (GENBANK_FEATURE_COLORS[type] ?? GENBANK_FEATURE_COLORS.custom);
-  // Phase 32 P0-6: prefer the live CSS token so HC + theme switches reach
+  // Prefer the live CSS token so high-contrast and theme switches reach
   // every renderer that lands here (FeatureAnnotationTrack, FeatureSelector,
   // DetailSequenceDisplay). Hex constants above remain the SSR fallback.
   return getFeatureColorToken(type, fallback);

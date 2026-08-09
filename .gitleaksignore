@@ -1,4 +1,8 @@
 # False positives: the generic-api-key rule interprets the standard
 # aria-keyshortcuts accessibility attribute as a credential assignment.
-src/artifacts/__tests__/claude-science-accessibility-interaction-guards.test.ts:generic-api-key:78
-src/artifacts/motif-artifact.tsx:generic-api-key:13794
+src/artifacts/__tests__/claude-science-accessibility-interaction-guards.test.ts:generic-api-key:155
+src/artifacts/motif-artifact.tsx:generic-api-key:19120
+# The initial public snapshot contains the same accessibility attributes at
+# these historical line numbers; keep full-history scans focused on real leaks.
+8b692e3ce55a49922593809d7ec6cb4545245d6c:src/artifacts/__tests__/claude-science-accessibility-interaction-guards.test.ts:generic-api-key:78
+8b692e3ce55a49922593809d7ec6cb4545245d6c:src/artifacts/motif-artifact.tsx:generic-api-key:13794

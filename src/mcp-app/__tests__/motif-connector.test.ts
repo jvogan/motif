@@ -317,6 +317,18 @@ describe('Motif MCP payload boundary', () => {
     expect(() => validateMotifPayload({
       records: [{ molecule: 'dna', sequence: 'AT-GC', features: [{ start: 0, end: 99 }] }],
     })).toThrow(/invalid character "-" at offset 2/i);
+    expect(() => validateMotifPayload({
+      records: [{ molecule: 'dna', sequence: 'ATGC', features: [{ start: 0.5, end: 2 }] }],
+    })).toThrow(/integer start and end coordinates/i);
+    expect(() => validateMotifPayload({
+      records: [{ molecule: 'dna', sequence: 'ATGC', features: [{ start: 0, end: 2, subRanges: [{ start: 1, end: 2.5 }] }] }],
+    })).toThrow(/integer start and end coordinates/i);
+    expect(() => validateMotifPayload({
+      records: [{ molecule: 'dna', sequence: 'ATGC', sites: [{ enzyme: 'EcoRI', hits: [{ position: 1.5 }] }] }],
+    })).toThrow(/position must be a non-negative safe integer/i);
+    expect(() => validateMotifPayload({
+      records: [{ molecule: 'dna', sequence: 'ATGC', sites: [{ enzyme: 'EcoRI', hits: [{ position: 1, cutPosition: 2.5 }] }] }],
+    })).toThrow(/cutPosition must be a non-negative safe integer/i);
   });
 
   it('matches browser record validation for nested metadata and DNA end chemistry', () => {

@@ -59,7 +59,8 @@ export const RESTRICTION_ENZYMES_FULL: RestrictionEnzyme[] = [
   },
   // HaeIII: GGCC — blunt, cuts GG|CC
   { name: 'HaeIII',  recognitionSequence: 'GGCC',   cutOffset: 2, complementCutOffset: 2,  overhang: 'blunt'  },
-  // HhaI: GCGC — cuts GCG|C leaving a 2-nt 3′ overhang; cutOffset=3, compCutOffset=1 (QA2 W27: was 1/3, fragment boundary off by 2)
+  // HhaI: GCGC — cuts GCG|C leaving a 2-nt 3′ overhang; cutOffset=3,
+  // compCutOffset=1. The previous 1/3 geometry put the fragment boundary off by 2.
   {
     name: 'HhaI',
     recognitionSequence: 'GCGC',
@@ -138,7 +139,8 @@ export const RESTRICTION_ENZYMES_FULL: RestrictionEnzyme[] = [
   { name: 'TaqI',    recognitionSequence: 'TCGA',   cutOffset: 1, complementCutOffset: 3,  overhang: '5prime' },
   // Tsp509I: AATT — 5′ overhang
   { name: 'Tsp509I', recognitionSequence: 'AATT',   cutOffset: 0, complementCutOffset: 4,  overhang: '5prime' },
-  // CfoI: GCGC — isoschizomer of HhaI (GCG|C, 2-nt 3′ overhang); cutOffset=3, compCutOffset=1 (QA2 W27)
+  // CfoI: GCGC — isoschizomer of HhaI (GCG|C, 2-nt 3′ overhang); cutOffset=3,
+  // compCutOffset=1.
   { name: 'CfoI',    recognitionSequence: 'GCGC',   cutOffset: 3, complementCutOffset: 1,  overhang: '3prime' },
   // Csp6I: GTAC — isoschizomer of RsaI
   { name: 'Csp6I',   recognitionSequence: 'GTAC',   cutOffset: 1, complementCutOffset: 3,  overhang: '5prime' },
@@ -197,7 +199,8 @@ export const RESTRICTION_ENZYMES_FULL: RestrictionEnzyme[] = [
   { name: 'BclI',    recognitionSequence: 'TGATCA',  cutOffset: 1, complementCutOffset: 5,  overhang: '5prime' },
   // BlpI: GCTNAGC — cuts GC|TNAGC → 5′ TNA overhang (degenerate); cut after pos 2
   { name: 'BlpI',    recognitionSequence: 'GCTNAGC', cutOffset: 2, complementCutOffset: 5,  overhang: '5prime' },
-  // BmtI: GCTAGC — NheI neoschizomer that cuts GCTAG^C → 1-nt 3′ overhang C (NEB R0658); 5/1 3prime (QA2 W28: was 1/5 5prime = NheI's cut)
+  // BmtI: GCTAGC — NheI neoschizomer that cuts GCTAG^C → 1-nt 3′ overhang C
+  // (NEB R0658); 5/1 3prime, rather than NheI's 1/5 5prime cut.
   { name: 'BmtI',    recognitionSequence: 'GCTAGC',  cutOffset: 5, complementCutOffset: 1,  overhang: '3prime' },
   // BsiWI: CGTACG — cuts C|GTACG → 5′ GTAC overhang
   { name: 'BsiWI',   recognitionSequence: 'CGTACG',  cutOffset: 1, complementCutOffset: 5,  overhang: '5prime' },
@@ -211,7 +214,8 @@ export const RESTRICTION_ENZYMES_FULL: RestrictionEnzyme[] = [
   { name: 'BstBI',   recognitionSequence: 'TTCGAA',  cutOffset: 2, complementCutOffset: 4,  overhang: '5prime' },
   // BstEII: GGTNACC — cuts G|GTNACC → 5′ GTNAC overhang; cut at pos 1
   { name: 'BstEII',  recognitionSequence: 'GGTNACC', cutOffset: 1, complementCutOffset: 6,  overhang: '5prime' },
-  // BstXI: CCANNNNNNTGG — cuts CCANNNNN^NTGG → 4-nt 3′ overhang (NEB R0113); 8/4 3prime (QA2 W28: was 2/10 5prime)
+  // BstXI: CCANNNNNNTGG — cuts CCANNNNN^NTGG → 4-nt 3′ overhang (NEB R0113);
+  // 8/4 3prime, correcting the former 2/10 5prime geometry.
   { name: 'BstXI',   recognitionSequence: 'CCANNNNNNTGG', cutOffset: 8, complementCutOffset: 4, overhang: '3prime' },
   // DraI: TTTAAA — blunt; cuts TTT|AAA
   { name: 'DraI',    recognitionSequence: 'TTTAAA',  cutOffset: 3, complementCutOffset: 3,  overhang: 'blunt'  },
@@ -245,12 +249,14 @@ export const RESTRICTION_ENZYMES_FULL: RestrictionEnzyme[] = [
   { name: 'PmeI',    recognitionSequence: 'GTTTAAAC', cutOffset: 4, complementCutOffset: 4, overhang: 'blunt'  },
   // PmlI: CACGTG — blunt; cuts CAC|GTG
   { name: 'PmlI',    recognitionSequence: 'CACGTG',  cutOffset: 3, complementCutOffset: 3,  overhang: 'blunt'  },
-  // PpuMI: RGGWCCY — cuts RG^GWCCY → 3-nt 5′ overhang GWC (NEB R0506); 2/5 (QA2 W28: was 1/6, cut after lone R)
+  // PpuMI: RGGWCCY — cuts RG^GWCCY → 3-nt 5′ overhang GWC (NEB R0506); 2/5,
+  // with the cut after the recognition prefix rather than the lone R.
   { name: 'PpuMI',   recognitionSequence: 'RGGWCCY', cutOffset: 2, complementCutOffset: 5,  overhang: '5prime' },
   // PsiI: TTATAA — blunt; cuts TTT|AAA (cuts midpoint: TTT→ no, TTAT|AA)
   // Actually PsiI cuts TTA|TAA → blunt
   { name: 'PsiI',    recognitionSequence: 'TTATAA',  cutOffset: 3, complementCutOffset: 3,  overhang: 'blunt'  },
-  // PvuI: CGATCG — cuts CGAT|CG → 2-nt 3′ overhang AT (NEB R0150); cutOffset=4, compCutOffset=2 (QA2 W27: was 5/1)
+  // PvuI: CGATCG — cuts CGAT|CG → 2-nt 3′ overhang AT (NEB R0150);
+  // cutOffset=4, compCutOffset=2.
   { name: 'PvuI',    recognitionSequence: 'CGATCG',  cutOffset: 4, complementCutOffset: 2,  overhang: '3prime' },
   // PvuII: CAGCTG — blunt; cuts CAG|CTG
   { name: 'PvuII',   recognitionSequence: 'CAGCTG',  cutOffset: 3, complementCutOffset: 3,  overhang: 'blunt'  },
@@ -261,7 +267,8 @@ export const RESTRICTION_ENZYMES_FULL: RestrictionEnzyme[] = [
   { name: 'SbfI',    recognitionSequence: 'CCTGCAGG', cutOffset: 6, complementCutOffset: 2, overhang: '3prime' },
   // SfoI: GGCGCC — blunt; cuts GGC|GCC
   { name: 'SfoI',    recognitionSequence: 'GGCGCC',  cutOffset: 3, complementCutOffset: 3,  overhang: 'blunt'  },
-  // SgrAI: CRCCGGYG — cuts CR^CCGGYG → 4-nt 5′ overhang CCGG (NEB R0603); 2/6 (QA2 W28: was 1/7, cut after lone C)
+  // SgrAI: CRCCGGYG — cuts CR^CCGGYG → 4-nt 5′ overhang CCGG (NEB R0603);
+  // 2/6, with the cut after the recognition prefix rather than the lone C.
   { name: 'SgrAI',   recognitionSequence: 'CRCCGGYG', cutOffset: 2, complementCutOffset: 6, overhang: '5prime' },
   // SnaBI: TACGTA — blunt; cuts TAC|GTA
   { name: 'SnaBI',   recognitionSequence: 'TACGTA',  cutOffset: 3, complementCutOffset: 3,  overhang: 'blunt'  },
@@ -287,9 +294,11 @@ export const RESTRICTION_ENZYMES_FULL: RestrictionEnzyme[] = [
   { name: 'DraIII',  recognitionSequence: 'CACNNNGTG', cutOffset: 6, complementCutOffset: 3, overhang: '3prime' },
   // AlwNI: CAGNNNCTG — interrupted palindrome with a 3-N spacer, identical cut
   // geometry to DraIII: cuts CAGNNN|CTG / G|TCNNNCAC → 3-nt 3′ recessed overhang
-  // (REBASE). Mirrors DraIII's 6/3 offsets. (R18 #53a: was missing entirely.)
+  // (REBASE). Mirrors DraIII's 6/3 offsets; included explicitly because the
+  // catalog previously omitted this enzyme.
   { name: 'AlwNI',   recognitionSequence: 'CAGNNNCTG', cutOffset: 6, complementCutOffset: 3, overhang: '3prime' },
-  // EcoO109I: RGGNCCY — cuts RG^GNCCY → 3-nt 5′ overhang GNC (NEB R0503); 2/5 (QA2 W28: was 1/6, cut after lone R)
+  // EcoO109I: RGGNCCY — cuts RG^GNCCY → 3-nt 5′ overhang GNC (NEB R0503);
+  // 2/5, with the cut after the recognition prefix rather than the lone R.
   { name: 'EcoO109I',recognitionSequence: 'RGGNCCY', cutOffset: 2, complementCutOffset: 5,  overhang: '5prime' },
   // HpaI: already added above
   // MscI: TGGCCA — blunt; cuts TGG|CCA
@@ -330,7 +339,8 @@ export const RESTRICTION_ENZYMES_FULL: RestrictionEnzyme[] = [
   // SbfI: already added
   // Sse8387I: CCTGCAGG — isoschizomer of SbfI
   { name: 'Sse8387I',recognitionSequence: 'CCTGCAGG', cutOffset: 6, complementCutOffset: 2, overhang: '3prime' },
-  // Sse8647I: AGGWCCT — cuts AG^GWCCT → 3-nt 5′ overhang GWC (REBASE caret AG^GWCCT); 2/5 (QA2 W28: was 3/4)
+  // Sse8647I: AGGWCCT — cuts AG^GWCCT → 3-nt 5′ overhang GWC (REBASE caret
+  // AG^GWCCT); 2/5, correcting the former 3/4 geometry.
   { name: 'Sse8647I',recognitionSequence: 'AGGWCCT', cutOffset: 2, complementCutOffset: 5,  overhang: '5prime' },
 
   // ── Type IIS enzymes ─────────────────────────────────────────────────────────
@@ -355,7 +365,8 @@ export const RESTRICTION_ENZYMES_FULL: RestrictionEnzyme[] = [
   //   cutOffset = 7+1 = 8, complementCutOffset = 7+4 = 11
   { name: 'SapI',    recognitionSequence: 'GCTCTTC', cutOffset: 8,  complementCutOffset: 11, overhang: '5prime' },
   // BtgZI: GCGATG(10/14) — recognition 6 bp, 4-nt 5′ extension (NEB R0703)
-  //   cutOffset = 6+10 = 16, complementCutOffset = 6+14 = 20 (QA2 W27: was 2/10 = 8/16)
+  //   cutOffset = 6+10 = 16, complementCutOffset = 6+14 = 20 (the former
+  //   2/10 = 8/16 offsets were incorrect).
   { name: 'BtgZI',   recognitionSequence: 'GCGATG',  cutOffset: 16,  complementCutOffset: 20, overhang: '5prime' },
   // BpiI (alternative name for BbsI/isoschizomer): GAAGAC(2/6)
   { name: 'BpiI',    recognitionSequence: 'GAAGAC',  cutOffset: 8,  complementCutOffset: 12, overhang: '5prime' },
@@ -386,7 +397,8 @@ export const RESTRICTION_ENZYMES_FULL: RestrictionEnzyme[] = [
   { name: 'AclI',    recognitionSequence: 'AACGTT',  cutOffset: 2, complementCutOffset: 4,  overhang: '5prime' },
   // AflIII: ACRYGT — cuts A|CRYGT → 5′ CRYGТ overhang
   { name: 'AflIII',  recognitionSequence: 'ACRYGT',  cutOffset: 1, complementCutOffset: 5,  overhang: '5prime' },
-  // AhdI: GACNNNNNGTC — cuts GACNNN|NNGTC → 1-nt 3′ overhang (NEB R0584); cutOffset=6, compCutOffset=5 (QA2 W27: was mislabeled blunt)
+  // AhdI: GACNNNNNGTC — cuts GACNNN|NNGTC → 1-nt 3′ overhang (NEB R0584);
+  // cutOffset=6, compCutOffset=5, not blunt.
   { name: 'AhdI',    recognitionSequence: 'GACNNNNNGTC', cutOffset: 6, complementCutOffset: 5, overhang: '3prime' },
   // BaeGI: GKGCMC — cuts G|KGCMC → 5′ KGCM overhang
   // AleI: CACNNNNGTG — cuts CAC|NNNNGTG → blunt
@@ -399,20 +411,23 @@ export const RESTRICTION_ENZYMES_FULL: RestrictionEnzyme[] = [
   { name: 'BsaBI',   recognitionSequence: 'GATNNNNATC', cutOffset: 5, complementCutOffset: 5, overhang: 'blunt' },
   // BsiEI: CGRY|CG → 3′ overhang
   { name: 'BsiEI',   recognitionSequence: 'CGRYCG',  cutOffset: 4, complementCutOffset: 2,  overhang: '3prime' },
-  // BsiHKAI: GWGCWC — cuts GWGCW^C → 4-nt 3′ overhang WGCW (SphI/HgiAI family); 5/1 3prime (QA2 W28: was 1/5 5prime)
+  // BsiHKAI: GWGCWC — cuts GWGCW^C → 4-nt 3′ overhang WGCW (SphI/HgiAI
+  // family); 5/1 3prime, correcting the former 1/5 5prime geometry.
   { name: 'BsiHKAI', recognitionSequence: 'GWGCWC',  cutOffset: 5, complementCutOffset: 1,  overhang: '3prime' },
   // BsoBI: CYCGRG — cuts C|YCGRG → 5′ YCGR overhang (like XhoI family)
   { name: 'BsoBI',   recognitionSequence: 'CYCGRG',  cutOffset: 1, complementCutOffset: 5,  overhang: '5prime' },
   // BspHI: already added
   // BsrFαI: RCCGGY — cuts R|CCGGY → 5′ CCGG overhang
   { name: 'BsrFI',   recognitionSequence: 'RCCGGY',  cutOffset: 1, complementCutOffset: 5,  overhang: '5prime' },
-  // BstAPI: GCANNNNNTGC — cuts GCANNNN^NTGC → 3-nt 3′ overhang (NEB R0654); cutOffset 7 (QA2 W28: was 6, off by one)
+  // BstAPI: GCANNNNNTGC — cuts GCANNNN^NTGC → 3-nt 3′ overhang (NEB R0654);
+  // cutOffset 7, correcting the former off-by-one value of 6.
   { name: 'BstAPI',  recognitionSequence: 'GCANNNNNTGC', cutOffset: 7, complementCutOffset: 4, overhang: '3prime' },
   // BstZ17I: GTATAC — blunt; cuts GTA|TAC
   { name: 'BstZ17I', recognitionSequence: 'GTATAC',  cutOffset: 3, complementCutOffset: 3,  overhang: 'blunt'  },
   // BtgI: CCRYGG — cuts C|CRYGG → 5′ CRYG overhang
   { name: 'BtgI',    recognitionSequence: 'CCRYGG',  cutOffset: 1, complementCutOffset: 5,  overhang: '5prime' },
-  // DrdI: GACNNNNNNGTC — cuts GACNNNN|NNGTC → 3-nt 3′ overhang (NEB R0530); cutOffset=7, compCutOffset=4 (QA2 W27: was 7/5 blunt)
+  // DrdI: GACNNNNNNGTC — cuts GACNNNN|NNGTC → 3-nt 3′ overhang (NEB R0530);
+  // cutOffset=7, compCutOffset=4, not the former 7/5 blunt geometry.
   { name: 'DrdI',    recognitionSequence: 'GACNNNNNNGTC', cutOffset: 7, complementCutOffset: 4, overhang: '3prime' },
   // EarI: CTCTTC(1/4) — isoschizomer of SapI
   { name: 'EarI',    recognitionSequence: 'CTCTTC',  cutOffset: 7,  complementCutOffset: 10, overhang: '5prime' },
@@ -424,7 +439,8 @@ export const RESTRICTION_ENZYMES_FULL: RestrictionEnzyme[] = [
   { name: 'MlsI',    recognitionSequence: 'TGGCCA',  cutOffset: 3, complementCutOffset: 3,  overhang: 'blunt'  },
   // MluCI: AATT — 5′ overhang (isoschizomer of Tsp509I)
   { name: 'MluCI',   recognitionSequence: 'AATT',    cutOffset: 0, complementCutOffset: 4,  overhang: '5prime' },
-  // NspI: RCATGY — cuts RCATG^Y → 4-nt 3′ overhang CATG (NEB R0602; SphI family); 5/1 3prime (QA2 W28: was 1/5 5prime — the old comment's hedge guessed wrong)
+  // NspI: RCATGY — cuts RCATG^Y → 4-nt 3′ overhang CATG (NEB R0602; SphI
+  // family); 5/1 3prime, correcting the former 1/5 5prime geometry.
   { name: 'NspI',    recognitionSequence: 'RCATGY',  cutOffset: 5, complementCutOffset: 1,  overhang: '3prime' },
   // SfeI: CTRYAG — cuts C|TRYAG → 5′ TRYA overhang
   { name: 'SfeI',    recognitionSequence: 'CTRYAG',  cutOffset: 1, complementCutOffset: 5,  overhang: '5prime' },
@@ -433,7 +449,8 @@ export const RESTRICTION_ENZYMES_FULL: RestrictionEnzyme[] = [
   // Actually TaiI: ACGT — cuts between A and CGT? Not well characterized; skip.
   // XcmI: CCANNNNNNNNNTGG — cuts CCA(9/12)NNNNNNTGG → 3′ overhang
   { name: 'XcmI',    recognitionSequence: 'CCANNNNNNNNNTGG', cutOffset: 12, complementCutOffset: 9, overhang: '3prime' },
-  // ZraI: GACGTC — BLUNT neoschizomer of AatII; cuts GAC^GTC (NEB R0659); 3/3 blunt (QA2 W28: was 5/1 3prime = AatII's cut — losing the blunt-cutter point)
+  // ZraI: GACGTC — BLUNT neoschizomer of AatII; cuts GAC^GTC (NEB R0659);
+  // 3/3 blunt, rather than AatII's 5/1 3prime geometry.
   { name: 'ZraI',    recognitionSequence: 'GACGTC',  cutOffset: 3, complementCutOffset: 3,  overhang: 'blunt' },
 
   // ── Additional frequently used enzymes ───────────────────────────────────────
@@ -462,7 +479,9 @@ export const RESTRICTION_ENZYMES_FULL: RestrictionEnzyme[] = [
   { name: 'EcoT22I', recognitionSequence: 'ATGCAT',  cutOffset: 5, complementCutOffset: 1,  overhang: '3prime' },
   // HindII: GTYRAC — isoschizomer of HincII (blunt)
   { name: 'HindII',  recognitionSequence: 'GTYRAC',  cutOffset: 3, complementCutOffset: 3,  overhang: 'blunt'  },
-  // MboII: GAAGA(8/7) — Type IIS, single-base 3′ extension (NEB R0148); offsets 13/12 imply 3prime (QA2 W28: label was 5prime, wrong strand for this non-palindromic overhang)
+  // MboII: GAAGA(8/7) — Type IIS, single-base 3′ extension (NEB R0148);
+  // offsets 13/12 imply 3prime, the correct strand for this non-palindromic
+  // overhang.
   { name: 'MboII',   recognitionSequence: 'GAAGA',   cutOffset: 13, complementCutOffset: 12, overhang: '3prime' },
   // MfeI: already added
   // MluI: already added
@@ -476,7 +495,9 @@ export const RESTRICTION_ENZYMES_FULL: RestrictionEnzyme[] = [
   { name: 'TfiI',    recognitionSequence: 'GAWTC',   cutOffset: 1, complementCutOffset: 4,  overhang: '5prime' },
   // TseI: GCWGC — cuts G|CWGC → 5′ CWGC overhang? Actually TseI cuts G|CWGC but let's use:
   { name: 'TseI',    recognitionSequence: 'GCWGC',   cutOffset: 1, complementCutOffset: 4,  overhang: '5prime' },
-  // Tth111I: GACNNNGTC — cuts GACN^NNGTC → single-base 5′ overhang (NEB R0185; odd central spacer → 5′, unlike AhdI/DrdI 3′); 4/5 5prime (QA2 W28: was 5/4 3prime, swapped+inverted)
+  // Tth111I: GACNNNGTC — cuts GACN^NNGTC → single-base 5′ overhang (NEB
+  // R0185; odd central spacer → 5′, unlike AhdI/DrdI 3′); 4/5 5prime, with
+  // the former 5/4 3prime geometry corrected.
   { name: 'Tth111I', recognitionSequence: 'GACNNNGTC', cutOffset: 4, complementCutOffset: 5, overhang: '5prime' },
 ];
 

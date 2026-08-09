@@ -46,7 +46,10 @@ export function gcContentFromComposition(comp: NucleotideComposition): number {
  * Calculate AT content as a fraction (0-1).
  */
 export function atContent(seq: string): number {
-  return 1 - gcContent(seq);
+  const comp = nucleotideComposition(seq);
+  const total = comp.A + comp.T + (comp.U ?? 0) + comp.G + comp.C;
+  if (total === 0) return 0;
+  return (comp.A + comp.T + (comp.U ?? 0)) / total;
 }
 
 /**
@@ -67,8 +70,8 @@ export function gcContentWindow(
   if (!Number.isInteger(windowSize) || windowSize <= 0) {
     throw new Error('windowSize must be a positive integer.');
   }
-  if (!Number.isFinite(step) || step <= 0) {
-    throw new Error('step must be a finite number greater than zero.');
+  if (!Number.isInteger(step) || step <= 0) {
+    throw new Error('step must be a positive integer.');
   }
 
   if (upper.length < windowSize) {
@@ -105,7 +108,10 @@ const DNA_MW: Record<string, number> = {
  * Uses average internal nucleotide weights.
  */
 export function molecularWeight(seq: string): number {
-  const upper = seq.toUpperCase().replace(/U/g, 'T');
+  // Sequence text may come from a formatted editor/FASTA row. Formatting
+  // whitespace is not a nucleotide and must not be charged as an N-equivalent
+  // residue; retain the historical N fallback for other ambiguous symbols.
+  const upper = seq.toUpperCase().replace(/[ \t\r\n]/g, '').replace(/U/g, 'T');
   let mw = 0;
 
   for (const ch of upper) {
@@ -130,8 +136,9 @@ export function molecularWeight(seq: string): number {
  */
 // ── AA residue masses ────────────────────────────────────────────────────────
 //
-// Phase 35 P0-A6: previously this table claimed "Average molecular weights"
-// in its JSDoc but the actual numbers were monoisotopic. Sum-of-20 residues
+// The table is split into average and monoisotopic residue masses because the
+// earlier documentation called monoisotopic values "Average molecular weights".
+// Sum-of-20 residues
 // was 2394.12 Da versus ExPASy's 2395.65 Da (average) and 2394.05 Da
 // (monoisotopic). We now ship BOTH tables and let callers choose. Default
 // is `'average'` to match ExPASy ProtParam — the canonical reference.
@@ -144,9 +151,9 @@ export function molecularWeight(seq: string): number {
 // Sums of the 20 residue masses below (no water — residue masses, not chain MW):
 //   Average:      2377.737 Da  (+H2O 18.015  = 2395.752 for a 1-of-each 20-mer)
 //   Monoisotopic: 2376.114 Da  (+H2O 18.0106 = 2394.125)
-// QA2 W15 (bio-correctness agent P2): prior values (2395.652 / 2394.057) claimed
-// to be the residue sums but actually conflated the +water chain MW (and were
-// themselves slightly off). The residue tables are correct; this is doc-only.
+// Earlier summary values (2395.652 / 2394.057) conflated the +water chain MW
+// with residue sums and were slightly off. The residue tables are correct;
+// this distinction affects documentation only.
 
 /** Average residue masses, Daltons. Source: ExPASy ProtParam. */
 const AA_MW_AVERAGE: Record<string, number> = {
@@ -174,8 +181,8 @@ const H2O_MONOISOTOPIC = 18.0106;
 /**
  * Estimate molecular weight of a protein sequence in Daltons.
  *
- * Phase 35 P0-A6: previously this used monoisotopic values labeled as
- * "Average" — off by ~0.07% systematically vs ExPASy ProtParam. The default
+ * The default previously used monoisotopic values labeled as "Average" — off
+ * by ~0.07% systematically vs ExPASy ProtParam. The default
  * is now ExPASy-matching average mass. Pass `'monoisotopic'` for MALDI-TOF /
  * MS workflows that expect the lighter isotope chain.
  *

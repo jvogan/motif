@@ -2,15 +2,10 @@ import type { Feature } from './types';
 import { NO_COLOR_VALUE } from './color-values';
 
 export const SEQUENCE_HIGHLIGHT_KIND = 'sequence_highlight';
-// #10b RE-BRIGHTEN (2026-06-02): a prior calm campaign muted this palette to a
-// quiet sage/clay/teal trio + a muted gold default. Per direct user direction
-// ("the highlight colors are not good — need more std colors and a custom
-// palette"), the highlight palette is re-brightened and expanded to a full
-// 12-swatch set: a vivid rainbow (amber → green → blue → … → purple) plus the
-// dark "redact" swatch last. The default still LEADS the array (index 0 — the
-// create-highlight path uses the first swatch as its default) and is a bright
-// amber, kept distinct from the G-base hue used by base-coloring. Tests pass
-// `#facc15` as a literal, so changing this constant stays safe.
+// The highlight palette uses a full 12-swatch vivid set (amber → green →
+// blue → … → purple) plus a dark "redact" swatch last. The default still
+// leads the array (index 0 — the create-highlight path uses the first swatch)
+// and remains a bright amber distinct from the G-base hue used by base-coloring.
 export const DEFAULT_SEQUENCE_HIGHLIGHT_COLOR = '#e0b83c';
 export const DARK_SEQUENCE_HIGHLIGHT_COLOR = '#111827';
 export const DARK_THEME_DARK_HIGHLIGHT_BACKGROUND = '#f8fafc';
@@ -191,13 +186,13 @@ export function sequenceHighlightForeground(
 /**
  * Default name format for a newly-created saved highlight ("Region N").
  *
- * Phase 39 W4 (D8 P0-3): renamed from "Highlight N" so the persisted entity
+ * Saved highlights use the "Region N" prefix so the persisted entity
  * does not collide with the live range-selection chip ("Selected bases X-Y").
  * Legacy snapshots are normalised in `normalizeSequenceHighlights()`.
  */
 export const DEFAULT_SEQUENCE_HIGHLIGHT_NAME_PREFIX = 'Region';
 
-/** Legacy default name format we used to emit before Phase 39 W4. */
+/** Legacy default name format emitted by older snapshots. */
 const LEGACY_HIGHLIGHT_DEFAULT_NAME_PATTERN = /^Highlight (\d+)$/;
 
 export function makeSequenceHighlight(
@@ -205,8 +200,10 @@ export function makeSequenceHighlight(
   color: string,
   ordinal: number,
 ): SequenceHighlight {
-  const start = Math.max(0, Math.min(range.start, range.end));
-  const end = Math.max(start + 1, Math.max(range.start, range.end));
+  const rawStart = Number.isFinite(range.start) ? Math.floor(range.start) : 0;
+  const rawEnd = Number.isFinite(range.end) ? Math.floor(range.end) : rawStart;
+  const start = Math.max(0, Math.min(rawStart, rawEnd));
+  const end = Math.max(start + 1, Math.max(rawStart, rawEnd));
   const randomId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
     ? crypto.randomUUID()
     : `highlight-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -253,7 +250,7 @@ export function normalizeSequenceHighlights(value: unknown): SequenceHighlight[]
       const start = Math.max(0, Math.floor(Number(record.start)));
       const end = Math.max(start, Math.floor(Number(record.end)));
       if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
-      // Phase 39 W4 (D8 P0-3) backfill: legacy `Highlight N` → `Region N`.
+      // Backfill the legacy `Highlight N` form to `Region N`.
       const rawName = typeof record.name === 'string' && record.name
         ? record.name
         : `${DEFAULT_SEQUENCE_HIGHLIGHT_NAME_PREFIX} ${index + 1}`;
@@ -279,6 +276,9 @@ export function shiftSequenceHighlightsForRange(
   start: number,
   end: number,
 ): SequenceHighlight[] {
+  if (!Number.isSafeInteger(start) || start < 0 || !Number.isSafeInteger(end) || end < start) {
+    throw new RangeError('highlight range must use non-negative safe integer coordinates.');
+  }
   return highlights
     .filter((highlight) => highlight.start < end && highlight.end > start)
     .map((highlight) => ({
@@ -298,6 +298,12 @@ export function shiftSequenceHighlightsForInsertion(
   editPos: number,
   delta: number,
 ): SequenceHighlight[] {
+  if (!Number.isSafeInteger(editPos) || editPos < 0) {
+    throw new RangeError('editPos must be a non-negative safe integer.');
+  }
+  if (!Number.isSafeInteger(delta)) {
+    throw new RangeError('delta must be a safe integer.');
+  }
   if (delta <= 0) return cloneSequenceHighlights(highlights);
   return highlights.map((highlight) => ({
     ...highlight,
@@ -312,6 +318,15 @@ export function shiftSequenceHighlightsForDeletion(
   count: number,
   rawLength: number,
 ): SequenceHighlight[] {
+  if (!Number.isSafeInteger(pos) || pos < 0) {
+    throw new RangeError('pos must be a non-negative safe integer.');
+  }
+  if (!Number.isSafeInteger(count) || count < 0) {
+    throw new RangeError('count must be a non-negative safe integer.');
+  }
+  if (!Number.isSafeInteger(rawLength) || rawLength < 0) {
+    throw new RangeError('rawLength must be a non-negative safe integer.');
+  }
   if (count <= 0 || pos < 0 || pos >= rawLength) return cloneSequenceHighlights(highlights);
   const effectiveCount = Math.min(count, rawLength - pos);
   const endOfDeletion = pos + effectiveCount;
