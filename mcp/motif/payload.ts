@@ -110,7 +110,13 @@ function validateJsonValue(
 
   seen.add(value);
   if (Array.isArray(value)) {
-    value.forEach((entry, index) => validateJsonValue(entry, `${path}[${index}]`, budget, seen, depth + 1));
+    // Indexing (rather than forEach) deliberately visits sparse holes. JSON
+    // arrays must be dense; otherwise JSON.stringify would turn an unchecked
+    // hole into null after this validator returns and change the payload's
+    // shape at the artifact boundary.
+    for (let index = 0; index < value.length; index += 1) {
+      validateJsonValue(value[index], `${path}[${index}]`, budget, seen, depth + 1);
+    }
   } else {
     for (const [key, entry] of Object.entries(value)) {
       if (UNSAFE_OBJECT_KEYS.has(key)) throw new Error(`${path}.${key} is not an allowed object key.`);
@@ -321,8 +327,8 @@ function validateFeature(feature: unknown, path: string, sequenceLength: number)
     && (feature.color.length > 80 || !SAFE_FEATURE_COLOR.test(feature.color.trim()))) {
     throw new Error(`${path}.color must be a simple CSS color value no longer than 80 characters.`);
   }
-  if (!Number.isFinite(feature.start) || !Number.isFinite(feature.end)) {
-    throw new Error(`${path} must have finite start and end coordinates.`);
+  if (!Number.isInteger(feature.start) || !Number.isInteger(feature.end)) {
+    throw new Error(`${path} must have integer start and end coordinates.`);
   }
   const start = Number(feature.start);
   const end = Number(feature.end);
@@ -350,8 +356,8 @@ function validateFeature(feature: unknown, path: string, sequenceLength: number)
 }
 
 function validateFeatureRange(range: unknown, path: string, sequenceLength: number): void {
-  if (!isPlainObject(range) || !Number.isFinite(range.start) || !Number.isFinite(range.end)) {
-    throw new Error(`${path} must have finite start and end coordinates.`);
+  if (!isPlainObject(range) || !Number.isInteger(range.start) || !Number.isInteger(range.end)) {
+    throw new Error(`${path} must have integer start and end coordinates.`);
   }
   const start = Number(range.start);
   const end = Number(range.end);
@@ -393,11 +399,11 @@ function validateSites(sites: unknown, path: string): void {
     site.hits.forEach((hit, hitIndex) => {
       const hitPath = `${sitePath}.hits[${hitIndex}]`;
       if (!isPlainObject(hit)) throw new Error(`${hitPath} must be a plain object.`);
-      if (!Number.isFinite(hit.position) || Number(hit.position) < 0) {
-        throw new Error(`${hitPath}.position must be a non-negative finite number.`);
+      if (!Number.isSafeInteger(hit.position) || Number(hit.position) < 0) {
+        throw new Error(`${hitPath}.position must be a non-negative safe integer.`);
       }
-      if (hit.cutPosition !== undefined && (!Number.isFinite(hit.cutPosition) || Number(hit.cutPosition) < 0)) {
-        throw new Error(`${hitPath}.cutPosition must be a non-negative finite number.`);
+      if (hit.cutPosition !== undefined && (!Number.isSafeInteger(hit.cutPosition) || Number(hit.cutPosition) < 0)) {
+        throw new Error(`${hitPath}.cutPosition must be a non-negative safe integer.`);
       }
       if (hit.strand !== undefined && hit.strand !== -1 && hit.strand !== 1) {
         throw new Error(`${hitPath}.strand must be -1 or 1.`);

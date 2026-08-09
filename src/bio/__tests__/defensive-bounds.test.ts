@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { toFasta } from '../fasta-parser';
-import { gcContentWindow } from '../gc-content';
+import { atContent, gcContentWindow } from '../gc-content';
 import { migrationDistance, renderGelASCII, simulateGel } from '../gel-simulation';
 import {
   buildSyntheticGoldenGateVector,
@@ -14,6 +14,16 @@ describe('defensive bounds', () => {
     expect(() => gcContentWindow('ACGTACGT', 4, 0)).toThrow(/step/);
     expect(() => gcContentWindow('ACGTACGT', 4, -1)).toThrow(/step/);
     expect(() => gcContentWindow('ACGTACGT', 4, Number.NaN)).toThrow(/step/);
+  });
+
+  it('keeps composition fractions defined on ambiguous or empty input', () => {
+    expect(atContent('')).toBe(0);
+    expect(atContent('NNN')).toBe(0);
+    expect(atContent('AATTGGCC')).toBe(0.5);
+  });
+
+  it('rejects fractional sliding-window steps before typed-array indexing', () => {
+    expect(() => gcContentWindow('ACGTACGT', 4, 0.5)).toThrow(/positive integer/i);
   });
 
   it('rejects non-positive FASTA line widths', () => {

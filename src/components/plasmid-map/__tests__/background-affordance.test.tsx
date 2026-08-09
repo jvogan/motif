@@ -143,8 +143,8 @@ describe('the map background claims only the gestures it can perform', () => {
   });
 
   it('still keeps touch drags from being stolen by page scroll', () => {
-    // The one genuinely functional property in the old data-pannable block; it now
-    // applies always, not just once the viewport happens to be transformed.
+    // This functional property applies in every state, not just after the
+    // viewport happens to be transformed.
     const bgRule = mapCss.slice(
       mapCss.indexOf('.motif-pm-bg {'),
       mapCss.indexOf('}', mapCss.indexOf('.motif-pm-bg {')),

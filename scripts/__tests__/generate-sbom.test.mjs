@@ -50,4 +50,32 @@ describe('deterministic SBOM dependency scopes', () => {
     expect(byName.get('hoisted-transitive')?.scope).toBe('transitive');
     expect(byName.get('nested-transitive')?.scope).toBe('transitive');
   });
+
+  it('resolves license files relative to the requested workspace', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'motif-sbom-license-test-'));
+    fixtures.push(directory);
+    writeFileSync(join(directory, 'package.json'), `${JSON.stringify({
+      name: 'fixture-workspace',
+      version: '1.0.0',
+      dependencies: { 'fixture-license-package': '1.0.0' },
+    })}\n`);
+    writeFileSync(join(directory, 'package-lock.json'), `${JSON.stringify({
+      lockfileVersion: 3,
+      packages: {
+        '': { dependencies: { 'fixture-license-package': '1.0.0' } },
+        'node_modules/fixture-license-package': { version: '1.0.0' },
+      },
+    })}\n`);
+    writePackage(directory, 'fixture-license-package', '1.0.0');
+    writeFileSync(join(directory, 'node_modules/fixture-license-package/LICENSE'), 'fixture license\n');
+
+    const component = createDeterministicSbom(directory).components.find(
+      (candidate) => candidate.name === 'fixture-license-package',
+    );
+    expect(component).toMatchObject({
+      scope: 'direct',
+      licenseFile: 'node_modules/fixture-license-package/LICENSE',
+    });
+    expect(component?.licenseSha256).toMatch(/^[a-f0-9]{64}$/u);
+  });
 });

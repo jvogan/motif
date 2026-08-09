@@ -1025,67 +1025,15 @@ describe('computeMapLayout: circular pUC19', () => {
   });
 
   it('keeps the circular pUC19 layout byte-stable', () => {
-    // P2 changed this pin (centerTitle + fitted-title keep-out). WaveC-c1 changed it
-    // again: circular restriction renders now carry additive per-enzyme labelSegments
-    // for Type IIS per-token coloring (label.text itself is unchanged).
-    // W3 text polish re-pinned it for circular-only nested outside labels and
-    // signed readable inline rotations; circular geometry is unchanged.
-    // Rebaselined after feature/restriction labels stopped treating the circle's
-    // enclosing square as an obstacle and now test against actual ring geometry.
-    // Rebaselined after inline labels gained a middle dominant-baseline so text sits
-    // centered inside the feature band instead of riding the glyph edge.
-    // Rebaselined after circular outside labels became individual, capped,
-    // direct-leader radial-tier placements with feature labels winning over enzymes.
-    // Rebaselined after coordinate labels started yielding to feature leaders.
-    // Rebaselined after side outside labels centered on radial leaders, coordinate
-    // labels rotated tangentially, and thin bands stopped accepting inline labels.
-    // Rebaselined after circular outside-label leaders stopped before padded label boxes.
-    // Rebaselined after inline (on-arc) feature labels gained an additive `arcPath`
-    // (baseline arc for <textPath> rendering); x/y/rotate/geometry are unchanged —
-    // verified by hashing the arcPath-stripped layout back to the prior pin.
+    // This byte-stable circular baseline covers Type IIS per-enzyme label
+    // segments, nested outside labels, radial leaders, feature-label priority,
+    // and coordinate-label keep-out. The expected output intentionally stays
+    // fixed while those geometry contracts evolve.
     // Direct leaders remain the default when their chord is unobstructed; the
     // radial-first elbow is reserved for a real collision escape. Label positions
     // and the represented label set remain fixed.
-    // Rebaselined after a crowded label began preferring an outward tier over a
-    // tangential slide (TIER_ESCALATION_ANGLE_EQUIV_DEG 4 -> 1.5). Verified to be
-    // the minimal consequence of that change: the label SET, every label's text
-    // and the viewBox are byte-identical to the previous pin, and exactly one
-    // label moved — "EcoRI,SacI,KpnI +2" from 524,123 to 544,117, i.e. one tier
-    // out rather than sideways. Leader straightness itself is pinned by
-    // 'keeps circular restriction leaders pointing at their own tick' below.
-    // Rebaselined again for the ", " name separator (and the width cap raised to keep
-    // the same enzyme content fitting). Verified minimal: exactly one label changed —
-    // "EcoRI,SacI,KpnI +2" -> "EcoRI, SacI, KpnI +2", which recentres it from 544,117
-    // to 548,114. No label gained, lost, or shed a name; feature labels and the viewBox
-    // are byte-identical.
-    // Rebaselined for the cluster tooltip naming its enzyme count alongside its site
-    // count, so the drawn label's "+N" (enzyme NAMES) stops reading as a contradiction
-    // of the tooltip's "N sites". NOTHING DRAWN MOVED: hashing this layout with
-    // restrictions[].title stripped gives d304bb878f6a569d82df3f30aa4fc0ea457543c5f96
-    // ef7ed9286292111e2777f both before and after, so geometry, the label set and every
-    // label's text are byte-identical. The only delta is one tooltip string,
-    // "EcoRI, SacI, KpnI, BamHI, HindIII · 5 sites" -> "... · 5 enzymes · 5 sites".
-    // Rebaselined for the additive overflow-chip hit rect. NOTHING DRAWN MOVED:
-    // hashing this layout with overflows[].hit stripped gives
-    // 35262ad877aa6404ff777c734b5b9bb42d1416c886b3d63e36265a09290078a6, i.e. the
-    // previous pin exactly, so geometry, the label set, every label's text and the
-    // viewBox are byte-identical. The only delta is the new pointer target, which the
-    // renderer draws and the SVG export ignores.
-    // Rebaselined again for the additive overflow `count`, which lets the map dock
-    // state the chip's number to a keyboard user without re-deriving it from the
-    // chip's display text. NOTHING DRAWN MOVED: hashing this layout with
-    // overflows[].count stripped gives
-    // 59f8c609fd6b0f01efd27b54882b97c15d04bac12efc7b72f8a8d6f4e3a77ec3, the previous
-    // pin exactly.
-    // Rebaselined once more for splitting that `count` into overflows[].hiddenBodies
-    // + overflows[].unlabelled, because one integer holding "bodies not drawn plus
-    // labels not drawn" is a quantity no reader can state truthfully. NOTHING DRAWN
-    // MOVED: hashing this layout with all three of count/hiddenBodies/unlabelled
-    // stripped gives 59f8c609fd6b0f01efd27b54882b97c15d04bac12efc7b72f8a8d6f4e3a77ec3
-    // both before and after — the same digest recorded above — and a line diff of the
-    // two full layouts is exactly `"count": 1` -> `"hiddenBodies": 0, "unlabelled": 1`
-    // on the single overflow entry, with every path, label, tick and the viewBox
-    // byte-identical.
+    // Tooltip text, overflow metadata, and hit rectangles are not part of the
+    // geometric hash; their contracts are asserted separately where needed.
     expect(layoutHash(layout)).toBe(
       '36be85f8350cb3a6108bd002c490af9ad1b04a34bb93ec15a8bbbbb27661d09c',
     );
@@ -1259,11 +1207,9 @@ describe('computeMapLayout: circular pUC19', () => {
     expect(visibleFeatureLabels).toBe(22);
     expect(featureOverflow(layout)).toBeNull();
     expect(visibleRestrictionLabels).toBeLessThanOrEqual(visibleFeatureLabels);
-    // Rebaselined for round-4 center-of-mass labels: side outside labels are now
-    // text-anchor:middle and straddle their leader endpoint, so they extend ~half a
-    // label-width further out than the old edge-anchored labels and the ring yields a
-    // few percent of radius to keep every label clear. Still a large, comfortable ring
-    // (visually verified on dense docks); all 22 feature labels stay visible (above).
+    // Centered side labels straddle their leader endpoint and therefore extend
+    // about half a label width beyond it. The ring yields a small radius margin
+    // so all 22 feature labels remain visible.
     expect(layout.radius / viewBoxHalfExtent).toBeGreaterThanOrEqual(0.54);
   });
 
@@ -1315,11 +1261,9 @@ describe('computeMapLayout: circular pUC19', () => {
     ).length;
 
     expect(labels.length).toBeGreaterThanOrEqual(18);
-    // Rebaselined for round-4 center-of-mass labels: a side outside label's leader now
-    // ends at the label's horizontal center (not its ring-side edge), so a few leaders run
-    // marginally longer / less strictly radial and fall just outside the "short near-radial"
-    // window. 86%+ still sit in-arc or on short radial leaders; the rest read clean (visually
-    // verified on dense docks — no long angled spokes).
+    // Side-label leaders end at the label's horizontal center, so a few run
+    // marginally longer or less strictly radial. At least 85% remain in-arc or
+    // on short radial leaders; the remaining labels avoid long angled spokes.
     expect((inArc + radialOutside) / labels.length).toBeGreaterThanOrEqual(0.85);
   });
 
@@ -2114,17 +2058,9 @@ describe('computeMapLayout: linear + protein', () => {
       height: 420,
     });
 
-    // Rebaselined after linear labels gained middle baselines and the dock-fill path
-    // stopped baking vertical centering into content coordinates.
-    // Rebaselined after beside-glyph labels used 4px clearance and stopped forcing
-    // decorative leaders for adjacent labels.
-    // Rebaselined after outside feature labels clear the arrowhead TIP (edgeX pushed
-    // to the visual tip on the pointing side), not just the flat body edge.
-    // Rebaselined after MapLayout gained explicit linearAxis geometry.
-    // Rebaselined after inline labels centered on rendered arrow glyphs and
-    // linear restriction labels used center-entering callout leaders.
-    // Rebaselined after linear feature bars adopted the artifact's square-ended
-    // feature treatment.
+    // This baseline covers middle baselines, four-pixel beside-glyph clearance,
+    // arrowhead-tip clearance, explicit linear-axis geometry, center-entering
+    // restriction leaders, and square-ended feature bars.
     expect(layoutHash(layout)).toBe(
       '52c8c1aff95c22cace479fb781b544371c6e54ff277bedce586d95ba4dc5ab90',
     );

@@ -1,5 +1,5 @@
 /**
- * W2 — adaptive circular lane sizing (fitLaneStack + laneBand). Proves the
+ * Adaptive circular lane sizing (fitLaneStack + laneBand). Proves the
  * lane-collapse bug is gone: deep overlapping lanes get DISTINCT descending radii
  * instead of clamping onto a shared floor, thickness/gap compress before any lane
  * is dropped, and genuine overflow is arc-less + counted (never silently overdrawn).

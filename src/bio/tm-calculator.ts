@@ -165,6 +165,9 @@ export function duplexThermodynamics(seq: string): {
   if (!isCanonicalDna(upper)) {
     throw new Error('Nearest-neighbor thermodynamics requires an unambiguous A/C/G/T sequence.');
   }
+  if (upper.length < 2) {
+    throw new Error('Nearest-neighbor thermodynamics requires at least two canonical bases.');
+  }
 
   // Initiation: 2 terminal base-pairs
   // dH in kcal/mol → convert to cal/mol for consistency
@@ -279,7 +282,7 @@ function owczarzyMg(
  *
  * naConc in mM. Returns corrected Tm in °C.
  *
- * (R10 #5: the previous implementation applied the entropy coefficient 0.368
+ * The previous implementation applied the entropy coefficient 0.368
  * — units cal/mol·K — straight to 1/Tm with `1/seqLength` standing in for the
  * proper (N−1)/ΔH, an ~345× units error that returned sub-absolute-zero Tm
  * (≈ −254 °C) for any [Na+] below 1 M, non-monotonically. The only test
@@ -435,7 +438,7 @@ export function calculateTm(seq: string, options?: TmOptions): TmResult {
 
   // Wallace rule — always used for very short oligos (< 14 nt).
   //
-  // Phase 35 P-I (P1-A13): the Owczarzy / SantaLucia / Wetmur salt-correction
+  // The Owczarzy / SantaLucia / Wetmur salt-correction
   // formulas are derived for oligos ≥ 14 nt. Applying them to a 6-mer produces
   // non-physical Tm values (e.g. negative Tm for `AAAAAA` at default 50mM Na+).
   // Wallace's rule assumes ~1 M Na+ implicitly, so for the short-oligo regime
@@ -500,7 +503,7 @@ export function calculateTm(seq: string, options?: TmOptions): TmResult {
 
   // Apply salt correction. The SantaLucia method needs the duplex ΔH/ΔS (and
   // Ct), which only exist here on the NN path — thread them through so its
-  // entropy-based correction is unit-correct (R10 #5).
+  // entropy-based correction is unit-correct.
   let correctedTm = tmC;
   if (naConc !== 1000 || freeMg > 0) {
     correctedTm = saltCorrectedTm(tmK, naConc, freeMg, fGC, upper.length, saltCorrMethod, {

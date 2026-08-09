@@ -33,6 +33,10 @@ function finiteNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
+function safeCoordinate(value: unknown): number | null {
+  return typeof value === 'number' && Number.isSafeInteger(value) ? value : null;
+}
+
 function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
@@ -45,9 +49,12 @@ export function normalizeSequenceVariant(value: unknown): SequenceVariant | null
   const record = asRecord(value);
   if (!record) return null;
   const id = stringValue(record.id);
-  const start = finiteNumber(record.start ?? record.position);
-  if (!id || start === null) return null;
-  const end = finiteNumber(record.end);
+  const start = safeCoordinate(record.start ?? record.position);
+  if (!id || start === null || start < 0) return null;
+  const end = record.end === undefined || record.end === null
+    ? null
+    : safeCoordinate(record.end);
+  if (record.end !== undefined && record.end !== null && (end === null || end < start)) return null;
   const rawKind = record.kind ?? record.type;
   const kind = isSequenceVariantKind(rawKind) ? rawKind : 'other';
   const confidence = finiteNumber(record.confidence);
@@ -55,8 +62,8 @@ export function normalizeSequenceVariant(value: unknown): SequenceVariant | null
   const updatedAt = finiteNumber(record.updatedAt);
   return {
     id,
-    start: Math.floor(start),
-    ...(end === null ? {} : { end: Math.floor(end) }),
+    start,
+    ...(end === null ? {} : { end }),
     kind,
     ...(stringValue(record.label) ? { label: stringValue(record.label) } : {}),
     ...(stringValue(record.reference ?? record.ref) ? { reference: stringValue(record.reference ?? record.ref) } : {}),
@@ -99,6 +106,12 @@ export function shiftSequenceVariants(
   pos: number,
   delta: number,
 ): SequenceVariant[] {
+  if (!Number.isSafeInteger(pos) || pos < 0) {
+    throw new RangeError('pos must be a non-negative safe integer.');
+  }
+  if (!Number.isSafeInteger(delta)) {
+    throw new RangeError('delta must be a safe integer.');
+  }
   if (delta === 0 || variants.length === 0) return variants.map((variant) => ({ ...variant }));
   if (delta > 0) {
     return variants.map((variant) => ({

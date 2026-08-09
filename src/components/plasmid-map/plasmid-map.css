@@ -643,7 +643,7 @@
   fill: var(--text-primary, #131313);
   font-family: var(--font-ui, var(--font-sans, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif));
   font-size: 11px;
-  /* Clickable so the readable name (incl. Wave-B outside-leader labels sitting
+  /* Clickable so the readable name (including outside-leader labels sitting
      away from the arc) selects its feature via the group handler, instead of
      falling through to the background and CLEARING the selection. */
   pointer-events: auto;

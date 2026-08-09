@@ -15,6 +15,12 @@ export interface MutationResult {
 // Helpers (not exported)
 // ---------------------------------------------------------------------------
 
+function requireSafeInteger(value: number, label: string, minimum: number): void {
+  if (!Number.isSafeInteger(value) || value < minimum) {
+    throw new RangeError(`${label} must be a safe integer greater than or equal to ${minimum}.`);
+  }
+}
+
 /**
  * Shift all scar positions by `delta` where the scar position is > editPos.
  * Returns a new array (does not mutate input).
@@ -109,6 +115,7 @@ export function applySubstitution(
   if (typeof newBase !== 'string' || !/^[A-Za-z*]$/.test(newBase)) {
     throw new Error('Substitution requires exactly one valid residue; use insertion or deletion for length-changing edits.');
   }
+  requireSafeInteger(pos, 'pos', 0);
 
   // Guard: pos out of range — return unchanged
   if (pos < 0 || pos >= raw.length) {
@@ -168,6 +175,10 @@ export function applyInsertion(
   pos: number,
   bases: string,
 ): MutationResult {
+  if (typeof bases !== 'string') {
+    throw new TypeError('Insertion bases must be a string.');
+  }
+  requireSafeInteger(pos, 'pos', -1);
   // Nothing to insert
   if (bases.length === 0) {
     return { raw, scars: [...scars], features: [...features] };
@@ -232,6 +243,8 @@ export function applyDeletion(
   pos: number,
   count: number,
 ): MutationResult {
+  requireSafeInteger(pos, 'pos', 0);
+  requireSafeInteger(count, 'count', 0);
   // Nothing to delete
   if (count <= 0) {
     return { raw, scars: [...scars], features: [...features] };
