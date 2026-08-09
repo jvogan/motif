@@ -226,7 +226,7 @@ describe('dependency cooling-off policy', () => {
   it('fails closed when a streamed packument exceeds its larger bounded cap', async () => {
     const fixtureData = fixture();
     const packument = JSON.parse(fixtureData.metadata);
-    packument.auditPadding = 'x'.repeat(16 * 1024 * 1024);
+    packument.auditPadding = 'x'.repeat(64 * 1024 * 1024);
     const metadata = JSON.parse(fixtureData.metadata);
     const routed = routedFetch({
       packument: JSON.stringify(packument),

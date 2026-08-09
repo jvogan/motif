@@ -9,7 +9,9 @@ import { loadDependencyPolicy } from './lib/supply-chain-policy.mjs';
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const DAY_MS = 24 * 60 * 60 * 1000;
 const MAX_VERSION_METADATA_BYTES = 2 * 1024 * 1024;
-const MAX_PACKUMENT_BYTES = 16 * 1024 * 1024;
+// Established packages such as Vite have packuments above 32 MiB. Keep the
+// registry read bounded while allowing their exact publish time to be checked.
+const MAX_PACKUMENT_BYTES = 64 * 1024 * 1024;
 const NPM_VERSION_METADATA_ACCEPT = 'application/json';
 const IMMUTABLE_COMMIT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/iu;
 
