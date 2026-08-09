@@ -275,9 +275,8 @@ export function gibsonAssemble(
   // end. Detect that closing seam now — before the duplicate/low-Tm checks, so
   // they evaluate it too — and make a MISSING seam a hard error rather than a
   // silently-linear product with the closing overlap duplicated at both ends.
-  // (R10 #3: previously `topology` was a pure label; the assembly loop only ran
-  // i < length-1, so the seam was never tested and a cyclic fragment set yielded
-  // a linear product carrying the closing overlap twice.)
+  // The seam must be checked explicitly: otherwise a cyclic fragment set can
+  // become a linear product carrying the closing overlap twice.
   let closingOverlap: Overlap | null = null;
   if (topology === 'circular' && fragments.length >= 2) {
     const last = fragments[fragments.length - 1];
@@ -425,7 +424,7 @@ export function gibsonAssemble(
  * Checks Tm, length, and uniqueness between consecutive pairs. The
  * minOverlap/maxOverlap thresholds default to the Gibson defaults but are
  * forwarded by callers (e.g. the CLI's --min-overlap/--max-overlap) so that
- * validation matches the assembly the user actually requested (R10 #2).
+ * validation matches the assembly the user actually requested.
  */
 export function validateOverlaps(
   fragments: GibsonFragment[],

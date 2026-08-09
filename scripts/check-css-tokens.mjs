@@ -4,9 +4,9 @@
  *
  * Verifies that every `var(--token)` reference in `src/` has a corresponding
  * `--token:` definition somewhere in `src/index.css`. This catches the recurring
- * "token-bypass" archetype that hit Phase 24 (`--bg-panel` undefined → transparent
- * popovers), Phase 28.5 (HC workbar invisible), and Phase 32 Pass-Tokens P0-3
- * (popover boxShadow referencing nonexistent `--shadow-popover`).
+ * "token-bypass" regressions such as an undefined `--bg-panel` making
+ * popovers transparent, an invisible high-contrast workbar, or a popover
+ * `boxShadow` referencing a nonexistent `--shadow-popover`.
  *
  * Run via: npm run check:css-tokens
  * Direct: node scripts/check-css-tokens.mjs [--quiet]
@@ -40,7 +40,7 @@ const ALLOWLIST = new Set([
   '--text-on-accent',
   // Selection highlight palette (4 user-pickable variants)
   '--selection-highlight', '--selection-highlight-rgb',
-  // VOG-2161 follow-up: `--selection-fg-override` is INLINE-SET by
+  // `--selection-fg-override` is set inline by
   // `applySelectionHighlightVars()` in `src/store/ui-store.ts` only for
   // palettes that demand a deliberate base-fg swap (charcoal +
   // monochrome). Default blue/amber/green/pink palettes leave it
@@ -53,7 +53,7 @@ const ALLOWLIST = new Set([
   // Monochrome theme — applied via ui-store setMonochrome at runtime
   '--mono', '--mono-softer', '--mono-border', '--mono-medium', '--mono-swatch',
   '--mono-feature-bg',
-  // Phase 35 P-Q (Fix #1+2): mono 3-stop ladder + feature foreground are also
+  // The monochrome three-stop ladder and feature foreground are also
   // applied dynamically at runtime through `MONOCHROME_INLINE_VARS`. They're
   // never defined in :root because they don't have a non-mono semantic — they
   // exist only as inline overrides.
@@ -94,8 +94,8 @@ function walkDir(dir, pattern, out = []) {
 }
 
 // 1. Collect every `--foo:` declaration across all src/ stylesheets
-// (Phase 41 W2: detail-mode.css is a sibling of index.css, paired with
-// the lazy DetailSequenceDisplay chunk).
+// `detail-mode.css` is a sibling of `index.css`, paired with the lazy
+// `DetailSequenceDisplay` chunk.
 const defs = new Set();
 for (const cssFile of CSS_DEF_FILES) {
   const cssText = stripCssComments(readFileSafe(cssFile));

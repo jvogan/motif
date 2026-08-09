@@ -4,7 +4,7 @@ import type { GoldenGateEnzymeName } from './golden-gate';
  * Catalog of common Golden Gate / MoClo kits with their canonical Type IIS
  * enzyme and the published set of fusion-site overhangs each kit defines.
  *
- * VOG-1790: Users with an existing pile of L0 parts can pick a kit here and
+ * Users with an existing pile of L0 parts can pick a kit here and
  * the dialog will sanity-check that loaded parts use overhangs the kit
  * actually recognizes. Mismatches are surfaced as warning chips — not
  * blockers — because users often have custom parts that extend the standard

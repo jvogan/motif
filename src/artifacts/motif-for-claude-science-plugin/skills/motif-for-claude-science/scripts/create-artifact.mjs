@@ -253,8 +253,8 @@ function validateFeature(feature, path, sequenceLength) {
   if (feature.color !== undefined && (feature.color.length > 80 || !SAFE_FEATURE_COLOR.test(feature.color.trim()))) {
     throw new Error(`${path}.color must be a simple CSS color value`);
   }
-  if (!Number.isFinite(feature.start) || !Number.isFinite(feature.end)) {
-    throw new Error(`${path} must have finite start and end numbers`);
+  if (!Number.isSafeInteger(feature.start) || !Number.isSafeInteger(feature.end)) {
+    throw new Error(`${path} must have safe integer start and end coordinates`);
   }
   if (feature.start < 0 || feature.end <= feature.start || feature.end > sequenceLength) {
     throw new Error(`${path} coordinates must satisfy 0 <= start < end <= ${sequenceLength}`);
@@ -276,8 +276,8 @@ function validateFeature(feature, path, sequenceLength) {
     }
     feature.subRanges.forEach((subRange, subRangeIndex) => {
       const subRangePath = `${path}.subRanges[${subRangeIndex}]`;
-      if (!isPlainObject(subRange) || !Number.isFinite(subRange.start) || !Number.isFinite(subRange.end)) {
-        throw new Error(`${subRangePath} must be an object with finite start and end numbers`);
+      if (!isPlainObject(subRange) || !Number.isSafeInteger(subRange.start) || !Number.isSafeInteger(subRange.end)) {
+        throw new Error(`${subRangePath} must be an object with safe integer start and end coordinates`);
       }
       if (subRange.start < 0 || subRange.end <= subRange.start || subRange.end > sequenceLength) {
         throw new Error(`${subRangePath} coordinates must satisfy 0 <= start < end <= ${sequenceLength}`);
@@ -317,9 +317,9 @@ function validateSites(sites, path) {
       site.hits.forEach((hit, hitIndex) => {
         const hitPath = `${sitePath}.hits[${hitIndex}]`;
         if (!isPlainObject(hit)) throw new Error(`${hitPath} must be a plain object`);
-        if (!Number.isFinite(hit.position) || hit.position < 0) throw new Error(`${hitPath}.position must be a non-negative finite number`);
-        if (hit.cutPosition !== undefined && (!Number.isFinite(hit.cutPosition) || hit.cutPosition < 0)) {
-          throw new Error(`${hitPath}.cutPosition must be a non-negative finite number`);
+        if (!Number.isSafeInteger(hit.position) || hit.position < 0) throw new Error(`${hitPath}.position must be a non-negative safe integer`);
+        if (hit.cutPosition !== undefined && (!Number.isSafeInteger(hit.cutPosition) || hit.cutPosition < 0)) {
+          throw new Error(`${hitPath}.cutPosition must be a non-negative safe integer`);
         }
         if (hit.strand !== undefined && ![-1, 1].includes(hit.strand)) throw new Error(`${hitPath}.strand must be -1 or 1`);
         if (hit.indexBase !== undefined && ![0, 1].includes(hit.indexBase)) throw new Error(`${hitPath}.indexBase must be 0 or 1`);

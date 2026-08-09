@@ -139,6 +139,41 @@ describe('Claude Science durable session validation', () => {
     });
   });
 
+  it('preserves record-keyed state for the legal record id __proto__', () => {
+    const state = normalizeArtifactDurableState({
+      translationLayersByRecord: {
+        ['__proto__']: [{
+          id: 'layer',
+          label: 'candidate',
+          start: 0,
+          end: 3,
+          strand: 1,
+          frame: 0,
+          translationTableId: 1,
+        }],
+      },
+      enzymeSourcesByRecord: { ['__proto__']: ['common'] },
+      hiddenEnzymesByRecord: { ['__proto__']: ['EcoRI'] },
+      hiddenFeatureTranslationsByRecord: { ['__proto__']: ['feature-1'] },
+      restrictionLabelsByRecord: { ['__proto__']: true },
+      motifsByRecord: { ['__proto__']: 'GAATTC' },
+    }, new Map([['__proto__', 12]]));
+
+    expect(state.translationLayersByRecord['__proto__']).toHaveLength(1);
+    expect(state.enzymeSourcesByRecord['__proto__']).toEqual(['common']);
+    expect(state.hiddenEnzymesByRecord['__proto__']).toEqual(['EcoRI']);
+    expect(state.hiddenFeatureTranslationsByRecord['__proto__']).toEqual(['feature-1']);
+    expect(state.restrictionLabelsByRecord['__proto__']).toBe(true);
+    expect(state.motifsByRecord['__proto__']).toBe('GAATTC');
+
+    const roundTripped = normalizeArtifactDurableState(
+      JSON.parse(JSON.stringify(state)),
+      new Map([['__proto__', 12]]),
+    );
+    expect(roundTripped.translationLayersByRecord['__proto__']).toHaveLength(1);
+    expect(roundTripped.motifsByRecord['__proto__']).toBe('GAATTC');
+  });
+
   it('rejects malformed nested session state instead of letting it reach React', () => {
     expect(() => normalizeArtifactDurableState({ customEnzymes: {} }, recordLengths)).toThrow(/must be an array/i);
     expect(() => normalizeArtifactDurableState({

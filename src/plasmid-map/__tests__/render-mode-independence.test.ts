@@ -5,7 +5,7 @@ import type { Feature } from '../../bio/types';
 import { normalizeSpan } from '../geometry/ranges';
 
 /**
- * #34. The map can draw a circular molecule as a line WITHOUT converting it.
+ * The map can draw a circular molecule as a line WITHOUT converting it.
  *
  * `computeMapLayout` has always taken `mode` as a first-class input and
  * consulted `topology` only as a fallback, so the capability was built and

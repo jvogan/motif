@@ -2247,7 +2247,7 @@ function rememberLastGoodRuntimePayload(
 
 type RecordSummary = { text: string; data: Record<string, unknown> };
 
-export type ArtifactExportLossFormat = 'fasta' | 'genbank' | 'gff3' | 'record-json' | 'database-json' | 'zip' | 'csv' | 'report';
+export type ArtifactExportLossFormat = 'raw-sequence' | 'fasta' | 'genbank' | 'gff3' | 'record-json' | 'database-json' | 'zip' | 'csv' | 'report';
 
 export type ArtifactExportLossReport = {
   format: ArtifactExportLossFormat;
@@ -2305,7 +2305,8 @@ const EXPORT_LOSS_INTERNAL_METADATA_KEYS = new Set([
 ]);
 
 function exportLossFormatForChoice(choiceId: string): ArtifactExportLossFormat {
-  if (choiceId === 'record-sequence' || choiceId === 'record-fasta' || choiceId === 'multi-fasta') return 'fasta';
+  if (choiceId === 'record-sequence') return 'raw-sequence';
+  if (choiceId === 'record-fasta' || choiceId === 'multi-fasta') return 'fasta';
   if (choiceId === 'record-gff3') return 'gff3';
   if (choiceId === 'record-json') return 'record-json';
   if (choiceId === 'inventory-json') return 'database-json';
@@ -2313,6 +2314,20 @@ function exportLossFormatForChoice(choiceId: string): ArtifactExportLossFormat {
   if (choiceId.endsWith('-csv')) return 'csv';
   if (choiceId.startsWith('report-')) return 'report';
   return 'genbank';
+}
+
+function exportLossFormatLabel(format: ArtifactExportLossFormat): string {
+  switch (format) {
+    case 'raw-sequence': return 'raw sequence';
+    case 'fasta': return 'FASTA';
+    case 'gff3': return 'GFF3';
+    case 'record-json': return 'Record JSON';
+    case 'database-json': return 'Database JSON';
+    case 'zip': return 'ZIP';
+    case 'csv': return 'CSV';
+    case 'report': return 'report';
+    case 'genbank': return 'GenBank';
+  }
 }
 
 /**
@@ -2436,7 +2451,7 @@ export function buildArtifactExportLossReport(
   }
 
   const checkpoint = format === 'record-json' || format === 'database-json' || format === 'zip';
-  const hasInterchangeLoss = format === 'fasta'
+  const hasInterchangeLoss = format === 'raw-sequence' || format === 'fasta'
     ? record.features.length > 0 || sequenceNormalization.length > 0
     : format === 'gff3'
       ? unsupportedLocationCount > 0 || repeatedQualifiers.length > 0 || truncatedQualifiers.length > 0 || fuzzyLocations.length > 0 || multipartBiologicalOrder.some((entry) => !entry.preserved) || unrepresentableMetadata.length > 0 || sequenceNormalization.length > 0
@@ -2459,8 +2474,12 @@ export function buildArtifactExportLossReport(
     : checkpoint
       ? 'This Motif JSON/ZIP checkpoint preserves the complete structured workspace; interchange files inside a ZIP remain explicitly lossy where noted.'
     : faithful
-      ? 'This export is faithful for the represented record content; it does not claim full INSDC round-trip support.'
-      : `This ${format.toUpperCase()} export is lossy; ${lossCount} preservation item${lossCount === 1 ? '' : 's'} require review. Use Database JSON or ZIP for the complete Motif checkpoint.`;
+      ? format === 'raw-sequence'
+        ? 'This raw sequence export contains the record sequence only; it does not claim feature or metadata round-trip support.'
+        : 'This export is faithful for the represented record content; it does not claim full INSDC round-trip support.'
+      : format === 'raw-sequence'
+        ? `This raw sequence export contains sequence text only and is lossy; ${lossCount} preservation item${lossCount === 1 ? '' : 's'} require review. Use Database JSON or ZIP for the complete Motif checkpoint.`
+        : `This ${exportLossFormatLabel(format)} export is lossy; ${lossCount} preservation item${lossCount === 1 ? '' : 's'} require review. Use Database JSON or ZIP for the complete Motif checkpoint.`;
   return {
     format,
     faithful,
@@ -2519,8 +2538,12 @@ function mergeArtifactExportLossReports(
     : format === 'database-json' || format === 'zip'
       ? 'This Motif JSON/ZIP checkpoint preserves the complete structured workspace; interchange files inside a ZIP remain explicitly lossy where noted.'
       : faithful
-        ? `This export is faithful for all ${recordReports.length} represented record${recordReports.length === 1 ? '' : 's'}; it does not claim full INSDC round-trip support.`
-        : `This ${format.toUpperCase()} export is lossy for ${recordSummary || `${lossCount} preservation item${lossCount === 1 ? '' : 's'}`}. Use Database JSON or ZIP for the complete Motif checkpoint.`;
+        ? format === 'raw-sequence'
+          ? `This raw sequence export contains sequence text only for ${recordReports.length} represented record${recordReports.length === 1 ? '' : 's'}; it does not claim feature or metadata round-trip support.`
+          : `This export is faithful for all ${recordReports.length} represented record${recordReports.length === 1 ? '' : 's'}; it does not claim full INSDC round-trip support.`
+        : format === 'raw-sequence'
+          ? `This raw sequence export contains sequence text only and is lossy for ${recordSummary || `${lossCount} preservation item${lossCount === 1 ? '' : 's'}`}. Use Database JSON or ZIP for the complete Motif checkpoint.`
+          : `This ${exportLossFormatLabel(format)} export is lossy for ${recordSummary || `${lossCount} preservation item${lossCount === 1 ? '' : 's'}`}. Use Database JSON or ZIP for the complete Motif checkpoint.`;
   return {
     ...first,
     format,
@@ -2589,6 +2612,15 @@ export function getArtifactCheckpointExportIssues(
   ));
   const issues: ArtifactCheckpointExportIssue[] = [];
   rawRecords.forEach((rawRecord, index) => {
+    if (rawRecord.active === false) {
+      issues.push({
+        recordId: records[index]?.id,
+        recordName: records[index]?.name,
+        code: 'inactive_record',
+        path: `records[${index}].active`,
+        message: 'Inactive records are omitted during restore and cannot be included in a durable checkpoint.',
+      });
+    }
     try {
       validateRuntimeRecordInputs([rawRecord], 'motifRenderInventory');
     } catch (error) {
@@ -4311,8 +4343,8 @@ function collectMalformedRecordIssues(
           }
         }
       }
-      if (!Number.isFinite(feature.start) || !Number.isFinite(feature.end)) {
-        add(featurePath, 'feature start and end must be finite numbers');
+      if (!Number.isSafeInteger(feature.start) || !Number.isSafeInteger(feature.end)) {
+        add(featurePath, 'feature start and end must be safe integers');
       } else {
         const start = Number(feature.start);
         const end = Number(feature.end);
@@ -4347,8 +4379,8 @@ function collectMalformedRecordIssues(
         } else {
           feature.subRanges.forEach((subRange, subRangeIndex) => {
             const subRangePath = `${featurePath}.subRanges[${subRangeIndex}]`;
-            if (!isPlainObject(subRange) || !Number.isFinite(subRange.start) || !Number.isFinite(subRange.end)) {
-              add(subRangePath, 'subRange must be an object with finite start and end numbers');
+            if (!isPlainObject(subRange) || !Number.isSafeInteger(subRange.start) || !Number.isSafeInteger(subRange.end)) {
+              add(subRangePath, 'subRange must be an object with safe integer start and end coordinates');
               return;
             }
             const start = Number(subRange.start);
@@ -4419,11 +4451,11 @@ function collectMalformedRecordIssues(
                 add(hitPath, 'hit must be a plain object');
                 return;
               }
-              if (!Number.isFinite(hit.position) || Number(hit.position) < 0) {
-                add(`${hitPath}.position`, 'position must be a non-negative finite number');
+              if (!Number.isSafeInteger(hit.position) || Number(hit.position) < 0) {
+                add(`${hitPath}.position`, 'position must be a non-negative safe integer');
               }
-              if (hit.cutPosition !== undefined && (!Number.isFinite(hit.cutPosition) || Number(hit.cutPosition) < 0)) {
-                add(`${hitPath}.cutPosition`, 'cutPosition must be a non-negative finite number');
+              if (hit.cutPosition !== undefined && (!Number.isSafeInteger(hit.cutPosition) || Number(hit.cutPosition) < 0)) {
+                add(`${hitPath}.cutPosition`, 'cutPosition must be a non-negative safe integer');
               }
               if (hit.strand !== undefined && hit.strand !== -1 && hit.strand !== 1) {
                 add(`${hitPath}.strand`, 'hit strand must be -1 or 1');
@@ -8969,7 +9001,8 @@ function App() {
   }, [addTranslationLayer]);
 
   /* Converts the MOLECULE. Reached from Entry Details only — the map's "Draw as"
-     control no longer comes here, which is the whole point of #34. Still clears
+     control no longer comes here, keeping drawing mode separate from molecule
+     topology. Still clears
      the selection, caret and map range, because after a conversion those really
      can mean something different. */
   const convertRecordTopology = useCallback((nextTopology: Topology) => {

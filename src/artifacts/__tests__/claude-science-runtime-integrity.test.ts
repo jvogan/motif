@@ -652,6 +652,39 @@ describe('Claude Science runtime data-integrity behavior', () => {
     }));
   });
 
+  it('blocks checkpoints that contain inactive records which restore would discard', () => {
+    const inactive = normalizeRecord({
+      id: 'inactive-checkpoint-record',
+      name: 'Inactive checkpoint record',
+      type: 'dna',
+      topology: 'linear',
+      sequence: 'ACGT',
+      active: false,
+    }, 0);
+    expect(inactive).not.toBeNull();
+    if (!inactive) throw new Error('inactive checkpoint fixture did not normalize');
+
+    const payload = prepareInventoryReplacement([{
+      id: inactive.id,
+      name: inactive.name,
+      type: inactive.type,
+      topology: inactive.topology,
+      sequence: inactive.sequence,
+    }]);
+    expect(() => createArtifactDatabaseSnapshot({ ...payload, records: [inactive] }, {
+      customEnzymes: [],
+      translationLayersByRecord: {},
+      enzymeSourcesByRecord: {},
+      hiddenEnzymesByRecord: {},
+      hiddenFeatureTranslationsByRecord: {},
+      restrictionLabelsByRecord: {},
+      motifsByRecord: {},
+    }, [inactive])).toThrowError(expect.objectContaining({
+      code: 'MOTIF_INPUT_LIMIT_EXCEEDED',
+      message: expect.stringMatching(/inactive|restore/i),
+    }));
+  });
+
   it('normalizes allowlisted feature fields and escapes all report markup', () => {
     const payload = prepareInventoryReplacement([{
       id: 'security-fixture',
@@ -875,6 +908,48 @@ describe('Claude Science runtime data-integrity behavior', () => {
         }),
       }),
     );
+  });
+
+  it('rejects fractional restriction-site coordinates before they reach map state', () => {
+    for (const hit of [
+      { position: 1.5 },
+      { position: 1, cutPosition: 2.5 },
+    ]) {
+      expect(() => validateRuntimeRecordInputs([{
+        id: 'fractional-site',
+        molecule: 'dna',
+        sequence: 'GAATTC',
+        sites: [{ enzyme: 'EcoRI', hits: [hit] }],
+      }], 'motifAddRecords')).toThrowError(expect.objectContaining({
+        details: expect.objectContaining({
+          mutated: false,
+          issues: expect.arrayContaining([
+            expect.objectContaining({ message: expect.stringMatching(/non-negative safe integer/i) }),
+          ]),
+        }),
+      }));
+    }
+  });
+
+  it('rejects fractional feature coordinates instead of rounding imported annotations', () => {
+    for (const feature of [
+      { start: 0.5, end: 2 },
+      { start: 0, end: 2, subRanges: [{ start: 0, end: 1.5 }] },
+    ]) {
+      expect(() => validateRuntimeRecordInputs([{
+        id: 'fractional-feature',
+        molecule: 'dna',
+        sequence: 'GAATTC',
+        features: [feature],
+      }], 'motifAddRecords')).toThrowError(expect.objectContaining({
+        details: expect.objectContaining({
+          mutated: false,
+          issues: expect.arrayContaining([
+            expect.objectContaining({ message: expect.stringMatching(/safe integer/i) }),
+          ]),
+        }),
+      }));
+    }
   });
 
   it('keeps ordinary FASTA records JSON-compatible for atomic UI imports', () => {

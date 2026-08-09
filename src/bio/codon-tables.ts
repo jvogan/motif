@@ -30,7 +30,7 @@ export const STANDARD_CODE: CodonTable = {
 };
 
 /**
- * Phase 35 P0-A1: NCBI translation tables (2, 5, 11, 13, 22). Prior to this
+ * NCBI translation tables (2, 5, 11, 13, 22). Prior to this
  * change Motif exposed only table 1; mitochondrial sequences mistranslated
  * silently because the standard code treats UGA as a stop while the
  * mitochondrial codes use it for Trp. See:
@@ -540,7 +540,7 @@ export const YEAST_USAGE: CodonUsage = {
 };
 
 /**
- * Phase 35 P-I (P1-A11): expand codon usage to cover major non-E.coli/non-human
+ * Additional codon-usage profiles cover major non-E. coli/non-human
  * expression hosts. Sources: Kazusa codon usage database (Pichia/Sf9/CHO/B.subtilis).
  * Together with the existing three tables (E. coli, human, yeast), these
  * cover ~95% of customer expression workflows.
@@ -658,14 +658,14 @@ export const BSUBTILIS_USAGE: CodonUsage = {
 export type CodonOrganism = 'ecoli' | 'human' | 'yeast' | 'pichia' | 'sf9' | 'cho' | 'bsubtilis';
 
 /**
- * I11b: any codon-table identifier accepted by `getCodonUsage` — a built-in
+ * Any codon-table identifier accepted by `getCodonUsage` — a built-in
  * `CodonOrganism` or a user table referenced as `custom:<id>`. Kept as a plain
  * `string` so it round-trips through localStorage and the settings backup
  * without a brittle literal union; unknown ids resolve to HUMAN_USAGE.
  */
 export type CodonTableId = string;
 
-/** A user-uploaded codon usage table (I11b). Persisted in the UI store. */
+/** A user-uploaded codon usage table, persisted in the UI store. */
 export interface CustomCodonTable {
   /** Stable id; referenced elsewhere as `custom:<id>`. */
   id: string;
