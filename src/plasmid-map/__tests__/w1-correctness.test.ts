@@ -1,5 +1,5 @@
 /**
- * W1 correctness hardening — pure-layout guards.
+ * Pure-layout robustness guards.
  * (1) Non-finite length/width/height never produce a NaN viewBox (which would blank
  *     the whole SVG). (2) Restriction clustering is fully deterministic (order-
  *     independent) after the cutPosition/strand tie-breakers.

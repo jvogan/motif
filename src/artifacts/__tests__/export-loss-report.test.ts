@@ -105,6 +105,39 @@ describe('structured export-loss report', () => {
     expect(buildArtifactExportLossReport(record, 'genbank').summary).toMatch(/does not claim full INSDC round-trip|lossy/i);
   });
 
+  it('describes raw sequence exports separately from FASTA exports', () => {
+    const record = normalizeRecord({
+      id: 'raw-sequence',
+      name: 'Raw sequence fixture',
+      molecule: 'dna',
+      seq: 'ACGT',
+      annotations: [{
+        id: 'raw-feature',
+        name: 'annotation omitted by sequence text',
+        type: 'misc_feature',
+        start: 1,
+        end: 4,
+      }],
+    }, 0);
+    expect(record).not.toBeNull();
+    if (!record) throw new Error('fixture did not normalize');
+
+    const rawSequenceReport = buildArtifactExportLossReport(record, 'raw-sequence');
+    expect(rawSequenceReport).toMatchObject({ format: 'raw-sequence', faithful: false, lossy: true });
+    expect(rawSequenceReport.summary).toMatch(/raw sequence export contains sequence text only/i);
+    expect(rawSequenceReport.summary).not.toMatch(/FASTA/i);
+    expect(buildArtifactExportLossReport(record, 'fasta').summary).toMatch(/FASTA export/i);
+
+    const sequenceOnlyRecord = normalizeRecord({ id: 'sequence-only', molecule: 'dna', seq: 'ACGT' }, 0);
+    expect(sequenceOnlyRecord).not.toBeNull();
+    if (!sequenceOnlyRecord) throw new Error('sequence-only fixture did not normalize');
+    expect(buildArtifactExportLossReport(sequenceOnlyRecord, 'raw-sequence')).toMatchObject({
+      faithful: true,
+      lossy: false,
+      summary: expect.stringMatching(/raw sequence export contains the record sequence only/i),
+    });
+  });
+
   it('aggregates whole-inventory loss receipts across inactive records', () => {
     const active = normalizeRecord({
       id: 'active-record',

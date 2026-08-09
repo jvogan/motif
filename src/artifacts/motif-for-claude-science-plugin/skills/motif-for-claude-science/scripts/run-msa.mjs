@@ -8,6 +8,7 @@ import {
   constants,
   existsSync,
   linkSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   openSync,
@@ -469,10 +470,13 @@ function engineInvocation(engine, molecule, inputPath, outputPath) {
   };
 }
 
-function portableInvocationArgs(args, inputPath, outputPath) {
+export function portableInvocationArgs(args, inputPath, outputPath) {
   return args.map((arg) => arg
-    .replace(inputPath, '<input.fasta>')
-    .replace(outputPath, '<output.fasta>'));
+    // Replace the output path first: an output such as `/tmp/input.fasta.bak`
+    // can contain the input path as a prefix, and the old order produced a
+    // misleading partially-redacted provenance argument.
+    .replace(outputPath, '<output.fasta>')
+    .replace(inputPath, '<input.fasta>'));
 }
 
 function readBoundedOutput(path) {
@@ -691,8 +695,11 @@ export function writeMsaPayload(outputPath, payload, force = false) {
   }
   const resolved = resolve(outputPath);
   if (existsSync(resolved) && !force) throw new Error(`Output already exists: ${resolved}. Pass --force to replace it.`);
-  mkdirSync(dirname(resolved), { recursive: true });
-  const temporaryDirectory = mkdtempSync(join(dirname(resolved), '.motif-msa-output-'));
+  const outputDirectory = dirname(resolved);
+  assertRealDirectoryChain(outputDirectory);
+  mkdirSync(outputDirectory, { recursive: true });
+  assertRealDirectoryChain(outputDirectory);
+  const temporaryDirectory = mkdtempSync(join(outputDirectory, '.motif-msa-output-'));
   const temporaryPath = join(temporaryDirectory, 'payload.json');
   try {
     writeFileSync(temporaryPath, json, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
@@ -719,6 +726,41 @@ function preflightOutput(outputPath, force) {
   const resolved = resolve(outputPath);
   if (existsSync(resolved) && !force) {
     throw new Error(`Output already exists: ${resolved}. Pass --force to replace it.`);
+  }
+}
+
+function assertRealDirectoryChain(directory) {
+  const isKnownSystemAlias = (path) => process.platform === 'darwin'
+    && (path === '/var' || path === '/tmp');
+  let current = resolve(directory);
+  while (true) {
+    let stat;
+    try {
+      stat = lstatSync(current);
+    } catch (error) {
+      if (error?.code === 'ENOENT') {
+        const parent = dirname(current);
+        if (parent === current) return;
+        current = parent;
+        continue;
+      }
+      throw error;
+    }
+    if (stat.isSymbolicLink()) {
+      if (!isKnownSystemAlias(current)) {
+        throw new Error(`MSA output directory must not traverse a symbolic link: ${current}`);
+      }
+      const parent = dirname(current);
+      if (parent === current) return;
+      current = parent;
+      continue;
+    }
+    if (!stat.isDirectory()) {
+      throw new Error(`MSA output parent must be a real directory: ${current}`);
+    }
+    const parent = dirname(current);
+    if (parent === current) return;
+    current = parent;
   }
 }
 

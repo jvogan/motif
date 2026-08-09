@@ -117,7 +117,7 @@ export interface RestrictionSite {
    * reverse-complement of the recognition sequence appears at this `position`
    * on the forward strand. This is critical for Type IIS enzymes
    * (BsaI/BbsI/BsmBI/SapI etc.) which are non-palindromic.
-   * Phase 34 P-B B1: added when JS scanner was extended to match Rust parity.
+   * Added when the scanner was extended to report the matching strand.
    */
   strand?: 1 | -1;
 }
@@ -232,7 +232,7 @@ export interface FastaRecord {
    */
   rawHeader?: string;
   /**
-   * Phase 35 P-I (P2-A22): when an aligned input contained `-` / `.` gap
+   * When an aligned input contains `-` / `.` gap
    * characters, the parser silently degaps but reports the count here so a
    * caller can disclose the transformation. Only present when gaps existed.
    */
@@ -269,7 +269,7 @@ export const BASE_COLORS_DARK: Record<string, string> = {
 
 /** DNA/RNA base colors for light backgrounds — WCAG AA ≥4.5:1.
  *
- * VOG-1991: the previous values (#198841/#ed0c0c/#8f7303/#0870f2) passed on
+ * The previous values (#198841/#ed0c0c/#8f7303/#0870f2) passed on
  * pure white at ~4.51-4.56:1 but composited at only ~4.18-4.22:1 against the
  * `--bg-secondary: #f5f5f5` workspace card surface — under the 4.5 normal-text
  * floor on every base. Darkened lightness only (Wong 2011 hue preserved) so

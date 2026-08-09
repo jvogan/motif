@@ -2076,7 +2076,7 @@ export function domesticateLegacyProjection(
  * Domesticate ONLY the internal insert of a flanked Type IIS part, preserving
  * the structural flanking recognition sites the assembly depends on.
  *
- * R10 #4: `domesticate()` removes every recognition site it finds, including the
+ * `domesticate()` removes every recognition site it finds, including the
  * flanking GGTCTC/GAGACC (BsaI) handles — so running it over a whole flanked
  * part strips the flanks and makes the part un-assemblable ("missing flanking
  * sites"), even when the part has zero INTERNAL sites. This helper uses

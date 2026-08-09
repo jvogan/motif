@@ -1,7 +1,7 @@
 /**
  * Primer thermodynamics — hairpin + dimer ΔG prediction.
  *
- * Phase 35 P0-A4: prior to this module, primer-design returned candidates
+ * Before this module, primer-design returned candidates
  * that could form strong self/hetero-duplexes silently. A perfectly matched
  * inverse-complement primer pair (e.g. F=CGCTCGGTACG + R=CGTACCGAGCG)
  * passes GC / Tm / clamp filters and ranks at the top — but in PCR forms a

@@ -58,6 +58,40 @@ function fetchFrom(text) {
   return async () => ({ ok: true, status: 200, text: async () => text });
 }
 
+function responseFromText(text, { stream = false, chunkSize = 23 } = {}) {
+  if (!stream) return { ok: true, status: 200, text: async () => text };
+  const bytes = new TextEncoder().encode(text);
+  let offset = 0;
+  return {
+    ok: true,
+    status: 200,
+    body: new ReadableStream({
+      pull(controller) {
+        if (offset >= bytes.byteLength) {
+          controller.close();
+          return;
+        }
+        const nextOffset = Math.min(offset + chunkSize, bytes.byteLength);
+        controller.enqueue(bytes.slice(offset, nextOffset));
+        offset = nextOffset;
+      },
+    }),
+  };
+}
+
+function routedFetch({ packument, versionMetadata, currentVersion = '1.0.0', stream = false, chunkSize = 23 } = {}) {
+  const requests = [];
+  const versionSuffix = `/${encodeURIComponent(currentVersion)}`;
+  return {
+    requests,
+    fetchImpl: async (url, options) => {
+      requests.push({ url, accept: options?.headers?.accept });
+      const body = new URL(url).pathname.endsWith(versionSuffix) ? versionMetadata : packument;
+      return responseFromText(typeof body === 'string' ? body : JSON.stringify(body), { stream, chunkSize });
+    },
+  };
+}
+
 describe('dependency cooling-off policy', () => {
   it('fails closed in CI without a real event baseline', async () => {
     const fixtureData = fixture();
@@ -163,6 +197,111 @@ describe('dependency cooling-off policy', () => {
       fetchImpl: fetchFrom(JSON.stringify(metadata)),
     })).rejects.toThrow(/tarball mismatch/);
     rmSync(tampered.directory, { recursive: true, force: true });
+  });
+
+  it('accepts a large streamed packument when the exact version response is small', async () => {
+    const fixtureData = fixture();
+    const packument = JSON.parse(fixtureData.metadata);
+    packument.auditPadding = 'x'.repeat(2_100_000);
+    const packumentText = JSON.stringify(packument);
+    expect(new TextEncoder().encode(packumentText).byteLength).toBeGreaterThan(2 * 1024 * 1024);
+    const exactVersion = {
+      name: 'reviewed-package',
+      version: '1.0.0',
+      dist: packument.versions['1.0.0'].dist,
+    };
+    const routed = routedFetch({ packument: packumentText, versionMetadata: exactVersion, stream: true, chunkSize: 11 });
+    await expect(checkDependencyCoolingOff(fixtureData.directory, {
+      baseLockfileText: fixtureData.baseline,
+      now: NOW,
+      fetchImpl: routed.fetchImpl,
+    })).resolves.toMatchObject({ changedPackageCount: 1 });
+    expect(routed.requests).toEqual(expect.arrayContaining([
+      expect.objectContaining({ accept: 'application/json' }),
+    ]));
+    expect(routed.requests).toHaveLength(2);
+    rmSync(fixtureData.directory, { recursive: true, force: true });
+  });
+
+  it('fails closed when a streamed packument exceeds its larger bounded cap', async () => {
+    const fixtureData = fixture();
+    const packument = JSON.parse(fixtureData.metadata);
+    packument.auditPadding = 'x'.repeat(16 * 1024 * 1024);
+    const metadata = JSON.parse(fixtureData.metadata);
+    const routed = routedFetch({
+      packument: JSON.stringify(packument),
+      versionMetadata: { name: 'reviewed-package', version: '1.0.0', dist: metadata.versions['1.0.0'].dist },
+      stream: true,
+      chunkSize: 65_536,
+    });
+    await expect(checkDependencyCoolingOff(fixtureData.directory, {
+      baseLockfileText: fixtureData.baseline,
+      now: NOW,
+      fetchImpl: routed.fetchImpl,
+    })).rejects.toThrow(/exceeded/iu);
+    rmSync(fixtureData.directory, { recursive: true, force: true });
+  });
+
+  it('requires the exact version endpoint to return the locked version', async () => {
+    const fixtureData = fixture();
+    const metadata = JSON.parse(fixtureData.metadata);
+    const routed = routedFetch({
+      packument: fixtureData.metadata,
+      versionMetadata: {
+        name: 'reviewed-package',
+        version: '0.9.0',
+        dist: metadata.versions['1.0.0'].dist,
+      },
+    });
+    await expect(checkDependencyCoolingOff(fixtureData.directory, {
+      baseLockfileText: fixtureData.baseline,
+      now: NOW,
+      fetchImpl: routed.fetchImpl,
+    })).rejects.toThrow(/no exact reviewed-package@1\.0\.0 version/);
+    rmSync(fixtureData.directory, { recursive: true, force: true });
+  });
+
+  it.each([
+    ['truncated publish metadata', '{"name":"reviewed-package","time":{"1.0.0":"2026-07-01T00:00:00.000Z"'],
+    ['publish metadata without the exact timestamp', JSON.stringify({ name: 'reviewed-package', time: { '0.9.0': '2026-07-01T00:00:00.000Z' } })],
+  ])('fails closed on %s', async (_label, packument) => {
+    const fixtureData = fixture();
+    const metadata = JSON.parse(fixtureData.metadata);
+    const routed = routedFetch({
+      packument,
+      versionMetadata: { name: 'reviewed-package', version: '1.0.0', dist: metadata.versions['1.0.0'].dist },
+      stream: true,
+      chunkSize: 7,
+    });
+    await expect(checkDependencyCoolingOff(fixtureData.directory, {
+      baseLockfileText: fixtureData.baseline,
+      now: NOW,
+      fetchImpl: routed.fetchImpl,
+    })).rejects.toThrow(/packument|publish|stream ended|stream failed/iu);
+    rmSync(fixtureData.directory, { recursive: true, force: true });
+  });
+
+  it('fails closed when the bounded exact-version response is too large', async () => {
+    const fixtureData = fixture();
+    const metadata = JSON.parse(fixtureData.metadata);
+    const oversizedVersion = JSON.stringify({
+      name: 'reviewed-package',
+      version: '1.0.0',
+      dist: metadata.versions['1.0.0'].dist,
+      auditPadding: 'x'.repeat(2_100_000),
+    });
+    const routed = routedFetch({
+      packument: fixtureData.metadata,
+      versionMetadata: oversizedVersion,
+      stream: true,
+      chunkSize: 31,
+    });
+    await expect(checkDependencyCoolingOff(fixtureData.directory, {
+      baseLockfileText: fixtureData.baseline,
+      now: NOW,
+      fetchImpl: routed.fetchImpl,
+    })).rejects.toThrow(/exceeded/iu);
+    rmSync(fixtureData.directory, { recursive: true, force: true });
   });
 
   it('does not make registry requests when the lockfile has no changed entries', async () => {

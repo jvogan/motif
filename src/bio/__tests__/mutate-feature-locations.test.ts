@@ -28,6 +28,16 @@ describe('mutation feature-location integrity', () => {
     }
   });
 
+  it('rejects fractional or non-finite edit coordinates before string indexing', () => {
+    expect(() => applySubstitution('ATGC', [], [], 1.5, 'C')).toThrow(/pos.*safe integer/i);
+    expect(() => applySubstitution('ATGC', [], [], Number.NaN, 'C')).toThrow(/pos.*safe integer/i);
+    expect(() => applyInsertion('ATGC', [], [], 1.5, 'AA')).toThrow(/pos.*safe integer/i);
+    expect(() => applyInsertion('ATGC', [], [], Number.NaN, 'AA')).toThrow(/pos.*safe integer/i);
+    expect(() => applyDeletion('ATGC', [], [], 1, 1.5)).toThrow(/count.*safe integer/i);
+    expect(() => applyDeletion('ATGC', [], [], 1, Number.NaN)).toThrow(/count.*safe integer/i);
+    expect(applyInsertion('ATGC', [], [], -1, 'AA').raw).toBe('AAATGC');
+  });
+
   it('uses half-open feature affinity at insertion boundaries', () => {
     const feature: Feature = {
       id: 'feature',

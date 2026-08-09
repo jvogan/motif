@@ -258,7 +258,8 @@ describe('layoutRadialTierLabels', () => {
     // packer now prefers spots that keep a readable horizontal gap between same-row
     // neighbors, so a label may be nudged off its true angle by up to the angular-shift
     // budget (default max(DEFAULT_ANGLE_STEP_DEG=1.5, angularThresholdDeg/2)) rather than
-    // sitting at the exact tick angle. Previously this asserted zero drift (< 1e-6).
+    // sitting at the exact tick angle; the layout intentionally permits the
+    // bounded angular shift above to maintain readable row spacing.
     const maxAngleShiftDeg = Math.max(1.5, opts.angularThresholdDeg / 2);
     for (const source of candidates) {
       const out = placed.find((item) => item.id === source.id);

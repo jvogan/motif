@@ -13,7 +13,7 @@ import { reverseComplement } from './reverse-complement';
 
 /**
  * Options for [`findRestrictionSites`].
- * Phase 34 P-B B3: topology added so circular plasmids wrap-scan their origin.
+ * Circular topology causes the scanner to wrap across the origin.
  */
 export interface FindRestrictionSitesOptions {
   /**
@@ -369,7 +369,7 @@ function concreteIupacMatch(buffer: string, start: number, recognition: string):
  * Default working set of restriction enzymes used by the UI and digest functions.
  *
  * Originally the 25-enzyme 6-cutter / Type IIS panel preserved across releases.
- * VOG-1807: the eGFP onboarding sample (720 bp) has no canonical 6-cutter
+ * The eGFP onboarding sample (720 bp) has no canonical 6-cutter
  * site, so the Inspector "Common" tab opened to "0 cuts" — a dead end for
  * first-time users. Five canonical screening 4-cutters (AluI, HaeIII, TaqI,
  * HpaII, MspI) are appended so the default Inspector view yields useful
@@ -406,10 +406,10 @@ export const RESTRICTION_ENZYMES: RestrictionEnzyme[] = [
   { name: 'ScaI',   recognitionSequence: 'AGTACT',   cutOffset: 3, complementCutOffset: 3, overhang: 'blunt' },
   { name: 'ApaI',   recognitionSequence: 'GGGCCC',   cutOffset: 5, complementCutOffset: 1, overhang: '3prime' },
   { name: 'SphI',   recognitionSequence: 'GCATGC',   cutOffset: 5, complementCutOffset: 1, overhang: '3prime' },
-  // VOG-1807: canonical screening 4-cutters that appear in molecular biology
+  // Canonical screening 4-cutters that appear in molecular biology
   // kits (RFLP/diagnostic digests, methylation-sensitive pair, RAD-tag panel).
   // Order matches the AluI/HaeIII/TaqI/HpaII/MspI panel called out in the
-  // ticket. Mirrors RESTRICTION_ENZYMES_FULL entries 1:1 so the digest engine
+  // Mirrors RESTRICTION_ENZYMES_FULL entries 1:1 so the digest engine
   // returns identical cut/overhang shapes whichever set the caller passes.
   { name: 'AluI',   recognitionSequence: 'AGCT',     cutOffset: 2, complementCutOffset: 2, overhang: 'blunt'  },
   { name: 'HaeIII', recognitionSequence: 'GGCC',     cutOffset: 2, complementCutOffset: 2, overhang: 'blunt'  },
@@ -443,15 +443,15 @@ for (let index = 0; index < RESTRICTION_ENZYMES.length; index += 1) {
 /**
  * Find all restriction sites in a sequence for the given enzymes.
  *
- * Phase 34 P-B B1: now scans BOTH strands. For each non-palindromic enzyme,
+ * The scanner checks BOTH strands. For each non-palindromic enzyme,
  * the reverse-complement of the recognition sequence is also scanned and
- * matches are tagged `strand: -1`. This matches the Rust engine's output
- * structure and is critical for Type IIS enzymes (BsaI/BbsI/BsmBI/SapI/etc.)
+ * matches are tagged `strand: -1`. This preserves the scanner's strand-aware
+ * output structure and is critical for Type IIS enzymes (BsaI/BbsI/BsmBI/SapI/etc.)
  * whose binding sites are not symmetric. Empirically verified: BsaI on
  * `AAAAAAGAGACCTTTTT` (where `GAGACC = revcomp(GGTCTC)`) now correctly
  * returns 1 site at position 6.
  *
- * Phase 34 P-B B3: when `options.topology === 'circular'`, the scanner
+ * When `options.topology === 'circular'`, the scanner
  * appends a wrap window so that recognition strings straddling the origin
  * are matched. Returned `position` values stay in `[0, seq.length)`.
  *

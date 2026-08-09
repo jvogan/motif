@@ -389,6 +389,9 @@ var VALID_TRANSLATION_TABLE_IDS = new Set(VALID_NCBI_TABLE_IDS);
 function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
+function createRecordMap() {
+  return /* @__PURE__ */ Object.create(null);
+}
 function requiredString(value, path, maxLength = MAX_TRANSLATION_LAYER_TEXT_LENGTH) {
   if (typeof value !== "string" || !value.trim() || value.length > maxLength) {
     throw new Error(`${path} must be a non-empty string no longer than ${maxLength} characters.`);
@@ -444,7 +447,7 @@ function normalizeCustomEnzymes(value) {
 function normalizeTranslationLayers(value, recordLengths) {
   if (value === void 0) return {};
   if (!isObject(value)) throw new Error("artifactState.translationLayersByRecord must be an object.");
-  const result = {};
+  const result = createRecordMap();
   for (const [recordId, rawLayers] of Object.entries(value)) {
     const sequenceLength = recordLengths.get(recordId);
     if (sequenceLength === void 0) continue;
@@ -503,7 +506,7 @@ function normalizeTranslationLayers(value, recordLengths) {
 function normalizeStringArraysByRecord(value, path, recordLengths, maxEntries) {
   if (value === void 0) return {};
   if (!isObject(value)) throw new Error(`${path} must be an object.`);
-  const result = {};
+  const result = createRecordMap();
   for (const [recordId, rawValues] of Object.entries(value)) {
     if (!recordLengths.has(recordId)) continue;
     if (!Array.isArray(rawValues) || rawValues.some((item) => typeof item !== "string")) {
@@ -518,7 +521,7 @@ function normalizeStringArraysByRecord(value, path, recordLengths, maxEntries) {
 }
 function normalizeRestrictionSources(value, recordLengths) {
   const raw = normalizeStringArraysByRecord(value, "artifactState.enzymeSourcesByRecord", recordLengths);
-  const result = {};
+  const result = createRecordMap();
   for (const [recordId, sources] of Object.entries(raw)) {
     const validated = sources.filter((source) => VALID_SOURCE_IDS.has(source));
     if (validated.length !== sources.length) throw new Error(`artifactState.enzymeSourcesByRecord.${recordId} contains an unknown source.`);
@@ -529,7 +532,7 @@ function normalizeRestrictionSources(value, recordLengths) {
 function normalizeBooleanByRecord(value, path, recordLengths) {
   if (value === void 0) return {};
   if (!isObject(value)) throw new Error(`${path} must be an object.`);
-  const result = {};
+  const result = createRecordMap();
   for (const [recordId, rawValue] of Object.entries(value)) {
     if (!recordLengths.has(recordId)) continue;
     if (typeof rawValue !== "boolean") throw new Error(`${path}.${recordId} must be a boolean.`);
@@ -540,7 +543,7 @@ function normalizeBooleanByRecord(value, path, recordLengths) {
 function normalizeMotifs(value, recordLengths) {
   if (value === void 0) return {};
   if (!isObject(value)) throw new Error("artifactState.motifsByRecord must be an object.");
-  const result = {};
+  const result = createRecordMap();
   for (const [recordId, rawValue] of Object.entries(value)) {
     if (!recordLengths.has(recordId)) continue;
     if (typeof rawValue !== "string" || rawValue.length > MAX_MOTIF_LENGTH) {
