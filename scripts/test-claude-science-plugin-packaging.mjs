@@ -95,16 +95,20 @@ function check(name, callback) {
 function writeFakeMsaExecutable(directory, name) {
   mkdirSync(directory, { recursive: true });
   const executablePath = join(directory, name);
-  writeFileSync(executablePath, String.raw`#!/usr/bin/env node
-import { readFileSync, writeFileSync } from 'node:fs';
+  writeFileSync(executablePath, `#!${process.execPath}\n${String.raw`import { readFileSync, writeFileSync } from 'node:fs';
 
 const args = process.argv.slice(2);
 const executable = process.argv[1].split(/[\\/]/).at(-1);
 if (args.includes('--version') || args.includes('-version')) {
-  process.stdout.write((process.env.FAKE_MSA_VERSION || ('fake-' + executable + ' 9.9.9')) + '\n');
+  const defaultVersion = executable === 'mafft'
+    ? 'v7.9.9'
+    : executable === 'muscle'
+      ? 'MUSCLE v5.9.9'
+      : 'Clustal Omega 1.9.9';
+  process.stdout.write((process.env.MOTIF_TEST_MSA_VERSION || defaultVersion) + '\n');
   process.exit(0);
 }
-if (process.env.FAKE_MSA_MODE === 'timeout') {
+if (process.env.MOTIF_TEST_MSA_MODE === 'timeout') {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5_000);
 }
 
@@ -131,7 +135,8 @@ for (const rawLine of input.split(/\r?\n/)) {
   }
 }
 
-const renderedRows = process.env.FAKE_MSA_MODE === 'duplicate'
+const renderedRows = process.env.MOTIF_TEST_MSA_MODE === 'duplicate'
+  || (process.env.MOTIF_TEST_MSA_MODE === 'ambient-check' && process.env.MOTIF_TEST_AMBIENT)
   ? [rows[0], rows[0]]
   : [...rows].reverse();
 const output = renderedRows.map((row) => {
@@ -141,7 +146,7 @@ const output = renderedRows.map((row) => {
 
 if (executable === 'mafft') process.stdout.write(output);
 else writeFileSync(outputPath, output);
-`, { mode: 0o755 });
+`}`, { mode: 0o755 });
   chmodSync(executablePath, 0o755);
   return executablePath;
 }
@@ -837,6 +842,14 @@ check('external MSA runner discovers the dedicated environment before PATH and h
       }),
       /--executable does not resolve/,
     );
+    assert.throws(
+      () => discoverMsaExecutable('mafft', {
+        executablePath: process.execPath,
+        env: { PATH: '' },
+        pathValue: '',
+      }),
+      /must resolve to a MAFFT executable named mafft/,
+    );
   } finally {
     rmSync(fixture, { recursive: true, force: true });
   }
@@ -868,7 +881,10 @@ check('external MSA runner maps reordered rows by safe header and records exact 
       assert.equal(alignment.engine.id, engine);
       assert.equal(alignment.engine.mode, 'local-command');
       assert.equal(alignment.engine.usedFallback, false);
-      assert.equal(alignment.engine.version, `fake-${executableName} 9.9.9`);
+      assert.equal(
+        alignment.engine.version,
+        executableName === 'mafft' ? 'v7.9.9' : executableName === 'muscle' ? 'MUSCLE v5.9.9' : 'Clustal Omega 1.9.9',
+      );
       assert.equal(alignment.provenance.executable, executableName);
       assert.match(alignment.provenance.executableSha256, /^[a-f0-9]{64}$/);
       assert.equal(alignment.provenance.argv[0], executableName);
@@ -900,7 +916,8 @@ check('external MSA runner rejects malformed output and never falls back', () =>
         molecule: 'dna',
         inputText: '>One\nATGC\n>Two\nATGGC\n',
         executablePath,
-        env: { ...process.env, FAKE_MSA_MODE: 'duplicate' },
+        env: { ...process.env },
+        childEnv: { MOTIF_TEST_MSA_MODE: 'duplicate' },
         temporaryRoot: fixture,
       }),
       /repeats header/,
@@ -911,7 +928,8 @@ check('external MSA runner rejects malformed output and never falls back', () =>
         molecule: 'dna',
         inputText: '>One\nATGC\n>Two\nATGGC\n',
         executablePath,
-        env: { ...process.env, FAKE_MSA_MODE: 'timeout' },
+        env: { ...process.env },
+        childEnv: { MOTIF_TEST_MSA_MODE: 'timeout' },
         temporaryRoot: fixture,
         timeoutMs: 100,
       }),
@@ -923,11 +941,40 @@ check('external MSA runner rejects malformed output and never falls back', () =>
         molecule: 'dna',
         inputText: '>One\nATGC\n>Two\nATGGC\n',
         executablePath,
-        env: { ...process.env, FAKE_MSA_VERSION: 'MUSCLE 3.8.31' },
+        env: { ...process.env },
+        childEnv: { MOTIF_TEST_MSA_VERSION: 'MUSCLE 3.8.31' },
         temporaryRoot: fixture,
       }),
-      /MUSCLE 5 or later is required/,
+      /version banner is not recognized/,
     );
+    for (const [engine, executableName, banner] of [
+      ['mafft', 'mafft', 'Node.js v22.13.0'],
+      ['clustal-omega', 'clustalo', 'clustalo 2.0.0'],
+    ]) {
+      const invalidExecutable = writeFakeMsaExecutable(join(fixture, `${engine}-invalid`), executableName);
+      assert.throws(
+        () => runExternalMsa({
+          engine,
+          molecule: 'dna',
+          inputText: '>One\nATGC\n>Two\nATGGC\n',
+          executablePath: invalidExecutable,
+          env: { ...process.env },
+          childEnv: { MOTIF_TEST_MSA_VERSION: banner },
+          temporaryRoot: fixture,
+        }),
+        /version banner is not recognized/,
+      );
+    }
+    const ambientExecutable = writeFakeMsaExecutable(join(fixture, 'ambient-check'), 'mafft');
+    assert.doesNotThrow(() => runExternalMsa({
+      engine: 'mafft',
+      molecule: 'dna',
+      inputText: '>One\nATGC\n>Two\nATGGC\n',
+      executablePath: ambientExecutable,
+      env: { ...process.env, MOTIF_TEST_AMBIENT: 'must-not-reach-child' },
+      childEnv: { MOTIF_TEST_MSA_MODE: 'ambient-check' },
+      temporaryRoot: fixture,
+    }));
   } finally {
     rmSync(fixture, { recursive: true, force: true });
   }

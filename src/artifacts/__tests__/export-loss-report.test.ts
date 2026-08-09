@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildArtifactExportLossReport, normalizeRecord } from '../motif-artifact';
+import { buildArtifactExportLossReport, buildArtifactExportLossReportForRecords, normalizeRecord } from '../motif-artifact';
 
 describe('structured export-loss report', () => {
   it('reuses source-preservation diagnostics and reports every lossy dimension', () => {
@@ -100,8 +100,41 @@ describe('structured export-loss report', () => {
     expect(record).not.toBeNull();
     if (!record) throw new Error('fixture did not normalize');
 
-    expect(buildArtifactExportLossReport(record, 'record-json')).toMatchObject({ faithful: true, lossy: false });
+    expect(buildArtifactExportLossReport(record, 'record-json')).toMatchObject({ faithful: true, lossy: false, summary: expect.stringMatching(/active record only/i) });
     expect(buildArtifactExportLossReport(record, 'zip')).toMatchObject({ faithful: true, lossy: false });
     expect(buildArtifactExportLossReport(record, 'genbank').summary).toMatch(/does not claim full INSDC round-trip|lossy/i);
+  });
+
+  it('aggregates whole-inventory loss receipts across inactive records', () => {
+    const active = normalizeRecord({
+      id: 'active-record',
+      name: 'Active record',
+      molecule: 'dna',
+      seq: 'ACGTACGT',
+    }, 0);
+    const inactive = normalizeRecord({
+      id: 'inactive-record',
+      name: 'Inactive annotated record',
+      molecule: 'dna',
+      seq: 'ACGTACGT',
+      active: false,
+      annotations: [{ id: 'inactive-feature', name: 'annotation omitted by FASTA', type: 'misc_feature', start: 1, end: 5 }],
+    }, 1);
+    expect(active).not.toBeNull();
+    expect(inactive).not.toBeNull();
+    if (!active || !inactive) throw new Error('multi-record fixture did not normalize');
+
+    const report = buildArtifactExportLossReportForRecords([active, inactive], 'fasta');
+    expect(report.faithful).toBe(false);
+    expect(report.recordReports).toEqual([
+      expect.objectContaining({ recordId: 'active-record', recordName: 'Active record', faithful: true, lossCount: 0 }),
+      expect.objectContaining({
+        recordId: 'inactive-record',
+        recordName: 'Inactive annotated record',
+        faithful: false,
+        lossCount: 1,
+      }),
+    ]);
+    expect(report.summary).toContain('Inactive annotated record');
   });
 });

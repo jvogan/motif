@@ -62,8 +62,8 @@ test.describe('Claude Science PCR materialization', () => {
       parameters: { topology: expect.any(String) },
       provenance: { metadata: { recordCreated: false } },
     });
-    expect(afterSimulation.simulations?.[0].kind === 'pcr'
-      ? afterSimulation.simulations[0].data.products[0]
+    expect(afterSimulation.simulations?.[0]?.kind === 'pcr'
+      ? afterSimulation.simulations[0].data.products?.[0]
       : null).not.toHaveProperty('recordId');
 
     await create.click();

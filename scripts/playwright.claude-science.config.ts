@@ -9,6 +9,7 @@ export default defineConfig({
   testMatch: 'claude-science-*.spec.ts',
   fullyParallel: false,
   forbidOnly: Boolean(process.env.CI),
+  failOnFlakyTests: Boolean(process.env.CI),
   retries: process.env.CI ? 1 : 0,
   workers: 1,
   reporter: process.env.CI ? 'line' : 'list',
@@ -18,7 +19,8 @@ export default defineConfig({
     contextOptions: {
       reducedMotion: 'reduce',
     },
-    trace: 'on-first-retry',
+    trace: 'retain-on-failure',
+    screenshot: 'only-on-failure',
     launchOptions: {
       args: [
         '--disable-gpu',

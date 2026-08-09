@@ -16,6 +16,14 @@ function readJson(path) {
   return JSON.parse(readFileSync(path, 'utf8'));
 }
 
+function declaredDependencyNames(packageJson) {
+  const names = new Set();
+  for (const field of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']) {
+    for (const name of Object.keys(packageJson[field] ?? {})) names.add(name);
+  }
+  return names;
+}
+
 function packageManifest(lockPath) {
   const path = join(root, lockPath, 'package.json');
   if (!existsSync(path)) return {};
@@ -38,6 +46,7 @@ export function createDeterministicSbom(rootPath = root) {
   const workspace = resolve(rootPath);
   const lock = readJson(join(workspace, 'package-lock.json'));
   const packageJson = readJson(join(workspace, 'package.json'));
+  const declaredDependencies = declaredDependencyNames(packageJson);
   const components = Object.entries(lock.packages ?? {})
     .filter(([lockPath]) => lockPath !== '')
     .map(([lockPath, metadata]) => {
@@ -48,7 +57,7 @@ export function createDeterministicSbom(rootPath = root) {
       return {
         name,
         version: metadata.version,
-        scope: lockPath.includes('/node_modules/') ? 'transitive' : 'direct',
+        scope: declaredDependencies.has(name) ? 'direct' : 'transitive',
         resolved: metadata.resolved,
         integrity: metadata.integrity,
         license: manifest.license ?? null,

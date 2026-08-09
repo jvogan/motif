@@ -1,59 +1,67 @@
-import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { GATE_STEPS } from '../lib/gate-steps.mjs';
+import { checkSupplyChainPolicy } from '../check-supply-chain-policy.mjs';
 
-// `npm run gate` is the canonical local check sequence. This test turns any
-// drift between that sequence and CI into a local failure.
+// `npm run gate` is the canonical local and hosted check sequence. The runner
+// writes exact-commit receipts for these shared step declarations.
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const workflow = readFileSync(resolve(root, '.github/workflows/ci.yml'), 'utf8');
 const pkg = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'));
 
-// Steps that set the machine up rather than check the source. `npm ci
-// --ignore-scripts` installs dependencies and `npx playwright install` fetches
-// a browser; neither is
-// something a local run should repeat on every commit.
-const SETUP_ONLY = new Set(['npm ci --ignore-scripts']);
-
-function npmCommands(script) {
-  return script
-    .split('&&')
-    .map((part) => part.trim())
-    .filter((part) => /^npm (run |test\b)/.test(part) && !SETUP_ONLY.has(part));
-}
-
-const ciCommands = [
-  ...workflow.matchAll(/^\s*run:\s*(.+)$/gm),
-].flatMap((match) => npmCommands(match[1]));
-
-const gateCommands = npmCommands(pkg.scripts.gate ?? '');
-
 describe('npm run gate matches CI', () => {
-  it('reads a non-trivial list out of both sides', () => {
-    // Guard the guard: a regex that stopped matching would make every
-    // assertion below pass by comparing two empty lists.
-    expect(ciCommands.length).toBeGreaterThan(5);
-    expect(gateCommands.length).toBeGreaterThan(5);
+  it('uses the same receipt-producing runner locally and in hosted CI', () => {
+    expect(pkg.scripts.gate).toBe('node scripts/run-gate.mjs');
+    expect(workflow.match(/run: npm run gate/g)).toHaveLength(1);
+    expect(workflow).toContain('MOTIF_COOLING_OFF_BASE_SHA:');
   });
 
-  it('runs every check CI runs', () => {
-    const missing = ciCommands.filter((command) => !gateCommands.includes(command));
-    expect(missing, 'in CI but not in `npm run gate`').toEqual([]);
+  it('declares a non-trivial, safely ordered gate', () => {
+    const ids = GATE_STEPS.map(({ id }) => id);
+    expect(ids.length).toBeGreaterThan(15);
+    expect(ids.indexOf('supply-chain-policy')).toBeLessThan(ids.indexOf('reviewed-lifecycle'));
+    expect(ids.indexOf('build')).toBeLessThan(ids.indexOf('post-build-release-verification'));
+    expect(ids.indexOf('post-build-release-verification')).toBeLessThan(ids.indexOf('reproducibility'));
   });
 
-  it('runs nothing CI does not', () => {
-    // The other direction matters too: a gate that checks more than CI turns
-    // green CI into an unreliable signal about what the gate proved.
-    const extra = gateCommands.filter((command) => !ciCommands.includes(command));
-    expect(extra, 'in `npm run gate` but not in CI').toEqual([]);
-  });
-
-  it('disables npm lifecycle execution until the reviewed policy has passed', () => {
+  it('disables npm lifecycle execution during installation', () => {
     expect(workflow).toContain('run: npm ci --ignore-scripts');
-    expect(workflow.indexOf('run: npm ci --ignore-scripts')).toBeLessThan(workflow.indexOf('run: npm run security:policy'));
-    expect(workflow.indexOf('run: npm run security:policy')).toBeLessThan(workflow.indexOf('run: npm run security:lifecycle'));
-    expect(gateCommands.indexOf('npm run security:policy')).toBeLessThan(gateCommands.indexOf('npm run security:lifecycle'));
+    expect(workflow.indexOf('run: npm ci --ignore-scripts')).toBeLessThan(workflow.indexOf('run: npm run gate'));
+  });
+
+  it('retains browser and exact-commit gate evidence', () => {
+    expect(workflow).toContain('actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02');
+    expect(workflow).toContain('test-results/');
+    expect(workflow).toContain('dist-motif/gate-coverage.json');
+  });
+
+  it('pins every hosted action to an exact 40-character commit SHA', () => {
+    const actionRefs = [...workflow.matchAll(/^\s*uses:\s*([^\s#]+)/gm)].map((match) => match[1]);
+    expect(actionRefs.length).toBeGreaterThan(0);
+    for (const ref of actionRefs) expect(ref).toMatch(/^[^@]+@[a-f0-9]{40}$/);
+  });
+
+  it('executes the declared Node 24 compatibility branch', () => {
+    expect(workflow).toContain('node-24-compatibility:');
+    expect(workflow).toContain('node-version: 24');
+    expect(workflow).toContain('run: npm run typecheck');
+    expect(workflow).toContain('run: npm test');
+  });
+});
+
+describe('post-build release verification', () => {
+  it('fails before policy work when the generated release is missing', () => {
+    const emptyWorkspace = mkdtempSync(join(tmpdir(), 'motif-release-required-'));
+    try {
+      expect(() => checkSupplyChainPolicy(emptyWorkspace, { requireRelease: true }))
+        .toThrow(/Generated release bundle is required/);
+    } finally {
+      rmSync(emptyWorkspace, { recursive: true, force: true });
+    }
   });
 });
 
@@ -80,6 +88,9 @@ describe('the typecheck script builds the project references', () => {
     const rootConfig = JSON.parse(readFileSync(resolve(root, 'tsconfig.json'), 'utf8'));
     expect(rootConfig.files).toEqual([]);
     expect(rootConfig.include).toBeUndefined();
-    expect(rootConfig.references?.length ?? 0).toBeGreaterThan(0);
+    expect(rootConfig.references?.map(({ path }) => path)).toEqual(expect.arrayContaining([
+      './tsconfig.mcp.json',
+      './tsconfig.e2e.json',
+    ]));
   });
 });

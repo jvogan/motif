@@ -10,6 +10,8 @@ export default defineConfig({
   testMatch: 'claude-science-pane-placement.spec.ts',
   fullyParallel: false,
   forbidOnly: Boolean(process.env.CI),
+  failOnFlakyTests: Boolean(process.env.CI),
+  retries: 0,
   workers: 1,
   reporter: process.env.CI ? 'line' : 'list',
   outputDir: resolve(root, 'test-results/pane-placement'),
@@ -18,7 +20,8 @@ export default defineConfig({
     browserName: 'chromium',
     baseURL: `http://127.0.0.1:${port}`,
     contextOptions: { reducedMotion: 'reduce' },
-    trace: 'on-first-retry',
+    trace: 'retain-on-failure',
+    screenshot: 'only-on-failure',
   },
   webServer: {
     command: `node_modules/.bin/vite --config vite.claude-science.config.ts --port ${port} --strictPort --host 127.0.0.1`,

@@ -13,9 +13,10 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { stampMotifBuildIdentity } from './motif-build-identity.mjs';
 
-const root = resolve(new URL('..', import.meta.url).pathname);
+const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const previewDir = join(root, 'preview');
 const previewHtml = join(previewDir, 'motif-artifact.html');
 const buildDir = mkdtempSync(join(tmpdir(), 'motif-preview-'));

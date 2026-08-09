@@ -228,7 +228,7 @@ import {
 } from './claude-science-download';
 import './motif-artifact.css';
 
-const MOTIF_ARTIFACT_VERSION = '0.3.2';
+const MOTIF_ARTIFACT_VERSION = '0.3.3';
 const MOTIF_ARTIFACT_BUILD_ID = (() => {
   if (typeof document === 'undefined') return 'development';
   const value = document.querySelector<HTMLMetaElement>('meta[name="motif-build-id"]')?.content.trim() ?? '';
@@ -2253,6 +2253,15 @@ export type ArtifactExportLossReport = {
   format: ArtifactExportLossFormat;
   faithful: boolean;
   lossy: boolean;
+  /** Per-record evidence for whole-inventory exports. */
+  recordReports: Array<{
+    recordId: string;
+    recordName: string;
+    faithful: boolean;
+    lossy: boolean;
+    lossCount: number;
+    summary: string;
+  }>;
   repeatedQualifiers: Array<{ featureId: string; key: string; count: number }>;
   truncatedQualifiers: Array<{
     featureId: string;
@@ -2271,6 +2280,14 @@ export type ArtifactExportLossReport = {
   unrepresentableMetadata: Array<{ featureId: string; keys: string[] }>;
   sequenceNormalization: Array<{ code: string; count?: number; detail: string }>;
   summary: string;
+};
+
+export type ArtifactCheckpointExportIssue = {
+  recordId?: string;
+  recordName?: string;
+  code: string;
+  path?: string;
+  message: string;
 };
 
 const EXPORT_LOSS_INTERNAL_METADATA_KEYS = new Set([
@@ -2427,7 +2444,7 @@ export function buildArtifactExportLossReport(
         ? true
         : format === 'csv' || format === 'report';
   const faithful = checkpoint || !hasInterchangeLoss;
-  const lossCount = repeatedQualifiers.length
+  const preservationItemCount = repeatedQualifiers.length
     + truncatedQualifiers.length
     + unsupportedOrRawLocations.length
     + fuzzyLocations.length
@@ -2435,8 +2452,12 @@ export function buildArtifactExportLossReport(
     + multipartBiologicalOrder.filter((entry) => !entry.preserved).length
     + unrepresentableMetadata.length
     + sequenceNormalization.length;
-  const summary = checkpoint
-    ? 'This Motif JSON/ZIP checkpoint preserves the complete structured workspace; interchange files inside a ZIP remain explicitly lossy where noted.'
+  const lossCount = preservationItemCount
+    + (hasInterchangeLoss && preservationItemCount === 0 ? 1 : 0);
+  const summary = format === 'record-json'
+    ? 'Record JSON preserves this active record only; it does not include other records, notes, results, assets, or workspace state. Use Database JSON or ZIP for a complete workspace checkpoint.'
+    : checkpoint
+      ? 'This Motif JSON/ZIP checkpoint preserves the complete structured workspace; interchange files inside a ZIP remain explicitly lossy where noted.'
     : faithful
       ? 'This export is faithful for the represented record content; it does not claim full INSDC round-trip support.'
       : `This ${format.toUpperCase()} export is lossy; ${lossCount} preservation item${lossCount === 1 ? '' : 's'} require review. Use Database JSON or ZIP for the complete Motif checkpoint.`;
@@ -2444,6 +2465,14 @@ export function buildArtifactExportLossReport(
     format,
     faithful,
     lossy: !faithful,
+    recordReports: [{
+      recordId: record.id,
+      recordName: record.name,
+      faithful,
+      lossy: !faithful,
+      lossCount,
+      summary,
+    }],
     repeatedQualifiers,
     truncatedQualifiers,
     unsupportedOrRawLocations,
@@ -2454,6 +2483,144 @@ export function buildArtifactExportLossReport(
     sequenceNormalization,
     summary,
   };
+}
+
+function mergeArtifactExportLossReports(
+  reports: readonly ArtifactExportLossReport[],
+  format: ArtifactExportLossFormat,
+): ArtifactExportLossReport {
+  const first = reports[0];
+  if (!first) {
+    return {
+      format,
+      faithful: true,
+      lossy: false,
+      recordReports: [],
+      repeatedQualifiers: [],
+      truncatedQualifiers: [],
+      unsupportedOrRawLocations: [],
+      fuzzyLocations: [],
+      originalFeatureKeys: [],
+      multipartBiologicalOrder: [],
+      unrepresentableMetadata: [],
+      sequenceNormalization: [],
+      summary: 'No records were represented by this export.',
+    };
+  }
+  const recordReports = reports.flatMap((report) => report.recordReports);
+  const faithful = reports.every((report) => report.faithful);
+  const lossCount = recordReports.reduce((total, report) => total + report.lossCount, 0);
+  const recordSummary = recordReports
+    .filter((report) => report.lossy)
+    .map((report) => `${report.recordName} (${report.lossCount} preservation item${report.lossCount === 1 ? '' : 's'})`)
+    .join('; ');
+  const summary = format === 'record-json'
+    ? first.summary
+    : format === 'database-json' || format === 'zip'
+      ? 'This Motif JSON/ZIP checkpoint preserves the complete structured workspace; interchange files inside a ZIP remain explicitly lossy where noted.'
+      : faithful
+        ? `This export is faithful for all ${recordReports.length} represented record${recordReports.length === 1 ? '' : 's'}; it does not claim full INSDC round-trip support.`
+        : `This ${format.toUpperCase()} export is lossy for ${recordSummary || `${lossCount} preservation item${lossCount === 1 ? '' : 's'}`}. Use Database JSON or ZIP for the complete Motif checkpoint.`;
+  return {
+    ...first,
+    format,
+    faithful,
+    lossy: !faithful,
+    recordReports,
+    repeatedQualifiers: reports.flatMap((report) => report.repeatedQualifiers),
+    truncatedQualifiers: reports.flatMap((report) => report.truncatedQualifiers),
+    unsupportedOrRawLocations: reports.flatMap((report) => report.unsupportedOrRawLocations),
+    fuzzyLocations: reports.flatMap((report) => report.fuzzyLocations),
+    originalFeatureKeys: reports.flatMap((report) => report.originalFeatureKeys),
+    multipartBiologicalOrder: reports.flatMap((report) => report.multipartBiologicalOrder),
+    unrepresentableMetadata: reports.flatMap((report) => report.unrepresentableMetadata),
+    sequenceNormalization: reports.flatMap((report) => report.sequenceNormalization),
+    summary,
+  };
+}
+
+/** Build one receipt for every record represented by a whole-inventory export. */
+export function buildArtifactExportLossReportForRecords(
+  records: readonly ArtifactVector[],
+  format: ArtifactExportLossFormat,
+): ArtifactExportLossReport {
+  return mergeArtifactExportLossReports(records.map((record) => buildArtifactExportLossReport(record, format)), format);
+}
+
+function checkpointExportIssuesFromError(
+  error: unknown,
+  records: readonly ArtifactVector[],
+): ArtifactCheckpointExportIssue[] {
+  const rawIssues = error instanceof MotifArtifactRuntimeError && Array.isArray(error.details.issues)
+    ? error.details.issues
+    : [];
+  if (rawIssues.length === 0) {
+    return [{
+      code: error instanceof MotifArtifactRuntimeError ? error.code : 'MOTIF_INPUT_LIMIT_EXCEEDED',
+      message: error instanceof Error ? error.message : String(error),
+    }];
+  }
+  return rawIssues.map((rawIssue) => {
+    const issue = isPlainObject(rawIssue) ? rawIssue : {};
+    const index = Number.isInteger(issue.index) ? Number(issue.index) : -1;
+    const record = index >= 0 ? records[index] : undefined;
+    return {
+      ...(record ? { recordId: record.id, recordName: record.name } : {}),
+      code: typeof issue.code === 'string' ? issue.code : 'resource_limit',
+      ...(typeof issue.path === 'string' ? { path: issue.path } : {}),
+      message: typeof issue.message === 'string' ? issue.message : 'The checkpoint exceeds a restore limit.',
+    };
+  });
+}
+
+/**
+ * A checkpoint must be accepted by the same record validator used on restore.
+ * This is intentionally fail-closed: no site or trace is truncated to make an
+ * export fit, because doing so would change the scientific record.
+ */
+export function getArtifactCheckpointExportIssues(
+  records: readonly ArtifactVector[],
+): ArtifactCheckpointExportIssue[] {
+  // Validate the JSON shape that is actually emitted. React-side vectors carry
+  // optional keys as `undefined`, which JSON.stringify omits and which should
+  // not be mistaken for an exportable value during this preflight.
+  const rawRecords = records.map((record) => (
+    omitUndefinedObjectProperties(serializeRecord(record))
+  ));
+  const issues: ArtifactCheckpointExportIssue[] = [];
+  rawRecords.forEach((rawRecord, index) => {
+    try {
+      validateRuntimeRecordInputs([rawRecord], 'motifRenderInventory');
+    } catch (error) {
+      issues.push(...checkpointExportIssuesFromError(error, [records[index]]));
+    }
+  });
+  try {
+    validateRuntimeRecordInputs(rawRecords, 'motifRenderInventory');
+  } catch (error) {
+    issues.push(...checkpointExportIssuesFromError(error, records));
+  }
+  const seen = new Set<string>();
+  return issues.filter((issue) => {
+    const key = `${issue.recordId ?? ''}|${issue.code}|${issue.path ?? ''}|${issue.message}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function assertArtifactCheckpointRecordsRestorable(records: readonly ArtifactVector[]): void {
+  const issues = getArtifactCheckpointExportIssues(records);
+  if (issues.length === 0) return;
+  const recordSummary = issues
+    .filter((issue) => issue.recordName)
+    .map((issue) => `${issue.recordName}: ${issue.message}`)
+    .join(' ');
+  throw new MotifArtifactRuntimeError(
+    'MOTIF_INPUT_LIMIT_EXCEEDED',
+    `Database JSON and workspace ZIP export were blocked because the checkpoint would not pass restore validation. ${recordSummary || issues[0].message} No data was truncated.`,
+    { operation: 'checkpointExport', issues, mutated: false },
+  );
 }
 
 function scanRestrictionSitesForRecord(
@@ -3217,7 +3384,7 @@ export function inventoryReportHtml(records: readonly ArtifactVector[]): string 
 </html>`;
 }
 
-type ZipTextFile = { name: string; content: string };
+export type ArtifactZipTextFile = { name: string; content: string };
 let zipCrcTable: Uint32Array | null = null;
 
 function zipCrc32(bytes: Uint8Array): number {
@@ -3241,7 +3408,27 @@ function zipDosDateTime(date = new Date()): { time: number; date: number } {
   return { time, date: packedDate };
 }
 
-function createZipBlob(files: readonly ZipTextFile[]): Blob {
+export function createArtifactWorkspaceZipBlob(files: readonly ArtifactZipTextFile[]): Blob {
+  const inventoryFile = files.find((file) => file.name === 'inventory.json');
+  if (!inventoryFile) {
+    throw new MotifArtifactRuntimeError(
+      'MOTIF_INVALID_INVENTORY_REPLACEMENT',
+      'Workspace ZIP export requires a restorable inventory.json entry. No archive was created.',
+      { operation: 'checkpointExport', mutated: false },
+    );
+  }
+  const parsedInventory = parseArtifactDatabaseJson(inventoryFile.content);
+  if (!parsedInventory) {
+    throw new MotifArtifactRuntimeError(
+      'MOTIF_INVALID_INVENTORY_REPLACEMENT',
+      'Workspace ZIP export requires a valid Database JSON inventory.json entry. No archive was created.',
+      { operation: 'checkpointExport', mutated: false },
+    );
+  }
+  // Validate the exact inventory entry that will be archived through the same
+  // transactional restore path used by Add Entry and file-drop recovery.
+  prepareArtifactDatabaseRestore(parsedInventory);
+
   const encoder = new TextEncoder();
   const localParts: BlobPart[] = [];
   const centralParts: BlobPart[] = [];
@@ -3295,6 +3482,10 @@ function createZipBlob(files: readonly ZipTextFile[]): Blob {
   endView.setUint32(16, centralOffset, true);
 
   return new Blob([...localParts, ...centralParts, end], { type: 'application/zip' });
+}
+
+function createZipBlob(files: readonly ArtifactZipTextFile[]): Blob {
+  return createArtifactWorkspaceZipBlob(files);
 }
 
 function recordInputFromGenBank(record: ReturnType<typeof parseGenBank>[number], index: number): ArtifactRecordInput {
@@ -4771,6 +4962,7 @@ export function createArtifactDatabaseSnapshot(
   artifactState: ArtifactDurableState,
   records: readonly ArtifactVector[] = payload.records,
 ): Record<string, unknown> {
+  assertArtifactCheckpointRecordsRestorable(records);
   const recordLengths = new Map(records.map((record) => [record.id, record.sequence.length]));
   return omitUndefinedObjectProperties({
     schema: DEFAULT_SCHEMA,
@@ -7537,6 +7729,10 @@ function App() {
   // a form field or when a native text selection is active.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
+      // A destructive restore owns the document while its confirmation is
+      // visible. Background shortcuts (including map zoom) must not observe
+      // keys sent to the inert workspace.
+      if (pendingDatabaseRestore) return;
       const el = document.activeElement as HTMLElement | null;
       const inForm = !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable);
       const mod = event.metaKey || event.ctrlKey;
@@ -7579,7 +7775,7 @@ function App() {
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [selectedFeature, selectedMapRange, sequence, sequenceType, topology, copyText, handleZoomIn, handleZoomOut, handleZoomReset, recordId]);
+  }, [copyText, handleZoomIn, handleZoomOut, handleZoomReset, pendingDatabaseRestore, recordId, selectedFeature, selectedMapRange, sequence, sequenceType, topology]);
 
   // ── Base editing ──────────────────────────────────────────────────────────
   // Mutations run through the real Motif mutate engine (feature/subRange
@@ -11092,6 +11288,7 @@ function App() {
   const renderedStackedSequenceHeight = effectiveStackedSequenceHeight
     ?? (workspaceRowResizeActive ? defaultCompactTopRowHeight : 360);
   const activeRecordTabIndex = Math.max(0, payload.records.findIndex((record) => record.id === recordId));
+  const floatingPaneZIndex = (pane: PaneKey) => 60 + (2 * Math.max(0, floatingPaneZOrder.indexOf(pane)));
   const floatingPaneStyle = (pane: PaneKey): CSSProperties => {
     if (panePlacements[pane] !== 'floating') return {};
     const safeViewport: FloatingSurfaceViewport = {
@@ -11100,7 +11297,8 @@ function App() {
       insets: { top: topbarHeight + 8, right: toolsRail ? TOOLS_RAIL_WIDTH + 8 : 8, bottom: 8, left: 8 },
     };
     const rect = clampFloatingSurfaceRect(floatingPaneRects[pane], safeViewport, FLOATING_PANE_LIMITS[pane]);
-    const zIndex = 60 + Math.max(0, floatingPaneZOrder.indexOf(pane));
+    // Leave one layer between panes for each pane's viewport-level resize grip.
+    const zIndex = floatingPaneZIndex(pane);
     return {
       '--motif-cs-floating-pane-left': `${rect.x}px`,
       '--motif-cs-floating-pane-top': `${rect.y}px`,
@@ -11111,6 +11309,16 @@ function App() {
       width: rect.w,
       height: rect.h,
       zIndex,
+    } as CSSProperties;
+  };
+  const floatingPaneResizeStyle = (pane: PaneKey): CSSProperties => {
+    const surfaceStyle = floatingPaneStyle(pane) as CSSProperties & Record<string, string | number | undefined>;
+    return {
+      '--motif-cs-floating-pane-left': surfaceStyle['--motif-cs-floating-pane-left'],
+      '--motif-cs-floating-pane-top': surfaceStyle['--motif-cs-floating-pane-top'],
+      '--motif-cs-floating-pane-width': surfaceStyle['--motif-cs-floating-pane-width'],
+      '--motif-cs-floating-pane-height': surfaceStyle['--motif-cs-floating-pane-height'],
+      zIndex: floatingPaneZIndex(pane) + 1,
     } as CSSProperties;
   };
 
@@ -11209,6 +11417,22 @@ function App() {
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
+      {pendingDatabaseRestore ? (
+        <RestoreWorkspaceDialog
+          sourceLabel={pendingDatabaseRestore.sourceLabel}
+          incomingRecordCount={pendingDatabaseRestore.prepared.payload.records.length}
+          currentRecordCount={payload.records.length}
+          hasUnsavedChanges={hasUnsavedChanges}
+          onCancel={cancelArtifactDatabaseRestore}
+          onConfirm={confirmArtifactDatabaseRestore}
+        />
+      ) : null}
+      <div
+        className="motif-cs-background"
+        inert={pendingDatabaseRestore ? true : undefined}
+        aria-hidden={pendingDatabaseRestore ? 'true' : undefined}
+        data-restore-background={pendingDatabaseRestore ? 'inert' : undefined}
+      >
       <a className="motif-cs-skip-link" href="#motif-cs-workspace">Skip to workspace</a>
       {/* The Tools rail is authored last, so its first tool was Tab stop 124 of
           139 at 1440x900 — measured with real keys, all fifteen tools behind
@@ -11239,16 +11463,6 @@ function App() {
         >
           {workbenchNotice.message}
         </div>
-      ) : null}
-      {pendingDatabaseRestore ? (
-        <RestoreWorkspaceDialog
-          sourceLabel={pendingDatabaseRestore.sourceLabel}
-          incomingRecordCount={pendingDatabaseRestore.prepared.payload.records.length}
-          currentRecordCount={payload.records.length}
-          hasUnsavedChanges={hasUnsavedChanges}
-          onCancel={cancelArtifactDatabaseRestore}
-          onConfirm={confirmArtifactDatabaseRestore}
-        />
       ) : null}
       <header ref={topbarRef} className="motif-cs-topbar" aria-label="Motif for Claude Science workspace">
         <div className="motif-cs-brand" aria-label="Motif for Claude Science">
@@ -11472,10 +11686,10 @@ function App() {
                 onRestoreDatabase={(database) => requestArtifactDatabaseRestore(database)}
               />
               <InventoryList records={payload.records} selectedRecordId={recordId} onSelect={selectRecord} />
-              {panePlacements.inventory === 'floating' ? (
-                <FloatingPaneResizeHandle pane="inventory" title="Inventory" onPointerDown={beginFloatingPaneInteraction} onKeyDown={resizeFloatingPaneFromKeyboard} />
-              ) : null}
             </aside>
+            {panePlacements.inventory === 'floating' ? (
+              <FloatingPaneResizeHandle pane="inventory" title="Inventory" style={floatingPaneResizeStyle('inventory')} onPointerDown={beginFloatingPaneInteraction} onKeyDown={resizeFloatingPaneFromKeyboard} />
+            ) : null}
             {panePlacements.inventory === 'docked' ? <PaneResizeHandle pane="inventory" label="Resize inventory pane" width={paneWidths.inventory} limits={paneWidthLimitsForCurrentLayout('inventory')} edge="after" onPointerDown={startPaneResize} onKeyDown={resizePaneFromKeyboard} style={{ order: paneCssOrder('inventory', 'after') }} /> : null}
             {panePlacements.inventory === 'docked' ? <StackedPaneResizeHandle
               pane="inventory"
@@ -11721,10 +11935,10 @@ function App() {
                   onSelectRange={selectSequenceRangeAndReveal}
                 />
               </div>
-              {panePlacements.map === 'floating' ? (
-                <FloatingPaneResizeHandle pane="map" title="Map" onPointerDown={beginFloatingPaneInteraction} onKeyDown={resizeFloatingPaneFromKeyboard} />
-              ) : null}
             </section>
+            {panePlacements.map === 'floating' ? (
+              <FloatingPaneResizeHandle pane="map" title="Map" style={floatingPaneResizeStyle('map')} onPointerDown={beginFloatingPaneInteraction} onKeyDown={resizeFloatingPaneFromKeyboard} />
+            ) : null}
             {showSequenceMapResizeHandle ? (
               <PaneResizeHandle
                 pane="sequence"
@@ -12055,10 +12269,10 @@ function App() {
               onAnnotateRange={handleAnnotateRange}
               canAnnotateRange={canAnnotateSelectedMapRange}
             />
-            {panePlacements.sequence === 'floating' ? (
-              <FloatingPaneResizeHandle pane="sequence" title="Sequence" onPointerDown={beginFloatingPaneInteraction} onKeyDown={resizeFloatingPaneFromKeyboard} />
-            ) : null}
             </section>
+            {panePlacements.sequence === 'floating' ? (
+              <FloatingPaneResizeHandle pane="sequence" title="Sequence" style={floatingPaneResizeStyle('sequence')} onPointerDown={beginFloatingPaneInteraction} onKeyDown={resizeFloatingPaneFromKeyboard} />
+            ) : null}
             {panePlacements.sequence === 'docked' ? <StackedPaneResizeHandle
               pane="sequence"
               label="Sequence"
@@ -12692,10 +12906,10 @@ function App() {
               </div>
             </div>
           </details>
-            {toolsFloating ? (
-              <FloatingPaneResizeHandle pane="tools" title="Tools" onPointerDown={beginFloatingPaneInteraction} onKeyDown={resizeFloatingPaneFromKeyboard} />
-            ) : null}
             </aside>
+            {toolsFloating ? (
+              <FloatingPaneResizeHandle pane="tools" title="Tools" style={floatingPaneResizeStyle('tools')} onPointerDown={beginFloatingPaneInteraction} onKeyDown={resizeFloatingPaneFromKeyboard} />
+            ) : null}
           </>
         ) : null}
       </main>
@@ -12943,6 +13157,7 @@ function App() {
           />
         </FloatingWindow>
       ) : null}
+      </div>
     </div>
   );
 }
@@ -13064,11 +13279,13 @@ function PanePlacementControl({
 function FloatingPaneResizeHandle({
   pane,
   title,
+  style,
   onPointerDown,
   onKeyDown,
 }: {
   pane: PaneKey;
   title: string;
+  style: CSSProperties;
   onPointerDown: (pane: PaneKey, mode: 'move' | 'resize', event: ReactPointerEvent<HTMLElement>) => void;
   onKeyDown: (pane: PaneKey, event: ReactKeyboardEvent<HTMLButtonElement>) => void;
 }) {
@@ -13077,6 +13294,7 @@ function FloatingPaneResizeHandle({
       className="motif-cs-floating-pane-resize"
       type="button"
       data-testid={`floating-pane-resize-${pane}`}
+      style={style}
       onPointerDown={(event) => onPointerDown(pane, 'resize', event)}
       onKeyDown={(event) => onKeyDown(pane, event)}
       aria-label={`Resize ${title} pane in 2 dimensions`}
@@ -16106,8 +16324,16 @@ function SequenceToolsPanel({
   const genbank = exportPanelOpen ? toGenBankLite(exportRecord, topology) : '';
   const gff3 = exportPanelOpen && exportChoiceId === 'record-gff3' ? toGff3Lite(record) : '';
   const recordJson = exportPanelOpen && exportChoiceId === 'record-json' ? JSON.stringify(serializeRecord(exportRecord), null, 2) : '';
+  const checkpointExportIssues = useMemo(
+    () => needsInventoryJson ? getArtifactCheckpointExportIssues(exportRecordsWithSites) : [],
+    [exportRecordsWithSites, needsInventoryJson],
+  );
+  const checkpointExportBlocked = checkpointExportIssues.length > 0;
+  const checkpointExportMessage = checkpointExportBlocked
+    ? `Database JSON and workspace ZIP export are unavailable because the checkpoint would not pass restore validation. ${checkpointExportIssues.map((issue) => `${issue.recordName ?? 'Workspace'}: ${issue.message}`).join(' ')} No data was truncated.`
+    : '';
   const inventoryJson = useMemo(() => (
-    needsInventoryJson
+    needsInventoryJson && !checkpointExportBlocked
       ? JSON.stringify(createArtifactDatabaseSnapshot({
         schema,
         inventory,
@@ -16121,7 +16347,7 @@ function SequenceToolsPanel({
         analysisAssets: [...analysisAssets],
       }, artifactState, exportRecordsWithSites))
       : ''
-  ), [alignments, analysisAssets, analysisResults, artifactState, defaultMotif, exportRecordsWithSites, inventory, needsInventoryJson, notes, schema, selectedRecordId, workflowResults]);
+  ), [alignments, analysisAssets, analysisResults, artifactState, checkpointExportBlocked, defaultMotif, exportRecordsWithSites, inventory, needsInventoryJson, notes, schema, selectedRecordId, workflowResults]);
   const inventoryCsv = exportChoiceId === 'inventory-csv' || needsZipExport ? inventoryToCsv(exportRecordsWithSites) : '';
   const featureCsv = exportChoiceId === 'features-csv' || needsZipExport ? featuresToCsv(exportRecordsWithSites) : '';
   const siteCsv = exportChoiceId === 'sites-csv' || needsZipExport ? sitesToCsv(exportRecordsWithSites) : '';
@@ -16132,7 +16358,7 @@ function SequenceToolsPanel({
   const zipFiles = useMemo(() => {
     if (!needsZipExport) return [];
     const usedNames = new Set<string>();
-    const file = (name: string, content: string): ZipTextFile => ({
+    const file = (name: string, content: string): ArtifactZipTextFile => ({
       name: uniqueArchiveName(name, usedNames),
       content,
     });
@@ -16168,6 +16394,7 @@ function SequenceToolsPanel({
     content?: string;
     downloadName?: string;
     mime?: string;
+    blocked?: boolean;
     download?: () => BrowserDownloadReceipt;
     print?: () => void;
   };
@@ -16179,7 +16406,7 @@ function SequenceToolsPanel({
       { id: 'record-gff3', group: 'Active record' as const, label: 'Basic GFF3 features', copyLabel: 'Basic GFF3', content: gff3, downloadName: `${safeSlug(record.name)}.gff3`, mime: 'text/gff3' },
       { id: 'record-json', group: 'Active record' as const, label: 'Record JSON', copyLabel: 'Record JSON', content: recordJson, downloadName: `${safeSlug(record.name)}.json`, mime: 'application/json' },
     ] : []),
-    { id: 'inventory-json', group: 'Whole inventory', label: 'Database JSON', copyLabel: 'Inventory JSON', content: inventoryJson, downloadName: 'motif-inventory.json', mime: 'application/json' },
+    { id: 'inventory-json', group: 'Whole inventory', label: 'Database JSON', copyLabel: 'Inventory JSON', content: inventoryJson, downloadName: 'motif-inventory.json', mime: 'application/json', blocked: checkpointExportBlocked },
     { id: 'inventory-csv', group: 'Whole inventory', label: 'Inventory CSV', copyLabel: 'Inventory CSV', content: inventoryCsv, downloadName: 'motif-inventory.csv', mime: 'text/csv' },
     { id: 'features-csv', group: 'Whole inventory', label: 'Feature CSV', copyLabel: 'Feature CSV', content: featureCsv, downloadName: 'motif-features.csv', mime: 'text/csv' },
     { id: 'sites-csv', group: 'Whole inventory', label: 'Restriction-site CSV', copyLabel: 'Restriction-site CSV', content: siteCsv, downloadName: 'motif-restriction-sites.csv', mime: 'text/csv' },
@@ -16188,18 +16415,29 @@ function SequenceToolsPanel({
     { id: 'report-md', group: 'Report', label: 'Pretty report Markdown', copyLabel: 'Report Markdown', content: reportMarkdown, downloadName: 'motif-inventory-report.md', mime: 'text/markdown' },
     { id: 'report-html', group: 'Report', label: 'Pretty report HTML', copyLabel: 'Report HTML', content: reportHtml, downloadName: 'motif-inventory-report.html', mime: 'text/html' },
     { id: 'report-print', group: 'Report', label: 'Pretty print / PDF', print: () => printHtmlReport(reportHtml) },
-    { id: 'inventory-zip', group: 'Whole inventory', label: 'ZIP package', download: () => downloadBlobFile('motif-inventory-export.zip', createZipBlob(zipFiles)) },
-  ], [fasta, featureCsv, genbank, gff3, hasActiveRecord, inventoryCsv, inventoryJson, multiFasta, multiGenbank, record.name, record.sequence, recordJson, reportHtml, reportMarkdown, siteCsv, zipFiles]);
+    { id: 'inventory-zip', group: 'Whole inventory', label: 'ZIP package', blocked: checkpointExportBlocked, download: checkpointExportBlocked ? undefined : () => downloadBlobFile('motif-inventory-export.zip', createZipBlob(zipFiles)) },
+  ], [checkpointExportBlocked, fasta, featureCsv, genbank, gff3, hasActiveRecord, inventoryCsv, inventoryJson, multiFasta, multiGenbank, record.name, record.sequence, recordJson, reportHtml, reportMarkdown, siteCsv, zipFiles]);
   const exportChoice = exportChoices.find((choice) => choice.id === exportChoiceId) ?? exportChoices[0];
-  const exportLossReport = hasActiveRecord
-    ? buildArtifactExportLossReport(record, exportLossFormatForChoice(exportChoice?.id ?? 'record-sequence'))
-    : null;
-  const exportPreview = exportChoice?.content
-    ?? (exportChoice?.id === 'inventory-zip'
-      ? `ZIP package · ${zipFiles.length} files\n\n${zipFiles.map((file) => file.name).join('\n')}`
-      : exportChoice?.id === 'report-print'
-        ? `Printable inventory report · ${exportRecordsWithSites.length} records\n\nUse Print / PDF to open the system print dialog.`
-        : preview);
+  const baseExportLossReport = useMemo(() => {
+    if (!hasActiveRecord) return null;
+    const format = exportLossFormatForChoice(exportChoice?.id ?? 'record-sequence');
+    return exportChoice?.group === 'Whole inventory'
+      ? buildArtifactExportLossReportForRecords(exportRecordsWithSites, format)
+      : buildArtifactExportLossReport(record, format);
+  }, [exportChoice?.group, exportChoice?.id, exportRecordsWithSites, hasActiveRecord, record]);
+  const exportLossReport = useMemo(() => (
+    baseExportLossReport && checkpointExportBlocked
+      ? { ...baseExportLossReport, faithful: false, lossy: true, summary: checkpointExportMessage }
+      : baseExportLossReport
+  ), [baseExportLossReport, checkpointExportBlocked, checkpointExportMessage]);
+  const exportFallbackPreview = exportChoice?.id === 'inventory-zip'
+    ? `ZIP package · ${zipFiles.length} files\n\n${zipFiles.map((file) => file.name).join('\n')}`
+    : exportChoice?.id === 'report-print'
+      ? `Printable inventory report · ${exportRecordsWithSites.length} records\n\nUse Print / PDF to open the system print dialog.`
+      : preview;
+  const exportPreview = exportChoice?.blocked
+    ? checkpointExportMessage
+    : exportChoice?.content ?? exportFallbackPreview;
 
   useEffect(() => {
     if (exportChoices.some((choice) => choice.id === exportChoiceId)) return;
@@ -16359,10 +16597,21 @@ function SequenceToolsPanel({
           </label>
           <div className="motif-cs-export-picker-actions">
             <button className="motif-cs-mini-button" type="button" onClick={copySelectedExport} disabled={!exportChoice?.content}>Copy</button>
-            <button className="motif-cs-mini-button" type="button" onClick={downloadSelectedExport} disabled={!(exportChoice?.download || (exportChoice?.content && exportChoice.downloadName))}>Download</button>
+            <button className="motif-cs-mini-button" type="button" onClick={downloadSelectedExport} disabled={Boolean(exportChoice?.blocked) || !(exportChoice?.download || (exportChoice?.content && exportChoice.downloadName))}>Download</button>
             <button className="motif-cs-mini-button motif-cs-mini-button-accent" type="button" onClick={exportChoice?.print} disabled={!exportChoice?.print}>Print / PDF</button>
           </div>
         </div>
+        {exportChoice?.blocked ? (
+          <div
+            className="motif-cs-form-note motif-cs-restore-warning"
+            data-testid="checkpoint-export-blocked"
+            role="alert"
+            aria-live="assertive"
+          >
+            <strong>Checkpoint export blocked.</strong>{' '}
+            {checkpointExportMessage}
+          </div>
+        ) : null}
         {exportLossReport ? (
           <div
             className="motif-cs-form-note"

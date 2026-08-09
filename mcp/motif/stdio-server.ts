@@ -7,15 +7,12 @@ import { fileURLToPath } from 'node:url';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 
 import { createMotifClaudeScienceServer } from './server.js';
-import { artifactTemplateCandidates } from './stdio-paths.js';
+import { artifactTemplateCandidates, inferredConnectorRoot, trustedConfiguredRoot } from './stdio-paths.js';
 
 type PackageManifest = { version?: unknown };
 
 const moduleDirectory = dirname(fileURLToPath(import.meta.url));
-const inferredRoot = resolve(moduleDirectory, '../..');
-const configuredRoot = process.env.MOTIF_ROOT?.trim()
-  ? resolve(process.env.MOTIF_ROOT)
-  : undefined;
+const inferredRoot = inferredConnectorRoot(moduleDirectory);
 
 async function firstExistingPath(candidates: string[], label: string): Promise<string> {
   for (const candidate of candidates) {
@@ -29,7 +26,7 @@ async function firstExistingPath(candidates: string[], label: string): Promise<s
   throw new Error(`${label} is missing. Rebuild or reinstall the Motif for Claude Science plugin.`);
 }
 
-async function readVersion(): Promise<string> {
+async function readVersion(configuredRoot: string | undefined): Promise<string> {
   const candidates = [
     ...(configuredRoot ? [resolve(configuredRoot, 'package.json')] : []),
     resolve(moduleDirectory, '../.claude-plugin/plugin.json'),
@@ -43,7 +40,7 @@ async function readVersion(): Promise<string> {
       // Fall through to the next supported manifest location.
     }
   }
-  return '0.3.2';
+  return '0.3.3';
 }
 
 async function readRuntimeBuildId(workbenchPath: string): Promise<string> {
@@ -56,9 +53,10 @@ async function readRuntimeBuildId(workbenchPath: string): Promise<string> {
 }
 
 async function main(): Promise<void> {
+  const configuredRoot = trustedConfiguredRoot(process.env.MOTIF_ROOT, inferredRoot);
   const traceEnabled = process.env.MOTIF_MCP_TRACE === '1'
     || process.env.MOTIF_MCP_TRACE === 'true';
-  const version = await readVersion();
+  const version = await readVersion(configuredRoot);
   const workbenchPath = await firstExistingPath([
     ...(configuredRoot ? [resolve(configuredRoot, 'dist-motif/claude-science/motif-mcp-app.html')] : []),
     resolve(moduleDirectory, 'motif-mcp-app.html'),

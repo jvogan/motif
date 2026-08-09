@@ -110,6 +110,12 @@ explicit and ordered: `--executable`; `MOTIF_MSA_MAFFT_PATH` /
 invalid explicitly configured executable is an error, not permission to try a
 different engine or the browser preview.
 
+Every selected executable must use the exact engine basename (`mafft`,
+`muscle`, `clustalo`, or `clustalomega`). The runner hashes that executable
+before its version probe, accepts only the engine's recognized version banner,
+and verifies the hash again after execution. The child receives a minimal
+environment without ambient credentials, proxy, or agent settings.
+
 On Windows, configure a native executable (`.exe`/`.com`). The runner does not
 launch `.bat` or `.cmd` wrappers because doing so requires a command shell and
 would weaken the no-shell execution boundary.

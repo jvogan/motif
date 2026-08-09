@@ -15,6 +15,8 @@ export default defineConfig({
   testMatch: 'claude-science-msa-interactions.spec.ts',
   fullyParallel: false,
   forbidOnly: Boolean(process.env.CI),
+  failOnFlakyTests: Boolean(process.env.CI),
+  retries: 0,
   workers: 1,
   reporter: process.env.CI ? 'line' : 'list',
   outputDir: resolve(root, 'test-results/msa-interactions'),
@@ -23,7 +25,8 @@ export default defineConfig({
     browserName: 'chromium',
     baseURL: `http://127.0.0.1:${port}`,
     contextOptions: { reducedMotion: 'reduce' },
-    trace: 'on-first-retry',
+    trace: 'retain-on-failure',
+    screenshot: 'only-on-failure',
     launchOptions: {
       args: ['--disable-gpu', '--force-color-profile=srgb', '--force-raster-color-profile=srgb'],
     },

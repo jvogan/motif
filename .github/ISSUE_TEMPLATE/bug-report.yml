@@ -21,7 +21,7 @@ body:
     id: version
     attributes:
       label: Motif version or commit
-      placeholder: v0.3.2 or a commit hash
+      placeholder: v0.3.3 or a commit hash
     validations:
       required: true
   - type: input

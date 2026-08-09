@@ -151,7 +151,7 @@ describe('Claude Science Inventory regression guards', () => {
     expect(splitWorkspace).not.toContain('--compact-inventory-height');
     expect(splitWorkspace).not.toContain('.motif-cs-record-tabs[data-inventory-visible="true"]');
     expect(artifactCss).toContain(
-      '.motif-cs-shell:has(> .motif-cs-record-tabs[data-inventory-visible="true"])',
+      '.motif-cs-shell:has(.motif-cs-record-tabs[data-inventory-visible="true"])',
     );
     expect(artifactCss).toMatch(/@media \(max-width: 767px\)[\s\S]*?data-inventory-visible="true"\]\)\s*\{\s*grid-template-rows:\s*auto 1fr/);
   });

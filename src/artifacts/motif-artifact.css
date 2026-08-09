@@ -482,6 +482,13 @@ summary,
   background: var(--workspace-bg);
 }
 
+/* The restore guard is a semantic wrapper only. Keep the workbench's existing
+   shell grid direct-child geometry while allowing the whole background subtree
+   to become inert behind the destructive confirmation dialog. */
+.motif-cs-background {
+  display: contents;
+}
+
 .motif-cs-skip-link {
   position: absolute;
   top: 6px;
@@ -10009,7 +10016,7 @@ summary.motif-cs-panel-head:focus-visible {
 }
 
 @media (max-width: 767px) {
-  .motif-cs-shell:has(> .motif-cs-record-tabs[data-inventory-visible="true"]) {
+  .motif-cs-shell:has(.motif-cs-record-tabs[data-inventory-visible="true"]) {
     grid-template-rows: auto 1fr;
   }
 
@@ -11247,6 +11254,8 @@ summary.motif-cs-panel-head:focus-visible {
 .motif-cs-floating-pane-resize {
   position: fixed;
   z-index: 8;
+  /* The grip is a viewport-level sibling of the pane. Its layer is paired
+     with the pane layer so overlapping floating surfaces keep their order. */
   top: calc(var(--motif-cs-floating-pane-top, 8px) + var(--motif-cs-floating-pane-height, 520px) - 28px);
   left: calc(var(--motif-cs-floating-pane-left, 8px) + var(--motif-cs-floating-pane-width, 340px) - 28px);
   width: 28px;

@@ -38,61 +38,56 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
-      - name: Typecheck
-        run: npm run typecheck
-
-      - name: Lint
-        run: npm run lint
-
-      - name: Repository language policy
-        run: npm run check:repository-language
-
-      - name: Unit tests
-        run: npm test
-
-      - name: Release alignment
-        run: npm run check:release-alignment
-
-      - name: Runtime compatibility
-        run: npm run check:runtime-compatibility
-
-      - name: Security audit
-        run: npm run security:audit
-
-      - name: Supply-chain policy
-        run: npm run security:policy
-
-      - name: Motif-owned dependency preparation
-        run: npm run security:lifecycle
-
-      - name: Dependency cooling-off policy
-        run: npm run security:cooling-off
-        env:
-          MOTIF_COOLING_OFF_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
-
-      - name: Plugin and connector checks
-        run: npm run test:plugin && npm run test:connector
-
-      - name: Style and accessibility guards
-        run: npm run check:css-tokens && npm run check:aria-controls
-
-      - name: Build distributables
-        run: npm run build:motif
-
-      - name: Reproducible release build
-        run: npm run security:reproducibility
-
-      - name: Release budgets
-        run: npm run security:budgets
-
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
 
-      - name: Browser workflows
-        run: npm run test:e2e
+      - name: Canonical exact-commit gate
+        run: npm run gate
+        env:
+          MOTIF_COOLING_OFF_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
 
-      - name: MSA interaction workflows
-        run: npm run test:e2e:msa
+      - name: Retain gate and release evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: motif-gate-evidence-node-22
+          path: |
+            test-results/
+            dist-motif/gate-coverage.json
+            dist-motif/*.zip
+            dist-motif/*checksums*
+            dist-motif/*manifest*
+          if-no-files-found: warn
+          retention-days: 14
 
-      - name: Gate coverage report
-        run: npm run report:gate-coverage
+  node-24-compatibility:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Use Node.js 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts
+
+      - name: Check supply-chain policy before reviewed preparation
+        run: npm run security:policy
+
+      - name: Run reviewed dependency preparation
+        run: npm run security:lifecycle
+
+      - name: Typecheck on Node.js 24
+        run: npm run typecheck
+
+      - name: Unit tests on Node.js 24
+        run: npm test

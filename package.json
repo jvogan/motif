@@ -1,6 +1,6 @@
 {
   "name": "motif-for-claude-science",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "private": true,
   "description": "Motif is a portable molecular-biology workbench, Claude plugin, and MCP App for sequence review, alignment, cloning design, traces, and analysis results.",
   "license": "MIT",
@@ -50,6 +50,7 @@
     "test": "vitest run",
     "security:audit": "npm audit --audit-level=moderate",
     "security:policy": "node scripts/check-supply-chain-policy.mjs",
+    "security:verify-release": "node scripts/check-supply-chain-policy.mjs --require-release",
     "security:lifecycle": "node scripts/run-reviewed-lifecycle.mjs",
     "security:cooling-off": "node scripts/check-dependency-cooling-off.mjs",
     "security:reproducibility": "node scripts/check-release-reproducibility.mjs",
@@ -76,7 +77,7 @@
     "claude-science:setup": "npm run claude-science:build && npm run claude-science:doctor:unregistered && npm run claude-science:install-local && npm run claude-science:check-local",
     "check:css-tokens": "node scripts/check-css-tokens.mjs",
     "check:aria-controls": "node scripts/check-aria-controls.mjs",
-    "gate": "npm run typecheck && npm run lint && npm run check:repository-language && npm test && npm run check:release-alignment && npm run check:runtime-compatibility && npm run security:audit && npm run security:policy && npm run security:lifecycle && npm run security:cooling-off && npm run test:plugin && npm run test:connector && npm run check:css-tokens && npm run check:aria-controls && npm run build:motif && npm run security:reproducibility && npm run security:budgets && npm run test:e2e && npm run test:e2e:msa && npm run report:gate-coverage"
+    "gate": "node scripts/run-gate.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/ext-apps": "1.7.5",

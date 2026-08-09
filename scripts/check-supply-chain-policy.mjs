@@ -16,22 +16,29 @@ function readJson(path, label) {
   }
 }
 
-export function checkSupplyChainPolicy(rootPath = root) {
+export function checkSupplyChainPolicy(rootPath = root, { requireRelease = false } = {}) {
   const workspace = resolve(rootPath);
+  const releasePath = join(workspace, 'dist-motif', 'motif-for-claude-science-release');
+  const releaseExists = existsSync(releasePath);
+  if (requireRelease && !releaseExists) {
+    throw new Error('Generated release bundle is required but does not exist; build distributables before final verification');
+  }
   const summary = checkLockfilePolicy(workspace);
   const { inventory } = loadDependencyPolicy(workspace);
-  const releasePath = join(workspace, 'dist-motif', 'motif-for-claude-science-release');
-  if (existsSync(releasePath)) {
+  if (releaseExists) {
     const generated = readJson(join(releasePath, 'connector-inventory.json'), 'Generated connector inventory');
     compareConnectorInventory(inventory, generated);
     verifyReleaseBundle(releasePath, { expectedVersion: readJson(join(workspace, 'package.json'), 'package.json').version });
   }
-  return { ...summary, releaseChecked: existsSync(releasePath) };
+  return { ...summary, releaseChecked: releaseExists };
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    const result = checkSupplyChainPolicy();
+    const allowedArguments = new Set(['--require-release']);
+    const unknownArguments = process.argv.slice(2).filter((argument) => !allowedArguments.has(argument));
+    if (unknownArguments.length > 0) throw new Error(`Unknown argument: ${unknownArguments[0]}`);
+    const result = checkSupplyChainPolicy(root, { requireRelease: process.argv.includes('--require-release') });
     console.log(`Supply-chain policy passed: ${result.packageCount} lockfile packages; ${result.connectorPackageCount} bundled connector packages; release checked: ${result.releaseChecked}.`);
   } catch (error) {
     console.error(`Supply-chain policy failed: ${error instanceof Error ? error.message : String(error)}`);

@@ -444,4 +444,36 @@ test.describe('Claude Science workspace integrity', () => {
     await dialog.getByRole('button', { name: 'Replace workspace' }).click();
     await expect(page.getByTestId('session-durability-status')).toHaveText('restored checkpoint');
   });
+
+  test('makes restore confirmation inert, focus-trapped, and shortcut-isolated', async ({ page }) => {
+    await openInjectedWorkspace(page);
+    const settings = page.locator('details[data-rail-tool="settings"]');
+    if (!(await settings.getAttribute('open'))) await settings.locator(':scope > summary').click();
+    await settings.getByTestId('restore-workspace-file').setInputFiles({
+      name: 'restore-focus.json',
+      mimeType: 'application/json',
+      buffer: Buffer.from(JSON.stringify(embeddedWorkspace)),
+    });
+
+    const dialog = page.getByTestId('database-restore-dialog');
+    await expect(dialog).toBeVisible();
+    await expect(page.locator('[data-restore-background="inert"]')).toHaveAttribute('inert', '');
+    await expect(page.locator('[data-restore-background="inert"]')).toHaveAttribute('aria-hidden', 'true');
+    await expect(dialog.getByRole('button', { name: 'Cancel' })).toBeFocused();
+
+    // The background is intentionally removed from the accessibility tree while
+    // the dialog is open, so inspect its DOM state through a scoped CSS locator.
+    const resetMap = page.locator('.motif-cs-map-reset');
+    const beforeShortcut = await resetMap.isDisabled();
+    await page.keyboard.press('+');
+    expect(await resetMap.isDisabled()).toBe(beforeShortcut);
+
+    await page.keyboard.press('Tab');
+    await expect(dialog.getByRole('button', { name: 'Replace workspace' })).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(dialog.getByRole('button', { name: 'Cancel' })).toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect(dialog).toBeHidden();
+    await expect(page.locator('[data-restore-background="inert"]')).toHaveCount(0);
+  });
 });

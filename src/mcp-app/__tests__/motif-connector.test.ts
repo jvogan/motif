@@ -388,6 +388,22 @@ describe('Motif MCP payload boundary', () => {
 });
 
 describe('Motif embedded artifact export', () => {
+  it('rejects escaped payload expansion before constructing oversized HTML', () => {
+    const workbench = prepareMotifWorkbench({
+      payload: {
+        schema: 'motif.claude-science.inventory.v2',
+        records: [{ id: 'demo', name: 'Demo', sequence: 'ATGCGT', molecule: 'dna' }],
+        hostileText: '<'.repeat(7_000_000),
+      },
+    });
+    expect(() => renderMotifArtifact({
+      template: artifactTemplate,
+      workbench,
+      runtimeBuildId,
+      filename: 'expanded.html',
+    })).toThrow(/exceeds .* after safe payload escaping/i);
+  });
+
   it('injects escaped JSON, creates a safe filename, and hashes exact HTML', () => {
     const workbench = prepareMotifWorkbench({
       payload: {
