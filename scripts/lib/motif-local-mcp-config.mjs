@@ -55,6 +55,49 @@ function assertRegularFile(path, purpose) {
   return stat;
 }
 
+/**
+ * Do not let a missing config file be created through a symlinked parent.
+ * `renameSync` and `mkdirSync` otherwise follow that parent and can write a
+ * supposedly local configuration into an unrelated directory. Missing path
+ * components are allowed, but every existing ancestor must be a real
+ * directory. Re-checking after mkdir also closes the simple replace-between-
+ * checks race before any file is committed.
+ */
+function assertRealDirectoryChain(directory, purpose) {
+  const isKnownSystemAlias = (path) => process.platform === 'darwin'
+    && (path === '/var' || path === '/tmp');
+  let current = resolve(directory);
+  while (true) {
+    let stat;
+    try {
+      stat = lstatSync(current);
+    } catch (error) {
+      if (error?.code === 'ENOENT') {
+        const parent = dirname(current);
+        if (parent === current) return;
+        current = parent;
+        continue;
+      }
+      throw error;
+    }
+    if (stat.isSymbolicLink()) {
+      if (!isKnownSystemAlias(current)) {
+        throw new Error(`${purpose} must not traverse a symbolic link: ${current}`);
+      }
+      const parent = dirname(current);
+      if (parent === current) return;
+      current = parent;
+      continue;
+    }
+    if (!stat.isDirectory()) {
+      throw new Error(`${purpose} parent must be a real directory: ${current}`);
+    }
+    const parent = dirname(current);
+    if (parent === current) return;
+    current = parent;
+  }
+}
+
 function executable(path) {
   try {
     assertRegularFile(path, 'Node.js executable');
@@ -140,7 +183,14 @@ export function validateLocalMcpConfig(config) {
 }
 
 export function readLocalMcpConfig(configPath) {
-  if (!existsSync(configPath)) {
+  assertRealDirectoryChain(dirname(configPath), 'Claude Science local MCP config path');
+  let configStat;
+  try {
+    configStat = lstatSync(configPath);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+  if (!configStat) {
     return {
       config: { servers: [] },
       originalBytes: null,
@@ -234,8 +284,16 @@ export function removeMotifLocalServer(config) {
 }
 
 function fingerprintMatches(path, expected) {
-  if (!expected) return !existsSync(path);
-  if (!existsSync(path)) return false;
+  assertRealDirectoryChain(dirname(path), 'Claude Science local MCP config path');
+  let pathStat;
+  try {
+    pathStat = lstatSync(path);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return !expected;
+    throw error;
+  }
+  if (!expected) return false;
+  if (!pathStat) return false;
   const current = assertRegularFile(path, 'Claude Science local MCP config');
   return current.dev === expected.dev
     && current.ino === expected.ino
@@ -286,7 +344,9 @@ export function writeLocalMcpConfigAtomically(
     throw new MotifLocalMcpConfigLimitError(configPath, serializedBytes);
   }
   const directory = dirname(configPath);
+  assertRealDirectoryChain(directory, 'Claude Science local MCP config path');
   mkdirSync(directory, { recursive: true, mode: 0o700 });
+  assertRealDirectoryChain(directory, 'Claude Science local MCP config path');
   chmodSync(directory, 0o700);
 
   if (!fingerprintMatches(configPath, document.fingerprint)) {

@@ -490,8 +490,10 @@ export function makeSequenceStyleRange(
   style: SequenceTextStyle,
   name?: string,
 ): SequenceStyleRange {
-  const start = Math.max(0, Math.min(range.start, range.end));
-  const end = Math.max(start + 1, Math.max(range.start, range.end));
+  const rawStart = Number.isFinite(range.start) ? Math.floor(range.start) : 0;
+  const rawEnd = Number.isFinite(range.end) ? Math.floor(range.end) : rawStart;
+  const start = Math.max(0, Math.min(rawStart, rawEnd));
+  const end = Math.max(start + 1, Math.max(rawStart, rawEnd));
   return {
     id: randomId('style-range'),
     start,
@@ -505,7 +507,7 @@ export function makeSequenceStyleRange(
 export function makeSequenceLayoutMark(position: number, kind: SequenceLayoutMarkKind, indentLevel?: number): SequenceLayoutMark {
   return {
     id: randomId('layout-mark'),
-    position: Math.max(0, Math.floor(position)),
+    position: Number.isFinite(position) ? Math.max(0, Math.floor(position)) : 0,
     kind,
     createdAt: nextSequenceFormattingCreatedAt(),
     indentLevel,
@@ -827,6 +829,9 @@ export function shiftSequenceFormattingForRange(
   start: number,
   end: number,
 ): SequenceFormatting {
+  if (!Number.isSafeInteger(start) || start < 0 || !Number.isSafeInteger(end) || end < start) {
+    throw new RangeError('formatting range must use non-negative safe integer coordinates.');
+  }
   const normalized = normalizeSequenceFormatting(formatting);
   return {
     ranges: normalized.ranges
@@ -856,6 +861,12 @@ export function shiftSequenceFormattingForInsertion(
   editPos: number,
   delta: number,
 ): SequenceFormatting {
+  if (!Number.isSafeInteger(editPos) || editPos < 0) {
+    throw new RangeError('editPos must be a non-negative safe integer.');
+  }
+  if (!Number.isSafeInteger(delta)) {
+    throw new RangeError('delta must be a safe integer.');
+  }
   const normalized = normalizeSequenceFormatting(formatting);
   if (delta <= 0) return normalized;
   return {
@@ -878,6 +889,15 @@ export function shiftSequenceFormattingForDeletion(
   count: number,
   rawLength: number,
 ): SequenceFormatting {
+  if (!Number.isSafeInteger(pos) || pos < 0) {
+    throw new RangeError('pos must be a non-negative safe integer.');
+  }
+  if (!Number.isSafeInteger(count) || count < 0) {
+    throw new RangeError('count must be a non-negative safe integer.');
+  }
+  if (!Number.isSafeInteger(rawLength) || rawLength < 0) {
+    throw new RangeError('rawLength must be a non-negative safe integer.');
+  }
   const normalized = normalizeSequenceFormatting(formatting);
   if (count <= 0 || pos < 0 || pos >= rawLength) return normalized;
   const effectiveCount = Math.min(count, rawLength - pos);
@@ -916,8 +936,10 @@ export function clearSequenceStyleRangesInRange(
   end: number,
 ): SequenceFormatting {
   const normalized = normalizeSequenceFormatting(formatting);
-  const rangeStart = Math.max(0, Math.min(start, end));
-  const rangeEnd = Math.max(rangeStart, Math.max(start, end));
+  const rawStart = Number.isFinite(start) ? Math.floor(start) : 0;
+  const rawEnd = Number.isFinite(end) ? Math.floor(end) : rawStart;
+  const rangeStart = Math.max(0, Math.min(rawStart, rawEnd));
+  const rangeEnd = Math.max(rangeStart, Math.max(rawStart, rawEnd));
   if (rangeEnd <= rangeStart) return normalized;
 
   const nextRanges: SequenceStyleRange[] = [];

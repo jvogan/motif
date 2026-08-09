@@ -61,6 +61,16 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+/**
+ * Record-keyed checkpoint maps must preserve every legal record id, including
+ * names such as `__proto__`. A normal object assignment treats that key as a
+ * prototype setter and silently drops the durable value. Null-prototype maps
+ * remain JSON-compatible while making every record id an ordinary data key.
+ */
+function createRecordMap<T>(): Record<string, T> {
+  return Object.create(null) as Record<string, T>;
+}
+
 const MOTIF_INVENTORY_SCHEMA_PREFIX = 'motif.claude-science.inventory.';
 const SUPPORTED_MOTIF_INVENTORY_SCHEMAS = new Set([
   MOTIF_INVENTORY_SCHEMA_V1,
@@ -206,7 +216,7 @@ function normalizeTranslationLayers(
 ): Record<string, PortableTranslationTrack[]> {
   if (value === undefined) return {};
   if (!isObject(value)) throw new Error('artifactState.translationLayersByRecord must be an object.');
-  const result: Record<string, PortableTranslationTrack[]> = {};
+  const result = createRecordMap<PortableTranslationTrack[]>();
 
   for (const [recordId, rawLayers] of Object.entries(value)) {
     const sequenceLength = recordLengths.get(recordId);
@@ -274,7 +284,7 @@ function normalizeStringArraysByRecord(
 ): Record<string, string[]> {
   if (value === undefined) return {};
   if (!isObject(value)) throw new Error(`${path} must be an object.`);
-  const result: Record<string, string[]> = {};
+  const result = createRecordMap<string[]>();
   for (const [recordId, rawValues] of Object.entries(value)) {
     if (!recordLengths.has(recordId)) continue;
     if (!Array.isArray(rawValues) || rawValues.some((item) => typeof item !== 'string')) {
@@ -293,7 +303,7 @@ function normalizeRestrictionSources(
   recordLengths: ReadonlyMap<string, number>,
 ): Record<string, RestrictionEnzymeSourceId[]> {
   const raw = normalizeStringArraysByRecord(value, 'artifactState.enzymeSourcesByRecord', recordLengths);
-  const result: Record<string, RestrictionEnzymeSourceId[]> = {};
+  const result = createRecordMap<RestrictionEnzymeSourceId[]>();
   for (const [recordId, sources] of Object.entries(raw)) {
     const validated = sources.filter((source): source is RestrictionEnzymeSourceId => VALID_SOURCE_IDS.has(source as RestrictionEnzymeSourceId));
     if (validated.length !== sources.length) throw new Error(`artifactState.enzymeSourcesByRecord.${recordId} contains an unknown source.`);
@@ -309,7 +319,7 @@ function normalizeBooleanByRecord(
 ): Record<string, boolean> {
   if (value === undefined) return {};
   if (!isObject(value)) throw new Error(`${path} must be an object.`);
-  const result: Record<string, boolean> = {};
+  const result = createRecordMap<boolean>();
   for (const [recordId, rawValue] of Object.entries(value)) {
     if (!recordLengths.has(recordId)) continue;
     if (typeof rawValue !== 'boolean') throw new Error(`${path}.${recordId} must be a boolean.`);
@@ -324,7 +334,7 @@ function normalizeMotifs(
 ): Record<string, string> {
   if (value === undefined) return {};
   if (!isObject(value)) throw new Error('artifactState.motifsByRecord must be an object.');
-  const result: Record<string, string> = {};
+  const result = createRecordMap<string>();
   for (const [recordId, rawValue] of Object.entries(value)) {
     if (!recordLengths.has(recordId)) continue;
     if (typeof rawValue !== 'string' || rawValue.length > MAX_MOTIF_LENGTH) {

@@ -13,7 +13,7 @@ function writeTagName(view: DataView, offset: number, tag: string): void {
   for (let index = 0; index < 4; index += 1) view.setUint8(offset + index, tag.charCodeAt(index));
 }
 
-/** Minimal deterministic ABIF input used by the standalone browser campaign. */
+/** Minimal deterministic ABIF input used by the standalone browser fixture. */
 export function buildAbiFixture(): Uint8Array {
   const tags = [
     { name: 'PBAS', number: 2, type: 2, size: 1, count: 4, data: encodeAscii('ATGC') },

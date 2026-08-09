@@ -7,7 +7,7 @@ import {
 } from '../pcr';
 import { designForwardPrimerWithDiagnostics } from '../primer-design';
 import { predictHairpin, predictPrimerDimer } from '../primer-thermodynamics';
-import { calculateTm, saltCorrectedTm } from '../tm-calculator';
+import { calculateTm, duplexThermodynamics, saltCorrectedTm } from '../tm-calculator';
 import { reverseComplement } from '../reverse-complement';
 import type { Feature } from '../types';
 
@@ -36,6 +36,11 @@ describe('primer, PCR, and Tm integrity', () => {
       deltaS: Number.NaN,
       ctMolar: 250e-9,
     })).toThrow(/finite/i);
+  });
+
+  it('rejects empty and one-base inputs for nearest-neighbor duplex thermodynamics', () => {
+    expect(() => duplexThermodynamics('')).toThrow(/at least two canonical bases/i);
+    expect(() => duplexThermodynamics('A')).toThrow(/at least two canonical bases/i);
   });
 
   it('enumerates repeated binding sites and exposes a configurable mismatch policy', () => {

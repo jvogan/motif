@@ -1,5 +1,5 @@
 /**
- * Phase 32 — JS ↔ CSS token bridge
+ * JS ↔ CSS token bridge
  *
  * Read CSS custom properties from `:root` at runtime so theme/HC switches
  * propagate to renderers that previously hardcoded color literals. Falls back
@@ -15,7 +15,7 @@ function readToken(name: string, fallback: string): string {
   const value = getComputedStyle(document.documentElement)
     .getPropertyValue(name)
     .trim();
-  // Phase 38 W1 defensive guard: a CSS variable resolved to `transparent` or
+  // A CSS variable resolved to `transparent` or
   // `rgba(0, 0, 0, 0)` makes any character it colors invisible. That was the
   // exact bug shape for `--aa-class-stop` in the compact renderers — the token
   // was intentionally `transparent` for DetailSequenceDisplay's anchor-only
@@ -31,7 +31,7 @@ function readToken(name: string, fallback: string): string {
 }
 
 /**
- * Phase 38 Tier 5 (Pass 4 F1 fix): build a `var(--name, fallback)` CSS value
+ * Build a `var(--name, fallback)` CSS value
  * string that the browser resolves on every paint. Using this instead of
  * `readToken()` for inline `style={{ color }}` makes theme/HC switches
  * propagate to already-mounted spans without re-rendering. The earlier
@@ -51,7 +51,7 @@ function readTokenAsCssVar(name: string, fallback: string): string {
   // `readToken()`. If the live token is `transparent`, return the static
   // fallback (the caller's per-theme palette) instead of routing through
   // `var(...)` — otherwise the browser would paint the invisible token
-  // every repaint and the W1 fix would regress.
+  // every repaint and the transparency guard would regress.
   const probe = getComputedStyle(document.documentElement)
     .getPropertyValue(name)
     .trim();
@@ -100,13 +100,13 @@ export function getAAColorToken(aa: string, fallback = '#9ca3af'): string {
 }
 
 /**
- * Phase 38 Tier 5 (Pass 4 F1 fix): return a CSS-var reference string for
+ * Return a CSS-var reference string for
  * an AA letter so the browser repaints on theme switch. The returned form
  * is one of `var(--aa-class-stop, fallback)`, `var(--aa-class-polar, fallback)`,
  * etc. — one of the five token names defined per-theme in `src/index.css`.
  *
- * Bug shape: Pass 4 measured the stop-codon asterisk dropping to 2.54:1 on
- * dark bg after a live `light to dark` toggle. The colorMap useMemo had
+ * A contrast check found the stop-codon asterisk dropping to 2.54:1 on dark
+ * background after a live `light to dark` toggle. The colorMap useMemo had
  * `effectiveTheme` as a dep and DID recompute, but `getAAColorToken`
  * resolved values via `getComputedStyle` at render time. React renders the
  * new memo BEFORE ThemeProvider's `useEffect` fires the `data-theme=dark`
@@ -125,16 +125,16 @@ export function getAAColorVar(aa: string, fallback = '#9ca3af'): string {
  * `AA_COLORS_LIGHT` from `bio/types.ts`. Pass the per-theme fallback palette
  * to preserve SSR/jsdom behavior when the CSS variable is unavailable.
  *
- * Phase 32 P0-1: bridges the compact renderers (SequenceDisplay,
+ * Bridges the compact renderers (SequenceDisplay,
  * CanvasSequenceDisplay, MSAPanel, ProteinAnalysisPanel) to the same token
  * layer the detail renderer reads via `data-aa-class`. Without this, HC
- * mode skipped the compact AA palette — same bug shape as the Phase 28.5
- * workbar regression.
+ * mode skipped the compact AA palette — the same failure mode as an earlier
+ * high-contrast workbar regression.
  *
- * Phase 38 Tier 5: now returns CSS-var reference strings (one of the five
+ * Returns CSS-var reference strings (one of the five
  * `--aa-class-*` names) for DOM consumers (SequenceDisplay,
  * LineSequenceDisplay) so theme toggles propagate to already-mounted
- * spans (Pass 4 F1 fix). Canvas-only consumers should call
+ * spans. Canvas-only consumers should call
  * `resolveAaPaletteLiteral()` for hex strings.
  */
 export function resolveAaPalette(
@@ -148,12 +148,12 @@ export function resolveAaPalette(
 }
 
 /**
- * Phase 38 Tier 5: Canvas-only variant of `resolveAaPalette()`. Returns a
+ * Canvas-only variant of `resolveAaPalette()`. Returns a
  * literal hex color per AA (resolved via `getComputedStyle`), suitable for
  * Canvas `fillStyle` which cannot interpret `var(...)`. Loses live theme
  * propagation in exchange — Canvas re-renders are gated by the `colorMap`
  * useMemo, which already re-runs on theme change, so Canvas was never the
- * surface that exhibited the F1 bug.
+ * surface that exhibited the live-theme timing bug.
  */
 export function resolveAaPaletteLiteral(
   fallback: Record<string, string>,

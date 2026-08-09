@@ -184,7 +184,7 @@ export function listRestrictionPresetNames(): string[] {
 export type RestrictionEnzymeSourceId = 'common' | 'all' | 'favorites' | RestrictionPresetId;
 
 /**
- * R17 — resolve a UNION of enzyme sources into a deduped enzyme list (by name,
+ * Resolve a UNION of enzyme sources into a deduped enzyme list (by name,
  * case-insensitive). Lets the restriction UI offer "pick any combination of
  * lists" — Common + Type IIS + Favorites + … — and scan one merged set so the
  * inspector AND the detail-view ticks reflect the same selection. `'all'`
@@ -232,7 +232,7 @@ export function resolveEnzymeUnion(
   return Array.from(byName.values());
 }
 
-// ── Isoschizomer canonical naming (R70) ─────────────────────────────────────
+// ── Isoschizomer canonical naming ────────────────────────────────────────────
 // Enzymes that share a recognition site (isoschizomers) fold into ONE inspector
 // row / detail tick, so a single representative name is shown. Picking it purely
 // alphabetically made the SAME physical site flip identity with the active

@@ -199,6 +199,22 @@ describe('Motif Claude Science local connector configuration', () => {
     expect(readFileSync(targetPath, 'utf8')).toBe(targetBytes);
   });
 
+  it('refuses to create a config through a symlinked parent directory', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'motif-local-mcp-parent-link-test-'));
+    temporaryDirectories.push(directory);
+    const targetDirectory = mkdtempSync(join(tmpdir(), 'motif-local-mcp-parent-target-'));
+    temporaryDirectories.push(targetDirectory);
+    const linkedDirectory = join(directory, 'linked-config');
+    symlinkSync(targetDirectory, linkedDirectory, 'dir');
+    const configPath = join(linkedDirectory, 'local-mcp.json');
+
+    expect(() => updateLocalMcpConfigFile({
+      configPath,
+      desired: desiredServer(),
+    })).toThrow(/must not traverse a symbolic link/);
+    expect(existsSync(join(targetDirectory, 'local-mcp.json'))).toBe(false);
+  });
+
   it('rejects an oversized config before reading or parsing it', () => {
     const directory = mkdtempSync(join(tmpdir(), 'motif-local-mcp-size-test-'));
     temporaryDirectories.push(directory);

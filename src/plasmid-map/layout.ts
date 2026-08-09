@@ -107,7 +107,7 @@ const TARGET_COORD_TICKS = 8; // aim for ~6-10 nice coordinate ticks
 const REC_CLUSTER_MIN_SEP_DEG = 6; // circular restriction clustering threshold
 const REC_CLUSTER_MAX_SPAN_BP = 128; // prevents transitive all-enzyme mega-clusters
 const REC_MAX_NAMES = 3; // enzyme names shown before "+N"
-// Adaptive lane compression (W2): when overlapping features stack into many lanes,
+// Adaptive lane compression: when overlapping features stack into many lanes,
 // thickness + gap shrink toward these floors so deep lanes keep DISTINCT descending
 // radii instead of collapsing onto a shared minimum; only when even the floor stack
 // overflows the radial depth do the deepest lanes drop to overflow (arc-less, still
@@ -462,7 +462,7 @@ function computeCircularLayout(input: MapInput): MapLayout {
   const coordLabelInset = coordBand / 2; // center the number in the band (clears ring + lanes)
   const coordTickLenR = Math.min(COORD_TICK_LEN, coordBand * 0.4);
 
-  // Adaptive lane geometry (W2): compress thickness/gap to fit the radial depth
+  // Adaptive lane geometry: compress thickness/gap to fit the radial depth
   // BEFORE dropping any lane, so deep lanes get DISTINCT descending radii instead
   // of collapsing onto a shared floor (the old laneOuterR clamp bug). laneBand(lane)
   // returns null for overflow lanes beyond what the floor stack fits.
