@@ -34,7 +34,7 @@ describe('npm run gate matches CI', () => {
   });
 
   it('retains browser and exact-commit gate evidence', () => {
-    expect(workflow).toContain('actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02');
+    expect(workflow).toContain('actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a');
     expect(workflow).toContain('test-results/');
     expect(workflow).toContain('dist-motif/gate-coverage.json');
   });
