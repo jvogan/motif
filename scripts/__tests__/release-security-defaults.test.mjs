@@ -25,10 +25,27 @@ describe('release security defaults', () => {
       execFileSync('git', ['config', 'user.name', 'Release test'], { cwd: directory });
       execFileSync('git', ['commit', '--allow-empty', '--message', 'first'], { cwd: directory });
       expect(assertVersionTagMatchesHead('1.2.3', directory)).toEqual({ tag: 'v1.2.3', status: 'unpublished' });
+      execFileSync('git', ['branch', 'v1.2.4'], { cwd: directory });
+      expect(assertVersionTagMatchesHead('1.2.4', directory)).toEqual({ tag: 'v1.2.4', status: 'unpublished' });
       execFileSync('git', ['tag', 'v1.2.3'], { cwd: directory });
       expect(assertVersionTagMatchesHead('1.2.3', directory)).toMatchObject({ tag: 'v1.2.3', status: 'current' });
       execFileSync('git', ['commit', '--allow-empty', '--message', 'second'], { cwd: directory });
       expect(() => assertVersionTagMatchesHead('1.2.3', directory)).toThrow(/Bump the release version before building/u);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed for an existing tag ref that does not resolve to a commit', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'motif-release-invalid-tag-'));
+    try {
+      execFileSync('git', ['init', '--quiet'], { cwd: directory });
+      execFileSync('git', ['config', 'user.email', 'release-test@example.invalid'], { cwd: directory });
+      execFileSync('git', ['config', 'user.name', 'Release test'], { cwd: directory });
+      execFileSync('git', ['commit', '--allow-empty', '--message', 'first'], { cwd: directory });
+      const blob = execFileSync('git', ['hash-object', '-w', '--stdin'], { cwd: directory, input: 'not a commit\n', encoding: 'utf8' }).trim();
+      execFileSync('git', ['update-ref', 'refs/tags/v1.2.5', blob], { cwd: directory });
+      expect(() => assertVersionTagMatchesHead('1.2.5', directory)).toThrow(/does not resolve to a commit/u);
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

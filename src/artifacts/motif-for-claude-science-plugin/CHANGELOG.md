@@ -8,7 +8,7 @@
   preserving bounded, reproducible packaging.
 - Corrected primer, PCR, Gibson, thermodynamic, molecular-mass, restriction,
   custom-enzyme, and Loop Assembly edge cases with typed receipts and bounds.
-- Added bounded MSA, gel, and mutation work, external-digest rollback
+- Added bounded MSA, gel, and mutation work, external-digest install, doctor, and rollback
   verification, and release-tag reuse protection.
 
 ## 0.3.3 — 2026-08-08

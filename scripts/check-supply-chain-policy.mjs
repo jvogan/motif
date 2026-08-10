@@ -4,7 +4,11 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { compareConnectorInventory, checkLockfilePolicy, loadDependencyPolicy } from './lib/supply-chain-policy.mjs';
-import { verifyReleaseBundle } from './lib/motif-release-bundle.mjs';
+import {
+  RELEASE_ARCHIVE_FILENAME,
+  RELEASE_MANIFEST_DIGEST_FILENAME,
+  verifyReleaseArtifacts,
+} from './lib/motif-release-bundle.mjs';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 
@@ -20,15 +24,25 @@ export function checkSupplyChainPolicy(rootPath = root, { requireRelease = false
   const workspace = resolve(rootPath);
   const releasePath = join(workspace, 'dist-motif', 'motif-for-claude-science-release');
   const releaseExists = existsSync(releasePath);
+  const releaseArchivePath = join(workspace, 'dist-motif', RELEASE_ARCHIVE_FILENAME);
+  const releaseManifestDigestPath = join(workspace, 'dist-motif', RELEASE_MANIFEST_DIGEST_FILENAME);
   if (requireRelease && !releaseExists) {
     throw new Error('Generated release bundle is required but does not exist; build distributables before final verification');
+  }
+  if (releaseExists && (!existsSync(releaseArchivePath) || !existsSync(releaseManifestDigestPath))) {
+    throw new Error('Generated release artifacts are incomplete; release ZIP and external manifest digest are required');
   }
   const summary = checkLockfilePolicy(workspace);
   const { inventory } = loadDependencyPolicy(workspace);
   if (releaseExists) {
     const generated = readJson(join(releasePath, 'connector-inventory.json'), 'Generated connector inventory');
     compareConnectorInventory(inventory, generated);
-    verifyReleaseBundle(releasePath, { expectedVersion: readJson(join(workspace, 'package.json'), 'package.json').version });
+    verifyReleaseArtifacts({
+      releaseDirectory: releasePath,
+      archivePath: releaseArchivePath,
+      manifestDigestPath: releaseManifestDigestPath,
+      expectedVersion: readJson(join(workspace, 'package.json'), 'package.json').version,
+    });
   }
   return { ...summary, releaseChecked: releaseExists };
 }

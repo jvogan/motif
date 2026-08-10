@@ -17,6 +17,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { doctorRelease } from '../doctor-motif-claude-science-release.mjs';
+import { createDeterministicZipBuffer } from '../build-claude-science-artifact.mjs';
 import { formatInstallResult, installRelease } from '../install-motif-claude-science-release.mjs';
 import {
   RELEASE_MAX_BUNDLE_FILES,
@@ -25,6 +26,8 @@ import {
   RELEASE_MAX_DIRECTORY_NODES,
   RELEASE_MAX_TOTAL_BYTES,
   resolveReleaseBundleRoot,
+  parseReleaseArchive,
+  verifyReleaseArtifacts,
   verifyReleaseBundle,
 } from '../lib/motif-release-bundle.mjs';
 import { isDirectScriptExecution } from '../lib/direct-script.mjs';
@@ -181,6 +184,14 @@ describe('checksum-verified Motif release installation', () => {
     expect(readFileSync(configPath, 'utf8')).toBe(bytes);
   });
 
+  it('requires the external manifest digest for doctor, including --skip-config', () => {
+    const bundle = writeFixture();
+    expect(() => doctorRelease(['--bundle', bundle, '--skip-config']))
+      .toThrow(/Doctor requires an externally trusted release-manifest SHA-256/);
+    expect(doctorRelease(['--bundle', bundle, ...trustedManifestArgs(bundle), '--skip-config']))
+      .toMatchObject({ config: 'skipped', externalManifestDigestMatched: true });
+  });
+
   it('reports dry-run registration without claiming the configuration changed', () => {
     const bundle = writeFixture();
     const { configPath, bytes } = temporaryConfig({ servers: [] });
@@ -219,6 +230,7 @@ describe('checksum-verified Motif release installation', () => {
     expect(installed.servers.find((server) => server.name === 'motif-local').env.MOTIF_ROOT).toBe(realpathSync(bundle));
 
     const doctor = runReleaseCli(aliasBundle, 'doctor-motif-claude-science-release.mjs', [
+      ...trustedManifestArgs(bundle),
       '--config', configPath,
       '--node', process.execPath,
     ]);
@@ -246,6 +258,7 @@ describe('checksum-verified Motif release installation', () => {
 
     const explicitDoctor = runReleaseCli(aliasBundle, 'doctor-motif-claude-science-release.mjs', [
       '--bundle', aliasBundle,
+      ...trustedManifestArgs(bundle),
       '--skip-config',
     ]);
     expect(explicitDoctor.status).toBe(0);
@@ -266,6 +279,57 @@ describe('checksum-verified Motif release installation', () => {
 
   it('rejects path traversal in release metadata', () => {
     expect(() => verifyReleaseBundle(writeFixture({ unsafePath: true }))).toThrow(/unsafe path/);
+  });
+
+  it('verifies the generated-style release ZIP and independent manifest digest asset', () => {
+    const bundle = writeFixture();
+    const archiveDirectory = mkdtempSync(join(tmpdir(), 'motif-release-archive-test-'));
+    temporaryDirectories.push(archiveDirectory);
+    const archivePath = join(archiveDirectory, 'motif-for-claude-science-release.zip');
+    writeFileSync(archivePath, createDeterministicZipBuffer(bundle));
+    const digestPath = trustedManifestFile(bundle);
+    const result = verifyReleaseArtifacts({
+      releaseDirectory: bundle,
+      archivePath,
+      manifestDigestPath: digestPath,
+      expectedVersion: '0.3.0',
+    });
+    expect(result.externalManifestDigestMatched).toBe(true);
+    expect(result.archiveEntries).toBeGreaterThan(5);
+    expect(result.archiveSha256).toMatch(/^[a-f0-9]{64}$/u);
+  });
+
+  it('parses archive paths without extraction and rejects unsafe or symlink entries', () => {
+    const sourceDirectory = mkdtempSync(join(tmpdir(), 'motif-release-archive-source-'));
+    const outputDirectory = mkdtempSync(join(tmpdir(), 'motif-release-archive-output-'));
+    temporaryDirectories.push(sourceDirectory, outputDirectory);
+    writeFileSync(join(sourceDirectory, 'safe.txt'), 'safe\n');
+    const valid = createDeterministicZipBuffer(sourceDirectory);
+    const unsafe = Buffer.from(valid);
+    const safeName = Buffer.from('safe.txt');
+    const unsafeName = Buffer.from('../x.txt');
+    let nameOffset = unsafe.indexOf(safeName);
+    while (nameOffset >= 0) {
+      unsafe.set(unsafeName, nameOffset);
+      nameOffset = unsafe.indexOf(safeName, nameOffset + unsafeName.length);
+    }
+    const unsafePath = join(outputDirectory, 'unsafe.zip');
+    writeFileSync(unsafePath, unsafe);
+    expect(() => parseReleaseArchive(unsafePath)).toThrow(/unsafe path/);
+
+    const symlink = Buffer.from(valid);
+    const centralOffset = symlink.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+    expect(centralOffset).toBeGreaterThanOrEqual(0);
+    symlink.writeUInt16LE(0x0314, centralOffset + 4);
+    symlink.writeUInt32LE(0xa0000000, centralOffset + 38);
+    const symlinkPath = join(outputDirectory, 'symlink.zip');
+    writeFileSync(symlinkPath, symlink);
+    expect(() => parseReleaseArchive(symlinkPath)).toThrow(/symbolic-link/);
+
+    const validPath = join(outputDirectory, 'valid.zip');
+    writeFileSync(validPath, valid);
+    expect(parseReleaseArchive(validPath).entries.map(({ name }) => name)).toEqual(['safe.txt']);
+    expect(() => parseReleaseArchive(validPath, { maxArchiveBytes: valid.length - 1 })).toThrow(/archive-size limit/);
   });
 
   it('bounds unexpected release-file traversal before comparing the manifest', () => {

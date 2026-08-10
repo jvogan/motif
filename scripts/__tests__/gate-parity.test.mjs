@@ -37,6 +37,7 @@ describe('npm run gate matches CI', () => {
     expect(workflow).toContain('actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a');
     expect(workflow).toContain('test-results/');
     expect(workflow).toContain('dist-motif/gate-coverage.json');
+    expect(workflow).toContain('dist-motif/release-confidence-report.json');
   });
 
   it('pins every hosted action to an exact 40-character commit SHA', () => {

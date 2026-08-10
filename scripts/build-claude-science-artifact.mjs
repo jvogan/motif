@@ -18,7 +18,11 @@ import { buildSync } from 'esbuild';
 import { validatePayload as validateArtifactPayload } from '../src/artifacts/motif-for-claude-science-plugin/skills/motif-for-claude-science/scripts/create-artifact.mjs';
 import { stampMotifBuildIdentity } from './motif-build-identity.mjs';
 import { createDeterministicSbom } from './generate-sbom.mjs';
-import { RELEASE_MANIFEST_FILENAME } from './lib/motif-release-bundle.mjs';
+import {
+  RELEASE_ARCHIVE_FILENAME,
+  RELEASE_MANIFEST_DIGEST_FILENAME,
+  RELEASE_MANIFEST_FILENAME,
+} from './lib/motif-release-bundle.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const outDir = join(root, 'dist-motif');
@@ -41,10 +45,10 @@ const pluginZipPath = join(outDir, `${pluginName}.zip`);
 const pluginChecksumPath = join(outDir, `${pluginName}.checksums.json`);
 const releaseDirectoryName = `${pluginName}-release`;
 const releaseDistPath = join(outDir, releaseDirectoryName);
-const releaseZipPath = join(outDir, `${releaseDirectoryName}.zip`);
+const releaseZipPath = join(outDir, RELEASE_ARCHIVE_FILENAME);
 const releaseChecksumPath = join(releaseDistPath, `${releaseDirectoryName}.checksums.json`);
 const releaseManifestPath = join(releaseDistPath, 'release-manifest.json');
-const releaseManifestShaPath = join(outDir, `${releaseDirectoryName}.manifest.sha256`);
+const releaseManifestShaPath = join(outDir, RELEASE_MANIFEST_DIGEST_FILENAME);
 const connectorDistPath = join(outDir, 'claude-science');
 const connectorServerPath = join(connectorDistPath, 'motif-mcp-server.mjs');
 const connectorAppPath = join(connectorDistPath, 'motif-mcp-app.html');

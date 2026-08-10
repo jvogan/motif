@@ -21,7 +21,7 @@
   checkpoints, retained distinct restriction geometries, and completed the
   Loop Assembly upper-level contract without inventing unspecified sites.
 - Bounded MSA, gel, and mutation work at the core API, required the external
-  manifest digest for rollback, and prevented a published version tag from
+  manifest digest for install, doctor, and rollback, and prevented a published version tag from
   being reused by a later commit.
 
 ## 0.3.3 — 2026-08-08
