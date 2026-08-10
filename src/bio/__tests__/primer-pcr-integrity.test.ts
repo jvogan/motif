@@ -6,17 +6,52 @@ import {
   simulatePCR,
 } from '../pcr';
 import {
+  designPrimerPairWithDiagnostics,
   designForwardPrimerWithDiagnostics,
   MAX_PRIMER_OLIGO_LENGTH,
   MAX_PRIMER_TAIL_LENGTH,
   normalizePrimerDesignParams,
 } from '../primer-design';
-import { predictHairpin, predictPrimerDimer } from '../primer-thermodynamics';
+import {
+  MAX_PRIMER_STRUCTURE_SEQUENCE_LENGTH,
+  predictHairpin,
+  predictPrimerDimer,
+  predictSelfDimer,
+} from '../primer-thermodynamics';
 import { calculateTm, duplexThermodynamics, saltCorrectedTm } from '../tm-calculator';
 import { reverseComplement } from '../reverse-complement';
 import type { Feature } from '../types';
 
 const binding = 'ACGTTGCAAC';
+
+function referenceHairpin(primer: string): {
+  deltaG: number;
+  stemLength: number;
+  loopSize: number;
+  structure: string;
+} {
+  let best = { deltaG: 0, stemLength: 0, loopSize: 0, structure: '' };
+  for (let i = 0; i + 2 * 3 + 3 <= primer.length; i += 1) {
+    for (let stemLength = 3; i + 2 * stemLength + 3 <= primer.length; stemLength += 1) {
+      for (let loopSize = 3; i + 2 * stemLength + loopSize <= primer.length; loopSize += 1) {
+        const left = primer.slice(i, i + stemLength);
+        const rightStart = i + stemLength + loopSize;
+        const right = primer.slice(rightStart, rightStart + stemLength);
+        if (left !== reverseComplement(right)) continue;
+        const deltaG = duplexThermodynamics(left).deltaG37 / 1000;
+        if (deltaG < best.deltaG) {
+          best = {
+            deltaG: Math.round(deltaG * 100) / 100,
+            stemLength,
+            loopSize,
+            structure: `5'-${left}-${'.'.repeat(loopSize)}-${right}-3'`,
+          };
+        }
+      }
+    }
+  }
+  return best;
+}
 
 describe('primer, PCR, and Tm integrity', () => {
   it('keeps ambiguity and rejects gaps instead of deleting residues before Tm', () => {
@@ -326,6 +361,7 @@ describe('primer, PCR, and Tm integrity', () => {
       { targetStart: 40, targetEnd: 60, flankingWindow: Number.NaN },
       { targetStart: 40, targetEnd: 60, maxHairpinDeltaG: Number.NaN },
       { targetStart: 40, targetEnd: 60, maxSelfDimerDeltaG: Number.POSITIVE_INFINITY },
+      { targetStart: 40, targetEnd: 60, maxCrossDimerDeltaG: Number.NaN },
     ]) {
       expect(normalizePrimerDesignParams(sequence.length, invalidParams, 'forward')).toBeNull();
     }
@@ -359,6 +395,109 @@ describe('primer, PCR, and Tm integrity', () => {
     expect(dimer.structure).toContain('GCGC');
     expect(dimer.pairLength).toBe(4);
     expect(dimer.deltaG).toBeLessThan(0);
+  });
+
+  it('keeps the quadratic hairpin scan exact for ordinary oligos', () => {
+    const sequences = [
+      'GCGAAACGC',
+      'ACGTACGTACGTACGT',
+      'GATTACAGCGTACGATCGATCG',
+      'CGCGTTTACGCGATATCGCG',
+      'ATGCATGCATGCATGCATGCATGC',
+    ];
+    let state = 0x12345678;
+    for (let sample = 0; sample < 20; sample += 1) {
+      const length = 8 + (sample % 5) * 4;
+      let sequence = '';
+      for (let index = 0; index < length; index += 1) {
+        state = (state * 1664525 + 1013904223) >>> 0;
+        sequence += 'ACGT'[state % 4];
+      }
+      sequences.push(sequence);
+    }
+    for (const sequence of sequences) {
+      expect(predictHairpin(sequence)).toMatchObject(referenceHairpin(sequence));
+    }
+  });
+
+  it('evaluates the maximum allowed direct oligo without cubic work', () => {
+    const maxOligo = 'ACGT'.repeat(MAX_PRIMER_STRUCTURE_SEQUENCE_LENGTH / 4);
+    expect(maxOligo).toHaveLength(MAX_PRIMER_STRUCTURE_SEQUENCE_LENGTH);
+    expect(predictHairpin(maxOligo).status).toBe('exact');
+    expect(predictPrimerDimer(maxOligo, maxOligo).status).toBe('exact');
+    expect(predictSelfDimer(maxOligo).status).toBe('exact');
+  });
+
+  it('returns an explicit work-limit status for direct oversized oligos', () => {
+    const oversized = 'ACGT'.repeat(Math.ceil((MAX_PRIMER_STRUCTURE_SEQUENCE_LENGTH + 1) / 4));
+    expect(oversized.length).toBeGreaterThan(MAX_PRIMER_STRUCTURE_SEQUENCE_LENGTH);
+    expect(predictHairpin(oversized).status).toBe('work-limit');
+    expect(predictHairpin(oversized).warning).toMatch(/bounded/i);
+    expect(predictPrimerDimer(oversized, 'ACGTACGT').status).toBe('work-limit');
+    expect(predictSelfDimer(oversized).status).toBe('work-limit');
+  });
+
+  it('bounds candidate structure enumeration with a maximum tail', () => {
+    const tail = `${'ACGT'.repeat(62)}AC`;
+    const design = designForwardPrimerWithDiagnostics('ACGT'.repeat(350), {
+      targetStart: 400,
+      targetEnd: 500,
+      minLength: 12,
+      maxLength: 60,
+      minGC: 0,
+      maxGC: 1,
+      enforceTargetTm: false,
+      requireGcClamp: false,
+      flankingWindow: 250,
+      forwardTail: tail,
+      maxHairpinDeltaG: -1000,
+      maxSelfDimerDeltaG: -1000,
+    });
+    expect(design.rejections.workLimit).toBeGreaterThan(0);
+    expect(design.warnings?.join(' ')).toMatch(/work units|bounded/i);
+    expect(design.candidates.every((candidate) => candidate.secondaryStructureStatus !== 'work-limit')).toBe(true);
+  });
+
+  it('rejects every pair when the explicit cross-dimer cutoff is exceeded', () => {
+    expect(normalizePrimerDesignParams(120, {
+      targetStart: 20,
+      targetEnd: 40,
+    }, 'forward')?.maxCrossDimerDeltaG).toBe(-5);
+    const result = designPrimerPairWithDiagnostics('ACGT'.repeat(30), {
+      targetStart: 20,
+      targetEnd: 40,
+      minLength: 18,
+      maxLength: 18,
+      minGC: 0,
+      maxGC: 1,
+      enforceTargetTm: false,
+      requireGcClamp: false,
+      flankingWindow: 0,
+      maxHairpinDeltaG: null,
+      maxSelfDimerDeltaG: null,
+      maxCrossDimerDeltaG: 0,
+    });
+    expect(result.forwardCount).toBeGreaterThan(0);
+    expect(result.reverseCount).toBeGreaterThan(0);
+    expect(result.pairs).toEqual([]);
+    expect(result.rejections.crossDimer).toBeGreaterThan(0);
+
+    const disabled = designPrimerPairWithDiagnostics('ACGT'.repeat(30), {
+      targetStart: 20,
+      targetEnd: 40,
+      minLength: 18,
+      maxLength: 18,
+      minGC: 0,
+      maxGC: 1,
+      enforceTargetTm: false,
+      requireGcClamp: false,
+      flankingWindow: 0,
+      maxHairpinDeltaG: null,
+      maxSelfDimerDeltaG: null,
+      maxCrossDimerDeltaG: null,
+    });
+    expect(disabled.pairs.length).toBeGreaterThan(0);
+    expect(disabled.pairs[0].crossDimer?.status).toBe('exact');
   });
 
   it('splits a circular origin feature into product coordinates', () => {

@@ -8,6 +8,11 @@ import {
   predictPrimerDimer,
   DEFAULT_MAX_HAIRPIN_DG,
   DEFAULT_MAX_DIMER_DG,
+  estimateHairpinWorkUnits,
+  estimatePrimerDimerWorkUnits,
+  MAX_HAIRPIN_WORK_UNITS,
+  MAX_DIMER_WORK_UNITS,
+  type PrimerThermodynamicsStatus,
   type DimerResult,
 } from './primer-thermodynamics';
 import { inspectNucleotideSequence } from './nucleotide';
@@ -88,6 +93,13 @@ export interface PrimerDesignParams {
    * Default -5.0 (Primer3 standard). Pass `null` to disable.
    */
   maxSelfDimerDeltaG?: number | null;
+  /**
+   * Cross-primer dimer ΔG37 cutoff (kcal/mol). Pairs whose exact
+   * cross-dimer evidence is MORE NEGATIVE than this value are rejected.
+   * Default -5.0 (the same heuristic used for self-dimer screening). Pass
+   * `null` to disable pair-level rejection while retaining evidence/ranking.
+   */
+  maxCrossDimerDeltaG?: number | null;
 }
 
 export interface PrimerCandidate {
@@ -109,7 +121,7 @@ export interface PrimerCandidate {
   /** Secondary-structure evidence evaluated on the full ordered oligo. */
   hairpinDeltaG?: number;
   selfDimerDeltaG?: number;
-  secondaryStructureStatus?: 'exact' | 'ambiguous' | 'invalid';
+  secondaryStructureStatus?: PrimerThermodynamicsStatus;
   secondaryStructureWarnings?: string[];
 }
 
@@ -151,6 +163,8 @@ export interface PrimerRejectionCounts {
    * Optional for backward-compat (see above).
    */
   dimer?: number;
+  /** Candidate could not receive an exact secondary-structure evaluation. */
+  workLimit?: number;
 }
 
 /**
@@ -187,6 +201,8 @@ export interface PrimerPairRejections extends PrimerRejectionCounts {
   tmDiff: number;
   /** Forward + reverse passed individually but product length was zero or negative */
   productLength: number;
+  /** Forward + reverse pair was rejected for a cross-dimer below threshold. */
+  crossDimer?: number;
 }
 
 export interface PrimerPairResult {
@@ -220,6 +236,12 @@ export const MAX_PRIMER_FLANKING_WINDOW = 250;
 const MAX_TM_DIFF_PAIR = 5;
 const MAX_PAIRS_RETURNED = 10;
 const MAX_PAIRING_CANDIDATES_PER_DIRECTION = 240;
+/** Aggregate ceiling for one directional candidate scan's exact structure work. */
+export const MAX_PRIMER_DESIGN_STRUCTURE_WORK_UNITS = 10_000_000;
+/** Aggregate ceiling for forward×reverse pair cross-dimer evaluation. */
+export const MAX_PRIMER_PAIR_CROSS_DIMER_WORK_UNITS = 10_000_000;
+/** Pair combinations above the ordinary default are explicitly bounded. */
+export const MAX_PRIMER_PAIR_COMBINATIONS = 250_000;
 // Distance penalty weight — each nt away from the anchor adds this
 // many degrees of "virtual Tm error" in the sort. A primer 30 nt off-anchor
 // with a perfect Tm ranks below an on-anchor primer with ΔTm = 1.5 °C.
@@ -235,7 +257,7 @@ function has3PrimeGcClamp(primer: string): boolean {
 }
 
 function emptyRejections(): Required<PrimerRejectionCounts> {
-  return { gc: 0, tm: 0, length: 0, clamp: 0, invalid: 0, hairpin: 0, dimer: 0 };
+  return { gc: 0, tm: 0, length: 0, clamp: 0, invalid: 0, hairpin: 0, dimer: 0, workLimit: 0 };
 }
 
 // Secondary rejection counter — populated by the design loops
@@ -274,6 +296,7 @@ export type NormalizedPrimerDesignParams = {
   tmOptions: TmOptions;
   maxHairpinDeltaG: number | null | undefined;
   maxSelfDimerDeltaG: number | null | undefined;
+  maxCrossDimerDeltaG: number | null | undefined;
   warnings: string[];
 };
 
@@ -378,6 +401,14 @@ export function normalizePrimerDesignParams(
         && Number.isFinite(raw.maxSelfDimerDeltaG)
         ? raw.maxSelfDimerDeltaG
         : Number.NaN;
+  const maxCrossDimerDeltaG = raw.maxCrossDimerDeltaG === undefined
+    ? DEFAULT_MAX_DIMER_DG
+    : raw.maxCrossDimerDeltaG === null
+      ? null
+      : typeof raw.maxCrossDimerDeltaG === 'number'
+        && Number.isFinite(raw.maxCrossDimerDeltaG)
+        ? raw.maxCrossDimerDeltaG
+        : Number.NaN;
   if (
     targetStart === null
     || targetEnd === null
@@ -390,6 +421,7 @@ export function normalizePrimerDesignParams(
     || flankingWindow === null
     || Number.isNaN(maxHairpinDeltaG as number)
     || Number.isNaN(maxSelfDimerDeltaG as number)
+    || Number.isNaN(maxCrossDimerDeltaG as number)
     || targetStart >= targetEnd
     || minLength > requestedMaxLength
     || minGC > maxGC
@@ -417,6 +449,7 @@ export function normalizePrimerDesignParams(
     tmOptions: raw.tmOptions ?? DEFAULT_TM_OPTIONS,
     maxHairpinDeltaG,
     maxSelfDimerDeltaG,
+    maxCrossDimerDeltaG,
     warnings: normalizedTail.warning ? [normalizedTail.warning] : [],
   };
 }
@@ -434,6 +467,87 @@ function pairRankScore(pair: PrimerPair, targetTm: number, enforceTargetTm: bool
       + (crossDimer.threePrimeOverlap.primer1 + crossDimer.threePrimeOverlap.primer2) * 0.75
     : 0;
   return tmPairPenalty + targetPenalty + anchorPenalty + gcBalancePenalty + crossDimerPenalty;
+}
+
+type StructureWorkBudget = {
+  remaining: number;
+};
+
+type SecondaryStructureEvaluation = {
+  accept: boolean;
+  rejection: 'hairpin' | 'dimer' | 'work-limit' | null;
+  hairpinDeltaG?: number;
+  selfDimerDeltaG?: number;
+  status: PrimerThermodynamicsStatus;
+  warnings: string[];
+};
+
+function structureWarning(warning: string | undefined, warnings: string[]): void {
+  if (warning && !warnings.includes(warning)) warnings.push(warning);
+}
+
+/**
+ * Evaluate one full ordered oligo while spending from the directional design
+ * budget. Work-limit results are rejected from the candidate pool so an
+ * unscored oligo is never presented as an exact structure pass.
+ */
+function evaluateSecondaryStructure(
+  fullPrimerSeq: string,
+  maxHairpinDeltaG: number | null | undefined,
+  maxSelfDimerDeltaG: number | null | undefined,
+  budget: StructureWorkBudget,
+): SecondaryStructureEvaluation {
+  let status: PrimerThermodynamicsStatus = 'exact';
+  const warnings: string[] = [];
+  let hairpinDeltaG: number | undefined;
+  let selfDimerDeltaG: number | undefined;
+
+  if (maxHairpinDeltaG != null && Number.isFinite(maxHairpinDeltaG)) {
+    const estimatedWork = estimateHairpinWorkUnits(fullPrimerSeq.length);
+    const hp = predictHairpin(fullPrimerSeq, {
+      maxWorkUnits: Math.min(budget.remaining, MAX_HAIRPIN_WORK_UNITS),
+    });
+    if (hp.status === 'work-limit') {
+      structureWarning(hp.warning, warnings);
+      return { accept: false, rejection: 'work-limit', status: hp.status, warnings };
+    }
+    if (hp.status === 'exact') budget.remaining = Math.max(0, budget.remaining - estimatedWork);
+    hairpinDeltaG = hp.deltaG;
+    status = hp.status;
+    structureWarning(hp.warning, warnings);
+    if (hp.deltaG < maxHairpinDeltaG) {
+      return { accept: false, rejection: 'hairpin', hairpinDeltaG, status, warnings };
+    }
+  }
+
+  if (maxSelfDimerDeltaG != null && Number.isFinite(maxSelfDimerDeltaG)) {
+    const estimatedWork = estimatePrimerDimerWorkUnits(fullPrimerSeq.length, fullPrimerSeq.length);
+    const dimer = predictSelfDimer(fullPrimerSeq, {
+      maxWorkUnits: Math.min(budget.remaining, MAX_DIMER_WORK_UNITS),
+    });
+    if (dimer.status === 'work-limit') {
+      structureWarning(dimer.warning, warnings);
+      return {
+        accept: false,
+        rejection: 'work-limit',
+        hairpinDeltaG,
+        selfDimerDeltaG: dimer.deltaG,
+        status: dimer.status,
+        warnings,
+      };
+    }
+    if (dimer.status === 'exact') budget.remaining = Math.max(0, budget.remaining - estimatedWork);
+    selfDimerDeltaG = dimer.deltaG;
+    if (dimer.status === 'invalid' || (dimer.status === 'ambiguous' && status === 'exact')) {
+      status = dimer.status;
+    }
+    structureWarning(dimer.warning, warnings);
+    if (dimer.deltaG < maxSelfDimerDeltaG) {
+      return { accept: false, rejection: 'dimer', hairpinDeltaG, selfDimerDeltaG, status, warnings };
+    }
+  }
+
+  return { accept: true, rejection: null, hairpinDeltaG, selfDimerDeltaG, status, warnings };
 }
 
 /**
@@ -486,6 +600,7 @@ export function designForwardPrimerWithDiagnostics(
       : []),
     ...normalizedWarnings,
   ];
+  const structureBudget: StructureWorkBudget = { remaining: MAX_PRIMER_DESIGN_STRUCTURE_WORK_UNITS };
 
   // Scan a window of start positions to the 5' side of targetStart.
   // The product MUST cover targetStart, so start positions can range from
@@ -543,33 +658,21 @@ export function designForwardPrimerWithDiagnostics(
         continue;
       }
 
-      // Hairpin + self-dimer ΔG filters.
       const fullPrimerSeq = tail + primerSeq;
-      let hairpinDeltaG: number | undefined;
-      let selfDimerDeltaG: number | undefined;
-      let secondaryStructureStatus: PrimerCandidate['secondaryStructureStatus'] = 'exact';
-      const secondaryStructureWarnings: string[] = [];
-      if (maxHairpinDeltaG != null && Number.isFinite(maxHairpinDeltaG)) {
-        const hp = predictHairpin(fullPrimerSeq);
-        hairpinDeltaG = hp.deltaG;
-        secondaryStructureStatus = hp.status;
-        if (hp.warning) secondaryStructureWarnings.push(hp.warning);
-        if (hp.deltaG < maxHairpinDeltaG) {
-          rejections.hairpin++;
-          continue;
+      const secondary = evaluateSecondaryStructure(
+        fullPrimerSeq,
+        maxHairpinDeltaG,
+        maxSelfDimerDeltaG,
+        structureBudget,
+      );
+      if (!secondary.accept) {
+        if (secondary.rejection === 'hairpin') rejections.hairpin++;
+        else if (secondary.rejection === 'dimer') rejections.dimer++;
+        else if (secondary.rejection === 'work-limit') {
+          rejections.workLimit = (rejections.workLimit ?? 0) + 1;
+          for (const warning of secondary.warnings) if (!warnings.includes(warning)) warnings.push(warning);
         }
-      }
-      if (maxSelfDimerDeltaG != null && Number.isFinite(maxSelfDimerDeltaG)) {
-        const dimer = predictSelfDimer(fullPrimerSeq);
-        selfDimerDeltaG = dimer.deltaG;
-        if (dimer.status === 'invalid' || (dimer.status === 'ambiguous' && secondaryStructureStatus === 'exact')) {
-          secondaryStructureStatus = dimer.status;
-        }
-        if (dimer.warning) secondaryStructureWarnings.push(dimer.warning);
-        if (dimer.deltaG < maxSelfDimerDeltaG) {
-          rejections.dimer++;
-          continue;
-        }
+        continue;
       }
 
       candidates.push({
@@ -584,10 +687,10 @@ export function designForwardPrimerWithDiagnostics(
         gcPercent: gc * 100,
         direction: 'forward',
         anchorDistance,
-        hairpinDeltaG,
-        selfDimerDeltaG,
-        secondaryStructureStatus,
-        ...(secondaryStructureWarnings.length > 0 ? { secondaryStructureWarnings } : {}),
+        hairpinDeltaG: secondary.hairpinDeltaG,
+        selfDimerDeltaG: secondary.selfDimerDeltaG,
+        secondaryStructureStatus: secondary.status,
+        ...(secondary.warnings.length > 0 ? { secondaryStructureWarnings: secondary.warnings } : {}),
       });
     }
   }
@@ -641,6 +744,7 @@ export function designReversePrimerWithDiagnostics(
       : []),
     ...normalizedWarnings,
   ];
+  const structureBudget: StructureWorkBudget = { remaining: MAX_PRIMER_DESIGN_STRUCTURE_WORK_UNITS };
 
   // Reverse primer's end coordinate ranges from targetEnd (on-anchor)
   // up to targetEnd + flankingWindow (clipped to sequence end).
@@ -696,33 +800,21 @@ export function designReversePrimerWithDiagnostics(
         continue;
       }
 
-      // Hairpin + self-dimer ΔG filters.
       const fullPrimerSeq = tail + primerSeq;
-      let hairpinDeltaG: number | undefined;
-      let selfDimerDeltaG: number | undefined;
-      let secondaryStructureStatus: PrimerCandidate['secondaryStructureStatus'] = 'exact';
-      const secondaryStructureWarnings: string[] = [];
-      if (maxHairpinDeltaG != null && Number.isFinite(maxHairpinDeltaG)) {
-        const hp = predictHairpin(fullPrimerSeq);
-        hairpinDeltaG = hp.deltaG;
-        secondaryStructureStatus = hp.status;
-        if (hp.warning) secondaryStructureWarnings.push(hp.warning);
-        if (hp.deltaG < maxHairpinDeltaG) {
-          rejections.hairpin++;
-          continue;
+      const secondary = evaluateSecondaryStructure(
+        fullPrimerSeq,
+        maxHairpinDeltaG,
+        maxSelfDimerDeltaG,
+        structureBudget,
+      );
+      if (!secondary.accept) {
+        if (secondary.rejection === 'hairpin') rejections.hairpin++;
+        else if (secondary.rejection === 'dimer') rejections.dimer++;
+        else if (secondary.rejection === 'work-limit') {
+          rejections.workLimit = (rejections.workLimit ?? 0) + 1;
+          for (const warning of secondary.warnings) if (!warnings.includes(warning)) warnings.push(warning);
         }
-      }
-      if (maxSelfDimerDeltaG != null && Number.isFinite(maxSelfDimerDeltaG)) {
-        const dimer = predictSelfDimer(fullPrimerSeq);
-        selfDimerDeltaG = dimer.deltaG;
-        if (dimer.status === 'invalid' || (dimer.status === 'ambiguous' && secondaryStructureStatus === 'exact')) {
-          secondaryStructureStatus = dimer.status;
-        }
-        if (dimer.warning) secondaryStructureWarnings.push(dimer.warning);
-        if (dimer.deltaG < maxSelfDimerDeltaG) {
-          rejections.dimer++;
-          continue;
-        }
+        continue;
       }
 
       candidates.push({
@@ -737,10 +829,10 @@ export function designReversePrimerWithDiagnostics(
         gcPercent: gc * 100,
         direction: 'reverse',
         anchorDistance,
-        hairpinDeltaG,
-        selfDimerDeltaG,
-        secondaryStructureStatus,
-        ...(secondaryStructureWarnings.length > 0 ? { secondaryStructureWarnings } : {}),
+        hairpinDeltaG: secondary.hairpinDeltaG,
+        selfDimerDeltaG: secondary.selfDimerDeltaG,
+        secondaryStructureStatus: secondary.status,
+        ...(secondary.warnings.length > 0 ? { secondaryStructureWarnings: secondary.warnings } : {}),
       });
     }
   }
@@ -794,6 +886,11 @@ export function designPrimerPairWithDiagnostics(
   const normalizedPairParams = normalizePrimerDesignParams(sequenceLength, params, 'forward');
   const targetTm = normalizedPairParams?.targetTm ?? DEFAULT_TARGET_TM;
   const enforceTargetTm = normalizedPairParams?.enforceTargetTm ?? true;
+  const maxCrossDimerDeltaG = normalizedPairParams === null
+    ? DEFAULT_MAX_DIMER_DG
+    : normalizedPairParams.maxCrossDimerDeltaG === undefined
+      ? DEFAULT_MAX_DIMER_DG
+      : normalizedPairParams.maxCrossDimerDeltaG;
   const maxPairs = boundedPositiveInteger(params?.maxPairs, MAX_PAIRS_RETURNED, 100);
   const pairingLimit = boundedPositiveInteger(
     params?.maxPairingCandidatesPerDirection,
@@ -813,12 +910,24 @@ export function designPrimerPairWithDiagnostics(
     invalid: forwardResult.rejections.invalid + reverseResult.rejections.invalid,
     hairpin: (forwardResult.rejections.hairpin ?? 0) + (reverseResult.rejections.hairpin ?? 0),
     dimer: (forwardResult.rejections.dimer ?? 0) + (reverseResult.rejections.dimer ?? 0),
+    workLimit: (forwardResult.rejections.workLimit ?? 0) + (reverseResult.rejections.workLimit ?? 0),
     tmDiff: 0,
     productLength: 0,
+    crossDimer: 0,
   };
 
-  for (const fwd of forwardsForPairing) {
+  let pairCombinations = 0;
+  let pairEnumerationLimited = false;
+  let crossDimerWorkRemaining = MAX_PRIMER_PAIR_CROSS_DIMER_WORK_UNITS;
+  let crossDimerWorkLimited = false;
+
+  pairing: for (const fwd of forwardsForPairing) {
     for (const rev of reversesForPairing) {
+      pairCombinations++;
+      if (pairCombinations > MAX_PRIMER_PAIR_COMBINATIONS) {
+        pairEnumerationLimited = true;
+        break pairing;
+      }
       const tmDiff = Math.abs(fwd.tm - rev.tm);
       if (tmDiff > MAX_TM_DIFF_PAIR) {
         rejections.tmDiff++;
@@ -831,12 +940,33 @@ export function designPrimerPairWithDiagnostics(
         continue;
       }
 
+      const estimatedDimerWork = estimatePrimerDimerWorkUnits(fwd.fullSequence.length, rev.fullSequence.length);
+      const crossDimer = predictPrimerDimer(fwd.fullSequence, rev.fullSequence, {
+        maxWorkUnits: Math.min(crossDimerWorkRemaining, MAX_DIMER_WORK_UNITS),
+      });
+      if (crossDimer.status === 'exact') {
+        crossDimerWorkRemaining = Math.max(0, crossDimerWorkRemaining - estimatedDimerWork);
+      } else if (crossDimer.status === 'work-limit') {
+        crossDimerWorkLimited = true;
+        rejections.workLimit = (rejections.workLimit ?? 0) + 1;
+      }
+
+      if (crossDimer.status === 'exact'
+        && maxCrossDimerDeltaG !== null
+        && crossDimer.deltaG < maxCrossDimerDeltaG) {
+        rejections.crossDimer = (rejections.crossDimer ?? 0) + 1;
+        continue;
+      }
+      if (crossDimer.status === 'work-limit' && maxCrossDimerDeltaG !== null) {
+        continue;
+      }
+
       pairs.push({
         forward: fwd,
         reverse: rev,
         productLength,
         tmDifference: tmDiff,
-        crossDimer: predictPrimerDimer(fwd.fullSequence, rev.fullSequence),
+        crossDimer,
       });
     }
   }
@@ -849,6 +979,17 @@ export function designPrimerPairWithDiagnostics(
     || a.productLength - b.productLength,
   );
 
+  const warnings = [...new Set([
+    ...(forwardResult.warnings ?? []),
+    ...(reverseResult.warnings ?? []),
+    ...(crossDimerWorkLimited
+      ? [`Cross-dimer scoring was bounded at ${MAX_PRIMER_PAIR_CROSS_DIMER_WORK_UNITS.toLocaleString()} work units; affected pairs are marked for review.`]
+      : []),
+    ...(pairEnumerationLimited
+      ? [`Primer pair enumeration was bounded at ${MAX_PRIMER_PAIR_COMBINATIONS.toLocaleString()} combinations; the returned ranking is not exhaustive.`]
+      : []),
+  ])];
+
   return {
     pairs: pairs.slice(0, maxPairs),
     rejections,
@@ -859,10 +1000,7 @@ export function designPrimerPairWithDiagnostics(
     reverseSecondary: reverseResult.secondaryRejections,
     forwardCount: forwards.length,
     reverseCount: reverses.length,
-    warnings: [...new Set([
-      ...(forwardResult.warnings ?? []),
-      ...(reverseResult.warnings ?? []),
-    ])],
+    warnings,
   };
 }
 

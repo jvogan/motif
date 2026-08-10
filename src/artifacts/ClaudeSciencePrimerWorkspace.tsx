@@ -249,6 +249,8 @@ function diagnosticMessage(result: PrimerPairResult): string {
   if (result.rejections.clamp > 0) reasons.push(`${result.rejections.clamp.toLocaleString()} clamp`);
   if ((result.rejections.hairpin ?? 0) > 0) reasons.push(`${result.rejections.hairpin?.toLocaleString()} hairpin`);
   if ((result.rejections.dimer ?? 0) > 0) reasons.push(`${result.rejections.dimer?.toLocaleString()} self-dimer`);
+  if ((result.rejections.crossDimer ?? 0) > 0) reasons.push(`${result.rejections.crossDimer?.toLocaleString()} cross-dimer`);
+  if ((result.rejections.workLimit ?? 0) > 0) reasons.push(`${result.rejections.workLimit?.toLocaleString()} bounded structure checks`);
   if (reasons.length > 0) return `No pair passed the current filters. Rejections: ${reasons.join(', ')}.`;
   if (result.rejections.invalid > 0) return 'No pair was found because candidate windows contain ambiguous bases.';
   return 'No pair fits this target. Widen the flank or move the target away from a sequence edge.';
@@ -258,7 +260,7 @@ function hasClamp(candidate: PrimerCandidate): boolean {
   return /[GC]/.test(candidate.sequence.slice(-5).toUpperCase());
 }
 
-function qualityState(deltaG: number, cutoff: number, status: 'exact' | 'ambiguous' | 'invalid' = 'exact'): 'pass' | 'review' {
+function qualityState(deltaG: number, cutoff: number, status: 'exact' | 'ambiguous' | 'invalid' | 'work-limit' = 'exact'): 'pass' | 'review' {
   return status !== 'exact' || deltaG < cutoff ? 'review' : 'pass';
 }
 
@@ -439,6 +441,9 @@ export function ClaudeSciencePrimerWorkspace({
     requireGcClamp,
     forwardTail: forwardTail.trim().toUpperCase() || undefined,
     reverseTail: reverseTail.trim().toUpperCase() || undefined,
+    // Keep the visible workspace's established review/ranking behavior; API
+    // callers can opt into the explicit pair-level cutoff.
+    maxCrossDimerDeltaG: null,
     maxPairs: MAX_VISIBLE_PAIRS,
   }), [flankingWindow, forwardTail, maxGC, maxLength, minGC, minLength, requireGcClamp, reverseTail, targetEnd, targetStart, targetTm, tmTolerance]);
 
