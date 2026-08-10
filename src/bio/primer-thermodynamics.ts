@@ -24,7 +24,7 @@
  * problems.
  */
 
-import { NN_PARAMS } from './tm-calculator';
+import { duplexThermodynamics } from './tm-calculator';
 import { reverseComplement } from './reverse-complement';
 import { inspectNucleotideSequence, isCanonicalDna } from './nucleotide';
 
@@ -32,10 +32,6 @@ import { inspectNucleotideSequence, isCanonicalDna } from './nucleotide';
 export const DEFAULT_MAX_HAIRPIN_DG = -3.0;
 export const DEFAULT_MAX_DIMER_DG = -5.0;
 const T37 = 310.15; // Kelvin
-
-/** Initiation parameters per terminal base-pair, SantaLucia 1998. */
-const INIT_H = 0.1;   // kcal/mol
-const INIT_S = -2.8;  // cal/mol·K
 
 export interface HairpinResult {
   /** Best (most negative) ΔG37 found across all stem-loop alignments, kcal/mol. */
@@ -107,22 +103,11 @@ function inspectedThermoSequence(primer: string): {
 function nnDeltaG(topStrand: string): number {
   const upper = topStrand.toUpperCase();
   if (upper.length < 2) return 0;
-  // 2 terminal initiations (assumed AT for simplicity — Primer3 also approximates).
-  // ΔH in kcal/mol; ΔS accumulated in cal/mol·K then converted at the ΔG step.
-  let dH = 2 * INIT_H;
-  let dS_cal = 2 * INIT_S;
-  for (let i = 0; i < upper.length - 1; i++) {
-    const dinuc = upper[i] + upper[i + 1];
-    const params = NN_PARAMS[dinuc];
-    if (!params) {
-      // Unknown dinucleotide — degenerate base; skip.
-      continue;
-    }
-    dH += params.dH;        // kcal/mol
-    dS_cal += params.dS;    // cal/mol·K
-  }
-  // ΔG(T) = ΔH − T·ΔS  (kcal/mol); ΔS in kcal/mol·K = dS_cal / 1000.
-  return dH - (T37 * dS_cal) / 1000;
+  const { deltaH, deltaS } = duplexThermodynamics(upper);
+  // ΔG(T) = ΔH − T·ΔS. The shared calculator applies the sequence-specific
+  // terminal initiation terms used by duplex Tm, keeping hairpin/dimer scores
+  // on the same thermodynamic basis.
+  return deltaH / 1000 - (T37 * deltaS) / 1000;
 }
 
 /**

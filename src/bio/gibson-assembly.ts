@@ -1,5 +1,5 @@
 import type { Feature } from './types';
-import { meltingTemperature } from './gc-content';
+import { calculateTm, type TmOptions } from './tm-calculator';
 import {
   aliasRemovedProductCoordinates,
   emptySourceToProductMap,
@@ -18,10 +18,22 @@ export interface Overlap {
   sequence: string;
   length: number;
   tm: number;
+  /** Conditions and model used for the screening Tm (not a reaction claim). */
+  tmEvidence: GibsonOverlapTmEvidence;
   /** Position within seq1 where the overlap starts (= seq1.length - overlap.length) */
   position1: number;
   /** Position within seq2 where the overlap ends (= overlap.length) */
   position2: number;
+}
+
+export interface GibsonOverlapTmEvidence {
+  method: 'nearest-neighbor' | 'wallace';
+  saltCorrection: 'owczarzy' | 'none';
+  naConcentrationMolar: number;
+  mgConcentrationMolar: number;
+  dntpConcentrationMolar: number;
+  strandConcentrationMolar: number;
+  assumption: string;
 }
 
 export type OverlapSearchReason = 'none' | 'exact' | 'multiple_exact' | 'ambiguous_symbols' | 'invalid_input';
@@ -59,6 +71,25 @@ export const MAX_GIBSON_FRAGMENT_LENGTH = 500_000;
 export const MAX_GIBSON_TOTAL_INPUT_LENGTH = 1_000_000;
 export const MAX_GIBSON_WORK_UNITS = 2_000_000;
 const IDEAL_OVERLAP_TM = 50; // °C minimum recommended Tm
+const GIBSON_TM_OPTIONS: TmOptions = {
+  method: 'nearest-neighbor',
+  // Gibson mixes differ by formulation; these bounded conditions are an
+  // explicit screening convention, not a claim about any particular reagent.
+  naConcentration: 50,
+  mgConcentration: 0,
+  dntpConcentration: 0,
+  primerConcentration: 250,
+  saltCorrection: 'owczarzy',
+};
+const GIBSON_TM_EVIDENCE: GibsonOverlapTmEvidence = {
+  method: 'nearest-neighbor',
+  saltCorrection: 'owczarzy',
+  naConcentrationMolar: 50e-3,
+  mgConcentrationMolar: 0,
+  dntpConcentrationMolar: 0,
+  strandConcentrationMolar: 250e-9,
+  assumption: 'Screening-only 50 mM Na+, no explicitly modelled Mg2+/dNTPs, and 250 nM strand concentration; verify against the actual assembly mix.',
+};
 
 type NormalizedOverlapRange = { minOverlap: number; maxOverlap: number };
 
@@ -185,10 +216,19 @@ function iupacCompatible(left: string, right: string): boolean {
 }
 
 function makeOverlap(sequence: string, seq1Length: number): Overlap {
+  const tmResult = calculateTm(sequence, GIBSON_TM_OPTIONS);
+  const tmMethod: GibsonOverlapTmEvidence['method'] = tmResult.method.startsWith('nearest-neighbor')
+    ? 'nearest-neighbor'
+    : 'wallace';
   return {
     sequence,
     length: sequence.length,
-    tm: meltingTemperature(sequence) ?? 0,
+    tm: tmResult.status === 'exact' ? tmResult.tm : 0,
+    tmEvidence: {
+      ...GIBSON_TM_EVIDENCE,
+      method: tmMethod,
+      saltCorrection: tmMethod === 'nearest-neighbor' ? 'owczarzy' : 'none',
+    },
     position1: seq1Length - sequence.length,
     position2: sequence.length,
   };
@@ -355,6 +395,7 @@ export function gibsonAssemble(
         sequence: '',
         length: 0,
         tm: 0,
+        tmEvidence: { ...GIBSON_TM_EVIDENCE, saltCorrection: 'none' },
         position1: a.sequence.length,
         position2: 0,
       });

@@ -15403,7 +15403,9 @@ function AnalysisPanel({
     [translationCode],
   );
   const mw = useMemo(
-    () => sequenceType === 'protein' ? proteinMolecularWeight(record.sequence) : molecularWeight(record.sequence),
+    () => sequenceType === 'protein'
+      ? proteinMolecularWeight(record.sequence)
+      : molecularWeight(record.sequence, { ambiguity: 'average' }),
     [record.sequence, sequenceType],
   );
   const tm = useMemo(() => isNucleotide ? meltingTemperature(record.sequence) : null, [isNucleotide, record.sequence]);

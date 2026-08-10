@@ -98,34 +98,183 @@ export function gcContentWindow(
   return results;
 }
 
-// Average molecular weights (Da) for nucleotides (internal, no terminal groups)
-const DNA_MW: Record<string, number> = {
-  A: 313.21, T: 304.19, G: 329.21, C: 289.18, N: 308.95,
+/**
+ * Average and monoisotopic masses for deoxyribonucleotide monophosphates.
+ * A phosphodiester chain is formed by removing one water molecule per bond;
+ * this basis therefore supports both end chemistries without double-counting
+ * polymerization loss. Values agree with the published nucleotide tables in
+ * Thermo Fisher's DNA/RNA molecular-weight reference. See
+ * https://www.thermofisher.com/us/en/home/references/
+ * ambion-tech-support/rna-tools-and-calculators/dna-and-rna-molecular-weights-
+ * and-conversions.html.
+ */
+const DNA_NMP_MASS_AVERAGE: Record<string, number> = {
+  A: 331.2218,
+  C: 307.1971,
+  G: 347.2212,
+  T: 322.2085,
 };
 
+const DNA_NMP_MASS_MONOISOTOPIC: Record<string, number> = {
+  A: 331.06817,
+  C: 307.056936,
+  G: 347.063084,
+  T: 322.056602,
+};
+
+const DNA_AMBIGUOUS_BASES: Record<string, string> = {
+  R: 'AG',
+  Y: 'CT',
+  S: 'GC',
+  W: 'AT',
+  K: 'GT',
+  M: 'AC',
+  B: 'CGT',
+  D: 'AGT',
+  H: 'ACT',
+  V: 'ACG',
+  N: 'ACGT',
+};
+
+export type DnaMolecularWeightMode = 'average' | 'monoisotopic';
+export type DnaEndChemistry = 'hydroxyl' | 'phosphate';
+export type DnaTopology = 'linear' | 'circular';
+export type DnaAmbiguityPolicy = 'reject' | 'average';
+
+export interface DnaMolecularWeightOptions {
+  /** Average (default) or isotope-resolved mass. */
+  mode?: DnaMolecularWeightMode;
+  /** 5′ terminal chemistry; default preserves the restriction-fragment UI convention. */
+  fivePrime?: DnaEndChemistry;
+  /** 3′ terminal chemistry; default is a free hydroxyl. */
+  threePrime?: DnaEndChemistry;
+  /** Linear chain (default) or a covalently closed circular strand. */
+  topology?: DnaTopology;
+  /** Reject IUPAC ambiguity by default, or average supported expansions. */
+  ambiguity?: DnaAmbiguityPolicy;
+}
+
+export interface DnaMolecularWeightResult {
+  mass: number | null;
+  status: 'exact' | 'ambiguous' | 'invalid';
+  sequence: string;
+  message?: string;
+}
+
 /**
- * Estimate molecular weight of a single-stranded DNA sequence.
- * Uses average internal nucleotide weights.
+ * Safe defaults for the sequence UI: average mass, linear strand, a 5′
+ * monophosphate (as left by many restriction enzymes), and a 3′ hydroxyl.
+ * Callers ordering synthetic primers should select `fivePrime: 'hydroxyl'`.
  */
-export function molecularWeight(seq: string): number {
-  // Sequence text may come from a formatted editor/FASTA row. Formatting
-  // whitespace is not a nucleotide and must not be charged as an N-equivalent
-  // residue; retain the historical N fallback for other ambiguous symbols.
-  const upper = seq.toUpperCase().replace(/[ \t\r\n]/g, '').replace(/U/g, 'T');
-  let mw = 0;
+export const DNA_MOLECULAR_WEIGHT_UI_DEFAULTS: Required<Omit<DnaMolecularWeightOptions, 'ambiguity'>> & {
+  ambiguity: DnaAmbiguityPolicy;
+} = {
+  mode: 'average',
+  fivePrime: 'phosphate',
+  threePrime: 'hydroxyl',
+  topology: 'linear',
+  ambiguity: 'reject',
+};
 
-  for (const ch of upper) {
-    mw += DNA_MW[ch] ?? DNA_MW.N;
+const PHOSPHATE_DELTA_AVERAGE = 79.9663;
+const PHOSPHATE_DELTA_MONOISOTOPIC = 79.966331;
+const WATER_AVERAGE = 18.0153;
+const WATER_MONOISOTOPIC = 18.010565;
+
+function roundedMass(mass: number): number {
+  return Math.round(mass * 100) / 100;
+}
+
+/**
+ * Return a qualified mass result. Ambiguous bases are never silently treated
+ * as a generic N: use `ambiguity: 'average'` to request the mean of their
+ * supported IUPAC expansions.
+ */
+export function calculateDnaMolecularWeight(
+  seq: string,
+  options: DnaMolecularWeightOptions = {},
+): DnaMolecularWeightResult {
+  const normalized = seq.toUpperCase().replace(/[ \t\r\n]/g, '').replace(/U/g, 'T');
+  const mode = options.mode ?? DNA_MOLECULAR_WEIGHT_UI_DEFAULTS.mode;
+  const fivePrime = options.fivePrime ?? DNA_MOLECULAR_WEIGHT_UI_DEFAULTS.fivePrime;
+  const threePrime = options.threePrime ?? DNA_MOLECULAR_WEIGHT_UI_DEFAULTS.threePrime;
+  const topology = options.topology ?? DNA_MOLECULAR_WEIGHT_UI_DEFAULTS.topology;
+  const ambiguity = options.ambiguity ?? DNA_MOLECULAR_WEIGHT_UI_DEFAULTS.ambiguity;
+  if (!['average', 'monoisotopic'].includes(mode)) {
+    return { mass: null, status: 'invalid', sequence: normalized, message: `Unsupported DNA mass mode: ${String(mode)}.` };
+  }
+  if (!['hydroxyl', 'phosphate'].includes(fivePrime) || !['hydroxyl', 'phosphate'].includes(threePrime)) {
+    return { mass: null, status: 'invalid', sequence: normalized, message: 'DNA terminal chemistry must be hydroxyl or phosphate.' };
+  }
+  if (topology !== 'linear' && topology !== 'circular') {
+    return { mass: null, status: 'invalid', sequence: normalized, message: 'DNA topology must be linear or circular.' };
+  }
+  if (ambiguity !== 'reject' && ambiguity !== 'average') {
+    return { mass: null, status: 'invalid', sequence: normalized, message: 'DNA ambiguity policy must be reject or average.' };
+  }
+  const table = mode === 'monoisotopic' ? DNA_NMP_MASS_MONOISOTOPIC : DNA_NMP_MASS_AVERAGE;
+  const water = mode === 'monoisotopic' ? WATER_MONOISOTOPIC : WATER_AVERAGE;
+  const phosphateDelta = mode === 'monoisotopic' ? PHOSPHATE_DELTA_MONOISOTOPIC : PHOSPHATE_DELTA_AVERAGE;
+  const values: number[] = [];
+  let hasAmbiguity = false;
+  for (const ch of normalized) {
+    if (table[ch] !== undefined) {
+      values.push(table[ch]);
+      continue;
+    }
+    const expansion = DNA_AMBIGUOUS_BASES[ch];
+    if (!expansion) {
+      return { mass: null, status: 'invalid', sequence: normalized, message: `Unsupported DNA base: ${ch}.` };
+    }
+    hasAmbiguity = true;
+    if (ambiguity === 'reject') {
+      return {
+        mass: null,
+        status: 'ambiguous',
+        sequence: normalized,
+        message: `DNA mass was not evaluated exactly because the sequence contains IUPAC ambiguity symbol ${ch}.`,
+      };
+    }
+    values.push([...expansion].reduce((sum, base) => sum + table[base], 0) / expansion.length);
   }
 
-  // Subtract water for phosphodiester bonds and add terminal groups
-  // Simplified: mw - (n-1)*18.02 + 17.01 + 79.0 (5' phosphate, 3' OH)
-  if (upper.length > 0) {
-    mw -= (upper.length - 1) * 18.02;
-    mw += 17.01 + 79.0;
+  if (values.length === 0) {
+    return { mass: 0, status: 'exact', sequence: normalized };
   }
 
-  return Math.round(mw * 100) / 100;
+  let mass = values.reduce((sum, value) => sum + value, 0);
+  if (topology === 'circular') {
+    // A closed strand has one phosphodiester bond per nucleotide and no end
+    // groups. End-chemistry options are intentionally ignored in this state.
+    mass -= values.length * water;
+  } else {
+    mass -= (values.length - 1) * water;
+    // The monophosphate basis describes 5′-phosphate / 3′-hydroxyl ends.
+    if (fivePrime === 'hydroxyl') mass -= phosphateDelta;
+    if (threePrime === 'phosphate') mass += phosphateDelta;
+  }
+  return {
+    mass: roundedMass(mass),
+    status: hasAmbiguity ? 'ambiguous' : 'exact',
+    sequence: normalized,
+    ...(hasAmbiguity ? { message: 'Mass is an average over the supported IUPAC expansions; it is not an exact molecular composition.' } : {}),
+  };
+}
+
+/**
+ * Estimate the mass of a single-stranded DNA molecule in Daltons. The default
+ * is the documented UI convention in `DNA_MOLECULAR_WEIGHT_UI_DEFAULTS`.
+ * Ambiguous inputs throw unless callers explicitly request `ambiguity:'average'`.
+ */
+export function molecularWeight(
+  seq: string,
+  options: DnaMolecularWeightOptions = {},
+): number {
+  const result = calculateDnaMolecularWeight(seq, options);
+  if (result.mass === null || (result.status === 'ambiguous' && options.ambiguity !== 'average')) {
+    throw new RangeError(result.message ?? 'DNA molecular weight could not be evaluated exactly.');
+  }
+  return result.mass;
 }
 
 /**

@@ -15,7 +15,12 @@ import {
   type GoldenGateKit,
   type GoldenGateKitLevelDefinition,
 } from '../bio/golden-gate-kits';
-import { analyzeOverlap, gibsonAssemble, type OverlapSearchResult } from '../bio/gibson-assembly';
+import {
+  analyzeOverlap,
+  gibsonAssemble,
+  type Overlap,
+  type OverlapSearchResult,
+} from '../bio/gibson-assembly';
 import { reverseComplement } from '../bio/reverse-complement';
 import { sha256HexSync } from './claude-science-sha256';
 import { materializeGoldenGateFlankSpacers } from './claude-science-golden-gate-normalization';
@@ -244,6 +249,7 @@ export type ArtifactGibsonJunctionPlan = {
   overlapSequence: string | null;
   overlapLength: number;
   overlapTm: number | null;
+  overlapTmEvidence: Overlap['tmEvidence'] | null;
   overlapUnique: boolean;
   alternateOverlapLengths: number[];
   overlapState: OverlapSearchResult['reason'];
@@ -1280,6 +1286,7 @@ export function planArtifactGibsonDesign(input: ArtifactGibsonDesignInput): Arti
         overlapSequence: overlap?.sequence ?? null,
         overlapLength: overlap?.length ?? 0,
         overlapTm: overlap?.tm ?? null,
+        overlapTmEvidence: overlap?.tmEvidence ?? null,
         overlapUnique: overlapSearch.unique,
         alternateOverlapLengths: overlapSearch.candidates
           .slice(1)
