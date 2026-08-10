@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
+  estimatePCRBindingScanWorkUnits,
   findPrimerBindings,
+  findPrimerBindingsWithDiagnostics,
+  MAX_PCR_BINDING_SCAN_WORK_UNITS,
   MAX_PCR_OLIGO_LENGTH,
   MAX_PCR_PRODUCT_LENGTH,
   simulatePCR,
+  simulatePCRWithDiagnostics,
 } from '../pcr';
 import {
   designPrimerPairWithDiagnostics,
@@ -113,6 +117,71 @@ describe('primer, PCR, and Tm integrity', () => {
       maxMismatches: 1,
     });
     expect(conditionalMismatch[0]?.status).toBe('ambiguous');
+  });
+
+  it('bounds automatic binding work and keeps the legacy array API fail-closed', () => {
+    const template = 'C'.repeat(100_000);
+    const primer = 'A'.repeat(40);
+    const estimate = estimatePCRBindingScanWorkUnits(template.length, primer.length);
+    expect(estimate).toBeGreaterThan(MAX_PCR_BINDING_SCAN_WORK_UNITS);
+
+    const detailed = findPrimerBindingsWithDiagnostics(template, primer);
+    expect(detailed.complete).toBe(false);
+    expect(detailed.workUnits).toBeLessThanOrEqual(MAX_PCR_BINDING_SCAN_WORK_UNITS);
+    expect(detailed.candidates).toEqual([]);
+    expect(detailed.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'binding_scan_work_limit',
+      workUnits: detailed.workUnits,
+      maxWorkUnits: MAX_PCR_BINDING_SCAN_WORK_UNITS,
+    }));
+    expect(findPrimerBindings(template, primer)).toEqual([]);
+  });
+
+  it('returns a typed zero-candidate scan limit instead of collapsing it to an ordinary miss', () => {
+    const detailed = simulatePCRWithDiagnostics(
+      'C'.repeat(2_000),
+      'A'.repeat(40),
+      'A'.repeat(40),
+      [],
+      'linear',
+      undefined,
+      { maxBindingScanWorkUnits: 100 },
+    );
+    expect(detailed.result).toBeNull();
+    expect(detailed.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'binding_scan_work_limit', primer: 'forward' }),
+      expect.objectContaining({ code: 'binding_scan_work_limit', primer: 'reverse' }),
+    ]));
+    expect(simulatePCR(
+      'C'.repeat(2_000),
+      'A'.repeat(40),
+      'A'.repeat(40),
+      [],
+      'linear',
+      undefined,
+      { maxBindingScanWorkUnits: 100 },
+    )).toBeNull();
+  });
+
+  it('blocks materialization when a partial automatic scan happens to find a product', () => {
+    const forward = binding;
+    const reverse = reverseComplement(binding);
+    const template = `${forward}${'G'.repeat(20)}${forward}`;
+    const detailed = simulatePCRWithDiagnostics(
+      template,
+      forward,
+      reverse,
+      [],
+      'linear',
+      undefined,
+      { maxBindingScanWorkUnits: forward.length * 2 * 2 },
+    );
+    expect(detailed.result).not.toBeNull();
+    expect(detailed.result?.status).toBe('ambiguous');
+    expect(detailed.result?.materializable).toBe(false);
+    expect(detailed.result?.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'binding_scan_work_limit',
+    }));
   });
 
   it('preserves explicit tails, reports competing products, and preserves template IUPAC symbols', () => {
