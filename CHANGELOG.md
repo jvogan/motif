@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.3.4 — 2026-08-09
+
+- Tightened checkpoint restoration, portable export receipts, MCP payload
+  validation, and sparse or invalid data handling so unsupported states fail
+  clearly before serialization or materialization.
+- Aligned coordinate, path, provenance, and sequence-helper validation while
+  strengthening map-label geometry and other bounded workflows.
+- Updated the reviewed React, Node type, Vite/Vitest, accessibility, and
+  Playwright toolchain; refreshed exact lifecycle metadata and retained bounded
+  cooling-off checks for established registry packages.
+
 ## 0.3.3 — 2026-08-08
 
 - Made Database JSON and workspace ZIP checkpoints provably restorable,

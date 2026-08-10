@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.4 — 2026-08-09
+
+- Tightened connector, workspace, MSA, export, path, and provenance validation
+  across packaged workflows.
+- Refreshed reviewed dependencies and exact release-policy metadata while
+  preserving bounded, reproducible packaging.
+
 ## 0.3.3 — 2026-08-08
 
 - Made checkpoint exports provably restorable and clarified active-record and
