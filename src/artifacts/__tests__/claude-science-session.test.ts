@@ -4,6 +4,7 @@ import {
   MOTIF_INVENTORY_SCHEMA_V1,
   MAX_ARTIFACT_DATABASE_JSON_CHARACTERS,
   MAX_CUSTOM_ENZYMES,
+  MAX_CUSTOM_ENZYME_EVIDENCE_TEXT_LENGTH,
   MAX_CUSTOM_ENZYME_NAME_LENGTH,
   MAX_CUSTOM_ENZYME_RECOGNITION_LENGTH,
   MAX_HIDDEN_ENZYMES_PER_RECORD,
@@ -87,6 +88,23 @@ describe('Claude Science durable session validation', () => {
         cutOffset: 7,
         complementCutOffset: 11,
         overhang: '5prime',
+        cleavageMode: 'double-strand',
+        methylationRequirement: {
+          target: 'dam',
+          state: 'unmethylated',
+          evidence: {
+            source: 'https://example.test/dam',
+            sourceLabel: 'Assay record',
+            conditions: 'Unmethylated substrate',
+            limitation: 'Global state does not model mixed populations.',
+          },
+        },
+        methylationBehavior: 'context_dependent',
+        methylationEvidence: {
+          source: 'https://example.test/context',
+          sourceLabel: 'Context record',
+          conditions: 'Context-dependent substrate',
+        },
       }],
       translationLayersByRecord: {
         'record-a': [{
@@ -115,6 +133,23 @@ describe('Claude Science durable session validation', () => {
         cutOffset: 7,
         complementCutOffset: 11,
         overhang: '5prime',
+        cleavageMode: 'double-strand',
+        methylationRequirement: {
+          target: 'dam',
+          state: 'unmethylated',
+          evidence: {
+            source: 'https://example.test/dam',
+            sourceLabel: 'Assay record',
+            conditions: 'Unmethylated substrate',
+            limitation: 'Global state does not model mixed populations.',
+          },
+        },
+        methylationBehavior: 'context_dependent',
+        methylationEvidence: {
+          source: 'https://example.test/context',
+          sourceLabel: 'Context record',
+          conditions: 'Context-dependent substrate',
+        },
       }],
       translationLayersByRecord: {
         'record-a': [{
@@ -189,6 +224,35 @@ describe('Claude Science durable session validation', () => {
     expect(() => normalizeArtifactDurableState({
       enzymeSourcesByRecord: { 'record-a': ['not-a-source'] },
     }, recordLengths)).toThrow(/unknown source/i);
+    const baseEnzyme = {
+      name: 'CustomI',
+      recognitionSequence: 'GAATTC',
+      cutOffset: 1,
+      complementCutOffset: 5,
+      overhang: '5prime',
+    };
+    expect(() => normalizeArtifactDurableState({
+      customEnzymes: [
+        baseEnzyme,
+        { ...baseEnzyme, name: 'customi' },
+      ],
+    }, recordLengths)).toThrow(/customEnzymes\[1\].*customEnzymes\[0\].*case-insensitive/i);
+    expect(() => normalizeArtifactDurableState({
+      customEnzymes: [{ ...baseEnzyme, cleavageMode: 'single-strand' }],
+    }, recordLengths)).toThrow(/cleavageMode/i);
+    expect(() => normalizeArtifactDurableState({
+      customEnzymes: [{ ...baseEnzyme, methylationRequirement: { target: 'dam', state: 'unknown' } }],
+    }, recordLengths)).toThrow(/methylationRequirement\.state/i);
+    expect(() => normalizeArtifactDurableState({
+      customEnzymes: [{
+        ...baseEnzyme,
+        methylationEvidence: {
+          source: 'x'.repeat(MAX_CUSTOM_ENZYME_EVIDENCE_TEXT_LENGTH + 1),
+          sourceLabel: 'label',
+          conditions: 'conditions',
+        },
+      }],
+    }, recordLengths)).toThrow(/no longer than/i);
   });
 
   it('deduplicates restored layer ids deterministically', () => {

@@ -162,10 +162,13 @@ export function simulateGel(
   const sampleBands: GelBand[] = [];
   samples.forEach((sample, sIdx) => {
     const laneIdx = sIdx + 1;
-    const uniqueSizes = [...new Set(sample.fragments)].sort((a, b) => b - a);
+    const sizeCounts = new Map<number, number>();
+    for (const size of sample.fragments) {
+      sizeCounts.set(size, (sizeCounts.get(size) ?? 0) + 1);
+    }
+    const uniqueSizes = Array.from(sizeCounts.keys()).sort((a, b) => b - a);
     for (const size of uniqueSizes) {
-      // Count duplicates for intensity
-      const count = sample.fragments.filter(f => f === size).length;
+      const count = sizeCounts.get(size) ?? 0;
       sampleBands.push({
         size,
         label: formatSize(size),

@@ -88,8 +88,9 @@ node doctor-motif-claude-science-release.mjs --bundle . \
 
 This path does not require `npm`, `npm ci`, or access to the source checkout.
 Use the private backup printed by the installer with
-`rollback-motif-claude-science-release.mjs` if a restore is needed. The
-installer only changes the `motif-local` entry and preserves unrelated config.
+`rollback-motif-claude-science-release.mjs` with the same separately downloaded
+manifest checksum if a restore is needed. The installer only changes the
+`motif-local` entry and preserves unrelated config.
 
 The installer updates only the `motif-local` entry in:
 

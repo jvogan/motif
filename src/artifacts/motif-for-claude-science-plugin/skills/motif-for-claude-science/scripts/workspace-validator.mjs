@@ -375,6 +375,7 @@ var MAX_TRANSLATION_LAYER_TEXT_LENGTH = 160;
 var MAX_MOTIF_LENGTH = 256;
 var MAX_CUSTOM_ENZYME_NAME_LENGTH = 64;
 var MAX_CUSTOM_ENZYME_RECOGNITION_LENGTH = 64;
+var MAX_CUSTOM_ENZYME_EVIDENCE_TEXT_LENGTH = 2048;
 var MAX_HIDDEN_FEATURE_TRANSLATIONS_PER_RECORD = 2e3;
 var VALID_SOURCE_IDS = /* @__PURE__ */ new Set([
   "common",
@@ -413,13 +414,35 @@ function uniqueId(base, used, maxLength = MAX_TRANSLATION_LAYER_TEXT_LENGTH) {
   used.add(candidate);
   return candidate;
 }
+function normalizeMethylationEvidence(value, path) {
+  if (!isObject(value)) throw new Error(`${path} must be an object.`);
+  return {
+    source: requiredString(value.source, `${path}.source`, MAX_CUSTOM_ENZYME_EVIDENCE_TEXT_LENGTH),
+    sourceLabel: requiredString(value.sourceLabel, `${path}.sourceLabel`, MAX_CUSTOM_ENZYME_EVIDENCE_TEXT_LENGTH),
+    conditions: requiredString(value.conditions, `${path}.conditions`, MAX_CUSTOM_ENZYME_EVIDENCE_TEXT_LENGTH),
+    ...value.limitation === void 0 ? {} : { limitation: requiredString(value.limitation, `${path}.limitation`, MAX_CUSTOM_ENZYME_EVIDENCE_TEXT_LENGTH) }
+  };
+}
+function normalizeMethylationRequirement(value, path) {
+  if (!isObject(value)) throw new Error(`${path} must be an object.`);
+  const target = value.target === "dam" || value.target === "dcm" || value.target === "cpg" || value.target === "custom" ? value.target : null;
+  if (target === null) throw new Error(`${path}.target must be dam, dcm, cpg, or custom.`);
+  const state = value.state === "methylated" || value.state === "unmethylated" ? value.state : null;
+  if (state === null) throw new Error(`${path}.state must be methylated or unmethylated.`);
+  return {
+    target,
+    state,
+    ...value.evidence === void 0 ? {} : { evidence: normalizeMethylationEvidence(value.evidence, `${path}.evidence`) }
+  };
+}
 function normalizeCustomEnzymes(value) {
   if (value === void 0) return [];
   if (!Array.isArray(value)) throw new Error("artifactState.customEnzymes must be an array.");
   if (value.length > MAX_CUSTOM_ENZYMES) {
     throw new Error(`artifactState.customEnzymes cannot contain more than ${MAX_CUSTOM_ENZYMES} entries.`);
   }
-  const byName = /* @__PURE__ */ new Map();
+  const seenNames = /* @__PURE__ */ new Map();
+  const normalizedEnzymes = [];
   value.forEach((raw, index) => {
     const path = `artifactState.customEnzymes[${index}]`;
     if (!isObject(raw)) throw new Error(`${path} must be an object.`);
@@ -440,9 +463,37 @@ function normalizeCustomEnzymes(value) {
     if (raw.overhang !== "blunt" && raw.overhang !== "5prime" && raw.overhang !== "3prime") {
       throw new Error(`${path}.overhang must be "blunt", "5prime", or "3prime".`);
     }
-    byName.set(name.toLowerCase(), { name, recognitionSequence, cutOffset, complementCutOffset, overhang: raw.overhang });
+    const nameKey = name.toLowerCase();
+    const previous = seenNames.get(nameKey);
+    if (previous) {
+      const previousPath = `artifactState.customEnzymes[${previous.index}].name`;
+      throw new Error(
+        `${path}.name (${JSON.stringify(name)}) duplicates ${previousPath} (${JSON.stringify(previous.name)}); custom-enzyme names are case-insensitive.`
+      );
+    }
+    seenNames.set(nameKey, { index, name });
+    const cleavageMode = raw.cleavageMode === void 0 ? void 0 : raw.cleavageMode === "double-strand" || raw.cleavageMode === "nick_top" || raw.cleavageMode === "nick_bottom" ? raw.cleavageMode : null;
+    if (cleavageMode === null) {
+      throw new Error(`${path}.cleavageMode must be double-strand, nick_top, or nick_bottom.`);
+    }
+    const methylationRequirement = raw.methylationRequirement === void 0 ? void 0 : normalizeMethylationRequirement(raw.methylationRequirement, `${path}.methylationRequirement`);
+    const methylationBehavior = raw.methylationBehavior === void 0 ? void 0 : raw.methylationBehavior === "context_dependent" ? raw.methylationBehavior : null;
+    if (methylationBehavior === null) throw new Error(`${path}.methylationBehavior must be context_dependent.`);
+    const methylationEvidence = raw.methylationEvidence === void 0 ? void 0 : normalizeMethylationEvidence(raw.methylationEvidence, `${path}.methylationEvidence`);
+    const normalized = {
+      name,
+      recognitionSequence,
+      cutOffset,
+      complementCutOffset,
+      overhang: raw.overhang,
+      ...cleavageMode === void 0 ? {} : { cleavageMode },
+      ...methylationRequirement === void 0 ? {} : { methylationRequirement },
+      ...methylationBehavior === void 0 ? {} : { methylationBehavior },
+      ...methylationEvidence === void 0 ? {} : { methylationEvidence }
+    };
+    normalizedEnzymes.push(normalized);
   });
-  return Array.from(byName.values());
+  return normalizedEnzymes;
 }
 function normalizeTranslationLayers(value, recordLengths) {
   if (value === void 0) return {};

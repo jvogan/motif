@@ -67,7 +67,10 @@ export interface GoldenGateKitLevelDefinition {
   transitionEnzyme: GoldenGateEnzymeName | null;
 }
 
-type GoldenGateKitDefinition = Omit<GoldenGateKit, 'levels'>;
+type GoldenGateKitDefinition = Omit<GoldenGateKit, 'levels'> & {
+  /** Optional level-specific contract when the primary kit set is not enough. */
+  levels?: readonly GoldenGateKitLevelDefinition[];
+};
 
 const MOCLO_PLANT: GoldenGateKitDefinition = {
   id: 'moclo-plant',
@@ -148,6 +151,32 @@ const LOOP_ASSEMBLY: GoldenGateKitDefinition = {
     { role: 'Promoter (L0 → L1)', left: 'GGAG', right: 'AATG' },
     { role: 'CDS (L0 → L1)', left: 'AATG', right: 'GCTT' },
     { role: 'Terminator (L0 → L1)', left: 'GCTT', right: 'CGCT' },
+  ],
+  levels: [
+    {
+      level: 'entry',
+      enzyme: 'BsaI',
+      fusionSiteLength: 4,
+      acceptedFusionSites: ['GGAG', 'AATG', 'AGGT', 'GCTT', 'CGCT', 'TCAG', 'TTAC'],
+      grammar: [
+        { role: 'Promoter (L0 → L1)', left: 'GGAG', right: 'AATG' },
+        { role: 'CDS (L0 → L1)', left: 'AATG', right: 'GCTT' },
+        { role: 'Terminator (L0 → L1)', left: 'GCTT', right: 'CGCT' },
+      ],
+      nextLevel: 'upper',
+      transitionEnzyme: 'SapI',
+    },
+    {
+      level: 'upper',
+      enzyme: 'SapI',
+      fusionSiteLength: 3,
+      // The cited Loop contract does not publish a fixed SapI overhang set;
+      // keep the set empty rather than deriving 3-nt sites from the L0 list.
+      acceptedFusionSites: [],
+      grammar: [],
+      nextLevel: null,
+      transitionEnzyme: null,
+    },
   ],
   citation: 'Pollak B, Cerda A, Delmans M, Álvarez-González S, et al. (2019). Loop Assembly: a simple and open system for recursive fabrication of DNA circuits. New Phytologist 222(1):628–40.',
   citationUrl: 'https://doi.org/10.1111/nph.15625',
@@ -252,6 +281,16 @@ export const GOLDEN_GATE_KITS: readonly GoldenGateKit[] = [
           transitionEnzyme: 'BsmBI',
         },
       ],
+    };
+  }
+  if (kit.levels) {
+    return {
+      ...kit,
+      levels: kit.levels.map((level) => ({
+        ...level,
+        acceptedFusionSites: [...level.acceptedFusionSites],
+        grammar: level.grammar.map((entry) => ({ ...entry })),
+      })),
     };
   }
   return {

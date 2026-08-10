@@ -237,6 +237,7 @@ describe('checksum-verified Motif release installation', () => {
 
     const rollback = runReleaseCli(aliasBundle, 'rollback-motif-claude-science-release.mjs', [
       '--bundle', aliasBundle,
+      ...trustedManifestArgs(bundle),
       '--config', configPath,
       '--dry-run',
     ]);
@@ -314,8 +315,9 @@ describe('checksum-verified Motif release installation', () => {
     const bundle = writeFixture();
     const { configPath, bytes } = temporaryConfig({ servers: [{ name: 'unrelated', command: '/private/unrelated', args: [] }] });
     const installed = installRelease(['--bundle', bundle, ...trustedManifestArgs(bundle), '--config', configPath, '--node', process.execPath]);
-    const rollback = rollbackRelease(['--bundle', bundle, '--config', configPath, '--backup', installed.backupPath]);
+    const rollback = rollbackRelease(['--bundle', bundle, ...trustedManifestArgs(bundle), '--config', configPath, '--backup', installed.backupPath]);
     expect(rollback.changed).toBe(true);
+    expect(rollback.externalManifestDigestMatched).toBe(true);
     expect(readFileSync(configPath, 'utf8')).toBe(bytes);
     expect(rollback.backupPath).toBeTruthy();
     expect(readFileSync(rollback.backupPath, 'utf8')).toContain('motif-local');
@@ -326,15 +328,25 @@ describe('checksum-verified Motif release installation', () => {
     const { configPath } = temporaryConfig({ servers: [] });
     const backupPath = join(dirname(configPath), `${basename(configPath)}.before-motif-local-test`);
     writeFileSync(backupPath, Buffer.alloc(MAX_LOCAL_MCP_CONFIG_BYTES + 1, 0x20));
-    expect(() => rollbackRelease(['--bundle', bundle, '--config', configPath, '--backup', backupPath]))
+    expect(() => rollbackRelease(['--bundle', bundle, ...trustedManifestArgs(bundle), '--config', configPath, '--backup', backupPath]))
       .toThrowError(expect.objectContaining({ code: 'config_too_large' }));
 
     const targetPath = join(dirname(configPath), 'rollback-target.json');
     writeFileSync(targetPath, '{"servers":[]}\n');
     rmSync(backupPath, { force: true });
     symlinkSync(targetPath, backupPath);
-    expect(() => rollbackRelease(['--bundle', bundle, '--config', configPath, '--backup', backupPath]))
+    expect(() => rollbackRelease(['--bundle', bundle, ...trustedManifestArgs(bundle), '--config', configPath, '--backup', backupPath]))
       .toThrow(/must not be a symbolic link/);
+  });
+
+  it('requires and checks the external manifest digest before rollback inspection', () => {
+    const bundle = writeFixture();
+    const { configPath, bytes } = temporaryConfig({ servers: [] });
+    expect(() => rollbackRelease(['--bundle', bundle, '--config', configPath]))
+      .toThrow(/Rollback requires an externally trusted release-manifest SHA-256/);
+    expect(() => rollbackRelease(['--bundle', bundle, '--manifest-sha256', '0'.repeat(64), '--config', configPath]))
+      .toThrow(/does not match the externally trusted SHA-256/);
+    expect(readFileSync(configPath, 'utf8')).toBe(bytes);
   });
 });
 

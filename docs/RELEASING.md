@@ -86,9 +86,9 @@ Create the GitHub release as a draft with `--verify-tag`, and attach exactly:
 
 The release ZIP is the supported no-npm end-user path. Users verify both release
 assets against the immutable GitHub release before executing bundled code. The
-installer additionally requires the separately downloaded release-manifest
-checksum as an external integrity anchor; it does not claim to authenticate
-itself. Its extracted root
+installer and rollback helper require the separately downloaded
+release-manifest checksum as an external integrity anchor; they do not claim to
+authenticate themselves. Its extracted root
 contains the installer, doctor, rollback helper, compiled `motif-local`
 connector, self-contained App/template, checksums, SBOM, and dependency
 license inventory. The installer never runs npm or reads outside the bundle

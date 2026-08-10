@@ -13,6 +13,24 @@ describe('cloning-fidelity contracts', () => {
     expect(kit?.levels.every((level) => level.acceptedFusionSites.length > 0 && level.grammar.length > 0)).toBe(true);
   });
 
+  it('publishes Loop Assembly upper-level SapI geometry without inventing a site set', () => {
+    const kit = getGoldenGateKit('loop');
+    expect(kit?.levels.map((level) => [
+      level.level,
+      level.enzyme,
+      level.fusionSiteLength,
+      level.nextLevel,
+      level.transitionEnzyme,
+    ])).toEqual([
+      ['entry', 'BsaI', 4, 'upper', 'SapI'],
+      ['upper', 'SapI', 3, null, null],
+    ]);
+    expect(kit?.levels.find((level) => level.level === 'upper')).toMatchObject({
+      acceptedFusionSites: [],
+      grammar: [],
+    });
+  });
+
   it('blocks an IUPAC-only Gibson homology claim in the artifact adapter', () => {
     const plan = planArtifactGibsonDesign({
       fragments: [

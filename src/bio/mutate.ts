@@ -11,6 +11,12 @@ export interface MutationResult {
   features: Feature[];
 }
 
+/** Shared bounds for the browser-facing nucleotide insertion primitive. */
+export const MAX_MUTATION_INSERTION_LENGTH = 250_000;
+export const MAX_MUTATION_RESULT_LENGTH = 250_000;
+export const MAX_MUTATION_OPERATION_UNITS = 1_000_000;
+const VALID_INSERTION_BASES = /^[ACGTURYSWKMBDHVN]+$/iu;
+
 // ---------------------------------------------------------------------------
 // Helpers (not exported)
 // ---------------------------------------------------------------------------
@@ -19,6 +25,27 @@ function requireSafeInteger(value: number, label: string, minimum: number): void
   if (!Number.isSafeInteger(value) || value < minimum) {
     throw new RangeError(`${label} must be a safe integer greater than or equal to ${minimum}.`);
   }
+}
+
+function insertionOperationUnits(
+  insertedLength: number,
+  scars: readonly MutationScar[],
+  features: readonly Feature[],
+): number {
+  let units = insertedLength;
+  const add = (amount: number): void => {
+    if (!Number.isSafeInteger(amount) || amount < 0 || units > MAX_MUTATION_OPERATION_UNITS - amount) {
+      throw new RangeError(`Insertion exceeds the ${MAX_MUTATION_OPERATION_UNITS.toLocaleString()}-unit mutation operation budget.`);
+    }
+    units += amount;
+  };
+  add(scars.length);
+  add(features.length);
+  for (const feature of features) add(feature.subRanges?.length ?? 0);
+  if (units > MAX_MUTATION_OPERATION_UNITS) {
+    throw new RangeError(`Insertion exceeds the ${MAX_MUTATION_OPERATION_UNITS.toLocaleString()}-unit mutation operation budget.`);
+  }
+  return units;
 }
 
 /**
@@ -184,16 +211,28 @@ export function applyInsertion(
     return { raw, scars: [...scars], features: [...features] };
   }
 
+  if (bases.length > MAX_MUTATION_INSERTION_LENGTH) {
+    throw new RangeError(`Insertion cannot exceed ${MAX_MUTATION_INSERTION_LENGTH.toLocaleString()} residues.`);
+  }
+  if (!VALID_INSERTION_BASES.test(bases)) {
+    throw new Error('Insertion bases must contain only valid DNA/RNA nucleotide symbols.');
+  }
+  if (raw.length > MAX_MUTATION_RESULT_LENGTH - bases.length) {
+    throw new RangeError(`Insertion would exceed the ${MAX_MUTATION_RESULT_LENGTH.toLocaleString()}-residue result limit.`);
+  }
+  insertionOperationUnits(bases.length, scars, features);
+  const normalizedBases = bases.toUpperCase();
+
   // Guard: pos out of range
   if (pos < -1 || pos > raw.length - 1) {
     return { raw, scars: [...scars], features: [...features] };
   }
 
   const insertIndex = pos + 1; // actual string index where insertion starts
-  const delta = bases.length;
+  const delta = normalizedBases.length;
 
   // Build the new sequence
-  const newRaw = raw.slice(0, insertIndex) + bases + raw.slice(insertIndex);
+  const newRaw = raw.slice(0, insertIndex) + normalizedBases + raw.slice(insertIndex);
 
   // Shift existing scars and features
   const shiftedScars = shiftScars(scars, pos, delta);
@@ -201,7 +240,7 @@ export function applyInsertion(
 
   // Create insertion scars for each inserted base
   const now = Date.now();
-  const insertionScars: MutationScar[] = Array.from(bases, (base, i) => ({
+  const insertionScars: MutationScar[] = Array.from(normalizedBases, (base, i) => ({
     id: crypto.randomUUID(),
     position: insertIndex + i,
     type: 'insertion' as const,
