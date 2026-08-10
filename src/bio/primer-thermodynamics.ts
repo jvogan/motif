@@ -24,7 +24,10 @@
  * problems.
  */
 
-import { NN_PARAMS } from './tm-calculator';
+import {
+  DNA_NN_INITIATION,
+  NN_PARAMS,
+} from './tm-calculator';
 import { reverseComplement } from './reverse-complement';
 import { inspectNucleotideSequence, isCanonicalDna } from './nucleotide';
 
@@ -33,9 +36,25 @@ export const DEFAULT_MAX_HAIRPIN_DG = -3.0;
 export const DEFAULT_MAX_DIMER_DG = -5.0;
 const T37 = 310.15; // Kelvin
 
-/** Initiation parameters per terminal base-pair, SantaLucia 1998. */
-const INIT_H = 0.1;   // kcal/mol
-const INIT_S = -2.8;  // cal/mol·K
+/**
+ * Direct secondary-structure calls accept the same maximum oligo length as
+ * primer design. Longer inputs are reported as a checked work limit instead
+ * of being silently shortened or scanned without a bound.
+ */
+export const MAX_PRIMER_STRUCTURE_SEQUENCE_LENGTH = 500;
+/** Formatting whitespace is normalized, but raw input is bounded separately. */
+export const MAX_PRIMER_STRUCTURE_INPUT_CHARACTERS = 2_000;
+
+/** Default exact-work ceilings for one direct secondary-structure call. */
+export const MAX_HAIRPIN_WORK_UNITS = 1_000_000;
+export const MAX_DIMER_WORK_UNITS = 1_000_000;
+
+export type PrimerThermodynamicsStatus = 'exact' | 'ambiguous' | 'invalid' | 'work-limit';
+
+export interface PrimerThermodynamicsOptions {
+  /** Optional caller-specific ceiling; never raises the module default. */
+  maxWorkUnits?: number;
+}
 
 export interface HairpinResult {
   /** Best (most negative) ΔG37 found across all stem-loop alignments, kcal/mol. */
@@ -49,7 +68,7 @@ export interface HairpinResult {
   /** Exact sequence after formatting normalization; no bases are discarded. */
   evaluatedSequence: string;
   /** Ambiguity/invalid-input state for this heuristic diagnostic. */
-  status: 'exact' | 'ambiguous' | 'invalid';
+  status: PrimerThermodynamicsStatus;
   warning?: string;
 }
 
@@ -69,13 +88,13 @@ export interface DimerResult {
   /** Exact sequence after formatting normalization; no bases are discarded. */
   evaluatedSequence: string;
   /** Ambiguity/invalid-input state for this heuristic diagnostic. */
-  status: 'exact' | 'ambiguous' | 'invalid';
+  status: PrimerThermodynamicsStatus;
   warning?: string;
 }
 
 function inspectedThermoSequence(primer: string): {
   sequence: string;
-  status: 'exact' | 'ambiguous' | 'invalid';
+  status: Exclude<PrimerThermodynamicsStatus, 'work-limit'>;
   warning?: string;
 } {
   const inspected = inspectNucleotideSequence(primer);
@@ -103,26 +122,137 @@ function inspectedThermoSequence(primer: string): {
   return { sequence: inspected.sequence, status: 'exact' };
 }
 
-/** Compute ΔG37 (kcal/mol) for a Watson-Crick duplex from its 5′→3′ top strand. */
-function nnDeltaG(topStrand: string): number {
-  const upper = topStrand.toUpperCase();
-  if (upper.length < 2) return 0;
-  // 2 terminal initiations (assumed AT for simplicity — Primer3 also approximates).
-  // ΔH in kcal/mol; ΔS accumulated in cal/mol·K then converted at the ΔG step.
-  let dH = 2 * INIT_H;
-  let dS_cal = 2 * INIT_S;
-  for (let i = 0; i < upper.length - 1; i++) {
-    const dinuc = upper[i] + upper[i + 1];
-    const params = NN_PARAMS[dinuc];
-    if (!params) {
-      // Unknown dinucleotide — degenerate base; skip.
-      continue;
+function boundedWorkLimit(value: number | undefined, fallback: number): number {
+  if (value === undefined) return fallback;
+  if (!Number.isFinite(value) || !Number.isSafeInteger(value) || value < 0) return 0;
+  return Math.min(fallback, value);
+}
+
+function boundedWorkUnits(value: number): number {
+  if (!Number.isFinite(value) || value < 0) return Number.MAX_SAFE_INTEGER;
+  return Math.min(Number.MAX_SAFE_INTEGER, Math.ceil(value));
+}
+
+/** Estimated exact work for the quadratic hairpin dynamic-programming scan. */
+export function estimateHairpinWorkUnits(sequenceLength: number): number {
+  return boundedWorkUnits(sequenceLength * sequenceLength * 2);
+}
+
+/** Estimated exact work for one quadratic dimer alignment scan. */
+export function estimatePrimerDimerWorkUnits(primer1Length: number, primer2Length: number): number {
+  return boundedWorkUnits(primer1Length * primer2Length);
+}
+
+function workLimitWarning(workUnits: number, maxWorkUnits: number): string {
+  return `Secondary-structure diagnostics require ${workUnits.toLocaleString()} work units, above the checked limit of ${maxWorkUnits.toLocaleString()}.`;
+}
+
+function oversizedSequenceWarning(length: number): string {
+  return `Secondary-structure diagnostics are bounded to ${MAX_PRIMER_STRUCTURE_SEQUENCE_LENGTH.toLocaleString()} nt per oligo; received ${length.toLocaleString()} nt.`;
+}
+
+function workLimitedHairpinResult(
+  evaluatedSequence: string,
+  warning: string,
+): HairpinResult {
+  return {
+    deltaG: 0,
+    stemLength: 0,
+    loopSize: 0,
+    structure: '',
+    evaluatedSequence,
+    status: 'work-limit',
+    warning,
+  };
+}
+
+function workLimitedDimerResult(
+  evaluatedSequence: string,
+  warning: string,
+): DimerResult {
+  return {
+    deltaG: 0,
+    pairLength: 0,
+    offset: 0,
+    threePrimeOverlap: { primer1: 0, primer2: 0 },
+    threePrimeParticipation: 'none',
+    structure: '',
+    evaluatedSequence,
+    status: 'work-limit',
+    warning,
+  };
+}
+
+type NnPrefixSums = {
+  deltaH: number[];
+  deltaS: number[];
+};
+
+function nnPrefixSums(sequence: string): NnPrefixSums {
+  const deltaH = new Array<number>(sequence.length).fill(0);
+  const deltaS = new Array<number>(sequence.length).fill(0);
+  for (let index = 0; index < sequence.length - 1; index += 1) {
+    deltaH[index + 1] = deltaH[index];
+    deltaS[index + 1] = deltaS[index];
+    const params = NN_PARAMS[sequence[index] + sequence[index + 1]];
+    if (params) {
+      deltaH[index + 1] += params.dH * 1000;
+      deltaS[index + 1] += params.dS;
     }
-    dH += params.dH;        // kcal/mol
-    dS_cal += params.dS;    // cal/mol·K
   }
-  // ΔG(T) = ΔH − T·ΔS  (kcal/mol); ΔS in kcal/mol·K = dS_cal / 1000.
-  return dH - (T37 * dS_cal) / 1000;
+  return { deltaH, deltaS };
+}
+
+/** Compute ΔG37 for a canonical sequence slice in O(1) after prefix setup. */
+function nnDeltaGAt(
+  sequence: string,
+  start: number,
+  length: number,
+  prefixes: NnPrefixSums,
+): number {
+  if (length < 2) return 0;
+  const endBase = start + length - 1;
+  const firstTerminal = /[AT]/.test(sequence[start])
+    ? DNA_NN_INITIATION.terminalAT
+    : DNA_NN_INITIATION.terminalGC;
+  const lastTerminal = /[AT]/.test(sequence[endBase])
+    ? DNA_NN_INITIATION.terminalAT
+    : DNA_NN_INITIATION.terminalGC;
+  const deltaH = (firstTerminal.dH + lastTerminal.dH) * 1000
+    + prefixes.deltaH[endBase] - prefixes.deltaH[start];
+  const deltaS = firstTerminal.dS + lastTerminal.dS
+    + prefixes.deltaS[endBase] - prefixes.deltaS[start];
+  // ΔG(T) = ΔH − T·ΔS. The shared calculator applies the sequence-specific
+  // terminal initiation terms used by duplex Tm, keeping hairpin/dimer scores
+  // on the same thermodynamic basis.
+  return deltaH / 1000 - (T37 * deltaS) / 1000;
+}
+
+const COMPLEMENT: Readonly<Record<string, string>> = {
+  A: 'T',
+  C: 'G',
+  G: 'C',
+  T: 'A',
+};
+
+/**
+ * For each left start and right-end coordinate, retain the exact length of
+ * the reverse-complement match. The recurrence is O(n²):
+ * match[i,e] = 1 + match[i+1,e-1] when the facing bases pair.
+ */
+function hairpinMatchLengths(sequence: string): Uint16Array[] {
+  const n = sequence.length;
+  const matches = Array.from({ length: n + 1 }, () => new Uint16Array(n + 1));
+  for (let left = n - 1; left >= 0; left -= 1) {
+    const row = matches[left];
+    const nextRow = matches[left + 1];
+    for (let rightEnd = 1; rightEnd <= n; rightEnd += 1) {
+      if (sequence[left] === COMPLEMENT[sequence[rightEnd - 1]]) {
+        row[rightEnd] = Math.min(0xffff, nextRow[rightEnd - 1] + 1);
+      }
+    }
+  }
+  return matches;
 }
 
 /**
@@ -136,10 +266,22 @@ function nnDeltaG(topStrand: string): number {
  * Returns the most-negative ΔG found. A primer with no stem of length ≥3
  * returns ΔG = 0 (no hairpin penalty).
  */
-export function predictHairpin(primer: string): HairpinResult {
+export function predictHairpin(
+  primer: string,
+  options: PrimerThermodynamicsOptions = {},
+): HairpinResult {
+  if (typeof primer !== 'string') {
+    return workLimitedHairpinResult('', 'Secondary-structure diagnostics require a nucleotide string.');
+  }
+  if (primer.length > MAX_PRIMER_STRUCTURE_INPUT_CHARACTERS) {
+    return workLimitedHairpinResult('', oversizedSequenceWarning(primer.length));
+  }
   const inspected = inspectedThermoSequence(primer);
   const seq = inspected.sequence;
   const n = seq.length;
+  if (n > MAX_PRIMER_STRUCTURE_SEQUENCE_LENGTH) {
+    return workLimitedHairpinResult('', oversizedSequenceWarning(n));
+  }
   let best: HairpinResult = {
     deltaG: 0,
     stemLength: 0,
@@ -151,30 +293,70 @@ export function predictHairpin(primer: string): HairpinResult {
   };
   if (inspected.status !== 'exact' || !isCanonicalDna(seq) || n < 8) return best;
 
+  const workUnits = estimateHairpinWorkUnits(n);
+  const maxWorkUnits = boundedWorkLimit(options.maxWorkUnits, MAX_HAIRPIN_WORK_UNITS);
+  if (workUnits > maxWorkUnits) {
+    return workLimitedHairpinResult(seq, workLimitWarning(workUnits, maxWorkUnits));
+  }
+
   const MIN_LOOP = 3;
   const MIN_STEM = 3;
 
-  for (let i = 0; i + 2 * MIN_STEM + MIN_LOOP <= n; i++) {
-    for (let stemLen = MIN_STEM; i + stemLen + MIN_LOOP + stemLen <= n; stemLen++) {
-      for (let loopSize = MIN_LOOP; i + stemLen + loopSize + stemLen <= n; loopSize++) {
-        const left = seq.slice(i, i + stemLen);
-        const right = seq.slice(i + stemLen + loopSize, i + stemLen + loopSize + stemLen);
-        const rightRevComp = reverseComplement(right);
-        if (left !== rightRevComp) continue;
-        // Compute ΔG of the stem (treat as a perfect duplex of length stemLen)
-        const dG = nnDeltaG(left);
-        if (dG < best.deltaG) {
-          const dots = '.'.repeat(loopSize);
-          best = {
-            deltaG: Math.round(dG * 100) / 100,
-            stemLength: stemLen,
-            loopSize,
-            structure: `5'-${left}-${dots}-${right}-3'`,
-            evaluatedSequence: seq,
-            status: 'exact',
-          };
-        }
+  const prefixes = nnPrefixSums(seq);
+  const matches = hairpinMatchLengths(seq);
+  let bestLeft = Number.POSITIVE_INFINITY;
+  let bestStem = Number.POSITIVE_INFINITY;
+  let bestRightEnd = Number.POSITIVE_INFINITY;
+
+  // The match table makes each possible arm comparison O(1). For a fixed
+  // (left, rightEnd), the valid stem lengths form a prefix; a running minimum
+  // of exact NN ΔG values avoids the former cubic stem × loop enumeration.
+  for (let left = 0; left + 2 * MIN_STEM + MIN_LOOP <= n; left += 1) {
+    const maxStem = Math.floor((n - left - MIN_LOOP) / 2);
+    const bestDeltaGAtStem = new Array<number>(maxStem + 1).fill(Number.POSITIVE_INFINITY);
+    const bestLengthAtStem = new Array<number>(maxStem + 1).fill(0);
+    let runningDeltaG = Number.POSITIVE_INFINITY;
+    let runningLength = 0;
+    for (let stemLength = MIN_STEM; stemLength <= maxStem; stemLength += 1) {
+      const dG = nnDeltaGAt(seq, left, stemLength, prefixes);
+      if (dG < runningDeltaG) {
+        runningDeltaG = dG;
+        runningLength = stemLength;
       }
+      bestDeltaGAtStem[stemLength] = runningDeltaG;
+      bestLengthAtStem[stemLength] = runningLength;
+    }
+
+    for (let rightEnd = left + 2 * MIN_STEM + MIN_LOOP; rightEnd <= n; rightEnd += 1) {
+      const maxStemForLoop = Math.floor((rightEnd - left - MIN_LOOP) / 2);
+      const stemLimit = Math.min(matches[left][rightEnd], maxStemForLoop);
+      if (stemLimit < MIN_STEM) continue;
+      const stemLength = bestLengthAtStem[stemLimit];
+      if (stemLength < MIN_STEM) continue;
+      const dG = bestDeltaGAtStem[stemLimit];
+      const loopSize = rightEnd - left - 2 * stemLength;
+      const shouldReplace = dG < best.deltaG
+        || (dG === best.deltaG && (
+          left < bestLeft
+          || (left === bestLeft && (
+            stemLength < bestStem
+            || (stemLength === bestStem && rightEnd < bestRightEnd)
+          ))
+        ));
+      if (!shouldReplace) continue;
+      const leftArm = seq.slice(left, left + stemLength);
+      const rightArm = seq.slice(rightEnd - stemLength, rightEnd);
+      best = {
+        deltaG: Math.round(dG * 100) / 100,
+        stemLength,
+        loopSize,
+        structure: `5'-${leftArm}-${'.'.repeat(loopSize)}-${rightArm}-3'`,
+        evaluatedSequence: seq,
+        status: 'exact',
+      };
+      bestLeft = left;
+      bestStem = stemLength;
+      bestRightEnd = rightEnd;
     }
   }
 
@@ -194,11 +376,24 @@ export function predictHairpin(primer: string): HairpinResult {
  * ends). We compute ΔG over the contiguous match — UI can additionally show
  * "3′-end overlap" as a flag.
  */
-export function predictPrimerDimer(p1: string, p2: string): DimerResult {
+export function predictPrimerDimer(
+  p1: string,
+  p2: string,
+  options: PrimerThermodynamicsOptions = {},
+): DimerResult {
+  if (typeof p1 !== 'string' || typeof p2 !== 'string') {
+    return workLimitedDimerResult('', 'Secondary-structure diagnostics require nucleotide strings.');
+  }
+  if (p1.length > MAX_PRIMER_STRUCTURE_INPUT_CHARACTERS || p2.length > MAX_PRIMER_STRUCTURE_INPUT_CHARACTERS) {
+    return workLimitedDimerResult('', oversizedSequenceWarning(Math.max(p1.length, p2.length)));
+  }
   const inspectedA = inspectedThermoSequence(p1);
   const inspectedB = inspectedThermoSequence(p2);
   const a = inspectedA.sequence;
   const b = inspectedB.sequence;
+  if (a.length > MAX_PRIMER_STRUCTURE_SEQUENCE_LENGTH || b.length > MAX_PRIMER_STRUCTURE_SEQUENCE_LENGTH) {
+    return workLimitedDimerResult('', oversizedSequenceWarning(Math.max(a.length, b.length)));
+  }
   const status = inspectedA.status === 'invalid' || inspectedB.status === 'invalid'
     ? 'invalid'
     : inspectedA.status === 'ambiguous' || inspectedB.status === 'ambiguous'
@@ -218,8 +413,15 @@ export function predictPrimerDimer(p1: string, p2: string): DimerResult {
   };
   if (status !== 'exact' || !isCanonicalDna(a) || !isCanonicalDna(b) || a.length < 3 || b.length < 3) return best;
 
+  const workUnits = estimatePrimerDimerWorkUnits(a.length, b.length);
+  const maxWorkUnits = boundedWorkLimit(options.maxWorkUnits, MAX_DIMER_WORK_UNITS);
+  if (workUnits > maxWorkUnits) {
+    return workLimitedDimerResult(`${a}|${b}`, workLimitWarning(workUnits, maxWorkUnits));
+  }
+
   // The dimer alignment is p1 (5′→3′ top) vs p2 reverse-complement aligned at offset.
   const b_rc = reverseComplement(b);
+  const prefixes = nnPrefixSums(a);
 
   // For each relative offset between [-len(b_rc)+1, len(a)-1], evaluate every
   // maximal contiguous Watson-Crick run. A shorter GC-rich run at one offset
@@ -229,7 +431,7 @@ export function predictPrimerDimer(p1: string, p2: string): DimerResult {
     const evaluateRun = (start: number, length: number): void => {
       if (start < 0 || length < 3) return;
       const matched = a.slice(start, start + length);
-      const deltaG = Math.round(nnDeltaG(matched) * 100) / 100;
+      const deltaG = Math.round(nnDeltaGAt(a, start, length, prefixes) * 100) / 100;
       const matchedEnd = start + length;
       const bRunStart = start + offset;
       // Participation means the duplex reaches the actual terminal 3′ base;
@@ -279,6 +481,9 @@ export function predictPrimerDimer(p1: string, p2: string): DimerResult {
 }
 
 /** Convenience: predict self-dimer for a single primer. */
-export function predictSelfDimer(primer: string): DimerResult {
-  return predictPrimerDimer(primer, primer);
+export function predictSelfDimer(
+  primer: string,
+  options: PrimerThermodynamicsOptions = {},
+): DimerResult {
+  return predictPrimerDimer(primer, primer, options);
 }

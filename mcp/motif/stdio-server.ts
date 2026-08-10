@@ -40,7 +40,7 @@ async function readVersion(configuredRoot: string | undefined): Promise<string> 
       // Fall through to the next supported manifest location.
     }
   }
-  return '0.3.3';
+  return '0.3.4';
 }
 
 async function readRuntimeBuildId(workbenchPath: string): Promise<string> {

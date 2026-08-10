@@ -10,6 +10,7 @@ import {
   restrictionSiteActivity,
 } from '../restriction-sites';
 import { resolveEnzymeUnion } from '../restriction-presets';
+import type { RestrictionEnzyme } from '../types';
 
 function enzyme(name: string) {
   const match = RESTRICTION_ENZYMES.find((candidate) => candidate.name === name);
@@ -109,6 +110,46 @@ describe('restriction-site scanning', () => {
       bottomCutPosition: 5,
       cleavageStatus: 'ok',
     })]);
+  });
+
+  it('retains distinct physical geometries when an asymmetric ambiguous site matches both strands', () => {
+    const asymmetric: RestrictionEnzyme = {
+      name: 'AsymmetricAmbiguous',
+      recognitionSequence: 'RNNN',
+      cutOffset: 1,
+      complementCutOffset: 2,
+      overhang: '5prime',
+    };
+    const sites = findRestrictionSites('ACCC', [asymmetric]);
+
+    expect(sites).toHaveLength(2);
+    expect(sites.map(({ strand, position, topCutPosition, bottomCutPosition }) => ({
+      strand,
+      position,
+      topCutPosition,
+      bottomCutPosition,
+    }))).toEqual(expect.arrayContaining([
+      { strand: 1, position: 0, topCutPosition: 1, bottomCutPosition: 2 },
+      { strand: -1, position: 0, topCutPosition: 2, bottomCutPosition: 3 },
+    ]));
+  });
+
+  it('merges strand matches only when their physical cut geometry is identical', () => {
+    const symmetricGeometry: RestrictionEnzyme = {
+      name: 'SymmetricGeometryAmbiguous',
+      recognitionSequence: 'RNNN',
+      cutOffset: 1,
+      complementCutOffset: 3,
+      overhang: '5prime',
+    };
+    const sites = findRestrictionSites('ACCC', [symmetricGeometry]);
+
+    expect(sites).toHaveLength(1);
+    expect(sites[0]).toMatchObject({
+      strand: 1,
+      topCutPosition: 1,
+      bottomCutPosition: 3,
+    });
   });
 
   it('finds and wraps a palindromic site that crosses a circular origin once', () => {

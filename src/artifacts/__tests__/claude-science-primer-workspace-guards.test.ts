@@ -46,6 +46,8 @@ describe('Claude Science primer workspace source guards', () => {
     expect(host).toContain('materializePcrAmplicon({');
     expect(host).toContain('replacePreparedPart({');
     expect(host).toContain('PCR simulation saved in Results only. No sequence record was created.');
+    expect(host).toContain('engineVersion: simulation.provenance.engineVersion');
+    expect(host).toContain('productAssembly: simulation.provenance.productAssembly');
     expect(host).toContain('topology: template.topology');
     expect(materialization).toContain('topology: sourceRecord.topology');
     expect(host).toContain('navigateCloningPrimerRecord(wrappedIndex);');

@@ -2,6 +2,8 @@
  * Advanced melting temperature (Tm) calculator.
  * Implements nearest-neighbor thermodynamics (SantaLucia 1998),
  * Wallace rule, and salt corrections (Owczarzy 2004/2008).
+ * Primary references: https://doi.org/10.1073/pnas.95.4.1460 and
+ * https://doi.org/10.1021/bi702363u.
  * All functions are pure — no side effects.
  */
 
@@ -10,6 +12,7 @@ import {
   isCanonicalDna,
   normalizeNucleotideSequence,
 } from './nucleotide';
+import { reverseComplement } from './reverse-complement';
 
 // ─── Constants ─────────────────────────────────────────────────────────────
 
@@ -43,9 +46,22 @@ export const NN_PARAMS: Record<string, { dH: number; dS: number }> = {
   'CC': { dH: -8.0, dS: -19.9 },   // CC/GG = GG/CC
 };
 
-/** Initiation parameters (per terminal base-pair, SantaLucia 1998) */
-const INIT_H = 0.1;   // kcal/mol (note: positive)
-const INIT_S = -2.8;  // cal/mol·K
+/**
+ * Initiation parameters from the unified DNA nearest-neighbor model
+ * (SantaLucia 1998, Table 2).  The terminal base-pair contribution is
+ * sequence-dependent; using the GC value at both ends materially biases AT-
+ * ended oligos.  Values are in kcal/mol and cal/mol·K, respectively.
+ */
+export const DNA_NN_INITIATION = {
+  terminalAT: { dH: 2.3, dS: 4.1 },
+  terminalGC: { dH: 0.1, dS: -2.8 },
+  symmetry: { dH: 0, dS: -1.4 },
+} as const;
+
+export interface DuplexThermodynamicsOptions {
+  /** Apply the C2 symmetry entropy penalty for a self-complementary duplex. */
+  selfComplementary?: boolean;
+}
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -81,6 +97,8 @@ export interface TmOptions {
   dntpConcentration?: number;
   /** Salt correction formula, default 'owczarzy' */
   saltCorrection?: 'owczarzy' | 'santalucia' | 'wetmur';
+  /** Override automatic self-complementarity detection for a duplex. */
+  selfComplementary?: boolean;
 }
 
 const MAX_NA_CONCENTRATION_MILLIMOLAR = 1_000;
@@ -137,7 +155,7 @@ function validateTmOptions(options: TmOptions | undefined): string | null {
 }
 
 function validateThermoInput(
-  thermo: { deltaH: number; deltaS: number; ctMolar: number } | undefined,
+  thermo: { deltaH: number; deltaS: number; ctMolar: number; selfComplementary?: boolean } | undefined,
 ): string | null {
   if (!thermo) return null;
   if (!Number.isFinite(thermo.deltaH) || !Number.isFinite(thermo.deltaS)) {
@@ -149,6 +167,36 @@ function validateThermoInput(
   return null;
 }
 
+/**
+ * Resolve free Mg2+ in the presence of dNTPs using Owczarzy et al. 2008
+ * eq. 17. Concentrations are molar. The paper notes that total Mg minus
+ * total dNTP is a good approximation when Mg is in clear excess; using the
+ * equilibrium quadratic throughout also behaves correctly when dNTP >= Mg.
+ */
+export function freeMagnesiumConcentration(
+  totalMgMolar: number,
+  totalDntpMolar: number,
+): number {
+  if (!Number.isFinite(totalMgMolar) || totalMgMolar < 0) {
+    throw new RangeError('Total Mg2+ concentration must be finite and non-negative.');
+  }
+  if (!Number.isFinite(totalDntpMolar) || totalDntpMolar < 0) {
+    throw new RangeError('Total dNTP concentration must be finite and non-negative.');
+  }
+  if (totalMgMolar === 0) return 0;
+  if (totalDntpMolar === 0) return totalMgMolar;
+
+  // Ka is the Mg:dNTP association constant reported by Owczarzy et al.
+  // (the reciprocal of the dissociation constant used in the equilibrium).
+  const associationConstant = 3e4;
+  const linear = 1 + associationConstant * (totalDntpMolar - totalMgMolar);
+  const discriminant = linear * linear + 4 * associationConstant * totalMgMolar;
+  const root = (-linear + Math.sqrt(discriminant)) / (2 * associationConstant);
+  // Roundoff can produce a tiny negative value at the boundary; physical free
+  // magnesium is bounded by the total concentration.
+  return Math.min(totalMgMolar, Math.max(0, root));
+}
+
 // ─── Core thermodynamics ───────────────────────────────────────────────────
 
 /**
@@ -156,7 +204,27 @@ function validateThermoInput(
  * Uses nearest-neighbor parameters from SantaLucia 1998.
  * Input should be the 5'→3' sequence of the top strand (DNA, uppercase).
  */
-export function duplexThermodynamics(seq: string): {
+export function duplexThermodynamics(
+  seq: string,
+  options: DuplexThermodynamicsOptions = {},
+): {
+  deltaH: number;
+  deltaS: number;
+  deltaG37: number;
+} {
+  return duplexThermodynamicsWithOptions(seq, options);
+}
+
+/**
+ * Compute nearest-neighbor thermodynamics with explicit duplex assumptions.
+ * This is kept separate from the legacy one-argument wrapper so existing
+ * callers remain source-compatible while Tm and secondary-structure callers
+ * share the same terminal and symmetry primitives.
+ */
+export function duplexThermodynamicsWithOptions(
+  seq: string,
+  options: DuplexThermodynamicsOptions = {},
+): {
   deltaH: number;
   deltaS: number;
   deltaG37: number;
@@ -169,10 +237,16 @@ export function duplexThermodynamics(seq: string): {
     throw new Error('Nearest-neighbor thermodynamics requires at least two canonical bases.');
   }
 
-  // Initiation: 2 terminal base-pairs
-  // dH in kcal/mol → convert to cal/mol for consistency
-  let dH = 2 * INIT_H * 1000; // cal/mol
-  let dS = 2 * INIT_S;        // cal/mol·K
+  // Two sequence-dependent terminal initiation contributions. dH in kcal/mol
+  // is converted to cal/mol for consistency with the NN table.
+  const firstTerminal = /[AT]/.test(upper[0])
+    ? DNA_NN_INITIATION.terminalAT
+    : DNA_NN_INITIATION.terminalGC;
+  const lastTerminal = /[AT]/.test(upper[upper.length - 1])
+    ? DNA_NN_INITIATION.terminalAT
+    : DNA_NN_INITIATION.terminalGC;
+  let dH = (firstTerminal.dH + lastTerminal.dH) * 1000;
+  let dS = firstTerminal.dS + lastTerminal.dS;
 
   // Sum nearest-neighbor contributions
   for (let i = 0; i < upper.length - 1; i++) {
@@ -183,6 +257,11 @@ export function duplexThermodynamics(seq: string): {
       dS += params.dS;
     }
     // Unknown dinucleotide: skip (best-effort for degenerate sequences)
+  }
+
+  if (options.selfComplementary) {
+    dH += DNA_NN_INITIATION.symmetry.dH * 1000;
+    dS += DNA_NN_INITIATION.symmetry.dS;
   }
 
   const T37 = 310.15; // 37°C in Kelvin
@@ -215,11 +294,11 @@ function owczarzyMg(
   tmK: number,
   naConc: number,
   mgConc: number,
+  dntpConc: number,
   gcFraction: number,
   seqLength: number,
 ): number {
-  // Free Mg2+ = mgConc - dNTP (simplified: assume dNTP already deducted)
-  const Mg = mgConc / 1000; // molar
+  const Mg = freeMagnesiumConcentration(mgConc / 1000, dntpConc / 1000);
   const Na = naConc / 1000; // molar
 
   if (Mg === 0) {
@@ -235,14 +314,16 @@ function owczarzyMg(
     // Na+ dominates — use Na correction
     return owczarzyNa(tmK, naConc, gcFraction);
   } else if (ratio < 6.0) {
-    // Mixed Na+/Mg2+ regime (Owczarzy 2008, eq. 16)
-    const a = 3.92e-5;
+    // Mixed Na+/Mg2+ regime (Owczarzy 2008, eqs. 16 and 18–20). The
+    // monovalent-dependent a, d and g terms are essential in this branch.
+    const ln_Na = Math.log(Na);
+    const a = 3.92e-5 * (0.843 - 0.352 * Math.sqrt(Na) * ln_Na);
     const b = -9.11e-6;
     const c = 6.26e-5;
-    const d = 1.42e-5;
+    const d = 1.42e-5 * (1.279 - 4.03e-3 * ln_Na - 8.03e-3 * ln_Na * ln_Na);
     const e = -4.82e-4;
     const f = 5.25e-4;
-    const g = 8.31e-5;
+    const g = 8.31e-5 * (0.486 - 0.258 * ln_Na + 5.25e-3 * ln_Na * ln_Na * ln_Na);
     const ln_Mg = Math.log(Mg);
     inv_Tm_corrected =
       1 / tmK +
@@ -251,14 +332,15 @@ function owczarzyMg(
       (1 / (2 * (seqLength - 1))) * (e + f * ln_Mg + g * ln_Mg * ln_Mg);
     return 1 / inv_Tm_corrected - 273.15;
   } else {
-    // Mg2+ dominates (Owczarzy 2008, eq. 7)
-    const a = 9.69e-5;
-    const b = -1.02e-5;
-    const c = 1.13e-4;
-    const d = -3.17e-5;
-    const e = -5.34e-4;
-    const f = 6.32e-4;
-    const g = 5.32e-5;
+    // Mg2+ dominates: use the constant Eq. 16 coefficients, as required by
+    // Owczarzy et al. 2008 once R >= 6.
+    const a = 3.92e-5;
+    const b = -9.11e-6;
+    const c = 6.26e-5;
+    const d = 1.42e-5;
+    const e = -4.82e-4;
+    const f = 5.25e-4;
+    const g = 8.31e-5;
     const ln_Mg = Math.log(Mg);
     inv_Tm_corrected =
       1 / tmK +
@@ -292,12 +374,13 @@ function santaluciaSaltCorrection(
   tmK: number,
   naConc: number,
   seqLength: number,
-  thermo?: { deltaH: number; deltaS: number; ctMolar: number },
+  thermo?: { deltaH: number; deltaS: number; ctMolar: number; selfComplementary?: boolean },
 ): number {
   if (thermo && seqLength > 1) {
     const lnNaMolar = Math.log(naConc / 1000); // [Na+] in mol/L
     const dsCorrected = thermo.deltaS + 0.368 * (seqLength - 1) * lnNaMolar;
-    const denom = dsCorrected + R * Math.log(thermo.ctMolar / 4);
+    const concentrationFactor = thermo.selfComplementary ? 1 : 4;
+    const denom = dsCorrected + R * Math.log(thermo.ctMolar / concentrationFactor);
     const tmKCorrected = thermo.deltaH / denom;
     if (Number.isFinite(tmKCorrected) && tmKCorrected > 0) {
       return tmKCorrected - 273.15;
@@ -328,13 +411,16 @@ export function saltCorrectedTm(
   gcFraction = 0.5,
   seqLength = 20,
   method: 'owczarzy' | 'santalucia' | 'wetmur' = 'owczarzy',
-  thermo?: { deltaH: number; deltaS: number; ctMolar: number },
+  thermo?: { deltaH: number; deltaS: number; ctMolar: number; selfComplementary?: boolean },
+  dntpConc = 0,
 ): number {
   if (!Number.isFinite(tmK) || tmK <= 0) throw new RangeError('Tm must be a finite temperature in Kelvin.');
   const naError = validateFiniteConcentration('Na+ concentration', naConc, 0, MAX_NA_CONCENTRATION_MILLIMOLAR, false);
   if (naError) throw new RangeError(naError);
   const mgError = validateFiniteConcentration('Mg2+ concentration', mgConc, 0, MAX_DIVALENT_CONCENTRATION_MILLIMOLAR, true);
   if (mgError) throw new RangeError(mgError);
+  const dntpError = validateFiniteConcentration('dNTP concentration', dntpConc, 0, MAX_DIVALENT_CONCENTRATION_MILLIMOLAR, true);
+  if (dntpError) throw new RangeError(dntpError);
   if (!Number.isFinite(gcFraction) || gcFraction < 0 || gcFraction > 1) {
     throw new RangeError('GC fraction must be finite and between 0 and 1.');
   }
@@ -350,7 +436,7 @@ export function saltCorrectedTm(
       return wetmurSaltCorrection(tmK, naConc);
     case 'owczarzy':
       if (mgConc > 0) {
-        return owczarzyMg(tmK, naConc, mgConc, gcFraction, seqLength);
+        return owczarzyMg(tmK, naConc, mgConc, dntpConc, gcFraction, seqLength);
       }
       return owczarzyNa(tmK, naConc, gcFraction);
     default:
@@ -430,9 +516,10 @@ export function calculateTm(seq: string, options?: TmOptions): TmResult {
   const primerConc = (options?.primerConcentration ?? 250) / 1e9; // nM → M
   const saltCorrMethod = options?.saltCorrection ?? 'owczarzy';
 
-  // Deduct dNTPs from free Mg2+ (dNTPs chelate Mg2+)
+  // Keep total Mg and dNTP concentrations separate. Owczarzy's complete
+  // equilibrium treatment is applied by the salt-correction decision tree;
+  // pre-subtracting here would make the dNTP >= Mg branch impossible.
   const dntpConc = options?.dntpConcentration ?? 0;
-  const freeMg = Math.max(0, mgConc - dntpConc);
 
   const fGC = gcFraction(upper);
 
@@ -461,8 +548,8 @@ export function calculateTm(seq: string, options?: TmOptions): TmResult {
     const tm = wallaceTm(upper);
     // Apply salt correction if non-standard conditions
     let correctedTm = tm;
-    if (naConc !== 1000 || freeMg > 0) {
-      correctedTm = saltCorrectedTm(tm + 273.15, naConc, freeMg, fGC, upper.length, saltCorrMethod);
+    if (naConc !== 1000 || mgConc > 0) {
+      correctedTm = saltCorrectedTm(tm + 273.15, naConc, mgConc, fGC, upper.length, saltCorrMethod, undefined, dntpConc);
     }
     return {
       tm: Math.round(correctedTm * 10) / 10,
@@ -478,8 +565,8 @@ export function calculateTm(seq: string, options?: TmOptions): TmResult {
   if (method === 'gc-adjusted') {
     const tm = gcAdjustedTm(upper);
     let correctedTm = tm;
-    if (naConc !== 1000 || freeMg > 0) {
-      correctedTm = saltCorrectedTm(tm + 273.15, naConc, freeMg, fGC, upper.length, saltCorrMethod);
+    if (naConc !== 1000 || mgConc > 0) {
+      correctedTm = saltCorrectedTm(tm + 273.15, naConc, mgConc, fGC, upper.length, saltCorrMethod, undefined, dntpConc);
     }
     return {
       tm: Math.round(correctedTm * 10) / 10,
@@ -493,24 +580,29 @@ export function calculateTm(seq: string, options?: TmOptions): TmResult {
   }
 
   // Nearest-neighbor (SantaLucia 1998)
-  const { deltaH, deltaS, deltaG37 } = duplexThermodynamics(upper);
+  const selfComplementary = options?.selfComplementary ?? upper === reverseComplement(upper);
+  const { deltaH, deltaS, deltaG37 } = duplexThermodynamicsWithOptions(upper, { selfComplementary });
 
   // Ct = total strand concentration
-  // For non-self-complementary oligos: Tm = dH / (dS + R * ln(Ct/4)) - 273.15
+  // For non-self-complementary oligos: Ct/4. A self-complementary duplex has
+  // a single strand species and uses Ct, with the SantaLucia symmetry entropy
+  // penalty included above.
   const Ct = primerConc;
-  const tmK = deltaH / (deltaS + R * Math.log(Ct / 4));
+  const concentrationFactor = selfComplementary ? 1 : 4;
+  const tmK = deltaH / (deltaS + R * Math.log(Ct / concentrationFactor));
   const tmC = tmK - 273.15;
 
   // Apply salt correction. The SantaLucia method needs the duplex ΔH/ΔS (and
   // Ct), which only exist here on the NN path — thread them through so its
   // entropy-based correction is unit-correct.
   let correctedTm = tmC;
-  if (naConc !== 1000 || freeMg > 0) {
-    correctedTm = saltCorrectedTm(tmK, naConc, freeMg, fGC, upper.length, saltCorrMethod, {
+  if (naConc !== 1000 || mgConc > 0) {
+    correctedTm = saltCorrectedTm(tmK, naConc, mgConc, fGC, upper.length, saltCorrMethod, {
       deltaH,
       deltaS,
       ctMolar: Ct,
-    });
+      selfComplementary,
+    }, dntpConc);
   }
 
   return {

@@ -43,12 +43,35 @@ if [[ -z "$NODE_BIN" ]]; then
   exit 1
 fi
 
-NODE_SUPPORTED="$("$NODE_BIN" -p 'const [major, minor] = process.versions.node.split(".").map(Number); Number(major >= 24 || (major === 22 && minor >= 13))' 2>/dev/null || true)"
+ENV_BIN="$(command -p -v env 2>/dev/null || true)"
+if [[ -z "$ENV_BIN" || "$ENV_BIN" != /* || ! -x "$ENV_BIN" ]]; then
+  echo "[motif-claude-science] A system env utility was not found." >&2
+  exit 1
+fi
+
+RUNTIME_ENV=(
+  "MOTIF_ROOT=$ROOT"
+  "MOTIF_NODE_BIN=$NODE_BIN"
+)
+for key in HOME PATH TMPDIR LANG LC_ALL SystemRoot SystemDrive WINDIR; do
+  value="${!key:-}"
+  if [[ -n "$value" ]]; then
+    RUNTIME_ENV+=("$key=$value")
+  fi
+done
+if [[ "${MOTIF_MCP_TRACE:-}" == "1" || "${MOTIF_MCP_TRACE:-}" == "true" ]]; then
+  RUNTIME_ENV+=("MOTIF_MCP_TRACE=${MOTIF_MCP_TRACE}")
+fi
+
+run_node_with_clean_environment() {
+  "$ENV_BIN" -i "${RUNTIME_ENV[@]}" "$NODE_BIN" "$@"
+}
+
+NODE_SUPPORTED="$(run_node_with_clean_environment -p 'const [major, minor] = process.versions.node.split(".").map(Number); Number(major >= 24 || (major === 22 && minor >= 13))' 2>/dev/null || true)"
 if [[ "$NODE_SUPPORTED" != "1" ]]; then
   echo "[motif-claude-science] Node.js 22.13 or newer (22.x) or 24 or newer is required." >&2
   exit 1
 fi
 
-export MOTIF_ROOT="$ROOT"
 cd "$ROOT"
-exec "$NODE_BIN" "$SERVER"
+exec "$ENV_BIN" -i "${RUNTIME_ENV[@]}" "$NODE_BIN" "$SERVER"

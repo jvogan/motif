@@ -57,7 +57,9 @@ To restore the previous configuration, use the backup named in the installer
 output (or the newest `.before-motif-local-*` backup):
 
 ```bash
-node rollback-motif-claude-science-release.mjs --bundle . --backup /path/to/local-mcp.json.before-motif-local-TIMESTAMP
+node rollback-motif-claude-science-release.mjs --bundle . \
+  --manifest-sha256-file /path/to/motif-for-claude-science-release.manifest.sha256 \
+  --backup /path/to/local-mcp.json.before-motif-local-TIMESTAMP
 ```
 
 ## 2. Obtain a source checkout (maintainer/developer fallback)
@@ -66,7 +68,7 @@ Use the latest published [Motif release](https://github.com/jvogan/motif/release
 or clone its tagged source into a fixed local folder:
 
 ```bash
-git clone --branch v0.3.3 --depth 1 https://github.com/jvogan/motif.git
+git clone --branch v0.3.4 --depth 1 https://github.com/jvogan/motif.git
 cd motif
 ```
 

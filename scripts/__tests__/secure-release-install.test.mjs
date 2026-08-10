@@ -17,6 +17,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { doctorRelease } from '../doctor-motif-claude-science-release.mjs';
+import { createDeterministicZipBuffer } from '../build-claude-science-artifact.mjs';
 import { formatInstallResult, installRelease } from '../install-motif-claude-science-release.mjs';
 import {
   RELEASE_MAX_BUNDLE_FILES,
@@ -25,6 +26,8 @@ import {
   RELEASE_MAX_DIRECTORY_NODES,
   RELEASE_MAX_TOTAL_BYTES,
   resolveReleaseBundleRoot,
+  parseReleaseArchive,
+  verifyReleaseArtifacts,
   verifyReleaseBundle,
 } from '../lib/motif-release-bundle.mjs';
 import { isDirectScriptExecution } from '../lib/direct-script.mjs';
@@ -181,6 +184,14 @@ describe('checksum-verified Motif release installation', () => {
     expect(readFileSync(configPath, 'utf8')).toBe(bytes);
   });
 
+  it('requires the external manifest digest for doctor, including --skip-config', () => {
+    const bundle = writeFixture();
+    expect(() => doctorRelease(['--bundle', bundle, '--skip-config']))
+      .toThrow(/Doctor requires an externally trusted release-manifest SHA-256/);
+    expect(doctorRelease(['--bundle', bundle, ...trustedManifestArgs(bundle), '--skip-config']))
+      .toMatchObject({ config: 'skipped', externalManifestDigestMatched: true });
+  });
+
   it('reports dry-run registration without claiming the configuration changed', () => {
     const bundle = writeFixture();
     const { configPath, bytes } = temporaryConfig({ servers: [] });
@@ -219,6 +230,7 @@ describe('checksum-verified Motif release installation', () => {
     expect(installed.servers.find((server) => server.name === 'motif-local').env.MOTIF_ROOT).toBe(realpathSync(bundle));
 
     const doctor = runReleaseCli(aliasBundle, 'doctor-motif-claude-science-release.mjs', [
+      ...trustedManifestArgs(bundle),
       '--config', configPath,
       '--node', process.execPath,
     ]);
@@ -237,6 +249,7 @@ describe('checksum-verified Motif release installation', () => {
 
     const rollback = runReleaseCli(aliasBundle, 'rollback-motif-claude-science-release.mjs', [
       '--bundle', aliasBundle,
+      ...trustedManifestArgs(bundle),
       '--config', configPath,
       '--dry-run',
     ]);
@@ -245,6 +258,7 @@ describe('checksum-verified Motif release installation', () => {
 
     const explicitDoctor = runReleaseCli(aliasBundle, 'doctor-motif-claude-science-release.mjs', [
       '--bundle', aliasBundle,
+      ...trustedManifestArgs(bundle),
       '--skip-config',
     ]);
     expect(explicitDoctor.status).toBe(0);
@@ -265,6 +279,105 @@ describe('checksum-verified Motif release installation', () => {
 
   it('rejects path traversal in release metadata', () => {
     expect(() => verifyReleaseBundle(writeFixture({ unsafePath: true }))).toThrow(/unsafe path/);
+  });
+
+  it('verifies the generated-style release ZIP and independent manifest digest asset', () => {
+    const bundle = writeFixture();
+    const archiveDirectory = mkdtempSync(join(tmpdir(), 'motif-release-archive-test-'));
+    temporaryDirectories.push(archiveDirectory);
+    const archivePath = join(archiveDirectory, 'motif-for-claude-science-release.zip');
+    writeFileSync(archivePath, createDeterministicZipBuffer(bundle));
+    const digestPath = trustedManifestFile(bundle);
+    const result = verifyReleaseArtifacts({
+      releaseDirectory: bundle,
+      archivePath,
+      manifestDigestPath: digestPath,
+      expectedVersion: '0.3.0',
+    });
+    expect(result.externalManifestDigestMatched).toBe(true);
+    expect(result.archiveEntries).toBeGreaterThan(5);
+    expect(result.archiveSha256).toMatch(/^[a-f0-9]{64}$/u);
+  });
+
+  it('parses archive paths without extraction and rejects unsafe or symlink entries', () => {
+    const sourceDirectory = mkdtempSync(join(tmpdir(), 'motif-release-archive-source-'));
+    const outputDirectory = mkdtempSync(join(tmpdir(), 'motif-release-archive-output-'));
+    temporaryDirectories.push(sourceDirectory, outputDirectory);
+    writeFileSync(join(sourceDirectory, 'safe.txt'), 'safe\n');
+    const valid = createDeterministicZipBuffer(sourceDirectory);
+    const unsafe = Buffer.from(valid);
+    const safeName = Buffer.from('safe.txt');
+    const unsafeName = Buffer.from('../x.txt');
+    let nameOffset = unsafe.indexOf(safeName);
+    while (nameOffset >= 0) {
+      unsafe.set(unsafeName, nameOffset);
+      nameOffset = unsafe.indexOf(safeName, nameOffset + unsafeName.length);
+    }
+    const unsafePath = join(outputDirectory, 'unsafe.zip');
+    writeFileSync(unsafePath, unsafe);
+    expect(() => parseReleaseArchive(unsafePath)).toThrow(/unsafe path/);
+
+    const symlink = Buffer.from(valid);
+    const centralOffset = symlink.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+    expect(centralOffset).toBeGreaterThanOrEqual(0);
+    symlink.writeUInt16LE(0x0314, centralOffset + 4);
+    symlink.writeUInt32LE(0xa0000000, centralOffset + 38);
+    const symlinkPath = join(outputDirectory, 'symlink.zip');
+    writeFileSync(symlinkPath, symlink);
+    expect(() => parseReleaseArchive(symlinkPath)).toThrow(/symbolic-link/);
+
+    const validPath = join(outputDirectory, 'valid.zip');
+    writeFileSync(validPath, valid);
+    expect(parseReleaseArchive(validPath).entries.map(({ name }) => name)).toEqual(['safe.txt']);
+    expect(() => parseReleaseArchive(validPath, { maxArchiveBytes: valid.length - 1 })).toThrow(/archive-size limit/);
+  });
+
+  it('requires canonical local metadata and contiguous ZIP layout', () => {
+    const sourceDirectory = mkdtempSync(join(tmpdir(), 'motif-release-archive-canonical-source-'));
+    const outputDirectory = mkdtempSync(join(tmpdir(), 'motif-release-archive-canonical-output-'));
+    temporaryDirectories.push(sourceDirectory, outputDirectory);
+    writeFileSync(join(sourceDirectory, 'safe.txt'), 'safe\n');
+    const valid = createDeterministicZipBuffer(sourceDirectory);
+    const localOffset = 0;
+    const centralOffset = valid.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+    const eocdOffset = valid.length - 22;
+    expect(centralOffset).toBeGreaterThan(localOffset);
+
+    const localCrcTampered = Buffer.from(valid);
+    localCrcTampered.writeUInt32LE(localCrcTampered.readUInt32LE(localOffset + 14) ^ 1, localOffset + 14);
+    const localCrcPath = join(outputDirectory, 'local-crc.zip');
+    writeFileSync(localCrcPath, localCrcTampered);
+    expect(() => parseReleaseArchive(localCrcPath)).toThrow(/local entry metadata is not canonical/);
+
+    const localSizeTampered = Buffer.from(valid);
+    localSizeTampered.writeUInt32LE(localSizeTampered.readUInt32LE(localOffset + 18) + 1, localOffset + 18);
+    const localSizePath = join(outputDirectory, 'local-size.zip');
+    writeFileSync(localSizePath, localSizeTampered);
+    expect(() => parseReleaseArchive(localSizePath)).toThrow(/local entry metadata is not canonical/);
+
+    const localExtraTampered = Buffer.from(valid);
+    localExtraTampered.writeUInt16LE(1, localOffset + 28);
+    const localExtraPath = join(outputDirectory, 'local-extra.zip');
+    writeFileSync(localExtraPath, localExtraTampered);
+    expect(() => parseReleaseArchive(localExtraPath)).toThrow(/local entry metadata is not canonical/);
+
+    const centralExtraTampered = Buffer.from(valid);
+    centralExtraTampered.writeUInt16LE(1, centralOffset + 30);
+    const centralExtraPath = join(outputDirectory, 'central-extra.zip');
+    writeFileSync(centralExtraPath, centralExtraTampered);
+    expect(() => parseReleaseArchive(centralExtraPath)).toThrow(/central (?:entry is truncated|extra fields and comments)/);
+
+    const gap = Buffer.concat([valid.subarray(0, centralOffset), Buffer.from([0]), valid.subarray(centralOffset)]);
+    gap.writeUInt32LE(centralOffset + 1, gap.length - 22 + 16);
+    const gapPath = join(outputDirectory, 'gap.zip');
+    writeFileSync(gapPath, gap);
+    expect(() => parseReleaseArchive(gapPath)).toThrow(/gap before the central directory/);
+
+    const comment = Buffer.concat([valid, Buffer.from('x')]);
+    comment.writeUInt16LE(1, eocdOffset + 20);
+    const commentPath = join(outputDirectory, 'comment.zip');
+    writeFileSync(commentPath, comment);
+    expect(() => parseReleaseArchive(commentPath)).toThrow(/comments are not supported/);
   });
 
   it('bounds unexpected release-file traversal before comparing the manifest', () => {
@@ -314,8 +427,9 @@ describe('checksum-verified Motif release installation', () => {
     const bundle = writeFixture();
     const { configPath, bytes } = temporaryConfig({ servers: [{ name: 'unrelated', command: '/private/unrelated', args: [] }] });
     const installed = installRelease(['--bundle', bundle, ...trustedManifestArgs(bundle), '--config', configPath, '--node', process.execPath]);
-    const rollback = rollbackRelease(['--bundle', bundle, '--config', configPath, '--backup', installed.backupPath]);
+    const rollback = rollbackRelease(['--bundle', bundle, ...trustedManifestArgs(bundle), '--config', configPath, '--backup', installed.backupPath]);
     expect(rollback.changed).toBe(true);
+    expect(rollback.externalManifestDigestMatched).toBe(true);
     expect(readFileSync(configPath, 'utf8')).toBe(bytes);
     expect(rollback.backupPath).toBeTruthy();
     expect(readFileSync(rollback.backupPath, 'utf8')).toContain('motif-local');
@@ -326,15 +440,25 @@ describe('checksum-verified Motif release installation', () => {
     const { configPath } = temporaryConfig({ servers: [] });
     const backupPath = join(dirname(configPath), `${basename(configPath)}.before-motif-local-test`);
     writeFileSync(backupPath, Buffer.alloc(MAX_LOCAL_MCP_CONFIG_BYTES + 1, 0x20));
-    expect(() => rollbackRelease(['--bundle', bundle, '--config', configPath, '--backup', backupPath]))
+    expect(() => rollbackRelease(['--bundle', bundle, ...trustedManifestArgs(bundle), '--config', configPath, '--backup', backupPath]))
       .toThrowError(expect.objectContaining({ code: 'config_too_large' }));
 
     const targetPath = join(dirname(configPath), 'rollback-target.json');
     writeFileSync(targetPath, '{"servers":[]}\n');
     rmSync(backupPath, { force: true });
     symlinkSync(targetPath, backupPath);
-    expect(() => rollbackRelease(['--bundle', bundle, '--config', configPath, '--backup', backupPath]))
+    expect(() => rollbackRelease(['--bundle', bundle, ...trustedManifestArgs(bundle), '--config', configPath, '--backup', backupPath]))
       .toThrow(/must not be a symbolic link/);
+  });
+
+  it('requires and checks the external manifest digest before rollback inspection', () => {
+    const bundle = writeFixture();
+    const { configPath, bytes } = temporaryConfig({ servers: [] });
+    expect(() => rollbackRelease(['--bundle', bundle, '--config', configPath]))
+      .toThrow(/Rollback requires an externally trusted release-manifest SHA-256/);
+    expect(() => rollbackRelease(['--bundle', bundle, '--manifest-sha256', '0'.repeat(64), '--config', configPath]))
+      .toThrow(/does not match the externally trusted SHA-256/);
+    expect(readFileSync(configPath, 'utf8')).toBe(bytes);
   });
 });
 

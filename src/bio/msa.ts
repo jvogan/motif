@@ -54,6 +54,7 @@ export function isMSAError<T>(r: T | MSAError): r is MSAError {
 
 // ===== Per-sequence length limit =====
 export const MSA_MAX_SEQ_LEN = 3000;
+export const MSA_MAX_SEQUENCES = 100;
 export const MSA_MAX_WORK_UNITS = 250_000_000;
 
 export type ComputeMSAOptions = {
@@ -74,13 +75,29 @@ function inferMolecule(sequences: readonly string[]): AlignmentMolecule | null {
   return protein ? 'protein' : null;
 }
 
-function estimateMsaWork(lengths: readonly number[]): number {
+export function estimateMsaWork(lengths: readonly number[]): number {
+  let totalLength = 0;
   let pairwise = 0;
-  for (let i = 0; i < lengths.length; i += 1) {
-    for (let j = i + 1; j < lengths.length; j += 1) pairwise += lengths[i] * lengths[j];
+  let maxLength = 0;
+  for (const length of lengths) {
+    if (!Number.isSafeInteger(length) || length < 0) return Number.POSITIVE_INFINITY;
+    if (length > maxLength) maxLength = length;
+    if (length > 0 && totalLength > Number.MAX_SAFE_INTEGER / length) return Number.POSITIVE_INFINITY;
+    const pairwiseIncrement = totalLength * length;
+    if (!Number.isSafeInteger(pairwiseIncrement)
+      || pairwise > Number.MAX_SAFE_INTEGER - pairwiseIncrement) {
+      return Number.POSITIVE_INFINITY;
+    }
+    pairwise += pairwiseIncrement;
+    if (totalLength > Number.MAX_SAFE_INTEGER - length) return Number.POSITIVE_INFINITY;
+    totalLength += length;
   }
-  const maxLength = Math.max(0, ...lengths);
-  const centerPass = lengths.reduce((sum, length) => sum + maxLength * length, 0) - maxLength * maxLength;
+  const nonCenterLength = totalLength - maxLength;
+  if (maxLength > 0 && nonCenterLength > Number.MAX_SAFE_INTEGER / maxLength) return Number.POSITIVE_INFINITY;
+  const centerPass = maxLength * nonCenterLength;
+  if (!Number.isSafeInteger(centerPass) || pairwise > Number.MAX_SAFE_INTEGER - centerPass) {
+    return Number.POSITIVE_INFINITY;
+  }
   return pairwise + Math.max(0, centerPass);
 }
 
@@ -260,6 +277,9 @@ export function computeMSA(
   if (!Array.isArray(sequences) || !Array.isArray(names)) {
     return msaError('invalid_input', 'MSA sequences and names must both be arrays.');
   }
+  if (sequences.length > MSA_MAX_SEQUENCES) {
+    return msaError('too_large', `MSA supports at most ${MSA_MAX_SEQUENCES} sequences.`);
+  }
   if (sequences.length < 2) {
     return msaError('insufficient_sequences', 'MSA requires at least 2 sequences.');
   }
@@ -312,7 +332,10 @@ export function computeMSA(
   }
 
   // Length guard
-  const maxLen = Math.max(...upper.map((s) => s.length));
+  let maxLen = 0;
+  for (const sequence of upper) {
+    if (sequence.length > maxLen) maxLen = sequence.length;
+  }
   if (maxLen > MSA_MAX_SEQ_LEN) {
     return msaError('too_large', `Sequences must be ≤ ${MSA_MAX_SEQ_LEN} characters for MSA (longest: ${maxLen} bp/aa).`);
   }
@@ -352,7 +375,14 @@ export function computeMSA(
     scores[sorted[Math.floor(n / 2)].i] = Infinity;
   }
 
-  const centerIdx = scores.indexOf(Math.max(...scores));
+  let centerIdx = 0;
+  let bestScore = Number.NEGATIVE_INFINITY;
+  for (let index = 0; index < scores.length; index += 1) {
+    if (scores[index] > bestScore) {
+      bestScore = scores[index];
+      centerIdx = index;
+    }
+  }
   const center = upper[centerIdx];
 
   // ── 2. Pairwise-align every sequence to center ────────────────────────────

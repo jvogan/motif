@@ -521,10 +521,26 @@ export function scanRestrictionSites(
           : issue?.code === 'methylation_context_unknown'
             ? 'methylation_context_unknown'
           : issue?.code === 'invalid_geometry' ? 'invalid_geometry' : 'ok';
-    if (issue) issues.push(issue);
-    const dedupeKey = `${enzyme.name}@${index}`;
+    // A single recognition window can match both strands when it contains
+    // ambiguity symbols.  The matching strand is not the physical identity of
+    // a cut: identical top/bottom coordinates describe one event, while a
+    // strand-specific asymmetric cutter can produce two distinct geometries at
+    // the same position.  Keep only truly identical physical outcomes.
+    const dedupeKey = JSON.stringify([
+      enzyme.name,
+      index,
+      status,
+      circularGeometry.cutPosition,
+      circularGeometry.topCutPosition,
+      circularGeometry.bottomCutPosition,
+      circularGeometry.overhangStart,
+      circularGeometry.overhangEnd,
+      circularGeometry.overhangLength,
+      circularGeometry.valid,
+    ]);
     if (seen.has(dedupeKey)) return;
     seen.add(dedupeKey);
+    if (issue) issues.push(issue);
     const site: RestrictionSite = {
       enzyme: enzyme.name,
       position: index,

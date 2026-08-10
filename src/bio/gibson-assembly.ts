@@ -1,5 +1,5 @@
 import type { Feature } from './types';
-import { meltingTemperature } from './gc-content';
+import { calculateTm, type TmOptions } from './tm-calculator';
 import {
   aliasRemovedProductCoordinates,
   emptySourceToProductMap,
@@ -18,13 +18,25 @@ export interface Overlap {
   sequence: string;
   length: number;
   tm: number;
+  /** Conditions and model used for the screening Tm (not a reaction claim). */
+  tmEvidence: GibsonOverlapTmEvidence;
   /** Position within seq1 where the overlap starts (= seq1.length - overlap.length) */
   position1: number;
   /** Position within seq2 where the overlap ends (= overlap.length) */
   position2: number;
 }
 
-export type OverlapSearchReason = 'none' | 'exact' | 'multiple_exact' | 'ambiguous_symbols';
+export interface GibsonOverlapTmEvidence {
+  method: 'nearest-neighbor' | 'wallace';
+  saltCorrection: 'owczarzy' | 'none';
+  naConcentrationMolar: number;
+  mgConcentrationMolar: number;
+  dntpConcentrationMolar: number;
+  strandConcentrationMolar: number;
+  assumption: string;
+}
+
+export type OverlapSearchReason = 'none' | 'exact' | 'multiple_exact' | 'ambiguous_symbols' | 'invalid_input';
 
 /** Complete overlap evidence, including alternatives that the legacy helper hid. */
 export interface OverlapSearchResult {
@@ -52,7 +64,75 @@ export interface GibsonResult {
 
 const DEFAULT_MIN_OVERLAP = 15;
 const DEFAULT_MAX_OVERLAP = 60;
+export const MIN_GIBSON_OVERLAP = 8;
+export const MAX_GIBSON_OVERLAP = 200;
+export const MAX_GIBSON_FRAGMENTS = 64;
+export const MAX_GIBSON_FRAGMENT_LENGTH = 500_000;
+export const MAX_GIBSON_TOTAL_INPUT_LENGTH = 1_000_000;
+export const MAX_GIBSON_WORK_UNITS = 2_000_000;
 const IDEAL_OVERLAP_TM = 50; // °C minimum recommended Tm
+const GIBSON_TM_OPTIONS: TmOptions = {
+  method: 'nearest-neighbor',
+  // Gibson mixes differ by formulation; these bounded conditions are an
+  // explicit screening convention, not a claim about any particular reagent.
+  naConcentration: 50,
+  mgConcentration: 0,
+  dntpConcentration: 0,
+  primerConcentration: 250,
+  saltCorrection: 'owczarzy',
+};
+const GIBSON_TM_EVIDENCE: GibsonOverlapTmEvidence = {
+  method: 'nearest-neighbor',
+  saltCorrection: 'owczarzy',
+  naConcentrationMolar: 50e-3,
+  mgConcentrationMolar: 0,
+  dntpConcentrationMolar: 0,
+  strandConcentrationMolar: 250e-9,
+  assumption: 'Screening-only 50 mM Na+, no explicitly modelled Mg2+/dNTPs, and 250 nM strand concentration; verify against the actual assembly mix.',
+};
+
+type NormalizedOverlapRange = { minOverlap: number; maxOverlap: number };
+
+function normalizeOverlapRange(
+  minOverlap: unknown,
+  maxOverlap: unknown,
+): NormalizedOverlapRange | null {
+  if (
+    typeof minOverlap !== 'number'
+    || typeof maxOverlap !== 'number'
+    || !Number.isSafeInteger(minOverlap)
+    || !Number.isSafeInteger(maxOverlap)
+    || minOverlap < MIN_GIBSON_OVERLAP
+    || maxOverlap > MAX_GIBSON_OVERLAP
+    || minOverlap > maxOverlap
+  ) return null;
+  return { minOverlap, maxOverlap };
+}
+
+function invalidOverlapSearch(): OverlapSearchResult {
+  return {
+    candidates: [],
+    maximalCandidates: [],
+    selected: null,
+    unique: false,
+    ambiguous: false,
+    reason: 'invalid_input',
+  };
+}
+
+function validGibsonFragments(fragments: unknown): fragments is GibsonFragment[] {
+  if (!Array.isArray(fragments) || fragments.length > MAX_GIBSON_FRAGMENTS) return false;
+  let totalLength = 0;
+  for (const rawFragment of fragments) {
+    if (!rawFragment || typeof rawFragment !== 'object') return false;
+    const fragment = rawFragment as { sequence?: unknown };
+    if (typeof fragment.sequence !== 'string') return false;
+    if (fragment.sequence.length > MAX_GIBSON_FRAGMENT_LENGTH) return false;
+    totalLength += fragment.sequence.length;
+    if (totalLength > MAX_GIBSON_TOTAL_INPUT_LENGTH) return false;
+  }
+  return true;
+}
 
 function fillFirstFragmentMap(map: SourceToProductCoordinateMap): void {
   for (let source = 0; source < map.sourceLength; source++) map.sourceToProduct[source] = source;
@@ -136,10 +216,19 @@ function iupacCompatible(left: string, right: string): boolean {
 }
 
 function makeOverlap(sequence: string, seq1Length: number): Overlap {
+  const tmResult = calculateTm(sequence, GIBSON_TM_OPTIONS);
+  const tmMethod: GibsonOverlapTmEvidence['method'] = tmResult.method.startsWith('nearest-neighbor')
+    ? 'nearest-neighbor'
+    : 'wallace';
   return {
     sequence,
     length: sequence.length,
-    tm: meltingTemperature(sequence) ?? 0,
+    tm: tmResult.status === 'exact' ? tmResult.tm : 0,
+    tmEvidence: {
+      ...GIBSON_TM_EVIDENCE,
+      method: tmMethod,
+      saltCorrection: tmMethod === 'nearest-neighbor' ? 'owczarzy' : 'none',
+    },
     position1: seq1Length - sequence.length,
     position2: sequence.length,
   };
@@ -156,12 +245,20 @@ export function analyzeOverlap(
   minOverlap = DEFAULT_MIN_OVERLAP,
   maxOverlap = DEFAULT_MAX_OVERLAP,
 ): OverlapSearchResult {
+  const range = normalizeOverlapRange(minOverlap, maxOverlap);
+  if (
+    !range
+    || typeof seq1 !== 'string'
+    || typeof seq2 !== 'string'
+    || seq1.length > MAX_GIBSON_FRAGMENT_LENGTH
+    || seq2.length > MAX_GIBSON_FRAGMENT_LENGTH
+  ) return invalidOverlapSearch();
   const upper1 = seq1.toUpperCase();
   const upper2 = seq2.toUpperCase();
-  const effectiveMax = Math.min(maxOverlap, upper1.length, upper2.length);
+  const effectiveMax = Math.min(range.maxOverlap, upper1.length, upper2.length);
   const candidates: Overlap[] = [];
   let plausibleAmbiguous = false;
-  for (let length = effectiveMax; length >= minOverlap; length -= 1) {
+  for (let length = effectiveMax; length >= range.minOverlap; length -= 1) {
     const tail = upper1.slice(upper1.length - length);
     const head = upper2.slice(0, length);
     if (tail === head && isUnambiguousDna(tail)) {
@@ -207,17 +304,60 @@ export function gibsonAssemble(
   maxOverlap = DEFAULT_MAX_OVERLAP,
   topology: 'linear' | 'circular' = 'linear',
 ): GibsonResult {
+  const range = normalizeOverlapRange(minOverlap, maxOverlap);
+  const safeTopology = topology === 'circular' ? 'circular' : 'linear';
   const errors: string[] = [];
   const warnings: string[] = [];
   const overlaps: Overlap[] = [];
   const overlapSearches: OverlapSearchResult[] = [];
+
+  if (!range) {
+    return {
+      sequence: '',
+      features: [],
+      overlaps,
+      topology: safeTopology,
+      success: false,
+      errors: [`Gibson overlap bounds must be safe integers from ${MIN_GIBSON_OVERLAP} to ${MAX_GIBSON_OVERLAP} bp with minimum no larger than maximum.`],
+      warnings,
+      overlapSearches,
+    };
+  }
+  if (!validGibsonFragments(fragments)) {
+    return {
+      sequence: '',
+      features: [],
+      overlaps,
+      topology: safeTopology,
+      success: false,
+      errors: [`Gibson assembly inputs must contain at most ${MAX_GIBSON_FRAGMENTS} fragments, each no longer than ${MAX_GIBSON_FRAGMENT_LENGTH.toLocaleString()} bp and ${MAX_GIBSON_TOTAL_INPUT_LENGTH.toLocaleString()} bp in total.`],
+      warnings,
+      overlapSearches,
+    };
+  }
+  const totalInputLength = fragments.reduce((sum, fragment) => sum + fragment.sequence.length, 0);
+  const workUnits = totalInputLength + (fragments.length + (safeTopology === 'circular' ? 1 : 0)) * range.maxOverlap;
+  if (workUnits > MAX_GIBSON_WORK_UNITS) {
+    return {
+      sequence: '',
+      features: [],
+      overlaps,
+      topology: safeTopology,
+      success: false,
+      errors: [`Gibson assembly input work exceeds the ${MAX_GIBSON_WORK_UNITS.toLocaleString()}-unit safety limit.`],
+      warnings,
+      overlapSearches,
+    };
+  }
+  minOverlap = range.minOverlap;
+  maxOverlap = range.maxOverlap;
 
   if (fragments.length < 2) {
     return {
       sequence: '',
       features: [],
       overlaps: [],
-      topology,
+      topology: safeTopology,
       success: false,
       errors: ['Gibson Assembly requires at least 2 fragments'],
       warnings: [],
@@ -255,6 +395,7 @@ export function gibsonAssemble(
         sequence: '',
         length: 0,
         tm: 0,
+        tmEvidence: { ...GIBSON_TM_EVIDENCE, saltCorrection: 'none' },
         position1: a.sequence.length,
         position2: 0,
       });
@@ -278,7 +419,7 @@ export function gibsonAssemble(
   // The seam must be checked explicitly: otherwise a cyclic fragment set can
   // become a linear product carrying the closing overlap twice.
   let closingOverlap: Overlap | null = null;
-  if (topology === 'circular' && fragments.length >= 2) {
+  if (safeTopology === 'circular' && fragments.length >= 2) {
     const last = fragments[fragments.length - 1];
     const first = fragments[0];
     const closingSearch = analyzeOverlap(last.sequence, first.sequence, minOverlap, maxOverlap);
@@ -320,7 +461,7 @@ export function gibsonAssemble(
   }
 
   if (errors.length > 0) {
-    return { sequence: '', features: [], overlaps, topology, success: false, errors, warnings, overlapSearches };
+    return { sequence: '', features: [], overlaps, topology: safeTopology, success: false, errors, warnings, overlapSearches };
   }
 
   // Assemble: start with the first fragment, then append each fragment after
@@ -370,14 +511,14 @@ export function gibsonAssemble(
   // and annotate the seam (which physically sits at [0, len) on the product).
   const preClosureLength = sequence.length;
   let productLength = preClosureLength;
-  if (topology === 'circular' && closingOverlap && closingOverlap.length > 0) {
+  if (safeTopology === 'circular' && closingOverlap && closingOverlap.length > 0) {
     productLength = Math.max(0, sequence.length - closingOverlap.length);
     if (productLength === 0) {
       return {
         sequence: '',
         features: [],
         overlaps,
-        topology,
+        topology: safeTopology,
         success: false,
         errors: ['Circular Gibson assembly closing overlap consumes the entire assembled product; at least one non-overlap base is required.'],
         warnings,
@@ -397,7 +538,7 @@ export function gibsonAssemble(
     const mapped = mapFeatureThroughSourceCoordinates(junction, finalProductMap);
     return mapped ? [mapped] : [];
   });
-  const closingJunction = topology === 'circular' && closingOverlap
+  const closingJunction = safeTopology === 'circular' && closingOverlap
     ? closingJunctionFeature(
       fragments[fragments.length - 1].name,
       fragments[0].name,
@@ -411,7 +552,7 @@ export function gibsonAssemble(
     sequence,
     features: [...sourceFeatures, ...productFeatures],
     overlaps,
-    topology,
+    topology: safeTopology,
     success: true,
     errors: [],
     warnings,
@@ -431,6 +572,8 @@ export function validateOverlaps(
   minOverlap = DEFAULT_MIN_OVERLAP,
   maxOverlap = DEFAULT_MAX_OVERLAP,
 ): Array<{ pair: string; overlap: Overlap | null; valid: boolean; issues: string[] }> {
+  const range = normalizeOverlapRange(minOverlap, maxOverlap);
+  if (!range || !validGibsonFragments(fragments)) return [];
   const results: Array<{ pair: string; overlap: Overlap | null; valid: boolean; issues: string[] }> = [];
 
   for (let i = 0; i < fragments.length - 1; i++) {

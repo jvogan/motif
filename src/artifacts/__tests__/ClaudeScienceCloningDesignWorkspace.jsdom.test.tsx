@@ -344,7 +344,7 @@ describe('ClaudeScienceCloningDesignWorkspace', () => {
     expect(screen.getByTestId('cloning-design-plan-status').dataset.state).toBe('ready');
     expect(screen.getByTestId('cloning-design-product-preview').textContent).toContain('Left arm');
     expect(screen.getByTestId('cloning-design-product-preview').textContent).toContain('Right arm');
-    expect(within(screen.getByTestId('gibson-junction-lanes')).getByText('20 bp · 64.0 °C')).toBeTruthy();
+    expect(within(screen.getByTestId('gibson-junction-lanes')).getByText('20 bp · 58.7 °C')).toBeTruthy();
 
     await user.clear(screen.getByRole('textbox', { name: 'Design Name' }));
     await user.type(screen.getByRole('textbox', { name: 'Design Name' }), 'Reporter assembly');

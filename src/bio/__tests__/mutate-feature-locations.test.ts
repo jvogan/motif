@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { extractFeatureSequence, isMultipartFeature } from '../feature-location';
-import { applyDeletion, applyInsertion, applySubstitution } from '../mutate';
+import {
+  applyDeletion,
+  applyInsertion,
+  applySubstitution,
+  MAX_MUTATION_INSERTION_LENGTH,
+  MAX_MUTATION_OPERATION_UNITS,
+  MAX_MUTATION_RESULT_LENGTH,
+} from '../mutate';
 import type { Feature } from '../types';
 
 function joinedFeature(): Feature {
@@ -36,6 +43,20 @@ describe('mutation feature-location integrity', () => {
     expect(() => applyDeletion('ATGC', [], [], 1, 1.5)).toThrow(/count.*safe integer/i);
     expect(() => applyDeletion('ATGC', [], [], 1, Number.NaN)).toThrow(/count.*safe integer/i);
     expect(applyInsertion('ATGC', [], [], -1, 'AA').raw).toBe('AAATGC');
+  });
+
+  it('bounds nucleotide insertion alphabet, size, and work before allocating derived state', () => {
+    expect(applyInsertion('ATGC', [], [], 1, 'ac').raw).toBe('ATACGC');
+    expect(() => applyInsertion('ATGC', [], [], 1, 'X')).toThrow(/declared dna alphabet/i);
+    expect(applyInsertion('MKW', [], [], 1, 'X*', 'protein').raw).toBe('MKX*W');
+    expect(applyInsertion('ACGU', [], [], 1, 'R', 'rna').raw).toBe('ACRGU');
+    expect(() => applyInsertion('MKW', [], [], 1, 'X*', 'dna')).toThrow(/declared dna alphabet/i);
+    expect(() => applyInsertion('ATGC', [], [], 1, 'A'.repeat(MAX_MUTATION_INSERTION_LENGTH + 1)))
+      .toThrow(/cannot exceed/i);
+    expect(() => applyInsertion('A'.repeat(MAX_MUTATION_RESULT_LENGTH), [], [], 0, 'A'))
+      .toThrow(/result limit/i);
+    expect(() => applyInsertion('A', new Array(MAX_MUTATION_OPERATION_UNITS), [], 0, 'A'))
+      .toThrow(/operation budget/i);
   });
 
   it('uses half-open feature affinity at insertion boundaries', () => {

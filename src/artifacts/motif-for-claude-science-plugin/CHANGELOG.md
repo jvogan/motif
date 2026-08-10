@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.4 — 2026-08-09
+
+- Tightened connector, workspace, MSA, export, path, and provenance validation
+  across packaged workflows.
+- Refreshed reviewed dependencies and exact release-policy metadata while
+  preserving bounded, reproducible packaging.
+- Corrected primer, PCR, Gibson, thermodynamic, molecular-mass, restriction,
+  custom-enzyme, and Loop Assembly edge cases with typed receipts and bounds.
+- Added bounded MSA, gel, mutation, primer-structure, cross-dimer, and PCR scan
+  work with typed incomplete-result diagnostics.
+- Added external-digest install, doctor, and rollback verification, canonical
+  release-ZIP verification, and release-tag reuse protection.
+
 ## 0.3.3 — 2026-08-08
 
 - Made checkpoint exports provably restorable and clarified active-record and

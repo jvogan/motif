@@ -1,6 +1,6 @@
 # Motif + Claude Science integration
 
-Last reviewed: August 8, 2026. Connector version: `0.3.3`.
+Last reviewed: August 9, 2026. Connector version: `0.3.4`.
 
 This is the maintainer and technical reference for the Motif-owned local
 connector. End users should start with the
@@ -88,8 +88,9 @@ node doctor-motif-claude-science-release.mjs --bundle . \
 
 This path does not require `npm`, `npm ci`, or access to the source checkout.
 Use the private backup printed by the installer with
-`rollback-motif-claude-science-release.mjs` if a restore is needed. The
-installer only changes the `motif-local` entry and preserves unrelated config.
+`rollback-motif-claude-science-release.mjs` with the same separately downloaded
+manifest checksum if a restore is needed. The installer only changes the
+`motif-local` entry and preserves unrelated config.
 
 The installer updates only the `motif-local` entry in:
 

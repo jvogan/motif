@@ -3,6 +3,7 @@ import {
   MAX_GEL_FRAGMENTS_PER_LANE,
   MAX_GEL_LABEL_LENGTH,
   MAX_GEL_SAMPLE_LANES,
+  MAX_GEL_TOTAL_FRAGMENTS,
   simulateGel,
 } from '../gel-simulation';
 import { molecularWeight } from '../gc-content';
@@ -41,6 +42,26 @@ describe('ancillary bio helper integrity', () => {
       name: 'sample',
       fragments: Array.from({ length: MAX_GEL_FRAGMENTS_PER_LANE + 1 }, () => 1000),
     }])).toThrow(/fragments cannot contain/i);
+  });
+
+  it('keeps duplicate-band intensity exact and handles dense lanes without rescanning each size', () => {
+    const exact = simulateGel([{
+      name: 'sample',
+      fragments: [1000, 1000, 1000, 500],
+    }], { width: 2, height: 1 });
+    expect(exact.bands).toMatchObject([
+      { size: 1000, lane: 1, intensity: 1 },
+      { size: 500, lane: 1, intensity: 0.8 },
+    ]);
+
+    const dense = simulateGel(Array.from({ length: 8 }, (_value, lane) => ({
+      name: `lane-${lane}`,
+      fragments: Array.from(
+        { length: MAX_GEL_FRAGMENTS_PER_LANE },
+        (_fragment, index) => lane * MAX_GEL_FRAGMENTS_PER_LANE + index + 1,
+      ),
+    })), { width: 2, height: 1 });
+    expect(dense.bands).toHaveLength(MAX_GEL_TOTAL_FRAGMENTS);
   });
 
   it('rejects fractional and negative variant coordinates instead of flooring them', () => {

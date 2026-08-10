@@ -1,15 +1,21 @@
 import { createHash } from 'node:crypto';
 import {
   existsSync,
+  closeSync,
   lstatSync,
   opendirSync,
+  openSync,
   readFileSync,
   realpathSync,
+  readSync,
 } from 'node:fs';
+import { TextDecoder } from 'node:util';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 
 export const RELEASE_MANIFEST_FILENAME = 'release-manifest.json';
 export const RELEASE_CHECKSUM_FILENAME = 'motif-for-claude-science-release.checksums.json';
+export const RELEASE_ARCHIVE_FILENAME = 'motif-for-claude-science-release.zip';
+export const RELEASE_MANIFEST_DIGEST_FILENAME = 'motif-for-claude-science-release.manifest.sha256';
 export const RELEASE_PRODUCT = 'Motif for Claude Science';
 export const RELEASE_CONNECTOR_NAME = 'motif-local';
 export const RELEASE_MAX_FILES = 128;
@@ -26,6 +32,7 @@ export const RELEASE_MAX_BUNDLE_ENTRIES = RELEASE_MAX_BUNDLE_FILES + RELEASE_MAX
 export const RELEASE_MAX_FILE_BYTES = 64 * 1024 * 1024;
 export const RELEASE_MAX_TOTAL_BYTES = 128 * 1024 * 1024;
 export const RELEASE_MAX_TRUSTED_DIGEST_FILE_BYTES = 512;
+export const RELEASE_MAX_ARCHIVE_BYTES = 64 * 1024 * 1024;
 
 /**
  * Resolve the bundle root for a release helper. Source helpers live in the
@@ -58,6 +65,188 @@ export function readTrustedManifestDigest(digestPath) {
   const match = line.match(/^([a-f0-9]{64})(?:\s+\*?release-manifest\.json)?$/iu);
   if (!match) throw new Error('Trusted release-manifest checksum file has an invalid format');
   return normalizeTrustedManifestDigest(match[1]);
+}
+
+const ZIP_LOCAL_HEADER_SIGNATURE = 0x04034b50;
+const ZIP_CENTRAL_HEADER_SIGNATURE = 0x02014b50;
+const ZIP_END_SIGNATURE = 0x06054b50;
+const ZIP_UTF8_FLAG = 0x0800;
+const ZIP_STORE_METHOD = 0;
+const ZIP_MAX_COMMENT_BYTES = 0xffff;
+
+function crc32(bytes) {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function readBoundedArchiveFile(archivePath, maxBytes) {
+  const path = resolve(archivePath);
+  if (!existsSync(path)) throw new Error('Release ZIP does not exist: ' + path);
+  const stat = lstatSync(path);
+  if (stat.isSymbolicLink() || !stat.isFile()) throw new Error('Release ZIP must be a regular file');
+  if (stat.size > maxBytes) throw new Error('Release ZIP exceeds the archive-size limit');
+  const descriptor = openSync(path, 'r');
+  try {
+    const buffer = Buffer.allocUnsafe(maxBytes + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const count = readSync(descriptor, buffer, length, buffer.length - length, null);
+      if (count === 0) break;
+      length += count;
+    }
+    if (length > maxBytes) throw new Error('Release ZIP exceeds the archive-size limit');
+    return buffer.subarray(0, length);
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+function decodeZipName(bytes) {
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    throw new Error('Release ZIP entry name is not valid UTF-8');
+  }
+}
+
+function parseReleaseArchiveBytes(archive) {
+  if (archive.length < 22) throw new Error('Release ZIP is truncated');
+  const minimumEndOffset = Math.max(0, archive.length - (ZIP_MAX_COMMENT_BYTES + 22));
+  let endOffset = -1;
+  for (let offset = archive.length - 22; offset >= minimumEndOffset; offset -= 1) {
+    if (archive.readUInt32LE(offset) !== ZIP_END_SIGNATURE) continue;
+    const commentLength = archive.readUInt16LE(offset + 20);
+    if (offset + 22 + commentLength === archive.length) {
+      if (commentLength !== 0) throw new Error('Release ZIP comments are not supported');
+      endOffset = offset;
+      break;
+    }
+  }
+  if (endOffset < 0) throw new Error('Release ZIP has no valid end record');
+
+  const diskNumber = archive.readUInt16LE(endOffset + 4);
+  const centralDisk = archive.readUInt16LE(endOffset + 6);
+  const entriesOnDisk = archive.readUInt16LE(endOffset + 8);
+  const entryCount = archive.readUInt16LE(endOffset + 10);
+  const centralSize = archive.readUInt32LE(endOffset + 12);
+  const centralOffset = archive.readUInt32LE(endOffset + 16);
+  if (diskNumber !== 0 || centralDisk !== 0 || entriesOnDisk !== entryCount) {
+    throw new Error('Release ZIP multi-disk archives are not supported');
+  }
+  if (entryCount === 0xffff || centralSize === 0xffffffff || centralOffset === 0xffffffff) {
+    throw new Error('Release ZIP64 archives are not supported');
+  }
+  if (entryCount > RELEASE_MAX_BUNDLE_FILES) {
+    throw new Error('Release ZIP entry count exceeds the supported limit');
+  }
+  if (centralOffset + centralSize !== endOffset || centralOffset > archive.length) {
+    throw new Error('Release ZIP central directory is outside the archive');
+  }
+
+  const entries = [];
+  const byName = new Map();
+  const regions = [];
+  let centralCursor = centralOffset;
+  let totalBytes = 0;
+  for (let index = 0; index < entryCount; index += 1) {
+    if (centralCursor + 46 > endOffset || archive.readUInt32LE(centralCursor) !== ZIP_CENTRAL_HEADER_SIGNATURE) {
+      throw new Error('Release ZIP central directory is truncated');
+    }
+    const madeBy = archive.readUInt16LE(centralCursor + 4);
+    const flags = archive.readUInt16LE(centralCursor + 8);
+    const method = archive.readUInt16LE(centralCursor + 10);
+    const checksum = archive.readUInt32LE(centralCursor + 16);
+    const compressedSize = archive.readUInt32LE(centralCursor + 20);
+    const uncompressedSize = archive.readUInt32LE(centralCursor + 24);
+    const nameLength = archive.readUInt16LE(centralCursor + 28);
+    const extraLength = archive.readUInt16LE(centralCursor + 30);
+    const commentLength = archive.readUInt16LE(centralCursor + 32);
+    const externalAttributes = archive.readUInt32LE(centralCursor + 38);
+    const localOffset = archive.readUInt32LE(centralCursor + 42);
+    const nameStart = centralCursor + 46;
+    const nameEnd = nameStart + nameLength;
+    const centralEnd = nameEnd + extraLength + commentLength;
+    if (centralEnd > endOffset) throw new Error('Release ZIP central entry is truncated');
+    if (extraLength !== 0 || commentLength !== 0) throw new Error('Release ZIP central extra fields and comments are not supported');
+    if ((flags & ~ZIP_UTF8_FLAG) !== 0 || (flags & ZIP_UTF8_FLAG) === 0) {
+      throw new Error('Release ZIP entry uses unsupported flags');
+    }
+    if (method !== ZIP_STORE_METHOD || compressedSize !== uncompressedSize) {
+      throw new Error('Release ZIP entry is not an uncompressed stored file');
+    }
+    if (compressedSize > RELEASE_MAX_FILE_BYTES) throw new Error('Release ZIP entry exceeds the file-size limit');
+    totalBytes += uncompressedSize;
+    if (totalBytes > RELEASE_MAX_TOTAL_BYTES) throw new Error('Release ZIP exceeds the total size limit');
+    const nameBytes = archive.subarray(nameStart, nameEnd);
+    const name = safeRelativePath(decodeZipName(nameBytes), 'Release ZIP entry path');
+    if (byName.has(name)) throw new Error('Release ZIP contains a duplicate entry: ' + name);
+    if (name.endsWith('/') || (externalAttributes & 0x10) !== 0 || (((madeBy >>> 8) & 0xff) === 3 && (externalAttributes >>> 28) === 0x0a)) {
+      throw new Error('Release ZIP contains a directory or symbolic-link entry: ' + name);
+    }
+    if (localOffset >= centralOffset || localOffset + 30 > centralOffset || archive.readUInt32LE(localOffset) !== ZIP_LOCAL_HEADER_SIGNATURE) {
+      throw new Error('Release ZIP local entry offset is invalid: ' + name);
+    }
+    const localChecksum = archive.readUInt32LE(localOffset + 14);
+    const localCompressedSize = archive.readUInt32LE(localOffset + 18);
+    const localUncompressedSize = archive.readUInt32LE(localOffset + 22);
+    const localFlags = archive.readUInt16LE(localOffset + 6);
+    const localMethod = archive.readUInt16LE(localOffset + 8);
+    const localNameLength = archive.readUInt16LE(localOffset + 26);
+    const localExtraLength = archive.readUInt16LE(localOffset + 28);
+    const localNameStart = localOffset + 30;
+    const localNameEnd = localNameStart + localNameLength;
+    const dataStart = localNameEnd + localExtraLength;
+    const dataEnd = dataStart + compressedSize;
+    if (localFlags !== flags || localMethod !== method || localChecksum !== checksum || localCompressedSize !== compressedSize || localUncompressedSize !== uncompressedSize || localExtraLength !== 0 || localNameEnd > centralOffset || dataStart > centralOffset || dataEnd > centralOffset) {
+      throw new Error('Release ZIP local entry metadata is not canonical: ' + name);
+    }
+    if (!archive.subarray(localNameStart, localNameEnd).equals(nameBytes)) {
+      throw new Error('Release ZIP local and central entry names differ: ' + name);
+    }
+    const data = archive.subarray(dataStart, dataEnd);
+    if (crc32(data) !== checksum) throw new Error('Release ZIP entry checksum mismatch: ' + name);
+    regions.push({ start: localOffset, end: dataEnd, name });
+    const entry = { name, data, checksum };
+    entries.push(entry);
+    byName.set(name, entry);
+    centralCursor = centralEnd;
+  }
+  if (centralCursor !== endOffset) throw new Error('Release ZIP contains an unexpected central-directory entry');
+  regions.sort((left, right) => left.start - right.start);
+  if (regions.length === 0) {
+    if (centralOffset !== 0) throw new Error('Release ZIP has a gap before the central directory');
+  } else {
+    if (regions[0].start !== 0) throw new Error('Release ZIP has a gap before the first local entry');
+    for (let index = 1; index < regions.length; index += 1) {
+      if (regions[index].start !== regions[index - 1].end) {
+        throw new Error('Release ZIP local entries are not contiguous');
+      }
+    }
+    if (regions.at(-1).end !== centralOffset) throw new Error('Release ZIP has a gap before the central directory');
+  }
+  return { entries, byName };
+}
+
+/**
+ * Parse only deterministic, stored ZIP entries. No archive extraction is
+ * performed: every path, offset, size, checksum, and file type is validated
+ * while the bounded archive bytes remain in memory.
+ */
+export function parseReleaseArchive(archivePath, { maxArchiveBytes = RELEASE_MAX_ARCHIVE_BYTES } = {}) {
+  if (!Number.isSafeInteger(maxArchiveBytes) || maxArchiveBytes < 22 || maxArchiveBytes > RELEASE_MAX_ARCHIVE_BYTES) throw new Error('Release ZIP archive-size limit is invalid');
+  const archive = readBoundedArchiveFile(archivePath, maxArchiveBytes);
+  const parsed = parseReleaseArchiveBytes(archive);
+  return {
+    ...parsed,
+    archiveBytes: archive.length,
+    archiveSha256: sha256(archive),
+  };
 }
 
 function canonicalRoot(bundlePath) {
@@ -239,5 +428,63 @@ export function verifyReleaseBundle(bundlePath, { expectedVersion = null, expect
     manifestSha256,
     externalManifestDigestMatched: trustedManifestSha256 !== null,
     paths: { launcher: launcherPath, server: serverPath, app: appPath, template: templatePath },
+  };
+}
+
+export function verifyReleaseArchive(archivePath, {
+  releaseDirectory,
+  expectedVersion = null,
+  expectedManifestSha256 = null,
+  maxArchiveBytes = RELEASE_MAX_ARCHIVE_BYTES,
+} = {}) {
+  if (!releaseDirectory) throw new Error('Release ZIP verification requires the extracted release bundle');
+  const verified = verifyReleaseBundle(releaseDirectory, { expectedVersion, expectedManifestSha256 });
+  const archive = parseReleaseArchive(archivePath, { maxArchiveBytes });
+  const expectedFiles = [
+    ...Object.keys(verified.checksums.files),
+    RELEASE_MANIFEST_FILENAME,
+    RELEASE_CHECKSUM_FILENAME,
+  ].sort((left, right) => left.localeCompare(right));
+  const actualFiles = archive.entries.map(({ name }) => name).sort((left, right) => left.localeCompare(right));
+  if (JSON.stringify(actualFiles) !== JSON.stringify(expectedFiles)) {
+    throw new Error('Release ZIP contains an unexpected or missing file');
+  }
+  for (const relativePath of expectedFiles) {
+    const entry = archive.byName.get(relativePath);
+    if (!entry) throw new Error('Release ZIP is missing ' + relativePath);
+    const expectedDigest = relativePath === RELEASE_MANIFEST_FILENAME
+      ? verified.manifestSha256
+      : relativePath === RELEASE_CHECKSUM_FILENAME
+        ? verified.manifest.checksumsSha256
+        : verified.checksums.files[relativePath];
+    if (sha256(entry.data) !== expectedDigest) throw new Error('Release ZIP checksum mismatch: ' + relativePath);
+  }
+  return {
+    ...verified,
+    archiveBytes: archive.archiveBytes,
+    archiveEntries: archive.entries.length,
+    archiveSha256: archive.archiveSha256,
+  };
+}
+
+export function verifyReleaseArtifacts({
+  releaseDirectory,
+  archivePath,
+  manifestDigestPath,
+  expectedVersion = null,
+  maxArchiveBytes = RELEASE_MAX_ARCHIVE_BYTES,
+} = {}) {
+  if (!manifestDigestPath) throw new Error('Release verification requires an external manifest digest asset');
+  const externalManifestDigest = readTrustedManifestDigest(manifestDigestPath);
+  const verified = verifyReleaseArchive(archivePath, {
+    releaseDirectory,
+    expectedVersion,
+    expectedManifestSha256: externalManifestDigest,
+    maxArchiveBytes,
+  });
+  return {
+    ...verified,
+    externalManifestDigest,
+    externalManifestDigestMatched: true,
   };
 }

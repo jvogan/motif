@@ -38,11 +38,12 @@ function parseArgs(args) {
 
 export function doctorRelease(args = process.argv.slice(2), environment = process.env) {
   const options = parseArgs(args);
-  if (options.help) return { help: 'node doctor-motif-claude-science-release.mjs [--bundle <directory>] [--manifest-sha256-file <path>] [--config <path>] [--skip-config]\n' };
+  if (options.help) return { help: 'node doctor-motif-claude-science-release.mjs --manifest-sha256-file <path> [--bundle <directory>] [--config <path>] [--skip-config]\nnode doctor-motif-claude-science-release.mjs --bundle <directory> --manifest-sha256 <digest> [--config <path>] [--skip-config]\n' };
   if (options.manifestSha256 && options.manifestSha256File) throw new Error('Choose either --manifest-sha256 or --manifest-sha256-file, not both');
   const expectedManifestSha256 = options.manifestSha256File
     ? readTrustedManifestDigest(options.manifestSha256File)
     : options.manifestSha256;
+  if (!expectedManifestSha256) throw new Error('Doctor requires an externally trusted release-manifest SHA-256');
   const verified = verifyReleaseBundle(options.bundle, { expectedManifestSha256 });
   const nodeBinary = resolveNodeBinary({
     environment: options.node ? { ...environment, MOTIF_NODE_BIN: options.node } : environment,
@@ -61,7 +62,7 @@ if (isDirectScriptExecution(process.argv[1], fileURLToPath(import.meta.url))) {
   try {
     const result = doctorRelease();
     if (result.help) process.stdout.write(result.help);
-    else process.stdout.write(`Motif bundle integrity verified: v${result.version} (${result.runtimeBuildId.slice(0, 12)}). ${result.externalManifestDigestMatched ? 'External manifest digest matched.' : 'No external manifest digest was supplied.'} ${result.config === 'skipped' ? 'Configuration check skipped.' : 'motif-local registration matches.'}\n`);
+    else process.stdout.write('Motif bundle integrity verified: v' + result.version + ' (' + result.runtimeBuildId.slice(0, 12) + '). External manifest digest matched. ' + (result.config === 'skipped' ? 'Configuration check skipped.' : 'motif-local registration matches.') + '\n');
   } catch (error) {
     process.stderr.write(`Motif release doctor failed: ${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = 1;

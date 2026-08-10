@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+## 0.3.4 — 2026-08-09
+
+- Tightened checkpoint restoration, portable export receipts, MCP payload
+  validation, and sparse or invalid data handling so unsupported states fail
+  clearly before serialization or materialization.
+- Aligned coordinate, path, provenance, and sequence-helper validation while
+  strengthening map-label geometry and other bounded workflows.
+- Updated the reviewed React, Node type, Vite/Vitest, accessibility, and
+  Playwright toolchain; refreshed exact lifecycle metadata and retained bounded
+  cooling-off checks for established registry packages.
+- Corrected SapI and XhoI primer-tail metadata, PCR provenance and overlapping
+  edit handling, and fail-closed primer/Gibson parameter limits.
+- Completed the salt-aware nearest-neighbor decision model, terminal and
+  self-complementary handling, explicit single-strand DNA mass chemistry, and
+  condition-stamped Gibson overlap estimates.
+- Preserved custom-enzyme cleavage and methylation semantics through portable
+  checkpoints, retained distinct restriction geometries, and completed the
+  Loop Assembly upper-level contract without inventing unspecified sites.
+- Bounded MSA, gel, mutation, primer-structure, cross-dimer, and automatic PCR
+  scan work at the core API with explicit incomplete-result diagnostics.
+- Required the external manifest digest for install, doctor, and rollback;
+  verified the canonical release ZIP; and prevented published-version reuse.
+
 ## 0.3.3 — 2026-08-08
 
 - Made Database JSON and workspace ZIP checkpoints provably restorable,

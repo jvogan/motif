@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { chmodSync, cpSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -36,5 +36,56 @@ describe('connector launcher', () => {
     });
     expect(result.status).toBe(0);
     expect(result.stdout.trim()).toBe(join(realpathSync(bundle), 'dist-motif', 'claude-science', 'motif-mcp-server.mjs'));
+  });
+
+  it('clears injected Node, proxy, agent, and credential variables before probing and execution', () => {
+    const bundle = mkdtempSync(join(tmpdir(), 'motif connector env '));
+    temporaryDirectories.push(bundle);
+    mkdirSync(join(bundle, 'scripts'), { recursive: true });
+    mkdirSync(join(bundle, 'dist-motif', 'claude-science'), { recursive: true });
+    const launcher = join(bundle, 'scripts', 'run-motif-claude-science-mcp.sh');
+    const server = join(bundle, 'dist-motif', 'claude-science', 'motif-mcp-server.mjs');
+    const observed = join(bundle, 'observed-env.json');
+    const marker = join(bundle, 'injection-ran');
+    const injection = join(bundle, 'injection.cjs');
+    cpSync(join(root, 'scripts', 'run-motif-claude-science-mcp.sh'), launcher);
+    writeFileSync(server, `import { writeFileSync } from 'node:fs'; writeFileSync(${JSON.stringify(observed)}, JSON.stringify(process.env));\n`);
+    writeFileSync(injection, `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'injected');\n`);
+    writeFileSync(join(bundle, 'dist-motif', 'claude-science', 'motif-mcp-app.html'), 'app fixture\n');
+    writeFileSync(join(bundle, 'dist-motif', 'motif-template.html'), 'template fixture\n');
+    chmodSync(launcher, 0o755);
+
+    const result = spawnSync('/bin/bash', [launcher], {
+      encoding: 'utf8',
+      env: {
+        PATH: '/usr/bin:/bin',
+        HOME: process.env.HOME ?? '',
+        MOTIF_NODE_BIN: process.execPath,
+        MOTIF_MCP_TRACE: 'true',
+        NODE_OPTIONS: '--require=' + injection,
+        NODE_PATH: '/tmp/injected-node-path',
+        NODE_NO_WARNINGS: '1',
+        HTTP_PROXY: 'http://proxy.invalid:8080',
+        HTTPS_PROXY: 'https://proxy.invalid:8443',
+        ALL_PROXY: 'socks5://proxy.invalid:1080',
+        NO_PROXY: 'localhost',
+        SSH_AUTH_SOCK: '/tmp/injected-agent.sock',
+        AWS_ACCESS_KEY_ID: 'injected-access-key',
+        AWS_SECRET_ACCESS_KEY: 'injected-secret-key',
+        GIT_SSH_COMMAND: 'injected-ssh',
+      },
+    });
+    expect(result.status).toBe(0);
+    expect(() => readFileSync(marker)).toThrow();
+    const environment = JSON.parse(readFileSync(observed, 'utf8'));
+    for (const variable of [
+      'NODE_OPTIONS', 'NODE_PATH', 'NODE_NO_WARNINGS',
+      'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
+      'SSH_AUTH_SOCK', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'GIT_SSH_COMMAND',
+    ]) expect(environment[variable]).toBeUndefined();
+    expect(environment.MOTIF_ROOT).toBe(realpathSync(bundle));
+    expect(environment.MOTIF_NODE_BIN).toBe(process.execPath);
+    expect(environment.MOTIF_MCP_TRACE).toBe('true');
+    expect(environment.PATH).toBe('/usr/bin:/bin');
   });
 });
