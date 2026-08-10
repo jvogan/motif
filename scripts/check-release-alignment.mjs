@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +13,30 @@ function readJson(relativePath) {
 
 function read(relativePath) {
   return readFileSync(join(root, relativePath), 'utf8');
+}
+
+function gitRevision(revision, cwd) {
+  try {
+    return execFileSync('git', ['rev-parse', '--verify', revision], {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+export function assertVersionTagMatchesHead(version, cwd = root) {
+  const tag = `v${version}`;
+  const tagCommit = gitRevision(`${tag}^{commit}`, cwd);
+  if (tagCommit === null) return { tag, status: 'unpublished' };
+  const headCommit = gitRevision('HEAD^{commit}', cwd);
+  if (headCommit === null) throw new Error('Cannot resolve the current Git commit for release alignment');
+  if (tagCommit !== headCommit) {
+    throw new Error(`${tag} already identifies ${tagCommit}; current HEAD is ${headCommit}. Bump the release version before building.`);
+  }
+  return { tag, status: 'current', commit: headCommit };
 }
 
 export function checkReleaseAlignment() {
@@ -49,6 +74,7 @@ export function checkReleaseAlignment() {
   for (const [relativePath, marker] of requiredDocs) {
     if (!read(relativePath).includes(marker)) throw new Error(`${relativePath} does not declare ${packageVersion}`);
   }
+  assertVersionTagMatchesHead(packageVersion);
   return { version: packageVersion, surfaces: surfaces.length + changelogs.length + requiredDocs.length };
 }
 
