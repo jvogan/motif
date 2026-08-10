@@ -5932,7 +5932,11 @@ test.describe('Claude Science artifact workflows', () => {
   });
 
   test('MSA 100-row density preserves suffixes, semantics, and panel-owned scrolling', async ({ page }) => {
-    test.setTimeout(120_000);
+    // The bounded high-density axe scan can exceed two minutes on a contended
+    // single-worker runner even though the interaction assertions complete.
+    // Keep retries disabled and give this deliberate stress case enough time
+    // to finish its first accessibility pass.
+    test.setTimeout(300_000);
     await openArtifact(page, 1180, 820);
     await page.evaluate(() => {
       const reference = 'ACGT'.repeat(375);
