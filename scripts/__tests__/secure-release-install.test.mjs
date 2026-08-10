@@ -332,6 +332,54 @@ describe('checksum-verified Motif release installation', () => {
     expect(() => parseReleaseArchive(validPath, { maxArchiveBytes: valid.length - 1 })).toThrow(/archive-size limit/);
   });
 
+  it('requires canonical local metadata and contiguous ZIP layout', () => {
+    const sourceDirectory = mkdtempSync(join(tmpdir(), 'motif-release-archive-canonical-source-'));
+    const outputDirectory = mkdtempSync(join(tmpdir(), 'motif-release-archive-canonical-output-'));
+    temporaryDirectories.push(sourceDirectory, outputDirectory);
+    writeFileSync(join(sourceDirectory, 'safe.txt'), 'safe\n');
+    const valid = createDeterministicZipBuffer(sourceDirectory);
+    const localOffset = 0;
+    const centralOffset = valid.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+    const eocdOffset = valid.length - 22;
+    expect(centralOffset).toBeGreaterThan(localOffset);
+
+    const localCrcTampered = Buffer.from(valid);
+    localCrcTampered.writeUInt32LE(localCrcTampered.readUInt32LE(localOffset + 14) ^ 1, localOffset + 14);
+    const localCrcPath = join(outputDirectory, 'local-crc.zip');
+    writeFileSync(localCrcPath, localCrcTampered);
+    expect(() => parseReleaseArchive(localCrcPath)).toThrow(/local entry metadata is not canonical/);
+
+    const localSizeTampered = Buffer.from(valid);
+    localSizeTampered.writeUInt32LE(localSizeTampered.readUInt32LE(localOffset + 18) + 1, localOffset + 18);
+    const localSizePath = join(outputDirectory, 'local-size.zip');
+    writeFileSync(localSizePath, localSizeTampered);
+    expect(() => parseReleaseArchive(localSizePath)).toThrow(/local entry metadata is not canonical/);
+
+    const localExtraTampered = Buffer.from(valid);
+    localExtraTampered.writeUInt16LE(1, localOffset + 28);
+    const localExtraPath = join(outputDirectory, 'local-extra.zip');
+    writeFileSync(localExtraPath, localExtraTampered);
+    expect(() => parseReleaseArchive(localExtraPath)).toThrow(/local entry metadata is not canonical/);
+
+    const centralExtraTampered = Buffer.from(valid);
+    centralExtraTampered.writeUInt16LE(1, centralOffset + 30);
+    const centralExtraPath = join(outputDirectory, 'central-extra.zip');
+    writeFileSync(centralExtraPath, centralExtraTampered);
+    expect(() => parseReleaseArchive(centralExtraPath)).toThrow(/central (?:entry is truncated|extra fields and comments)/);
+
+    const gap = Buffer.concat([valid.subarray(0, centralOffset), Buffer.from([0]), valid.subarray(centralOffset)]);
+    gap.writeUInt32LE(centralOffset + 1, gap.length - 22 + 16);
+    const gapPath = join(outputDirectory, 'gap.zip');
+    writeFileSync(gapPath, gap);
+    expect(() => parseReleaseArchive(gapPath)).toThrow(/gap before the central directory/);
+
+    const comment = Buffer.concat([valid, Buffer.from('x')]);
+    comment.writeUInt16LE(1, eocdOffset + 20);
+    const commentPath = join(outputDirectory, 'comment.zip');
+    writeFileSync(commentPath, comment);
+    expect(() => parseReleaseArchive(commentPath)).toThrow(/comments are not supported/);
+  });
+
   it('bounds unexpected release-file traversal before comparing the manifest', () => {
     const bundle = writeFixture();
     for (let index = 0; index < RELEASE_MAX_BUNDLE_FILES; index += 1) {

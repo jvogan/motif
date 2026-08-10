@@ -1,10 +1,13 @@
 import { createHash } from 'node:crypto';
 import {
   existsSync,
+  closeSync,
   lstatSync,
   opendirSync,
+  openSync,
   readFileSync,
   realpathSync,
+  readSync,
 } from 'node:fs';
 import { TextDecoder } from 'node:util';
 import { dirname, join, relative, resolve, sep } from 'node:path';
@@ -88,7 +91,20 @@ function readBoundedArchiveFile(archivePath, maxBytes) {
   const stat = lstatSync(path);
   if (stat.isSymbolicLink() || !stat.isFile()) throw new Error('Release ZIP must be a regular file');
   if (stat.size > maxBytes) throw new Error('Release ZIP exceeds the archive-size limit');
-  return readFileSync(path);
+  const descriptor = openSync(path, 'r');
+  try {
+    const buffer = Buffer.allocUnsafe(maxBytes + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const count = readSync(descriptor, buffer, length, buffer.length - length, null);
+      if (count === 0) break;
+      length += count;
+    }
+    if (length > maxBytes) throw new Error('Release ZIP exceeds the archive-size limit');
+    return buffer.subarray(0, length);
+  } finally {
+    closeSync(descriptor);
+  }
 }
 
 function decodeZipName(bytes) {
@@ -107,6 +123,7 @@ function parseReleaseArchiveBytes(archive) {
     if (archive.readUInt32LE(offset) !== ZIP_END_SIGNATURE) continue;
     const commentLength = archive.readUInt16LE(offset + 20);
     if (offset + 22 + commentLength === archive.length) {
+      if (commentLength !== 0) throw new Error('Release ZIP comments are not supported');
       endOffset = offset;
       break;
     }
@@ -156,6 +173,7 @@ function parseReleaseArchiveBytes(archive) {
     const nameEnd = nameStart + nameLength;
     const centralEnd = nameEnd + extraLength + commentLength;
     if (centralEnd > endOffset) throw new Error('Release ZIP central entry is truncated');
+    if (extraLength !== 0 || commentLength !== 0) throw new Error('Release ZIP central extra fields and comments are not supported');
     if ((flags & ~ZIP_UTF8_FLAG) !== 0 || (flags & ZIP_UTF8_FLAG) === 0) {
       throw new Error('Release ZIP entry uses unsupported flags');
     }
@@ -174,6 +192,9 @@ function parseReleaseArchiveBytes(archive) {
     if (localOffset >= centralOffset || localOffset + 30 > centralOffset || archive.readUInt32LE(localOffset) !== ZIP_LOCAL_HEADER_SIGNATURE) {
       throw new Error('Release ZIP local entry offset is invalid: ' + name);
     }
+    const localChecksum = archive.readUInt32LE(localOffset + 14);
+    const localCompressedSize = archive.readUInt32LE(localOffset + 18);
+    const localUncompressedSize = archive.readUInt32LE(localOffset + 22);
     const localFlags = archive.readUInt16LE(localOffset + 6);
     const localMethod = archive.readUInt16LE(localOffset + 8);
     const localNameLength = archive.readUInt16LE(localOffset + 26);
@@ -182,8 +203,8 @@ function parseReleaseArchiveBytes(archive) {
     const localNameEnd = localNameStart + localNameLength;
     const dataStart = localNameEnd + localExtraLength;
     const dataEnd = dataStart + compressedSize;
-    if (localFlags !== flags || localMethod !== method || localNameEnd > centralOffset || dataStart > centralOffset || dataEnd > centralOffset) {
-      throw new Error('Release ZIP local entry metadata is invalid: ' + name);
+    if (localFlags !== flags || localMethod !== method || localChecksum !== checksum || localCompressedSize !== compressedSize || localUncompressedSize !== uncompressedSize || localExtraLength !== 0 || localNameEnd > centralOffset || dataStart > centralOffset || dataEnd > centralOffset) {
+      throw new Error('Release ZIP local entry metadata is not canonical: ' + name);
     }
     if (!archive.subarray(localNameStart, localNameEnd).equals(nameBytes)) {
       throw new Error('Release ZIP local and central entry names differ: ' + name);
@@ -198,10 +219,16 @@ function parseReleaseArchiveBytes(archive) {
   }
   if (centralCursor !== endOffset) throw new Error('Release ZIP contains an unexpected central-directory entry');
   regions.sort((left, right) => left.start - right.start);
-  for (let index = 1; index < regions.length; index += 1) {
-    if (regions[index].start < regions[index - 1].end) {
-      throw new Error('Release ZIP local entries overlap');
+  if (regions.length === 0) {
+    if (centralOffset !== 0) throw new Error('Release ZIP has a gap before the central directory');
+  } else {
+    if (regions[0].start !== 0) throw new Error('Release ZIP has a gap before the first local entry');
+    for (let index = 1; index < regions.length; index += 1) {
+      if (regions[index].start !== regions[index - 1].end) {
+        throw new Error('Release ZIP local entries are not contiguous');
+      }
     }
+    if (regions.at(-1).end !== centralOffset) throw new Error('Release ZIP has a gap before the central directory');
   }
   return { entries, byName };
 }
@@ -212,7 +239,7 @@ function parseReleaseArchiveBytes(archive) {
  * while the bounded archive bytes remain in memory.
  */
 export function parseReleaseArchive(archivePath, { maxArchiveBytes = RELEASE_MAX_ARCHIVE_BYTES } = {}) {
-  if (!Number.isSafeInteger(maxArchiveBytes) || maxArchiveBytes < 22) throw new Error('Release ZIP archive-size limit is invalid');
+  if (!Number.isSafeInteger(maxArchiveBytes) || maxArchiveBytes < 22 || maxArchiveBytes > RELEASE_MAX_ARCHIVE_BYTES) throw new Error('Release ZIP archive-size limit is invalid');
   const archive = readBoundedArchiveFile(archivePath, maxArchiveBytes);
   const parsed = parseReleaseArchiveBytes(archive);
   return {
