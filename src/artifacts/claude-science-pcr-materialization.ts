@@ -4,7 +4,7 @@ import {
   type PrimerDesignParams,
   type PrimerPair,
 } from '../bio/primer-design';
-import { simulatePCR, type PCRResult } from '../bio/pcr';
+import { PCR_ENGINE_VERSION, simulatePCR, type PCRResult } from '../bio/pcr';
 import { reverseComplement } from '../bio/reverse-complement';
 import type { Feature, Topology } from '../bio/types';
 import type { ArtifactAnalysisResult } from './claude-science-analysis-results';
@@ -12,8 +12,6 @@ import { sha256HexSync } from './claude-science-sha256';
 import type { ArtifactJsonObject } from './claude-science-workspace-collections';
 
 const DNA_ALPHABET = /^[ACGT]+$/i;
-const PCR_ENGINE_VERSION = '1';
-
 export class PcrMaterializationError extends Error {
   constructor(message: string) {
     super(message);
@@ -67,6 +65,8 @@ export type PcrDerivedRecordProvenance = ArtifactJsonObject & {
   actor: 'user';
   engine: 'motif-pcr';
   engineVersion: typeof PCR_ENGINE_VERSION;
+  /** Product construction method copied from the simulation receipt. */
+  productAssembly: PCRResult['provenance']['productAssembly'];
   parentRecordId: string;
   primerDesignResultId: string;
   templateSha256: string;
@@ -213,6 +213,9 @@ export function simulateSelectedPrimerPair(
   if (!simulation) {
     throw new PcrMaterializationError('The selected primer pair does not produce an exact amplicon on this template.');
   }
+  if (!simulation.materializable) {
+    throw new PcrMaterializationError('The selected primer pair has conflicting overlapping edits and cannot be materialized safely.');
+  }
   return simulation;
 }
 
@@ -322,7 +325,8 @@ export function materializePcrAmplicon(input: {
     operation: 'pcr_materialization',
     actor: 'user',
     engine: 'motif-pcr',
-    engineVersion: PCR_ENGINE_VERSION,
+    engineVersion: simulation.provenance.engineVersion,
+    productAssembly: simulation.provenance.productAssembly,
     parentRecordId: sourceRecord.id,
     primerDesignResultId,
     templateSha256,
@@ -338,6 +342,11 @@ export function materializePcrAmplicon(input: {
     reverseBindStart: simulation.reverse.bindStart,
     reverseBindEnd: simulation.reverse.bindEnd,
     ...preparationMetadata,
+    metadata: {
+      productAssembly: simulation.provenance.productAssembly,
+      tailPolicy: simulation.provenance.tailPolicy,
+      implicitTails: simulation.provenance.implicitTails,
+    },
   };
   const record: PcrDerivedRecordInput = {
     id: identity.recordId,
@@ -400,7 +409,7 @@ export function materializePcrAmplicon(input: {
       operation: 'pcr_materialization',
       actor: 'user',
       engine: 'motif-pcr',
-      engineVersion: PCR_ENGINE_VERSION,
+      engineVersion: simulation.provenance.engineVersion,
       parentIds: [sourceRecord.id, primerDesignResultId],
       metadata: {
         templateSha256,
@@ -408,6 +417,9 @@ export function materializePcrAmplicon(input: {
         primerDesignSha256,
         materializationKey,
         wrapsOrigin: simulation.wrapsOrigin,
+        productAssembly: simulation.provenance.productAssembly,
+        tailPolicy: simulation.provenance.tailPolicy,
+        implicitTails: simulation.provenance.implicitTails,
         ...preparationMetadata,
       },
     },

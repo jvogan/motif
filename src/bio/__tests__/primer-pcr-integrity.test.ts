@@ -5,7 +5,12 @@ import {
   MAX_PCR_PRODUCT_LENGTH,
   simulatePCR,
 } from '../pcr';
-import { designForwardPrimerWithDiagnostics } from '../primer-design';
+import {
+  designForwardPrimerWithDiagnostics,
+  MAX_PRIMER_OLIGO_LENGTH,
+  MAX_PRIMER_TAIL_LENGTH,
+  normalizePrimerDesignParams,
+} from '../primer-design';
 import { predictHairpin, predictPrimerDimer } from '../primer-thermodynamics';
 import { calculateTm, duplexThermodynamics, saltCorrectedTm } from '../tm-calculator';
 import { reverseComplement } from '../reverse-complement';
@@ -146,6 +151,43 @@ describe('primer, PCR, and Tm integrity', () => {
     }));
   });
 
+  it('blocks conflicting overlapping primer edits while retaining agreeing overlaps', () => {
+    const template = 'ACGT'.repeat(20);
+    const reverseBinding = template.slice(5, 15);
+    const reversePrimer = reverseComplement(reverseBinding);
+    const forwardBinding = template.slice(0, 10);
+    const mismatchedForward = `${forwardBinding.slice(0, 5)}A${forwardBinding.slice(6)}`;
+    const conflicting = simulatePCR(
+      template,
+      mismatchedForward,
+      reversePrimer,
+      [],
+      'linear',
+      { forward: { start: 0, end: 10 }, reverse: { start: 5, end: 15 } },
+      { minMatched3PrimeLength: 4, maxMismatches: 1 },
+    );
+    expect(conflicting?.materializable).toBe(false);
+    expect(conflicting?.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'conflicting_overlapping_binding_edits',
+      positions: [5],
+    }));
+
+    const agreeing = simulatePCR(
+      template,
+      forwardBinding,
+      reversePrimer,
+      [],
+      'linear',
+      { forward: { start: 0, end: 10 }, reverse: { start: 5, end: 15 } },
+    );
+    expect(agreeing?.materializable).toBe(true);
+    expect(agreeing?.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'overlapping_binding_regions',
+      positions: [5, 6, 7, 8, 9],
+    }));
+    expect(agreeing?.diagnostics.some(({ code }) => code === 'conflicting_overlapping_binding_edits')).toBe(false);
+  });
+
   it('requires explicit selection or opt-in before inferring 5\u2032 tails', () => {
     const reverseBinding = 'TTGCAACGTA';
     const template = `${binding}GGGG${reverseBinding}`;
@@ -234,6 +276,58 @@ describe('primer, PCR, and Tm integrity', () => {
     });
     expect(invalidTail.candidates).toEqual([]);
     expect(invalidTail.warnings?.join(' ')).toMatch(/invalid nucleotide/i);
+  });
+
+  it('fails closed and caps full ordered oligos for adversarial design bounds', () => {
+    const sequence = 'ACGT'.repeat(80);
+    const invalid = designForwardPrimerWithDiagnostics(sequence, {
+      targetStart: 40,
+      targetEnd: 60,
+      maxLength: Number.POSITIVE_INFINITY,
+    });
+    expect(invalid.candidates).toEqual([]);
+    expect(invalid.warnings?.join(' ')).toMatch(/finite bounded/i);
+
+    const oversizedTail = designForwardPrimerWithDiagnostics(sequence, {
+      targetStart: 40,
+      targetEnd: 60,
+      minLength: 18,
+      maxLength: 28,
+      forwardTail: 'A'.repeat(MAX_PRIMER_TAIL_LENGTH + 1),
+    });
+    expect(oversizedTail.candidates).toEqual([]);
+    expect(oversizedTail.warnings?.join(' ')).toMatch(/250/);
+
+    const bounded = designForwardPrimerWithDiagnostics(sequence, {
+      targetStart: 40,
+      targetEnd: 60,
+      minLength: 18,
+      maxLength: 60,
+      minGC: 0,
+      maxGC: 1,
+      enforceTargetTm: false,
+      requireGcClamp: false,
+      flankingWindow: 0,
+      forwardTail: 'A'.repeat(MAX_PRIMER_TAIL_LENGTH),
+      maxHairpinDeltaG: null,
+      maxSelfDimerDeltaG: null,
+    });
+    expect(bounded.candidates.length).toBeGreaterThan(0);
+    expect(bounded.candidates.every((candidate) => candidate.fullLength <= MAX_PRIMER_OLIGO_LENGTH)).toBe(true);
+
+    for (const invalidParams of [
+      { targetStart: Number.NaN, targetEnd: 60 },
+      { targetStart: 60, targetEnd: 40 },
+      { targetStart: 40, targetEnd: 40 },
+      { targetStart: 40, targetEnd: 60, minLength: 11 },
+      { targetStart: 40, targetEnd: 60, maxLength: 61 },
+      { targetStart: 40, targetEnd: 60, minLength: 30, maxLength: 18 },
+      { targetStart: 40, targetEnd: 60, minGC: Number.POSITIVE_INFINITY },
+      { targetStart: 40, targetEnd: 60, flankingWindow: Number.NaN },
+      { targetStart: 40, targetEnd: 60, maxHairpinDeltaG: Number.NaN },
+    ]) {
+      expect(normalizePrimerDesignParams(sequence.length, invalidParams, 'forward')).toBeNull();
+    }
   });
 
   it('marks full ordered oligos with ambiguous tails for secondary-structure review', () => {

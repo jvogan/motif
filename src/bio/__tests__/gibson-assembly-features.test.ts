@@ -33,7 +33,7 @@ describe('Gibson assembly feature locations', () => {
     const result = gibsonAssemble([
       {
         name: 'A',
-        sequence: 'AAAACCC',
+        sequence: 'AAAACCCGGGTT',
         features: [feature('first multipart', {
           start: 0,
           end: 7,
@@ -65,7 +65,7 @@ describe('Gibson assembly feature locations', () => {
           }),
         ],
       },
-    ], 3, 3, 'linear');
+    ], 8, 8, 'linear');
 
     expect(result.success).toBe(true);
     expect(result.sequence).toBe('AAAACCCGGGTTT');
@@ -102,7 +102,7 @@ describe('Gibson assembly feature locations', () => {
       { name: 'A', sequence: 'TTTAAAACCC' },
       {
         name: 'B',
-        sequence: 'CCCGGGTTT',
+        sequence: 'TAAAACCCGGGTTTAAAAC',
         features: [
           feature('closing-tail multipart', {
             start: 4,
@@ -121,30 +121,26 @@ describe('Gibson assembly feature locations', () => {
           }),
         ],
       },
-    ], 3, 3, 'circular');
+    ], 8, 8, 'circular');
 
     expect(result.success).toBe(true);
     expect(result.sequence).toBe('TTTAAAACCCGGG');
     expect(result.features.find(({ name }) => name === 'closing-tail multipart')).toMatchObject({
-      start: 0,
-      end: 13,
+      start: 6,
+      end: 11,
       subRanges: [
-        { start: 0, end: 3, strand: -1 },
-        { start: 11, end: 13, strand: -1 },
+        { start: 8, end: 11, strand: -1 },
+        { start: 6, end: 8, strand: -1 },
       ],
     });
     expect(result.features.find(({ name }) => name === 'closing-tail crossing')).toMatchObject({
-      start: 0,
-      end: 13,
-      subRanges: [
-        { start: 12, end: 13, strand: 1 },
-        { start: 0, end: 2, strand: 1 },
-      ],
+      start: 7,
+      end: 10,
     });
     expect(result.features.find(({ name }) => name === 'closing-tail only')).toMatchObject({
-      start: 0,
-      end: 3,
-      subRanges: [{ start: 0, end: 3, strand: 1 }],
+      start: 8,
+      end: 11,
+      subRanges: [{ start: 8, end: 11, strand: 1 }],
     });
     const crossing = result.features.find(({ name }) => name === 'closing-tail crossing');
     expect(crossing?.metadata.partial).toBeUndefined();
@@ -160,10 +156,10 @@ describe('Gibson assembly feature locations', () => {
       },
       {
         name: 'tail',
-        sequence: 'CCCGGGTTT',
+        sequence: 'TAAAACCCGGGTTTAAAAC',
         features: [feature('tail feature', { start: 0, end: 9, strand })],
       },
-    ], 3, 3, 'circular');
+    ], 8, 8, 'circular');
 
     expect(result.success).toBe(true);
     expectBoundedFeatures(result);

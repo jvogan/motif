@@ -35,7 +35,9 @@ export const DEFAULT_TM_OPTIONS: TmOptions = {
 export interface PrimerDesignParams {
   targetStart: number;
   targetEnd: number;
+  /** Binding-region length in nt; the core accepts 12–60 nt. */
   minLength?: number;
+  /** Binding-region length in nt; the core accepts 12–60 nt. */
   maxLength?: number;
   targetTm?: number;
   tmTolerance?: number;
@@ -54,7 +56,9 @@ export interface PrimerDesignParams {
   maxPairingCandidatesPerDirection?: number;
   minGC?: number;
   maxGC?: number;
+  /** Optional 5′ tail; at most 250 nt and 500 nt including the binding region. */
   forwardTail?: string;
+  /** Optional 5′ tail; at most 250 nt and 500 nt including the binding region. */
   reverseTail?: string;
   // Primer3-style 3' GC clamp — require at least one G/C in the
   // last 5 nt of the primer's 3' end. Default ON: prevents AAAA-tail
@@ -208,6 +212,11 @@ const DEFAULT_MIN_GC = 0.30;
 const DEFAULT_MAX_GC = 0.70;
 const DEFAULT_REQUIRE_GC_CLAMP = true;
 const DEFAULT_FLANKING_WINDOW = 50;
+export const MAX_PRIMER_TAIL_LENGTH = 250;
+export const MAX_PRIMER_OLIGO_LENGTH = 500;
+export const MIN_PRIMER_BINDING_LENGTH = 12;
+export const MAX_PRIMER_BINDING_LENGTH = 60;
+export const MAX_PRIMER_FLANKING_WINDOW = 250;
 const MAX_TM_DIFF_PAIR = 5;
 const MAX_PAIRS_RETURNED = 10;
 const MAX_PAIRING_CANDIDATES_PER_DIRECTION = 240;
@@ -249,13 +258,51 @@ function boundedPositiveInteger(value: number | undefined, fallback: number, max
   return Math.max(1, Math.min(max, Math.floor(value as number)));
 }
 
-function normalizedOligo(value: string | undefined): { sequence: string; warning?: string; invalid: boolean } {
+export type NormalizedPrimerDesignParams = {
+  targetStart: number;
+  targetEnd: number;
+  minLength: number;
+  maxLength: number;
+  targetTm: number;
+  tmTolerance: number;
+  enforceTargetTm: boolean;
+  minGC: number;
+  maxGC: number;
+  tail: string;
+  requireGcClamp: boolean;
+  flankingWindow: number;
+  tmOptions: TmOptions;
+  maxHairpinDeltaG: number | null | undefined;
+  maxSelfDimerDeltaG: number | null | undefined;
+  warnings: string[];
+};
+
+function invalidPrimerDesignResult(message: string): PrimerDesignResult {
+  return {
+    candidates: [],
+    rejections: { ...emptyRejections(), invalid: 1 },
+    secondaryRejections: emptySecondaryRejections(),
+    warnings: [message],
+  };
+}
+
+function normalizedOligo(value: unknown): { sequence: string; warning?: string; invalid: boolean } {
+  if (value !== undefined && typeof value !== 'string') {
+    return { sequence: '', invalid: true, warning: 'Oligo input must be a nucleotide string.' };
+  }
   const inspected = inspectNucleotideSequence(value ?? '');
   if (inspected.invalidCharacters.length > 0) {
     return {
       sequence: inspected.sequence,
       invalid: true,
       warning: `Oligo input contains invalid nucleotide characters: ${inspected.invalidCharacters.join(', ')}.`,
+    };
+  }
+  if (inspected.sequence.length > MAX_PRIMER_TAIL_LENGTH) {
+    return {
+      sequence: inspected.sequence,
+      invalid: true,
+      warning: `Oligo tail cannot exceed ${MAX_PRIMER_TAIL_LENGTH.toLocaleString()} nt.`,
     };
   }
   return inspected.ambiguous
@@ -265,6 +312,113 @@ function normalizedOligo(value: string | undefined): { sequence: string; warning
         warning: 'Oligo tail contains IUPAC ambiguity symbols; secondary-structure diagnostics require review.',
       }
     : { sequence: inspected.sequence, invalid: false };
+}
+
+function finiteIntegerOption(
+  value: unknown,
+  fallback: number,
+  minimum: number,
+  maximum: number,
+): number | null {
+  if (value === undefined) return fallback;
+  if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isSafeInteger(value)) return null;
+  return value < minimum || value > maximum ? null : value;
+}
+
+function finiteNumberOption(
+  value: unknown,
+  fallback: number,
+  minimum: number,
+  maximum: number,
+): number | null {
+  if (value === undefined) return fallback;
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  return value < minimum || value > maximum ? null : value;
+}
+
+/**
+ * Normalize every numeric primer-design control and tail through one bounded
+ * path. Exported design entry points use this before scanning so malformed
+ * UI/agent values cannot turn a finite request into an unbounded loop.
+ */
+export function normalizePrimerDesignParams(
+  sequenceLength: number,
+  params: PrimerDesignParams,
+  direction: 'forward' | 'reverse',
+): NormalizedPrimerDesignParams | null {
+  if (!Number.isSafeInteger(sequenceLength) || sequenceLength < 0) return null;
+  const raw = params as Partial<PrimerDesignParams> | null | undefined;
+  if (!raw || typeof raw !== 'object') return null;
+  const targetStart = raw.targetStart === undefined
+    ? null
+    : finiteIntegerOption(raw.targetStart, 0, 0, sequenceLength);
+  const targetEnd = raw.targetEnd === undefined
+    ? null
+    : finiteIntegerOption(raw.targetEnd, sequenceLength, 0, sequenceLength);
+  const minLength = finiteIntegerOption(raw.minLength, DEFAULT_MIN_LENGTH, MIN_PRIMER_BINDING_LENGTH, MAX_PRIMER_BINDING_LENGTH);
+  const requestedMaxLength = finiteIntegerOption(raw.maxLength, DEFAULT_MAX_LENGTH, MIN_PRIMER_BINDING_LENGTH, MAX_PRIMER_BINDING_LENGTH);
+  const targetTm = finiteNumberOption(raw.targetTm, DEFAULT_TARGET_TM, 0, 200);
+  const tmTolerance = finiteNumberOption(raw.tmTolerance, DEFAULT_TM_TOLERANCE, 0, 100);
+  const minGC = finiteNumberOption(raw.minGC, DEFAULT_MIN_GC, 0, 1);
+  const maxGC = finiteNumberOption(raw.maxGC, DEFAULT_MAX_GC, 0, 1);
+  const flankingWindow = finiteIntegerOption(raw.flankingWindow, DEFAULT_FLANKING_WINDOW, 0, MAX_PRIMER_FLANKING_WINDOW);
+  const maxHairpinDeltaG = raw.maxHairpinDeltaG === undefined
+    ? DEFAULT_MAX_HAIRPIN_DG
+    : raw.maxHairpinDeltaG === null
+      ? null
+      : typeof raw.maxHairpinDeltaG === 'number'
+        && (Number.isFinite(raw.maxHairpinDeltaG) || raw.maxHairpinDeltaG === Number.POSITIVE_INFINITY)
+        ? raw.maxHairpinDeltaG
+        : Number.NaN;
+  const maxSelfDimerDeltaG = raw.maxSelfDimerDeltaG === undefined
+    ? DEFAULT_MAX_DIMER_DG
+    : raw.maxSelfDimerDeltaG === null
+      ? null
+      : typeof raw.maxSelfDimerDeltaG === 'number'
+        && (Number.isFinite(raw.maxSelfDimerDeltaG) || raw.maxSelfDimerDeltaG === Number.POSITIVE_INFINITY)
+        ? raw.maxSelfDimerDeltaG
+        : Number.NaN;
+  if (
+    targetStart === null
+    || targetEnd === null
+    || minLength === null
+    || requestedMaxLength === null
+    || targetTm === null
+    || tmTolerance === null
+    || minGC === null
+    || maxGC === null
+    || flankingWindow === null
+    || Number.isNaN(maxHairpinDeltaG as number)
+    || Number.isNaN(maxSelfDimerDeltaG as number)
+    || targetStart >= targetEnd
+    || minLength > requestedMaxLength
+    || minGC > maxGC
+    || (raw.enforceTargetTm !== undefined && typeof raw.enforceTargetTm !== 'boolean')
+    || (raw.requireGcClamp !== undefined && typeof raw.requireGcClamp !== 'boolean')
+  ) return null;
+
+  const normalizedTail = normalizedOligo(direction === 'forward' ? raw.forwardTail : raw.reverseTail);
+  if (normalizedTail.invalid) return null;
+  const maxLength = Math.min(requestedMaxLength, MAX_PRIMER_OLIGO_LENGTH - normalizedTail.sequence.length);
+  if (maxLength < 1) return null;
+  return {
+    targetStart,
+    targetEnd,
+    minLength,
+    maxLength,
+    targetTm,
+    tmTolerance,
+    enforceTargetTm: typeof raw.enforceTargetTm === 'boolean' ? raw.enforceTargetTm : true,
+    minGC,
+    maxGC,
+    tail: normalizedTail.sequence,
+    requireGcClamp: typeof raw.requireGcClamp === 'boolean' ? raw.requireGcClamp : DEFAULT_REQUIRE_GC_CLAMP,
+    flankingWindow,
+    tmOptions: raw.tmOptions ?? DEFAULT_TM_OPTIONS,
+    maxHairpinDeltaG,
+    maxSelfDimerDeltaG,
+    warnings: normalizedTail.warning ? [normalizedTail.warning] : [],
+  };
 }
 
 function pairRankScore(pair: PrimerPair, targetTm: number, enforceTargetTm: boolean): number {
@@ -298,27 +452,31 @@ export function designForwardPrimerWithDiagnostics(
   seq: string,
   params: PrimerDesignParams,
 ): PrimerDesignResult {
-  const {
-    targetStart,
-    minLength = DEFAULT_MIN_LENGTH,
-    maxLength = DEFAULT_MAX_LENGTH,
-    targetTm = DEFAULT_TARGET_TM,
-    tmTolerance = DEFAULT_TM_TOLERANCE,
-    enforceTargetTm = true,
-    minGC = DEFAULT_MIN_GC,
-    maxGC = DEFAULT_MAX_GC,
-    forwardTail = '',
-    requireGcClamp = DEFAULT_REQUIRE_GC_CLAMP,
-    flankingWindow = DEFAULT_FLANKING_WINDOW,
-    tmOptions = DEFAULT_TM_OPTIONS,
-    maxHairpinDeltaG = DEFAULT_MAX_HAIRPIN_DG,
-    maxSelfDimerDeltaG = DEFAULT_MAX_DIMER_DG,
-  } = params;
-
+  if (typeof seq !== 'string') return invalidPrimerDesignResult('Primer template must be a nucleotide string.');
   const inspectedSequence = inspectNucleotideSequence(seq);
   const upper = inspectedSequence.sequence;
-  const normalizedTail = normalizedOligo(forwardTail);
-  const tail = normalizedTail.sequence;
+  const normalized = normalizePrimerDesignParams(upper.length, params, 'forward');
+  if (!normalized) {
+    const tail = normalizedOligo((params as PrimerDesignParams | null | undefined)?.forwardTail);
+    return invalidPrimerDesignResult(tail.warning ?? 'Primer design parameters must use finite bounded values.');
+  }
+  const {
+    targetStart,
+    minLength,
+    maxLength,
+    targetTm,
+    tmTolerance,
+    enforceTargetTm,
+    minGC,
+    maxGC,
+    tail,
+    requireGcClamp,
+    flankingWindow,
+    tmOptions,
+    maxHairpinDeltaG,
+    maxSelfDimerDeltaG,
+    warnings: normalizedWarnings,
+  } = normalized;
   const candidates: PrimerCandidate[] = [];
   const rejections = emptyRejections();
   const secondaryRejections = emptySecondaryRejections();
@@ -326,12 +484,8 @@ export function designForwardPrimerWithDiagnostics(
     ...(inspectedSequence.invalidCharacters.length > 0
       ? [`Template contains invalid nucleotide characters: ${inspectedSequence.invalidCharacters.join(', ')}.`]
       : []),
-    ...(normalizedTail.warning ? [normalizedTail.warning] : []),
+    ...normalizedWarnings,
   ];
-  if (normalizedTail.invalid) {
-    rejections.invalid = 1;
-    return { candidates, rejections, secondaryRejections, warnings };
-  }
 
   // Scan a window of start positions to the 5' side of targetStart.
   // The product MUST cover targetStart, so start positions can range from
@@ -453,27 +607,31 @@ export function designReversePrimerWithDiagnostics(
   seq: string,
   params: PrimerDesignParams,
 ): PrimerDesignResult {
-  const {
-    targetEnd,
-    minLength = DEFAULT_MIN_LENGTH,
-    maxLength = DEFAULT_MAX_LENGTH,
-    targetTm = DEFAULT_TARGET_TM,
-    tmTolerance = DEFAULT_TM_TOLERANCE,
-    enforceTargetTm = true,
-    minGC = DEFAULT_MIN_GC,
-    maxGC = DEFAULT_MAX_GC,
-    reverseTail = '',
-    requireGcClamp = DEFAULT_REQUIRE_GC_CLAMP,
-    flankingWindow = DEFAULT_FLANKING_WINDOW,
-    tmOptions = DEFAULT_TM_OPTIONS,
-    maxHairpinDeltaG = DEFAULT_MAX_HAIRPIN_DG,
-    maxSelfDimerDeltaG = DEFAULT_MAX_DIMER_DG,
-  } = params;
-
+  if (typeof seq !== 'string') return invalidPrimerDesignResult('Primer template must be a nucleotide string.');
   const inspectedSequence = inspectNucleotideSequence(seq);
   const upper = inspectedSequence.sequence;
-  const normalizedTail = normalizedOligo(reverseTail);
-  const tail = normalizedTail.sequence;
+  const normalized = normalizePrimerDesignParams(upper.length, params, 'reverse');
+  if (!normalized) {
+    const tail = normalizedOligo((params as PrimerDesignParams | null | undefined)?.reverseTail);
+    return invalidPrimerDesignResult(tail.warning ?? 'Primer design parameters must use finite bounded values.');
+  }
+  const {
+    targetEnd,
+    minLength,
+    maxLength,
+    targetTm,
+    tmTolerance,
+    enforceTargetTm,
+    minGC,
+    maxGC,
+    tail,
+    requireGcClamp,
+    flankingWindow,
+    tmOptions,
+    maxHairpinDeltaG,
+    maxSelfDimerDeltaG,
+    warnings: normalizedWarnings,
+  } = normalized;
   const candidates: PrimerCandidate[] = [];
   const rejections = emptyRejections();
   const secondaryRejections = emptySecondaryRejections();
@@ -481,12 +639,8 @@ export function designReversePrimerWithDiagnostics(
     ...(inspectedSequence.invalidCharacters.length > 0
       ? [`Template contains invalid nucleotide characters: ${inspectedSequence.invalidCharacters.join(', ')}.`]
       : []),
-    ...(normalizedTail.warning ? [normalizedTail.warning] : []),
+    ...normalizedWarnings,
   ];
-  if (normalizedTail.invalid) {
-    rejections.invalid = 1;
-    return { candidates, rejections, secondaryRejections, warnings };
-  }
 
   // Reverse primer's end coordinate ranges from targetEnd (on-anchor)
   // up to targetEnd + flankingWindow (clipped to sequence end).
@@ -636,11 +790,13 @@ export function designPrimerPairWithDiagnostics(
   const reverseResult = designReversePrimerWithDiagnostics(seq, params);
   const forwards = forwardResult.candidates;
   const reverses = reverseResult.candidates;
-  const targetTm = params.targetTm ?? DEFAULT_TARGET_TM;
-  const enforceTargetTm = params.enforceTargetTm ?? true;
-  const maxPairs = boundedPositiveInteger(params.maxPairs, MAX_PAIRS_RETURNED, 100);
+  const sequenceLength = typeof seq === 'string' ? seq.length : 0;
+  const normalizedPairParams = normalizePrimerDesignParams(sequenceLength, params, 'forward');
+  const targetTm = normalizedPairParams?.targetTm ?? DEFAULT_TARGET_TM;
+  const enforceTargetTm = normalizedPairParams?.enforceTargetTm ?? true;
+  const maxPairs = boundedPositiveInteger(params?.maxPairs, MAX_PAIRS_RETURNED, 100);
   const pairingLimit = boundedPositiveInteger(
-    params.maxPairingCandidatesPerDirection,
+    params?.maxPairingCandidatesPerDirection,
     MAX_PAIRING_CANDIDATES_PER_DIRECTION,
     2000,
   );
@@ -800,7 +956,7 @@ export const ENZYME_TAIL_PRESETS: EnzymeTailPreset[] = [
     name: 'XhoI',
     tail: 'GCGCCTCGAG',
     enzyme: 'CTCGAG',
-    description: '5′ CTCG overhang. Common C-terminal cloning into pET vectors; compatible with SalI overhang after ligation.',
+    description: '5′ TCGA overhang. Common C-terminal cloning into pET vectors; compatible with SalI overhang after ligation.',
   },
   {
     name: 'NdeI',
@@ -954,7 +1110,7 @@ export const ENZYME_TAIL_PRESETS: EnzymeTailPreset[] = [
   },
   {
     name: 'SapI (Golden Gate)',
-    tail: 'GCGCGCTCTTCAAATG',
+    tail: 'GCGCGCTCTTCAATG',
     enzyme: 'GCTCTTC',
     description: 'Golden Gate forward tail for SapI; 3-nt overhang ATG (SapI generates 3-nt overhangs). Used in CDS modular assembly.',
   },

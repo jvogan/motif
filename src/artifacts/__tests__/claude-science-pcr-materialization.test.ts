@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { PrimerCandidate, PrimerPair } from '../../bio/primer-design';
 import { simulatePCR } from '../../bio/pcr';
 import { reverseComplement } from '../../bio/reverse-complement';
@@ -15,6 +15,7 @@ import {
   type PcrMaterializationSourceRecord,
 } from '../claude-science-pcr-materialization';
 import { sha256HexSync } from '../claude-science-sha256';
+import * as pcrModule from '../../bio/pcr';
 
 function candidate(
   direction: 'forward' | 'reverse',
@@ -218,6 +219,50 @@ describe('PCR engine selected-pair semantics', () => {
 });
 
 describe('PCR amplicon materialization', () => {
+  it('does not save a record or result when PCR reports conflicting overlap edits', () => {
+    const template = 'AAAACCCCGGGGTTTTAAAACCCCGGGGTTTT';
+    const selected = selection(pairFor(template, 4, 14, 20, 30));
+    const exact = simulatePCR(
+      template,
+      selected.pair.forward.fullSequence,
+      selected.pair.reverse.fullSequence,
+      [],
+      'linear',
+      {
+        forward: { start: selected.pair.forward.start, end: selected.pair.forward.end },
+        reverse: { start: selected.pair.reverse.start, end: selected.pair.reverse.end },
+      },
+    );
+    expect(exact).not.toBeNull();
+    if (!exact) throw new Error('Expected a PCR fixture.');
+    const spy = vi.spyOn(pcrModule, 'simulatePCR').mockReturnValue({
+      ...exact,
+      materializable: false,
+      diagnostics: [{
+        code: 'conflicting_overlapping_binding_edits',
+        message: 'conflict',
+        positions: [20],
+      }],
+    });
+    try {
+      expect(() => materializePcrAmplicon({
+        sourceRecord: source(template),
+        selection: selected,
+        identity: {
+          recordId: 'conflict-record',
+          resultId: 'conflict-result',
+          productId: 'conflict-product',
+          createdAt: '2026-07-17T12:00:00.000Z',
+        },
+        primerDesignResultId: 'primer-result',
+      })).toThrowError(new PcrMaterializationError(
+        'The selected primer pair has conflicting overlapping edits and cannot be materialized safely.',
+      ));
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it('rejects noncanonical or internally inconsistent selected primer sequences', () => {
     const template = 'AAAACCCCGGGGTTTTAAAACCCCGGGGTTTT';
     const baseSelection = selection(pairFor(template, 4, 14, 20, 30));
@@ -295,6 +340,8 @@ describe('PCR amplicon materialization', () => {
       tags: ['source', 'PCR amplicon'],
       provenance: {
         operation: 'pcr_materialization',
+        engineVersion: result.simulation.provenance.engineVersion,
+        productAssembly: result.simulation.provenance.productAssembly,
         parentRecordId: 'template-1',
         primerDesignResultId: 'primer-result',
         productSha256: sha256HexSync(result.record.seq),
@@ -302,6 +349,10 @@ describe('PCR amplicon materialization', () => {
         cloningPreparation: {
           requestSha256: 'a'.repeat(64),
           actionId: 'prep-action',
+        },
+        metadata: {
+          productAssembly: result.simulation.provenance.productAssembly,
+          tailPolicy: result.simulation.provenance.tailPolicy,
         },
       },
     });
@@ -321,6 +372,13 @@ describe('PCR amplicon materialization', () => {
       inputRecordIds: ['template-1'],
       dependsOnResultIds: ['primer-result'],
       parameters: { topology: 'linear' },
+      provenance: {
+        engineVersion: result.simulation.provenance.engineVersion,
+        metadata: {
+          productAssembly: result.simulation.provenance.productAssembly,
+          tailPolicy: result.simulation.provenance.tailPolicy,
+        },
+      },
       data: {
         templateRecordId: 'template-1',
         primerDesignResultId: 'primer-result',

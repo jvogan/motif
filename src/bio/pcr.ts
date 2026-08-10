@@ -17,6 +17,7 @@ function primerBindingTm(seq: string): number | null {
 
 export const DEFAULT_MIN_MATCHED_3_PRIME_LENGTH = 10;
 export const DEFAULT_MAX_PRIMER_MISMATCHES = 0;
+export const PCR_ENGINE_VERSION = '2' as const;
 export const MAX_PCR_OLIGO_LENGTH = 500;
 export const MAX_PCR_TAIL_LENGTH = 250;
 export const MAX_PCR_PRODUCT_LENGTH = 50_000;
@@ -41,7 +42,8 @@ export interface PCRBindingEdit {
 export type PCRDiagnosticCode =
   | 'implicit_tail'
   | 'primer_bases_overwrote_template'
-  | 'overlapping_binding_regions';
+  | 'overlapping_binding_regions'
+  | 'conflicting_overlapping_binding_edits';
 
 export interface PCRDiagnostic {
   code: PCRDiagnosticCode;
@@ -52,7 +54,7 @@ export interface PCRDiagnostic {
 
 export interface PCRProductProvenance {
   engine: 'motif-pcr';
-  engineVersion: '2';
+  engineVersion: typeof PCR_ENGINE_VERSION;
   /** Product bases are the template interval overlaid with primer bases. */
   productAssembly: 'template-plus-primer-binding';
   tailPolicy: 'explicit-only' | 'allow-implicit';
@@ -141,6 +143,8 @@ export interface PCRResult {
   warnings: string[];
   /** Machine-readable caveats and product-overlay evidence. */
   diagnostics: PCRDiagnostic[];
+  /** False when overlapping primer edits disagree and cannot be ordered safely. */
+  materializable: boolean;
   /** Deterministic product construction and primer/template edit receipt. */
   provenance: PCRProductProvenance;
   /** Other valid products/sites found under the selected policy. */
@@ -412,6 +416,7 @@ function materializeTemplateProduct(
   templateProduct: string;
   bindingEdits: PCRBindingEdit[];
   overlappingBindingPositions: number[];
+  conflictingBindingPositions: number[];
 } {
   const originalProduct = wrapsOrigin
     ? template.slice(forward.bindStart) + template.slice(0, reverse.bindEnd)
@@ -424,8 +429,9 @@ function materializeTemplateProduct(
     : [{ start: forward.bindStart, end: reverse.bindEnd, productStart: 0 }];
   const chars = originalProduct.split('');
   const bindingEdits: PCRBindingEdit[] = [];
-  const touchedBy = new Map<number, 'forward' | 'reverse'>();
+  const touchedBy = new Map<number, { primer: 'forward' | 'reverse'; replacement: string }>();
   const overlappingBindingPositions: number[] = [];
+  const conflictingBindingPositions: number[] = [];
   const apply = (
     templatePosition: number,
     replacement: string,
@@ -436,11 +442,15 @@ function materializeTemplateProduct(
     ));
     if (!segment) return;
     const productOffset = segment.productStart + templatePosition - segment.start;
-    const previousPrimer = touchedBy.get(productOffset);
-    if (previousPrimer && previousPrimer !== primer && !overlappingBindingPositions.includes(templatePosition)) {
+    const previous = touchedBy.get(productOffset);
+    if (previous && previous.primer !== primer && !overlappingBindingPositions.includes(templatePosition)) {
       overlappingBindingPositions.push(templatePosition);
     }
-    touchedBy.set(productOffset, primer);
+    if (previous && previous.primer !== primer && previous.replacement !== replacement) {
+      conflictingBindingPositions.push(templatePosition);
+      return;
+    }
+    touchedBy.set(productOffset, { primer, replacement });
     const original = chars[productOffset] ?? '';
     if (original !== replacement) {
       bindingEdits.push({
@@ -461,7 +471,12 @@ function materializeTemplateProduct(
   for (let offset = 0; offset < reversePlus.length; offset += 1) {
     apply(reverse.bindStart + offset, reversePlus[offset], 'reverse');
   }
-  return { templateProduct: chars.join(''), bindingEdits, overlappingBindingPositions };
+  return {
+    templateProduct: chars.join(''),
+    bindingEdits,
+    overlappingBindingPositions,
+    conflictingBindingPositions,
+  };
 }
 
 /**
@@ -634,10 +649,18 @@ export function simulatePCR(
   if (materialized.overlappingBindingPositions.length > 0) {
     diagnostics.push({
       code: 'overlapping_binding_regions',
-      message: 'Forward and reverse binding regions overlap; the reverse primer base was applied last at overlapping product coordinates.',
+      message: 'Forward and reverse binding regions overlap; shared bases must agree before the amplicon can be ordered.',
       positions: materialized.overlappingBindingPositions,
     });
   }
+  if (materialized.conflictingBindingPositions.length > 0) {
+    diagnostics.push({
+      code: 'conflicting_overlapping_binding_edits',
+      message: 'Forward and reverse primer edits disagree at overlapping product coordinates; the amplicon is not safe to materialize.',
+      positions: materialized.conflictingBindingPositions,
+    });
+  }
+  const materializable = materialized.conflictingBindingPositions.length === 0;
   const product = fwdTail + materialized.templateProduct + revTailRC;
   const sourceSpans: FeatureCoordinateMapSpan[] = selected.wrapsOrigin
     ? [
@@ -664,9 +687,10 @@ export function simulatePCR(
     status,
     warnings,
     diagnostics,
+    materializable,
     provenance: {
       engine: 'motif-pcr',
-      engineVersion: '2',
+      engineVersion: PCR_ENGINE_VERSION,
       productAssembly: 'template-plus-primer-binding',
       tailPolicy: policy.allowImplicitTails ? 'allow-implicit' : 'explicit-only',
       implicitTails: { forward: implicitForward, reverse: implicitReverse },

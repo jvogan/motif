@@ -9,6 +9,9 @@ import {
 } from 'react';
 import {
   ENZYME_TAIL_PRESETS,
+  MAX_PRIMER_BINDING_LENGTH,
+  MAX_PRIMER_TAIL_LENGTH,
+  MIN_PRIMER_BINDING_LENGTH,
   designPrimerPairWithDiagnostics,
   primerToFeature,
   type PrimerCandidate,
@@ -392,10 +395,22 @@ export function ClaudeSciencePrimerWorkspace({
     () => record.sequence.toUpperCase().replace(/U/g, 'T').replace(/\s/g, ''),
     [record.sequence],
   );
-  const targetRangeInvalid = targetStart < 1 || targetEnd > normalizedSequence.length || targetEnd <= targetStart;
-  const lengthInvalid = minLength < 12 || maxLength > 60 || minLength > maxLength;
-  const targetTmInvalid = targetTm < 40 || targetTm > 80;
-  const gcInvalid = minGC < 0 || maxGC > 100 || minGC > maxGC;
+  const targetRangeInvalid = !Number.isSafeInteger(targetStart)
+    || !Number.isSafeInteger(targetEnd)
+    || targetStart < 1
+    || targetEnd > normalizedSequence.length
+    || targetEnd <= targetStart;
+  const lengthInvalid = !Number.isSafeInteger(minLength)
+    || !Number.isSafeInteger(maxLength)
+    || minLength < MIN_PRIMER_BINDING_LENGTH
+    || maxLength > MAX_PRIMER_BINDING_LENGTH
+    || minLength > maxLength;
+  const targetTmInvalid = !Number.isFinite(targetTm) || targetTm < 40 || targetTm > 80;
+  const gcInvalid = !Number.isFinite(minGC)
+    || !Number.isFinite(maxGC)
+    || minGC < 0
+    || maxGC > 100
+    || minGC > maxGC;
   const fieldDescription = (invalid: boolean): string => invalid
     ? `${statusId} ${validationMessageId}`
     : statusId;
@@ -404,7 +419,7 @@ export function ClaudeSciencePrimerWorkspace({
     if (targetRangeInvalid) {
       return `Use a non-wrapping target inside 1–${normalizedSequence.length.toLocaleString()}.`;
     }
-    if (lengthInvalid) return 'Primer length must be 12–60 nt, with minimum no larger than maximum.';
+    if (lengthInvalid) return `Primer length must be ${MIN_PRIMER_BINDING_LENGTH}–${MAX_PRIMER_BINDING_LENGTH} nt, with minimum no larger than maximum.`;
     if (targetTmInvalid) return 'Target Tm must be between 40 and 80 °C.';
     if (gcInvalid) return 'GC range must be 0–100%, with minimum no larger than maximum.';
     if (!/^[ACGTURYSWKMBDHVN]+$/.test(normalizedSequence)) return 'Primer design supports nucleotide records containing IUPAC DNA/RNA symbols only.';
@@ -661,11 +676,11 @@ export function ClaudeSciencePrimerWorkspace({
               </label>
               <label>
                 <span>Minimum length</span>
-                <input aria-invalid={lengthInvalid || undefined} aria-describedby={fieldDescription(lengthInvalid)} name="primer-min-length" type="number" inputMode="numeric" autoComplete="off" min={12} max={60} step={1} value={minLength} onChange={(event) => { setMinLength(Number(event.target.value)); markCustom(); }} />
+                <input aria-invalid={lengthInvalid || undefined} aria-describedby={fieldDescription(lengthInvalid)} name="primer-min-length" type="number" inputMode="numeric" autoComplete="off" min={MIN_PRIMER_BINDING_LENGTH} max={MAX_PRIMER_BINDING_LENGTH} step={1} value={minLength} onChange={(event) => { setMinLength(Number(event.target.value)); markCustom(); }} />
               </label>
               <label>
                 <span>Maximum length</span>
-                <input aria-invalid={lengthInvalid || undefined} aria-describedby={fieldDescription(lengthInvalid)} name="primer-max-length" type="number" inputMode="numeric" autoComplete="off" min={12} max={60} step={1} value={maxLength} onChange={(event) => { setMaxLength(Number(event.target.value)); markCustom(); }} />
+                <input aria-invalid={lengthInvalid || undefined} aria-describedby={fieldDescription(lengthInvalid)} name="primer-max-length" type="number" inputMode="numeric" autoComplete="off" min={MIN_PRIMER_BINDING_LENGTH} max={MAX_PRIMER_BINDING_LENGTH} step={1} value={maxLength} onChange={(event) => { setMaxLength(Number(event.target.value)); markCustom(); }} />
               </label>
             </div>
           </section>
@@ -694,7 +709,7 @@ export function ClaudeSciencePrimerWorkspace({
               <div className="motif-cs-primer-tail-grid">
                 <label>
                   <span>Forward 5′ tail</span>
-                  <input className="motif-cs-primer-sequence-input" autoComplete="off" spellCheck={false} value={forwardTail} onChange={(event) => { setForwardTail(event.target.value.replace(/\s+/g, '').toUpperCase()); markCustom(); }} placeholder="Optional sequence" />
+                  <input className="motif-cs-primer-sequence-input" autoComplete="off" spellCheck={false} maxLength={MAX_PRIMER_TAIL_LENGTH} value={forwardTail} onChange={(event) => { setForwardTail(event.target.value.replace(/\s+/g, '').toUpperCase()); markCustom(); }} placeholder="Optional sequence" />
                 </label>
                 <label>
                   <span>Tail preset</span>
@@ -705,7 +720,7 @@ export function ClaudeSciencePrimerWorkspace({
                 </label>
                 <label>
                   <span>Reverse 5′ tail</span>
-                  <input className="motif-cs-primer-sequence-input" autoComplete="off" spellCheck={false} value={reverseTail} onChange={(event) => { setReverseTail(event.target.value.replace(/\s+/g, '').toUpperCase()); markCustom(); }} placeholder="Optional sequence" />
+                  <input className="motif-cs-primer-sequence-input" autoComplete="off" spellCheck={false} maxLength={MAX_PRIMER_TAIL_LENGTH} value={reverseTail} onChange={(event) => { setReverseTail(event.target.value.replace(/\s+/g, '').toUpperCase()); markCustom(); }} placeholder="Optional sequence" />
                 </label>
                 <label>
                   <span>Tail preset</span>
