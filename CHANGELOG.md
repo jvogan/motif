@@ -12,6 +12,17 @@
 - Updated the reviewed React, Node type, Vite/Vitest, accessibility, and
   Playwright toolchain; refreshed exact lifecycle metadata and retained bounded
   cooling-off checks for established registry packages.
+- Corrected SapI and XhoI primer-tail metadata, PCR provenance and overlapping
+  edit handling, and fail-closed primer/Gibson parameter limits.
+- Completed the salt-aware nearest-neighbor decision model, terminal and
+  self-complementary handling, explicit single-strand DNA mass chemistry, and
+  condition-stamped Gibson overlap estimates.
+- Preserved custom-enzyme cleavage and methylation semantics through portable
+  checkpoints, retained distinct restriction geometries, and completed the
+  Loop Assembly upper-level contract without inventing unspecified sites.
+- Bounded MSA, gel, and mutation work at the core API, required the external
+  manifest digest for rollback, and prevented a published version tag from
+  being reused by a later commit.
 
 ## 0.3.3 — 2026-08-08
 

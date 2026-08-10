@@ -15,7 +15,10 @@ export interface MutationResult {
 export const MAX_MUTATION_INSERTION_LENGTH = 250_000;
 export const MAX_MUTATION_RESULT_LENGTH = 250_000;
 export const MAX_MUTATION_OPERATION_UNITS = 1_000_000;
-const VALID_INSERTION_BASES = /^[ACGTURYSWKMBDHVN]+$/iu;
+export type MutationMolecule = 'dna' | 'rna' | 'protein';
+const VALID_DNA_INSERTION = /^[ACGTRYSWKMBDHVN]+$/iu;
+const VALID_RNA_INSERTION = /^[ACGURYSWKMBDHVN]+$/iu;
+const VALID_PROTEIN_INSERTION = /^[ACDEFGHIKLMNPQRSTVWYOUJBXZ*]+$/iu;
 
 // ---------------------------------------------------------------------------
 // Helpers (not exported)
@@ -201,6 +204,7 @@ export function applyInsertion(
   features: Feature[],
   pos: number,
   bases: string,
+  molecule: MutationMolecule = 'dna',
 ): MutationResult {
   if (typeof bases !== 'string') {
     throw new TypeError('Insertion bases must be a string.');
@@ -214,8 +218,15 @@ export function applyInsertion(
   if (bases.length > MAX_MUTATION_INSERTION_LENGTH) {
     throw new RangeError(`Insertion cannot exceed ${MAX_MUTATION_INSERTION_LENGTH.toLocaleString()} residues.`);
   }
-  if (!VALID_INSERTION_BASES.test(bases)) {
-    throw new Error('Insertion bases must contain only valid DNA/RNA nucleotide symbols.');
+  const validAlphabet = molecule === 'dna'
+    ? VALID_DNA_INSERTION
+    : molecule === 'rna'
+      ? VALID_RNA_INSERTION
+      : molecule === 'protein'
+        ? VALID_PROTEIN_INSERTION
+        : null;
+  if (validAlphabet === null || !validAlphabet.test(bases)) {
+    throw new Error(`Insertion residues must match the declared ${String(molecule)} alphabet.`);
   }
   if (raw.length > MAX_MUTATION_RESULT_LENGTH - bases.length) {
     throw new RangeError(`Insertion would exceed the ${MAX_MUTATION_RESULT_LENGTH.toLocaleString()}-residue result limit.`);

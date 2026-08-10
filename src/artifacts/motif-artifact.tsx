@@ -13,7 +13,7 @@ import {
   type GenBankQualifier,
   type GenBankQualifierTruncation,
 } from '../bio/genbank-parser';
-import { gcContent, meltingTemperature, molecularWeight, nucleotideComposition, proteinMolecularWeight } from '../bio/gc-content';
+import { calculateDnaMolecularWeight, gcContent, meltingTemperature, nucleotideComposition, proteinMolecularWeight } from '../bio/gc-content';
 import { findORFs } from '../bio/orf-detection';
 import type { DigestFragment } from '../bio/restriction-digest';
 import {
@@ -8078,7 +8078,7 @@ function App() {
       if (!alphabet.includes(ch)) return;
       event.preventDefault();
       if (insertMode || c >= len) {
-        commitEdit(applyInsertion(sequence, [], featureList, c - 1, ch), c + 1, { start: c, deletedLength: 0, insertedLength: 1, oldLength: len });
+        commitEdit(applyInsertion(sequence, [], featureList, c - 1, ch, sequenceType), c + 1, { start: c, deletedLength: 0, insertedLength: 1, oldLength: len });
       } else {
         if (sequence[c]?.toUpperCase() === ch) {
           setCaret(c + 1);
@@ -8100,7 +8100,7 @@ function App() {
       return;
     }
     commitEdit(
-      applyInsertion(sequence, [], features as Feature[], caret - 1, pasted),
+      applyInsertion(sequence, [], features as Feature[], caret - 1, pasted, sequenceType),
       caret + pasted.length,
       { start: caret, deletedLength: 0, insertedLength: pasted.length, oldLength: sequence.length },
     );
@@ -15402,12 +15402,19 @@ function AnalysisPanel({
     () => (translationCode.supported ? [...translationCode.table.starts].sort().join(', ') : ''),
     [translationCode],
   );
-  const mw = useMemo(
-    () => sequenceType === 'protein'
-      ? proteinMolecularWeight(record.sequence)
-      : molecularWeight(record.sequence, { ambiguity: 'average' }),
-    [record.sequence, sequenceType],
+  const nucleotideMass = useMemo(
+    () => sequenceType === 'dna'
+      ? calculateDnaMolecularWeight(record.sequence, { ambiguity: 'average', topology })
+      : null,
+    [record.sequence, sequenceType, topology],
   );
+  const mw = sequenceType === 'protein'
+    ? proteinMolecularWeight(record.sequence)
+    : sequenceType === 'dna' ? nucleotideMass?.mass : null;
+  const molecularWeightStatus = nucleotideMass?.status;
+  const massText = mw === null || mw === undefined
+    ? 'n/a'
+    : `${molecularWeightStatus === 'ambiguous' ? '≈ ' : ''}${formatMass(mw)}`;
   const tm = useMemo(() => isNucleotide ? meltingTemperature(record.sequence) : null, [isNucleotide, record.sequence]);
   const gc = useMemo(() => isNucleotide ? gcContent(record.sequence) : 0, [isNucleotide, record.sequence]);
   const statsText = useMemo(() => JSON.stringify({
@@ -15418,7 +15425,13 @@ function AnalysisPanel({
     length: record.sequence.length,
     gc: isNucleotide ? gc : undefined,
     tm,
-    molecularWeight: mw,
+    molecularWeight: mw ?? undefined,
+    molecularWeightStatus,
+    molecularWeightAssumptions: sequenceType !== 'dna' ? undefined : {
+      mode: 'average',
+      topology,
+      linearEnds: topology === 'linear' ? "5'-phosphate / 3'-hydroxyl" : undefined,
+    },
     composition,
     orfCount: allOrfs.length,
     translationTable: isNucleotide && translationCode.supported
@@ -15433,7 +15446,7 @@ function AnalysisPanel({
       status: orf.status ?? 'complete',
       warnings: orf.warnings ?? [],
     })),
-  }, null, 2), [allOrfs.length, composition, gc, isNucleotide, mw, record.id, record.name, record.sequence.length, sequenceType, tm, topology, translationCode, visibleOrfs]);
+  }, null, 2), [allOrfs.length, composition, gc, isNucleotide, molecularWeightStatus, mw, record.id, record.name, record.sequence.length, sequenceType, tm, topology, translationCode, visibleOrfs]);
 
   return (
     <details className="motif-cs-panel" name="motif-cs-tools" data-rail-tool="analysis">
@@ -15446,7 +15459,7 @@ function AnalysisPanel({
         <RailPopoverTitle title="Analysis" meta={isNucleotide ? `${allOrfs.length} ORFs ≥${ANALYSIS_ORF_MIN_AA} aa` : 'protein'} />
         <div className="motif-cs-stat-grid">
           <div className="motif-cs-stat"><span>Length</span><strong>{sequenceLengthLabel(record.sequence.length, sequenceType)}</strong></div>
-          <div className="motif-cs-stat"><span>Mass</span><strong>{formatMass(mw)}</strong></div>
+          <div className="motif-cs-stat" title={sequenceType === 'rna' ? 'RNA mass is not evaluated by the DNA mass model.' : nucleotideMass === null ? undefined : "Average single-strand mass; linear records assume a 5'-phosphate and 3'-hydroxyl."}><span>Mass</span><strong>{massText}</strong></div>
           {isNucleotide ? (
             <>
               <div className="motif-cs-stat"><span>GC</span><strong>{formatPercent(gc)}</strong></div>

@@ -47,7 +47,10 @@ describe('mutation feature-location integrity', () => {
 
   it('bounds nucleotide insertion alphabet, size, and work before allocating derived state', () => {
     expect(applyInsertion('ATGC', [], [], 1, 'ac').raw).toBe('ATACGC');
-    expect(() => applyInsertion('ATGC', [], [], 1, 'X')).toThrow(/DNA\/RNA nucleotide/i);
+    expect(() => applyInsertion('ATGC', [], [], 1, 'X')).toThrow(/declared dna alphabet/i);
+    expect(applyInsertion('MKW', [], [], 1, 'X*', 'protein').raw).toBe('MKX*W');
+    expect(applyInsertion('ACGU', [], [], 1, 'R', 'rna').raw).toBe('ACRGU');
+    expect(() => applyInsertion('MKW', [], [], 1, 'X*', 'dna')).toThrow(/declared dna alphabet/i);
     expect(() => applyInsertion('ATGC', [], [], 1, 'A'.repeat(MAX_MUTATION_INSERTION_LENGTH + 1)))
       .toThrow(/cannot exceed/i);
     expect(() => applyInsertion('A'.repeat(MAX_MUTATION_RESULT_LENGTH), [], [], 0, 'A'))

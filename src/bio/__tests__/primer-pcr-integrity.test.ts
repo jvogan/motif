@@ -325,6 +325,7 @@ describe('primer, PCR, and Tm integrity', () => {
       { targetStart: 40, targetEnd: 60, minGC: Number.POSITIVE_INFINITY },
       { targetStart: 40, targetEnd: 60, flankingWindow: Number.NaN },
       { targetStart: 40, targetEnd: 60, maxHairpinDeltaG: Number.NaN },
+      { targetStart: 40, targetEnd: 60, maxSelfDimerDeltaG: Number.POSITIVE_INFINITY },
     ]) {
       expect(normalizePrimerDesignParams(sequence.length, invalidParams, 'forward')).toBeNull();
     }

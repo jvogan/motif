@@ -79,13 +79,13 @@ export interface PrimerDesignParams {
   /**
    * Hairpin ΔG37 cutoff (kcal/mol). Candidates whose
    * predicted hairpin ΔG is MORE NEGATIVE than this value are rejected.
-   * Default -3.0 (Primer3 standard). Pass `null` or `+Infinity` to disable.
+   * Default -3.0 (Primer3 standard). Pass `null` to disable.
    */
   maxHairpinDeltaG?: number | null;
   /**
    * Self-dimer ΔG37 cutoff (kcal/mol). Candidates whose
    * predicted self-dimer ΔG is MORE NEGATIVE than this value are rejected.
-   * Default -5.0 (Primer3 standard). Pass `null` or `+Infinity` to disable.
+   * Default -5.0 (Primer3 standard). Pass `null` to disable.
    */
   maxSelfDimerDeltaG?: number | null;
 }
@@ -367,7 +367,7 @@ export function normalizePrimerDesignParams(
     : raw.maxHairpinDeltaG === null
       ? null
       : typeof raw.maxHairpinDeltaG === 'number'
-        && (Number.isFinite(raw.maxHairpinDeltaG) || raw.maxHairpinDeltaG === Number.POSITIVE_INFINITY)
+        && Number.isFinite(raw.maxHairpinDeltaG)
         ? raw.maxHairpinDeltaG
         : Number.NaN;
   const maxSelfDimerDeltaG = raw.maxSelfDimerDeltaG === undefined
@@ -375,7 +375,7 @@ export function normalizePrimerDesignParams(
     : raw.maxSelfDimerDeltaG === null
       ? null
       : typeof raw.maxSelfDimerDeltaG === 'number'
-        && (Number.isFinite(raw.maxSelfDimerDeltaG) || raw.maxSelfDimerDeltaG === Number.POSITIVE_INFINITY)
+        && Number.isFinite(raw.maxSelfDimerDeltaG)
         ? raw.maxSelfDimerDeltaG
         : Number.NaN;
   if (

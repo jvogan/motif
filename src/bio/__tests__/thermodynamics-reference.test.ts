@@ -19,6 +19,7 @@ import {
 import { analyzeOverlap } from '../gibson-assembly';
 
 const balanced20 = 'ACGTACGTACGTACGTACGT';
+const highGc21 = 'GCGCCCCCCGACCGAGCGCGC';
 
 describe('condition-matched nearest-neighbor reference fixtures', () => {
   it('matches all three Owczarzy 2008 salt-decision branches', () => {
@@ -33,6 +34,11 @@ describe('condition-matched nearest-neighbor reference fixtures', () => {
       mgConcentration: 5,
       dntpConcentration: 0.2,
     }).tm).toBe(64.2); // 0.22 <= R < 6: mixed
+    expect(calculateTm(highGc21, {
+      naConcentration: 10,
+      mgConcentration: 5,
+      dntpConcentration: 0.2,
+    }).tm).toBe(82.1); // mixed, high-GC reference fixture
     expect(calculateTm(balanced20, {
       naConcentration: 5,
       mgConcentration: 1.5,
@@ -118,7 +124,7 @@ describe('Gibson overlap thermodynamic provenance', () => {
   });
 
   it('records the short-overlap fallback rather than claiming nearest-neighbor salt correction', () => {
-    const analysis = analyzeOverlap('AAAA', 'AAAA', 4, 4);
+    const analysis = analyzeOverlap('AAAAAAAA', 'AAAAAAAA', 8, 8);
     expect(analysis.selected?.tmEvidence).toMatchObject({
       method: 'wallace',
       saltCorrection: 'none',
@@ -126,8 +132,9 @@ describe('Gibson overlap thermodynamic provenance', () => {
   });
 
   it('rejects non-finite or unbounded overlap ranges in the core API', () => {
-    expect(() => analyzeOverlap('AAAA', 'AAAA', Number.NEGATIVE_INFINITY, 20)).toThrow(/finite/i);
-    expect(() => analyzeOverlap('AAAA', 'AAAA', 10, Number.NaN)).toThrow(/finite/i);
-    expect(() => analyzeOverlap('AAAA', 'AAAA', 1, 201)).toThrow(/between 1 and 200/i);
+    expect(analyzeOverlap('AAAAAAAA', 'AAAAAAAA', Number.NEGATIVE_INFINITY, 20).reason).toBe('invalid_input');
+    expect(analyzeOverlap('AAAAAAAA', 'AAAAAAAA', 10, Number.NaN).reason).toBe('invalid_input');
+    expect(analyzeOverlap('AAAAAAAA', 'AAAAAAAA', 7, 200).reason).toBe('invalid_input');
+    expect(analyzeOverlap('A'.repeat(201), 'A'.repeat(201), 8, 201).reason).toBe('invalid_input');
   });
 });
