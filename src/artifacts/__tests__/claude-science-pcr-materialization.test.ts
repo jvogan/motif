@@ -306,7 +306,33 @@ describe('PCR amplicon materialization', () => {
       color: '#000000',
       metadata: {},
     };
-    const selected = selection(pairFor(template, 4, 14, 20, 30, 'GGATCC', 'CATATG'));
+    const tmEvidence = {
+      conditionPresetId: 'custom',
+      conditionPresetName: 'Custom bounded Tm conditions',
+      model: 'santalucia-1998-nearest-neighbor',
+      engine: 'motif-tm-calculator',
+      engineVersion: '1',
+      options: {
+        method: 'nearest-neighbor',
+        naConcentration: 75,
+        mgConcentration: 2,
+        dntpConcentration: 0.8,
+        primerConcentration: 100,
+        saltCorrection: 'owczarzy',
+        selfComplementarity: 'auto',
+      },
+    };
+    const evidenceReview = {
+      required: true,
+      acknowledged: true,
+      reasonCodes: ['cross-dimer-3-prime'],
+      acknowledgedAt: '2026-07-17T12:00:00.000Z',
+    };
+    const selected = {
+      ...selection(pairFor(template, 4, 14, 20, 30, 'GGATCC', 'CATATG')),
+      tmEvidence,
+      evidenceReview,
+    };
     const templateRecord = source(template, 'linear', [feature]);
     templateRecord.translationTableId = 2;
     const sourceSnapshot = structuredClone(templateRecord);
@@ -346,6 +372,8 @@ describe('PCR amplicon materialization', () => {
         primerDesignResultId: 'primer-result',
         productSha256: sha256HexSync(result.record.seq),
         translationTableId: 2,
+        tmEvidence,
+        evidenceReview,
         cloningPreparation: {
           requestSha256: 'a'.repeat(64),
           actionId: 'prep-action',
@@ -371,12 +399,14 @@ describe('PCR amplicon materialization', () => {
       kind: 'pcr',
       inputRecordIds: ['template-1'],
       dependsOnResultIds: ['primer-result'],
-      parameters: { topology: 'linear' },
+      parameters: { topology: 'linear', tmEvidence, evidenceReview },
       provenance: {
         engineVersion: result.simulation.provenance.engineVersion,
         metadata: {
           productAssembly: result.simulation.provenance.productAssembly,
           tailPolicy: result.simulation.provenance.tailPolicy,
+          tmEvidence,
+          evidenceReview,
         },
       },
       data: {

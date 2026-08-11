@@ -15,8 +15,8 @@ test.describe('Claude Science primer workspace responsive footer', () => {
   test.describe.configure({ retries: 0 });
   test.skip(!artifactUrl, 'Set MOTIF_ARTIFACT_URL to run the standalone artifact audit.');
 
-  test('keeps every action visible and mouse- and keyboard-operable at 760px', async ({ page }) => {
-    await page.setViewportSize({ width: 760, height: 900 });
+  for (const width of [760, 390]) test(`keeps every action visible and mouse- and keyboard-operable at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
     await page.addInitScript(() => {
       window.localStorage.clear();
       window.sessionStorage.clear();

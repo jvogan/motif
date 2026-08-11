@@ -12,14 +12,26 @@ import {
   MAX_PRIMER_BINDING_LENGTH,
   MAX_PRIMER_TAIL_LENGTH,
   MIN_PRIMER_BINDING_LENGTH,
+  CUSTOM_PRIMER_TM_CONDITION_PRESET_ID,
+  DEFAULT_PRIMER_TM_CONDITION_PRESET_ID,
+  DEFAULT_TM_OPTIONS,
+  PRIMER_TM_CONDITION_PRESETS,
   designPrimerPairWithDiagnostics,
   primerToFeature,
   type PrimerCandidate,
   type PrimerDesignParams,
   type PrimerPair,
   type PrimerPairResult,
+  type PrimerTmEvidence,
 } from '../bio/primer-design';
 import {
+  MAX_DIVALENT_CONCENTRATION_MILLIMOLAR,
+  MAX_NA_CONCENTRATION_MILLIMOLAR,
+  MAX_PRIMER_CONCENTRATION_NANOMOLAR,
+  type TmOptions,
+} from '../bio/tm-calculator';
+import {
+  DEFAULT_MAX_DIMER_DG,
   predictHairpin,
   predictPrimerDimer,
   predictSelfDimer,
@@ -66,8 +78,17 @@ export type ClaudeSciencePrimerHandoff = {
   pair: PrimerPair;
   pairNumber: number;
   parameters: PrimerDesignParams;
+  tmEvidence?: PrimerTmEvidence;
+  evidenceReview?: ClaudeSciencePrimerEvidenceReview;
   /** Present only when this result belongs to a reviewed cloning-plan action. */
   preparationContext?: ClaudeSciencePrimerPreparationContext;
+};
+
+export type ClaudeSciencePrimerEvidenceReview = {
+  required: boolean;
+  acknowledged: boolean;
+  reasonCodes: readonly string[];
+  acknowledgedAt?: string;
 };
 
 export type ClaudeSciencePrimerExport = ClaudeSciencePrimerHandoff & {
@@ -199,6 +220,11 @@ function clamp(value: number, minimum: number, maximum: number): number {
   return Math.max(minimum, Math.min(maximum, Math.round(value)));
 }
 
+function boundDecimal(value: number, minimum: number, maximum: number): number {
+  if (!Number.isFinite(value)) return minimum;
+  return Math.max(minimum, Math.min(maximum, value));
+}
+
 function defaultTarget(
   sequenceLength: number,
   selectedRange?: { start: number; end: number } | null,
@@ -264,6 +290,19 @@ function qualityState(deltaG: number, cutoff: number, status: 'exact' | 'ambiguo
   return status !== 'exact' || deltaG < cutoff ? 'review' : 'pass';
 }
 
+function evidenceReviewLabel(code: string): string {
+  switch (code) {
+    case 'cross-dimer-cutoff': return 'Cross-dimer ΔG is below the default −5 kcal/mol review cutoff.';
+    case 'cross-dimer-3-prime': return 'The strongest cross-dimer alignment involves a primer 3′ end.';
+    case 'cross-dimer-ambiguous': return 'Cross-dimer evidence includes ambiguous nucleotide symbols.';
+    case 'cross-dimer-work-limit': return 'Cross-dimer scoring reached its bounded work limit.';
+    case 'secondary-structure-ambiguous': return 'Hairpin or self-dimer evidence includes ambiguous symbols.';
+    case 'secondary-structure-work-limit': return 'Hairpin or self-dimer scoring reached its bounded work limit.';
+    case 'search-evidence-incomplete': return 'Candidate search or pool pairing was bounded; the returned ranking is not exhaustive.';
+    default: return 'Additional interaction evidence requires review.';
+  }
+}
+
 function Metric({ label, value, state }: { label: string; value: string; state?: 'pass' | 'review' }) {
   return (
     <span className="motif-cs-primer-metric" data-state={state}>
@@ -320,9 +359,17 @@ export function ClaudeSciencePrimerWorkspace({
   const [maxGC, setMaxGC] = useState(initialPreset.maxGC);
   const [flankingWindow, setFlankingWindow] = useState(initialPreset.flankingWindow);
   const [requireGcClamp, setRequireGcClamp] = useState(true);
+  const [tmConditionPresetId, setTmConditionPresetId] = useState<string>(DEFAULT_PRIMER_TM_CONDITION_PRESET_ID);
+  const [customTmNa, setCustomTmNa] = useState(DEFAULT_TM_OPTIONS.naConcentration ?? 50);
+  const [customTmMg, setCustomTmMg] = useState(DEFAULT_TM_OPTIONS.mgConcentration ?? 1.5);
+  const [customTmDntp, setCustomTmDntp] = useState(DEFAULT_TM_OPTIONS.dntpConcentration ?? 0.2);
+  const [customTmPrimer, setCustomTmPrimer] = useState(DEFAULT_TM_OPTIONS.primerConcentration ?? 250);
+  const [customTmMethod, setCustomTmMethod] = useState<NonNullable<TmOptions['method']>>(DEFAULT_TM_OPTIONS.method ?? 'nearest-neighbor');
+  const [customTmSaltCorrection, setCustomTmSaltCorrection] = useState<NonNullable<TmOptions['saltCorrection']>>(DEFAULT_TM_OPTIONS.saltCorrection ?? 'owczarzy');
   const [forwardTail, setForwardTail] = useState(() => normalizeInitialTail(initialForwardTail));
   const [reverseTail, setReverseTail] = useState(() => normalizeInitialTail(initialReverseTail));
   const [selectedPairIndex, setSelectedPairIndex] = useState(0);
+  const [acknowledgedEvidenceKey, setAcknowledgedEvidenceKey] = useState('');
   const [status, setStatus] = useState('');
   const [busyAction, setBusyAction] = useState('');
 
@@ -428,6 +475,26 @@ export function ClaudeSciencePrimerWorkspace({
     return '';
   }, [gcInvalid, lengthInvalid, normalizedSequence, targetRangeInvalid, targetTmInvalid]);
 
+  const tmConditionPreset = useMemo(
+    () => tmConditionPresetId === CUSTOM_PRIMER_TM_CONDITION_PRESET_ID
+      ? {
+          id: CUSTOM_PRIMER_TM_CONDITION_PRESET_ID,
+          name: 'Custom bounded screen',
+          description: 'Custom calculator concentrations; named proprietary formulations are not modeled because this engine exposes concentration terms only. Verify reaction-specific conditions externally.',
+          options: {
+            method: customTmMethod,
+            naConcentration: customTmNa,
+            mgConcentration: customTmMg,
+            dntpConcentration: customTmDntp,
+            primerConcentration: customTmPrimer,
+            saltCorrection: customTmSaltCorrection,
+          } satisfies TmOptions,
+        }
+      : PRIMER_TM_CONDITION_PRESETS.find((preset) => preset.id === tmConditionPresetId)
+        ?? PRIMER_TM_CONDITION_PRESETS[0],
+    [customTmDntp, customTmMethod, customTmMg, customTmNa, customTmPrimer, customTmSaltCorrection, tmConditionPresetId],
+  );
+
   const parameters = useMemo<PrimerDesignParams>(() => ({
     targetStart: targetStart - 1,
     targetEnd,
@@ -441,11 +508,11 @@ export function ClaudeSciencePrimerWorkspace({
     requireGcClamp,
     forwardTail: forwardTail.trim().toUpperCase() || undefined,
     reverseTail: reverseTail.trim().toUpperCase() || undefined,
-    // Keep the visible workspace's established review/ranking behavior; API
-    // callers can opt into the explicit pair-level cutoff.
-    maxCrossDimerDeltaG: null,
+    tmConditionPresetId,
+    tmOptions: { ...tmConditionPreset.options },
+    maxCrossDimerDeltaG: DEFAULT_MAX_DIMER_DG,
     maxPairs: MAX_VISIBLE_PAIRS,
-  }), [flankingWindow, forwardTail, maxGC, maxLength, minGC, minLength, requireGcClamp, reverseTail, targetEnd, targetStart, targetTm, tmTolerance]);
+  }), [flankingWindow, forwardTail, maxGC, maxLength, minGC, minLength, requireGcClamp, reverseTail, targetEnd, targetStart, targetTm, tmConditionPreset, tmConditionPresetId, tmTolerance]);
 
   const result = useMemo<PrimerPairResult | null>(() => {
     if (validationMessage) return null;
@@ -453,6 +520,10 @@ export function ClaudeSciencePrimerWorkspace({
   }, [normalizedSequence, parameters, validationMessage]);
   const pairs = useMemo(() => result?.pairs ?? [], [result]);
   const selectedPair = pairs[selectedPairIndex] ?? pairs[0] ?? null;
+
+  const selectedPairKey = selectedPair
+    ? `${selectedPair.forward.start}:${selectedPair.forward.end}:${selectedPair.reverse.start}:${selectedPair.reverse.end}:${selectedPair.forward.fullSequence}:${selectedPair.reverse.fullSequence}`
+    : '';
 
   useEffect(() => {
     if (selectedPairIndex >= pairs.length) setSelectedPairIndex(0);
@@ -468,6 +539,41 @@ export function ClaudeSciencePrimerWorkspace({
     return { forwardHairpin, reverseHairpin, forwardDimer, reverseDimer, crossDimer };
   }, [selectedPair]);
 
+  const evidenceReviewReasons = useMemo(() => {
+    if (!selectedDiagnostics) return [] as string[];
+    const reasons: string[] = [];
+    const crossDimer = selectedDiagnostics.crossDimer;
+    if (crossDimer.status === 'exact' && crossDimer.deltaG < DEFAULT_MAX_DIMER_DG) {
+      reasons.push('cross-dimer-cutoff');
+    }
+    if (crossDimer.threePrimeParticipation !== 'none') {
+      reasons.push('cross-dimer-3-prime');
+    }
+    if (crossDimer.status === 'ambiguous') reasons.push('cross-dimer-ambiguous');
+    if (crossDimer.status === 'work-limit') reasons.push('cross-dimer-work-limit');
+    if ([selectedDiagnostics.forwardHairpin, selectedDiagnostics.reverseHairpin, selectedDiagnostics.forwardDimer, selectedDiagnostics.reverseDimer]
+      .some((diagnostic) => diagnostic.status === 'ambiguous')) {
+      reasons.push('secondary-structure-ambiguous');
+    }
+    if ([selectedDiagnostics.forwardHairpin, selectedDiagnostics.reverseHairpin, selectedDiagnostics.forwardDimer, selectedDiagnostics.reverseDimer]
+      .some((diagnostic) => diagnostic.status === 'work-limit')) {
+      reasons.push('secondary-structure-work-limit');
+    }
+    if ((result?.warnings ?? []).some((warning) => /work units|incomplete|not exhaustive/i.test(warning))) {
+      reasons.push('search-evidence-incomplete');
+    }
+    return [...new Set(reasons)];
+  }, [result?.warnings, selectedDiagnostics]);
+
+  const evidenceReviewRequired = evidenceReviewReasons.length > 0;
+  const evidenceReviewKey = useMemo(() => JSON.stringify({
+    pair: selectedPairKey,
+    parameters,
+    reasonCodes: evidenceReviewReasons,
+  }), [evidenceReviewReasons, parameters, selectedPairKey]);
+  const evidenceAcknowledged = evidenceReviewRequired && acknowledgedEvidenceKey === evidenceReviewKey;
+  const actionBlockedByReview = evidenceReviewRequired && !evidenceAcknowledged;
+
   const handoff = useMemo<ClaudeSciencePrimerHandoff | null>(() => selectedPair ? ({
     recordId: record.id,
     recordName: record.name,
@@ -476,8 +582,15 @@ export function ClaudeSciencePrimerWorkspace({
     pair: selectedPair,
     pairNumber: Math.max(1, pairs.indexOf(selectedPair) + 1),
     parameters,
+    ...(result?.tmEvidence ? { tmEvidence: result.tmEvidence } : {}),
+    evidenceReview: {
+      required: evidenceReviewRequired,
+      acknowledged: !evidenceReviewRequired || evidenceAcknowledged,
+      reasonCodes: evidenceReviewReasons,
+      ...(evidenceReviewRequired && evidenceAcknowledged ? { acknowledgedAt: new Date().toISOString() } : {}),
+    },
     ...(preparationContext ? { preparationContext: { ...preparationContext } } : {}),
-  }) : null, [intent, pairs, parameters, preparationContext, record.id, record.name, selectedPair, targetEnd, targetStart]);
+  }) : null, [evidenceAcknowledged, evidenceReviewReasons, evidenceReviewRequired, intent, pairs, parameters, preparationContext, record.id, record.name, result?.tmEvidence, selectedPair, targetEnd, targetStart]);
 
   const applyPreset = useCallback((preset: PrimerPreset) => {
     previewRangeKeyRef.current = null;
@@ -511,6 +624,10 @@ export function ClaudeSciencePrimerWorkspace({
 
   const runAction = useCallback(async (label: string, action: (() => void | Promise<void>) | undefined) => {
     if (!action || busyAction) return;
+    if (actionBlockedByReview) {
+      setStatus('Review the flagged interaction evidence and acknowledge it before continuing.');
+      return;
+    }
     setBusyAction(label);
     setStatus('');
     try {
@@ -521,7 +638,7 @@ export function ClaudeSciencePrimerWorkspace({
     } finally {
       setBusyAction('');
     }
-  }, [busyAction]);
+  }, [actionBlockedByReview, busyAction]);
 
   const copyPair = useCallback(() => {
     if (!handoff || !onCopy) return;
@@ -676,6 +793,19 @@ export function ClaudeSciencePrimerWorkspace({
                 <input aria-invalid={targetTmInvalid || undefined} aria-describedby={fieldDescription(targetTmInvalid)} name="primer-target-tm" type="number" inputMode="decimal" autoComplete="off" min={40} max={80} step={1} value={targetTm} onChange={(event) => { setTargetTm(Number(event.target.value)); markCustom(); }} />
               </label>
               <label>
+                <span>Tm condition</span>
+                <select
+                  aria-describedby={statusId}
+                  aria-label="Tm condition preset"
+                  name="primer-tm-condition"
+                  value={tmConditionPresetId}
+                  onChange={(event) => { setTmConditionPresetId(event.target.value); setAcknowledgedEvidenceKey(''); markCustom(); }}
+                >
+                  <option value={CUSTOM_PRIMER_TM_CONDITION_PRESET_ID}>Custom bounded screen</option>
+                  {PRIMER_TM_CONDITION_PRESETS.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
+                </select>
+              </label>
+              <label>
                 <span>Tolerance <small>± °C</small></span>
                 <input aria-describedby={statusId} name="primer-tm-tolerance" type="number" inputMode="decimal" autoComplete="off" min={1} max={15} step={1} value={tmTolerance} onChange={(event) => { setTmTolerance(clamp(Number(event.target.value), 1, 15)); markCustom(); }} />
               </label>
@@ -688,6 +818,47 @@ export function ClaudeSciencePrimerWorkspace({
                 <input aria-invalid={lengthInvalid || undefined} aria-describedby={fieldDescription(lengthInvalid)} name="primer-max-length" type="number" inputMode="numeric" autoComplete="off" min={MIN_PRIMER_BINDING_LENGTH} max={MAX_PRIMER_BINDING_LENGTH} step={1} value={maxLength} onChange={(event) => { setMaxLength(Number(event.target.value)); markCustom(); }} />
               </label>
             </div>
+            {tmConditionPresetId === CUSTOM_PRIMER_TM_CONDITION_PRESET_ID ? (
+              <div className="motif-cs-primer-custom-tm" data-testid="primer-custom-tm-options">
+                <p className="motif-cs-primer-help">
+                  Custom inputs are bounded to this calculator’s supported concentration ranges. dNTP is the total concentration across dATP, dCTP, dGTP, and dTTP; named proprietary formulations are not modeled because this engine exposes concentration terms only.
+                </p>
+                <div className="motif-cs-primer-field-grid">
+                  <label>
+                    <span>Na+ <small>mM</small></span>
+                    <input name="primer-tm-na" type="number" inputMode="decimal" autoComplete="off" min={0.001} max={MAX_NA_CONCENTRATION_MILLIMOLAR} step={0.1} value={customTmNa} onChange={(event) => { setCustomTmNa(boundDecimal(Number(event.target.value), 0.001, MAX_NA_CONCENTRATION_MILLIMOLAR)); markCustom(); }} />
+                  </label>
+                  <label>
+                    <span>Mg2+ <small>mM</small></span>
+                    <input name="primer-tm-mg" type="number" inputMode="decimal" autoComplete="off" min={0} max={MAX_DIVALENT_CONCENTRATION_MILLIMOLAR} step={0.1} value={customTmMg} onChange={(event) => { setCustomTmMg(boundDecimal(Number(event.target.value), 0, MAX_DIVALENT_CONCENTRATION_MILLIMOLAR)); markCustom(); }} />
+                  </label>
+                  <label>
+                    <span>Total dNTP <small>mM</small></span>
+                    <input name="primer-tm-dntp" type="number" inputMode="decimal" autoComplete="off" min={0} max={MAX_DIVALENT_CONCENTRATION_MILLIMOLAR} step={0.1} value={customTmDntp} onChange={(event) => { setCustomTmDntp(boundDecimal(Number(event.target.value), 0, MAX_DIVALENT_CONCENTRATION_MILLIMOLAR)); markCustom(); }} />
+                  </label>
+                  <label>
+                    <span>Primer <small>nM</small></span>
+                    <input name="primer-tm-primer" type="number" inputMode="decimal" autoComplete="off" min={0.001} max={MAX_PRIMER_CONCENTRATION_NANOMOLAR} step={1} value={customTmPrimer} onChange={(event) => { setCustomTmPrimer(boundDecimal(Number(event.target.value), 0.001, MAX_PRIMER_CONCENTRATION_NANOMOLAR)); markCustom(); }} />
+                  </label>
+                  <label>
+                    <span>Tm method</span>
+                    <select name="primer-tm-method" value={customTmMethod} onChange={(event) => { setCustomTmMethod(event.target.value as NonNullable<TmOptions['method']>); markCustom(); }}>
+                      <option value="nearest-neighbor">SantaLucia nearest-neighbor</option>
+                      <option value="wallace">Wallace</option>
+                      <option value="gc-adjusted">GC-adjusted</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>Salt correction</span>
+                    <select name="primer-tm-salt" value={customTmSaltCorrection} onChange={(event) => { setCustomTmSaltCorrection(event.target.value as NonNullable<TmOptions['saltCorrection']>); markCustom(); }}>
+                      <option value="owczarzy">Owczarzy</option>
+                      <option value="santalucia">SantaLucia</option>
+                      <option value="wetmur">Wetmur</option>
+                    </select>
+                  </label>
+                </div>
+              </div>
+            ) : null}
           </section>
 
           <details className="motif-cs-primer-advanced">
@@ -735,7 +906,9 @@ export function ClaudeSciencePrimerWorkspace({
                   </select>
                 </label>
               </div>
-              <p className="motif-cs-primer-help">Tm and GC are calculated from the annealing region. Full-length tail sequences are included in structure diagnostics.</p>
+              <p className="motif-cs-primer-help">
+                {tmConditionPreset.description} Tm and GC use the annealing region; full-length tail sequences are included in structure diagnostics.
+              </p>
             </div>
           </details>
         </aside>
@@ -748,6 +921,18 @@ export function ClaudeSciencePrimerWorkspace({
             </div>
             {!validationMessage && pairs.length > 0 ? <span className="motif-cs-primer-result-badge">Best ΔTm {pairs[0].tmDifference.toFixed(1)} °C</span> : null}
           </div>
+
+          {result && result.warnings && result.warnings.length > 0 ? (
+            <div className="motif-cs-primer-search-receipt" data-testid="primer-search-receipt">
+              <strong>Search receipt</strong>
+              <p>{result.warnings.join(' ')}</p>
+              {result.forwardPool.truncated || result.reversePool.truncated ? (
+                <small>
+                  Forward pool: {result.forwardPool.retainedCount.toLocaleString()} retained / {result.forwardPool.enumeratedCount.toLocaleString()} found · Reverse pool: {result.reversePool.retainedCount.toLocaleString()} retained / {result.reversePool.enumeratedCount.toLocaleString()} found.
+                </small>
+              ) : null}
+            </div>
+          ) : null}
 
           {validationMessage ? (
             <div className="motif-cs-primer-empty" role="alert" id={validationMessageId}><strong>Cannot design primers</strong><p>{validationMessage}</p></div>
@@ -802,11 +987,29 @@ export function ClaudeSciencePrimerWorkspace({
                     </div>
                   ))}
 
-                  <div className="motif-cs-primer-cross-check" data-state={qualityState(selectedDiagnostics.crossDimer.deltaG, -5, selectedDiagnostics.crossDimer.status)}>
+                  <div className="motif-cs-primer-cross-check" data-state={qualityState(selectedDiagnostics.crossDimer.deltaG, DEFAULT_MAX_DIMER_DG, selectedDiagnostics.crossDimer.status)}>
                     <span>Cross-dimer check</span>
                     <strong>ΔG {selectedDiagnostics.crossDimer.deltaG.toFixed(1)} kcal/mol{selectedDiagnostics.crossDimer.status === 'exact' ? '' : ' · review'}</strong>
-                    <small>{selectedDiagnostics.crossDimer.status !== 'exact' || selectedDiagnostics.crossDimer.deltaG < -5 ? 'Review before ordering' : 'No strong pair interaction predicted'}</small>
+                    <small>{selectedDiagnostics.crossDimer.status !== 'exact' || selectedDiagnostics.crossDimer.deltaG < DEFAULT_MAX_DIMER_DG ? 'Review before ordering' : 'No strong pair interaction predicted'}</small>
                   </div>
+
+                  {evidenceReviewRequired ? (
+                    <div className="motif-cs-primer-evidence-review" role="group" aria-label="Interaction evidence review" data-testid="primer-evidence-review">
+                      <strong>Review required before downstream actions</strong>
+                      <ul>
+                        {evidenceReviewReasons.map((reason) => <li key={reason}>{evidenceReviewLabel(reason)}</li>)}
+                      </ul>
+                      <label>
+                        <input
+                          type="checkbox"
+                          data-testid="primer-evidence-acknowledgment"
+                          checked={evidenceAcknowledged}
+                          onChange={(event) => setAcknowledgedEvidenceKey(event.target.checked ? evidenceReviewKey : '')}
+                        />
+                        I reviewed the flagged evidence and accept this pair for the selected downstream action.
+                      </label>
+                    </div>
+                  ) : null}
                 </section>
               ) : null}
             </>
@@ -819,15 +1022,15 @@ export function ClaudeSciencePrimerWorkspace({
           {status || selectedSummary || 'Select a ranked pair to inspect its evidence.'}
         </div>
         <div className="motif-cs-primer-footer-actions">
-          <button type="button" disabled={!handoff || !onCopy || !!busyAction} onClick={copyPair}>Copy pair</button>
-          <button type="button" disabled={!handoff || !onExport || !!busyAction} onClick={exportPair}>Export FASTA</button>
-          <button type="button" disabled={!handoff || !onSaveDesign || !!busyAction} onClick={() => { if (handoff) void runAction('Save design', () => onSaveDesign?.(handoff)); }}>Save design</button>
-          <button type="button" disabled={!handoff || !onAddAnnotations || !!busyAction} onClick={addAnnotations}>Add annotations</button>
-          <button type="button" disabled={!handoff || !onSimulatePcr || !!busyAction} onClick={() => { if (handoff) void runAction('PCR simulation', () => onSimulatePcr?.(handoff)); }}>Simulate PCR</button>
+          <button type="button" disabled={!handoff || !onCopy || actionBlockedByReview || !!busyAction} onClick={copyPair}>Copy pair</button>
+          <button type="button" disabled={!handoff || !onExport || actionBlockedByReview || !!busyAction} onClick={exportPair}>Export FASTA</button>
+          <button type="button" disabled={!handoff || !onSaveDesign || actionBlockedByReview || !!busyAction} onClick={() => { if (handoff) void runAction('Save design', () => onSaveDesign?.(handoff)); }}>Save design</button>
+          <button type="button" disabled={!handoff || !onAddAnnotations || actionBlockedByReview || !!busyAction} onClick={addAnnotations}>Add annotations</button>
+          <button type="button" disabled={!handoff || !onSimulatePcr || actionBlockedByReview || !!busyAction} onClick={() => { if (handoff) void runAction('PCR simulation', () => onSimulatePcr?.(handoff)); }}>Simulate PCR</button>
           {preparationContext ? (
             <button
               type="button"
-              disabled={!handoff || !onUseForCloning || !!busyAction}
+              disabled={!handoff || !onUseForCloning || actionBlockedByReview || !!busyAction}
               onClick={() => {
                 if (handoff) void runAction('Save primer plan only', () => onUseForCloning?.(handoff));
               }}
@@ -835,7 +1038,7 @@ export function ClaudeSciencePrimerWorkspace({
           ) : (
             <button
               type="button"
-              disabled={!handoff || !onCreateAmplicon || !!busyAction}
+              disabled={!handoff || !onCreateAmplicon || actionBlockedByReview || !!busyAction}
               onClick={() => {
                 if (handoff) void runAction('Create amplicon record', () => onCreateAmplicon?.(handoff));
               }}
@@ -844,7 +1047,7 @@ export function ClaudeSciencePrimerWorkspace({
           <button
             className="motif-cs-primer-primary-action"
             type="button"
-            disabled={!handoff || !(preparationContext ? onCreateAmplicon : onUseForCloning) || !!busyAction}
+            disabled={!handoff || !(preparationContext ? onCreateAmplicon : onUseForCloning) || actionBlockedByReview || !!busyAction}
             onClick={() => {
               if (!handoff) return;
               if (preparationContext) {

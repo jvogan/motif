@@ -1,6 +1,6 @@
 # Motif + Claude Science troubleshooting
 
-Last reviewed: August 9, 2026. Motif connector version: `0.3.4`.
+Last reviewed: August 11, 2026. Motif connector version: `0.3.5`.
 
 This guide covers the local `motif-local` connector only. It does not assume
 another application, connector, database, or product identity.
@@ -90,6 +90,13 @@ Then fully relaunch Claude Science and reconnect the existing `motif-local`
 entry. Do not create duplicate Motif connector entries. If the detail page
 still shows an obsolete command, rerun `claude-science:install-local` and
 relaunch the app.
+
+The managed command should be `/usr/bin/env` followed by `-i` and `/bin/bash`
+with `--noprofile`, `--norc`, and `-p`. That fixed pre-start boundary is
+intentional: startup files, imported functions, Node options, proxy settings,
+credentials, and agent sockets are removed before Bash or Node can inspect the
+process environment. If an older registration still invokes the launcher as
+plain `/bin/bash`, rerun the installer/doctor pair.
 
 `Skip approvals` is optional. Motif's two connector tools are read-only and do
 not write a database or run external analysis software, but leaving approvals

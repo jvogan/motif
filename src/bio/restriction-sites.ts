@@ -33,6 +33,9 @@ export interface FindRestrictionSitesOptions {
 export type RestrictionIssueCode =
   | 'invalid_sequence'
   | 'invalid_recognition_sequence'
+  | 'invalid_enzyme_name'
+  | 'invalid_topology'
+  | 'scan_work_limit'
   | 'insufficient_flanking_bases'
   | 'methylation_unknown'
   | 'methylation_unmethylated'
@@ -104,14 +107,118 @@ export interface RestrictionEnzymeScanReceipt {
 }
 
 export class RestrictionInputError extends Error {
-  readonly code: 'invalid_sequence' | 'invalid_recognition_sequence';
+  readonly code: 'invalid_sequence' | 'invalid_recognition_sequence' | 'invalid_enzyme_name' | 'invalid_topology' | 'scan_work_limit';
 
-  constructor(code: 'invalid_sequence' | 'invalid_recognition_sequence', message: string) {
+  constructor(
+    code: 'invalid_sequence' | 'invalid_recognition_sequence' | 'invalid_enzyme_name' | 'invalid_topology' | 'scan_work_limit',
+    message: string,
+  ) {
     super(message);
     this.name = 'RestrictionInputError';
     this.code = code;
   }
 }
+
+const RESTRICTION_METHYLATION_TARGETS = new Set<RestrictionMethylationTarget>([
+  'dam',
+  'dcm',
+  'cpg',
+  'custom',
+]);
+const RESTRICTION_METHYLATION_STATES = new Set<RestrictionMethylationState>([
+  'unknown',
+  'methylated',
+  'unmethylated',
+]);
+const MAX_RESTRICTION_METHYLATION_TEXT_LENGTH = 4_096;
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function validMethylationText(value: unknown, allowEmpty = false): value is string {
+  return typeof value === 'string'
+    && (allowEmpty || value.length > 0)
+    && value.length <= MAX_RESTRICTION_METHYLATION_TEXT_LENGTH
+    && !hasControlCharacters(value);
+}
+
+function validateMethylationEvidence(value: unknown, label: string): void {
+  if (!isPlainObject(value)
+    || !validMethylationText(value.source)
+    || !validMethylationText(value.sourceLabel)
+    || !validMethylationText(value.conditions)
+    || (value.limitation !== undefined && !validMethylationText(value.limitation, true))) {
+    throw new RestrictionInputError(
+      'invalid_recognition_sequence',
+      `${label} must contain bounded source, sourceLabel, and conditions text, with an optional bounded limitation.`,
+    );
+  }
+}
+
+function validateMethylationMetadata(enzyme: Partial<RestrictionEnzyme>, name: string): void {
+  const requirement = enzyme.methylationRequirement;
+  if (requirement !== undefined) {
+    const target: unknown = isPlainObject(requirement) ? requirement.target : undefined;
+    const state: unknown = isPlainObject(requirement) ? requirement.state : undefined;
+    if (!RESTRICTION_METHYLATION_TARGETS.has(target as RestrictionMethylationTarget)
+      || !RESTRICTION_METHYLATION_STATES.has(state as RestrictionMethylationState)
+      || state === 'unknown') {
+      throw new RestrictionInputError(
+        'invalid_recognition_sequence',
+        `Restriction enzyme "${name}" has invalid methylationRequirement metadata.`,
+      );
+    }
+    if (requirement.evidence !== undefined) {
+      validateMethylationEvidence(requirement.evidence, `Restriction enzyme "${name}" methylationRequirement.evidence`);
+    }
+  }
+  if (enzyme.methylationBehavior !== undefined && enzyme.methylationBehavior !== 'context_dependent') {
+    throw new RestrictionInputError(
+      'invalid_recognition_sequence',
+      `Restriction enzyme "${name}" has invalid methylationBehavior metadata.`,
+    );
+  }
+  if (enzyme.methylationEvidence !== undefined) {
+    validateMethylationEvidence(enzyme.methylationEvidence, `Restriction enzyme "${name}" methylationEvidence`);
+  }
+}
+
+/** Normalize requested enzyme names at the digest boundary. */
+export function normalizeRestrictionEnzymeNames(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    throw new RestrictionInputError('invalid_enzyme_name', 'Restriction enzyme names must be an array.');
+  }
+  if (value.length > MAX_RESTRICTION_ENZYMES) {
+    throw new RestrictionInputError(
+      'invalid_enzyme_name',
+      `Restriction enzyme names accept at most ${MAX_RESTRICTION_ENZYMES} entries per request.`,
+    );
+  }
+  return value.map((rawName, index) => {
+    if (typeof rawName !== 'string') {
+      throw new RestrictionInputError('invalid_enzyme_name', `Restriction enzyme name ${index + 1} must be a string.`);
+    }
+    const name = rawName.trim();
+    if (!name || name.length > MAX_RESTRICTION_ENZYME_NAME_LENGTH || hasControlCharacters(name)) {
+      throw new RestrictionInputError(
+        'invalid_enzyme_name',
+        `Restriction enzyme name ${index + 1} must be 1–${MAX_RESTRICTION_ENZYME_NAME_LENGTH} characters without control characters.`,
+      );
+    }
+    return name;
+  });
+}
+
+/** Hard limits for the browser-facing restriction scanner. */
+export const MAX_RESTRICTION_ENZYMES = 512;
+export const MAX_RESTRICTION_ENZYME_NAME_LENGTH = 128;
+export const MAX_RESTRICTION_RECOGNITION_LENGTH = 64;
+export const MAX_RESTRICTION_CUT_OFFSET = 1_000;
+export const MAX_RESTRICTION_SEQUENCE_LENGTH = 1_000_000;
+export const MAX_RESTRICTION_SCAN_WORK_UNITS = 100_000_000;
 
 const IUPAC_BASES: Readonly<Record<string, ReadonlySet<string>>> = {
   A: new Set(['A']),
@@ -133,6 +240,13 @@ const IUPAC_BASES: Readonly<Record<string, ReadonlySet<string>>> = {
 
 const IUPAC_SYMBOLS = new Set(Object.keys(IUPAC_BASES));
 
+function hasControlCharacters(value: string): boolean {
+  return [...value].some((character) => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return codePoint <= 0x1f || codePoint === 0x7f;
+  });
+}
+
 /** Remove display whitespace/numbering and normalize RNA U to DNA T. */
 export function normalizeRestrictionSequence(seq: string): string {
   if (typeof seq !== 'string') {
@@ -149,6 +263,12 @@ export function normalizeRestrictionSequence(seq: string): string {
       );
     }
     normalized += ch;
+    if (normalized.length > MAX_RESTRICTION_SEQUENCE_LENGTH) {
+      throw new RestrictionInputError(
+        'invalid_sequence',
+        `Restriction sequence exceeds the ${MAX_RESTRICTION_SEQUENCE_LENGTH.toLocaleString()}-base safety limit.`,
+      );
+    }
   }
   return normalized;
 }
@@ -165,7 +285,23 @@ export function normalizeRestrictionRecognitionSequence(seq: string): string {
       'Restriction recognition sequence must contain one or more IUPAC DNA symbols.',
     );
   }
+  if (normalized.length > MAX_RESTRICTION_RECOGNITION_LENGTH) {
+    throw new RestrictionInputError(
+      'invalid_recognition_sequence',
+      `Restriction recognition sequence exceeds the ${MAX_RESTRICTION_RECOGNITION_LENGTH}-symbol safety limit.`,
+    );
+  }
   return normalized;
+}
+
+/** Validate the runtime topology boundary instead of falling back silently. */
+export function normalizeRestrictionTopology(value: unknown): Topology {
+  if (value === undefined) return 'linear';
+  if (value === 'linear' || value === 'circular') return value;
+  throw new RestrictionInputError(
+    'invalid_topology',
+    'Restriction topology must be exactly "linear" or "circular".',
+  );
 }
 
 export function isValidRestrictionRecognitionSequence(seq: string): boolean {
@@ -175,6 +311,68 @@ export function isValidRestrictionRecognitionSequence(seq: string): boolean {
   } catch {
     return false;
   }
+}
+
+/** Normalize a complete runtime enzyme list before any scan or catalog lookup. */
+export function normalizeRestrictionEnzymes(enzymes: unknown): RestrictionEnzyme[] {
+  if (!Array.isArray(enzymes)) {
+    throw new RestrictionInputError('invalid_recognition_sequence', 'Restriction enzymes must be an array.');
+  }
+  if (enzymes.length > MAX_RESTRICTION_ENZYMES) {
+    throw new RestrictionInputError(
+      'invalid_recognition_sequence',
+      `Restriction scans accept at most ${MAX_RESTRICTION_ENZYMES} enzymes per request.`,
+    );
+  }
+  const seenNames = new Set<string>();
+  return enzymes.map((rawEnzyme, index) => {
+    if (typeof rawEnzyme !== 'object' || rawEnzyme === null || Array.isArray(rawEnzyme)) {
+      throw new RestrictionInputError('invalid_recognition_sequence', `Restriction enzyme ${index + 1} must be an object.`);
+    }
+    const candidate = rawEnzyme as Partial<RestrictionEnzyme>;
+    if (typeof candidate.name !== 'string') {
+      throw new RestrictionInputError('invalid_recognition_sequence', `Restriction enzyme ${index + 1} name must be a string.`);
+    }
+    const name = candidate.name.trim();
+    if (!name || name.length > MAX_RESTRICTION_ENZYME_NAME_LENGTH || hasControlCharacters(name)) {
+      throw new RestrictionInputError(
+        'invalid_recognition_sequence',
+        `Restriction enzyme ${index + 1} name must be 1–${MAX_RESTRICTION_ENZYME_NAME_LENGTH} characters without control characters.`,
+      );
+    }
+    const nameKey = name.toLowerCase();
+    if (seenNames.has(nameKey)) {
+      throw new RestrictionInputError('invalid_recognition_sequence', `Restriction enzyme names must be unique; "${name}" appears more than once.`);
+    }
+    seenNames.add(nameKey);
+    const recognitionSequence = normalizeRestrictionRecognitionSequence(candidate.recognitionSequence as string);
+    const validOffset = (value: unknown): value is number => (
+      Number.isSafeInteger(value) && (value as number) >= -MAX_RESTRICTION_CUT_OFFSET && (value as number) <= MAX_RESTRICTION_CUT_OFFSET
+    );
+    if (!validOffset(candidate.cutOffset) || !validOffset(candidate.complementCutOffset)) {
+      throw new RestrictionInputError(
+        'invalid_recognition_sequence',
+        `Restriction enzyme "${name}" cut offsets must be safe integers from -${MAX_RESTRICTION_CUT_OFFSET} to ${MAX_RESTRICTION_CUT_OFFSET}.`,
+      );
+    }
+    const cleavageMode = candidate.cleavageMode ?? 'double-strand';
+    if (cleavageMode !== 'double-strand' && cleavageMode !== 'nick_top' && cleavageMode !== 'nick_bottom') {
+      throw new RestrictionInputError('invalid_recognition_sequence', `Restriction enzyme "${name}" has an invalid cleavage mode.`);
+    }
+    if (candidate.overhang !== 'blunt' && candidate.overhang !== '5prime' && candidate.overhang !== '3prime') {
+      throw new RestrictionInputError('invalid_recognition_sequence', `Restriction enzyme "${name}" has an invalid overhang type.`);
+    }
+    validateMethylationMetadata(candidate, name);
+    return {
+      ...candidate,
+      name,
+      recognitionSequence,
+      cutOffset: candidate.cutOffset,
+      complementCutOffset: candidate.complementCutOffset,
+      overhang: candidate.overhang,
+      cleavageMode,
+    } as RestrictionEnzyme;
+  });
 }
 
 function methylationStateFor(
@@ -481,16 +679,35 @@ export function scanRestrictionSites(
   options?: FindRestrictionSitesOptions,
 ): RestrictionScanResult {
   const upper = normalizeRestrictionSequence(seq);
-  const topology: Topology = options?.topology ?? 'linear';
+  const topology = normalizeRestrictionTopology(options?.topology);
   const sites: RestrictionSite[] = [];
   const issues: RestrictionScanIssue[] = [];
-  if (upper.length === 0 || enzymes.length === 0) return { sequence: upper, topology, sites, issues };
-
-  const normalizedEnzymes = enzymes.map((enzyme) => ({
-    ...enzyme,
-    recognitionSequence: normalizeRestrictionRecognitionSequence(enzyme.recognitionSequence),
-  }));
-  const maxRecLen = Math.max(...normalizedEnzymes.map((enzyme) => enzyme.recognitionSequence.length));
+  const normalizedEnzymes = normalizeRestrictionEnzymes(enzymes);
+  if (upper.length === 0 || normalizedEnzymes.length === 0) return { sequence: upper, topology, sites, issues };
+  let patternCount = 0;
+  let recognitionWork = 0;
+  let maxRecLen = 0;
+  for (const enzyme of normalizedEnzymes) {
+    const recognition = enzyme.recognitionSequence;
+    const orientations = reverseComplement(recognition) === recognition ? 1 : 2;
+    patternCount += orientations;
+    maxRecLen = Math.max(maxRecLen, recognition.length);
+    if (recognitionWork > Number.MAX_SAFE_INTEGER - orientations * recognition.length) {
+      recognitionWork = Number.MAX_SAFE_INTEGER;
+      break;
+    }
+    recognitionWork += orientations * recognition.length;
+  }
+  const scanLength = upper.length + (topology === 'circular' ? Math.max(0, maxRecLen - 1) : 0);
+  const scanWorkUnits = recognitionWork > Number.MAX_SAFE_INTEGER / Math.max(1, scanLength)
+    ? Number.POSITIVE_INFINITY
+    : scanLength * recognitionWork;
+  if (!Number.isSafeInteger(scanWorkUnits) || scanWorkUnits > MAX_RESTRICTION_SCAN_WORK_UNITS) {
+    throw new RestrictionInputError(
+      'scan_work_limit',
+      `Restriction scan requires ${Number.isSafeInteger(scanWorkUnits) ? scanWorkUnits.toLocaleString() : 'an unsafe number of'} comparison units across ${patternCount} tested orientations, above the ${MAX_RESTRICTION_SCAN_WORK_UNITS.toLocaleString()}-unit safety limit.`,
+    );
+  }
   const wrapWindow = topology === 'circular' ? Math.max(0, maxRecLen - 1) : 0;
   const scanBuffer = wrapWindow > 0
     ? upper + upper.repeat(Math.ceil(wrapWindow / upper.length)).slice(0, wrapWindow)

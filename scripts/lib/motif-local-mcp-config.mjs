@@ -160,8 +160,21 @@ export function desiredMotifLocalServer(rootPath, options = {}) {
   const nodeBinary = options.nodeBinary ?? resolveNodeBinary(options);
   return {
     name: MOTIF_LOCAL_CONNECTOR_NAME,
-    command: '/bin/bash',
-    args: [paths.launcher],
+    // Start with a fixed system env utility.  The allowlist is applied before
+    // Bash starts, so BASH_ENV, ENV, imported functions, and Node injection
+    // variables cannot be processed by the shell or runtime bootstrap.
+    command: '/usr/bin/env',
+    args: [
+      '-i',
+      `MOTIF_NODE_BIN=${nodeBinary}`,
+      `MOTIF_ROOT=${paths.root}`,
+      'PATH=/usr/bin:/bin',
+      '/bin/bash',
+      '--noprofile',
+      '--norc',
+      '-p',
+      paths.launcher,
+    ],
     env: {
       MOTIF_NODE_BIN: nodeBinary,
       MOTIF_ROOT: paths.root,

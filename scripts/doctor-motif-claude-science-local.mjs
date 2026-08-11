@@ -202,7 +202,20 @@ function toolResourceUri(tool) {
 }
 
 async function inspectProtocol(paths, timeoutMs) {
-  const child = spawn('/bin/bash', [paths.launcher], {
+  // Mirror the registered command exactly: /usr/bin/env applies the minimal
+  // startup environment before Bash can inspect BASH_ENV, ENV, or imports.
+  const child = spawn('/usr/bin/env', [
+    '-i',
+    `MOTIF_NODE_BIN=${process.execPath}`,
+    `MOTIF_ROOT=${paths.root}`,
+    'MOTIF_MCP_TRACE=1',
+    'PATH=/usr/bin:/bin',
+    '/bin/bash',
+    '--noprofile',
+    '--norc',
+    '-p',
+    paths.launcher,
+  ], {
     cwd: paths.root,
     env: doctorEnvironment(paths),
     stdio: ['pipe', 'pipe', 'pipe'],

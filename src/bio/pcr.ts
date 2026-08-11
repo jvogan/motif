@@ -395,6 +395,7 @@ export function findPrimerBindingsWithDiagnostics(
   let workUnits = 0;
   let workLimitReached = false;
   let candidateLimitReached = false;
+  let candidateCapReached = false;
   // Prefer the full oligo when a safety cap is reached. Short suffixes are
   // considered only after an explicit allowImplicitTails opt-in and must not
   // crowd out the strongest/full-length binding evidence.
@@ -419,11 +420,16 @@ export function findPrimerBindingsWithDiagnostics(
       const key = `${candidate.bindStart}:${candidate.bindEnd}:${candidate.mismatchCount}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      candidates.push(candidate);
-      if (candidates.length >= policy.maxBindingCandidates) {
+      if (candidateCapReached) {
+        // The first candidate beyond the retained cap proves that the scan
+        // would have returned more evidence. A cap reached on the final
+        // exhaustive window remains complete because no such candidate can
+        // exist after the loop finishes.
         candidateLimitReached = true;
         break;
       }
+      candidates.push(candidate);
+      if (candidates.length >= policy.maxBindingCandidates) candidateCapReached = true;
     }
     if (workLimitReached || candidateLimitReached) break;
   }
@@ -775,10 +781,14 @@ function simulatePCRInternal(
   if (bindingScanDiagnostics.length > 0) {
     warnings.push(...bindingScanDiagnostics.map((diagnostic) => diagnostic.message));
   }
-  if (!selectedBinding && forwardCandidates.length >= policy.maxBindingCandidates) {
+  if (!selectedBinding && bindingScanDiagnostics.some((diagnostic) => (
+    diagnostic.primer === 'forward' && diagnostic.code === 'binding_candidate_limit'
+  ))) {
     warnings.push(`Forward primer-site enumeration reached its cap of ${policy.maxBindingCandidates.toLocaleString()} candidates; the competing-product list may be incomplete.`);
   }
-  if (!selectedBinding && reverseRcCandidates.length >= policy.maxBindingCandidates) {
+  if (!selectedBinding && bindingScanDiagnostics.some((diagnostic) => (
+    diagnostic.primer === 'reverse' && diagnostic.code === 'binding_candidate_limit'
+  ))) {
     warnings.push(`Reverse primer-site enumeration reached its cap of ${policy.maxBindingCandidates.toLocaleString()} candidates; the competing-product list may be incomplete.`);
   }
   if (productsTruncated) warnings.push(`PCR product enumeration stopped at ${MAX_PRODUCT_COMBINATIONS.toLocaleString()} combinations; narrow the binding policy before treating the result as exhaustive.`);
@@ -826,6 +836,8 @@ function simulatePCRInternal(
     });
   }
   const materializable = bindingScanDiagnostics.length === 0
+    && !implicitForward
+    && !implicitReverse
     && materialized.conflictingBindingPositions.length === 0;
   const product = fwdTail + materialized.templateProduct + revTailRC;
   const sourceSpans: FeatureCoordinateMapSpan[] = selected.wrapsOrigin

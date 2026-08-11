@@ -13,7 +13,7 @@ describe('cloning-fidelity contracts', () => {
     expect(kit?.levels.every((level) => level.acceptedFusionSites.length > 0 && level.grammar.length > 0)).toBe(true);
   });
 
-  it('publishes Loop Assembly upper-level SapI geometry without inventing a site set', () => {
+  it('publishes Loop Assembly parity transitions without inventing receiver sites', () => {
     const kit = getGoldenGateKit('loop');
     expect(kit?.levels.map((level) => [
       level.level,
@@ -28,6 +28,22 @@ describe('cloning-fidelity contracts', () => {
     expect(kit?.levels.find((level) => level.level === 'upper')).toMatchObject({
       acceptedFusionSites: [],
       grammar: [],
+    });
+    expect(kit?.levels.find((level) => level.level === 'entry')?.transition).toMatchObject({
+      donorParity: 'even',
+      receiverParity: 'odd',
+      enzyme: 'BsaI',
+      model: 'entry',
+      receiverIdentity: 'unavailable',
+    });
+    expect(kit?.levels.find((level) => level.level === 'upper')?.transition).toMatchObject({
+      donorParity: 'odd',
+      receiverParity: 'even',
+      enzyme: 'SapI',
+      model: 'parity-only',
+      nextLevel: 'unknown',
+      nextEnzyme: 'BsaI',
+      receiverIdentity: 'unavailable',
     });
   });
 

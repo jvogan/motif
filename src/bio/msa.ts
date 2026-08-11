@@ -56,6 +56,14 @@ export function isMSAError<T>(r: T | MSAError): r is MSAError {
 export const MSA_MAX_SEQ_LEN = 3000;
 export const MSA_MAX_SEQUENCES = 100;
 export const MSA_MAX_WORK_UNITS = 250_000_000;
+export const MSA_MAX_FORMAT_WIDTH = 10_000;
+export const MSA_MAX_FORMAT_NAME_LENGTH = 256;
+export const MSA_MAX_FORMAT_ROWS = MSA_MAX_SEQUENCES;
+export const MSA_MAX_FORMAT_ALIGNMENT_LENGTH = 50_000;
+export const MSA_MAX_FORMAT_WORK_UNITS = 2_000_000;
+export const MSA_MAX_FORMAT_ORIGINAL_LENGTH = MSA_MAX_FORMAT_ALIGNMENT_LENGTH;
+
+export type MsaWorkRoute = 'all-pairs' | 'heuristic-star';
 
 export type ComputeMSAOptions = {
   molecule?: AlignmentMolecule;
@@ -75,30 +83,41 @@ function inferMolecule(sequences: readonly string[]): AlignmentMolecule | null {
   return protein ? 'protein' : null;
 }
 
-export function estimateMsaWork(lengths: readonly number[]): number {
+export function estimateMsaWork(
+  lengths: readonly number[],
+  route?: MsaWorkRoute,
+): number {
+  if (!Array.isArray(lengths) || lengths.length > MSA_MAX_SEQUENCES) return Number.POSITIVE_INFINITY;
+  const selectedRoute = route ?? (lengths.length <= 10 ? 'all-pairs' : 'heuristic-star');
+  if (selectedRoute !== 'all-pairs' && selectedRoute !== 'heuristic-star') return Number.POSITIVE_INFINITY;
   let totalLength = 0;
   let pairwise = 0;
   let maxLength = 0;
   for (const length of lengths) {
     if (!Number.isSafeInteger(length) || length < 0) return Number.POSITIVE_INFINITY;
     if (length > maxLength) maxLength = length;
-    if (length > 0 && totalLength > Number.MAX_SAFE_INTEGER / length) return Number.POSITIVE_INFINITY;
-    const pairwiseIncrement = totalLength * length;
-    if (!Number.isSafeInteger(pairwiseIncrement)
-      || pairwise > Number.MAX_SAFE_INTEGER - pairwiseIncrement) {
-      return Number.POSITIVE_INFINITY;
+    if (selectedRoute === 'all-pairs') {
+      if (length > 0 && totalLength > Number.MAX_SAFE_INTEGER / length) return Number.POSITIVE_INFINITY;
+      const pairwiseIncrement = totalLength * length;
+      if (!Number.isSafeInteger(pairwiseIncrement)
+        || pairwise > Number.MAX_SAFE_INTEGER - pairwiseIncrement) {
+        return Number.POSITIVE_INFINITY;
+      }
+      pairwise += pairwiseIncrement;
     }
-    pairwise += pairwiseIncrement;
     if (totalLength > Number.MAX_SAFE_INTEGER - length) return Number.POSITIVE_INFINITY;
     totalLength += length;
   }
-  const nonCenterLength = totalLength - maxLength;
-  if (maxLength > 0 && nonCenterLength > Number.MAX_SAFE_INTEGER / maxLength) return Number.POSITIVE_INFINITY;
-  const centerPass = maxLength * nonCenterLength;
+  const centerLength = selectedRoute === 'heuristic-star'
+    ? [...lengths].sort((left, right) => left - right)[Math.floor(lengths.length / 2)] ?? 0
+    : maxLength;
+  const nonCenterLength = totalLength - centerLength;
+  if (centerLength > 0 && nonCenterLength > Number.MAX_SAFE_INTEGER / centerLength) return Number.POSITIVE_INFINITY;
+  const centerPass = centerLength * nonCenterLength;
   if (!Number.isSafeInteger(centerPass) || pairwise > Number.MAX_SAFE_INTEGER - centerPass) {
     return Number.POSITIVE_INFINITY;
   }
-  return pairwise + Math.max(0, centerPass);
+  return (selectedRoute === 'all-pairs' ? pairwise : 0) + Math.max(0, centerPass);
 }
 
 function diffMethods(values: readonly DiffMethod[]): string {
@@ -293,7 +312,7 @@ export function computeMSA(
     if (typeof names[index] !== 'string' || !names[index].trim()) {
       return msaError('invalid_input', `Sequence name ${index + 1} must be a non-empty string.`);
     }
-    const key = names[index].trim().toLocaleLowerCase();
+    const key = names[index].trim().toLowerCase();
     if (seenNames.has(key)) return msaError('invalid_input', `Sequence names must be unique; “${names[index]}” appears more than once.`);
     seenNames.add(key);
   }
@@ -340,11 +359,15 @@ export function computeMSA(
     return msaError('too_large', `Sequences must be ≤ ${MSA_MAX_SEQ_LEN} characters for MSA (longest: ${maxLen} bp/aa).`);
   }
 
-  const estimatedWork = estimateMsaWork(upper.map((sequence) => sequence.length));
-  const maxWorkUnits = options.maxWorkUnits ?? MSA_MAX_WORK_UNITS;
-  if (!Number.isFinite(maxWorkUnits) || maxWorkUnits < 0) {
-    return msaError('invalid_input', 'MSA maxWorkUnits must be a finite non-negative number.');
+  const route: MsaWorkRoute = upper.length <= 10 ? 'all-pairs' : 'heuristic-star';
+  const requestedMaxWorkUnits = options.maxWorkUnits ?? MSA_MAX_WORK_UNITS;
+  if (typeof requestedMaxWorkUnits !== 'number' || Number.isNaN(requestedMaxWorkUnits) || requestedMaxWorkUnits < 0) {
+    return msaError('invalid_input', 'MSA maxWorkUnits must be a non-negative number.');
   }
+  // A caller-provided budget can only lower the hard ceiling; Infinity is
+  // clamped rather than becoming an escape hatch for the comparison guard.
+  const maxWorkUnits = Math.min(requestedMaxWorkUnits, MSA_MAX_WORK_UNITS);
+  const estimatedWork = estimateMsaWork(upper.map((sequence) => sequence.length), route);
   if (estimatedWork > maxWorkUnits) {
     return msaError('work_limit', `MSA requires ${estimatedWork.toLocaleString()} comparison cells, above the ${maxWorkUnits.toLocaleString()}-cell work limit.`);
   }
@@ -473,6 +496,66 @@ export interface LegacyMSAResult {
   conservedColumns: number;
 }
 
+function validateLegacyMSAResult(result: unknown, width: unknown): asserts result is LegacyMSAResult {
+  if (typeof width !== 'number' || !Number.isSafeInteger(width) || width < 1 || width > MSA_MAX_FORMAT_WIDTH) {
+    throw new RangeError(`MSA format width must be a safe integer from 1 to ${MSA_MAX_FORMAT_WIDTH}.`);
+  }
+  if (typeof result !== 'object' || result === null || Array.isArray(result)) {
+    throw new TypeError('MSA format result must be an object.');
+  }
+  const candidate = result as Partial<LegacyMSAResult>;
+  if (!Array.isArray(candidate.sequences) || candidate.sequences.length === 0) {
+    throw new TypeError('MSA format result must contain at least one sequence row.');
+  }
+  if (candidate.sequences.length > MSA_MAX_FORMAT_ROWS) {
+    throw new RangeError(`MSA format result cannot contain more than ${MSA_MAX_FORMAT_ROWS} sequence rows.`);
+  }
+  if (!Number.isSafeInteger(candidate.alignmentLength) || (candidate.alignmentLength as number) < 0) {
+    throw new TypeError('MSA format alignmentLength must be a non-negative safe integer.');
+  }
+  if ((candidate.alignmentLength as number) < 1 || (candidate.alignmentLength as number) > MSA_MAX_FORMAT_ALIGNMENT_LENGTH) {
+    throw new RangeError(`MSA format alignmentLength must be from 1 to ${MSA_MAX_FORMAT_ALIGNMENT_LENGTH}.`);
+  }
+  if ((candidate.sequences.length as number) > MSA_MAX_FORMAT_WORK_UNITS / (candidate.alignmentLength as number)) {
+    throw new RangeError(`MSA format result exceeds the ${MSA_MAX_FORMAT_WORK_UNITS.toLocaleString()}-cell work limit.`);
+  }
+  if (!Array.isArray(candidate.conservationScores) || candidate.conservationScores.length !== candidate.alignmentLength) {
+    throw new TypeError('MSA format conservationScores must match alignmentLength.');
+  }
+  if (!Number.isFinite(candidate.identity) || (candidate.identity as number) < 0 || (candidate.identity as number) > 100) {
+    throw new TypeError('MSA format identity must be a percentage from 0 to 100.');
+  }
+  if (!Number.isSafeInteger(candidate.gaps) || (candidate.gaps as number) < 0) {
+    throw new TypeError('MSA format gaps must be a non-negative safe integer.');
+  }
+  if (!Number.isSafeInteger(candidate.conservedColumns) || (candidate.conservedColumns as number) < 0 || (candidate.conservedColumns as number) > candidate.alignmentLength) {
+    throw new TypeError('MSA format conservedColumns must be bounded by alignmentLength.');
+  }
+  let expectedGaps = 0;
+  for (const [index, row] of candidate.sequences.entries()) {
+    if (typeof row !== 'object' || row === null || Array.isArray(row)) throw new TypeError(`MSA sequence row ${index + 1} must be an object.`);
+    const sequence = row as Partial<AlignedSequence>;
+    if (typeof sequence.name !== 'string' || sequence.name.trim().length === 0 || sequence.name.length > MSA_MAX_FORMAT_NAME_LENGTH) {
+      throw new TypeError(`MSA sequence row ${index + 1} name must be a bounded non-empty string.`);
+    }
+    if (typeof sequence.aligned !== 'string' || sequence.aligned.length !== candidate.alignmentLength) {
+      throw new TypeError(`MSA sequence row ${index + 1} aligned length must equal alignmentLength.`);
+    }
+    if (typeof sequence.original !== 'string' || sequence.original.length > MSA_MAX_FORMAT_ORIGINAL_LENGTH) {
+      throw new TypeError(`MSA sequence row ${index + 1} original must be a bounded string.`);
+    }
+    expectedGaps += [...sequence.aligned].filter((character) => character === '-').length;
+  }
+  for (const [index, score] of candidate.conservationScores.entries()) {
+    if (typeof score !== 'number' || !Number.isFinite(score) || score < 0 || score > 1) {
+      throw new TypeError(`MSA conservation score ${index + 1} must be a number from 0 to 1.`);
+    }
+  }
+  if (candidate.gaps !== expectedGaps) throw new TypeError('MSA format gaps does not match the aligned rows.');
+  const expectedConserved = candidate.conservationScores.filter((score) => score === 1).length;
+  if (candidate.conservedColumns !== expectedConserved) throw new TypeError('MSA format conservedColumns does not match conservationScores.');
+}
+
 /**
  * Backward-compatible wrapper around computeMSA.
  * Accepts { name, sequence }[] and returns legacy MSAResult shape.
@@ -531,7 +614,7 @@ export function multipleAlign(
  */
 export function formatMSA(result: LegacyMSAResult, options?: { width?: number }): string {
   const width = options?.width ?? 60;
-  if (result.sequences.length === 0) return '';
+  validateLegacyMSAResult(result, width);
 
   const lines: string[] = ['CLUSTAL-like multiple sequence alignment\n'];
   const alignLen = result.alignmentLength;

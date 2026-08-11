@@ -62,13 +62,20 @@ node rollback-motif-claude-science-release.mjs --bundle . \
   --backup /path/to/local-mcp.json.before-motif-local-TIMESTAMP
 ```
 
+Keep the original extracted release folder, ZIP, and external manifest digest
+until the installation has passed its doctor check. If that installed folder
+is damaged, do not run its helpers. Extract a fresh copy of the same verified
+release and run the rollback helper from that recovery copy, passing the
+recovery copy as `--bundle` and the damaged installation's configuration
+backup with `--backup`.
+
 ## 2. Obtain a source checkout (maintainer/developer fallback)
 
 Use the latest published [Motif release](https://github.com/jvogan/motif/releases)
 or clone its tagged source into a fixed local folder:
 
 ```bash
-git clone --branch v0.3.4 --depth 1 https://github.com/jvogan/motif.git
+git clone --branch v0.3.5 --depth 1 https://github.com/jvogan/motif.git
 cd motif
 ```
 

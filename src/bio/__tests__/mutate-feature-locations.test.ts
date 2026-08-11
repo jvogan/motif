@@ -7,6 +7,7 @@ import {
   MAX_MUTATION_INSERTION_LENGTH,
   MAX_MUTATION_OPERATION_UNITS,
   MAX_MUTATION_RESULT_LENGTH,
+  preflightSequenceEdit,
 } from '../mutate';
 import type { Feature } from '../types';
 
@@ -28,11 +29,44 @@ function joinedFeature(): Feature {
 }
 
 describe('mutation feature-location integrity', () => {
+  it('preflights exact record-cap boundaries without constructing a mutation', () => {
+    expect(preflightSequenceEdit(249_999, { deletedLength: 0, insertedLength: 1 })).toMatchObject({
+      ok: true,
+      nextLength: 250_000,
+    });
+    expect(preflightSequenceEdit(250_000, { deletedLength: 0, insertedLength: 1 })).toMatchObject({
+      ok: false,
+      nextLength: 250_001,
+    });
+    expect(preflightSequenceEdit(250_000, { deletedLength: 1, insertedLength: 1 })).toMatchObject({
+      ok: true,
+      nextLength: 250_000,
+    });
+  });
+
+  it('executes cap-boundary overwrite, end-insert, and delete-then-insert edits', () => {
+    const belowCap = 'A'.repeat(249_999);
+    const atCap = 'A'.repeat(250_000);
+    const insertedAtEnd = applyInsertion(belowCap, [], [], belowCap.length - 1, 'C');
+    expect(insertedAtEnd.raw).toHaveLength(250_000);
+    expect(insertedAtEnd.raw.endsWith('AC')).toBe(true);
+    expect(() => applyInsertion(atCap, [], [], atCap.length - 1, 'C')).toThrow(/250,000|result limit/i);
+    const overwrittenAtCap = applySubstitution(atCap, [], [], atCap.length - 1, 'C');
+    expect(overwrittenAtCap.raw).toHaveLength(250_000);
+    expect(overwrittenAtCap.raw.endsWith('C')).toBe(true);
+    const deleted = applyDeletion(atCap, [], [], atCap.length - 1, 1);
+    expect(deleted.raw).toHaveLength(249_999);
+    const restored = applyInsertion(deleted.raw, [], [], deleted.raw.length - 1, 'C');
+    expect(restored.raw).toHaveLength(250_000);
+  });
+
   it('requires exactly one residue for substitution and rejects length-changing disguises', () => {
     expect(applySubstitution('ATGC', [], [], 1, 'C').raw).toBe('ACGC');
     for (const replacement of ['', 'GG', '-', ' ']) {
       expect(() => applySubstitution('ATGC', [], [], 1, replacement)).toThrow(/exactly one valid residue/i);
     }
+    expect(applySubstitution('MKW', [], [], 1, 'X', 'protein').raw).toBe('MXW');
+    expect(() => applySubstitution('ATGC', [], [], 1, 'X', 'dna')).toThrow(/declared dna alphabet/i);
   });
 
   it('rejects fractional or non-finite edit coordinates before string indexing', () => {
@@ -57,6 +91,25 @@ describe('mutation feature-location integrity', () => {
       .toThrow(/result limit/i);
     expect(() => applyInsertion('A', new Array(MAX_MUTATION_OPERATION_UNITS), [], 0, 'A'))
       .toThrow(/operation budget/i);
+  });
+
+  it('returns an out-of-range insertion as a no-op before unrelated size or work checks', () => {
+    const scars = new Array(MAX_MUTATION_OPERATION_UNITS);
+    expect(applyInsertion('ATGC', scars, [], 99, 'X'.repeat(MAX_MUTATION_INSERTION_LENGTH + 1))).toEqual({
+      raw: 'ATGC',
+      scars: [...scars],
+      features: [],
+    });
+    expect(applySubstitution('ATGC', scars, [], 99, 'X')).toEqual({
+      raw: 'ATGC',
+      scars: [...scars],
+      features: [],
+    });
+    expect(applyDeletion('ATGC', scars, [], 99, MAX_MUTATION_OPERATION_UNITS)).toEqual({
+      raw: 'ATGC',
+      scars: [...scars],
+      features: [],
+    });
   });
 
   it('uses half-open feature affinity at insertion boundaries', () => {

@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
@@ -27,10 +27,11 @@ if [[ -n "$NODE_BIN" ]]; then
   fi
 else
   for candidate in \
-    "$(command -v node 2>/dev/null || true)" \
     /opt/homebrew/bin/node \
     /usr/local/bin/node \
-    /usr/local/opt/node/bin/node; do
+    /usr/local/opt/node/bin/node \
+    /usr/bin/node \
+    /bin/node; do
     if [[ -n "$candidate" && "$candidate" = /* && -x "$candidate" ]]; then
       NODE_BIN="$candidate"
       break
@@ -43,8 +44,8 @@ if [[ -z "$NODE_BIN" ]]; then
   exit 1
 fi
 
-ENV_BIN="$(command -p -v env 2>/dev/null || true)"
-if [[ -z "$ENV_BIN" || "$ENV_BIN" != /* || ! -x "$ENV_BIN" ]]; then
+ENV_BIN="/usr/bin/env"
+if [[ ! -x "$ENV_BIN" ]]; then
   echo "[motif-claude-science] A system env utility was not found." >&2
   exit 1
 fi

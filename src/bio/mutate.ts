@@ -19,6 +19,57 @@ export type MutationMolecule = 'dna' | 'rna' | 'protein';
 const VALID_DNA_INSERTION = /^[ACGTRYSWKMBDHVN]+$/iu;
 const VALID_RNA_INSERTION = /^[ACGURYSWKMBDHVN]+$/iu;
 const VALID_PROTEIN_INSERTION = /^[ACDEFGHIKLMNPQRSTVWYOUJBXZ*]+$/iu;
+const VALID_DNA_SUBSTITUTION = /^[ACGTRYSWKMBDHVN]$/iu;
+const VALID_RNA_SUBSTITUTION = /^[ACGURYSWKMBDHVN]$/iu;
+const VALID_PROTEIN_SUBSTITUTION = /^[ACDEFGHIKLMNPQRSTVWYOUJBXZ*]$/iu;
+
+export interface SequenceEditCapacity {
+  ok: boolean;
+  currentLength: number;
+  nextLength: number | null;
+  message?: string;
+}
+
+/**
+ * Check the resulting sequence length before constructing a length-changing
+ * mutation. UI entry points use this shared preflight so an expected record
+ * limit is reported as an ordinary notice instead of escaping from a pure
+ * mutator call.
+ */
+export function preflightSequenceEdit(
+  currentLength: number,
+  edit: { deletedLength: number; insertedLength: number },
+  maxLength = MAX_MUTATION_RESULT_LENGTH,
+): SequenceEditCapacity {
+  if (
+    !Number.isSafeInteger(currentLength)
+    || currentLength < 0
+    || !Number.isSafeInteger(edit.deletedLength)
+    || edit.deletedLength < 0
+    || !Number.isSafeInteger(edit.insertedLength)
+    || edit.insertedLength < 0
+    || !Number.isSafeInteger(maxLength)
+    || maxLength < 0
+  ) {
+    return {
+      ok: false,
+      currentLength,
+      nextLength: null,
+      message: 'The edit could not be checked because its lengths were not safe integers.',
+    };
+  }
+  const effectiveDeletedLength = Math.min(currentLength, edit.deletedLength);
+  const nextLength = currentLength - effectiveDeletedLength + edit.insertedLength;
+  if (nextLength > maxLength) {
+    return {
+      ok: false,
+      currentLength,
+      nextLength,
+      message: `This edit would exceed the ${maxLength.toLocaleString()}-residue record limit. Delete bases or split the record before inserting more.`,
+    };
+  }
+  return { ok: true, currentLength, nextLength };
+}
 
 // ---------------------------------------------------------------------------
 // Helpers (not exported)
@@ -30,15 +81,15 @@ function requireSafeInteger(value: number, label: string, minimum: number): void
   }
 }
 
-function insertionOperationUnits(
-  insertedLength: number,
+function mutationOperationUnits(
+  affectedLength: number,
   scars: readonly MutationScar[],
   features: readonly Feature[],
 ): number {
-  let units = insertedLength;
+  let units = affectedLength;
   const add = (amount: number): void => {
     if (!Number.isSafeInteger(amount) || amount < 0 || units > MAX_MUTATION_OPERATION_UNITS - amount) {
-      throw new RangeError(`Insertion exceeds the ${MAX_MUTATION_OPERATION_UNITS.toLocaleString()}-unit mutation operation budget.`);
+      throw new RangeError(`Mutation exceeds the ${MAX_MUTATION_OPERATION_UNITS.toLocaleString()}-unit mutation operation budget.`);
     }
     units += amount;
   };
@@ -46,9 +97,20 @@ function insertionOperationUnits(
   add(features.length);
   for (const feature of features) add(feature.subRanges?.length ?? 0);
   if (units > MAX_MUTATION_OPERATION_UNITS) {
-    throw new RangeError(`Insertion exceeds the ${MAX_MUTATION_OPERATION_UNITS.toLocaleString()}-unit mutation operation budget.`);
+    throw new RangeError(`Mutation exceeds the ${MAX_MUTATION_OPERATION_UNITS.toLocaleString()}-unit mutation operation budget.`);
   }
   return units;
+}
+
+function featureExtrema(ranges: readonly { start: number; end: number }[]): { start: number; end: number } | null {
+  if (ranges.length === 0) return null;
+  let start = ranges[0].start;
+  let end = ranges[0].end;
+  for (let index = 1; index < ranges.length; index += 1) {
+    start = Math.min(start, ranges[index].start);
+    end = Math.max(end, ranges[index].end);
+  }
+  return { start, end };
 }
 
 /**
@@ -86,10 +148,11 @@ function shiftFeatures(
       end: range.end > insertIndex ? range.end + delta : range.end,
     }));
     if (newSubRanges && newSubRanges.length > 0) {
+      const extrema = featureExtrema(newSubRanges)!;
       return {
         ...f,
-        start: Math.min(...newSubRanges.map((range) => range.start)),
-        end: Math.max(...newSubRanges.map((range) => range.end)),
+        start: extrema.start,
+        end: extrema.end,
         subRanges: newSubRanges,
       };
     }
@@ -141,16 +204,26 @@ export function applySubstitution(
   features: Feature[],
   pos: number,
   newBase: string,
+  molecule: MutationMolecule = 'dna',
 ): MutationResult {
-  if (typeof newBase !== 'string' || !/^[A-Za-z*]$/.test(newBase)) {
-    throw new Error('Substitution requires exactly one valid residue; use insertion or deletion for length-changing edits.');
-  }
   requireSafeInteger(pos, 'pos', 0);
 
   // Guard: pos out of range — return unchanged
   if (pos < 0 || pos >= raw.length) {
     return { raw, scars: [...scars], features: [...features] };
   }
+
+  const validAlphabet = molecule === 'dna'
+    ? VALID_DNA_SUBSTITUTION
+    : molecule === 'rna'
+      ? VALID_RNA_SUBSTITUTION
+      : molecule === 'protein'
+        ? VALID_PROTEIN_SUBSTITUTION
+        : null;
+  if (typeof newBase !== 'string' || validAlphabet === null || !validAlphabet.test(newBase)) {
+    throw new Error(`Substitution requires exactly one valid residue from the declared ${String(molecule)} alphabet; use insertion or deletion for length-changing edits.`);
+  }
+  mutationOperationUnits(1, scars, features);
 
   const original = raw[pos];
 
@@ -215,6 +288,12 @@ export function applyInsertion(
     return { raw, scars: [...scars], features: [...features] };
   }
 
+  // Guard: pos out of range before alphabet, result-size, and work-budget
+  // checks. An edit that cannot address this sequence is an intentional no-op.
+  if (pos < -1 || pos > raw.length - 1) {
+    return { raw, scars: [...scars], features: [...features] };
+  }
+
   if (bases.length > MAX_MUTATION_INSERTION_LENGTH) {
     throw new RangeError(`Insertion cannot exceed ${MAX_MUTATION_INSERTION_LENGTH.toLocaleString()} residues.`);
   }
@@ -231,13 +310,8 @@ export function applyInsertion(
   if (raw.length > MAX_MUTATION_RESULT_LENGTH - bases.length) {
     throw new RangeError(`Insertion would exceed the ${MAX_MUTATION_RESULT_LENGTH.toLocaleString()}-residue result limit.`);
   }
-  insertionOperationUnits(bases.length, scars, features);
+  mutationOperationUnits(bases.length, scars, features);
   const normalizedBases = bases.toUpperCase();
-
-  // Guard: pos out of range
-  if (pos < -1 || pos > raw.length - 1) {
-    return { raw, scars: [...scars], features: [...features] };
-  }
 
   const insertIndex = pos + 1; // actual string index where insertion starts
   const delta = normalizedBases.length;
@@ -307,6 +381,7 @@ export function applyDeletion(
 
   // Clamp count so we don't exceed sequence length
   const effectiveCount = Math.min(count, raw.length - pos);
+  mutationOperationUnits(effectiveCount, scars, features);
   const deletedBases = raw.slice(pos, pos + effectiveCount);
 
   // Build the new sequence
@@ -367,10 +442,11 @@ export function applyDeletion(
 
       if (f.subRanges && (!newSubRanges || newSubRanges.length === 0)) return null;
       if (newSubRanges && newSubRanges.length > 0) {
+        const extrema = featureExtrema(newSubRanges)!;
         return {
           ...f,
-          start: Math.min(...newSubRanges.map((range) => range.start)),
-          end: Math.max(...newSubRanges.map((range) => range.end)),
+          start: extrema.start,
+          end: extrema.end,
           subRanges: newSubRanges,
         };
       }

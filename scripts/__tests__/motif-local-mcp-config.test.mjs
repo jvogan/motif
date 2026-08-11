@@ -18,6 +18,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   MAX_LOCAL_MCP_CONFIG_BYTES,
   MOTIF_LOCAL_CONNECTOR_NAME,
+  desiredMotifLocalServer,
   installMotifLocalServer,
   readLocalMcpConfig,
   removeMotifLocalServer,
@@ -41,8 +42,18 @@ function temporaryConfig(initialConfig) {
 function desiredServer() {
   return {
     name: MOTIF_LOCAL_CONNECTOR_NAME,
-    command: '/bin/bash',
-    args: ['/absolute/example/scripts/run-motif-claude-science-mcp.sh'],
+    command: '/usr/bin/env',
+    args: [
+      '-i',
+      'MOTIF_NODE_BIN=/absolute/example/bin/node',
+      'MOTIF_ROOT=/absolute/example',
+      'PATH=/usr/bin:/bin',
+      '/bin/bash',
+      '--noprofile',
+      '--norc',
+      '-p',
+      '/absolute/example/scripts/run-motif-claude-science-mcp.sh',
+    ],
     env: {
       MOTIF_NODE_BIN: '/absolute/example/bin/node',
       MOTIF_ROOT: '/absolute/example',
@@ -64,6 +75,23 @@ afterEach(() => {
 });
 
 describe('Motif Claude Science local connector configuration', () => {
+  it('registers a fixed pre-sanitized Bash startup command', () => {
+    const desired = desiredMotifLocalServer(root, { nodeBinary: process.execPath });
+    expect(desired.command).toBe('/usr/bin/env');
+    expect(desired.args.slice(0, 8)).toEqual([
+      '-i',
+      `MOTIF_NODE_BIN=${process.execPath}`,
+      `MOTIF_ROOT=${root}`,
+      'PATH=/usr/bin:/bin',
+      '/bin/bash',
+      '--noprofile',
+      '--norc',
+      '-p',
+    ]);
+    expect(desired.args.at(-1)).toBe(`${root}/scripts/run-motif-claude-science-mcp.sh`);
+    expect(desired.env).toEqual({ MOTIF_NODE_BIN: process.execPath, MOTIF_ROOT: root });
+  });
+
   it('preserves unrelated servers, unknown settings, and exact backup bytes', () => {
     const unrelated = {
       name: 'unrelated-local-tool',

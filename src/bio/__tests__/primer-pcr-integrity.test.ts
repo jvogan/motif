@@ -12,6 +12,7 @@ import {
 import {
   designPrimerPairWithDiagnostics,
   designForwardPrimerWithDiagnostics,
+  DEFAULT_TM_OPTIONS,
   MAX_PRIMER_OLIGO_LENGTH,
   MAX_PRIMER_TAIL_LENGTH,
   normalizePrimerDesignParams,
@@ -117,6 +118,30 @@ describe('primer, PCR, and Tm integrity', () => {
       maxMismatches: 1,
     });
     expect(conditionalMismatch[0]?.status).toBe('ambiguous');
+  });
+
+  it('proves a binding cap is exhaustive when the final window supplies the cap', () => {
+    const finalWindow = findPrimerBindingsWithDiagnostics(binding, binding, {
+      minMatched3PrimeLength: binding.length,
+      maxBindingCandidates: 1,
+    });
+    expect(finalWindow).toMatchObject({ complete: true, diagnostics: [] });
+    expect(finalWindow.candidates).toHaveLength(1);
+    expect(findPrimerBindings(binding, binding, {
+      minMatched3PrimeLength: binding.length,
+      maxBindingCandidates: 1,
+    })).toHaveLength(1);
+
+    const truncated = findPrimerBindingsWithDiagnostics(`${binding}GGGG${binding}`, binding, {
+      minMatched3PrimeLength: binding.length,
+      maxBindingCandidates: 1,
+    });
+    expect(truncated.complete).toBe(false);
+    expect(truncated.diagnostics).toContainEqual(expect.objectContaining({ code: 'binding_candidate_limit' }));
+    expect(findPrimerBindings(`${binding}GGGG${binding}`, binding, {
+      minMatched3PrimeLength: binding.length,
+      maxBindingCandidates: 1,
+    })).toEqual([]);
   });
 
   it('bounds automatic binding work and keeps the legacy array API fail-closed', () => {
@@ -317,6 +342,7 @@ describe('primer, PCR, and Tm integrity', () => {
       primer: 'forward',
     }));
     expect(inferred?.provenance.implicitTails.forward).toBe(true);
+    expect(inferred?.materializable).toBe(false);
   });
 
   it('bounds oligos, inferred tails, and the final tailed amplicon', () => {
@@ -434,6 +460,83 @@ describe('primer, PCR, and Tm integrity', () => {
     ]) {
       expect(normalizePrimerDesignParams(sequence.length, invalidParams, 'forward')).toBeNull();
     }
+  });
+
+  it('keeps Tm evidence bounded, fieldwise, and explicit about custom conditions', () => {
+    const sequenceLength = 160;
+    expect(normalizePrimerDesignParams(sequenceLength, {
+      targetStart: 20,
+      targetEnd: 80,
+      tmOptions: { ...DEFAULT_TM_OPTIONS, naConcentration: 1_001 },
+    }, 'forward')).toBeNull();
+    expect(normalizePrimerDesignParams(sequenceLength, {
+      targetStart: 20,
+      targetEnd: 80,
+      tmOptions: { ...DEFAULT_TM_OPTIONS, dntpConcentration: 101 },
+    }, 'forward')).toBeNull();
+    expect(normalizePrimerDesignParams(sequenceLength, {
+      targetStart: 20,
+      targetEnd: 80,
+      tmOptions: { ...DEFAULT_TM_OPTIONS, selfComplementary: 'yes' as never },
+    }, 'forward')).toBeNull();
+    expect(normalizePrimerDesignParams(sequenceLength, {
+      targetStart: 20,
+      targetEnd: 80,
+      tmConditionPresetId: 'unsupported-condition',
+    }, 'forward')).toBeNull();
+
+    const custom = normalizePrimerDesignParams(sequenceLength, {
+      targetStart: 20,
+      targetEnd: 80,
+      tmConditionPresetId: 'custom',
+      tmOptions: {
+        ...DEFAULT_TM_OPTIONS,
+        naConcentration: 75,
+        mgConcentration: 2,
+        dntpConcentration: 0.8,
+        primerConcentration: 100,
+        selfComplementary: false,
+      },
+    }, 'forward');
+    expect(custom?.tmEvidence).toMatchObject({
+      conditionPresetId: 'custom',
+      model: 'santalucia-1998-nearest-neighbor',
+      engine: 'motif-tm-calculator',
+      options: {
+        naConcentration: 75,
+        mgConcentration: 2,
+        dntpConcentration: 0.8,
+        primerConcentration: 100,
+        selfComplementarity: 'disabled',
+      },
+    });
+  });
+
+  it('reports directional pool truncation instead of presenting capped pairing as exhaustive', () => {
+    const result = designPrimerPairWithDiagnostics('ACGT'.repeat(80), {
+      targetStart: 20,
+      targetEnd: 80,
+      minLength: 18,
+      maxLength: 18,
+      minGC: 0,
+      maxGC: 1,
+      enforceTargetTm: false,
+      requireGcClamp: false,
+      flankingWindow: 20,
+      maxHairpinDeltaG: null,
+      maxSelfDimerDeltaG: null,
+      maxCrossDimerDeltaG: null,
+      maxPairingCandidatesPerDirection: 1,
+    });
+    expect(result.forwardPool.limit).toBe(1);
+    expect(result.reversePool.limit).toBe(1);
+    expect(result.forwardPool.enumeratedCount).toBeGreaterThan(1);
+    expect(result.reversePool.enumeratedCount).toBeGreaterThan(1);
+    expect(result.forwardPool.truncated).toBe(true);
+    expect(result.reversePool.truncated).toBe(true);
+    expect(result.forwardPool.exhaustive).toBe(false);
+    expect(result.reversePool.exhaustive).toBe(false);
+    expect(result.warnings?.join(' ')).toMatch(/directional pool is not exhaustive/i);
   });
 
   it('marks full ordered oligos with ambiguous tails for secondary-structure review', () => {

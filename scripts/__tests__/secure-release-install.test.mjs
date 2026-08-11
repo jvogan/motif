@@ -168,6 +168,8 @@ describe('checksum-verified Motif release installation', () => {
     expect(installed.servers[0].name).toBe('unrelated');
     expect(installed.servers[1]).toMatchObject({
       name: 'motif-local',
+      command: '/usr/bin/env',
+      args: expect.arrayContaining(['/bin/bash', '-p', '--noprofile', '--norc']),
       env: { MOTIF_ROOT: canonicalBundle, MOTIF_NODE_BIN: process.execPath },
     });
     expect(result.externalManifestDigestMatched).toBe(true);
@@ -433,6 +435,36 @@ describe('checksum-verified Motif release installation', () => {
     expect(readFileSync(configPath, 'utf8')).toBe(bytes);
     expect(rollback.backupPath).toBeTruthy();
     expect(readFileSync(rollback.backupPath, 'utf8')).toContain('motif-local');
+  });
+
+  it('recovers through a separately verified bundle when the installed bundle is damaged', () => {
+    const installedBundle = writeFixture();
+    const recoveryBundle = writeFixture();
+    const { configPath, bytes } = temporaryConfig({ servers: [{ name: 'unrelated', command: '/private/unrelated', args: [] }] });
+    const installed = installRelease([
+      '--bundle', installedBundle,
+      ...trustedManifestArgs(installedBundle),
+      '--config', configPath,
+      '--node', process.execPath,
+    ]);
+
+    writeFileSync(join(installedBundle, 'installer.mjs'), 'damaged installed bundle\n');
+    expect(() => doctorRelease([
+      '--bundle', installedBundle,
+      ...trustedManifestArgs(installedBundle),
+      '--config', configPath,
+      '--node', process.execPath,
+    ])).toThrow(/checksum mismatch/u);
+
+    const rollback = rollbackRelease([
+      '--bundle', recoveryBundle,
+      ...trustedManifestArgs(recoveryBundle),
+      '--config', configPath,
+      '--backup', installed.backupPath,
+    ]);
+    expect(rollback.externalManifestDigestMatched).toBe(true);
+    expect(readFileSync(configPath, 'utf8')).toBe(bytes);
+    expect(rollback.restoredFrom).toBe(installed.backupPath);
   });
 
   it('rejects oversized or symlinked rollback backups before reading them', () => {
