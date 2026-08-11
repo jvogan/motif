@@ -102,6 +102,25 @@ describe('ClaudeSciencePrimerWorkspace', () => {
     });
   });
 
+  it('requires a fresh evidence acknowledgment after search parameters change', async () => {
+    const user = userEvent.setup();
+    render(<ClaudeSciencePrimerWorkspace {...props({
+      initialForwardTail: 'NNNN',
+      initialReverseTail: 'NNNN',
+    })} />);
+
+    const acknowledgment = screen.getByTestId('primer-evidence-acknowledgment') as HTMLInputElement;
+    await user.click(acknowledgment);
+    expect(acknowledgment.checked).toBe(true);
+
+    await user.click(screen.getByText('Advanced constraints'));
+    const flankingWindow = screen.getByLabelText('Flanking scan nt');
+    await user.clear(flankingWindow);
+    await user.type(flankingWindow, '51');
+
+    await waitFor(() => expect((screen.getByTestId('primer-evidence-acknowledgment') as HTMLInputElement).checked).toBe(false));
+  });
+
   it('associates each invalid numeric field with the current validation message', async () => {
     const user = userEvent.setup();
     render(<ClaudeSciencePrimerWorkspace {...props()} />);

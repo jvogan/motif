@@ -11,6 +11,7 @@ import { checkSupplyChainPolicy } from '../check-supply-chain-policy.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const workflow = readFileSync(resolve(root, '.github/workflows/ci.yml'), 'utf8');
+const releaseReviewWorkflow = readFileSync(resolve(root, '.github/workflows/release-review-threads.yml'), 'utf8');
 const pkg = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'));
 
 describe('npm run gate matches CI', () => {
@@ -42,20 +43,25 @@ describe('npm run gate matches CI', () => {
     expect(workflow).toContain('dist-motif/release-confidence-report.json');
   });
 
-  it('rechecks release review threads on review and review-comment events', () => {
-    expect(workflow).toContain('pull_request_review:');
-    expect(workflow).toContain('types: [submitted, edited, dismissed]');
-    expect(workflow).toContain('pull_request_review_comment:');
-    expect(workflow).toContain('types: [created, edited, deleted]');
-    expect(workflow).toContain('run: node scripts/check-release-review-threads.mjs --github --require-release');
+  it('keeps review events out of the full gate and rechecks release threads separately', () => {
+    expect(workflow).not.toContain('pull_request_review:');
+    expect(workflow).not.toContain('pull_request_review_comment:');
+    expect(workflow).not.toContain('run: node scripts/check-release-review-threads.mjs --github --require-release');
     expect(workflow).toContain('github.event.pull_request.base.sha || github.event.before');
-    expect(workflow).toMatch(/if: startsWith\(github\.head_ref, 'release\/'/u);
-    expect(workflow).toContain("startsWith(github.event.pull_request.head.ref, 'release/')");
-    expect(workflow).toContain('GH_TOKEN: ${{ github.token }}');
+
+    expect(releaseReviewWorkflow).toContain('pull_request:');
+    expect(releaseReviewWorkflow).toContain('types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]');
+    expect(releaseReviewWorkflow).toContain('pull_request_review:');
+    expect(releaseReviewWorkflow).toContain('types: [submitted, edited, dismissed]');
+    expect(releaseReviewWorkflow).toContain('pull_request_review_comment:');
+    expect(releaseReviewWorkflow).toContain('types: [created, edited, deleted]');
+    expect(releaseReviewWorkflow).toContain('run: node scripts/check-release-review-threads.mjs --github --require-release');
+    expect(releaseReviewWorkflow).toContain("startsWith(github.event.pull_request.head.ref, 'release/')");
+    expect(releaseReviewWorkflow).toContain('GH_TOKEN: ${{ github.token }}');
   });
 
   it('pins every hosted action to an exact 40-character commit SHA', () => {
-    const actionRefs = [...workflow.matchAll(/^\s*uses:\s*([^\s#]+)/gm)].map((match) => match[1]);
+    const actionRefs = [...`${workflow}\n${releaseReviewWorkflow}`.matchAll(/^\s*uses:\s*([^\s#]+)/gm)].map((match) => match[1]);
     expect(actionRefs.length).toBeGreaterThan(0);
     for (const ref of actionRefs) expect(ref).toMatch(/^[^@]+@[a-f0-9]{40}$/);
   });

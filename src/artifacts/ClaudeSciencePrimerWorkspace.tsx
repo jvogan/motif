@@ -369,7 +369,7 @@ export function ClaudeSciencePrimerWorkspace({
   const [forwardTail, setForwardTail] = useState(() => normalizeInitialTail(initialForwardTail));
   const [reverseTail, setReverseTail] = useState(() => normalizeInitialTail(initialReverseTail));
   const [selectedPairIndex, setSelectedPairIndex] = useState(0);
-  const [evidenceAcknowledged, setEvidenceAcknowledged] = useState(false);
+  const [acknowledgedEvidenceKey, setAcknowledgedEvidenceKey] = useState('');
   const [status, setStatus] = useState('');
   const [busyAction, setBusyAction] = useState('');
 
@@ -526,10 +526,6 @@ export function ClaudeSciencePrimerWorkspace({
     : '';
 
   useEffect(() => {
-    setEvidenceAcknowledged(false);
-  }, [selectedPairKey, tmConditionPresetId]);
-
-  useEffect(() => {
     if (selectedPairIndex >= pairs.length) setSelectedPairIndex(0);
   }, [pairs.length, selectedPairIndex]);
 
@@ -570,6 +566,12 @@ export function ClaudeSciencePrimerWorkspace({
   }, [result?.warnings, selectedDiagnostics]);
 
   const evidenceReviewRequired = evidenceReviewReasons.length > 0;
+  const evidenceReviewKey = useMemo(() => JSON.stringify({
+    pair: selectedPairKey,
+    parameters,
+    reasonCodes: evidenceReviewReasons,
+  }), [evidenceReviewReasons, parameters, selectedPairKey]);
+  const evidenceAcknowledged = evidenceReviewRequired && acknowledgedEvidenceKey === evidenceReviewKey;
   const actionBlockedByReview = evidenceReviewRequired && !evidenceAcknowledged;
 
   const handoff = useMemo<ClaudeSciencePrimerHandoff | null>(() => selectedPair ? ({
@@ -797,7 +799,7 @@ export function ClaudeSciencePrimerWorkspace({
                   aria-label="Tm condition preset"
                   name="primer-tm-condition"
                   value={tmConditionPresetId}
-                  onChange={(event) => { setTmConditionPresetId(event.target.value); setEvidenceAcknowledged(false); markCustom(); }}
+                  onChange={(event) => { setTmConditionPresetId(event.target.value); setAcknowledgedEvidenceKey(''); markCustom(); }}
                 >
                   <option value={CUSTOM_PRIMER_TM_CONDITION_PRESET_ID}>Custom bounded screen</option>
                   {PRIMER_TM_CONDITION_PRESETS.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
@@ -1002,7 +1004,7 @@ export function ClaudeSciencePrimerWorkspace({
                           type="checkbox"
                           data-testid="primer-evidence-acknowledgment"
                           checked={evidenceAcknowledged}
-                          onChange={(event) => setEvidenceAcknowledged(event.target.checked)}
+                          onChange={(event) => setAcknowledgedEvidenceKey(event.target.checked ? evidenceReviewKey : '')}
                         />
                         I reviewed the flagged evidence and accept this pair for the selected downstream action.
                       </label>
