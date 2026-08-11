@@ -17,9 +17,11 @@ working tree.
 - Merge only after the required hosted checks pass against the current
   protected branch.
 - Mark the pull request with the `release` label (or use a `release/*` head
-  branch). The existing CI validation job rechecks current review threads on
-  review, review-comment, and synchronization events; branch protection must
-  require the `validate` context for release pull requests.
+  branch). The dedicated Release review threads workflow rechecks current
+  threads on release-label, synchronization, review, and review-comment
+  events without rerunning the full build. Branch protection must require the
+  `validate` and `validate-release-review-threads` contexts for release pull
+  requests.
 
 ## 2. Build from the release commit
 
