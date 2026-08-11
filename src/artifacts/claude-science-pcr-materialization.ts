@@ -41,6 +41,10 @@ export type PcrMaterializationSelection = {
   pairNumber: number;
   target: { start: number; end: number };
   parameters?: PrimerDesignParams;
+  /** Exact Tm calculator model, engine, version, and conditions used. */
+  tmEvidence?: ArtifactJsonObject;
+  /** Explicit review receipt for any ambiguous or work-limited evidence. */
+  evidenceReview?: ArtifactJsonObject;
 };
 
 export type PcrMaterializationIdentity = {
@@ -75,6 +79,8 @@ export type PcrDerivedRecordProvenance = ArtifactJsonObject & {
   materializationKey: string;
   wrapsOrigin: boolean;
   translationTableId?: number;
+  tmEvidence?: ArtifactJsonObject;
+  evidenceReview?: ArtifactJsonObject;
 };
 
 /** Compatible with the artifact's private ArtifactRecordInput contract. */
@@ -156,6 +162,7 @@ function primerDesignIdentity(selection: PcrMaterializationSelection): string {
     reverse.end,
     selection.target.start,
     selection.target.end,
+    selection.tmEvidence ?? null,
   ]);
 }
 
@@ -341,11 +348,15 @@ export function materializePcrAmplicon(input: {
     forwardBindEnd: simulation.forward.bindEnd,
     reverseBindStart: simulation.reverse.bindStart,
     reverseBindEnd: simulation.reverse.bindEnd,
+    ...(selection.tmEvidence ? { tmEvidence: selection.tmEvidence } : {}),
+    ...(selection.evidenceReview ? { evidenceReview: selection.evidenceReview } : {}),
     ...preparationMetadata,
     metadata: {
       productAssembly: simulation.provenance.productAssembly,
       tailPolicy: simulation.provenance.tailPolicy,
       implicitTails: simulation.provenance.implicitTails,
+      ...(selection.tmEvidence ? { tmEvidence: selection.tmEvidence } : {}),
+      ...(selection.evidenceReview ? { evidenceReview: selection.evidenceReview } : {}),
     },
   };
   const record: PcrDerivedRecordInput = {
@@ -387,6 +398,8 @@ export function materializePcrAmplicon(input: {
       topology: sourceRecord.topology,
       primerDesignSha256,
       materializationKey,
+      ...(selection.tmEvidence ? { tmEvidence: selection.tmEvidence } : {}),
+      ...(selection.evidenceReview ? { evidenceReview: selection.evidenceReview } : {}),
     },
     data: {
       templateRecordId: sourceRecord.id,
@@ -420,6 +433,8 @@ export function materializePcrAmplicon(input: {
         productAssembly: simulation.provenance.productAssembly,
         tailPolicy: simulation.provenance.tailPolicy,
         implicitTails: simulation.provenance.implicitTails,
+        ...(selection.tmEvidence ? { tmEvidence: selection.tmEvidence } : {}),
+        ...(selection.evidenceReview ? { evidenceReview: selection.evidenceReview } : {}),
         ...preparationMetadata,
       },
     },

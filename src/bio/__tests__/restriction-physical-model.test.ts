@@ -7,6 +7,8 @@ import {
 import {
   countAmbiguousBases,
   findRestrictionSites,
+  MAX_RESTRICTION_ENZYMES,
+  MAX_RESTRICTION_ENZYME_NAME_LENGTH,
   isValidRestrictionRecognitionSequence,
   normalizeRestrictionSequence,
 } from '../restriction-sites';
@@ -20,6 +22,15 @@ const byName = (name: string): RestrictionEnzyme => {
 };
 
 describe('physical restriction model', () => {
+  it('returns a typed invalid-topology result at the digest boundary', () => {
+    const result = restrictionDigestDetailed('AAAAGAATTC', ['EcoRI'], 'wrapped' as never);
+    expect(result).toMatchObject({
+      topology: 'linear',
+      issues: [expect.objectContaining({ code: 'invalid_topology' })],
+      fragments: [],
+    });
+  });
+
   it.each(['BsaI', 'BbsI', 'BsmBI', 'SapI'])('reports insufficient_flanking_bases for a short linear %s site', (name) => {
     const enzyme = byName(name);
     const result = restrictionDigestDetailed(enzyme.recognitionSequence, [name]);
@@ -128,6 +139,73 @@ describe('physical restriction model', () => {
     expect(preview.unknownEnzymes).toEqual(['NotInCatalog']);
     expect(preview.issues).toContainEqual(expect.objectContaining({ code: 'unknown_enzyme', enzyme: 'NotInCatalog' }));
     expect(preview.counts.get('EcoRI')).toBe(1);
+  });
+
+  it('returns a typed issue for malformed requested enzyme names', () => {
+    const malformedRequests: unknown[] = [
+      null,
+      [''],
+      ['   '],
+      ['E'.repeat(MAX_RESTRICTION_ENZYME_NAME_LENGTH + 1)],
+      ['EcoRI', null],
+      Array.from({ length: MAX_RESTRICTION_ENZYMES + 1 }, () => 'EcoRI'),
+    ];
+    for (const request of malformedRequests) {
+      const result = restrictionDigestDetailed('AAAAGAATTCAAAA', request as never);
+      expect(result).toMatchObject({
+        fragments: [],
+        cuts: [],
+        issues: [expect.objectContaining({ code: 'invalid_enzyme_name' })],
+      });
+    }
+    const oversizedInvalidTopology = restrictionDigestDetailed(
+      'AAAAGAATTCAAAA',
+      Array.from({ length: MAX_RESTRICTION_ENZYMES + 1 }, () => 'EcoRI'),
+      'invalid' as never,
+    );
+    expect(oversizedInvalidTopology.requestedEnzymes).toEqual([]);
+  });
+
+  it('rejects malformed custom methylation metadata before scanning', () => {
+    const base: RestrictionEnzyme = {
+      name: 'CustomMethylation',
+      recognitionSequence: 'GATC',
+      cutOffset: 2,
+      complementCutOffset: 2,
+      overhang: 'blunt',
+    };
+    const malformed: RestrictionEnzyme[] = [
+      { ...base, methylationRequirement: { target: 'not-a-target', state: 'methylated' } as never },
+      { ...base, methylationRequirement: { target: 'dam', state: 'unknown' } as never },
+      { ...base, methylationBehavior: 'always' as never },
+      {
+        ...base,
+        methylationRequirement: {
+          target: 'dam',
+          state: 'methylated',
+          evidence: { source: 42, sourceLabel: 'label', conditions: 'conditions' },
+        } as never,
+      },
+      {
+        ...base,
+        methylationEvidence: { source: 'source', sourceLabel: 'label', conditions: null },
+      } as never,
+    ];
+
+    for (const enzyme of malformed) {
+      const result = restrictionDigestDetailed(
+        'AAAAGATCAAAA',
+        [base.name],
+        'linear',
+        undefined,
+        [enzyme],
+      );
+      expect(result).toMatchObject({
+        fragments: [],
+        cuts: [],
+        issues: [expect.objectContaining({ code: 'invalid_recognition_sequence' })],
+      });
+    }
   });
 
   it('normalizes formatted DNA and rejects invalid/custom regex-like recognition strings', () => {

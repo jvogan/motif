@@ -27,7 +27,13 @@ import {
   resolveEnzymeUnion,
   type RestrictionEnzymeSourceId,
 } from '../bio/restriction-presets';
-import { applySubstitution, applyInsertion, applyDeletion, type MutationResult } from '../bio/mutate';
+import {
+  applySubstitution,
+  applyInsertion,
+  applyDeletion,
+  preflightSequenceEdit,
+  type MutationResult,
+} from '../bio/mutate';
 import {
   ABI_IMPORT_LIMITS,
   parseAbiImport,
@@ -228,7 +234,7 @@ import {
 } from './claude-science-download';
 import './motif-artifact.css';
 
-const MOTIF_ARTIFACT_VERSION = '0.3.4';
+const MOTIF_ARTIFACT_VERSION = '0.3.5';
 const MOTIF_ARTIFACT_BUILD_ID = (() => {
   if (typeof document === 'undefined') return 'development';
   const value = document.querySelector<HTMLMetaElement>('meta[name="motif-build-id"]')?.content.trim() ?? '';
@@ -1564,6 +1570,24 @@ function normalizeJsonObject(value: unknown): ArtifactJsonObject {
   return normalized !== null && typeof normalized === 'object' && !Array.isArray(normalized)
     ? normalized
     : {};
+}
+
+function primerTmEvidenceJson(
+  value: ClaudeSciencePrimerHandoff['tmEvidence'],
+): ArtifactJsonObject | undefined {
+  return value ? normalizeJsonObject({
+    ...value,
+    options: { ...value.options },
+  }) : undefined;
+}
+
+function primerEvidenceReviewJson(
+  value: ClaudeSciencePrimerHandoff['evidenceReview'],
+): ArtifactJsonObject | undefined {
+  return value ? normalizeJsonObject({
+    ...value,
+    reasonCodes: [...value.reasonCodes],
+  }) : undefined;
 }
 
 type JsonInspectionLimits = {
@@ -7838,8 +7862,9 @@ function App() {
     caretAfter: number,
     edit: SequenceCoordinateEdit,
   ) => {
-    if (result.raw.length > MOTIF_MAX_RECORD_LENGTH) {
-      showWorkbenchNotice(`Records are limited to ${MOTIF_MAX_RECORD_LENGTH.toLocaleString()} residues. Delete bases or split the record before inserting more.`, 'error');
+    const capacity = preflightSequenceEdit(edit.oldLength, edit, MOTIF_MAX_RECORD_LENGTH);
+    if (!capacity.ok) {
+      showWorkbenchNotice(capacity.message ?? `This edit would exceed the ${MOTIF_MAX_RECORD_LENGTH.toLocaleString()}-residue record limit.`, 'error');
       return;
     }
     const current = payloadRef.current;
@@ -7953,6 +7978,31 @@ function App() {
     setCaret(clamp(caretAfter, 0, result.raw.length));
     bumpEditHistory();
   }, [captureEditSnapshot, recordId, showWorkbenchNotice]);
+
+  const commitMutation = useCallback((
+    build: () => MutationResult,
+    caretAfter: number,
+    edit: SequenceCoordinateEdit,
+  ) => {
+    const capacity = preflightSequenceEdit(edit.oldLength, edit, MOTIF_MAX_RECORD_LENGTH);
+    if (!capacity.ok) {
+      showWorkbenchNotice(capacity.message ?? `This edit would exceed the ${MOTIF_MAX_RECORD_LENGTH.toLocaleString()}-residue record limit.`, 'error');
+      return;
+    }
+    try {
+      commitEdit(build(), caretAfter, edit);
+    } catch (error) {
+      // The pure mutators retain their throwing API for non-UI callers. The
+      // browser editor has already preflighted this transaction; keep a
+      // defensive boundary for a concurrent/stale event at the record cap.
+      const message = error instanceof Error ? error.message : String(error);
+      if (/record limit|result limit|exceed(?:s|ed)? .*residue/i.test(message)) {
+        showWorkbenchNotice(message, 'error');
+        return;
+      }
+      throw error;
+    }
+  }, [commitEdit, showWorkbenchNotice]);
 
   const restoreSnapshot = useCallback((snap: EditSnapshot, expectedCurrent: EditSnapshot) => {
     const current = payloadRef.current;
@@ -8068,8 +8118,22 @@ function App() {
       case 'ArrowRight': event.preventDefault(); setCaret(Math.min(len, c + 1)); return;
       case 'Home': event.preventDefault(); setCaret(0); return;
       case 'End': event.preventDefault(); setCaret(len); return;
-      case 'Backspace': event.preventDefault(); if (c > 0) commitEdit(applyDeletion(sequence, [], featureList, c - 1, 1), c - 1, { start: c - 1, deletedLength: 1, insertedLength: 0, oldLength: len }); return;
-      case 'Delete': event.preventDefault(); if (c < len) commitEdit(applyDeletion(sequence, [], featureList, c, 1), c, { start: c, deletedLength: 1, insertedLength: 0, oldLength: len }); return;
+      case 'Backspace': {
+        event.preventDefault();
+        if (c > 0) {
+          const edit = { start: c - 1, deletedLength: 1, insertedLength: 0, oldLength: len };
+          commitMutation(() => applyDeletion(sequence, [], featureList, c - 1, 1), c - 1, edit);
+        }
+        return;
+      }
+      case 'Delete': {
+        event.preventDefault();
+        if (c < len) {
+          const edit = { start: c, deletedLength: 1, insertedLength: 0, oldLength: len };
+          commitMutation(() => applyDeletion(sequence, [], featureList, c, 1), c, edit);
+        }
+        return;
+      }
       default: break;
     }
     if (event.key.length === 1) {
@@ -8078,16 +8142,18 @@ function App() {
       if (!alphabet.includes(ch)) return;
       event.preventDefault();
       if (insertMode || c >= len) {
-        commitEdit(applyInsertion(sequence, [], featureList, c - 1, ch, sequenceType), c + 1, { start: c, deletedLength: 0, insertedLength: 1, oldLength: len });
+        const edit = { start: c, deletedLength: 0, insertedLength: 1, oldLength: len };
+        commitMutation(() => applyInsertion(sequence, [], featureList, c - 1, ch, sequenceType), c + 1, edit);
       } else {
         if (sequence[c]?.toUpperCase() === ch) {
           setCaret(c + 1);
           return;
         }
-        commitEdit(applySubstitution(sequence, [], featureList, c, ch), c + 1, { start: c, deletedLength: 1, insertedLength: 1, oldLength: len });
+        const edit = { start: c, deletedLength: 1, insertedLength: 1, oldLength: len };
+        commitMutation(() => applySubstitution(sequence, [], featureList, c, ch, sequenceType), c + 1, edit);
       }
     }
-  }, [isEditable, caret, sequence, features, sequenceType, insertMode, commitEdit, undoEdit, redoEdit]);
+  }, [isEditable, caret, sequence, features, sequenceType, insertMode, commitMutation, undoEdit, redoEdit]);
 
   const handleSequencePaste = useCallback((event: ReactClipboardEvent) => {
     if (!isEditable || caret === null) return;
@@ -8095,16 +8161,13 @@ function App() {
     const pasted = cleanPastedSequenceForEdit(event.clipboardData.getData('text/plain'), alphabet);
     if (!pasted) return;
     event.preventDefault();
-    if (sequence.length + pasted.length > MOTIF_MAX_RECORD_LENGTH) {
-      showWorkbenchNotice(`This paste would exceed the ${MOTIF_MAX_RECORD_LENGTH.toLocaleString()}-residue record limit.`, 'error');
-      return;
-    }
-    commitEdit(
-      applyInsertion(sequence, [], features as Feature[], caret - 1, pasted, sequenceType),
+    const edit = { start: caret, deletedLength: 0, insertedLength: pasted.length, oldLength: sequence.length };
+    commitMutation(
+      () => applyInsertion(sequence, [], features as Feature[], caret - 1, pasted, sequenceType),
       caret + pasted.length,
-      { start: caret, deletedLength: 0, insertedLength: pasted.length, oldLength: sequence.length },
+      edit,
     );
-  }, [caret, commitEdit, features, isEditable, sequence, sequenceType, showWorkbenchNotice]);
+  }, [caret, commitMutation, features, isEditable, sequence, sequenceType]);
 
   const addRecords = useCallback((recordInputs: readonly ArtifactRecordInput[]): number => {
     if (recordInputs.length === 0) return 0;
@@ -9545,6 +9608,8 @@ function App() {
         intent: handoff.intent,
         targetStart: handoff.target.start,
         targetEnd: handoff.target.end,
+        ...(handoff.tmEvidence ? { tmEvidence: handoff.tmEvidence } : {}),
+        ...(handoff.evidenceReview ? { evidenceReview: handoff.evidenceReview } : {}),
         ...(cloningPreparation ? { cloningPreparation } : {}),
       })),
       data: {
@@ -9626,6 +9691,8 @@ function App() {
     });
     const templateSha256 = sha256HexSync(template.sequence);
     const productSha256 = sha256HexSync(simulation.product);
+    const tmEvidence = primerTmEvidenceJson(handoff.tmEvidence);
+    const evidenceReview = primerEvidenceReviewJson(handoff.evidenceReview);
     const pcrResult: ArtifactAnalysisResult = {
       id: `pcr-${crypto.randomUUID()}`,
       kind: 'pcr',
@@ -9644,6 +9711,8 @@ function App() {
         reverseBindingStart: simulation.reverse.bindStart,
         reverseBindingEnd: simulation.reverse.bindEnd,
         topology: template.topology,
+        ...(tmEvidence ? { tmEvidence } : {}),
+        ...(evidenceReview ? { evidenceReview } : {}),
         productSha256,
       },
       data: {
@@ -9672,6 +9741,8 @@ function App() {
           productAssembly: simulation.provenance.productAssembly,
           tailPolicy: simulation.provenance.tailPolicy,
           implicitTails: simulation.provenance.implicitTails,
+          ...(tmEvidence ? { tmEvidence } : {}),
+          ...(evidenceReview ? { evidenceReview } : {}),
           recordCreated: false,
         },
       },
@@ -9728,6 +9799,8 @@ function App() {
       recordName = `${baseName} ${suffix}`;
     }
     const createdAt = new Date().toISOString();
+    const tmEvidence = primerTmEvidenceJson(handoff.tmEvidence);
+    const evidenceReview = primerEvidenceReviewJson(handoff.evidenceReview);
     const materialized = materializePcrAmplicon({
       sourceRecord,
       selection: {
@@ -9735,6 +9808,8 @@ function App() {
         pairNumber: handoff.pairNumber,
         target: handoff.target,
         parameters: handoff.parameters,
+        ...(tmEvidence ? { tmEvidence } : {}),
+        ...(evidenceReview ? { evidenceReview } : {}),
       },
       identity: {
         recordId: `pcr-record-${crypto.randomUUID()}`,

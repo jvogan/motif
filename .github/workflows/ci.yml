@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, review_requested]
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+  pull_request_review_comment:
+    types: [created, edited, deleted]
 
 permissions:
   contents: read
@@ -44,7 +49,13 @@ jobs:
       - name: Canonical exact-commit gate
         run: npm run gate
         env:
-          MOTIF_COOLING_OFF_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          MOTIF_COOLING_OFF_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+
+      - name: Check release pull request review threads
+        if: startsWith(github.head_ref, 'release/') || startsWith(github.event.pull_request.head.ref, 'release/') || contains(github.event.pull_request.labels.*.name, 'release') || contains(github.event.pull_request.labels.*.name, 'release-pr')
+        run: node scripts/check-release-review-threads.mjs --github --require-release
+        env:
+          GH_TOKEN: ${{ github.token }}
 
       - name: Retain gate and release evidence
         if: ${{ always() }}

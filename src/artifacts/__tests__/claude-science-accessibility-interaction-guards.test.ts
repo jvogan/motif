@@ -223,6 +223,10 @@ describe('Claude Science accessibility and interaction guards', () => {
       'primer-min-gc',
       'primer-max-gc',
       'primer-flanking-window',
+      'primer-tm-na',
+      'primer-tm-mg',
+      'primer-tm-dntp',
+      'primer-tm-primer',
     ];
     for (const name of names) {
       expect(primerWorkspaceSource).toContain(`name="${name}"`);

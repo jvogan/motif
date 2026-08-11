@@ -7,6 +7,8 @@ import {
   findNonCutters,
   findRestrictionSites,
   isActiveDoubleStrandRestrictionSite,
+  MAX_RESTRICTION_ENZYMES,
+  scanRestrictionSites,
   restrictionSiteActivity,
 } from '../restriction-sites';
 import { resolveEnzymeUnion } from '../restriction-presets';
@@ -223,5 +225,38 @@ describe('restriction-site scanning', () => {
     expect(classifyRestrictionEnzymes(sequence, [conditional])[0].activeDoubleStrandSiteCount).toBe(0);
     expect(findNonCutters(sequence, [conditional, nick]).map((candidate) => candidate.name))
       .toEqual([conditional.name, nick.name]);
+  });
+
+  it('validates runtime topology, custom enzyme geometry, and scan work before matching', () => {
+    const custom = {
+      name: 'SignedOffset',
+      recognitionSequence: 'AAAA',
+      cutOffset: -1,
+      complementCutOffset: 3,
+      overhang: '5prime' as const,
+    };
+    expect(() => findRestrictionSites('AAAA', [custom], { topology: 'wrapped' as never })).toThrow(/linear.*circular/i);
+    expect(scanRestrictionSites('AAAA', [custom]).issues).toContainEqual(expect.objectContaining({
+      code: 'insufficient_flanking_bases',
+    }));
+    expect(() => findRestrictionSites('AAAA', [{ ...custom, name: 'bad\u0000name' }])).toThrow(/control/i);
+    expect(() => findRestrictionSites('AAAA', Array.from({ length: MAX_RESTRICTION_ENZYMES + 1 }, (_, index) => ({
+      ...custom,
+      name: `E${index}`,
+      cutOffset: 0,
+      complementCutOffset: 0,
+      recognitionSequence: 'A',
+      overhang: 'blunt' as const,
+    })))).toThrow(/at most/i);
+
+    const longPatterns = Array.from({ length: 10 }, (_, index) => ({
+      ...custom,
+      name: `Long${index}`,
+      recognitionSequence: `${'A'.repeat(63)}C`,
+      cutOffset: 0,
+      complementCutOffset: 64,
+      overhang: 'blunt' as const,
+    }));
+    expect(() => findRestrictionSites('A'.repeat(1_000_000), longPatterns)).toThrow(/scan requires.*orientations|safety limit/i);
   });
 });

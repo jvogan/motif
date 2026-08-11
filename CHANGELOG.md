@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## 0.3.5 — 2026-08-11
+
+- Split post-tag version collision enforcement into the explicit release
+  publish check, hardened connector startup before Bash initialization, added
+  release-review thread verification, and documented separately verified
+  rollback recovery.
+- Guarded sequence edits at the record boundary, made substitutions
+  molecule-aware, corrected exact-cap PCR completeness, and kept inferred-tail
+  simulations out of materialization paths.
+- Restored the default primer-pair interaction cutoff, added review
+  acknowledgements and directional search receipts, and stamped explicit Tm
+  model, engine, version, and concentration evidence into saved results.
+- Hardened Gibson, restriction, MSA, mutation, and legacy formatting APIs with
+  runtime validation and route-aware work limits; documented Loop Assembly
+  parity transitions without inventing unavailable receiver identities.
+- Aligned Node type definitions with the minimum supported Node 22 runtime.
+
 ## 0.3.4 — 2026-08-09
 
 - Tightened checkpoint restoration, portable export receipts, MCP payload

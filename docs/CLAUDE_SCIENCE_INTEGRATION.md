@@ -1,6 +1,6 @@
 # Motif + Claude Science integration
 
-Last reviewed: August 9, 2026. Connector version: `0.3.4`.
+Last reviewed: August 11, 2026. Connector version: `0.3.5`.
 
 This is the maintainer and technical reference for the Motif-owned local
 connector. End users should start with the
@@ -92,6 +92,11 @@ Use the private backup printed by the installer with
 manifest checksum if a restore is needed. The installer only changes the
 `motif-local` entry and preserves unrelated config.
 
+For recovery after an installed bundle is damaged, use a fresh extraction of
+the same release as the rollback helper's `--bundle` and verify it with its
+own external manifest checksum first. Do not execute helpers from the damaged
+folder; the separately verified copy is the recovery route.
+
 The installer updates only the `motif-local` entry in:
 
 ```text
@@ -101,6 +106,13 @@ The installer updates only the `motif-local` entry in:
 It preserves every unrelated server and unknown top-level field. Before a
 changed config is written, it creates a private same-directory backup and uses
 an atomic rename with a concurrency guard. It never prints config values.
+
+The managed registration starts `/usr/bin/env -i` with only `MOTIF_ROOT`,
+`MOTIF_NODE_BIN`, and a fixed system `PATH`, then invokes `/bin/bash` with
+startup files and imported functions disabled. This happens before Bash starts,
+so inherited `BASH_ENV`, `ENV`, Node bootstrap, proxy, credential, and agent
+variables do not reach the connector. The launcher applies a second small
+runtime allowlist for documented locale and temporary-directory behavior.
 
 After registration:
 

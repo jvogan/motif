@@ -23,6 +23,8 @@ describe('npm run gate matches CI', () => {
   it('declares a non-trivial, safely ordered gate', () => {
     const ids = GATE_STEPS.map(({ id }) => id);
     expect(ids.length).toBeGreaterThan(15);
+    expect(ids).not.toContain('release-publish');
+    expect(pkg.scripts['check:release-publish']).toBe('node scripts/check-release-publish.mjs');
     expect(ids.indexOf('supply-chain-policy')).toBeLessThan(ids.indexOf('reviewed-lifecycle'));
     expect(ids.indexOf('build')).toBeLessThan(ids.indexOf('post-build-release-verification'));
     expect(ids.indexOf('post-build-release-verification')).toBeLessThan(ids.indexOf('reproducibility'));
@@ -38,6 +40,18 @@ describe('npm run gate matches CI', () => {
     expect(workflow).toContain('test-results/');
     expect(workflow).toContain('dist-motif/gate-coverage.json');
     expect(workflow).toContain('dist-motif/release-confidence-report.json');
+  });
+
+  it('rechecks release review threads on review and review-comment events', () => {
+    expect(workflow).toContain('pull_request_review:');
+    expect(workflow).toContain('types: [submitted, edited, dismissed]');
+    expect(workflow).toContain('pull_request_review_comment:');
+    expect(workflow).toContain('types: [created, edited, deleted]');
+    expect(workflow).toContain('run: node scripts/check-release-review-threads.mjs --github --require-release');
+    expect(workflow).toContain('github.event.pull_request.base.sha || github.event.before');
+    expect(workflow).toMatch(/if: startsWith\(github\.head_ref, 'release\/'/u);
+    expect(workflow).toContain("startsWith(github.event.pull_request.head.ref, 'release/')");
+    expect(workflow).toContain('GH_TOKEN: ${{ github.token }}');
   });
 
   it('pins every hosted action to an exact 40-character commit SHA', () => {

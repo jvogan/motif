@@ -1,6 +1,12 @@
 import type { Feature } from './types';
 import { gcContent } from './gc-content';
-import { calculateTm, type TmOptions } from './tm-calculator';
+import {
+  calculateTm,
+  MAX_DIVALENT_CONCENTRATION_MILLIMOLAR,
+  MAX_NA_CONCENTRATION_MILLIMOLAR,
+  MAX_PRIMER_CONCENTRATION_NANOMOLAR,
+  type TmOptions,
+} from './tm-calculator';
 import { reverseComplement } from './reverse-complement';
 import {
   predictHairpin,
@@ -17,17 +23,8 @@ import {
 } from './primer-thermodynamics';
 import { inspectNucleotideSequence } from './nucleotide';
 
-/**
- * Realistic PCR buffer defaults. SantaLucia 1998 NN-Tm
- * computed at the legacy default 50 mM Na, 0 Mg, 0 dNTP undershoots
- * real-PCR Tm by 5-7 °C — a thermal cycler annealing temp set at the
- * dialog-displayed Tm will mis-anneal in the actual reaction. Common
- * standard PCR conditions:
- *   - 50 mM Na+ (KCl/NaCl combined, normalized to Na)
- *   - 1.5 mM Mg2+ (Taq, Q5, KOD, Phusion default)
- *   - 0.2 mM dNTPs (each dNTP at 0.05 mM × 4)
- *   - 250 nM primer
- */
+/** Named screening condition used by the visible primer workspace. Values are
+ * explicit calculator inputs, not a claim about a proprietary reaction mix. */
 export const DEFAULT_TM_OPTIONS: TmOptions = {
   method: 'nearest-neighbor',
   naConcentration: 50,
@@ -36,6 +33,70 @@ export const DEFAULT_TM_OPTIONS: TmOptions = {
   primerConcentration: 250,
   saltCorrection: 'owczarzy',
 };
+
+export const PRIMER_TM_MODEL = 'santalucia-1998-nearest-neighbor' as const;
+export const PRIMER_TM_MODEL_BY_METHOD = {
+  'nearest-neighbor': PRIMER_TM_MODEL,
+  wallace: 'wallace-rule',
+  'gc-adjusted': 'gc-adjusted',
+} as const;
+export type PrimerTmModel = typeof PRIMER_TM_MODEL_BY_METHOD[keyof typeof PRIMER_TM_MODEL_BY_METHOD];
+export const PRIMER_TM_ENGINE = 'motif-tm-calculator' as const;
+export const PRIMER_TM_ENGINE_VERSION = '1' as const;
+
+export interface PrimerTmConditionPreset {
+  id: string;
+  name: string;
+  description: string;
+  options: TmOptions;
+}
+
+/**
+ * Safe, named presets keep the chemistry visible while avoiding unsupported
+ * vendor-specific buffer claims. dNTP concentration is total across the four
+ * nucleotide species and is used to estimate free Mg2+.
+ */
+export const PRIMER_TM_CONDITION_PRESETS: readonly PrimerTmConditionPreset[] = [
+  {
+    id: 'standard-screening',
+    name: 'Standard screening · total dNTP 0.2 mM',
+    description: '50 mM Na+, 1.5 mM Mg2+, 0.2 mM total dNTP, 250 nM primer; SantaLucia NN + Owczarzy.',
+    options: { ...DEFAULT_TM_OPTIONS },
+  },
+  {
+    id: 'monovalent-screening',
+    name: 'Monovalent salt screen · no Mg2+',
+    description: '50 mM Na+, no Mg2+ or dNTP correction, 250 nM primer; SantaLucia NN + Owczarzy Na+.',
+    options: {
+      method: 'nearest-neighbor',
+      naConcentration: 50,
+      mgConcentration: 0,
+      dntpConcentration: 0,
+      primerConcentration: 250,
+      saltCorrection: 'owczarzy',
+    },
+  },
+] as const;
+export const DEFAULT_PRIMER_TM_CONDITION_PRESET_ID = 'standard-screening' as const;
+export const CUSTOM_PRIMER_TM_CONDITION_PRESET_ID = 'custom' as const;
+
+export interface PrimerTmEvidence {
+  conditionPresetId: string;
+  conditionPresetName: string;
+  model: PrimerTmModel;
+  engine: typeof PRIMER_TM_ENGINE;
+  engineVersion: typeof PRIMER_TM_ENGINE_VERSION;
+  options: {
+    method: NonNullable<TmOptions['method']>;
+    naConcentration: number;
+    mgConcentration: number;
+    /** Total concentration summed across dATP, dCTP, dGTP, and dTTP. */
+    dntpConcentration: number;
+    primerConcentration: number;
+    saltCorrection: NonNullable<TmOptions['saltCorrection']>;
+    selfComplementarity: 'auto' | 'enabled' | 'disabled';
+  };
+}
 
 export interface PrimerDesignParams {
   targetStart: number;
@@ -77,10 +138,13 @@ export interface PrimerDesignParams {
   flankingWindow?: number;
   /**
    * Tm calculation buffer conditions. Defaults to
-   * DEFAULT_TM_OPTIONS (50 mM Na, 1.5 mM Mg, 0.2 mM dNTP, 250 nM primer).
+   * the named standard screening preset (50 mM Na, 1.5 mM Mg, 0.2 mM total
+   * dNTP, 250 nM primer).
    * Passing `{}` or {mgConcentration: 0} reproduces legacy behavior.
    */
   tmOptions?: TmOptions;
+  /** Stable named condition identity retained in design evidence. */
+  tmConditionPresetId?: string;
   /**
    * Hairpin ΔG37 cutoff (kcal/mol). Candidates whose
    * predicted hairpin ΔG is MORE NEGATIVE than this value are rejected.
@@ -190,10 +254,28 @@ export interface PrimerSecondaryRejectionCounts {
 export interface PrimerDesignResult {
   candidates: PrimerCandidate[];
   rejections: PrimerRejectionCounts;
+  /** Directional candidate-pool completeness receipt. */
+  pool: PrimerPoolReceipt;
   /** Per-rejection multi-criteria attribution counts. */
   secondaryRejections?: PrimerSecondaryRejectionCounts;
   /** Input/tail integrity warnings that prevented exact candidate evaluation. */
   warnings?: string[];
+}
+
+export interface PrimerPoolReceipt {
+  direction: 'forward' | 'reverse';
+  /** Number of passing candidates generated by the directional scan. */
+  enumeratedCount: number;
+  /** Number retained for the caller's next stage. */
+  retainedCount: number;
+  /** Passing candidates intentionally omitted from the retained pool. */
+  omittedCount: number;
+  /** Retention cap, or null when no cap was applied. */
+  limit: number | null;
+  /** True only when omittedCount is proven non-zero. */
+  truncated: boolean;
+  /** False whenever the retained pool is not the complete passing pool. */
+  exhaustive: boolean;
 }
 
 export interface PrimerPairRejections extends PrimerRejectionCounts {
@@ -216,6 +298,13 @@ export interface PrimerPairResult {
   reverseSecondary?: PrimerSecondaryRejectionCounts;
   forwardCount: number;
   reverseCount: number;
+  /** Receipts for the directional pools actually used for pairing. */
+  forwardPool: PrimerPoolReceipt;
+  reversePool: PrimerPoolReceipt;
+  /** Alias grouped for receipt-oriented consumers. */
+  poolReceipts: { forward: PrimerPoolReceipt; reverse: PrimerPoolReceipt };
+  /** Exact model, engine, version, and conditions used for candidate Tm. */
+  tmEvidence?: PrimerTmEvidence;
   /** Input/tail integrity warnings carried from both directional scans. */
   warnings?: string[];
 }
@@ -294,18 +383,143 @@ export type NormalizedPrimerDesignParams = {
   requireGcClamp: boolean;
   flankingWindow: number;
   tmOptions: TmOptions;
+  tmEvidence: PrimerTmEvidence;
   maxHairpinDeltaG: number | null | undefined;
   maxSelfDimerDeltaG: number | null | undefined;
   maxCrossDimerDeltaG: number | null | undefined;
   warnings: string[];
 };
 
-function invalidPrimerDesignResult(message: string): PrimerDesignResult {
+function emptyPoolReceipt(direction: 'forward' | 'reverse'): PrimerPoolReceipt {
+  return {
+    direction,
+    enumeratedCount: 0,
+    retainedCount: 0,
+    omittedCount: 0,
+    limit: null,
+    truncated: false,
+    exhaustive: true,
+  };
+}
+
+function completePoolReceipt(
+  direction: 'forward' | 'reverse',
+  count: number,
+): PrimerPoolReceipt {
+  return {
+    direction,
+    enumeratedCount: count,
+    retainedCount: count,
+    omittedCount: 0,
+    limit: null,
+    truncated: false,
+    exhaustive: true,
+  };
+}
+
+function retainedPoolReceipt(
+  pool: PrimerPoolReceipt,
+  limit: number,
+): PrimerPoolReceipt {
+  const retainedCount = Math.min(pool.enumeratedCount, limit);
+  const omittedCount = Math.max(0, pool.enumeratedCount - retainedCount);
+  return {
+    ...pool,
+    retainedCount,
+    omittedCount,
+    limit,
+    truncated: omittedCount > 0,
+    exhaustive: omittedCount === 0 && pool.exhaustive,
+  };
+}
+
+function invalidPrimerDesignResult(message: string, direction: 'forward' | 'reverse'): PrimerDesignResult {
   return {
     candidates: [],
     rejections: { ...emptyRejections(), invalid: 1 },
+    pool: emptyPoolReceipt(direction),
     secondaryRejections: emptySecondaryRejections(),
     warnings: [message],
+  };
+}
+
+function normalizedTmOptions(options: TmOptions | undefined): TmOptions | null {
+  // An omitted value selects the visible workspace's named screening preset.
+  // An explicitly supplied object retains the calculator's historical
+  // per-field defaults, so API callers passing `{}` or `{mgConcentration: 0}`
+  // do not silently change chemistry assumptions.
+  const candidate = options === undefined
+    ? { ...DEFAULT_TM_OPTIONS }
+    : {
+        method: 'nearest-neighbor' as const,
+        naConcentration: 50,
+        mgConcentration: 0,
+        dntpConcentration: 0,
+        primerConcentration: 250,
+        saltCorrection: 'owczarzy' as const,
+        ...options,
+      };
+  if (
+    (candidate.method !== 'nearest-neighbor' && candidate.method !== 'wallace' && candidate.method !== 'gc-adjusted')
+    || (candidate.saltCorrection !== 'owczarzy' && candidate.saltCorrection !== 'santalucia' && candidate.saltCorrection !== 'wetmur')
+    || typeof candidate.naConcentration !== 'number'
+    || !Number.isFinite(candidate.naConcentration)
+    || candidate.naConcentration <= 0
+    || candidate.naConcentration > MAX_NA_CONCENTRATION_MILLIMOLAR
+    || typeof candidate.mgConcentration !== 'number'
+    || !Number.isFinite(candidate.mgConcentration)
+    || candidate.mgConcentration < 0
+    || candidate.mgConcentration > MAX_DIVALENT_CONCENTRATION_MILLIMOLAR
+    || typeof candidate.dntpConcentration !== 'number'
+    || !Number.isFinite(candidate.dntpConcentration)
+    || candidate.dntpConcentration < 0
+    || candidate.dntpConcentration > MAX_DIVALENT_CONCENTRATION_MILLIMOLAR
+    || typeof candidate.primerConcentration !== 'number'
+    || !Number.isFinite(candidate.primerConcentration)
+    || candidate.primerConcentration <= 0
+    || candidate.primerConcentration > MAX_PRIMER_CONCENTRATION_NANOMOLAR
+    || (candidate.selfComplementary !== undefined && typeof candidate.selfComplementary !== 'boolean')
+  ) return null;
+  return candidate;
+}
+
+function sameTmOptions(left: TmOptions, right: TmOptions): boolean {
+  return left.method === right.method
+    && left.naConcentration === right.naConcentration
+    && left.mgConcentration === right.mgConcentration
+    && left.dntpConcentration === right.dntpConcentration
+    && left.primerConcentration === right.primerConcentration
+    && left.saltCorrection === right.saltCorrection
+    && left.selfComplementary === right.selfComplementary;
+}
+
+function tmEvidenceFor(
+  options: TmOptions,
+  requestedPresetId: string | undefined,
+): PrimerTmEvidence {
+  const preset = PRIMER_TM_CONDITION_PRESETS.find((entry) => entry.id === requestedPresetId)
+    ?? PRIMER_TM_CONDITION_PRESETS.find((entry) => entry.id === DEFAULT_PRIMER_TM_CONDITION_PRESET_ID)!;
+  const customRequested = requestedPresetId === CUSTOM_PRIMER_TM_CONDITION_PRESET_ID;
+  const optionsMatchPreset = !customRequested && sameTmOptions(preset.options, options);
+  const conditionPresetId = optionsMatchPreset ? preset.id : CUSTOM_PRIMER_TM_CONDITION_PRESET_ID;
+  const conditionPresetName = optionsMatchPreset ? preset.name : 'Custom bounded Tm conditions';
+  return {
+    conditionPresetId,
+    conditionPresetName,
+    model: PRIMER_TM_MODEL_BY_METHOD[options.method ?? 'nearest-neighbor'],
+    engine: PRIMER_TM_ENGINE,
+    engineVersion: PRIMER_TM_ENGINE_VERSION,
+    options: {
+      method: options.method ?? 'nearest-neighbor',
+      naConcentration: options.naConcentration ?? 50,
+      mgConcentration: options.mgConcentration ?? 0,
+      dntpConcentration: options.dntpConcentration ?? 0,
+      primerConcentration: options.primerConcentration ?? 250,
+      saltCorrection: options.saltCorrection ?? 'owczarzy',
+      selfComplementarity: options.selfComplementary === undefined
+        ? 'auto'
+        : options.selfComplementary ? 'enabled' : 'disabled',
+    },
   };
 }
 
@@ -409,6 +623,16 @@ export function normalizePrimerDesignParams(
         && Number.isFinite(raw.maxCrossDimerDeltaG)
         ? raw.maxCrossDimerDeltaG
         : Number.NaN;
+  const tmOptions = normalizedTmOptions(raw.tmOptions);
+  const tmConditionPresetId = raw.tmConditionPresetId;
+  const validTmConditionPresetId = tmConditionPresetId === undefined
+    || (
+      typeof tmConditionPresetId === 'string'
+      && tmConditionPresetId.length > 0
+      && tmConditionPresetId.length <= 64
+      && /^[a-z0-9][a-z0-9-]*$/u.test(tmConditionPresetId)
+      && (tmConditionPresetId === CUSTOM_PRIMER_TM_CONDITION_PRESET_ID || PRIMER_TM_CONDITION_PRESETS.some((preset) => preset.id === tmConditionPresetId))
+    );
   if (
     targetStart === null
     || targetEnd === null
@@ -419,6 +643,8 @@ export function normalizePrimerDesignParams(
     || minGC === null
     || maxGC === null
     || flankingWindow === null
+    || tmOptions === null
+    || !validTmConditionPresetId
     || Number.isNaN(maxHairpinDeltaG as number)
     || Number.isNaN(maxSelfDimerDeltaG as number)
     || Number.isNaN(maxCrossDimerDeltaG as number)
@@ -446,7 +672,8 @@ export function normalizePrimerDesignParams(
     tail: normalizedTail.sequence,
     requireGcClamp: typeof raw.requireGcClamp === 'boolean' ? raw.requireGcClamp : DEFAULT_REQUIRE_GC_CLAMP,
     flankingWindow,
-    tmOptions: raw.tmOptions ?? DEFAULT_TM_OPTIONS,
+    tmOptions,
+    tmEvidence: tmEvidenceFor(tmOptions, tmConditionPresetId),
     maxHairpinDeltaG,
     maxSelfDimerDeltaG,
     maxCrossDimerDeltaG,
@@ -566,13 +793,13 @@ export function designForwardPrimerWithDiagnostics(
   seq: string,
   params: PrimerDesignParams,
 ): PrimerDesignResult {
-  if (typeof seq !== 'string') return invalidPrimerDesignResult('Primer template must be a nucleotide string.');
+  if (typeof seq !== 'string') return invalidPrimerDesignResult('Primer template must be a nucleotide string.', 'forward');
   const inspectedSequence = inspectNucleotideSequence(seq);
   const upper = inspectedSequence.sequence;
   const normalized = normalizePrimerDesignParams(upper.length, params, 'forward');
   if (!normalized) {
     const tail = normalizedOligo((params as PrimerDesignParams | null | undefined)?.forwardTail);
-    return invalidPrimerDesignResult(tail.warning ?? 'Primer design parameters must use finite bounded values.');
+    return invalidPrimerDesignResult(tail.warning ?? 'Primer design parameters must use finite bounded values.', 'forward');
   }
   const {
     targetStart,
@@ -696,7 +923,13 @@ export function designForwardPrimerWithDiagnostics(
   }
 
   candidates.sort((a, b) => rankScore(a, targetTm) - rankScore(b, targetTm));
-  return { candidates, rejections, secondaryRejections, warnings };
+  return {
+    candidates,
+    rejections,
+    pool: completePoolReceipt('forward', candidates.length),
+    secondaryRejections,
+    warnings,
+  };
 }
 
 /**
@@ -710,13 +943,13 @@ export function designReversePrimerWithDiagnostics(
   seq: string,
   params: PrimerDesignParams,
 ): PrimerDesignResult {
-  if (typeof seq !== 'string') return invalidPrimerDesignResult('Primer template must be a nucleotide string.');
+  if (typeof seq !== 'string') return invalidPrimerDesignResult('Primer template must be a nucleotide string.', 'reverse');
   const inspectedSequence = inspectNucleotideSequence(seq);
   const upper = inspectedSequence.sequence;
   const normalized = normalizePrimerDesignParams(upper.length, params, 'reverse');
   if (!normalized) {
     const tail = normalizedOligo((params as PrimerDesignParams | null | undefined)?.reverseTail);
-    return invalidPrimerDesignResult(tail.warning ?? 'Primer design parameters must use finite bounded values.');
+    return invalidPrimerDesignResult(tail.warning ?? 'Primer design parameters must use finite bounded values.', 'reverse');
   }
   const {
     targetEnd,
@@ -838,7 +1071,13 @@ export function designReversePrimerWithDiagnostics(
   }
 
   candidates.sort((a, b) => rankScore(a, targetTm) - rankScore(b, targetTm));
-  return { candidates, rejections, secondaryRejections, warnings };
+  return {
+    candidates,
+    rejections,
+    pool: completePoolReceipt('reverse', candidates.length),
+    secondaryRejections,
+    warnings,
+  };
 }
 
 /**
@@ -899,6 +1138,8 @@ export function designPrimerPairWithDiagnostics(
   );
   const forwardsForPairing = forwards.slice(0, pairingLimit);
   const reversesForPairing = reverses.slice(0, pairingLimit);
+  const forwardPool = retainedPoolReceipt(forwardResult.pool, pairingLimit);
+  const reversePool = retainedPoolReceipt(reverseResult.pool, pairingLimit);
 
   const pairs: PrimerPair[] = [];
   // Aggregate rejections — for the dialog we summarize at the pair level.
@@ -982,6 +1223,12 @@ export function designPrimerPairWithDiagnostics(
   const warnings = [...new Set([
     ...(forwardResult.warnings ?? []),
     ...(reverseResult.warnings ?? []),
+    ...(forwardPool.truncated
+      ? [`Forward primer pool retained ${forwardPool.retainedCount.toLocaleString()} of ${forwardPool.enumeratedCount.toLocaleString()} passing candidates for pairing; the directional pool is not exhaustive.`]
+      : []),
+    ...(reversePool.truncated
+      ? [`Reverse primer pool retained ${reversePool.retainedCount.toLocaleString()} of ${reversePool.enumeratedCount.toLocaleString()} passing candidates for pairing; the directional pool is not exhaustive.`]
+      : []),
     ...(crossDimerWorkLimited
       ? [`Cross-dimer scoring was bounded at ${MAX_PRIMER_PAIR_CROSS_DIMER_WORK_UNITS.toLocaleString()} work units; affected pairs are marked for review.`]
       : []),
@@ -1000,6 +1247,10 @@ export function designPrimerPairWithDiagnostics(
     reverseSecondary: reverseResult.secondaryRejections,
     forwardCount: forwards.length,
     reverseCount: reverses.length,
+    forwardPool,
+    reversePool,
+    poolReceipts: { forward: forwardPool, reverse: reversePool },
+    tmEvidence: normalizedPairParams?.tmEvidence,
     warnings,
   };
 }

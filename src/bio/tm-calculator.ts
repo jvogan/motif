@@ -93,7 +93,7 @@ export interface TmOptions {
   mgConcentration?: number;
   /** Primer/oligonucleotide concentration in nM, default 250 */
   primerConcentration?: number;
-  /** dNTP concentration in mM, default 0 (affects free Mg2+) */
+  /** Total dNTP concentration in mM, summed across dATP+dCTP+dGTP+dTTP (affects free Mg2+). */
   dntpConcentration?: number;
   /** Salt correction formula, default 'owczarzy' */
   saltCorrection?: 'owczarzy' | 'santalucia' | 'wetmur';
@@ -101,9 +101,9 @@ export interface TmOptions {
   selfComplementary?: boolean;
 }
 
-const MAX_NA_CONCENTRATION_MILLIMOLAR = 1_000;
-const MAX_DIVALENT_CONCENTRATION_MILLIMOLAR = 100;
-const MAX_PRIMER_CONCENTRATION_NANOMOLAR = 1_000_000_000;
+export const MAX_NA_CONCENTRATION_MILLIMOLAR = 1_000;
+export const MAX_DIVALENT_CONCENTRATION_MILLIMOLAR = 100;
+export const MAX_PRIMER_CONCENTRATION_NANOMOLAR = 1_000_000_000;
 
 function invalidTmResult(
   evaluatedSequence: string,
@@ -168,7 +168,7 @@ function validateThermoInput(
 }
 
 /**
- * Resolve free Mg2+ in the presence of dNTPs using Owczarzy et al. 2008
+ * Resolve free Mg2+ in the presence of total dNTPs using Owczarzy et al. 2008
  * eq. 17. Concentrations are molar. The paper notes that total Mg minus
  * total dNTP is a good approximation when Mg is in clear excess; using the
  * equilibrium quadratic throughout also behaves correctly when dNTP >= Mg.
@@ -516,7 +516,7 @@ export function calculateTm(seq: string, options?: TmOptions): TmResult {
   const primerConc = (options?.primerConcentration ?? 250) / 1e9; // nM → M
   const saltCorrMethod = options?.saltCorrection ?? 'owczarzy';
 
-  // Keep total Mg and dNTP concentrations separate. Owczarzy's complete
+  // Keep total Mg and total dNTP concentrations separate. Owczarzy's complete
   // equilibrium treatment is applied by the salt-correction decision tree;
   // pre-subtracting here would make the dNTP >= Mg branch impossible.
   const dntpConc = options?.dntpConcentration ?? 0;

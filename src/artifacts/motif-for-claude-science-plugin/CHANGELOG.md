@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.5 — 2026-08-11
+
+- Hardened connector startup before shell initialization and separated routine
+  version alignment from explicit publish-time collision checks.
+- Added bounded Primer Tm-condition controls, interaction-review receipts,
+  safer sequence edits, exact-cap PCR enumeration, and complete saved-result
+  provenance.
+- Strengthened Gibson, restriction, MSA, mutation, and Loop Assembly API
+  validation while retaining honest incomplete-result diagnostics.
+
 ## 0.3.4 — 2026-08-09
 
 - Tightened connector, workspace, MSA, export, path, and provenance validation

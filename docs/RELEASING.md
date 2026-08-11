@@ -16,6 +16,10 @@ working tree.
   logs.
 - Merge only after the required hosted checks pass against the current
   protected branch.
+- Mark the pull request with the `release` label (or use a `release/*` head
+  branch). The existing CI validation job rechecks current review threads on
+  review, review-comment, and synchronization events; branch protection must
+  require the `validate` context for release pull requests.
 
 ## 2. Build from the release commit
 
@@ -75,6 +79,33 @@ connector dependency.
 
 ## 3. Tag and draft
 
+Before creating or publishing a tag, run the release-only checks. The ordinary
+alignment check intentionally permits later development commits after an old
+tag; the publish check is the collision guard:
+
+```bash
+npm run check:release-publish
+```
+
+When GitHub authentication is available, also ask GitHub whether an immutable
+release already owns the version. This is opt-in so ordinary local gate runs
+stay offline:
+
+```bash
+npm run check:release-publish -- --github --repo OWNER/REPOSITORY
+```
+
+For an explicit release pull request, CI runs the review-thread check with the
+workflow token. To reproduce that check locally, save the reviewed GraphQL
+subset as JSON and run:
+
+```bash
+npm run check:release-review -- --threads-file /path/to/review-threads.json --require-release
+```
+
+The check fails for every unresolved, current review thread. Resolved or
+outdated threads do not block publication.
+
 Create and push an annotated `vX.Y.Z` tag that names the validated commit.
 Create the GitHub release as a draft with `--verify-tag`, and attach exactly:
 
@@ -120,3 +151,7 @@ gh release verify-asset vX.Y.Z \
 Finally, confirm the release is marked immutable and latest, the public
 downloads match the recorded hashes, Dependabot and CodeQL have no unresolved
 release-blocking alerts, and the working tree remains clean.
+
+If an installed bundle is damaged during recovery testing, use a fresh,
+separately verified extraction of the release as the rollback `--bundle`; the
+damaged copy must not be used to execute its own helpers.

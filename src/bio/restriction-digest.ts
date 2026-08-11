@@ -10,6 +10,11 @@ import {
   findRestrictionSites,
   isActiveDoubleStrandRestrictionSite,
   normalizeRestrictionSequence,
+  normalizeRestrictionTopology,
+  normalizeRestrictionEnzymeNames,
+  normalizeRestrictionEnzymes,
+  MAX_RESTRICTION_ENZYMES,
+  RestrictionInputError,
   scanRestrictionSites,
   type FindRestrictionSitesOptions,
   type RestrictionCleavageGeometry,
@@ -169,7 +174,7 @@ function resolveRequestedEnzymes(
 ): { requestedNames: string[]; enzymes: RestrictionEnzyme[]; unknownEnzymes: string[] } {
   const byName = new Map<string, RestrictionEnzyme>();
   for (const enzyme of enzymeCatalog) {
-    const key = enzyme.name.trim().toLocaleLowerCase();
+    const key = enzyme.name.trim().toLowerCase();
     if (key && !byName.has(key)) byName.set(key, enzyme);
   }
   const requestedNames = enzymeNames.map((name) => name.trim()).filter(Boolean);
@@ -178,7 +183,7 @@ function resolveRequestedEnzymes(
   const seenEnzymes = new Set<string>();
   const seenUnknown = new Set<string>();
   for (const requested of requestedNames) {
-    const key = requested.toLocaleLowerCase();
+    const key = requested.toLowerCase();
     const enzyme = byName.get(key);
     if (!enzyme) {
       if (!seenUnknown.has(key)) {
@@ -195,6 +200,30 @@ function resolveRequestedEnzymes(
   return { requestedNames, enzymes, unknownEnzymes };
 }
 
+function digestInputFailure(
+  topology: Topology,
+  requestedEnzymes: unknown,
+  issue: RestrictionDigestIssue,
+): RestrictionDigestResult {
+  return {
+    sequence: '',
+    topology,
+    requestedEnzymes: Array.isArray(requestedEnzymes) ? requestedEnzymes.map((name) => String(name)) : [],
+    resolvedEnzymes: [],
+    unknownEnzymes: [],
+    sites: [],
+    cuts: [],
+    fragments: [],
+    issues: [issue],
+    cutCount: 0,
+  };
+}
+
+function requestedEnzymeValues(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length > MAX_RESTRICTION_ENZYMES) return [];
+  return value.map((entry) => typeof entry === 'string' ? entry : `<invalid ${entry === null ? 'null' : typeof entry}>`);
+}
+
 function activeDoubleStrandSite(site: ReturnType<typeof findRestrictionSites>[number]): boolean {
   return isActiveDoubleStrandRestrictionSite(site);
 }
@@ -207,6 +236,35 @@ function restrictionDigestResultFor(
   enzymeCatalog: readonly RestrictionEnzyme[],
   options: RestrictionDigestOptions | undefined,
 ): RestrictionDigestResult {
+  let safeTopology: Topology;
+  try {
+    safeTopology = normalizeRestrictionTopology(topology);
+  } catch (error) {
+    return {
+      sequence: '',
+      topology: 'linear',
+      requestedEnzymes: requestedEnzymeValues(enzymeNames),
+      resolvedEnzymes: [],
+      unknownEnzymes: [],
+      sites: [],
+      cuts: [],
+      fragments: [],
+      issues: [{
+        code: error instanceof RestrictionInputError ? error.code : 'invalid_topology',
+        message: error instanceof Error ? error.message : 'Invalid restriction topology.',
+      }],
+      cutCount: 0,
+    };
+  }
+  let normalizedEnzymeNames: string[];
+  try {
+    normalizedEnzymeNames = normalizeRestrictionEnzymeNames(enzymeNames);
+  } catch (error) {
+    return digestInputFailure(safeTopology, enzymeNames, {
+      code: error instanceof RestrictionInputError ? error.code : 'invalid_enzyme_name',
+      message: error instanceof Error ? error.message : 'Restriction enzyme names are invalid.',
+    });
+  }
   let normalized: string;
   try {
     normalized = normalizeRestrictionSequence(seq);
@@ -214,8 +272,8 @@ function restrictionDigestResultFor(
     const message = error instanceof Error ? error.message : 'Invalid restriction sequence.';
     return {
       sequence: '',
-      topology,
-      requestedEnzymes: enzymeNames.map((name) => String(name)),
+      topology: safeTopology,
+      requestedEnzymes: normalizedEnzymeNames,
       resolvedEnzymes: [],
       unknownEnzymes: [],
       sites: [],
@@ -225,7 +283,16 @@ function restrictionDigestResultFor(
       cutCount: 0,
     };
   }
-  const resolution = resolveRequestedEnzymes(enzymeNames, enzymeCatalog);
+  let normalizedCatalog: RestrictionEnzyme[];
+  try {
+    normalizedCatalog = normalizeRestrictionEnzymes(enzymeCatalog);
+  } catch (error) {
+    return digestInputFailure(safeTopology, enzymeNames, {
+      code: error instanceof RestrictionInputError ? error.code : 'invalid_recognition_sequence',
+      message: error instanceof Error ? error.message : 'Invalid restriction enzyme catalog.',
+    });
+  }
+  const resolution = resolveRequestedEnzymes(normalizedEnzymeNames, normalizedCatalog);
   const issues: RestrictionDigestIssue[] = resolution.unknownEnzymes.map((enzyme) => ({
     code: 'unknown_enzyme',
     enzyme,
@@ -234,7 +301,7 @@ function restrictionDigestResultFor(
   let scan: ReturnType<typeof scanRestrictionSites>;
   try {
     scan = scanRestrictionSites(normalized, resolution.enzymes, {
-      topology,
+      topology: safeTopology,
       methylation: options?.methylation,
       methylationState: options?.methylationState,
       methylationAssumptions: options?.methylationAssumptions,
@@ -243,21 +310,24 @@ function restrictionDigestResultFor(
     const message = error instanceof Error ? error.message : 'Invalid restriction recognition sequence.';
     return {
       sequence: normalized,
-      topology,
+      topology: safeTopology,
       requestedEnzymes: resolution.requestedNames,
       resolvedEnzymes: resolution.enzymes.map((enzyme) => enzyme.name),
       unknownEnzymes: resolution.unknownEnzymes,
       sites: [],
       cuts: [],
       fragments: [],
-      issues: [...issues, { code: 'invalid_recognition_sequence', message }],
+      issues: [...issues, {
+        code: error instanceof RestrictionInputError ? error.code : 'invalid_recognition_sequence',
+        message,
+      }],
       cutCount: 0,
     };
   }
   issues.push(...scan.issues.map(issueFromScan));
   const usableSites = scan.sites.filter(activeDoubleStrandSite);
   const allCutRecords = usableSites.map((site) => {
-    const enzyme = resolution.enzymes.find((candidate) => candidate.name.toLocaleLowerCase() === site.enzyme.toLocaleLowerCase())
+    const enzyme = resolution.enzymes.find((candidate) => candidate.name.toLowerCase() === site.enzyme.toLowerCase())
       ?? resolution.enzymes[0];
     return {
       site,
@@ -324,7 +394,7 @@ function restrictionDigestResultFor(
 
   const base: RestrictionDigestResult = {
     sequence: normalized,
-    topology,
+    topology: safeTopology,
     requestedEnzymes: resolution.requestedNames,
     resolvedEnzymes: resolution.enzymes.map((enzyme) => enzyme.name),
     unknownEnzymes: resolution.unknownEnzymes,
@@ -341,16 +411,16 @@ function restrictionDigestResultFor(
     return base;
   }
 
-  const enzymeByName = new Map(resolution.enzymes.map((enzyme) => [enzyme.name.toLocaleLowerCase(), enzyme]));
+  const enzymeByName = new Map(resolution.enzymes.map((enzyme) => [enzyme.name.toLowerCase(), enzyme]));
   const cutRecords = uniqueCutRecords
     .map((record) => ({
       site: record.site,
-      enzyme: enzymeByName.get(record.site.enzyme.toLocaleLowerCase())!,
+      enzyme: enzymeByName.get(record.site.enzyme.toLowerCase())!,
       geometry: record.geometry,
     }))
     .sort((a, b) => a.site.cutPosition - b.site.cutPosition);
   const uniqueCuts = cutRecords.filter((cut, index) => index === 0 || cut.site.cutPosition !== cutRecords[index - 1].site.cutPosition);
-  const featureSlicers = buildFeatureSlicers(normalized, topology, features);
+  const featureSlicers = buildFeatureSlicers(normalized, safeTopology, features);
 
   const endFor = (record: typeof uniqueCuts[number], side: 'left' | 'right'): FragmentEnd => {
     const enzyme = record.enzyme;
@@ -362,7 +432,7 @@ function restrictionDigestResultFor(
     // cannot interpret as a wrapped interval.  Recompute the unwrapped
     // physical geometry from the site anchor for materialization; fragment
     // boundaries continue to use the normalized coordinates in `record`.
-    const geometry = topology === 'circular'
+    const geometry = safeTopology === 'circular'
       ? calculateRestrictionCleavageGeometry(enzyme, record.site.position, record.site.strand ?? 1)
       : record.geometry;
     if (geometry.mode !== 'double-strand') return BLUNT_END;
@@ -373,7 +443,7 @@ function restrictionDigestResultFor(
     if (!Number.isInteger(geometry.overhangStart) || !Number.isInteger(geometry.overhangEnd) || geometry.overhangLength <= 0) {
       throw new RestrictionDigestError({ ...base, issues: [{ code: 'invalid_geometry', enzyme: enzyme.name, message: `Enzyme ${enzyme.name} has no materializable sticky-end window.` }], fragments: [] });
     }
-    const sense = readSenseOverhang(normalized, geometry.overhangStart, geometry.overhangEnd, topology);
+    const sense = readSenseOverhang(normalized, geometry.overhangStart, geometry.overhangEnd, safeTopology);
     if (sense === null || sense.length !== geometry.overhangLength) {
       throw new RestrictionDigestError({ ...base, issues: [{ code: 'insufficient_flanking_bases', enzyme: enzyme.name, message: `Enzyme ${enzyme.name} sticky-end window is outside the sequence bounds.` }], fragments: [] });
     }
@@ -384,7 +454,7 @@ function restrictionDigestResultFor(
   };
 
   const fragments: DigestFragment[] = [];
-  if (topology === 'linear') {
+  if (safeTopology === 'linear') {
     for (let index = 0; index <= uniqueCuts.length; index += 1) {
       const start = index === 0 ? 0 : uniqueCuts[index - 1].site.cutPosition;
       const end = index === uniqueCuts.length ? normalized.length : uniqueCuts[index].site.cutPosition;

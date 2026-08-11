@@ -14,6 +14,40 @@ export interface GibsonFragment {
   features?: Feature[];
 }
 
+/** Maximum length for a user-facing fragment or feature name. */
+export const MAX_GIBSON_NAME_LENGTH = 256;
+/** Maximum number of annotations accepted on one Gibson fragment. */
+export const MAX_GIBSON_FEATURES_PER_FRAGMENT = 10_000;
+/** Maximum number of authoritative pieces accepted on one annotation. */
+export const MAX_GIBSON_SUBRANGES_PER_FEATURE = 10_000;
+/** Maximum annotation units inspected during one input validation pass. */
+export const MAX_GIBSON_FEATURE_WORK_UNITS = 1_000_000;
+export const MAX_GIBSON_METADATA_DEPTH = 4;
+export const MAX_GIBSON_METADATA_KEYS = 256;
+export const MAX_GIBSON_METADATA_STRING_LENGTH = 4_096;
+export const MAX_GIBSON_METADATA_BYTES = 65_536;
+
+export type GibsonInputValidationStatus = 'valid' | 'invalid_input';
+
+export interface GibsonInputValidation {
+  status: GibsonInputValidationStatus;
+  valid: boolean;
+  errors: string[];
+  totalLength: number;
+  featureWorkUnits: number;
+}
+
+export class GibsonInputError extends Error {
+  readonly code = 'invalid_input' as const;
+  readonly issues: readonly string[];
+
+  constructor(message: string, issues: readonly string[] = []) {
+    super(message);
+    this.name = 'GibsonInputError';
+    this.issues = issues;
+  }
+}
+
 export interface Overlap {
   sequence: string;
   length: number;
@@ -93,6 +127,27 @@ const GIBSON_TM_EVIDENCE: GibsonOverlapTmEvidence = {
 
 type NormalizedOverlapRange = { minOverlap: number; maxOverlap: number };
 
+const GIBSON_DNA_SYMBOLS = /^[ACGTRYSWKMBDHVN]*$/u;
+const GIBSON_CANONICAL_DNA = /^[ACGT]*$/u;
+const metadataTextEncoder = new TextEncoder();
+const GIBSON_FEATURE_TYPES: ReadonlySet<Feature['type']> = new Set([
+  'orf', 'gene', 'cds', 'promoter', 'terminator', 'rbs', 'origin', 'resistance',
+  'restriction_site', 'primer_bind', 'misc_feature', 'mRNA', 'rRNA', 'tRNA',
+  'ncRNA', 'regulatory', 'repeat_region', 'sig_peptide', 'mat_peptide',
+  'transit_peptide', 'intron', 'exon', 'polyA_signal', 'enhancer', 'custom',
+]);
+
+function utf8ByteLength(value: string): number {
+  return metadataTextEncoder.encode(value).byteLength;
+}
+
+function hasControlCharacters(value: string): boolean {
+  return [...value].some((character) => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return codePoint <= 0x1f || codePoint === 0x7f;
+  });
+}
+
 function normalizeOverlapRange(
   minOverlap: unknown,
   maxOverlap: unknown,
@@ -120,18 +175,256 @@ function invalidOverlapSearch(): OverlapSearchResult {
   };
 }
 
-function validGibsonFragments(fragments: unknown): fragments is GibsonFragment[] {
-  if (!Array.isArray(fragments) || fragments.length > MAX_GIBSON_FRAGMENTS) return false;
-  let totalLength = 0;
-  for (const rawFragment of fragments) {
-    if (!rawFragment || typeof rawFragment !== 'object') return false;
-    const fragment = rawFragment as { sequence?: unknown };
-    if (typeof fragment.sequence !== 'string') return false;
-    if (fragment.sequence.length > MAX_GIBSON_FRAGMENT_LENGTH) return false;
-    totalLength += fragment.sequence.length;
-    if (totalLength > MAX_GIBSON_TOTAL_INPUT_LENGTH) return false;
+function boundedText(value: unknown, label: string, maxLength = MAX_GIBSON_NAME_LENGTH): string | null {
+  if (typeof value !== 'string' || value.length === 0 || value.length > maxLength || hasControlCharacters(value)) {
+    return `${label} must be a non-empty string of at most ${maxLength} characters without control characters.`;
   }
-  return true;
+  if (value.trim().length === 0) return `${label} must contain a non-whitespace name.`;
+  return null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
+}
+
+interface MetadataValidation {
+  errors: string[];
+  units: number;
+  bytes: number;
+}
+
+function validateMetadata(value: unknown, path: string): MetadataValidation {
+  const errors: string[] = [];
+  const seen = new WeakSet<object>();
+  let units = 0;
+  let bytes = 0;
+  const visit = (candidate: unknown, candidatePath: string, depth: number): void => {
+    units += 1;
+    if (units > MAX_GIBSON_METADATA_KEYS || bytes > MAX_GIBSON_METADATA_BYTES) return;
+    if (candidate === null || typeof candidate === 'boolean') {
+      bytes += candidate === null ? 4 : 5;
+      return;
+    }
+    if (typeof candidate === 'string') {
+      if (candidate.length > MAX_GIBSON_METADATA_STRING_LENGTH || hasControlCharacters(candidate)) {
+        errors.push(`${candidatePath} must be a bounded string without control characters.`);
+        return;
+      }
+      bytes += utf8ByteLength(candidate);
+      return;
+    }
+    if (typeof candidate === 'number') {
+      if (!Number.isFinite(candidate)) errors.push(`${candidatePath} must be finite.`);
+      bytes += 8;
+      return;
+    }
+    if (typeof candidate !== 'object' || candidate === undefined) {
+      errors.push(`${candidatePath} must contain only plain JSON-compatible values.`);
+      return;
+    }
+    if (seen.has(candidate)) {
+      errors.push(`${candidatePath} must not contain cycles.`);
+      return;
+    }
+    seen.add(candidate);
+    if (depth >= MAX_GIBSON_METADATA_DEPTH) {
+      errors.push(`${candidatePath} exceeds the ${MAX_GIBSON_METADATA_DEPTH}-level metadata depth limit.`);
+      return;
+    }
+    if (Array.isArray(candidate)) {
+      if (candidate.length > MAX_GIBSON_METADATA_KEYS) errors.push(`${candidatePath} exceeds the metadata item limit.`);
+      for (const [index, item] of candidate.slice(0, MAX_GIBSON_METADATA_KEYS).entries()) visit(item, `${candidatePath}[${index}]`, depth + 1);
+      return;
+    }
+    if (!isRecord(candidate)) {
+      errors.push(`${candidatePath} must be a plain object.`);
+      return;
+    }
+    const entries = Object.entries(candidate);
+    if (entries.length > MAX_GIBSON_METADATA_KEYS) errors.push(`${candidatePath} exceeds the metadata key limit.`);
+    for (const [key, item] of entries.slice(0, MAX_GIBSON_METADATA_KEYS)) {
+      if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
+        errors.push(`${candidatePath} contains a prohibited object key.`);
+        continue;
+      }
+      if (key.length > MAX_GIBSON_METADATA_STRING_LENGTH || hasControlCharacters(key)) {
+        errors.push(`${candidatePath} contains an overlong or control-character key.`);
+        continue;
+      }
+      bytes += utf8ByteLength(key);
+      visit(item, `${candidatePath}.${key}`, depth + 1);
+    }
+  };
+  visit(value, path, 0);
+  if (units > MAX_GIBSON_METADATA_KEYS) errors.push(`${path} exceeds the ${MAX_GIBSON_METADATA_KEYS}-node metadata work limit.`);
+  if (bytes > MAX_GIBSON_METADATA_BYTES) errors.push(`${path} exceeds the ${MAX_GIBSON_METADATA_BYTES.toLocaleString()}-byte metadata limit.`);
+  return { errors, units, bytes };
+}
+
+function featureValidationErrors(
+  value: unknown,
+  sequenceLength: number,
+  fragmentLabel: string,
+  featureIndex: number,
+): { errors: string[]; workUnits: number } {
+  const path = `${fragmentLabel}.features[${featureIndex}]`;
+  if (!isRecord(value)) return { errors: [`${path} must be a plain feature object.`], workUnits: 1 };
+  const feature = value as Partial<Feature> & { metadata?: unknown };
+  const errors: string[] = [];
+  const idError = boundedText(feature.id, `${path}.id`);
+  if (idError) errors.push(idError);
+  const nameError = boundedText(feature.name, `${path}.name`);
+  if (nameError) errors.push(nameError);
+  const typeError = boundedText(feature.type, `${path}.type`, 64);
+  if (typeError) errors.push(typeError);
+  else if (!GIBSON_FEATURE_TYPES.has(feature.type as Feature['type'])) {
+    errors.push(`${path}.type must be one of the supported feature types.`);
+  }
+  if (typeof feature.color !== 'string' || feature.color.length > 128 || hasControlCharacters(feature.color)) {
+    errors.push(`${path}.color must be a bounded string without control characters.`);
+  }
+  let metadataUnits = 0;
+  if (!isRecord(feature.metadata)) errors.push(`${path}.metadata must be a plain object.`);
+  else {
+    const metadata = validateMetadata(feature.metadata, `${path}.metadata`);
+    metadataUnits = metadata.units;
+    errors.push(...metadata.errors);
+  }
+  const hasValidStrand = feature.strand === -1 || feature.strand === 0 || feature.strand === 1;
+  if (!hasValidStrand) errors.push(`${path}.strand must be -1, 0, or 1.`);
+  const validCoordinate = (coordinate: unknown): coordinate is number => (
+    Number.isSafeInteger(coordinate) && (coordinate as number) >= 0 && (coordinate as number) <= sequenceLength
+  );
+  if (!validCoordinate(feature.start) || !validCoordinate(feature.end) || (feature.end as number) <= (feature.start as number)) {
+    errors.push(`${path} must have safe integer coordinates with 0 <= start < end <= sequence length.`);
+  }
+
+  let workUnits = 1 + metadataUnits;
+  if (feature.subRanges !== undefined) {
+    if (!Array.isArray(feature.subRanges) || feature.subRanges.length === 0) {
+      errors.push(`${path}.subRanges must be a non-empty array when present.`);
+    } else if (feature.subRanges.length > MAX_GIBSON_SUBRANGES_PER_FEATURE) {
+      errors.push(`${path}.subRanges exceeds the ${MAX_GIBSON_SUBRANGES_PER_FEATURE.toLocaleString()}-piece limit.`);
+    } else {
+      workUnits += feature.subRanges.length;
+      for (const [rangeIndex, rawRange] of feature.subRanges.entries()) {
+        const rangePath = `${path}.subRanges[${rangeIndex}]`;
+        if (!isRecord(rawRange)) {
+          errors.push(`${rangePath} must be an object.`);
+          continue;
+        }
+        const range = rawRange as { start?: unknown; end?: unknown; strand?: unknown };
+        if (!validCoordinate(range.start) || !validCoordinate(range.end) || (range.end as number) <= (range.start as number)) {
+          errors.push(`${rangePath} must have safe integer coordinates with 0 <= start < end <= sequence length.`);
+        } else if (validCoordinate(feature.start) && validCoordinate(feature.end)
+          && ((range.start as number) < (feature.start as number) || (range.end as number) > (feature.end as number))) {
+          errors.push(`${rangePath} must remain inside the feature envelope.`);
+        }
+        if (range.strand !== undefined && range.strand !== -1 && range.strand !== 0 && range.strand !== 1) {
+          errors.push(`${rangePath}.strand must be -1, 0, or 1 when provided.`);
+        }
+      }
+    }
+  }
+  return { errors, workUnits };
+}
+
+/**
+ * Validate the complete Gibson input boundary before overlap work or feature
+ * mapping starts. The overlap search can report IUPAC ambiguity separately,
+ * but the materializing assembler requires canonical A/C/G/T input.
+ */
+export function validateGibsonFragments(fragments: unknown): GibsonInputValidation {
+  const errors: string[] = [];
+  if (!Array.isArray(fragments)) {
+    return { status: 'invalid_input', valid: false, errors: ['Gibson assembly fragments must be an array.'], totalLength: 0, featureWorkUnits: 0 };
+  }
+  if (fragments.length > MAX_GIBSON_FRAGMENTS) {
+    errors.push(`Gibson assembly supports at most ${MAX_GIBSON_FRAGMENTS} fragments.`);
+  }
+  let totalLength = 0;
+  let featureWorkUnits = 0;
+  const boundedFragments = fragments.slice(0, MAX_GIBSON_FRAGMENTS);
+  for (const [index, rawFragment] of boundedFragments.entries()) {
+    const fragmentLabel = `Gibson fragment ${index + 1}`;
+    if (!isRecord(rawFragment)) {
+      errors.push(`${fragmentLabel} must be an object.`);
+      continue;
+    }
+    const fragment = rawFragment as Partial<GibsonFragment>;
+    const nameError = boundedText(fragment.name, `${fragmentLabel}.name`);
+    if (nameError) errors.push(nameError);
+    if (typeof fragment.sequence !== 'string') {
+      errors.push(`${fragmentLabel}.sequence must be a DNA string.`);
+      continue;
+    }
+    if (fragment.sequence.length === 0) errors.push(`${fragmentLabel}.sequence must not be empty.`);
+    if (fragment.sequence.length > MAX_GIBSON_FRAGMENT_LENGTH) {
+      errors.push(`${fragmentLabel}.sequence exceeds ${MAX_GIBSON_FRAGMENT_LENGTH.toLocaleString()} bp.`);
+    }
+    if (!GIBSON_DNA_SYMBOLS.test(fragment.sequence.toUpperCase())) {
+      errors.push(`${fragmentLabel}.sequence contains symbols outside the DNA/IUPAC alphabet.`);
+    }
+    if (totalLength <= MAX_GIBSON_TOTAL_INPUT_LENGTH - fragment.sequence.length) totalLength += fragment.sequence.length;
+    else {
+      totalLength = MAX_GIBSON_TOTAL_INPUT_LENGTH + 1;
+      errors.push(`Gibson assembly input exceeds ${MAX_GIBSON_TOTAL_INPUT_LENGTH.toLocaleString()} bp in total.`);
+    }
+    if (fragment.features !== undefined) {
+      if (!Array.isArray(fragment.features)) {
+        errors.push(`${fragmentLabel}.features must be an array when provided.`);
+      } else if (fragment.features.length > MAX_GIBSON_FEATURES_PER_FRAGMENT) {
+        errors.push(`${fragmentLabel}.features exceeds the ${MAX_GIBSON_FEATURES_PER_FRAGMENT.toLocaleString()}-feature limit.`);
+      } else {
+        featureWorkUnits += fragment.features.length;
+        for (const [featureIndex, rawFeature] of fragment.features.entries()) {
+          const validation = featureValidationErrors(rawFeature, fragment.sequence.length, fragmentLabel, featureIndex);
+          featureWorkUnits += validation.workUnits;
+          errors.push(...validation.errors);
+          if (featureWorkUnits > MAX_GIBSON_FEATURE_WORK_UNITS) {
+            errors.push(`Gibson feature validation exceeds the ${MAX_GIBSON_FEATURE_WORK_UNITS.toLocaleString()}-unit safety limit.`);
+            break;
+          }
+        }
+      }
+    }
+  }
+  if (fragments.length > MAX_GIBSON_FRAGMENTS) {
+    totalLength = Math.max(totalLength, MAX_GIBSON_TOTAL_INPUT_LENGTH + 1);
+  }
+  return {
+    status: errors.length === 0 ? 'valid' : 'invalid_input',
+    valid: errors.length === 0,
+    errors,
+    totalLength,
+    featureWorkUnits,
+  };
+}
+
+function validGibsonDnaSequence(value: unknown): value is string {
+  return typeof value === 'string' && value.length <= MAX_GIBSON_FRAGMENT_LENGTH && GIBSON_DNA_SYMBOLS.test(value.toUpperCase());
+}
+
+function validTopology(value: unknown): value is 'linear' | 'circular' {
+  return value === 'linear' || value === 'circular';
+}
+
+function gibsonInputErrorResult(
+  topology: 'linear' | 'circular',
+  errors: string[],
+  warnings: string[] = [],
+): GibsonResult {
+  return {
+    sequence: '',
+    features: [],
+    overlaps: [],
+    topology,
+    success: false,
+    errors,
+    warnings,
+    overlapSearches: [],
+  };
 }
 
 function fillFirstFragmentMap(map: SourceToProductCoordinateMap): void {
@@ -252,6 +545,8 @@ export function analyzeOverlap(
     || typeof seq2 !== 'string'
     || seq1.length > MAX_GIBSON_FRAGMENT_LENGTH
     || seq2.length > MAX_GIBSON_FRAGMENT_LENGTH
+    || !validGibsonDnaSequence(seq1)
+    || !validGibsonDnaSequence(seq2)
   ) return invalidOverlapSearch();
   const upper1 = seq1.toUpperCase();
   const upper2 = seq2.toUpperCase();
@@ -323,20 +618,21 @@ export function gibsonAssemble(
       overlapSearches,
     };
   }
-  if (!validGibsonFragments(fragments)) {
-    return {
-      sequence: '',
-      features: [],
-      overlaps,
-      topology: safeTopology,
-      success: false,
-      errors: [`Gibson assembly inputs must contain at most ${MAX_GIBSON_FRAGMENTS} fragments, each no longer than ${MAX_GIBSON_FRAGMENT_LENGTH.toLocaleString()} bp and ${MAX_GIBSON_TOTAL_INPUT_LENGTH.toLocaleString()} bp in total.`],
+  if (!validTopology(topology)) {
+    return gibsonInputErrorResult(
+      safeTopology,
+      ['Gibson topology must be exactly "linear" or "circular"; it was not coerced to a default.'],
       warnings,
-      overlapSearches,
-    };
+    );
   }
-  const totalInputLength = fragments.reduce((sum, fragment) => sum + fragment.sequence.length, 0);
-  const workUnits = totalInputLength + (fragments.length + (safeTopology === 'circular' ? 1 : 0)) * range.maxOverlap;
+  const inputValidation = validateGibsonFragments(fragments);
+  if (!inputValidation.valid) {
+    return gibsonInputErrorResult(safeTopology, inputValidation.errors, warnings);
+  }
+  const totalInputLength = inputValidation.totalLength;
+  const workUnits = totalInputLength
+    + inputValidation.featureWorkUnits
+    + (fragments.length + (safeTopology === 'circular' ? 1 : 0)) * range.maxOverlap;
   if (workUnits > MAX_GIBSON_WORK_UNITS) {
     return {
       sequence: '',
@@ -369,6 +665,9 @@ export function gibsonAssemble(
   for (const fragment of fragments) {
     const normalized = fragment.sequence.toUpperCase();
     sequenceCounts.set(normalized, (sequenceCounts.get(normalized) ?? 0) + 1);
+  }
+  if (fragments.some((fragment) => !GIBSON_CANONICAL_DNA.test(fragment.sequence.toUpperCase()))) {
+    errors.push('Gibson assembly requires canonical A/C/G/T fragment sequences; IUPAC ambiguity cannot be materialized as an exact product.');
   }
   for (const count of sequenceCounts.values()) {
     if (count > 1) {
@@ -567,14 +866,45 @@ export function gibsonAssemble(
  * forwarded by callers (e.g. the CLI's --min-overlap/--max-overlap) so that
  * validation matches the assembly the user actually requested.
  */
-export function validateOverlaps(
+export interface OverlapValidationEntry {
+  pair: string;
+  overlap: Overlap | null;
+  valid: boolean;
+  issues: string[];
+}
+
+export interface OverlapValidationResult {
+  /** `invalid_input` distinguishes malformed inputs from a valid empty result. */
+  status: 'valid' | 'invalid_input';
+  valid: boolean;
+  results: OverlapValidationEntry[];
+  issues: string[];
+}
+
+export function validateOverlapsWithDiagnostics(
   fragments: GibsonFragment[],
   minOverlap = DEFAULT_MIN_OVERLAP,
   maxOverlap = DEFAULT_MAX_OVERLAP,
-): Array<{ pair: string; overlap: Overlap | null; valid: boolean; issues: string[] }> {
+): OverlapValidationResult {
   const range = normalizeOverlapRange(minOverlap, maxOverlap);
-  if (!range || !validGibsonFragments(fragments)) return [];
-  const results: Array<{ pair: string; overlap: Overlap | null; valid: boolean; issues: string[] }> = [];
+  if (!range) {
+    return {
+      status: 'invalid_input',
+      valid: false,
+      results: [],
+      issues: [`Gibson overlap bounds must be safe integers from ${MIN_GIBSON_OVERLAP} to ${MAX_GIBSON_OVERLAP} bp with minimum no larger than maximum.`],
+    };
+  }
+  const inputValidation = validateGibsonFragments(fragments);
+  if (!inputValidation.valid) {
+    return {
+      status: 'invalid_input',
+      valid: false,
+      results: [],
+      issues: inputValidation.errors,
+    };
+  }
+  const results: OverlapValidationEntry[] = [];
 
   for (let i = 0; i < fragments.length - 1; i++) {
     const a = fragments[i];
@@ -605,5 +935,30 @@ export function validateOverlaps(
     });
   }
 
-  return results;
+  const issues = results.flatMap((result) => result.issues.map((issue) => `${result.pair}: ${issue}`));
+  return {
+    status: 'valid',
+    valid: results.every((result) => result.valid),
+    results,
+    issues,
+  };
 }
+
+/** @deprecated Use `validateOverlapsWithDiagnostics()` for invalid-input status. */
+export function validateOverlaps(
+  fragments: GibsonFragment[],
+  minOverlap = DEFAULT_MIN_OVERLAP,
+  maxOverlap = DEFAULT_MAX_OVERLAP,
+): OverlapValidationEntry[] {
+  const detailed = validateOverlapsWithDiagnostics(fragments, minOverlap, maxOverlap);
+  if (detailed.status === 'invalid_input') {
+    throw new GibsonInputError('Gibson overlap validation received invalid input.', detailed.issues);
+  }
+  return detailed.results;
+}
+
+/** @deprecated Alias retained for callers that used the explicit legacy name. */
+export const validateOverlapsLegacy = validateOverlaps;
+
+/** Descriptive alias for integrations that prefer an explicit detailed name. */
+export const validateOverlapsDetailed = validateOverlapsWithDiagnostics;

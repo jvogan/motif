@@ -54,7 +54,27 @@ export interface GoldenGateKit {
   levels: readonly GoldenGateKitLevelDefinition[];
 }
 
-export type GoldenGateKitLevel = 'entry' | 'alpha' | 'omega' | 'upper';
+export type GoldenGateKitLevel = 'entry' | 'alpha' | 'omega' | 'upper' | 'unknown';
+export type GoldenGateKitParity = 'even' | 'odd' | 'not_applicable';
+export type GoldenGateReceiverIdentity = 'complete' | 'unavailable';
+export type GoldenGateTransitionModel = 'entry' | 'parity-only';
+
+/**
+ * A level transition records the strand/parity direction and the enzyme that
+ * performs that transition. `parity-only` is deliberately not a complete
+ * recursive level contract: the receiver's overhang identity is not published
+ * in the supported source, so callers must not infer a site set from it.
+ */
+export interface GoldenGateKitTransition {
+  nextLevel: GoldenGateKitLevel;
+  donorParity: GoldenGateKitParity;
+  receiverParity: GoldenGateKitParity;
+  enzyme: GoldenGateEnzymeName | null;
+  /** Known enzyme for the following parity transition, when published. */
+  nextEnzyme?: GoldenGateEnzymeName;
+  receiverIdentity: GoldenGateReceiverIdentity;
+  model: GoldenGateTransitionModel;
+}
 
 export interface GoldenGateKitLevelDefinition {
   level: GoldenGateKitLevel;
@@ -64,7 +84,15 @@ export interface GoldenGateKitLevelDefinition {
   /** Ordered role/slot grammar; an empty array means a non-positional level. */
   grammar: readonly { role: string; left: string; right: string }[];
   nextLevel: GoldenGateKitLevel | null;
+  /**
+   * Legacy next-step enzyme label. A null value means no complete next-level
+   * record is available; use `transition` for any bounded parity evidence.
+   */
   transitionEnzyme: GoldenGateEnzymeName | null;
+  /** Donor parity for a level whose transition is described by parity. */
+  parity?: GoldenGateKitParity;
+  /** Explicit transition receipt; absent on non-recursive one-level kits. */
+  transition?: GoldenGateKitTransition;
 }
 
 type GoldenGateKitDefinition = Omit<GoldenGateKit, 'levels'> & {
@@ -142,7 +170,7 @@ const EMMA: GoldenGateKitDefinition = {
 const LOOP_ASSEMBLY: GoldenGateKitDefinition = {
   id: 'loop',
   name: 'Loop Assembly',
-  description: 'Loop Assembly (Pollak et al.) — alternates BsaI (L0/even) and SapI (L1+/odd).',
+  description: 'Loop Assembly (Pollak et al.) — represents the published BsaI/SapI even/odd parity alternation; receiver fusion-site identities are unavailable in this bounded profile.',
   enzyme: 'BsaI',
   upperLevelEnzyme: 'SapI',
   fusionSiteLength: 4,
@@ -165,17 +193,38 @@ const LOOP_ASSEMBLY: GoldenGateKitDefinition = {
       ],
       nextLevel: 'upper',
       transitionEnzyme: 'SapI',
+      parity: 'even',
+      transition: {
+        nextLevel: 'upper',
+        donorParity: 'even',
+        receiverParity: 'odd',
+        enzyme: 'BsaI',
+        receiverIdentity: 'unavailable',
+        model: 'entry',
+      },
     },
     {
       level: 'upper',
       enzyme: 'SapI',
       fusionSiteLength: 3,
-      // The cited Loop contract does not publish a fixed SapI overhang set;
-      // keep the set empty rather than deriving 3-nt sites from the L0 list.
+      // The cited Loop contract does not publish a fixed SapI overhang set or
+      // a concrete receiver grammar for the recursive next round. Keep both
+      // empty rather than deriving 3-nt sites from the L0 list; the transition
+      // below records parity evidence only and is not a complete recursive plan.
       acceptedFusionSites: [],
       grammar: [],
       nextLevel: null,
       transitionEnzyme: null,
+      parity: 'odd',
+      transition: {
+        nextLevel: 'unknown',
+        donorParity: 'odd',
+        receiverParity: 'even',
+        enzyme: 'SapI',
+        nextEnzyme: 'BsaI',
+        receiverIdentity: 'unavailable',
+        model: 'parity-only',
+      },
     },
   ],
   citation: 'Pollak B, Cerda A, Delmans M, Álvarez-González S, et al. (2019). Loop Assembly: a simple and open system for recursive fabrication of DNA circuits. New Phytologist 222(1):628–40.',

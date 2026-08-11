@@ -7,6 +7,8 @@ const root = resolve(import.meta.dirname, '../..');
 const filesystemScripts = [
   'scripts/build-preview.mjs',
   'scripts/check-release-alignment.mjs',
+  'scripts/check-release-publish.mjs',
+  'scripts/check-release-review-threads.mjs',
   'scripts/check-release-budgets.mjs',
   'scripts/check-runtime-compatibility.mjs',
   'scripts/report-gate-coverage.mjs',

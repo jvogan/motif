@@ -76,6 +76,32 @@ describe('ClaudeSciencePrimerWorkspace', () => {
     expect(screen.getByText('Cross-dimer check')).toBeTruthy();
   });
 
+  it('exposes bounded custom Tm inputs and stamps exact condition evidence into the handoff', async () => {
+    const user = userEvent.setup();
+    const onSaveDesign = vi.fn();
+    render(<ClaudeSciencePrimerWorkspace {...props({ onSaveDesign })} />);
+
+    await user.selectOptions(screen.getByLabelText('Tm condition preset'), 'custom');
+    expect(screen.getByTestId('primer-custom-tm-options')).toBeTruthy();
+    await user.clear(screen.getByLabelText('Total dNTP mM'));
+    await user.type(screen.getByLabelText('Total dNTP mM'), '0.8');
+    expect((screen.getByLabelText('Total dNTP mM') as HTMLInputElement).value).toBe('0.8');
+    const acknowledgment = screen.queryByTestId('primer-evidence-acknowledgment');
+    if (acknowledgment) await user.click(acknowledgment);
+    await user.click(screen.getByRole('button', { name: 'Save design' }));
+    await waitFor(() => expect(onSaveDesign).toHaveBeenCalledTimes(1));
+    expect(onSaveDesign.mock.calls[0][0]).toMatchObject({
+      parameters: {
+        tmConditionPresetId: 'custom',
+        tmOptions: { dntpConcentration: 0.8 },
+      },
+      tmEvidence: {
+        conditionPresetId: 'custom',
+        options: { dntpConcentration: 0.8 },
+      },
+    });
+  });
+
   it('associates each invalid numeric field with the current validation message', async () => {
     const user = userEvent.setup();
     render(<ClaudeSciencePrimerWorkspace {...props()} />);
@@ -259,7 +285,8 @@ describe('ClaudeSciencePrimerWorkspace', () => {
     const onCreateAmplicon = vi.fn();
     render(<ClaudeSciencePrimerWorkspace {...props({
       record: { id: 'record-1', name: 'Example insert', molecule: 'dna', sequence: sequence.slice(150, 550) },
-      initialIntent: 'cloning',
+      selectedRange: { start: 0, end: 400 },
+      initialIntent: 'pcr',
       preparationContext: preparationContext(),
       onUseForCloning,
       onCreateAmplicon,
@@ -268,6 +295,8 @@ describe('ClaudeSciencePrimerWorkspace', () => {
     const context = screen.getByRole('note', { name: 'Cloning preparation context' });
     expect(context.textContent).toContain('Simulate PCR saves a result only');
     expect(context.textContent).toContain('keeps the source record unchanged');
+    const evidenceAcknowledgment = screen.queryByTestId('primer-evidence-acknowledgment');
+    if (evidenceAcknowledgment) await user.click(evidenceAcknowledgment);
     await user.click(screen.getByRole('button', { name: 'Save primer plan only' }));
     await waitFor(() => expect(onUseForCloning).toHaveBeenCalledTimes(1));
     expect(onUseForCloning.mock.calls[0][0]).toMatchObject({

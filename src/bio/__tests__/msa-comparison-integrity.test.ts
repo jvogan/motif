@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { computeMSA, estimateMsaWork, isMSAError, MSA_MAX_SEQUENCES, multipleAlign } from '../msa';
+import {
+  computeMSA,
+  estimateMsaWork,
+  formatMSA,
+  isMSAError,
+  MSA_MAX_SEQUENCES,
+  multipleAlign,
+} from '../msa';
 import { sequenceDiff } from '../sequence-diff';
 
 describe('bounded sequence comparison integrity', () => {
@@ -85,5 +92,33 @@ describe('MSA input and provenance contract', () => {
     expect(result.fallback).toBe(false);
     expect(result.warnings).toEqual([]);
     expect(result.ambiguities).toBeGreaterThan(0);
+  });
+
+  it('estimates the selected heuristic center for a 30x1000 route', () => {
+    const sequences = Array.from({ length: 30 }, () => 'A'.repeat(1_000));
+    const names = sequences.map((_sequence, index) => `sequence-${index}`);
+    expect(estimateMsaWork(sequences.map((sequence) => sequence.length))).toBe(29_000_000);
+    expect(computeMSA(sequences, names, { maxWorkUnits: 28_999_999 })).toMatchObject({ type: 'work_limit' });
+    const result = computeMSA(sequences, names, { maxWorkUnits: 30_000_000 });
+    expect(isMSAError(result)).toBe(false);
+    if (isMSAError(result)) return;
+    expect(result.rows).toHaveLength(30);
+    expect(result.alignmentLength).toBe(1_000);
+  }, 60_000);
+
+  it('rejects malformed legacy formatter shapes before scanning rows', () => {
+    const valid = {
+      sequences: [{ name: 'one', aligned: 'AC', original: 'AC' }],
+      consensusSequence: 'AC',
+      conservationScores: [1, 0.5],
+      identity: 75,
+      gaps: 0,
+      alignmentLength: 2,
+      conservedColumns: 1,
+    };
+    expect(formatMSA(valid)).toContain('Alignment length:  2');
+    expect(() => formatMSA(valid, { width: 0 })).toThrow(/width/i);
+    expect(() => formatMSA({ ...valid, sequences: [] })).toThrow(/sequence row/i);
+    expect(() => formatMSA({ ...valid, sequences: [{ ...valid.sequences[0], aligned: 'A' }] })).toThrow(/aligned length/i);
   });
 });

@@ -2,9 +2,13 @@ import { describe, expect, it } from 'vitest';
 import {
   analyzeOverlap,
   findOverlap,
+  GibsonInputError,
   gibsonAssemble,
   MAX_GIBSON_FRAGMENTS,
   MAX_GIBSON_TOTAL_INPUT_LENGTH,
+  validateGibsonFragments,
+  validateOverlaps,
+  validateOverlapsWithDiagnostics,
 } from '../gibson-assembly';
 
 describe('Gibson overlap analysis', () => {
@@ -84,5 +88,50 @@ describe('Gibson overlap analysis', () => {
     ], 8, 8);
     expect(tooLarge.success).toBe(false);
     expect(tooLarge.errors.join(' ')).toMatch(/total|longer/i);
+  });
+
+  it('keeps legacy overlap arrays while exposing typed malformed-input diagnostics', () => {
+    const fragments = [
+      { name: 'left', sequence: 'GCGCGCGCGCGCGCGC' },
+      { name: 'right', sequence: 'GCGCGCGCGCGCGCGC' },
+    ];
+    expect(validateOverlaps(fragments, 16, 16)).toHaveLength(1);
+    expect(validateOverlapsWithDiagnostics(fragments, 16, 16)).toMatchObject({
+      status: 'valid',
+      valid: true,
+    });
+    expect(() => validateOverlaps([
+      { name: 'bad', sequence: 'ACGT!' },
+      { name: 'right', sequence: 'ACGT' },
+    ], 8, 8)).toThrow(GibsonInputError);
+    expect(validateOverlapsWithDiagnostics([
+      { name: 'bad', sequence: 'ACGT!' },
+      { name: 'right', sequence: 'ACGT' },
+    ], 8, 8)).toMatchObject({ status: 'invalid_input', valid: false });
+  });
+
+  it('bounds feature metadata as plain UTF-8 data before assembly', () => {
+    const metadata = Object.fromEntries(
+      Array.from({ length: 9 }, (_, index) => [`label-${index}`, '😀'.repeat(2_048)]),
+    );
+    const validation = validateGibsonFragments([
+      {
+        name: 'left',
+        sequence: 'AAAAAAAA',
+        features: [{
+          id: 'feature-id',
+          name: 'feature',
+          type: 'misc_feature',
+          start: 0,
+          end: 8,
+          strand: 1,
+          color: '#888888',
+          metadata,
+        }],
+      },
+      { name: 'right', sequence: 'AAAAAAAA' },
+    ]);
+    expect(validation.valid).toBe(false);
+    expect(validation.errors.join(' ')).toMatch(/metadata.*byte/i);
   });
 });
