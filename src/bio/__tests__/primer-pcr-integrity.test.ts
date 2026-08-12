@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   estimatePCRBindingScanWorkUnits,
   findPrimerBindings,
@@ -469,6 +469,31 @@ describe('primer, PCR, and Tm integrity', () => {
       targetEnd: 80,
       tmOptions: { ...DEFAULT_TM_OPTIONS, naConcentration: 1_001 },
     }, 'forward')).toBeNull();
+
+    class TmOptionsClass {
+      naConcentration = 50;
+    }
+    const getter = vi.fn(() => 50);
+    const accessorOptions = Object.defineProperty({}, 'naConcentration', { enumerable: true, get: getter });
+    const customPrototypeOptions = Object.create({ inherited: true });
+    customPrototypeOptions.naConcentration = 50;
+    for (const tmOptions of [
+      null,
+      'not-an-object',
+      [],
+      new Date(),
+      new TmOptionsClass(),
+      accessorOptions,
+      customPrototypeOptions,
+      { ...DEFAULT_TM_OPTIONS, unknownField: true },
+    ]) {
+      expect(normalizePrimerDesignParams(sequenceLength, {
+        targetStart: 20,
+        targetEnd: 80,
+        tmOptions: tmOptions as never,
+      }, 'forward')).toBeNull();
+    }
+    expect(getter).not.toHaveBeenCalled();
     expect(normalizePrimerDesignParams(sequenceLength, {
       targetStart: 20,
       targetEnd: 80,
@@ -499,6 +524,7 @@ describe('primer, PCR, and Tm integrity', () => {
       },
     }, 'forward');
     expect(custom?.tmEvidence).toMatchObject({
+      schema: 'motif.primer.tm-evidence.v1',
       conditionPresetId: 'custom',
       model: 'santalucia-1998-nearest-neighbor',
       engine: 'motif-tm-calculator',

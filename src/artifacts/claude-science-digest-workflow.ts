@@ -1,12 +1,28 @@
 import type { DigestFragment } from '../bio/restriction-digest';
+import { validateFeatureCollection } from '../bio/feature-bounds';
 import {
   remapFeatureLocation,
   type FeatureCoordinateMapSpan,
   type RemappedFeatureLocation,
 } from '../bio/feature-location';
-import type { Feature, SequenceType, Topology } from '../bio/types';
-import { isActiveDoubleStrandRestrictionSite } from '../bio/restriction-sites';
-import type { DigestRecipe } from './claude-science-digest-recipe';
+import type {
+  Feature,
+  RestrictionEnzyme,
+  RestrictionMethylationAssumptions,
+  SequenceType,
+  Topology,
+} from '../bio/types';
+import {
+  isActiveDoubleStrandRestrictionSite,
+  MAX_RESTRICTION_ENZYMES,
+  MAX_RESTRICTION_RESULT_SITES,
+  normalizeRestrictionEnzymeNames,
+  normalizeRestrictionEnzymes,
+} from '../bio/restriction-sites';
+import {
+  buildDigestRecipe,
+  type DigestRecipe,
+} from './claude-science-digest-recipe';
 import {
   MAX_ARTIFACT_ID_LENGTH,
   MAX_ARTIFACT_WORKFLOW_NAME_LENGTH,
@@ -29,6 +45,9 @@ const MAX_METADATA_NODES = 10_000;
 const UNSAFE_OBJECT_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 const DNA_ALPHABET = /^[ACGTRYSWKMBDHVN]+$/i;
 const OVERHANG_TYPES = new Set(['blunt', '5prime', '3prime']);
+const METHYLATION_STATES = new Set(['unknown', 'methylated', 'unmethylated']);
+const METHYLATION_TARGETS = new Set(['dam', 'dcm', 'cpg', 'custom']);
+const INVALID_DATA_PROPERTY = Symbol('invalid-data-property');
 
 export type DigestWorkflowErrorCode =
   | 'inactive-source'
@@ -92,6 +111,8 @@ export type DigestWorkflowMetadata = {
 export type MaterializeDigestWorkflowInput = {
   sourceRecord: DigestWorkflowSourceRecord;
   recipe: DigestRecipe;
+  /** Authoritative catalog used to reproduce and verify the submitted recipe. */
+  enzymeCatalog: readonly RestrictionEnzyme[];
   workflow: DigestWorkflowMetadata;
   /**
    * Must contain one identity per materialized output. Uncut digests create no
@@ -174,6 +195,81 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return prototype === Object.prototype || prototype === null;
 }
 
+function ownDataProperty(
+  value: Record<string, unknown>,
+  key: string,
+): unknown | typeof INVALID_DATA_PROPERTY {
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor) return undefined;
+    if (!('value' in descriptor)) return INVALID_DATA_PROPERTY;
+    return descriptor.value;
+  } catch {
+    return INVALID_DATA_PROPERTY;
+  }
+}
+
+function boundedDenseArray(value: unknown, label: string, maximum: number): unknown[] {
+  if (!Array.isArray(value)) fail('invalid-recipe', `${label} must be an array.`);
+  let length: number;
+  try {
+    length = value.length;
+  } catch {
+    fail('invalid-recipe', `${label} could not be inspected safely.`);
+  }
+  if (length > maximum) {
+    fail('resource-limit', `${label} cannot exceed ${maximum.toLocaleString()} entries.`);
+  }
+  const snapshot: unknown[] = [];
+  for (let index = 0; index < length; index += 1) {
+    let descriptor: PropertyDescriptor | undefined;
+    try {
+      descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+    } catch {
+      fail('invalid-recipe', `${label}[${index}] could not be inspected safely.`);
+    }
+    if (!descriptor || !('value' in descriptor)) {
+      fail('invalid-recipe', `${label} must be dense and contain only direct data entries.`);
+    }
+    snapshot.push(descriptor.value);
+  }
+  return snapshot;
+}
+
+function normalizeMethylationAssumptions(value: unknown): RestrictionMethylationAssumptions | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === 'string') {
+    if (!METHYLATION_STATES.has(value)) {
+      fail('invalid-recipe', 'Digest methylation assumptions contain an invalid state.');
+    }
+    return value as RestrictionMethylationAssumptions;
+  }
+  if (!isPlainObject(value)) {
+    fail('invalid-recipe', 'Digest methylation assumptions must be a state or a plain target-state object.');
+  }
+  let keys: string[];
+  try {
+    keys = Object.keys(value);
+  } catch {
+    fail('invalid-recipe', 'Digest methylation assumptions could not be inspected safely.');
+  }
+  if (keys.length > METHYLATION_TARGETS.size) {
+    fail('invalid-recipe', 'Digest methylation assumptions contain too many targets.');
+  }
+  const normalized: Partial<Record<'dam' | 'dcm' | 'cpg' | 'custom', 'unknown' | 'methylated' | 'unmethylated'>> = {};
+  for (const key of keys) {
+    if (!METHYLATION_TARGETS.has(key)) {
+      fail('invalid-recipe', `Digest methylation assumptions contain unknown target "${key}".`);
+    }
+    const state = ownDataProperty(value, key);
+    if (state === INVALID_DATA_PROPERTY || typeof state !== 'string' || !METHYLATION_STATES.has(state)) {
+      fail('invalid-recipe', `Digest methylation target "${key}" has an invalid state.`);
+    }
+    normalized[key as keyof typeof normalized] = state as 'unknown' | 'methylated' | 'unmethylated';
+  }
+  return normalized;
+}
+
 function cloneJsonValue(value: unknown, path: string, depth: number, budget: JsonCloneBudget): unknown {
   budget.nodes += 1;
   if (budget.nodes > MAX_METADATA_NODES) {
@@ -235,6 +331,201 @@ function validateSourceRecord(record: DigestWorkflowSourceRecord): void {
   if (!DNA_ALPHABET.test(record.sequence)) {
     fail('invalid-source', 'Source DNA contains characters outside the supported IUPAC alphabet.');
   }
+}
+
+function snapshotSourceFeatures(record: DigestWorkflowSourceRecord): Feature[] {
+  const validation = validateFeatureCollection(record.features, {
+    label: 'Digest workflow source features',
+    sequenceLength: record.sequence.length,
+    allowCircularWrap: record.topology === 'circular',
+    maxFeatures: MAX_DIGEST_WORKFLOW_FEATURES_PER_RECORD,
+  });
+  if (!validation.valid) {
+    const resourceLimited = validation.issues.some((issue) => (
+      issue.code === 'feature_limit'
+      || issue.code === 'subrange_limit'
+      || issue.code === 'metadata_limit'
+      || issue.code === 'feature_work_limit'
+    ));
+    fail(
+      resourceLimited ? 'resource-limit' : 'invalid-source',
+      validation.issues.map((issue) => issue.message).join(' '),
+    );
+  }
+
+  const budget: JsonCloneBudget = { nodes: 0 };
+  const features = record.features ?? [];
+  const snapshot: Feature[] = [];
+  for (let index = 0; index < features.length; index += 1) {
+    const featureDescriptor = Object.getOwnPropertyDescriptor(features, String(index));
+    if (!featureDescriptor || !('value' in featureDescriptor) || !isPlainObject(featureDescriptor.value)) {
+      fail('invalid-source', `Digest workflow source feature ${index + 1} changed during validation.`);
+    }
+    const feature = featureDescriptor.value as unknown as Feature;
+    const subRanges: Feature['subRanges'] = [];
+    for (let rangeIndex = 0; rangeIndex < (feature.subRanges?.length ?? 0); rangeIndex += 1) {
+      const rangeDescriptor = Object.getOwnPropertyDescriptor(feature.subRanges, String(rangeIndex));
+      if (!rangeDescriptor || !('value' in rangeDescriptor) || !isPlainObject(rangeDescriptor.value)) {
+        fail('invalid-source', `Digest workflow source feature ${index + 1} sub-range ${rangeIndex + 1} changed during validation.`);
+      }
+      const range = rangeDescriptor?.value as NonNullable<Feature['subRanges']>[number];
+      subRanges.push({
+        start: range.start,
+        end: range.end,
+        ...(range.strand === undefined ? {} : { strand: range.strand }),
+      });
+    }
+    snapshot.push({
+      id: feature.id,
+      name: feature.name,
+      type: feature.type,
+      start: feature.start,
+      end: feature.end,
+      strand: feature.strand,
+      color: feature.color,
+      metadata: cloneJsonValue(
+        feature.metadata,
+        `sourceRecord.features[${index}].metadata`,
+        0,
+        budget,
+      ) as Record<string, unknown>,
+      ...(feature.subRanges === undefined ? {} : { subRanges }),
+    });
+  }
+  return snapshot;
+}
+
+function sameStringArray(candidate: unknown, expected: readonly string[], label: string): boolean {
+  const values = boundedDenseArray(candidate, label, MAX_RESTRICTION_ENZYMES);
+  return values.length === expected.length
+    && values.every((value, index) => value === expected[index]);
+}
+
+function fragmentMatches(
+  candidate: unknown,
+  expected: DigestFragment,
+  index: number,
+): boolean {
+  if (!isPlainObject(candidate)) return false;
+  const label = `Digest recipe fragment ${index + 1}`;
+  const value = (key: string): unknown => ownDataProperty(candidate, key);
+  const leftEnzymes = value('leftEnzymes');
+  const rightEnzymes = value('rightEnzymes');
+  if (leftEnzymes === INVALID_DATA_PROPERTY || rightEnzymes === INVALID_DATA_PROPERTY) return false;
+  const expectedLeft = expected.leftEnzymes ?? [];
+  const expectedRight = expected.rightEnzymes ?? [];
+  const leftMatches = leftEnzymes === undefined
+    ? expectedLeft.length === 0
+    : sameStringArray(leftEnzymes, expectedLeft, `${label} left enzymes`);
+  const rightMatches = rightEnzymes === undefined
+    ? expectedRight.length === 0
+    : sameStringArray(rightEnzymes, expectedRight, `${label} right enzymes`);
+  return leftMatches
+    && rightMatches
+    && value('sequence') === expected.sequence
+    && value('length') === expected.length
+    && value('startInOriginal') === expected.startInOriginal
+    && value('endInOriginal') === expected.endInOriginal
+    && value('leftEnzyme') === expected.leftEnzyme
+    && value('rightEnzyme') === expected.rightEnzyme
+    && value('overhang5') === expected.overhang5
+    && value('overhang3') === expected.overhang3
+    && value('overhang5Type') === expected.overhang5Type
+    && value('overhang3Type') === expected.overhang3Type;
+}
+
+/**
+ * Treat a caller-provided recipe as an untrusted receipt. Only bounded enzyme
+ * names and assumptions are read from it; authoritative definitions come from
+ * the separately supplied catalog, and physical geometry is recomputed.
+ */
+function rebuildAndVerifyRecipe(
+  source: DigestWorkflowSourceRecord,
+  candidate: DigestRecipe,
+  trustedCatalog: readonly RestrictionEnzyme[],
+): DigestRecipe {
+  if (!isPlainObject(candidate)) fail('invalid-recipe', 'Digest recipe must be a plain object.');
+  if (ownDataProperty(candidate, 'isValid') !== true
+    || ownDataProperty(candidate, 'sequenceType') !== source.type
+    || ownDataProperty(candidate, 'topology') !== source.topology) {
+    fail('invalid-recipe', 'Digest recipe validity, molecule type, or topology no longer matches the source record.');
+  }
+  const rawEntries = boundedDenseArray(
+    ownDataProperty(candidate, 'enzymes'),
+    'Digest recipe enzymes',
+    MAX_RESTRICTION_ENZYMES,
+  );
+  if (rawEntries.length === 0) fail('invalid-recipe', 'Digest recipe must contain at least one enzyme.');
+  const rawNames = rawEntries.map((entry, index) => {
+    if (!isPlainObject(entry)) {
+      fail('invalid-recipe', `Digest recipe enzyme ${index + 1} must be a plain object.`);
+    }
+    const name = ownDataProperty(entry, 'name');
+    if (name === INVALID_DATA_PROPERTY || name === undefined) {
+      fail('invalid-recipe', `Digest recipe enzyme ${index + 1} must contain a direct name.`);
+    }
+    return name;
+  });
+
+  let requestedNames;
+  let enzymeCatalog;
+  try {
+    requestedNames = normalizeRestrictionEnzymeNames(rawNames);
+    enzymeCatalog = normalizeRestrictionEnzymes(trustedCatalog);
+  } catch (error) {
+    fail('invalid-recipe', error instanceof Error ? error.message : 'Digest recipe enzyme inputs are invalid.');
+  }
+  const rawAssumptions = ownDataProperty(candidate, 'methylationAssumptions');
+  if (rawAssumptions === INVALID_DATA_PROPERTY) {
+    fail('invalid-recipe', 'Digest methylation assumptions must be direct data.');
+  }
+  const methylationAssumptions = normalizeMethylationAssumptions(rawAssumptions);
+  const canonical = buildDigestRecipe({
+    sequence: source.sequence,
+    sequenceType: source.type,
+    topology: source.topology,
+    enzymeText: requestedNames.join(', '),
+    enzymeCatalog,
+    features: source.features,
+    methylationAssumptions,
+  });
+  if (!canonical.isValid) {
+    fail('invalid-recipe', 'Digest recipe could not be reproduced from the current source and bounded enzyme data.');
+  }
+
+  const suppliedFragments = boundedDenseArray(
+    ownDataProperty(candidate, 'fragments'),
+    'Digest recipe fragments',
+    MAX_DIGEST_WORKFLOW_FRAGMENTS,
+  );
+  const suppliedSites = ownDataProperty(candidate, 'sites');
+  if (!Array.isArray(suppliedSites)) fail('invalid-recipe', 'Digest recipe sites must be an array.');
+  let suppliedSiteCount: number;
+  try {
+    suppliedSiteCount = suppliedSites.length;
+  } catch {
+    fail('invalid-recipe', 'Digest recipe sites could not be inspected safely.');
+  }
+  if (suppliedSiteCount > MAX_RESTRICTION_RESULT_SITES) {
+    fail(
+      'resource-limit',
+      `Digest recipe sites cannot exceed ${MAX_RESTRICTION_RESULT_SITES.toLocaleString()} entries.`,
+    );
+  }
+
+  const sameReceipt = ownDataProperty(candidate, 'isValid') === true
+    && ownDataProperty(candidate, 'sequenceType') === canonical.sequenceType
+    && ownDataProperty(candidate, 'topology') === canonical.topology
+    && ownDataProperty(candidate, 'outcome') === canonical.outcome
+    && ownDataProperty(candidate, 'cutCount') === canonical.cutCount
+    && ownDataProperty(candidate, 'recognitionSiteCount') === canonical.recognitionSiteCount
+    && suppliedSiteCount === canonical.sites.length
+    && suppliedFragments.length === canonical.fragments.length
+    && suppliedFragments.every((fragment, index) => fragmentMatches(fragment, canonical.fragments[index], index));
+  if (!sameReceipt) {
+    fail('incoherent-recipe', 'Digest recipe no longer matches a fresh bounded digest of the source record.');
+  }
+  return canonical;
 }
 
 function readCircularSequence(sequence: string, start: number, length: number): string {
@@ -325,6 +616,9 @@ function validateRecipe(source: DigestWorkflowSourceRecord, recipe: DigestRecipe
   }
   if (recipe.issues.length > 0 || recipe.unresolvedNames.length > 0 || recipe.enzymes.length === 0) {
     fail('invalid-recipe', 'Digest recipe contains unresolved validation issues.');
+  }
+  if (recipe.featureMapping && !recipe.featureMapping.complete) {
+    fail('resource-limit', 'Digest recipe annotation mapping exceeded its bounded work limit.');
   }
   if (recipe.fragments.length > MAX_DIGEST_WORKFLOW_FRAGMENTS) {
     fail(
@@ -597,9 +891,33 @@ function buildWorkflowProvenance(input: MaterializeDigestWorkflowInput): Artifac
  * and every returned collection is a defensive copy.
  */
 export function materializeDigestWorkflow(
-  input: MaterializeDigestWorkflowInput,
+  rawInput: MaterializeDigestWorkflowInput,
 ): MaterializedDigestWorkflow {
-  validateSourceRecord(input.sourceRecord);
+  validateSourceRecord(rawInput.sourceRecord);
+  const sourceFeatures = snapshotSourceFeatures(rawInput.sourceRecord);
+  const sourceRecord: DigestWorkflowSourceRecord = {
+    id: rawInput.sourceRecord.id,
+    name: rawInput.sourceRecord.name,
+    sequence: rawInput.sourceRecord.sequence,
+    type: rawInput.sourceRecord.type,
+    topology: rawInput.sourceRecord.topology,
+    active: rawInput.sourceRecord.active,
+    features: sourceFeatures,
+    ...(rawInput.sourceRecord.translationTableId === undefined
+      ? {}
+      : { translationTableId: rawInput.sourceRecord.translationTableId }),
+    ...(rawInput.sourceRecord.description === undefined ? {} : { description: rawInput.sourceRecord.description }),
+    ...(rawInput.sourceRecord.organism === undefined ? {} : { organism: rawInput.sourceRecord.organism }),
+    ...(rawInput.sourceRecord.source === undefined ? {} : { source: rawInput.sourceRecord.source }),
+    ...(rawInput.sourceRecord.group === undefined ? {} : { group: rawInput.sourceRecord.group }),
+    ...(rawInput.sourceRecord.tags === undefined ? {} : { tags: [...rawInput.sourceRecord.tags] }),
+  };
+  const recipe = rebuildAndVerifyRecipe(sourceRecord, rawInput.recipe, rawInput.enzymeCatalog);
+  const input: MaterializeDigestWorkflowInput = {
+    ...rawInput,
+    sourceRecord,
+    recipe,
+  };
   boundedText(input.workflow.id, 'Digest workflow id', MAX_ARTIFACT_ID_LENGTH, 'invalid-recipe');
   validateRecipe(input.sourceRecord, input.recipe);
 

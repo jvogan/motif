@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { PrimerCandidate, PrimerPair } from '../../bio/primer-design';
+import {
+  designPrimerPairWithDiagnostics,
+  type PrimerCandidate,
+  type PrimerDesignParams,
+  type PrimerPair,
+} from '../../bio/primer-design';
 import { simulatePCR } from '../../bio/pcr';
 import { reverseComplement } from '../../bio/reverse-complement';
 import type { Feature } from '../../bio/types';
@@ -292,10 +297,21 @@ describe('PCR amplicon materialization', () => {
     expect(() => materialize(inconsistent)).toThrowError(new PcrMaterializationError(
       'Reverse primer fullSequence must equal its 5′ tail followed by its binding sequence.',
     ));
+
+    const malformedReview = structuredClone(baseSelection);
+    malformedReview.evidenceReview = {
+      schema: 'motif.primer.evidence-review.v0',
+      required: false,
+      acknowledged: false,
+      reasonCodes: [],
+    };
+    expect(() => materialize(malformedReview)).toThrowError(new PcrMaterializationError(
+      'Evidence review does not match motif.primer.evidence-review.v1.',
+    ));
   });
 
   it('creates one exact linear record with primer annotations, hashes, and a linked PCR result', () => {
-    const template = 'AAAACCCCGGGGTTTTAAAACCCCGGGGTTTT';
+    const template = 'ATGCGTACGATCAGATCGTACGCAT';
     const feature: Feature = {
       id: 'gene-1',
       name: 'payload',
@@ -323,15 +339,51 @@ describe('PCR amplicon materialization', () => {
       },
     };
     const evidenceReview = {
+      schema: 'motif.primer.evidence-review.v1',
       required: true,
       acknowledged: true,
       reasonCodes: ['cross-dimer-3-prime'],
       acknowledgedAt: '2026-07-17T12:00:00.000Z',
     };
-    const selected = {
-      ...selection(pairFor(template, 4, 14, 20, 30, 'GGATCC', 'CATATG')),
-      tmEvidence,
+    const parameters: PrimerDesignParams = {
+        targetStart: 12,
+        targetEnd: 13,
+        minLength: 12,
+        maxLength: 12,
+        minGC: 0,
+        maxGC: 1,
+        enforceTargetTm: false,
+        requireGcClamp: false,
+        flankingWindow: 12,
+        forwardTail: 'GGATCC',
+        reverseTail: 'CATATG',
+        maxHairpinDeltaG: null,
+        maxSelfDimerDeltaG: null,
+        maxCrossDimerDeltaG: null,
+        maxPairs: 100,
+        tmConditionPresetId: 'custom',
+        tmOptions: {
+          method: 'nearest-neighbor',
+          naConcentration: 75,
+          mgConcentration: 2,
+          dntpConcentration: 0.8,
+          primerConcentration: 100,
+          saltCorrection: 'owczarzy',
+        },
+    };
+    const recomputedPair = designPrimerPairWithDiagnostics(template, parameters).pairs.find((pair) => (
+      pair.forward.start === 0 && pair.forward.end === 12
+      && pair.reverse.start === 12 && pair.reverse.end === 24
+    ));
+    expect(recomputedPair).toBeDefined();
+    const selected: PcrMaterializationSelection = {
+      ...selection(recomputedPair!),
+      tmEvidence: {
+        ...tmEvidence,
+        options: { ...tmEvidence.options, mgConcentration: 999 },
+      },
       evidenceReview,
+      parameters,
     };
     const templateRecord = source(template, 'linear', [feature]);
     templateRecord.translationTableId = 2;
@@ -373,7 +425,14 @@ describe('PCR amplicon materialization', () => {
         productSha256: sha256HexSync(result.record.seq),
         translationTableId: 2,
         tmEvidence,
-        evidenceReview,
+        evidenceReview: {
+          schema: 'motif.primer.evidence-review.v1',
+          assertion: {
+            schema: 'motif.primer.evidence-acknowledgment.v1',
+            acknowledged: true,
+            acknowledgedAt: '2026-07-17T12:00:00.000Z',
+          },
+        },
         cloningPreparation: {
           requestSha256: 'a'.repeat(64),
           actionId: 'prep-action',
@@ -399,14 +458,18 @@ describe('PCR amplicon materialization', () => {
       kind: 'pcr',
       inputRecordIds: ['template-1'],
       dependsOnResultIds: ['primer-result'],
-      parameters: { topology: 'linear', tmEvidence, evidenceReview },
+      parameters: {
+        topology: 'linear',
+        tmEvidence: { schema: 'motif.primer.tm-evidence.v1' },
+        evidenceReview: { schema: 'motif.primer.evidence-review.v1' },
+      },
       provenance: {
         engineVersion: result.simulation.provenance.engineVersion,
         metadata: {
           productAssembly: result.simulation.provenance.productAssembly,
           tailPolicy: result.simulation.provenance.tailPolicy,
-          tmEvidence,
-          evidenceReview,
+          tmEvidence: { schema: 'motif.primer.tm-evidence.v1' },
+          evidenceReview: { schema: 'motif.primer.evidence-review.v1' },
         },
       },
       data: {
@@ -416,7 +479,7 @@ describe('PCR amplicon materialization', () => {
           id: 'pcr-product',
           recordId: 'amplicon-record',
           lengthBp: result.record.seq.length,
-          templateRange: { start: 4, end: 30 },
+          templateRange: { start: 0, end: 24 },
         }],
       },
     });
@@ -474,11 +537,103 @@ describe('PCR amplicon materialization', () => {
     expect(findPcrMaterializationDuplicate([], result.materializationKey)).toBeNull();
   });
 
+  it('recomputes incomplete-search review evidence before accepting its separate acknowledgment', () => {
+    const template = 'ATGCGTACGATCCGTAAGCTGACCTAGTCGATGCTACGGTCAATCG'.repeat(10);
+    const parameters: PrimerDesignParams = {
+      targetStart: 160,
+      targetEnd: 240,
+      minLength: 12,
+      maxLength: 12,
+      minGC: 0,
+      maxGC: 1,
+      enforceTargetTm: false,
+      requireGcClamp: false,
+      flankingWindow: 20,
+      maxHairpinDeltaG: null,
+      maxSelfDimerDeltaG: null,
+      maxCrossDimerDeltaG: null,
+      maxPairingCandidatesPerDirection: 1,
+      maxPairs: 1,
+    };
+    const design = designPrimerPairWithDiagnostics(template, parameters);
+    expect(design.warnings?.join(' ')).toMatch(/not exhaustive/iu);
+    expect(design.pairs[0]).toBeDefined();
+    const result = materializePcrAmplicon({
+      sourceRecord: source(template),
+      selection: {
+        ...selection(design.pairs[0]),
+        parameters,
+        evidenceReview: {
+          schema: 'motif.primer.evidence-review.v1',
+          required: true,
+          acknowledged: true,
+          reasonCodes: ['search-evidence-incomplete'],
+          acknowledgedAt: '2026-07-17T12:00:00.000Z',
+        },
+      },
+      identity: {
+        recordId: 'bounded-record',
+        resultId: 'bounded-result',
+        productId: 'bounded-product',
+        createdAt: '2026-07-17T12:00:00.000Z',
+      },
+      primerDesignResultId: 'bounded-primer-result',
+    });
+    expect(result.record.provenance.evidenceReview).toMatchObject({
+      required: true,
+      reasonCodes: expect.arrayContaining(['search-evidence-incomplete']),
+      assertion: { acknowledged: true },
+    });
+  });
+
+  it('rejects non-object review assertions and timestamps without acknowledgment', () => {
+    const template = 'AAAACCCCGGGGTTTTAAAACCCCGGGGTTTTAAAACCCC';
+    const pair = pairFor(template, 2, 12, 24, 34);
+    const identity = {
+      recordId: 'review-record',
+      resultId: 'review-result',
+      productId: 'review-product',
+      createdAt: '2026-07-17T12:00:00.000Z',
+    };
+
+    expect(() => materializePcrAmplicon({
+      sourceRecord: source(template),
+      selection: { ...selection(pair), evidenceReview: null as never },
+      identity,
+      primerDesignResultId: 'primer-result',
+    })).toThrow(PcrMaterializationError);
+
+    expect(() => materializePcrAmplicon({
+      sourceRecord: source(template),
+      selection: {
+        ...selection(pair),
+        evidenceReview: {
+          schema: 'motif.primer.evidence-review.v1',
+          required: false,
+          acknowledged: false,
+          reasonCodes: [],
+          acknowledgedAt: 'not-a-timestamp',
+        },
+      },
+      identity,
+      primerDesignResultId: 'primer-result',
+    })).toThrow(/timestamp is allowed only when the review is acknowledged/i);
+  });
+
   it('omits an invalid linear template range for an origin-crossing product', () => {
     const template = 'AAAACCCCGGGGTTTTAAAACCCCGGGGTTTTAAAACCCC';
     const result = materializePcrAmplicon({
       sourceRecord: source(template, 'circular'),
-      selection: selection(pairFor(template, 30, 40, 2, 12)),
+      selection: {
+        ...selection(pairFor(template, 30, 40, 2, 12)),
+        evidenceReview: {
+          schema: 'motif.primer.evidence-review.v1',
+          required: true,
+          acknowledged: true,
+          reasonCodes: [],
+          acknowledgedAt: '2026-07-17T12:00:00.000Z',
+        },
+      },
       identity: {
         recordId: 'wrapped-record',
         resultId: 'wrapped-result',

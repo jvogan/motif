@@ -1,5 +1,6 @@
 import { reverseComplement } from './reverse-complement';
 import type { Feature, FeatureStrand, SequenceType } from './types';
+import { MAX_SUBRANGES_PER_FEATURE } from './feature-bounds';
 
 export type FeatureLocation = Pick<Feature, 'start' | 'end' | 'strand' | 'subRanges'> & {
   metadata?: Record<string, unknown>;
@@ -37,6 +38,7 @@ function effectiveStrand(value: unknown, fallback: FeatureStrand): FeatureStrand
 export function featureLocationSegments(feature: FeatureLocation): FeatureLocationSegment[] {
   const fallbackStrand = effectiveStrand(feature.strand, 1);
   if (feature.subRanges !== undefined) {
+    if (!Array.isArray(feature.subRanges) || feature.subRanges.length > MAX_SUBRANGES_PER_FEATURE) return [];
     return feature.subRanges.filter((range) => (
       Number.isFinite(range.start)
       && Number.isFinite(range.end)
@@ -142,6 +144,7 @@ export function remapFeatureLocation(
   // derived digest/PCR/child sequence.
   if (!isMaterializableFeatureLocation(feature)) return null;
   const hasStoredSubRanges = feature.subRanges !== undefined;
+  if (hasStoredSubRanges && (!Array.isArray(feature.subRanges) || feature.subRanges.length > MAX_SUBRANGES_PER_FEATURE)) return null;
   const sourceSegments = hasStoredSubRanges
     ? feature.subRanges!
     : [{ start: feature.start, end: feature.end }];
@@ -161,9 +164,16 @@ export function remapFeatureLocation(
   const mappedSegments = mapped.filter((segment): segment is NonNullable<typeof segment> => segment !== null);
   if (mappedSegments.length === 0) return null;
 
+  let start = Number.POSITIVE_INFINITY;
+  let end = Number.NEGATIVE_INFINITY;
+  for (const segment of mappedSegments) {
+    start = Math.min(start, segment.start);
+    end = Math.max(end, segment.end);
+  }
+
   return {
-    start: Math.min(...mappedSegments.map((segment) => segment.start)),
-    end: Math.max(...mappedSegments.map((segment) => segment.end)),
+    start,
+    end,
     ...(hasStoredSubRanges ? { subRanges: mappedSegments } : {}),
   };
 }

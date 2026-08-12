@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { RESTRICTION_ENZYMES_FULL } from '../../bio/enzyme-data';
+import type { RestrictionEnzyme } from '../../bio/types';
 import {
   buildDigestRecipe,
   resolveDigestEnzymes,
@@ -211,6 +212,41 @@ describe('Claude Science digest recipe model', () => {
     expect(resolved.cutCount).toBe(2);
     expect(resolved.recognitionSiteCount).toBe(3);
     expect(resolved.methylationAssumptions).toEqual({ dam: 'methylated', cpg: 'unmethylated' });
+  });
+
+  it('detaches normalized enzyme geometry and nested evidence from the caller catalog', () => {
+    const enzyme: RestrictionEnzyme = {
+      name: 'StateI',
+      recognitionSequence: 'GATC',
+      cutOffset: 1,
+      complementCutOffset: 1,
+      overhang: 'blunt',
+      methylationRequirement: {
+        target: 'dam',
+        state: 'methylated',
+        evidence: {
+          source: 'https://example.invalid/statei',
+          sourceLabel: 'StateI reference',
+          conditions: 'Defined fixture conditions',
+        },
+      },
+    };
+    const recipe = buildDigestRecipe({
+      sequence: 'AAAAGATCAAAA',
+      sequenceType: 'dna',
+      topology: 'linear',
+      enzymeText: 'StateI',
+      enzymeCatalog: [enzyme],
+      methylationAssumptions: 'methylated',
+    });
+
+    enzyme.cutOffset = 999;
+    enzyme.methylationRequirement!.evidence!.conditions = 'mutated after construction';
+
+    expect(recipe.enzymes[0].enzyme.cutOffset).toBe(1);
+    expect(recipe.enzymes[0].methylationEvidence?.conditions).toBe('Defined fixture conditions');
+    expect(recipe.enzymes[0].enzyme.methylationRequirement?.evidence?.conditions)
+      .toBe('Defined fixture conditions');
   });
 
   it.each(['rna', 'protein', 'mixed', 'unknown'] as const)(

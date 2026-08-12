@@ -85,6 +85,7 @@ export type ClaudeSciencePrimerHandoff = {
 };
 
 export type ClaudeSciencePrimerEvidenceReview = {
+  schema: 'motif.primer.evidence-review.v1';
   required: boolean;
   acknowledged: boolean;
   reasonCodes: readonly string[];
@@ -448,7 +449,7 @@ export function ClaudeSciencePrimerWorkspace({
     || !Number.isSafeInteger(targetEnd)
     || targetStart < 1
     || targetEnd > normalizedSequence.length
-    || targetEnd <= targetStart;
+    || targetEnd < targetStart;
   const lengthInvalid = !Number.isSafeInteger(minLength)
     || !Number.isSafeInteger(maxLength)
     || minLength < MIN_PRIMER_BINDING_LENGTH
@@ -584,8 +585,9 @@ export function ClaudeSciencePrimerWorkspace({
     parameters,
     ...(result?.tmEvidence ? { tmEvidence: result.tmEvidence } : {}),
     evidenceReview: {
+      schema: 'motif.primer.evidence-review.v1',
       required: evidenceReviewRequired,
-      acknowledged: !evidenceReviewRequired || evidenceAcknowledged,
+      acknowledged: evidenceAcknowledged,
       reasonCodes: evidenceReviewReasons,
       ...(evidenceReviewRequired && evidenceAcknowledged ? { acknowledgedAt: new Date().toISOString() } : {}),
     },

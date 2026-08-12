@@ -32,7 +32,7 @@ describe('release review-thread check', () => {
     expect(checkReleaseReviewThreads({
       pullRequest: {
         number: 36,
-        headRefName: 'release/0.3.5',
+        headRefName: 'release/0.3.6',
         labels: [],
         reviewThreads: [],
       },

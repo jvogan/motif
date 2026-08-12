@@ -5,6 +5,10 @@ import { DEFAULT_TM_OPTIONS } from './primer-design';
 import type { Feature, Topology } from './types';
 import { remapFeatureLocation, type FeatureCoordinateMapSpan } from './feature-location';
 import {
+  validateFeatureCollection,
+  type FeatureValidationIssueCode,
+} from './feature-bounds';
+import {
   inspectNucleotideSequence,
   nucleotideSymbolsCanPair,
 } from './nucleotide';
@@ -47,7 +51,8 @@ export type PCRDiagnosticCode =
   | 'overlapping_binding_regions'
   | 'conflicting_overlapping_binding_edits'
   | 'binding_scan_work_limit'
-  | 'binding_candidate_limit';
+  | 'binding_candidate_limit'
+  | 'feature_input_limit';
 
 export interface PCRDiagnostic {
   code: PCRDiagnosticCode;
@@ -57,6 +62,7 @@ export interface PCRDiagnostic {
   /** Work-accounting evidence for a bounded automatic scan. */
   workUnits?: number;
   maxWorkUnits?: number;
+  featureIssueCode?: FeatureValidationIssueCode;
 }
 
 export interface PCRProductProvenance {
@@ -660,6 +666,21 @@ function simulatePCRInternal(
   const tmpl = templateInspection.sequence;
   const fwd = forwardInspection.sequence;
   const rev = reverseInspection.sequence;
+  const featureValidation = validateFeatureCollection(features, {
+    label: 'PCR features',
+    sequenceLength: tmpl.length,
+    allowCircularWrap: topology === 'circular',
+  });
+  if (!featureValidation.valid) {
+    return {
+      result: null,
+      diagnostics: featureValidation.issues.map((issue) => ({
+        code: 'feature_input_limit' as const,
+        featureIssueCode: issue.code,
+        message: issue.message,
+      })),
+    };
+  }
   if (fwd.length > MAX_PCR_OLIGO_LENGTH || rev.length > MAX_PCR_OLIGO_LENGTH) return { result: null, diagnostics: [] };
   if (fwd.length < policy.minMatched3PrimeLength || rev.length < policy.minMatched3PrimeLength || tmpl.length === 0) return { result: null, diagnostics: [] };
 

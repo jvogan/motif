@@ -21,7 +21,9 @@ working tree.
   threads on release-label, synchronization, review, and review-comment
   events without rerunning the full build. Branch protection must require the
   `validate` and `validate-release-review-threads` contexts for release pull
-  requests.
+  requests, and the protected branch must enable GitHub's native conversation-
+  resolution requirement. Maintainers can manually refresh the advisory
+  workflow by dispatching it with the release pull request number.
 
 ## 2. Build from the release commit
 
@@ -97,6 +99,9 @@ stay offline:
 npm run check:release-publish -- --github --repo OWNER/REPOSITORY
 ```
 
+Arguments are strict: unknown or repeated options, positional arguments, and
+`--repo` without `--github` fail before any publish check can report success.
+
 For an explicit release pull request, CI runs the review-thread check with the
 workflow token. To reproduce that check locally, save the reviewed GraphQL
 subset as JSON and run:
@@ -106,7 +111,10 @@ npm run check:release-review -- --threads-file /path/to/review-threads.json --re
 ```
 
 The check fails for every unresolved, current review thread. Resolved or
-outdated threads do not block publication.
+outdated threads do not block publication. After resolving a thread, dispatch
+the Release review threads workflow with the pull request number if an event-
+driven status has not refreshed yet; the native conversation-resolution branch
+rule remains the authoritative merge control.
 
 Create and push an annotated `vX.Y.Z` tag that names the validated commit.
 Create the GitHub release as a draft with `--verify-tag`, and attach exactly:

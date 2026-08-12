@@ -81,6 +81,7 @@ export const DEFAULT_PRIMER_TM_CONDITION_PRESET_ID = 'standard-screening' as con
 export const CUSTOM_PRIMER_TM_CONDITION_PRESET_ID = 'custom' as const;
 
 export interface PrimerTmEvidence {
+  schema: 'motif.primer.tm-evidence.v1';
   conditionPresetId: string;
   conditionPresetName: string;
   model: PrimerTmModel;
@@ -448,6 +449,27 @@ function normalizedTmOptions(options: TmOptions | undefined): TmOptions | null {
   // An explicitly supplied object retains the calculator's historical
   // per-field defaults, so API callers passing `{}` or `{mgConcentration: 0}`
   // do not silently change chemistry assumptions.
+  const supplied: Partial<TmOptions> = {};
+  if (options !== undefined) {
+    if (options === null || typeof options !== 'object' || Array.isArray(options)) return null;
+    const prototype = Object.getPrototypeOf(options);
+    if (prototype !== Object.prototype && prototype !== null) return null;
+    const allowedKeys = new Set([
+      'method',
+      'naConcentration',
+      'mgConcentration',
+      'dntpConcentration',
+      'primerConcentration',
+      'saltCorrection',
+      'selfComplementary',
+    ]);
+    for (const key of Reflect.ownKeys(options)) {
+      if (typeof key !== 'string' || !allowedKeys.has(key)) return null;
+      const descriptor = Object.getOwnPropertyDescriptor(options, key);
+      if (!descriptor || !Object.hasOwn(descriptor, 'value')) return null;
+      (supplied as Record<string, unknown>)[key] = descriptor.value;
+    }
+  }
   const candidate = options === undefined
     ? { ...DEFAULT_TM_OPTIONS }
     : {
@@ -457,7 +479,7 @@ function normalizedTmOptions(options: TmOptions | undefined): TmOptions | null {
         dntpConcentration: 0,
         primerConcentration: 250,
         saltCorrection: 'owczarzy' as const,
-        ...options,
+        ...supplied,
       };
   if (
     (candidate.method !== 'nearest-neighbor' && candidate.method !== 'wallace' && candidate.method !== 'gc-adjusted')
@@ -504,6 +526,7 @@ function tmEvidenceFor(
   const conditionPresetId = optionsMatchPreset ? preset.id : CUSTOM_PRIMER_TM_CONDITION_PRESET_ID;
   const conditionPresetName = optionsMatchPreset ? preset.name : 'Custom bounded Tm conditions';
   return {
+    schema: 'motif.primer.tm-evidence.v1',
     conditionPresetId,
     conditionPresetName,
     model: PRIMER_TM_MODEL_BY_METHOD[options.method ?? 'nearest-neighbor'],

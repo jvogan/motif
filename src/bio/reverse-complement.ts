@@ -4,6 +4,7 @@
  */
 
 import type { Feature } from './types';
+import { FeatureCollectionInputError, validateFeatureCollection } from './feature-bounds';
 
 const DNA_COMPLEMENT: Record<string, string> = {
   A: 'T', T: 'A', G: 'C', C: 'G',
@@ -62,6 +63,11 @@ export function reverseComplement(seq: string, isRna = false): string {
  * Coordinates are mirrored and strands are flipped.
  */
 export function reverseComplementFeatures(features: Feature[], seqLength: number): Feature[] {
+  const validation = validateFeatureCollection(features, {
+    label: 'Reverse-complement features',
+    sequenceLength: seqLength,
+  });
+  if (!validation.valid) throw new FeatureCollectionInputError(validation);
   return features.map((f) => ({
     ...f,
     id: crypto.randomUUID(),

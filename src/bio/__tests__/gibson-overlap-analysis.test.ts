@@ -73,6 +73,20 @@ describe('Gibson overlap analysis', () => {
     }
   });
 
+  it('does not attach a physical topology to an invalid runtime topology request', () => {
+    const result = gibsonAssemble([
+      { name: 'left', sequence: 'AAAACCCCCCCC' },
+      { name: 'right', sequence: 'CCCCCCCCTTTT' },
+    ], 8, 8, 'banana' as never);
+
+    expect(result).toMatchObject({
+      success: false,
+      topology: null,
+      requestedTopology: 'banana',
+    });
+    expect(result.errors.join(' ')).toMatch(/linear.*circular/i);
+  });
+
   it('fails closed on oversized fragment cardinality and total input', () => {
     const tooMany = gibsonAssemble(
       Array.from({ length: MAX_GIBSON_FRAGMENTS + 1 }, (_, index) => ({ name: `part-${index}`, sequence: 'A'.repeat(8) })),

@@ -12,7 +12,12 @@ import {
 } from '../feature-location';
 import { parseFeatures } from '../genbank-parser';
 import { reverseComplement, reverseComplementFeatures } from '../reverse-complement';
-import { mapFeatureThroughSourceCoordinates } from '../assembly-feature-mapping';
+import {
+  mapFeatureThroughSourceCoordinates,
+  mapFeaturesThroughSourceCoordinates,
+  MAX_MAPPED_FEATURE_PIECES,
+  MAX_SOURCE_TO_PRODUCT_RUNS,
+} from '../assembly-feature-mapping';
 import type { Feature } from '../types';
 
 const SEQUENCE = 'ATGCCCGGGCCATTTAAA';
@@ -290,6 +295,118 @@ describe('feature location semantics', () => {
       productLength: 12,
       sourceToProduct: Array.from({ length: 12 }, (_, index) => index),
     })).toBeNull();
+  });
+
+  it('maps many long features through one dense identity map without a base walk per feature', () => {
+    const sourceLength = 200_000;
+    const map = {
+      sourceLength,
+      productLength: sourceLength,
+      sourceToProduct: Array.from({ length: sourceLength }, (_, index) => index),
+    };
+    const features = Array.from({ length: 500 }, (_, index) => feature({
+      id: `long-${index}`,
+      name: `long-${index}`,
+      end: sourceLength,
+    }));
+
+    const result = mapFeaturesThroughSourceCoordinates(features, map);
+
+    expect(result.status).toBe('ready');
+    expect(result.complete).toBe(true);
+    expect(result.features).toHaveLength(features.length);
+    expect(result.estimatedWorkUnits).toBeLessThan(sourceLength + features.length * 4);
+    expect(result.features[0]).toMatchObject({ start: 0, end: sourceLength });
+  });
+
+  it('refuses an alternating coordinate map before materializing unbounded pieces', () => {
+    const sourceLength = MAX_SOURCE_TO_PRODUCT_RUNS * 2 + 1;
+    const map = {
+      sourceLength,
+      productLength: sourceLength,
+      sourceToProduct: Array.from({ length: sourceLength }, (_, index) => index % 2),
+    };
+
+    const result = mapFeaturesThroughSourceCoordinates([feature({ end: sourceLength })], map);
+
+    expect(result.status).toBe('work_limit');
+    expect(result.complete).toBe(false);
+    expect(result.features).toEqual([]);
+    expect(result.issues).toContainEqual(expect.objectContaining({ code: 'map_work_limit' }));
+  });
+
+  it('uses bounded run intersections for many late multipart ranges', () => {
+    const sourceLength = 40_000;
+    const map = {
+      sourceLength,
+      productLength: 1,
+      sourceToProduct: Array.from({ length: sourceLength }, () => 0),
+    };
+    const subRanges = Array.from({ length: 512 }, (_, index) => ({
+      start: sourceLength - 512 + index,
+      end: sourceLength - 511 + index,
+      strand: 1 as const,
+    }));
+    const result = mapFeaturesThroughSourceCoordinates([feature({ end: sourceLength, subRanges })], map, {
+      maxWorkUnits: 50_000,
+    });
+
+    expect(result.status).toBe('ready');
+    expect(result.estimatedWorkUnits).toBeLessThan(50_000);
+    expect(result.estimatedWorkUnits).toBeGreaterThan(48_000);
+    expect(result.features[0]?.subRanges).toHaveLength(subRanges.length);
+  });
+
+  it('caps total mapped pieces across all ranges of one feature', () => {
+    const rangeLength = 6_000;
+    const sourceLength = rangeLength * 2;
+    const map = {
+      sourceLength,
+      productLength: 1,
+      sourceToProduct: Array.from({ length: sourceLength }, () => 0),
+    };
+    const result = mapFeaturesThroughSourceCoordinates([feature({
+      end: sourceLength,
+      subRanges: [
+        { start: 0, end: rangeLength, strand: 1 },
+        { start: rangeLength, end: sourceLength, strand: 1 },
+      ],
+    })], map);
+
+    expect(result.status).toBe('work_limit');
+    expect(result.features).toEqual([]);
+    expect(result.issues).toContainEqual(expect.objectContaining({
+      code: 'mapped_piece_limit',
+    }));
+    expect(rangeLength * 2).toBeGreaterThan(MAX_MAPPED_FEATURE_PIECES);
+  });
+
+  it('rejects sparse and accessor-backed coordinate maps without invoking accessors', () => {
+    const sparse = [0, 1, 3] as Array<number | null>;
+    sparse.length = 4;
+    const sparseResult = mapFeaturesThroughSourceCoordinates([feature({ end: 4 })], {
+      sourceLength: 4,
+      productLength: 4,
+      sourceToProduct: sparse,
+    });
+    expect(sparseResult.status).toBe('invalid_input');
+    expect(sparseResult.issues).toContainEqual(expect.objectContaining({ code: 'invalid_map' }));
+
+    let getterReads = 0;
+    const accessorMap = {} as Record<string, unknown>;
+    Object.defineProperty(accessorMap, 'sourceLength', {
+      configurable: true,
+      enumerable: true,
+      get: () => {
+        getterReads += 1;
+        return 4;
+      },
+    });
+    Object.defineProperty(accessorMap, 'productLength', { value: 4, enumerable: true });
+    Object.defineProperty(accessorMap, 'sourceToProduct', { value: [0, 1, 2, 3], enumerable: true });
+    const accessorResult = mapFeaturesThroughSourceCoordinates([feature({ end: 4 })], accessorMap as never);
+    expect(accessorResult.status).toBe('invalid_input');
+    expect(getterReads).toBe(0);
   });
 
   it('preserves repeated qualifier order, multiline values, and escaped quotes', () => {

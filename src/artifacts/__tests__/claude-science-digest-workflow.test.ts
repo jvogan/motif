@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { RESTRICTION_ENZYMES_FULL } from '../../bio/enzyme-data';
+import { MAX_SUBRANGES_PER_FEATURE } from '../../bio/feature-bounds';
+import { MAX_RESTRICTION_ENZYMES, MAX_RESTRICTION_RESULT_SITES } from '../../bio/restriction-sites';
 import type { Feature, RestrictionEnzyme, Topology } from '../../bio/types';
 import { buildDigestRecipe, type DigestRecipe } from '../claude-science-digest-recipe';
 import {
@@ -56,6 +58,7 @@ function materialize(
   return materializeDigestWorkflow({
     sourceRecord: record,
     recipe,
+    enzymeCatalog: overrides.enzymeCatalog ?? recipe.enzymes.map((entry) => entry.enzyme),
     workflow: {
       id: 'digest-workflow-1',
       createdAt: CREATED_AT,
@@ -499,6 +502,94 @@ describe('Claude Science digest workflow materialization', () => {
       )),
     };
     expect(() => materialize(source, altered)).toMatchErrorCode('incoherent-recipe');
+  });
+
+  it('rebuilds geometry from the separately supplied catalog instead of trusting mutable recipe enzyme objects', () => {
+    const authoritative: RestrictionEnzyme = {
+      name: 'BluntI',
+      recognitionSequence: 'GGG',
+      cutOffset: 1,
+      complementCutOffset: 1,
+      overhang: 'blunt',
+    };
+    const source = sourceRecord('AAAGGGTTT');
+    const recipe = recipeFor(source, 'BluntI', [{ ...authoritative }]);
+    recipe.enzymes[0].enzyme.cutOffset = 999;
+    recipe.enzymes[0].enzyme.complementCutOffset = -999;
+
+    const result = materialize(source, recipe, { enzymeCatalog: [authoritative] });
+
+    expect(result.records.map((record) => record.seq)).toEqual(['AAAG', 'GGTTT']);
+    expect(result.workflowResult.parameters.enzymeGeometry).toEqual([
+      expect.objectContaining({ name: 'BluntI', cutOffset: 1, complementCutOffset: 1 }),
+    ]);
+  });
+
+  it('rejects oversized or accessor-backed recipe collections before traversing them', () => {
+    const source = sourceRecord('AAAAGAATTCTTTT');
+    const recipe = recipeFor(source, 'EcoRI');
+    expect(() => materialize(source, {
+      ...recipe,
+      sites: new Array(MAX_RESTRICTION_RESULT_SITES + 1),
+    })).toMatchErrorCode('resource-limit');
+
+    let accessorReads = 0;
+    const accessorEntries = Array.from({ length: MAX_RESTRICTION_ENZYMES + 1 }, () => recipe.enzymes[0]);
+    Object.defineProperty(accessorEntries, '0', {
+      get() {
+        accessorReads += 1;
+        return recipe.enzymes[0];
+      },
+    });
+    expect(() => materialize(source, { ...recipe, enzymes: accessorEntries }, {
+      enzymeCatalog: RESTRICTION_ENZYMES_FULL,
+    }))
+      .toMatchErrorCode('resource-limit');
+    expect(accessorReads).toBe(0);
+  });
+
+  it('rejects sparse, accessor-backed, and excessive source feature pieces before remapping', () => {
+    const source = sourceRecord('AAAAGAATTCTTTT');
+    const recipe = recipeFor(source, 'EcoRI');
+    expect(() => materialize({ ...source, features: new Array(1) as Feature[] }, recipe))
+      .toMatchErrorCode('invalid-source');
+
+    let accessorReads = 0;
+    const accessorFeature = {
+      id: 'accessor',
+      name: 'accessor',
+      type: 'misc_feature',
+      end: 2,
+      strand: 1,
+      color: '#abcdef',
+      metadata: {},
+    } as unknown as Feature;
+    Object.defineProperty(accessorFeature, 'start', {
+      get() {
+        accessorReads += 1;
+        return 0;
+      },
+    });
+    expect(() => materialize({ ...source, features: [accessorFeature] }, recipe))
+      .toMatchErrorCode('invalid-source');
+    expect(accessorReads).toBe(0);
+
+    const excessive: Feature = {
+      id: 'excessive',
+      name: 'excessive pieces',
+      type: 'misc_feature',
+      start: 0,
+      end: source.sequence.length,
+      strand: 1,
+      color: '#abcdef',
+      metadata: {},
+      subRanges: Array.from(
+        { length: MAX_SUBRANGES_PER_FEATURE + 1 },
+        () => ({ start: 0, end: 1, strand: 1 }),
+      ),
+    };
+    expect(() => materialize({ ...source, features: [excessive] }, recipe))
+      .toMatchErrorCode('resource-limit');
   });
 
   it('bounds pathological digests before they can exceed the portable workspace record limit', () => {

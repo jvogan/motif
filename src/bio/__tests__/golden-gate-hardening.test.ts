@@ -33,6 +33,18 @@ describe('Golden Gate hardening', () => {
     }));
   });
 
+  it('verifies filler against every supported enzyme, not only the selected enzyme', () => {
+    expect(() => buildSyntheticGoldenGateVector('ACGT', 'TGCA', {
+      enzyme: 'BsaI',
+      filler: 'CGTCTC',
+    })).toThrow(/BsmBI|Esp3I|unexpected/i);
+
+    expect(() => buildSyntheticGoldenGateVector('ACGT', 'TGCA', {
+      enzyme: 'BsaI',
+      filler: 'GGTCTC'.repeat(10_001),
+    })).toThrow(/bounded|site|limit/i);
+  });
+
   it('normalizes formatting with provenance but rejects ambiguous bases', () => {
     const vector = buildSyntheticGoldenGateVector('ACGT', 'TGCA', {
       enzyme: 'BsaI',
@@ -71,6 +83,25 @@ describe('Golden Gate hardening', () => {
     expect(rna.normalizationDiagnostics).toContainEqual(expect.objectContaining({
       code: 'invalid_character',
       characters: ['U'],
+    }));
+
+    const formattedFeature = validateGoldenGateOverhangs([{
+      name: 'formatted-feature',
+      sequence: ` ${vector.sequence} `,
+      features: [{
+        id: 'feature',
+        name: 'feature',
+        type: 'misc_feature',
+        start: 0,
+        end: vector.sequence.length,
+        strand: 1,
+        color: '#000000',
+        metadata: {},
+      }],
+    }], 'BsaI');
+    expect(formattedFeature.valid).toBe(false);
+    expect(formattedFeature.normalizationDiagnostics).toContainEqual(expect.objectContaining({
+      code: 'formatting_with_features',
     }));
   });
 

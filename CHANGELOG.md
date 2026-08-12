@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+## 0.3.6 — 2026-08-12
+
+- Accepted one-base primer targets, derived versioned Tm evidence during PCR
+  materialization, separated calculated review evidence from acknowledgments,
+  and rejected malformed runtime Tm option objects.
+- Made release-publish arguments strict, added manual release-review refreshes,
+  and increased the legibility of primer interaction review controls.
+- Bounded restriction result cardinality and derived-feature mapping work,
+  rejected sparse or accessor-backed enzyme inputs, and tightened circular
+  feature-envelope validation.
+- Recomputed saved digest geometry from an authoritative bounded catalog,
+  snapshot source annotations before remapping, and detached enzyme evidence
+  from caller-owned catalog objects.
+- Added engine-level Golden Gate part, site, chain, feature, and domestication
+  work limits; capped legacy MSA output before allocation; and normalized
+  substitution residues consistently. Invalid Gibson topology receipts no
+  longer claim a physical fallback topology.
+- Raised the self-contained artifact allowance narrowly for the added bounded
+  validation receipts while retaining explicit release-size enforcement.
+- Compressed assembly coordinate maps into bounded affine runs, charged exact
+  lookup and intersection work, capped aggregate mapped pieces, and made
+  Gibson and Golden Gate reject incomplete annotation mapping explicitly.
+
 ## 0.3.5 — 2026-08-11
 
 - Split post-tag version collision enforcement into the explicit release

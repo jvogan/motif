@@ -8,9 +8,14 @@ import {
   findRestrictionSites,
   isActiveDoubleStrandRestrictionSite,
   MAX_RESTRICTION_ENZYMES,
+  MAX_RESTRICTION_RESULT_SITES,
+  RestrictionScanResultLimitError,
+  normalizeRestrictionEnzymeNames,
+  normalizeRestrictionEnzymes,
   scanRestrictionSites,
   restrictionSiteActivity,
 } from '../restriction-sites';
+import { digestPreviewDetailed, restrictionDigestDetailed } from '../restriction-digest';
 import { resolveEnzymeUnion } from '../restriction-presets';
 import type { RestrictionEnzyme } from '../types';
 
@@ -258,5 +263,97 @@ describe('restriction-site scanning', () => {
       overhang: 'blunt' as const,
     }));
     expect(() => findRestrictionSites('A'.repeat(1_000_000), longPatterns)).toThrow(/scan requires.*orientations|safety limit/i);
+  });
+
+  it('returns a typed incomplete receipt before site output can grow without bound', () => {
+    const anyBase = (name: string): RestrictionEnzyme => ({
+      name,
+      recognitionSequence: 'N',
+      cutOffset: 0,
+      complementCutOffset: 0,
+      overhang: 'blunt',
+    });
+    const sequence = 'A'.repeat(MAX_RESTRICTION_RESULT_SITES + 1);
+    const detailed = scanRestrictionSites(sequence, [anyBase('Any-A'), anyBase('Any-B')]);
+
+    expect(detailed.complete).toBe(false);
+    expect(detailed.sites).toHaveLength(MAX_RESTRICTION_RESULT_SITES);
+    expect(detailed.diagnostics[0]).toMatchObject({
+      code: 'result_limit',
+      retainedSites: MAX_RESTRICTION_RESULT_SITES,
+      omittedSitesAtLeast: expect.any(Number),
+    });
+    expect(detailed.issues.at(-1)).toMatchObject({ code: 'result_limit' });
+    expect(() => findRestrictionSites(sequence, [anyBase('Any-A'), anyBase('Any-B')]))
+      .toThrow(RestrictionScanResultLimitError);
+  });
+
+  it('normalizes classifier identities and digest-preview count keys once', () => {
+    const spaced = { ...enzyme('EcoRI'), name: ' EcoRI ' };
+    const [receipt] = classifyRestrictionEnzymes('GAATTCAAAA', [spaced]);
+    expect(receipt.enzyme.name).toBe('EcoRI');
+    expect(receipt.category).toBe('active-double-strand');
+    expect(receipt.activeDoubleStrandSiteCount).toBe(1);
+    expect(findNonCutters('GAATTCAAAA', [spaced])).toEqual([]);
+
+    const preview = digestPreviewDetailed('GAATTC', [' ecori ']);
+    expect([...preview.counts.entries()]).toEqual([['EcoRI', 1]]);
+  });
+
+  it('marks circular geometry that would traverse the source more than once', () => {
+    const pathological: RestrictionEnzyme = {
+      name: 'LongCircularGeometry',
+      recognitionSequence: 'A',
+      cutOffset: 0,
+      complementCutOffset: 20,
+      overhang: '5prime',
+    };
+    const detailed = scanRestrictionSites('A'.repeat(10), [pathological], { topology: 'circular' });
+    expect(detailed.complete).toBe(true);
+    expect(detailed.sites[0]).toMatchObject({ cleavageStatus: 'invalid_geometry' });
+    expect(detailed.issues[0]).toMatchObject({ code: 'circular_geometry_exceeds_molecule' });
+  });
+
+  it('keeps invalid enzyme-name failure receipts bounded', () => {
+    const requested = Array.from({ length: 200_000 }, (_, index) => `E${index}`);
+    const result = restrictionDigestDetailed('AAAA', requested);
+    expect(result.issues[0]?.code).toBe('invalid_enzyme_name');
+    expect(result.requestedEnzymes).toHaveLength(MAX_RESTRICTION_ENZYMES);
+    expect(result.requestedEnzymeCount).toBe(requested.length);
+    expect(result.requestedEnzymesTruncated).toBe(true);
+  });
+
+  it('rejects sparse enzyme-name and catalog arrays before indexing them', () => {
+    const sparseNames = new Array<string>(1);
+    expect(() => normalizeRestrictionEnzymeNames(sparseNames)).toThrow(/sparse|missing/i);
+    const nameDigest = restrictionDigestDetailed('GAATTC', sparseNames as never);
+    expect(nameDigest.issues[0]).toMatchObject({ code: 'invalid_enzyme_name' });
+
+    const sparseCatalog = [enzyme('EcoRI')] as RestrictionEnzyme[];
+    sparseCatalog.length = 2;
+    expect(() => normalizeRestrictionEnzymes(sparseCatalog)).toThrow(/sparse|missing/i);
+
+    const digest = restrictionDigestDetailed(
+      'GAATTC',
+      ['EcoRI'],
+      'linear',
+      undefined,
+      sparseCatalog,
+    );
+    expect(digest.fragments).toEqual([]);
+    expect(digest.issues).toContainEqual(expect.objectContaining({ code: 'invalid_recognition_sequence' }));
+  });
+
+  it('rejects accessor-backed direct enzyme fields without invoking them', () => {
+    const accessor = { ...enzyme('EcoRI') } as RestrictionEnzyme;
+    Object.defineProperty(accessor, 'recognitionSequence', {
+      configurable: true,
+      enumerable: true,
+      get: () => {
+        throw new Error('accessor must not run');
+      },
+    });
+
+    expect(() => normalizeRestrictionEnzymes([accessor])).toThrow(/direct data|accessor/i);
   });
 });

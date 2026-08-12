@@ -3,6 +3,7 @@ import {
   type DigestFragment,
   type RestrictionDigestIssue,
   type RestrictionDigestOptions,
+  type RestrictionFeatureMappingReceipt,
 } from '../bio/restriction-digest';
 import type {
   Feature,
@@ -13,7 +14,10 @@ import type {
   SequenceType,
   Topology,
 } from '../bio/types';
-import { isActiveDoubleStrandRestrictionSite } from '../bio/restriction-sites';
+import {
+  isActiveDoubleStrandRestrictionSite,
+  normalizeRestrictionEnzymes,
+} from '../bio/restriction-sites';
 
 export type DigestRecipeIssueCode =
   | 'empty-enzyme-list'
@@ -30,6 +34,16 @@ export type DigestRecipeIssueCode =
   | 'methylation_unmethylated'
   | 'methylation_context_unknown'
   | 'invalid_geometry'
+  | 'circular_geometry_exceeds_molecule'
+  | 'result_limit'
+  | 'invalid_feature_collection'
+  | 'feature_limit'
+  | 'invalid_feature'
+  | 'subrange_limit'
+  | 'invalid_subrange'
+  | 'metadata_limit'
+  | 'feature_work_limit'
+  | 'feature_mapping_work_limit'
   | 'incompatible_colocated_cleavage';
 
 export interface DigestRecipeIssue {
@@ -41,6 +55,9 @@ export interface DigestRecipeIssue {
   required?: string;
   observed?: string;
   evidence?: RestrictionDigestIssue['evidence'];
+  retainedSites?: number;
+  omittedSitesAtLeast?: number;
+  retainedIssues?: number;
 }
 
 export interface DigestEnzymeResolution {
@@ -91,6 +108,8 @@ export interface DigestRecipe {
   recognitionSiteCount: number;
   /** Explicit state assumptions used for methylation-sensitive enzymes. */
   methylationAssumptions?: RestrictionDigestOptions['methylationAssumptions'];
+  /** Bounded annotation-mapping preflight, when feature propagation was requested. */
+  featureMapping?: RestrictionFeatureMappingReceipt;
   outcome: DigestMoleculeOutcome;
   fragments: DigestFragment[];
 }
@@ -123,13 +142,14 @@ export function resolveDigestEnzymes(
   input: string,
   enzymeCatalog: readonly RestrictionEnzyme[],
 ): DigestEnzymeResolution {
+  const normalizedCatalog = normalizeRestrictionEnzymes(enzymeCatalog);
   const tokens = input
     .split(/[\s,;]+/)
     .map((token) => token.trim())
     .filter(Boolean);
 
   const catalogByName = new Map<string, RestrictionEnzyme>();
-  for (const enzyme of enzymeCatalog) {
+  for (const enzyme of normalizedCatalog) {
     const key = enzyme.name.trim().toLocaleLowerCase();
     if (key && !catalogByName.has(key)) catalogByName.set(key, enzyme);
   }
@@ -227,6 +247,9 @@ export function buildDigestRecipe(input: BuildDigestRecipeInput): DigestRecipe {
     ...(issue.required === undefined ? {} : { required: issue.required }),
     ...(issue.observed === undefined ? {} : { observed: issue.observed }),
     ...(issue.evidence === undefined ? {} : { evidence: issue.evidence }),
+    ...(issue.retainedSites === undefined ? {} : { retainedSites: issue.retainedSites }),
+    ...(issue.omittedSitesAtLeast === undefined ? {} : { omittedSitesAtLeast: issue.omittedSitesAtLeast }),
+    ...(issue.retainedIssues === undefined ? {} : { retainedIssues: issue.retainedIssues }),
   })));
 
   const enzymes = resolution.enzymes.map((enzyme): DigestRecipeEnzyme => {
@@ -266,6 +289,11 @@ export function buildDigestRecipe(input: BuildDigestRecipeInput): DigestRecipe {
   const isValid = issues.length === 0;
   const fragments = isValid ? (digestResult?.fragments ?? []) : [];
   const cutCount = digestResult?.cutCount ?? 0;
+  const resolvedMethylationAssumptions = input.methylationAssumptions ?? input.methylation ?? input.methylationState;
+  const methylationAssumptions = typeof resolvedMethylationAssumptions === 'object'
+    && resolvedMethylationAssumptions !== null
+    ? { ...resolvedMethylationAssumptions }
+    : resolvedMethylationAssumptions;
 
   let outcome: DigestMoleculeOutcome = 'not-run';
   if (isValid) {
@@ -289,8 +317,9 @@ export function buildDigestRecipe(input: BuildDigestRecipeInput): DigestRecipe {
     ...(input.methylation === undefined && input.methylationState === undefined && input.methylationAssumptions === undefined
       ? {}
       : {
-          methylationAssumptions: input.methylationAssumptions ?? input.methylation ?? input.methylationState,
+          methylationAssumptions,
         }),
+    ...(digestResult?.featureMapping === undefined ? {} : { featureMapping: digestResult.featureMapping }),
     outcome,
     fragments,
   };

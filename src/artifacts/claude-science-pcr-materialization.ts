@@ -1,9 +1,18 @@
 import {
+  designPrimerPairWithDiagnostics,
+  normalizePrimerDesignParams,
   primerToFeature,
   type PrimerCandidate,
   type PrimerDesignParams,
   type PrimerPair,
+  type PrimerTmEvidence,
 } from '../bio/primer-design';
+import {
+  DEFAULT_MAX_DIMER_DG,
+  predictHairpin,
+  predictPrimerDimer,
+  predictSelfDimer,
+} from '../bio/primer-thermodynamics';
 import { PCR_ENGINE_VERSION, simulatePCR, type PCRResult } from '../bio/pcr';
 import { reverseComplement } from '../bio/reverse-complement';
 import type { Feature, Topology } from '../bio/types';
@@ -162,8 +171,129 @@ function primerDesignIdentity(selection: PcrMaterializationSelection): string {
     reverse.end,
     selection.target.start,
     selection.target.end,
-    selection.tmEvidence ?? null,
+    selection.parameters ?? null,
   ]);
+}
+
+const REVIEW_SCHEMA = 'motif.primer.evidence-review.v1' as const;
+const ACKNOWLEDGMENT_SCHEMA = 'motif.primer.evidence-acknowledgment.v1' as const;
+
+function derivedTmEvidence(
+  sourceRecord: PcrMaterializationSourceRecord,
+  selection: PcrMaterializationSelection,
+): PrimerTmEvidence | null {
+  if (!selection.parameters) {
+    if (selection.tmEvidence) {
+      throw new PcrMaterializationError('Tm evidence requires normalized primer-design parameters.');
+    }
+    return null;
+  }
+  const forward = normalizePrimerDesignParams(sourceRecord.sequence.length, selection.parameters, 'forward');
+  const reverse = normalizePrimerDesignParams(sourceRecord.sequence.length, selection.parameters, 'reverse');
+  if (!forward || !reverse || JSON.stringify(forward.tmEvidence) !== JSON.stringify(reverse.tmEvidence)) {
+    throw new PcrMaterializationError('Primer-design parameters do not produce valid, consistent Tm evidence.');
+  }
+  return forward.tmEvidence;
+}
+
+function derivedEvidenceReview(
+  sourceRecord: PcrMaterializationSourceRecord,
+  selection: PcrMaterializationSelection,
+): ArtifactJsonObject {
+  const diagnostics = [
+    predictHairpin(selection.pair.forward.fullSequence),
+    predictHairpin(selection.pair.reverse.fullSequence),
+    predictSelfDimer(selection.pair.forward.fullSequence),
+    predictSelfDimer(selection.pair.reverse.fullSequence),
+  ];
+  const crossDimer = predictPrimerDimer(
+    selection.pair.forward.fullSequence,
+    selection.pair.reverse.fullSequence,
+  );
+  const reasonCodes: string[] = [];
+  if (crossDimer.status === 'exact' && crossDimer.deltaG < DEFAULT_MAX_DIMER_DG) reasonCodes.push('cross-dimer-cutoff');
+  if (crossDimer.threePrimeParticipation !== 'none') reasonCodes.push('cross-dimer-3-prime');
+  if (crossDimer.status === 'ambiguous') reasonCodes.push('cross-dimer-ambiguous');
+  if (crossDimer.status === 'work-limit') reasonCodes.push('cross-dimer-work-limit');
+  if (diagnostics.some((diagnostic) => diagnostic.status === 'ambiguous')) reasonCodes.push('secondary-structure-ambiguous');
+  if (diagnostics.some((diagnostic) => diagnostic.status === 'work-limit')) reasonCodes.push('secondary-structure-work-limit');
+
+  if (selection.parameters) {
+    const design = designPrimerPairWithDiagnostics(
+      sourceRecord.sequence,
+      selection.parameters,
+    );
+    const selectedPairWasRecomputed = design.pairs.some((pair) => (
+      pair.forward.start === selection.pair.forward.start
+      && pair.forward.end === selection.pair.forward.end
+      && pair.forward.fullSequence.toUpperCase() === selection.pair.forward.fullSequence.toUpperCase()
+      && pair.reverse.start === selection.pair.reverse.start
+      && pair.reverse.end === selection.pair.reverse.end
+      && pair.reverse.fullSequence.toUpperCase() === selection.pair.reverse.fullSequence.toUpperCase()
+    ));
+    if (!selectedPairWasRecomputed) {
+      throw new PcrMaterializationError('Selected primer pair is not present in the bounded recomputed design result.');
+    }
+    if ((design.warnings ?? []).some((warning) => /work units|incomplete|not exhaustive/iu.test(warning))) {
+      reasonCodes.push('search-evidence-incomplete');
+    }
+  }
+
+  const assertion = selection.evidenceReview;
+  if (assertion !== undefined) {
+    if (
+      typeof assertion !== 'object'
+      || assertion === null
+      || Array.isArray(assertion)
+      || Object.getPrototypeOf(assertion) !== Object.prototype
+    ) {
+      throw new PcrMaterializationError('Evidence review must be a versioned plain-object assertion.');
+    }
+    const allowedKeys = new Set(['schema', 'required', 'acknowledged', 'reasonCodes', 'acknowledgedAt']);
+    for (const key of Reflect.ownKeys(assertion)) {
+      if (typeof key !== 'string' || !allowedKeys.has(key)) {
+        throw new PcrMaterializationError('Evidence review contains an unknown field.');
+      }
+      const descriptor = Object.getOwnPropertyDescriptor(assertion, key);
+      if (!descriptor || !Object.hasOwn(descriptor, 'value')) {
+        throw new PcrMaterializationError('Evidence review fields must be own data properties.');
+      }
+    }
+    if (
+      assertion.schema !== REVIEW_SCHEMA
+      || typeof assertion.required !== 'boolean'
+      || typeof assertion.acknowledged !== 'boolean'
+      || !Array.isArray(assertion.reasonCodes)
+      || assertion.reasonCodes.some((code) => typeof code !== 'string' || code.length === 0 || code.length > 64)
+    ) {
+      throw new PcrMaterializationError('Evidence review does not match motif.primer.evidence-review.v1.');
+    }
+  }
+  const acknowledged = assertion?.acknowledged === true;
+  const acknowledgedAt = assertion?.acknowledgedAt;
+  if (!acknowledged && acknowledgedAt !== undefined) {
+    throw new PcrMaterializationError('Evidence acknowledgment timestamp is allowed only when the review is acknowledged.');
+  }
+  if (acknowledged && (
+    typeof acknowledgedAt !== 'string'
+    || !Number.isFinite(Date.parse(acknowledgedAt))
+    || new Date(acknowledgedAt).toISOString() !== acknowledgedAt
+  )) {
+    throw new PcrMaterializationError('Evidence acknowledgment requires a valid timestamp.');
+  }
+  if (reasonCodes.length > 0 && !acknowledged) {
+    throw new PcrMaterializationError('Selected primer evidence requires an explicit acknowledgment before materialization.');
+  }
+  return {
+    schema: REVIEW_SCHEMA,
+    required: reasonCodes.length > 0,
+    reasonCodes,
+    assertion: {
+      schema: ACKNOWLEDGMENT_SCHEMA,
+      acknowledged,
+      ...(acknowledged ? { acknowledgedAt: acknowledgedAt as string } : {}),
+    },
+  };
 }
 
 export function createPcrMaterializationKey(
@@ -275,6 +405,8 @@ export function materializePcrAmplicon(input: {
 }): MaterializedPcrAmplicon {
   const { sourceRecord, selection, identity, primerDesignResultId, preparation } = input;
   const simulation = simulateSelectedPrimerPair(sourceRecord, selection);
+  const tmEvidence = derivedTmEvidence(sourceRecord, selection);
+  const evidenceReview = derivedEvidenceReview(sourceRecord, selection);
   const templateSha256 = sha256HexSync(sourceRecord.sequence.toUpperCase());
   const productSha256 = sha256HexSync(simulation.product);
   const primerDesignSha256 = sha256HexSync(primerDesignIdentity(selection));
@@ -348,15 +480,15 @@ export function materializePcrAmplicon(input: {
     forwardBindEnd: simulation.forward.bindEnd,
     reverseBindStart: simulation.reverse.bindStart,
     reverseBindEnd: simulation.reverse.bindEnd,
-    ...(selection.tmEvidence ? { tmEvidence: selection.tmEvidence } : {}),
-    ...(selection.evidenceReview ? { evidenceReview: selection.evidenceReview } : {}),
+    ...(tmEvidence ? { tmEvidence: tmEvidence as unknown as ArtifactJsonObject } : {}),
+    evidenceReview,
     ...preparationMetadata,
     metadata: {
       productAssembly: simulation.provenance.productAssembly,
       tailPolicy: simulation.provenance.tailPolicy,
       implicitTails: simulation.provenance.implicitTails,
-      ...(selection.tmEvidence ? { tmEvidence: selection.tmEvidence } : {}),
-      ...(selection.evidenceReview ? { evidenceReview: selection.evidenceReview } : {}),
+      ...(tmEvidence ? { tmEvidence: tmEvidence as unknown as ArtifactJsonObject } : {}),
+      evidenceReview,
     },
   };
   const record: PcrDerivedRecordInput = {
@@ -398,8 +530,8 @@ export function materializePcrAmplicon(input: {
       topology: sourceRecord.topology,
       primerDesignSha256,
       materializationKey,
-      ...(selection.tmEvidence ? { tmEvidence: selection.tmEvidence } : {}),
-      ...(selection.evidenceReview ? { evidenceReview: selection.evidenceReview } : {}),
+      ...(tmEvidence ? { tmEvidence: tmEvidence as unknown as ArtifactJsonObject } : {}),
+      evidenceReview,
     },
     data: {
       templateRecordId: sourceRecord.id,
@@ -433,8 +565,8 @@ export function materializePcrAmplicon(input: {
         productAssembly: simulation.provenance.productAssembly,
         tailPolicy: simulation.provenance.tailPolicy,
         implicitTails: simulation.provenance.implicitTails,
-        ...(selection.tmEvidence ? { tmEvidence: selection.tmEvidence } : {}),
-        ...(selection.evidenceReview ? { evidenceReview: selection.evidenceReview } : {}),
+        ...(tmEvidence ? { tmEvidence: tmEvidence as unknown as ArtifactJsonObject } : {}),
+        evidenceReview,
         ...preparationMetadata,
       },
     },

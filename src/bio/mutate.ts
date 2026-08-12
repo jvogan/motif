@@ -4,6 +4,7 @@
 
 import type { Feature } from './types';
 import type { MutationScar } from './types';
+import { FeatureCollectionInputError, validateFeatureCollection } from './feature-bounds';
 
 export interface MutationResult {
   raw: string;
@@ -100,6 +101,14 @@ function mutationOperationUnits(
     throw new RangeError(`Mutation exceeds the ${MAX_MUTATION_OPERATION_UNITS.toLocaleString()}-unit mutation operation budget.`);
   }
   return units;
+}
+
+function validateMutationFeatures(features: unknown, sequenceLength: number): void {
+  const validation = validateFeatureCollection(features, {
+    label: 'Mutation features',
+    sequenceLength,
+  });
+  if (!validation.valid) throw new FeatureCollectionInputError(validation);
 }
 
 function featureExtrema(ranges: readonly { start: number; end: number }[]): { start: number; end: number } | null {
@@ -223,12 +232,14 @@ export function applySubstitution(
   if (typeof newBase !== 'string' || validAlphabet === null || !validAlphabet.test(newBase)) {
     throw new Error(`Substitution requires exactly one valid residue from the declared ${String(molecule)} alphabet; use insertion or deletion for length-changing edits.`);
   }
+  validateMutationFeatures(features, raw.length);
   mutationOperationUnits(1, scars, features);
 
   const original = raw[pos];
+  const normalizedBase = newBase.toUpperCase();
 
   // Build the new sequence
-  const newRaw = raw.slice(0, pos) + newBase + raw.slice(pos + 1);
+  const newRaw = raw.slice(0, pos) + normalizedBase + raw.slice(pos + 1);
 
   // Remove any existing scar at this position, then add the new one
   const filteredScars = scars.filter((s) => s.position !== pos);
@@ -310,6 +321,7 @@ export function applyInsertion(
   if (raw.length > MAX_MUTATION_RESULT_LENGTH - bases.length) {
     throw new RangeError(`Insertion would exceed the ${MAX_MUTATION_RESULT_LENGTH.toLocaleString()}-residue result limit.`);
   }
+  validateMutationFeatures(features, raw.length);
   mutationOperationUnits(bases.length, scars, features);
   const normalizedBases = bases.toUpperCase();
 
@@ -381,6 +393,7 @@ export function applyDeletion(
 
   // Clamp count so we don't exceed sequence length
   const effectiveCount = Math.min(count, raw.length - pos);
+  validateMutationFeatures(features, raw.length);
   mutationOperationUnits(effectiveCount, scars, features);
   const deletedBases = raw.slice(pos, pos + effectiveCount);
 

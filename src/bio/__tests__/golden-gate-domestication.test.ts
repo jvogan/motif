@@ -3,14 +3,127 @@ import { reverseComplement } from '../reverse-complement';
 import {
   domesticate,
   domesticateGoldenGateFeature,
+  domesticatePartInternals,
   domesticateLegacyProjection,
   GOLDEN_GATE_LEGACY_PROJECTION_WARNING,
   GoldenGateLegacyDomesticationError,
+  getGoldenGatePartBoundary,
+  MAX_GOLDEN_GATE_DOMESTICATION_FAILURES,
+  MAX_GOLDEN_GATE_DOMESTICATION_SITES,
+  MAX_GOLDEN_GATE_PART_LENGTH,
+  MAX_GOLDEN_GATE_SUBRANGES_PER_FEATURE,
 } from '../golden-gate';
 
 const CDS_WITH_BSAI_SITE = 'ATGGGTCTCGAATAA';
 
 describe('feature-aware Golden Gate domestication', () => {
+  it('rejects malformed or oversized part-boundary input before normalization', () => {
+    expect(() => getGoldenGatePartBoundary(null as never)).not.toThrow();
+    expect(getGoldenGatePartBoundary(null as never)).toMatchObject({ valid: false });
+    const oversized = getGoldenGatePartBoundary({
+      name: 'oversized',
+      sequence: 'A'.repeat(MAX_GOLDEN_GATE_PART_LENGTH + 1),
+    });
+    expect(oversized.valid).toBe(false);
+    expect(oversized.errors.join(' ')).toMatch(/exceeds/i);
+  });
+
+  it('uses the shared feature bounds before expanding domestication locations', () => {
+    const result = domesticateGoldenGateFeature({
+      sequence: CDS_WITH_BSAI_SITE,
+      feature: {
+        start: 0,
+        end: CDS_WITH_BSAI_SITE.length,
+        strand: 1,
+        type: 'cds',
+        subRanges: new Array(MAX_GOLDEN_GATE_SUBRANGES_PER_FEATURE + 1) as Array<{ start: number; end: number; strand?: number }>,
+      },
+      codonStart: 1,
+      translationTableId: 1,
+      forbiddenEnzymes: ['BsaI'],
+    });
+
+    expect(result.complete).toBe(false);
+    expect(result.failures).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'feature_limit' }),
+    ]));
+    expect(result.authoritativeBaseCount).toBe(0);
+  });
+
+  it('does not treat a capped enzyme scan as a site-free CDS', () => {
+    const result = domesticateGoldenGateFeature({
+      sequence: 'GGTCTC'.repeat(MAX_GOLDEN_GATE_DOMESTICATION_SITES + 1),
+      feature: {
+        start: 0,
+        end: 'GGTCTC'.length * (MAX_GOLDEN_GATE_DOMESTICATION_SITES + 1),
+        strand: 1,
+        type: 'cds',
+      },
+      codonStart: 1,
+      translationTableId: 1,
+      forbiddenEnzymes: ['BsaI'],
+    });
+
+    expect(result.complete).toBe(false);
+    expect(result.failures).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'site_scan_limit' }),
+    ]));
+    expect(result.remainingSites.length).toBeGreaterThan(0);
+    expect(result.remainingSites.length).toBeLessThanOrEqual(MAX_GOLDEN_GATE_DOMESTICATION_SITES);
+  });
+
+  it('treats an exact site cap as exhaustive only after all motifs are inspected', () => {
+    const exact = domesticateGoldenGateFeature({
+      sequence: 'ATG'.repeat(MAX_GOLDEN_GATE_DOMESTICATION_SITES),
+      feature: {
+        start: 0,
+        end: 'ATG'.length * MAX_GOLDEN_GATE_DOMESTICATION_SITES,
+        strand: 1,
+        type: 'cds',
+      },
+      codonStart: 1,
+      translationTableId: 1,
+      forbiddenSites: ['ATG'],
+    });
+    expect(exact.failures).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'site_scan_limit' }),
+    ]));
+
+    const withUnvisitedMotif = domesticateGoldenGateFeature({
+      sequence: `${'ATG'.repeat(MAX_GOLDEN_GATE_DOMESTICATION_SITES)}GCG`,
+      feature: {
+        start: 0,
+        end: 'ATG'.length * MAX_GOLDEN_GATE_DOMESTICATION_SITES + 3,
+        strand: 1,
+        type: 'cds',
+      },
+      codonStart: 1,
+      translationTableId: 1,
+      forbiddenSites: ['ATG', 'GCG'],
+    });
+    expect(withUnvisitedMotif.complete).toBe(false);
+    expect(withUnvisitedMotif.failures).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'site_scan_limit' }),
+    ]));
+  });
+
+  it('bounds malformed option collections and failure receipts', () => {
+    const result = domesticateGoldenGateFeature({
+      sequence: CDS_WITH_BSAI_SITE,
+      feature: { start: 0, end: CDS_WITH_BSAI_SITE.length, strand: 1, type: 'cds' },
+      codonStart: 1,
+      translationTableId: 1,
+      forbiddenEnzymes: Array.from({ length: 65 }, () => 'missing-enzyme'),
+      forbiddenSites: Array.from({ length: 65 }, () => 'not-a-dna-site'),
+    });
+
+    expect(result.complete).toBe(false);
+    expect(result.failures.length).toBeLessThanOrEqual(MAX_GOLDEN_GATE_DOMESTICATION_FAILURES);
+    expect(result.failures).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'input_limit' }),
+    ]));
+  });
+
   it('fails closed when the deprecated wrapper lacks authoritative frame/table context', () => {
     expect(() => domesticate(CDS_WITH_BSAI_SITE, 'BsaI')).toThrow(GoldenGateLegacyDomesticationError);
     const explicit = domesticate(CDS_WITH_BSAI_SITE, 'BsaI', {
@@ -150,6 +263,18 @@ describe('feature-aware Golden Gate domestication', () => {
     expect(result.complete).toBe(true);
     expect(result.proteinIdentity).toBe(true);
     expect(result.sequence.slice(split, split + 4)).toBe('NNNN');
+  });
+
+  it('rejects formatted flanked input in the legacy internal-part projection', () => {
+    expect(() => domesticatePartInternals(
+      ` ${CDS_WITH_BSAI_SITE} `,
+      'BsaI',
+      {
+        feature: { start: 0, end: CDS_WITH_BSAI_SITE.length, strand: 1, type: 'cds' },
+        codonStart: 1,
+        translationTableId: 1,
+      },
+    )).toThrow(/unformatted/i);
   });
 
   it('honors codon_start and the selected nonstandard translation table', () => {

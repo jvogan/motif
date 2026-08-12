@@ -3,10 +3,11 @@ import { calculateTm, type TmOptions } from './tm-calculator';
 import {
   aliasRemovedProductCoordinates,
   emptySourceToProductMap,
-  mapFeatureThroughSourceCoordinates,
+  mapFeaturesThroughSourceCoordinates,
   type SourceToProductCoordinateMap,
 } from './assembly-feature-mapping';
 import { IUPAC_BASE_EXPANSIONS } from './translate';
+import { validateFeatureCollection } from './feature-bounds';
 
 export interface GibsonFragment {
   name: string;
@@ -84,17 +85,30 @@ export interface OverlapSearchResult {
   reason: OverlapSearchReason;
 }
 
-export interface GibsonResult {
+interface GibsonResultBase {
   sequence: string;
   features: Feature[];
   overlaps: Overlap[];
-  topology: 'linear' | 'circular';
-  success: boolean;
   errors: string[];
   warnings: string[];
   /** One entry per tested junction, including the circular closing seam. */
   overlapSearches?: OverlapSearchResult[];
 }
+
+export interface GibsonSuccessResult extends GibsonResultBase {
+  topology: 'linear' | 'circular';
+  success: true;
+}
+
+export interface GibsonFailureResult extends GibsonResultBase {
+  /** Null when the caller did not supply a valid physical topology. */
+  topology: 'linear' | 'circular' | null;
+  success: false;
+  /** Bounded diagnostic spelling retained only for an invalid topology input. */
+  requestedTopology?: string;
+}
+
+export type GibsonResult = GibsonSuccessResult | GibsonFailureResult;
 
 const DEFAULT_MIN_OVERLAP = 15;
 const DEFAULT_MAX_OVERLAP = 60;
@@ -374,17 +388,26 @@ export function validateGibsonFragments(fragments: unknown): GibsonInputValidati
     if (fragment.features !== undefined) {
       if (!Array.isArray(fragment.features)) {
         errors.push(`${fragmentLabel}.features must be an array when provided.`);
-      } else if (fragment.features.length > MAX_GIBSON_FEATURES_PER_FRAGMENT) {
-        errors.push(`${fragmentLabel}.features exceeds the ${MAX_GIBSON_FEATURES_PER_FRAGMENT.toLocaleString()}-feature limit.`);
       } else {
-        featureWorkUnits += fragment.features.length;
-        for (const [featureIndex, rawFeature] of fragment.features.entries()) {
-          const validation = featureValidationErrors(rawFeature, fragment.sequence.length, fragmentLabel, featureIndex);
-          featureWorkUnits += validation.workUnits;
-          errors.push(...validation.errors);
-          if (featureWorkUnits > MAX_GIBSON_FEATURE_WORK_UNITS) {
-            errors.push(`Gibson feature validation exceeds the ${MAX_GIBSON_FEATURE_WORK_UNITS.toLocaleString()}-unit safety limit.`);
-            break;
+        const validation = validateFeatureCollection(fragment.features, {
+          label: `${fragmentLabel}.features`,
+          sequenceLength: fragment.sequence.length,
+        });
+        if (!validation.valid) {
+          featureWorkUnits += validation.featureWorkUnits;
+          errors.push(...validation.issues.map((issue) => issue.message));
+        } else if (fragment.features.length > MAX_GIBSON_FEATURES_PER_FRAGMENT) {
+          errors.push(`${fragmentLabel}.features exceeds the ${MAX_GIBSON_FEATURES_PER_FRAGMENT.toLocaleString()}-feature limit.`);
+        } else {
+          featureWorkUnits += fragment.features.length;
+          for (const [featureIndex, rawFeature] of fragment.features.entries()) {
+            const featureValidation = featureValidationErrors(rawFeature, fragment.sequence.length, fragmentLabel, featureIndex);
+            featureWorkUnits += featureValidation.workUnits;
+            errors.push(...featureValidation.errors);
+            if (featureWorkUnits > MAX_GIBSON_FEATURE_WORK_UNITS) {
+              errors.push(`Gibson feature validation exceeds the ${MAX_GIBSON_FEATURE_WORK_UNITS.toLocaleString()}-unit safety limit.`);
+              break;
+            }
           }
         }
       }
@@ -411,9 +434,10 @@ function validTopology(value: unknown): value is 'linear' | 'circular' {
 }
 
 function gibsonInputErrorResult(
-  topology: 'linear' | 'circular',
+  topology: 'linear' | 'circular' | null,
   errors: string[],
   warnings: string[] = [],
+  requestedTopology?: string,
 ): GibsonResult {
   return {
     sequence: '',
@@ -424,6 +448,7 @@ function gibsonInputErrorResult(
     errors,
     warnings,
     overlapSearches: [],
+    ...(requestedTopology === undefined ? {} : { requestedTopology }),
   };
 }
 
@@ -597,7 +622,7 @@ export function gibsonAssemble(
   fragments: GibsonFragment[],
   minOverlap = DEFAULT_MIN_OVERLAP,
   maxOverlap = DEFAULT_MAX_OVERLAP,
-  topology: 'linear' | 'circular' = 'linear',
+  topology: unknown = 'linear',
 ): GibsonResult {
   const range = normalizeOverlapRange(minOverlap, maxOverlap);
   const safeTopology = topology === 'circular' ? 'circular' : 'linear';
@@ -619,10 +644,14 @@ export function gibsonAssemble(
     };
   }
   if (!validTopology(topology)) {
+    const requestedTopology = typeof topology === 'string'
+      ? topology.slice(0, 128)
+      : typeof topology;
     return gibsonInputErrorResult(
-      safeTopology,
-      ['Gibson topology must be exactly "linear" or "circular"; it was not coerced to a default.'],
+      null,
+      ['Gibson topology must be exactly "linear" or "circular".'],
       warnings,
+      requestedTopology,
     );
   }
   const inputValidation = validateGibsonFragments(fragments);
@@ -829,14 +858,37 @@ export function gibsonAssemble(
 
   aliasRemovedProductCoordinates(sourceMaps, productLength, preClosureLength);
   const finalProductMap = productCoordinateMap(preClosureLength, preClosureLength - productLength);
-  const sourceFeatures = fragments.flatMap((fragment, index) => (fragment.features ?? []).flatMap((feature) => {
-    const mapped = mapFeatureThroughSourceCoordinates(feature, sourceMaps[index]);
-    return mapped ? [mapped] : [];
-  }));
-  const productFeatures = junctions.flatMap((junction) => {
-    const mapped = mapFeatureThroughSourceCoordinates(junction, finalProductMap);
-    return mapped ? [mapped] : [];
-  });
+  const sourceFeatures: Feature[] = [];
+  for (const [index, fragment] of fragments.entries()) {
+    const mapping = mapFeaturesThroughSourceCoordinates(fragment.features, sourceMaps[index]);
+    if (mapping.status !== 'ready') {
+      return {
+        sequence: '',
+        features: [],
+        overlaps,
+        topology: safeTopology,
+        success: false,
+        errors: mapping.issues.map((issue) => issue.message),
+        warnings,
+        overlapSearches,
+      };
+    }
+    sourceFeatures.push(...mapping.features);
+  }
+  const productMapping = mapFeaturesThroughSourceCoordinates(junctions, finalProductMap);
+  if (productMapping.status !== 'ready') {
+    return {
+      sequence: '',
+      features: [],
+      overlaps,
+      topology: safeTopology,
+      success: false,
+      errors: productMapping.issues.map((issue) => issue.message),
+      warnings,
+      overlapSearches,
+    };
+  }
+  const productFeatures = productMapping.features;
   const closingJunction = safeTopology === 'circular' && closingOverlap
     ? closingJunctionFeature(
       fragments[fragments.length - 1].name,
