@@ -113,6 +113,42 @@ interface MetadataValidation {
   complete: boolean;
 }
 
+interface BoundedMetadataEntry {
+  key: string;
+  descriptor: PropertyDescriptor;
+}
+
+interface BoundedMetadataEntries {
+  entries: BoundedMetadataEntry[];
+  truncated: boolean;
+  readable: boolean;
+}
+
+/**
+ * Inspect at most `maximum + 1` enumerable own properties without first
+ * materializing the complete key set. Arrays with an excessive logical
+ * length are rejected before property enumeration, including sparse arrays.
+ */
+function boundedMetadataEntries(candidate: object, maximum: number): BoundedMetadataEntries {
+  const entries: BoundedMetadataEntry[] = [];
+  try {
+    if (Array.isArray(candidate) && candidate.length > maximum) {
+      return { entries, truncated: true, readable: true };
+    }
+    for (const key in candidate) {
+      const descriptor = Object.getOwnPropertyDescriptor(candidate, key);
+      if (!descriptor?.enumerable) continue;
+      if (entries.length >= maximum) {
+        return { entries, truncated: true, readable: true };
+      }
+      entries.push({ key, descriptor });
+    }
+  } catch {
+    return { entries, truncated: false, readable: false };
+  }
+  return { entries, truncated: false, readable: true };
+}
+
 function validateMetadata(
   value: unknown,
   path: string,
@@ -169,26 +205,18 @@ function validateMetadata(
       return;
     }
     seen.add(candidate);
-    let keys: string[];
-    try {
-      keys = Object.keys(candidate);
-    } catch {
+    const remainingKeyBudget = Math.max(0, options.maxMetadataKeys - units);
+    const enumeration = boundedMetadataEntries(candidate, remainingKeyBudget);
+    if (!enumeration.readable) {
       addIssue(`${candidatePath} could not be inspected as bounded JSON data.`);
       seen.delete(candidate);
       return;
     }
-    if (keys.length > options.maxMetadataKeys) {
+    if (enumeration.truncated) {
       addIssue(`${candidatePath} exceeds the metadata item limit.`);
     }
-    for (const key of keys.slice(0, options.maxMetadataKeys)) {
-      let descriptor: PropertyDescriptor | undefined;
-      try {
-        descriptor = Object.getOwnPropertyDescriptor(candidate, key);
-      } catch {
-        addIssue(`${candidatePath} contains an unreadable property.`);
-        continue;
-      }
-      if (!descriptor || !('value' in descriptor)) {
+    for (const { key, descriptor } of enumeration.entries) {
+      if (!('value' in descriptor)) {
         addIssue(`${candidatePath} contains an accessor property.`);
         continue;
       }

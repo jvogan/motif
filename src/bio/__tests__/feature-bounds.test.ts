@@ -78,6 +78,51 @@ describe('shared derived-feature bounds', () => {
     expect(validation.issues).toContainEqual(expect.objectContaining({ code: 'feature_limit' }));
   });
 
+  it('bounds metadata-key inspection without materializing the complete key set', () => {
+    const metadata = Object.fromEntries(
+      Array.from({ length: 50_000 }, (_, index) => [`key-${index}`, index]),
+    );
+    const originalObjectKeys = Object.keys;
+    let completeKeyEnumerationAttempted = false;
+    Object.keys = ((value: object) => {
+      if (value === metadata) completeKeyEnumerationAttempted = true;
+      return originalObjectKeys(value);
+    }) as typeof Object.keys;
+
+    try {
+      const validation = validateFeatureCollection([feature({ metadata })], { sequenceLength: 20 });
+      expect(validation.valid).toBe(false);
+      expect(validation.complete).toBe(false);
+      expect(validation.issues).toContainEqual(expect.objectContaining({
+        code: 'metadata_limit',
+        message: expect.stringMatching(/metadata item limit/i),
+      }));
+      expect(completeKeyEnumerationAttempted).toBe(false);
+    } finally {
+      Object.keys = originalObjectKeys;
+    }
+  });
+
+  it('rejects oversized sparse metadata arrays before enumerating their entries', () => {
+    const metadata = [] as unknown[];
+    metadata.length = 1_000_000;
+    Object.defineProperty(metadata, '0', {
+      configurable: true,
+      enumerable: true,
+      get: () => {
+        throw new Error('metadata entry must not be read');
+      },
+    });
+
+    const validation = validateFeatureCollection([feature({ metadata: { values: metadata } })], { sequenceLength: 20 });
+    expect(validation.valid).toBe(false);
+    expect(validation.complete).toBe(false);
+    expect(validation.issues).toContainEqual(expect.objectContaining({
+      code: 'metadata_limit',
+      message: expect.stringMatching(/metadata item limit/i),
+    }));
+  });
+
   it('keeps wrapped feature subranges inside one physical side of the envelope', () => {
     const valid = validateFeatureCollection([feature({
       start: 8,
