@@ -103,10 +103,15 @@ function mutationOperationUnits(
   return units;
 }
 
-function validateMutationFeatures(features: unknown, sequenceLength: number): void {
+function validateMutationFeatures(
+  features: unknown,
+  sequenceLength: number,
+  allowCircularWrap = false,
+): void {
   const validation = validateFeatureCollection(features, {
     label: 'Mutation features',
     sequenceLength,
+    allowCircularWrap,
   });
   if (!validation.valid) throw new FeatureCollectionInputError(validation);
 }
@@ -232,7 +237,9 @@ export function applySubstitution(
   if (typeof newBase !== 'string' || validAlphabet === null || !validAlphabet.test(newBase)) {
     throw new Error(`Substitution requires exactly one valid residue from the declared ${String(molecule)} alphabet; use insertion or deletion for length-changing edits.`);
   }
-  validateMutationFeatures(features, raw.length);
+  // A substitution does not move coordinates, so a supported circular
+  // origin-spanning envelope remains valid without requiring topology here.
+  validateMutationFeatures(features, raw.length, true);
   mutationOperationUnits(1, scars, features);
 
   const original = raw[pos];
