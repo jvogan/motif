@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.6 — 2026-08-12
+
+- Bounded restriction result cardinality, feature propagation, assembly-chain
+  search, domestication, and legacy alignment formatting at exported API
+  boundaries.
+- Added one-base primer targets, strict chemistry inputs, derived versioned
+  evidence receipts, bounded digest reconstruction, and clearer compact review
+  controls.
+- Compressed assembly annotation mapping into bounded affine runs and made
+  incomplete Gibson and Golden Gate mapping fail explicitly.
+- Tightened release review, publishing arguments, reproducible packaging, and
+  public recovery guidance while preserving the no-npm installer path.
+
 ## 0.3.5 — 2026-08-11
 
 - Hardened connector startup before shell initialization and separated routine

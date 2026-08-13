@@ -63,6 +63,53 @@ afterEach(() => {
 });
 
 describe('ClaudeSciencePrimerWorkspace', () => {
+  it.each(['pcr', 'cloning', 'verification'] as const)(
+    'accepts a selected one-base target for the %s intent while retaining half-open handoff coordinates',
+    async (initialIntent) => {
+      const user = userEvent.setup();
+      const onSaveDesign = vi.fn();
+      render(<ClaudeSciencePrimerWorkspace {...props({
+        selectedRange: { start: 350, end: 351 },
+        onSaveDesign,
+      })} />);
+      if (initialIntent === 'cloning') await user.click(screen.getByLabelText('Cloning'));
+      if (initialIntent === 'verification') await user.click(screen.getByLabelText('Verify'));
+      expect((screen.getByLabelText('Target start') as HTMLInputElement).value).toBe('351');
+      expect((screen.getByLabelText('Target end') as HTMLInputElement).value).toBe('351');
+      expect(screen.getByLabelText('Target start').getAttribute('aria-invalid')).toBeNull();
+      const acknowledgment = screen.queryByTestId('primer-evidence-acknowledgment');
+      if (acknowledgment) await user.click(acknowledgment);
+      await user.click(screen.getByRole('button', { name: 'Save design' }));
+      await waitFor(() => expect(onSaveDesign).toHaveBeenCalled());
+      expect(onSaveDesign.mock.calls[0][0].target).toEqual({ start: 350, end: 351 });
+      expect(onSaveDesign.mock.calls[0][0].intent).toBe(initialIntent);
+    },
+  );
+
+  it('accepts manually entered equal inclusive endpoints and one-base edge selections', async () => {
+    const user = userEvent.setup();
+    const view = render(<ClaudeSciencePrimerWorkspace {...props()} />);
+    await user.clear(screen.getByLabelText('Target start'));
+    await user.type(screen.getByLabelText('Target start'), '351');
+    await user.clear(screen.getByLabelText('Target end'));
+    await user.type(screen.getByLabelText('Target end'), '351');
+    expect(screen.getByLabelText('Target end').getAttribute('aria-invalid')).toBeNull();
+
+    view.rerender(<ClaudeSciencePrimerWorkspace {...props({ selectedRange: { start: 0, end: 1 } })} />);
+    await waitFor(() => {
+      expect((screen.getByLabelText('Target start') as HTMLInputElement).value).toBe('1');
+      expect((screen.getByLabelText('Target end') as HTMLInputElement).value).toBe('1');
+      expect(screen.getByLabelText('Target start').getAttribute('aria-invalid')).toBeNull();
+    });
+
+    view.rerender(<ClaudeSciencePrimerWorkspace {...props({ selectedRange: { start: sequence.length - 1, end: sequence.length } })} />);
+    await waitFor(() => {
+      expect((screen.getByLabelText('Target start') as HTMLInputElement).value).toBe(String(sequence.length));
+      expect((screen.getByLabelText('Target end') as HTMLInputElement).value).toBe(String(sequence.length));
+      expect(screen.getByLabelText('Target end').getAttribute('aria-invalid')).toBeNull();
+    });
+  });
+
   it('opens with compact presets, ranked pairs, and evidence for the selected pair', () => {
     render(<ClaudeSciencePrimerWorkspace {...props()} />);
 
@@ -295,6 +342,12 @@ describe('ClaudeSciencePrimerWorkspace', () => {
     expect(features.map((feature: { type: string }) => feature.type)).toEqual(['primer_bind', 'primer_bind']);
     expect(annotationHandoff.recordId).toBe('record-1');
     expect(callbacks.onSimulatePcr.mock.calls[0][0].pair.productLength).toBeGreaterThan(0);
+    expect(callbacks.onCreateAmplicon.mock.calls[0][0].evidenceReview).toEqual({
+      schema: 'motif.primer.evidence-review.v1',
+      required: false,
+      acknowledged: false,
+      reasonCodes: [],
+    });
     expect(callbacks.onUseForCloning.mock.calls[0][0].recordName).toBe('Example insert');
   });
 

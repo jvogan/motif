@@ -1,6 +1,12 @@
 name: Release review threads
 
 on:
+  workflow_dispatch:
+    inputs:
+      pull_request_number:
+        description: Release pull request number to refresh
+        required: true
+        type: number
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
   pull_request_review:
@@ -14,7 +20,7 @@ permissions:
 
 jobs:
   validate-release-review-threads:
-    if: startsWith(github.event.pull_request.head.ref, 'release/') || contains(github.event.pull_request.labels.*.name, 'release') || contains(github.event.pull_request.labels.*.name, 'release-pr')
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.pull_request.head.ref, 'release/') || contains(github.event.pull_request.labels.*.name, 'release') || contains(github.event.pull_request.labels.*.name, 'release-pr')
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
@@ -26,6 +32,13 @@ jobs:
           persist-credentials: false
 
       - name: Check release pull request review threads
+        if: github.event_name != 'workflow_dispatch'
         run: node scripts/check-release-review-threads.mjs --github --require-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Refresh release pull request review threads
+        if: github.event_name == 'workflow_dispatch'
+        run: node scripts/check-release-review-threads.mjs --github --require-release --pr "${{ inputs.pull_request_number }}"
         env:
           GH_TOKEN: ${{ github.token }}

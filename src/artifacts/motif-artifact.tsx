@@ -234,7 +234,7 @@ import {
 } from './claude-science-download';
 import './motif-artifact.css';
 
-const MOTIF_ARTIFACT_VERSION = '0.3.5';
+const MOTIF_ARTIFACT_VERSION = '0.3.6';
 const MOTIF_ARTIFACT_BUILD_ID = (() => {
   if (typeof document === 'undefined') return 'development';
   const value = document.querySelector<HTMLMetaElement>('meta[name="motif-build-id"]')?.content.trim() ?? '';
@@ -8291,6 +8291,7 @@ function App() {
           tags: vector.tags,
         },
         recipe,
+        enzymeCatalog: digestEnzymeCatalog,
         workflow: {
           id: workflowResultId,
           createdAt,
@@ -8337,7 +8338,7 @@ function App() {
       );
       return null;
     }
-  }, [showWorkbenchNotice, vector]);
+  }, [digestEnzymeCatalog, showWorkbenchNotice, vector]);
 
   const updateRecordDetails = useCallback((details: { name: string; description?: string; group?: string }) => {
     const nextName = details.name.trim();

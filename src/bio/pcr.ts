@@ -3,7 +3,17 @@ import { gcContent } from './gc-content';
 import { calculateTm } from './tm-calculator';
 import { DEFAULT_TM_OPTIONS } from './primer-design';
 import type { Feature, Topology } from './types';
-import { remapFeatureLocation, type FeatureCoordinateMapSpan } from './feature-location';
+import {
+  expandCircularFeatureLocation,
+  remapFeatureLocation,
+  type FeatureCoordinateMapSpan,
+} from './feature-location';
+import {
+  FeatureCollectionInputError,
+  cloneCanonicalFeature,
+  snapshotFeatureCollection,
+  type FeatureValidationIssueCode,
+} from './feature-bounds';
 import {
   inspectNucleotideSequence,
   nucleotideSymbolsCanPair,
@@ -47,7 +57,8 @@ export type PCRDiagnosticCode =
   | 'overlapping_binding_regions'
   | 'conflicting_overlapping_binding_edits'
   | 'binding_scan_work_limit'
-  | 'binding_candidate_limit';
+  | 'binding_candidate_limit'
+  | 'feature_input_limit';
 
 export interface PCRDiagnostic {
   code: PCRDiagnosticCode;
@@ -57,6 +68,7 @@ export interface PCRDiagnostic {
   /** Work-accounting evidence for a bounded automatic scan. */
   workUnits?: number;
   maxWorkUnits?: number;
+  featureIssueCode?: FeatureValidationIssueCode;
 }
 
 export interface PCRProductProvenance {
@@ -505,17 +517,9 @@ function bindingStatus(forward: PCRBindingCandidate, reverse: PCRBindingCandidat
 }
 
 function featureForCircularSource(feature: Feature, sequenceLength: number, topology: Topology): Feature {
-  if (topology !== 'circular' || feature.subRanges !== undefined || feature.start <= feature.end) return feature;
-  const strand = feature.strand;
-  return {
-    ...feature,
-    start: 0,
-    end: sequenceLength,
-    subRanges: [
-      { start: feature.start, end: sequenceLength, strand },
-      { start: 0, end: feature.end, strand },
-    ],
-  };
+  return topology === 'circular'
+    ? expandCircularFeatureLocation(feature, sequenceLength) as Feature
+    : feature;
 }
 
 function propagateFeature(
@@ -527,10 +531,11 @@ function propagateFeature(
   const sourceFeature = featureForCircularSource(feature, sequenceLength, topology);
   const location = remapFeatureLocation(sourceFeature, sourceSpans);
   if (!location) return null;
-  return {
-    ...feature,
+  return cloneCanonicalFeature(feature, {
     id: crypto.randomUUID(),
-    ...location,
+    start: location.start,
+    end: location.end,
+    ...(location.subRanges === undefined ? { subRanges: undefined } : { subRanges: location.subRanges }),
     metadata: {
       ...feature.metadata,
       pcrSourceFeatureId: feature.id,
@@ -541,7 +546,7 @@ function propagateFeature(
         ? { pcrSourceSplitAtOrigin: true }
         : {}),
     },
-  };
+  });
 }
 
 function productStatusWarnings(
@@ -642,7 +647,7 @@ function simulatePCRInternal(
   template: string,
   forwardPrimer: string,
   reversePrimer: string,
-  features?: Feature[],
+  features?: readonly Feature[],
   topology: Topology = 'linear',
   selectedBinding?: PCRBindingSelection,
   options?: PCRSimulationOptions,
@@ -660,6 +665,27 @@ function simulatePCRInternal(
   const tmpl = templateInspection.sequence;
   const fwd = forwardInspection.sequence;
   const rev = reverseInspection.sequence;
+  let canonicalFeatures: Feature[];
+  try {
+    canonicalFeatures = snapshotFeatureCollection(features, {
+      label: 'PCR features',
+      sequenceLength: tmpl.length,
+      allowCircularWrap: topology === 'circular',
+    });
+  } catch (error) {
+    const validation = error instanceof FeatureCollectionInputError ? error.validation : null;
+    return {
+      result: null,
+      diagnostics: validation?.issues.map((issue) => ({
+        code: 'feature_input_limit' as const,
+        featureIssueCode: issue.code,
+        message: issue.message,
+      })) ?? [{
+        code: 'feature_input_limit' as const,
+        message: 'PCR features could not be inspected as bounded data.',
+      }],
+    };
+  }
   if (fwd.length > MAX_PCR_OLIGO_LENGTH || rev.length > MAX_PCR_OLIGO_LENGTH) return { result: null, diagnostics: [] };
   if (fwd.length < policy.minMatched3PrimeLength || rev.length < policy.minMatched3PrimeLength || tmpl.length === 0) return { result: null, diagnostics: [] };
 
@@ -846,7 +872,7 @@ function simulatePCRInternal(
         { start: 0, end: selected.reverse.bindEnd, targetStart: fwdTail.length + (tmpl.length - selected.forward.bindStart) },
       ]
     : [{ start: selected.forward.bindStart, end: selected.reverse.bindEnd, targetStart: fwdTail.length }];
-  const productFeatures = (features ?? [])
+  const productFeatures = canonicalFeatures
     .map((feature) => propagateFeature(feature, sourceSpans, tmpl.length, topology))
     .filter((feature): feature is Feature => feature !== null);
   const tmDifference = selectedForward.tm !== null && selectedReverse.tm !== null
@@ -897,7 +923,7 @@ export function simulatePCRWithDiagnostics(
   template: string,
   forwardPrimer: string,
   reversePrimer: string,
-  features?: Feature[],
+  features?: readonly Feature[],
   topology: Topology = 'linear',
   selectedBinding?: PCRBindingSelection,
   options?: PCRSimulationOptions,
@@ -917,7 +943,7 @@ export function simulatePCR(
   template: string,
   forwardPrimer: string,
   reversePrimer: string,
-  features?: Feature[],
+  features?: readonly Feature[],
   topology: Topology = 'linear',
   selectedBinding?: PCRBindingSelection,
   options?: PCRSimulationOptions,

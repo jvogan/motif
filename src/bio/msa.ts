@@ -62,6 +62,9 @@ export const MSA_MAX_FORMAT_ROWS = MSA_MAX_SEQUENCES;
 export const MSA_MAX_FORMAT_ALIGNMENT_LENGTH = 50_000;
 export const MSA_MAX_FORMAT_WORK_UNITS = 2_000_000;
 export const MSA_MAX_FORMAT_ORIGINAL_LENGTH = MSA_MAX_FORMAT_ALIGNMENT_LENGTH;
+/** Legacy string formatting is intentionally capped below browser memory cliffs. */
+export const MSA_MAX_FORMAT_OUTPUT_BYTES = 32 * 1024 * 1024;
+export const MSA_MAX_FORMAT_OUTPUT_LINES = 1_000_000;
 
 export type MsaWorkRoute = 'all-pairs' | 'heuristic-star';
 
@@ -496,6 +499,59 @@ export interface LegacyMSAResult {
   conservedColumns: number;
 }
 
+const msaFormatTextEncoder = new TextEncoder();
+
+function msaFormatUtf8Bytes(value: string): number {
+  return msaFormatTextEncoder.encode(value).byteLength;
+}
+
+function msaFormatHasControlCharacters(value: string): boolean {
+  return [...value].some((character) => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return codePoint <= 0x1f || codePoint === 0x7f;
+  });
+}
+
+interface LegacyMSAFormatEstimate {
+  bytes: number;
+  lines: number;
+}
+
+/** Estimate the complete legacy string before allocating its line array. */
+function estimateLegacyMSAFormatOutput(
+  result: LegacyMSAResult,
+  width: number,
+  maxNameLength: number,
+): LegacyMSAFormatEstimate {
+  const header = 'CLUSTAL-like multiple sequence alignment\n';
+  let bytes = msaFormatUtf8Bytes(header);
+  let lines = 1;
+  for (let offset = 0; offset < result.alignmentLength; offset += width) {
+    const blockLength = Math.min(width, result.alignmentLength - offset);
+    for (const sequence of result.sequences) {
+      const block = sequence.aligned.slice(offset, offset + width);
+      const nameBytes = msaFormatUtf8Bytes(sequence.name) + (maxNameLength - sequence.name.length);
+      const lineBytes = nameBytes + 1 + msaFormatUtf8Bytes(block) + 1 + String(offset + block.length).length;
+      bytes += lineBytes;
+    }
+    // Conservation symbols, spaces, and separators are all ASCII.
+    bytes += maxNameLength + 1 + blockLength;
+    lines += result.sequences.length + 2;
+  }
+  const summary = [
+    `Alignment length:  ${result.alignmentLength}`,
+    `Identity:          ${result.identity.toFixed(1)}%`,
+    `Conserved columns: ${result.conservedColumns}`,
+    `Total gaps:        ${result.gaps}`,
+  ];
+  for (const line of summary) bytes += msaFormatUtf8Bytes(line);
+  lines += summary.length;
+  // Array#join('\n') inserts one separator between every line. The header
+  // already contains its historical trailing newline, which is included above.
+  bytes += Math.max(0, lines - 1);
+  return { bytes, lines };
+}
+
 function validateLegacyMSAResult(result: unknown, width: unknown): asserts result is LegacyMSAResult {
   if (typeof width !== 'number' || !Number.isSafeInteger(width) || width < 1 || width > MSA_MAX_FORMAT_WIDTH) {
     throw new RangeError(`MSA format width must be a safe integer from 1 to ${MSA_MAX_FORMAT_WIDTH}.`);
@@ -538,8 +594,14 @@ function validateLegacyMSAResult(result: unknown, width: unknown): asserts resul
     if (typeof sequence.name !== 'string' || sequence.name.trim().length === 0 || sequence.name.length > MSA_MAX_FORMAT_NAME_LENGTH) {
       throw new TypeError(`MSA sequence row ${index + 1} name must be a bounded non-empty string.`);
     }
+    if (msaFormatHasControlCharacters(sequence.name)) {
+      throw new TypeError(`MSA sequence row ${index + 1} name must not contain control characters.`);
+    }
     if (typeof sequence.aligned !== 'string' || sequence.aligned.length !== candidate.alignmentLength) {
       throw new TypeError(`MSA sequence row ${index + 1} aligned length must equal alignmentLength.`);
+    }
+    if (msaFormatHasControlCharacters(sequence.aligned)) {
+      throw new TypeError(`MSA sequence row ${index + 1} aligned sequence must not contain control characters.`);
     }
     if (typeof sequence.original !== 'string' || sequence.original.length > MSA_MAX_FORMAT_ORIGINAL_LENGTH) {
       throw new TypeError(`MSA sequence row ${index + 1} original must be a bounded string.`);
@@ -554,6 +616,15 @@ function validateLegacyMSAResult(result: unknown, width: unknown): asserts resul
   if (candidate.gaps !== expectedGaps) throw new TypeError('MSA format gaps does not match the aligned rows.');
   const expectedConserved = candidate.conservationScores.filter((score) => score === 1).length;
   if (candidate.conservedColumns !== expectedConserved) throw new TypeError('MSA format conservedColumns does not match conservationScores.');
+
+  const maxNameLength = Math.max(...candidate.sequences.map((sequence) => sequence.name.length), 9);
+  const estimate = estimateLegacyMSAFormatOutput(candidate as LegacyMSAResult, width, maxNameLength);
+  if (estimate.lines > MSA_MAX_FORMAT_OUTPUT_LINES) {
+    throw new RangeError(`MSA format output would contain ${estimate.lines.toLocaleString()} lines, above the ${MSA_MAX_FORMAT_OUTPUT_LINES.toLocaleString()}-line limit.`);
+  }
+  if (estimate.bytes > MSA_MAX_FORMAT_OUTPUT_BYTES) {
+    throw new RangeError(`MSA format output would require ${estimate.bytes.toLocaleString()} UTF-8 bytes, above the ${MSA_MAX_FORMAT_OUTPUT_BYTES.toLocaleString()}-byte limit.`);
+  }
 }
 
 /**

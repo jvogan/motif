@@ -11,9 +11,15 @@ import {
   type TranslationExceptionReceipt,
 } from './transl-except';
 import {
+  MAX_FEATURES_PER_COLLECTION,
+  MAX_FEATURE_VALIDATION_WORK_UNITS,
+  MAX_SUBRANGES_PER_FEATURE,
+  validateFeatureCollection,
+} from './feature-bounds';
+import {
   aliasRemovedProductCoordinates,
   emptySourceToProductMap,
-  mapFeatureThroughSourceCoordinates,
+  mapFeaturesThroughSourceCoordinates,
   type SourceToProductCoordinateMap,
 } from './assembly-feature-mapping';
 import { inspectNucleotideSequence } from './nucleotide';
@@ -26,10 +32,14 @@ export interface GoldenGatePart {
 }
 
 export type GoldenGateNormalizationDiagnosticCode =
+  | 'invalid_input'
   | 'formatting_normalized'
+  | 'formatting_with_features'
   | 'invalid_character'
   | 'ambiguous_base'
-  | 'unsupported_enzyme';
+  | 'unsupported_enzyme'
+  | 'input_limit'
+  | 'site_limit';
 
 export interface GoldenGateNormalizationDiagnostic {
   code: GoldenGateNormalizationDiagnosticCode;
@@ -55,6 +65,8 @@ export interface GoldenGateSiteScanResult {
   sequence: string;
   enzyme: string;
   sites: GoldenGateSite[];
+  /** False when the result was stopped before all sites could be inspected. */
+  complete: boolean;
   diagnostics: GoldenGateNormalizationDiagnostic[];
   provenance: GoldenGateNormalizationProvenance;
 }
@@ -102,6 +114,8 @@ export interface GoldenGateResult {
   overhangs: string[];
   enzyme: string;
   topology: 'linear' | 'circular';
+  /** Explicit outcome so callers can distinguish an invalid input from a bounded search. */
+  status: GoldenGateAssemblyStatus;
   success: boolean;
   errors: string[];
   warnings: string[];
@@ -114,6 +128,16 @@ export interface GoldenGateResult {
    * the head) to complete the assembly.
    */
   missingVectorOverhangs?: { left: string; right: string };
+}
+
+export type GoldenGateAssemblyStatus = 'ready' | 'ambiguous' | 'invalid_input' | 'work_limit';
+
+export interface GoldenGateInputValidation {
+  status: 'valid' | 'invalid_input' | 'work_limit';
+  valid: boolean;
+  errors: string[];
+  totalLength: number;
+  featureWorkUnits: number;
 }
 
 export interface OverhangValidation {
@@ -149,6 +173,238 @@ const GOLDEN_GATE_EXTRA_ENZYMES: RestrictionEnzyme[] = [
 ];
 const GOLDEN_GATE_ENZYME_NAME_SET = new Set(GOLDEN_GATE_ENZYME_NAMES.map((name) => name.toLowerCase()));
 
+/** Hard limits for direct callers. The artifact adapter applies narrower limits. */
+export const MAX_GOLDEN_GATE_PARTS = 64;
+export const MAX_GOLDEN_GATE_PART_LENGTH = 500_000;
+export const MAX_GOLDEN_GATE_TOTAL_INPUT_LENGTH = 1_000_000;
+export const MAX_GOLDEN_GATE_FEATURES_PER_PART = MAX_FEATURES_PER_COLLECTION;
+export const MAX_GOLDEN_GATE_SUBRANGES_PER_FEATURE = MAX_SUBRANGES_PER_FEATURE;
+export const MAX_GOLDEN_GATE_FEATURE_WORK_UNITS = MAX_FEATURE_VALIDATION_WORK_UNITS;
+export const MAX_GOLDEN_GATE_DETECTED_SITES = 10_000;
+export const MAX_GOLDEN_GATE_TOTAL_DETECTED_SITES = 100_000;
+export const MAX_GOLDEN_GATE_CHAIN_WORK_UNITS = 100_000;
+
+function goldenGateIsPlainObject(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  try {
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
+  } catch {
+    return false;
+  }
+}
+
+const INVALID_GOLDEN_GATE_ACCESSOR = Symbol('invalid-golden-gate-accessor');
+
+function goldenGateOwnDataValue(record: Record<string, unknown>, key: string): unknown | typeof INVALID_GOLDEN_GATE_ACCESSOR {
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(record, key);
+    if (!descriptor) return undefined;
+    return 'value' in descriptor ? descriptor.value : INVALID_GOLDEN_GATE_ACCESSOR;
+  } catch {
+    return INVALID_GOLDEN_GATE_ACCESSOR;
+  }
+}
+
+function goldenGateHasControlCharacters(value: string): boolean {
+  return [...value].some((character) => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return codePoint <= 0x1f || codePoint === 0x7f;
+  });
+}
+
+function goldenGateBoundedText(value: unknown, label: string, maxLength: number): string | null {
+  if (typeof value !== 'string' || value.length === 0 || value.length > maxLength || goldenGateHasControlCharacters(value)) {
+    return `${label} must be a non-empty string of at most ${maxLength} characters without control characters.`;
+  }
+  if (value.trim().length === 0) return `${label} must contain a non-whitespace name.`;
+  return null;
+}
+
+interface GoldenGatePartSnapshot {
+  part: GoldenGatePart | null;
+  errors: string[];
+}
+
+/**
+ * Snapshot a part using only own data properties.  The biological engines are
+ * exported to JavaScript and agent callers, so a TypeScript cast is not an
+ * adequate boundary: accessors and inherited values must never run while a
+ * failed input is being converted into a receipt.
+ */
+function snapshotGoldenGatePart(value: unknown, index = 0): GoldenGatePartSnapshot {
+  const label = `Golden Gate part ${index + 1}`;
+  if (!goldenGateIsPlainObject(value)) {
+    return { part: null, errors: [`${label} must be a plain object.`] };
+  }
+  const record = value as Record<string, unknown>;
+  const name = goldenGateOwnDataValue(record, 'name');
+  const id = goldenGateOwnDataValue(record, 'id');
+  const sequence = goldenGateOwnDataValue(record, 'sequence');
+  const features = goldenGateOwnDataValue(record, 'features');
+  if ([name, id, sequence, features].some((field) => field === INVALID_GOLDEN_GATE_ACCESSOR)) {
+    return { part: null, errors: [`${label} fields must be data properties, not accessors.`] };
+  }
+  const errors: string[] = [];
+  const nameError = goldenGateBoundedText(name, `${label}.name`, 256);
+  if (nameError) errors.push(nameError);
+  if (id !== undefined) {
+    const idError = goldenGateBoundedText(id, `${label}.id`, 256);
+    if (idError) errors.push(idError);
+  }
+  if (typeof sequence !== 'string') {
+    errors.push(`${label}.sequence must be a DNA string.`);
+  } else {
+    if (sequence.length === 0) errors.push(`${label}.sequence must not be empty.`);
+    if (sequence.length > MAX_GOLDEN_GATE_PART_LENGTH) {
+      errors.push(`${label}.sequence exceeds ${MAX_GOLDEN_GATE_PART_LENGTH.toLocaleString()} bp.`);
+    }
+  }
+  if (features !== undefined && !Array.isArray(features)) {
+    errors.push(`${label}.features must be an array when provided.`);
+  }
+  if (errors.length > 0 || typeof name !== 'string' || typeof sequence !== 'string') {
+    return { part: null, errors };
+  }
+  return {
+    part: {
+      name,
+      ...(typeof id === 'string' ? { id } : {}),
+      sequence,
+      ...(Array.isArray(features) ? { features: features as Feature[] } : {}),
+    },
+    errors: [],
+  };
+}
+
+interface GoldenGatePartsArraySnapshot {
+  values: unknown[];
+  length: number;
+  tooMany: boolean;
+  error?: string;
+}
+
+/** Read only a bounded dense prefix of a caller-provided parts array. */
+function snapshotGoldenGatePartsArray(value: unknown): GoldenGatePartsArraySnapshot {
+  if (!Array.isArray(value)) return { values: [], length: 0, tooMany: false, error: 'Golden Gate parts must be an array.' };
+  let lengthDescriptor: PropertyDescriptor | undefined;
+  try {
+    lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length');
+  } catch {
+    return { values: [], length: 0, tooMany: false, error: 'Golden Gate parts length could not be inspected as data.' };
+  }
+  if (!lengthDescriptor || !('value' in lengthDescriptor) || !Number.isSafeInteger(lengthDescriptor.value) || lengthDescriptor.value < 0) {
+    return { values: [], length: 0, tooMany: false, error: 'Golden Gate parts length must be a bounded data value.' };
+  }
+  const length = lengthDescriptor.value as number;
+  const tooMany = length > MAX_GOLDEN_GATE_PARTS;
+  const values: unknown[] = [];
+  for (let index = 0; index < Math.min(length, MAX_GOLDEN_GATE_PARTS); index += 1) {
+    let descriptor: PropertyDescriptor | undefined;
+    try {
+      descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+    } catch {
+      return { values, length, tooMany, error: `Golden Gate part ${index + 1} could not be inspected as data.` };
+    }
+    if (!descriptor || !('value' in descriptor)) {
+      return { values, length, tooMany, error: `Golden Gate part ${index + 1} must be an own data entry.` };
+    }
+    values.push(descriptor.value);
+  }
+  return { values, length, tooMany };
+}
+
+function boundedGoldenGateEnzymeLabel(value: unknown): string {
+  if (typeof value !== 'string') return '<invalid enzyme value>';
+  return value.length > 256 ? `${value.slice(0, 256)}…` : value;
+}
+
+/** Validate bounded Golden Gate inputs before sequence/site/feature work starts. */
+export function validateGoldenGateParts(parts: unknown): GoldenGateInputValidation {
+  const errors: string[] = [];
+  let hardLimit = false;
+  const snapshot = snapshotGoldenGatePartsArray(parts);
+  if (snapshot.error) {
+    return { status: 'invalid_input', valid: false, errors: [snapshot.error], totalLength: 0, featureWorkUnits: 0 };
+  }
+  if (snapshot.tooMany) {
+    errors.push(`Golden Gate assembly supports at most ${MAX_GOLDEN_GATE_PARTS} parts.`);
+    hardLimit = true;
+  }
+  let totalLength = 0;
+  let featureWorkUnits = 0;
+  const boundedParts = snapshot.values;
+  for (const [index, rawPart] of boundedParts.entries()) {
+    const snapshot = snapshotGoldenGatePart(rawPart, index);
+    errors.push(...snapshot.errors);
+    if (snapshot.errors.some((error) => /exceeds .*bp/u.test(error))) hardLimit = true;
+    if (!snapshot.part) {
+      continue;
+    }
+    const part = snapshot.part;
+    const partLabel = `Golden Gate part ${index + 1}`;
+    if (part.sequence.length === 0) errors.push(`${partLabel}.sequence must not be empty.`);
+    if (part.sequence.length > MAX_GOLDEN_GATE_PART_LENGTH) {
+      errors.push(`${partLabel}.sequence exceeds ${MAX_GOLDEN_GATE_PART_LENGTH.toLocaleString()} bp.`);
+      hardLimit = true;
+    }
+    if (totalLength <= MAX_GOLDEN_GATE_TOTAL_INPUT_LENGTH - part.sequence.length) totalLength += part.sequence.length;
+    else {
+      totalLength = MAX_GOLDEN_GATE_TOTAL_INPUT_LENGTH + 1;
+      errors.push(`Golden Gate assembly input exceeds ${MAX_GOLDEN_GATE_TOTAL_INPUT_LENGTH.toLocaleString()} bp in total.`);
+      hardLimit = true;
+    }
+    if (part.features !== undefined) {
+      const remainingFeatureWork = MAX_GOLDEN_GATE_FEATURE_WORK_UNITS - featureWorkUnits;
+      if (remainingFeatureWork <= 0) {
+        errors.push(`Golden Gate feature validation exceeds the ${MAX_GOLDEN_GATE_FEATURE_WORK_UNITS.toLocaleString()}-unit safety limit across all parts.`);
+        hardLimit = true;
+        break;
+      }
+      const validation = validateFeatureCollection(part.features, {
+        label: `${partLabel}.features`,
+        sequenceLength: part.sequence.length,
+        maxFeatures: MAX_GOLDEN_GATE_FEATURES_PER_PART,
+        maxSubrangesPerFeature: MAX_GOLDEN_GATE_SUBRANGES_PER_FEATURE,
+        maxWorkUnits: remainingFeatureWork,
+      });
+      featureWorkUnits = Math.min(
+        MAX_GOLDEN_GATE_FEATURE_WORK_UNITS + 1,
+        featureWorkUnits + validation.featureWorkUnits,
+      );
+      errors.push(...validation.issues.map((issue) => issue.message));
+      if (validation.issues.some((issue) => (
+        issue.code === 'feature_limit'
+        || issue.code === 'subrange_limit'
+        || issue.code === 'metadata_limit'
+        || issue.code === 'feature_work_limit'
+      ))) {
+        hardLimit = true;
+      }
+      if (featureWorkUnits > MAX_GOLDEN_GATE_FEATURE_WORK_UNITS) {
+        errors.push(`Golden Gate feature validation exceeds the ${MAX_GOLDEN_GATE_FEATURE_WORK_UNITS.toLocaleString()}-unit safety limit across all parts.`);
+        hardLimit = true;
+        break;
+      }
+    }
+  }
+  if (snapshot.tooMany) totalLength = Math.max(totalLength, MAX_GOLDEN_GATE_TOTAL_INPUT_LENGTH + 1);
+  const status = errors.length === 0 ? 'valid' : hardLimit ? 'work_limit' : 'invalid_input';
+  return { status, valid: errors.length === 0, errors, totalLength, featureWorkUnits };
+}
+
+function goldenGateResultPartNames(parts: unknown): string[] {
+  const snapshot = snapshotGoldenGatePartsArray(parts);
+  if (snapshot.error) return [];
+  const names: string[] = [];
+  for (let index = 0; index < snapshot.values.length; index += 1) {
+    const part = snapshotGoldenGatePart(snapshot.values[index], index);
+    names.push(part.part?.name ?? `part-${index + 1}`);
+  }
+  if (snapshot.tooMany) names.push(`… ${snapshot.length - MAX_GOLDEN_GATE_PARTS} additional part(s) omitted`);
+  return names;
+}
+
 /**
  * Type IIS enzymes can produce different overhang lengths (4 bp for BsaI-family,
  * 3 bp for SapI/BspQI). Derive the length from the gap between the top-strand
@@ -179,7 +435,7 @@ function validateFlankCutGeometry(
 }
 
 function unsupportedEnzymeError(enzymeName: string): string {
-  return `Unsupported Golden Gate enzyme "${enzymeName}". Supported enzymes: ${GOLDEN_GATE_ENZYME_NAMES.join(', ')}.`;
+  return `Unsupported Golden Gate enzyme "${boundedGoldenGateEnzymeLabel(enzymeName)}". Supported enzymes: ${GOLDEN_GATE_ENZYME_NAMES.join(', ')}.`;
 }
 
 /**
@@ -201,11 +457,28 @@ export function getGoldenGateEnzyme(enzymeName: string): RestrictionEnzyme | nul
   return getEnzyme(enzymeName);
 }
 
-function normalizeGoldenGatePart(part: GoldenGatePart): {
+function normalizeGoldenGatePart(value: unknown): {
   part: GoldenGatePart | null;
   diagnostics: GoldenGateNormalizationDiagnostic[];
   provenance: NonNullable<GoldenGateNormalizationProvenance['parts']>[number];
 } {
+  const snapshot = snapshotGoldenGatePart(value);
+  const part = snapshot.part;
+  if (!part) {
+    return {
+      part: null,
+      diagnostics: [{
+        code: 'invalid_input',
+        message: snapshot.errors.join(' ') || 'Golden Gate part could not be read as bounded data.',
+      }],
+      provenance: {
+        name: 'invalid-part',
+        sourceLength: 0,
+        normalizedLength: 0,
+        formattingNormalized: false,
+      },
+    };
+  }
   const inspected = inspectNucleotideSequence(part.sequence);
   const diagnostics: GoldenGateNormalizationDiagnostic[] = [];
   const sourceLength = part.sequence.length;
@@ -232,7 +505,15 @@ function normalizeGoldenGatePart(part: GoldenGatePart): {
     });
   }
   const formattingNormalized = inspected.sequence !== part.sequence;
-  if (formattingNormalized && diagnostics.length === 0) {
+  const whitespaceNormalized = part.sequence.replace(/\s+/g, '').length !== part.sequence.length;
+  if (whitespaceNormalized && part.features !== undefined) {
+    diagnostics.push({
+      code: 'formatting_with_features',
+      partName: part.name,
+      ...(part.id ? { partId: part.id } : {}),
+      message: `Part "${part.name}" contains features and formatting whitespace changes; reject normalization to preserve feature coordinates.`,
+    });
+  } else if (formattingNormalized && diagnostics.length === 0) {
     diagnostics.push({
       code: 'formatting_normalized',
       partName: part.name,
@@ -291,16 +572,30 @@ function normalizationProvenanceForParts(
  * enzyme reads the complement in the 5'→3' direction and cuts upstream,
  * producing an overhang that is the reverse complement of the sense-strand bases.
  */
+interface GoldenGateSiteScanDetails {
+  sites: GoldenGateSite[];
+  complete: boolean;
+}
+
 function findGoldenGateSitesInNormalizedSequence(
   upper: string,
   enz: RestrictionEnzyme,
   options: FindGoldenGateSitesOptions = {},
-): GoldenGateSite[] {
+): GoldenGateSiteScanDetails {
   const recog = enz.recognitionSequence.toUpperCase();
   const recogRC = reverseComplement(recog).toUpperCase();
   const overhangLength = overhangLengthFor(enz);
   const includeOutOfBounds = options.includeOutOfBounds === true;
   const sites: GoldenGateSite[] = [];
+  let complete = true;
+  const appendSite = (site: GoldenGateSite): boolean => {
+    if (sites.length >= MAX_GOLDEN_GATE_DETECTED_SITES) {
+      complete = false;
+      return false;
+    }
+    sites.push(site);
+    return true;
+  };
 
   // Sense strand sites
   let idx = upper.indexOf(recog);
@@ -310,13 +605,13 @@ function findGoldenGateSitesInNormalizedSequence(
     const hasWindow = hasOverhangWindow(upper, cutPos, overhangLength);
     if (hasWindow || includeOutOfBounds) {
       const overhangSeq = hasWindow ? upper.slice(cutPos, cutPos + overhangLength) : '';
-      sites.push({
+      if (!appendSite({
         position: idx,
         enzyme: enz.name,
         strand: 1,
         cutPosition: cutPos,
         overhang: overhangSeq,
-      });
+      })) break;
     }
     idx = upper.indexOf(recog, idx + 1);
   }
@@ -336,20 +631,20 @@ function findGoldenGateSitesInNormalizedSequence(
       if (hasWindow || includeOutOfBounds) {
         const overhangSense = hasWindow ? upper.slice(cutPos, cutPos + overhangLength) : '';
         const overhangSeq = hasWindow ? reverseComplement(overhangSense) : '';
-        sites.push({
+        if (!appendSite({
           position: ridx,
           enzyme: enz.name,
           strand: -1,
           cutPosition: cutPos,
           overhang: overhangSeq,
-        });
+        })) break;
       }
       ridx = upper.indexOf(recogRC, ridx + 1);
     }
   }
 
   sites.sort((a, b) => a.position - b.position);
-  return sites;
+  return { sites, complete };
 }
 
 /**
@@ -362,19 +657,43 @@ export function scanGoldenGateSites(
   enzyme = DEFAULT_ENZYME,
   options: FindGoldenGateSitesOptions = {},
 ): GoldenGateSiteScanResult {
+  if (typeof seq !== 'string') {
+    return {
+      sequence: '',
+      enzyme: boundedGoldenGateEnzymeLabel(enzyme),
+      sites: [],
+      complete: false,
+      diagnostics: [{ code: 'input_limit', message: 'Golden Gate sequence must be a string.' }],
+      provenance: normalizationProvenance([], [{ name: 'sequence', sourceLength: 0, normalizedLength: 0, formattingNormalized: false }]),
+    };
+  }
+  if (seq.length > MAX_GOLDEN_GATE_PART_LENGTH) {
+    return {
+      sequence: '',
+      enzyme: boundedGoldenGateEnzymeLabel(enzyme),
+      sites: [],
+      complete: false,
+      diagnostics: [{
+        code: 'input_limit',
+        message: `Golden Gate sequence exceeds ${MAX_GOLDEN_GATE_PART_LENGTH.toLocaleString()} bp.`,
+      }],
+      provenance: normalizationProvenance([], [{ name: 'sequence', sourceLength: seq.length, normalizedLength: 0, formattingNormalized: false }]),
+    };
+  }
   const normalized = normalizeGoldenGatePart({ name: 'sequence', sequence: seq });
   const provenance = normalizationProvenance([], [normalized.provenance]);
   const enz = getEnzyme(enzyme);
   if (!enz) {
     return {
       sequence: normalized.part?.sequence ?? seq.replace(/\s+/g, '').toUpperCase(),
-      enzyme,
+      enzyme: boundedGoldenGateEnzymeLabel(enzyme),
       sites: [],
+      complete: false,
       diagnostics: [
         ...normalized.diagnostics,
         {
           code: 'unsupported_enzyme',
-          message: `Unsupported Golden Gate enzyme: ${enzyme}`,
+          message: `Unsupported Golden Gate enzyme: ${boundedGoldenGateEnzymeLabel(enzyme)}`,
         },
       ],
       provenance,
@@ -385,15 +704,26 @@ export function scanGoldenGateSites(
       sequence: seq.replace(/\s+/g, '').toUpperCase(),
       enzyme: enz.name,
       sites: [],
+      complete: false,
       diagnostics: normalized.diagnostics,
       provenance,
     };
   }
+  const scanned = findGoldenGateSitesInNormalizedSequence(normalized.part.sequence, enz, options);
   return {
     sequence: normalized.part.sequence,
     enzyme: enz.name,
-    sites: findGoldenGateSitesInNormalizedSequence(normalized.part.sequence, enz, options),
-    diagnostics: normalized.diagnostics,
+    sites: scanned.sites,
+    complete: scanned.complete,
+    diagnostics: scanned.complete
+      ? normalized.diagnostics
+      : [
+        ...normalized.diagnostics,
+        {
+          code: 'site_limit' as const,
+          message: `Golden Gate site scan stopped after ${MAX_GOLDEN_GATE_DETECTED_SITES.toLocaleString()} detected sites.`,
+        },
+      ],
     provenance,
   };
 }
@@ -407,7 +737,8 @@ export function findGoldenGateSites(
   enzyme = DEFAULT_ENZYME,
   options: FindGoldenGateSitesOptions = {},
 ): GoldenGateSite[] {
-  return scanGoldenGateSites(seq, enzyme, options).sites;
+  const result = scanGoldenGateSites(seq, enzyme, options);
+  return result.complete ? result.sites : [];
 }
 
 /**
@@ -586,35 +917,55 @@ function digestGoldenGateParts(
   const recog = enz.recognitionSequence.toUpperCase();
   const recogRC = reverseComplement(recog).toUpperCase();
   const overhangLength = overhangLengthFor(enz);
+  let detectedSiteCount = 0;
 
   for (const part of parts) {
     const normalized = normalizeGoldenGatePart(part);
+    const partLabel = normalized.provenance.name;
     normalizationDiagnostics.push(...normalized.diagnostics);
     provenanceParts.push(normalized.provenance);
     if (!normalized.part) {
-      errors.push(`Part "${part.name}": Golden Gate input must be canonical A/C/G/T after normalization.`);
+      errors.push(`Part "${partLabel}": Golden Gate input must be canonical A/C/G/T after normalization.`);
       continue;
     }
     const normalizedPart = normalized.part;
     const upper = normalizedPart.sequence;
+    const featureValidation = validateFeatureCollection(normalizedPart.features, {
+      label: `Golden Gate part "${partLabel}" features`,
+      sequenceLength: upper.length,
+    });
+    if (!featureValidation.valid) {
+      errors.push(...featureValidation.issues.map((issue) => issue.message));
+      continue;
+    }
     const senseIdx = upper.indexOf(recog);
     const antiIdx = senseIdx !== -1 ? upper.indexOf(recogRC, senseIdx + recog.length) : -1;
+    const scanned = scanGoldenGateSites(normalizedPart.sequence, enz.name, { includeOutOfBounds: true });
+    if (!scanned.complete) {
+      errors.push(`Part "${partLabel}": ${scanned.diagnostics.find((diagnostic) => diagnostic.code === 'site_limit')?.message ?? 'Golden Gate site scan exceeded its safety limit.'}`);
+      continue;
+    }
+    detectedSiteCount += scanned.sites.length;
+    if (detectedSiteCount > MAX_GOLDEN_GATE_TOTAL_DETECTED_SITES) {
+      errors.push(`Golden Gate assembly detected more than ${MAX_GOLDEN_GATE_TOTAL_DETECTED_SITES.toLocaleString()} total Type IIS sites.`);
+      break;
+    }
 
     if (senseIdx === -1 || antiIdx === -1 || senseIdx >= antiIdx) {
-      const foundSites = findGoldenGateSites(normalizedPart.sequence, enz.name);
+      const foundSites = scanned.sites;
       const foundSummary = foundSites.length > 0
         ? `found ${foundSites.length} site${foundSites.length !== 1 ? 's' : ''}, but not a valid sense/antisense flank pair`
         : 'found none';
       errors.push(
-        `Part "${part.name}": missing flanking ${enz.name} sites (${foundSummary}; need a sense site before the antisense site)`,
+        `Part "${partLabel}": missing flanking ${enz.name} sites (${foundSummary}; need a sense site before the antisense site)`,
       );
       continue;
     }
 
-    const internalSites = findInternalGoldenGateSites(normalizedPart.sequence, enz.name);
+    const internalSites = selectInternalGoldenGateSites(scanned.sites);
     if (internalSites.length > 0) {
       errors.push(
-        `Part "${part.name}": contains ${internalSites.length} internal ${enz.name} site${internalSites.length !== 1 ? 's' : ''}`,
+        `Part "${partLabel}": contains ${internalSites.length} internal ${enz.name} site${internalSites.length !== 1 ? 's' : ''}`,
       );
       continue;
     }
@@ -623,7 +974,7 @@ function digestGoldenGateParts(
     const rightCutStart = antiIdx + recogRC.length - enz.complementCutOffset;
     const geometryErrors = validateFlankCutGeometry(upper, leftCut, rightCutStart, overhangLength);
     if (geometryErrors.length > 0) {
-      errors.push(`Part "${part.name}": ${geometryErrors.join('; ')}`);
+      errors.push(`Part "${partLabel}": ${geometryErrors.join('; ')}`);
       continue;
     }
 
@@ -633,7 +984,7 @@ function digestGoldenGateParts(
     const insert = upper.slice(leftCut, rightCutStart + overhangLength);
 
     if (oh5.length < overhangLength || oh3.length < overhangLength) {
-      errors.push(`Part "${part.name}": could not extract ${overhangLength} bp overhangs`);
+      errors.push(`Part "${partLabel}": could not extract ${overhangLength} bp overhangs`);
       continue;
     }
 
@@ -642,11 +993,12 @@ function digestGoldenGateParts(
     // therefore, mark a surviving feature partial.
     const insertLength = insert.length;
     const insertMap = sourceMapForInsert(normalizedPart.sequence.length, leftCut, insertLength);
-    const shiftedFeatures: Feature[] = [];
-    for (const feat of normalizedPart.features ?? []) {
-      const shifted = mapFeatureThroughSourceCoordinates(feat, insertMap);
-      if (shifted) shiftedFeatures.push(shifted);
+    const featureMapping = mapFeaturesThroughSourceCoordinates(normalizedPart.features, insertMap);
+    if (featureMapping.status !== 'ready') {
+      errors.push(`Part "${partLabel}": ${featureMapping.issues.map((issue) => issue.message).join(' ')}`);
+      continue;
     }
+    const shiftedFeatures = featureMapping.features;
 
     digested.push({ id: normalizedPart.id, name: normalizedPart.name, insert, oh5, oh3, rightOverhang, features: shiftedFeatures, insertStart: leftCut });
   }
@@ -658,7 +1010,8 @@ export type GoldenGateChainReason =
   | 'unique'
   | 'no-chain'
   | 'ambiguous-multiple-chains'
-  | 'ambiguous-self-ligation';
+  | 'ambiguous-self-ligation'
+  | 'work-limit';
 
 interface GoldenGateChainAnalysis {
   ordered: DigestedAssemblyPart[] | null;
@@ -671,7 +1024,7 @@ interface GoldenGateChainAnalysis {
   ambiguousOverhangs?: string[];
 }
 
-/** Safety cap on chain enumeration — Golden Gate assemblies are typically <10 parts. */
+/** Safety cap on completed chains retained during enumeration. */
 const MAX_GOLDEN_GATE_CHAINS = 64;
 
 /**
@@ -698,36 +1051,47 @@ function analyzeGoldenGateChain(digested: DigestedAssemblyPart[]): GoldenGateCha
   }
 
   const validChains: number[][] = [];
-  let bailedOnLimit = false;
+  let workUnits = 0;
 
   for (let startIdx = 0; startIdx < n; startIdx++) {
-    if (bailedOnLimit) break;
     const path: number[] = [startIdx];
     const visited = new Set<number>([startIdx]);
 
-    const dfs = (curr: number): void => {
-      if (validChains.length >= MAX_GOLDEN_GATE_CHAINS) {
-        bailedOnLimit = true;
-        return;
+    // Explicit stack: a hostile set of compatible parts cannot exhaust the
+    // JavaScript call stack, and every candidate edge consumes bounded work.
+    const stack: Array<{ current: number; nextIndex: number }> = [{ current: startIdx, nextIndex: 0 }];
+    while (stack.length > 0) {
+      if (validChains.length >= MAX_GOLDEN_GATE_CHAINS || workUnits >= MAX_GOLDEN_GATE_CHAIN_WORK_UNITS) {
+        return {
+          ordered: null,
+          closes: false,
+          topology: 'linear',
+          reason: 'work-limit',
+        };
       }
+      const frame = stack[stack.length - 1];
       if (path.length === n) {
         validChains.push([...path]);
-        return;
+        stack.pop();
+        const removed = path.pop();
+        if (removed !== undefined) visited.delete(removed);
+        continue;
       }
-      const currRight = digested[curr].rightOverhang;
-      for (let i = 0; i < n; i++) {
-        if (bailedOnLimit) return;
-        if (visited.has(i)) continue;
-        if (digested[i].oh5 === currRight) {
-          visited.add(i);
-          path.push(i);
-          dfs(i);
-          path.pop();
-          visited.delete(i);
-        }
+      if (frame.nextIndex >= n) {
+        stack.pop();
+        const removed = path.pop();
+        if (removed !== undefined) visited.delete(removed);
+        continue;
       }
-    };
-    dfs(startIdx);
+      const candidateIndex = frame.nextIndex;
+      frame.nextIndex += 1;
+      workUnits += 1;
+      if (visited.has(candidateIndex)) continue;
+      if (digested[candidateIndex].oh5 !== digested[frame.current].rightOverhang) continue;
+      visited.add(candidateIndex);
+      path.push(candidateIndex);
+      stack.push({ current: candidateIndex, nextIndex: 0 });
+    }
   }
 
   if (validChains.length === 0) {
@@ -741,7 +1105,10 @@ function analyzeGoldenGateChain(digested: DigestedAssemblyPart[]): GoldenGateCha
     const isCircular = last.rightOverhang === first.oh5;
     let key: string;
     if (isCircular) {
-      const minIdx = chain.indexOf(Math.min(...chain));
+      let minIdx = 0;
+      for (let index = 1; index < chain.length; index += 1) {
+        if (chain[index] < chain[minIdx]) minIdx = index;
+      }
       const rotated = [...chain.slice(minIdx), ...chain.slice(0, minIdx)];
       key = 'C:' + rotated.join('-');
     } else {
@@ -754,7 +1121,7 @@ function analyzeGoldenGateChain(digested: DigestedAssemblyPart[]): GoldenGateCha
 
   const canonicalChains = [...canonicalMap.values()];
 
-  if (canonicalChains.length > 1 || bailedOnLimit) {
+  if (canonicalChains.length > 1) {
     return {
       ordered: null,
       closes: false,
@@ -848,15 +1215,73 @@ function selectInternalGoldenGateSites(sites: GoldenGateSite[]): GoldenGateSite[
   );
 }
 
+interface GoldenGatePartBoundaryInput {
+  valid: true;
+  name: string;
+  sequence: string;
+}
+
+interface InvalidGoldenGatePartBoundaryInput {
+  valid: false;
+  errors: string[];
+}
+
+function goldenGatePartBoundaryInput(value: unknown): GoldenGatePartBoundaryInput | InvalidGoldenGatePartBoundaryInput {
+  if (!goldenGateIsPlainObject(value)) {
+    return { valid: false, errors: ['Golden Gate part must be a plain object.'] };
+  }
+  const part = value as Record<string, unknown>;
+  const name = goldenGateOwnDataValue(part, 'name');
+  const sequence = goldenGateOwnDataValue(part, 'sequence');
+  if (name === INVALID_GOLDEN_GATE_ACCESSOR || sequence === INVALID_GOLDEN_GATE_ACCESSOR) {
+    return { valid: false, errors: ['Golden Gate part name and sequence must be data properties, not accessors.'] };
+  }
+  if (typeof name !== 'string' || name.length === 0 || name.length > 256 || goldenGateHasControlCharacters(name)) {
+    return { valid: false, errors: ['Golden Gate part name must be a bounded string without control characters.'] };
+  }
+  if (typeof sequence !== 'string') {
+    return { valid: false, errors: [`Part "${boundedGoldenGateEnzymeLabel(name)}" sequence must be a DNA string.`] };
+  }
+  if (sequence.length === 0) {
+    return { valid: false, errors: [`Part "${boundedGoldenGateEnzymeLabel(name)}" sequence must not be empty.`] };
+  }
+  if (sequence.length > MAX_GOLDEN_GATE_PART_LENGTH) {
+    return {
+      valid: false,
+      errors: [`Part "${boundedGoldenGateEnzymeLabel(name)}" sequence exceeds ${MAX_GOLDEN_GATE_PART_LENGTH.toLocaleString()} bp.`],
+    };
+  }
+  return { valid: true, name, sequence };
+}
+
 export function getGoldenGatePartBoundary(
   part: Pick<GoldenGatePart, 'name' | 'sequence'>,
   enzyme = DEFAULT_ENZYME,
 ): GoldenGatePartBoundary {
+  // This is an exported boundary helper and is also called by agent-facing
+  // adapters. Check the runtime shape and sequence length before any
+  // normalization, uppercasing, or diagnostic construction can copy a large
+  // caller-controlled value.
+  const input = goldenGatePartBoundaryInput(part);
+  if (!input.valid) {
+    return {
+      valid: false,
+      enzyme: boundedGoldenGateEnzymeLabel(enzyme),
+      leftOverhang: null,
+      rightOverhang: null,
+      rightOverhangComplement: null,
+      insertStart: null,
+      insertEnd: null,
+      siteCount: 0,
+      internalSiteCount: 0,
+      errors: input.errors,
+    };
+  }
   const enz = getEnzyme(enzyme);
   if (!enz) {
     return {
       valid: false,
-      enzyme,
+      enzyme: boundedGoldenGateEnzymeLabel(enzyme),
       leftOverhang: null,
       rightOverhang: null,
       rightOverhangComplement: null,
@@ -867,7 +1292,7 @@ export function getGoldenGatePartBoundary(
       errors: [unsupportedEnzymeError(enzyme)],
     };
   }
-  const normalized = normalizeGoldenGatePart({ name: part.name, sequence: part.sequence });
+  const normalized = normalizeGoldenGatePart({ name: input.name, sequence: input.sequence });
   const normalizationDiagnostics = normalized.diagnostics;
   const provenance = normalizationProvenance([], [normalized.provenance]);
   if (!normalized.part) {
@@ -881,7 +1306,7 @@ export function getGoldenGatePartBoundary(
       insertEnd: null,
       siteCount: 0,
       internalSiteCount: 0,
-      errors: [`Part "${part.name}" must contain only canonical A/C/G/T bases.`],
+      errors: [`Part "${input.name}" must contain only canonical A/C/G/T bases.`],
       normalizationDiagnostics,
       provenance,
     };
@@ -890,8 +1315,12 @@ export function getGoldenGatePartBoundary(
   const recog = enz.recognitionSequence.toUpperCase();
   const recogRC = reverseComplement(recog).toUpperCase();
   const overhangLength = overhangLengthFor(enz);
-  const sites = findGoldenGateSites(upper, enzyme, { includeOutOfBounds: true });
+  const scanned = scanGoldenGateSites(upper, enzyme, { includeOutOfBounds: true });
+  const sites = scanned.sites;
   const errors: string[] = [];
+  if (!scanned.complete) {
+    errors.push(scanned.diagnostics.find((diagnostic) => diagnostic.code === 'site_limit')?.message ?? 'Golden Gate site scan exceeded its safety limit.');
+  }
 
   const senseIdx = upper.indexOf(recog);
   const antiIdx = senseIdx !== -1 ? upper.indexOf(recogRC, senseIdx + recog.length) : -1;
@@ -956,9 +1385,12 @@ function describeMissingVectorOverhangs(missing: { left: string; right: string }
   return `Add a destination vector with overhangs ${missing.left} (5'-facing) and ${missing.right} (3'-facing) to close the loop`;
 }
 
-function partIdsForInput(parts: readonly GoldenGatePart[]): string[] | undefined {
-  return parts.some((part) => typeof part.id === 'string' && part.id.length > 0)
-    ? parts.map((part, index) => part.id ?? `${part.name}#${index + 1}`)
+function partIdsForInput(parts: unknown): string[] | undefined {
+  const arraySnapshot = snapshotGoldenGatePartsArray(parts);
+  if (arraySnapshot.error) return undefined;
+  const snapshots = arraySnapshot.values.map((part, index) => snapshotGoldenGatePart(part, index).part);
+  return snapshots.some((part) => typeof part?.id === 'string' && part.id.length > 0)
+    ? snapshots.map((part, index) => part?.id ?? `${part?.name ?? `part-${index + 1}`}#${index + 1}`)
     : undefined;
 }
 
@@ -994,13 +1426,26 @@ export function validateGoldenGateOverhangs(
   if (!enz) {
     return { valid: false, overhangs: [], issues };
   }
+  const inputValidation = validateGoldenGateParts(parts);
+  if (!inputValidation.valid) {
+    for (const error of inputValidation.errors) {
+      issues.push({ type: 'preparation', overhangs: [], description: error });
+    }
+    return { valid: false, overhangs: [], issues };
+  }
+  const partsSnapshot = snapshotGoldenGatePartsArray(parts);
+  if (partsSnapshot.error) {
+    issues.push({ type: 'preparation', overhangs: [], description: partsSnapshot.error });
+    return { valid: false, overhangs: [], issues };
+  }
+  const safeParts = partsSnapshot.values as GoldenGatePart[];
 
   const {
     digested,
     errors: digestErrors,
     normalizationDiagnostics,
     provenanceParts,
-  } = digestGoldenGateParts(parts, enz);
+  } = digestGoldenGateParts(safeParts, enz);
   for (const error of digestErrors) {
     issues.push({
       type: 'preparation',
@@ -1009,7 +1454,7 @@ export function validateGoldenGateOverhangs(
     });
   }
 
-  if (parts.length === 0) {
+  if (partsSnapshot.length === 0) {
     issues.push({
       type: 'preparation',
       overhangs: [],
@@ -1030,7 +1475,13 @@ export function validateGoldenGateOverhangs(
 
   if (digested.length >= 2) {
     const analysis = analyzeGoldenGateChain(digested);
-    if (analysis.reason === 'ambiguous-multiple-chains' || analysis.reason === 'ambiguous-self-ligation') {
+    if (analysis.reason === 'work-limit') {
+      issues.push({
+        type: 'preparation',
+        overhangs: [],
+        description: `Golden Gate chain enumeration exceeded the ${MAX_GOLDEN_GATE_CHAIN_WORK_UNITS.toLocaleString()}-unit safety limit.`,
+      });
+    } else if (analysis.reason === 'ambiguous-multiple-chains' || analysis.reason === 'ambiguous-self-ligation') {
       const ambiguous = analysis.ambiguousOverhangs ?? [];
       for (const oh of ambiguous) {
         issues.push({
@@ -1104,24 +1555,43 @@ export function goldenGateAssemble(
 ): GoldenGateResult {
   const errors: string[] = [];
   const warnings: string[] = [];
+  const partsSnapshot = snapshotGoldenGatePartsArray(parts);
   const inputPartIds = partIdsForInput(parts);
   const enz = getEnzyme(enzyme);
   if (!enz) {
     return {
       sequence: '',
       features: [],
-      parts: parts.map((part) => part.name),
+      parts: goldenGateResultPartNames(parts),
       ...(inputPartIds ? { partIds: inputPartIds } : {}),
       overhangs: [],
-      enzyme,
+      enzyme: boundedGoldenGateEnzymeLabel(enzyme),
       topology: 'linear',
+      status: 'invalid_input',
       success: false,
       errors: [unsupportedEnzymeError(enzyme)],
       warnings: [],
     };
   }
 
-  if (parts.length < 2) {
+  const inputValidation = validateGoldenGateParts(parts);
+  if (!inputValidation.valid) {
+    return {
+      sequence: '',
+      features: [],
+      parts: goldenGateResultPartNames(parts),
+      ...(inputPartIds ? { partIds: inputPartIds } : {}),
+      overhangs: [],
+      enzyme: enz.name,
+      topology: 'linear',
+      status: inputValidation.status === 'work_limit' ? 'work_limit' : 'invalid_input',
+      success: false,
+      errors: inputValidation.errors,
+      warnings: [],
+    };
+  }
+
+  if (partsSnapshot.error || partsSnapshot.length < 2) {
     return {
       sequence: '',
       features: [],
@@ -1130,6 +1600,7 @@ export function goldenGateAssemble(
       overhangs: [],
       enzyme: enz.name,
       topology: 'linear',
+      status: 'invalid_input',
       success: false,
       errors: ['Golden Gate Assembly requires at least 2 parts'],
       warnings: [],
@@ -1139,7 +1610,8 @@ export function goldenGateAssemble(
   // Pre-validate palindromic and near-identical overhangs (informational warnings).
   // Ambiguity / open-chain handling is delegated to the chain analyzer below
   // so the assembler can return structured `missingVectorOverhangs` to the UI.
-  const validation = validateGoldenGateOverhangs(parts, enzyme);
+  const safeParts = partsSnapshot.values as GoldenGatePart[];
+  const validation = validateGoldenGateOverhangs(safeParts, enzyme);
   for (const issue of validation.issues) {
     if (issue.type === 'palindromic' || issue.type === 'near_identical') {
       warnings.push(issue.description);
@@ -1152,12 +1624,15 @@ export function goldenGateAssemble(
     errors: digestErrors,
     normalizationDiagnostics,
     provenanceParts,
-  } = digestGoldenGateParts(parts, enz);
+  } = digestGoldenGateParts(safeParts, enz);
   const normalizationProvenance = normalizationProvenanceForParts(provenanceParts);
   errors.push(...digestErrors);
 
   if (errors.length > 0) {
-    return { sequence: '', features: [], parts: parts.map((p) => p.name), ...(inputPartIds ? { partIds: inputPartIds } : {}), overhangs: [], enzyme: enz.name, topology: 'linear', success: false, errors, warnings, normalizationDiagnostics, provenance: normalizationProvenance };
+    const status: GoldenGateAssemblyStatus = errors.some((message) => /safety limit|exceeds .*limit|exceeded its safety|detected more than .* total/u.test(message))
+      ? 'work_limit'
+      : 'invalid_input';
+    return { sequence: '', features: [], parts: goldenGateResultPartNames(parts), ...(inputPartIds ? { partIds: inputPartIds } : {}), overhangs: [], enzyme: enz.name, topology: 'linear', status, success: false, errors, warnings, normalizationDiagnostics, provenance: normalizationProvenance };
   }
 
   // --- Step 2: Resolve the unique part ordering via chain analysis ---
@@ -1170,7 +1645,12 @@ export function goldenGateAssemble(
         ? `Overhang ${oh} appears at every junction — ambiguous ligation order (every part can self-ligate or swap with another).`
         : 'Parts can be self-ligated or reordered — ambiguous ligation order.',
     );
-    return { sequence: '', features: [], parts: parts.map((p) => p.name), ...(inputPartIds ? { partIds: inputPartIds } : {}), overhangs: [], enzyme: enz.name, topology: 'linear', success: false, errors, warnings, normalizationDiagnostics, provenance: normalizationProvenance };
+    return { sequence: '', features: [], parts: goldenGateResultPartNames(parts), ...(inputPartIds ? { partIds: inputPartIds } : {}), overhangs: [], enzyme: enz.name, topology: 'linear', status: 'ambiguous', success: false, errors, warnings, normalizationDiagnostics, provenance: normalizationProvenance };
+  }
+
+  if (analysis.reason === 'work-limit') {
+    errors.push(`Golden Gate chain enumeration exceeded the ${MAX_GOLDEN_GATE_CHAIN_WORK_UNITS.toLocaleString()}-unit safety limit.`);
+    return { sequence: '', features: [], parts: goldenGateResultPartNames(parts), ...(inputPartIds ? { partIds: inputPartIds } : {}), overhangs: [], enzyme: enz.name, topology: 'linear', status: 'work_limit', success: false, errors, warnings, normalizationDiagnostics, provenance: normalizationProvenance };
   }
 
   if (analysis.reason === 'ambiguous-multiple-chains') {
@@ -1186,14 +1666,14 @@ export function goldenGateAssemble(
         'Could not form a complete assembly chain — parts can be ordered in multiple ways.',
       );
     }
-    return { sequence: '', features: [], parts: parts.map((p) => p.name), ...(inputPartIds ? { partIds: inputPartIds } : {}), overhangs: [], enzyme: enz.name, topology: 'linear', success: false, errors, warnings, normalizationDiagnostics, provenance: normalizationProvenance };
+    return { sequence: '', features: [], parts: goldenGateResultPartNames(parts), ...(inputPartIds ? { partIds: inputPartIds } : {}), overhangs: [], enzyme: enz.name, topology: 'linear', status: 'ambiguous', success: false, errors, warnings, normalizationDiagnostics, provenance: normalizationProvenance };
   }
 
   if (analysis.reason === 'no-chain' || !analysis.ordered) {
     errors.push(
       'Could not form a complete assembly chain — check that overhangs are unique and form a linear (or circular) order',
     );
-    return { sequence: '', features: [], parts: parts.map((p) => p.name), ...(inputPartIds ? { partIds: inputPartIds } : {}), overhangs: [], enzyme: enz.name, topology: 'linear', success: false, errors, warnings, normalizationDiagnostics, provenance: normalizationProvenance };
+    return { sequence: '', features: [], parts: goldenGateResultPartNames(parts), ...(inputPartIds ? { partIds: inputPartIds } : {}), overhangs: [], enzyme: enz.name, topology: 'linear', status: 'invalid_input', success: false, errors, warnings, normalizationDiagnostics, provenance: normalizationProvenance };
   }
 
   const ordered = analysis.ordered;
@@ -1213,6 +1693,7 @@ export function goldenGateAssemble(
       overhangs: ordered.map((p) => p.oh5),
       enzyme: enz.name,
       topology: 'linear',
+      status: 'invalid_input',
       success: false,
       errors,
       warnings,
@@ -1266,7 +1747,7 @@ export function goldenGateAssemble(
   }
 
   if (errors.length > 0) {
-    return { sequence: '', features: [], parts: ordered.map((p) => p.name), ...(orderedPartIds ? { partIds: orderedPartIds } : {}), overhangs, enzyme: enz.name, topology: 'linear', success: false, errors, warnings, normalizationDiagnostics, provenance: normalizationProvenance };
+    return { sequence: '', features: [], parts: ordered.map((p) => p.name), ...(orderedPartIds ? { partIds: orderedPartIds } : {}), overhangs, enzyme: enz.name, topology: 'linear', status: 'invalid_input', success: false, errors, warnings, normalizationDiagnostics, provenance: normalizationProvenance };
   }
 
   const last = ordered[ordered.length - 1];
@@ -1276,7 +1757,7 @@ export function goldenGateAssemble(
     errors.push(
       `Assembly chain is open: "${last.name}" 3' overhang ${last.rightOverhang} does not close to "${first.name}" 5' overhang ${first.oh5}`,
     );
-    return { sequence: '', features: [], parts: ordered.map((p) => p.name), ...(orderedPartIds ? { partIds: orderedPartIds } : {}), overhangs, enzyme: enz.name, topology: 'linear', success: false, errors, warnings, normalizationDiagnostics, provenance: normalizationProvenance };
+    return { sequence: '', features: [], parts: ordered.map((p) => p.name), ...(orderedPartIds ? { partIds: orderedPartIds } : {}), overhangs, enzyme: enz.name, topology: 'linear', status: 'invalid_input', success: false, errors, warnings, normalizationDiagnostics, provenance: normalizationProvenance };
   }
 
   const preClosureLength = sequence.length;
@@ -1284,14 +1765,47 @@ export function goldenGateAssemble(
   const circularSequence = sequence.slice(0, productLength);
   aliasRemovedProductCoordinates(insertMaps, productLength, preClosureLength);
   const finalProductMap = finalProductMapForAssembly(preClosureLength, overhangLength);
-  const circularFeatures = ordered.flatMap((part, index) => part.features.flatMap((feature) => {
-    const mapped = mapFeatureThroughSourceCoordinates(feature, insertMaps[index]);
-    return mapped ? [mapped] : [];
-  }));
-  const circularProductFeatures = productFeatures.flatMap((feature) => {
-    const mapped = mapFeatureThroughSourceCoordinates(feature, finalProductMap);
-    return mapped ? [mapped] : [];
-  });
+  const circularFeatures: Feature[] = [];
+  for (const [index, part] of ordered.entries()) {
+    const mapping = mapFeaturesThroughSourceCoordinates(part.features, insertMaps[index]);
+    if (mapping.status !== 'ready') {
+      return {
+        sequence: '',
+        features: [],
+        parts: ordered.map((p) => p.name),
+        ...(orderedPartIds ? { partIds: orderedPartIds } : {}),
+        overhangs,
+        enzyme: enz.name,
+        topology: 'linear',
+        status: 'work_limit',
+        success: false,
+        errors: mapping.issues.map((issue) => issue.message),
+        warnings,
+        normalizationDiagnostics,
+        provenance: normalizationProvenance,
+      };
+    }
+    circularFeatures.push(...mapping.features);
+  }
+  const productMapping = mapFeaturesThroughSourceCoordinates(productFeatures, finalProductMap);
+  if (productMapping.status !== 'ready') {
+    return {
+      sequence: '',
+      features: [],
+      parts: ordered.map((p) => p.name),
+      ...(orderedPartIds ? { partIds: orderedPartIds } : {}),
+      overhangs,
+      enzyme: enz.name,
+      topology: 'linear',
+      status: 'work_limit',
+      success: false,
+      errors: productMapping.issues.map((issue) => issue.message),
+      warnings,
+      normalizationDiagnostics,
+      provenance: normalizationProvenance,
+    };
+  }
+  const circularProductFeatures = productMapping.features;
   const finalJunction = createJunctionFeature(
     last.name,
     first.name,
@@ -1310,6 +1824,7 @@ export function goldenGateAssemble(
     overhangs,
     enzyme: enz.name,
     topology: 'circular',
+    status: 'ready',
     success: true,
     errors: [],
     warnings,
@@ -1425,14 +1940,41 @@ export function buildSyntheticGoldenGateVector(
     throw new Error('Synthetic Golden Gate vector must be canonical A/C/G/T after spacer materialization.');
   }
 
-  // Verify the synthetic part has no internal Type IIS sites that would
-  // sabotage the assembly. If the filler accidentally contains one, the
-  // caller can pass a different `filler` string.
-  const internalSites = findInternalGoldenGateSites(sequence, enz.name);
-  if (internalSites.length > 0) {
-    throw new Error(
-      `Synthetic vector filler contains ${internalSites.length} internal ${enz.name} site${internalSites.length === 1 ? '' : 's'}; supply a site-free filler via options.filler`,
-    );
+  // Verify the complete synthetic construct against every supported Type IIS
+  // enzyme. A compatibility array API can return an empty array for a capped
+  // scan, so use the detailed scan and fail closed on `complete: false`.
+  // Isoschizomer aliases (BsmBI/Esp3I and SapI/BspQI) are allowed to report
+  // the two deliberately selected flank sites, but no other site is allowed.
+  const intendedFlanks = [
+    { position: padding.length, strand: 1 as const },
+    {
+      position: padding.length + recog.length + leftSpacerLength + left.length + filler.length + right.length + rightSpacerLength,
+      strand: -1 as const,
+    },
+  ];
+  const sameGoldenGateGeometry = (candidate: RestrictionEnzyme, selected: RestrictionEnzyme): boolean => (
+    candidate.recognitionSequence.toUpperCase() === selected.recognitionSequence.toUpperCase()
+    && candidate.cutOffset === selected.cutOffset
+    && candidate.complementCutOffset === selected.complementCutOffset
+    && candidate.overhang === selected.overhang
+  );
+  for (const supportedName of GOLDEN_GATE_ENZYME_NAMES) {
+    const supported = getEnzyme(supportedName);
+    if (!supported) continue;
+    const scan = scanGoldenGateSites(sequence, supported.name, { includeOutOfBounds: true });
+    if (!scan.complete) {
+      throw new Error(`Synthetic vector site verification for ${supported.name} exceeded its bounded scan limit.`);
+    }
+    const unexpected = scan.sites.filter((site) => (
+      !sameGoldenGateGeometry(supported, enz)
+      || !intendedFlanks.some((flank) => flank.position === site.position && flank.strand === site.strand)
+    ));
+    if (unexpected.length > 0) {
+      const positions = unexpected.slice(0, 8).map((site) => `${site.position} (${site.strand === 1 ? 'forward' : 'reverse'})`).join(', ');
+      throw new Error(
+        `Synthetic vector filler contains ${unexpected.length} unexpected ${supported.name} site${unexpected.length === 1 ? '' : 's'} at ${positions}; supply a site-free filler via options.filler`,
+      );
+    }
   }
 
   return {
@@ -1453,6 +1995,12 @@ export interface GoldenGateDomesticationSite {
 }
 
 export type GoldenGateDomesticationFailureCode =
+  | 'invalid_input'
+  | 'input_limit'
+  | 'feature_limit'
+  | 'work_limit'
+  | 'site_scan_limit'
+  | 'failure_limit'
   | 'invalid_cds_location'
   | 'invalid_codon_start'
   | 'unsupported_translation_table'
@@ -1475,6 +2023,14 @@ export interface GoldenGateDomesticationFailure {
   motif?: string;
   diagnostics?: TranslationExceptionDiagnostic[];
 }
+
+/** Hard limits for the feature-aware domestication API. */
+export const MAX_GOLDEN_GATE_DOMESTICATION_ENZYMES = 64;
+export const MAX_GOLDEN_GATE_DOMESTICATION_SITES = MAX_GOLDEN_GATE_DETECTED_SITES;
+export const MAX_GOLDEN_GATE_DOMESTICATION_MOTIF_LENGTH = 64;
+export const MAX_GOLDEN_GATE_DOMESTICATION_FAILURES = 128;
+export const MAX_GOLDEN_GATE_DOMESTICATION_WORK_UNITS = 100_000_000;
+export const MAX_GOLDEN_GATE_DOMESTICATION_PASSES = 100;
 
 /** A feature location is authoritative only when every stored segment is valid. */
 export type GoldenGateCdsFeature = Pick<Feature, 'start' | 'end' | 'strand' | 'subRanges'> & {
@@ -1538,6 +2094,93 @@ interface DomesticationFeatureLocation {
   strands: Array<1 | -1>;
   segments: DomesticationFeatureSegment[];
   failures: GoldenGateDomesticationFailure[];
+}
+
+interface DomesticationFeatureValidation {
+  feature: GoldenGateCdsFeature | null;
+  failures: GoldenGateDomesticationFailure[];
+}
+
+interface DomesticationSiteScanResult {
+  sites: GoldenGateDomesticationSite[];
+  complete: boolean;
+  omittedSitesAtLeast: number;
+  workUnits: number;
+  limitReason: 'site_limit' | 'work_limit' | null;
+}
+
+function domesticationFailureCodeForFeatureIssue(
+  code: string,
+): GoldenGateDomesticationFailureCode {
+  if (code === 'feature_limit' || code === 'subrange_limit' || code === 'metadata_limit') return 'feature_limit';
+  if (code === 'feature_work_limit') return 'work_limit';
+  return 'invalid_cds_location';
+}
+
+/**
+ * Validate the minimal CDS shape used by domestication through the shared
+ * feature boundary. The public Feature type contains display-only fields that
+ * are intentionally optional on this focused API, so bounded defaults are
+ * supplied only for validation and never returned to callers.
+ */
+function validateDomesticationFeature(
+  value: unknown,
+  sequenceLength: number,
+): DomesticationFeatureValidation {
+  const failures: GoldenGateDomesticationFailure[] = [];
+  if (!goldenGateIsPlainObject(value)) {
+    return {
+      feature: null,
+      failures: [domesticationFailure('invalid_cds_location', 'Domestication requires a plain CDS feature object.')],
+    };
+  }
+  const record = value as Record<string, unknown>;
+  const start = goldenGateOwnDataValue(record, 'start');
+  const end = goldenGateOwnDataValue(record, 'end');
+  const strand = goldenGateOwnDataValue(record, 'strand');
+  const type = goldenGateOwnDataValue(record, 'type');
+  const metadata = goldenGateOwnDataValue(record, 'metadata');
+  const subRanges = goldenGateOwnDataValue(record, 'subRanges');
+  if ([start, end, strand, type, metadata, subRanges].some((field) => field === INVALID_GOLDEN_GATE_ACCESSOR)) {
+    return {
+      feature: null,
+      failures: [domesticationFailure('invalid_cds_location', 'CDS feature fields must be data properties, not accessors.')],
+    };
+  }
+
+  const feature = {
+    start,
+    end,
+    strand,
+    ...(type !== undefined ? { type } : {}),
+    ...(metadata !== undefined ? { metadata } : {}),
+    ...(subRanges !== undefined ? { subRanges } : {}),
+  } as GoldenGateCdsFeature;
+  const validationFeature = {
+    id: 'domestication-feature',
+    name: 'domestication-feature',
+    type: 'cds',
+    start,
+    end,
+    strand,
+    color: '#000000',
+    metadata: metadata === undefined ? {} : metadata,
+    ...(subRanges !== undefined ? { subRanges } : {}),
+  } as Feature;
+  const validation = validateFeatureCollection([validationFeature], {
+    label: 'Golden Gate domestication feature',
+    sequenceLength,
+    maxFeatures: 1,
+    maxSubrangesPerFeature: MAX_SUBRANGES_PER_FEATURE,
+    maxWorkUnits: MAX_FEATURE_VALIDATION_WORK_UNITS,
+  });
+  for (const issue of validation.issues) {
+    failures.push(domesticationFailure(
+      domesticationFailureCodeForFeatureIssue(issue.code),
+      issue.message,
+    ));
+  }
+  return { feature: validation.valid ? feature : null, failures };
 }
 
 function sourceCoordinatesForFeature(
@@ -1631,35 +2274,87 @@ function scanDomesticationSites(
   coding: string,
   enzymes: readonly RestrictionEnzyme[],
   explicitMotifs: readonly string[],
-): GoldenGateDomesticationSite[] {
+  maxWorkUnits = MAX_GOLDEN_GATE_DOMESTICATION_WORK_UNITS,
+): DomesticationSiteScanResult {
   const sites: GoldenGateDomesticationSite[] = [];
+  let complete = true;
+  let omittedSitesAtLeast = 0;
+  let workUnits = 0;
+  let limitReason: DomesticationSiteScanResult['limitReason'] = null;
+  const workLimit = Math.max(0, maxWorkUnits);
+  const markSiteLimit = (): void => {
+    complete = false;
+    limitReason = 'site_limit';
+    omittedSitesAtLeast += 1;
+  };
+  const appendSite = (site: GoldenGateDomesticationSite): boolean => {
+    if (sites.length >= MAX_GOLDEN_GATE_DOMESTICATION_SITES) {
+      markSiteLimit();
+      return false;
+    }
+    sites.push(site);
+    return true;
+  };
+  const charge = (units: number): boolean => {
+    if (!Number.isSafeInteger(units) || units < 0 || units > workLimit - workUnits) {
+      complete = false;
+      limitReason = 'work_limit';
+      omittedSitesAtLeast += 1;
+      return false;
+    }
+    workUnits += units;
+    return true;
+  };
+
   for (const enzyme of enzymes) {
+    if (!charge(coding.length)) break;
     const recognition = enzyme.recognitionSequence.toUpperCase();
-    for (const site of findGoldenGateSites(coding, enzyme.name, { includeOutOfBounds: true })) {
-      sites.push({
+    // The compatibility array API intentionally returns no sites for a
+    // partial scan. Domestication must retain the detailed completion bit so
+    // a capped scan can never be interpreted as site-free.
+    const scan = scanGoldenGateSites(coding, enzyme.name, { includeOutOfBounds: true });
+    if (!scan.complete) {
+      complete = false;
+      limitReason = 'site_limit';
+      omittedSitesAtLeast += Math.max(1, MAX_GOLDEN_GATE_DETECTED_SITES - scan.sites.length);
+    }
+    if (!charge(scan.sites.length)) break;
+    for (const site of scan.sites) {
+      if (!appendSite({
         kind: 'enzyme',
         enzyme: enzyme.name,
         motif: site.strand === 1 ? recognition : reverseComplement(recognition).toUpperCase(),
         position: site.position,
         featurePosition: site.position,
         strand: site.strand,
-      });
+      })) break;
     }
+    // If this enzyme filled the result cap exactly, keep scanning subsequent
+    // enzymes and motifs as probes.  A full cap is exhaustive only after all
+    // remaining scan dimensions have been inspected.
+    if (!complete) break;
   }
-  for (const motif of explicitMotifs) {
-    const reverse = reverseComplement(motif).toUpperCase();
-    const motifs: Array<readonly [string, 1 | -1]> = reverse === motif
-      ? [[motif, 1]]
-      : [[motif, 1], [reverse, -1]];
-    for (const [orientedMotif, strand] of motifs) {
-      let position = coding.indexOf(orientedMotif);
-      while (position !== -1) {
-        sites.push({ kind: 'site', motif: orientedMotif, position, featurePosition: position, strand });
-        position = coding.indexOf(orientedMotif, position + 1);
+  if (complete) {
+    for (const motif of explicitMotifs) {
+      const reverse = reverseComplement(motif).toUpperCase();
+      const motifs: Array<readonly [string, 1 | -1]> = reverse === motif
+        ? [[motif, 1]]
+        : [[motif, 1], [reverse, -1]];
+      for (const [orientedMotif, strand] of motifs) {
+        if (!charge(coding.length)) break;
+        let position = coding.indexOf(orientedMotif);
+        while (position !== -1) {
+          if (!charge(1)) break;
+          if (!appendSite({ kind: 'site', motif: orientedMotif, position, featurePosition: position, strand })) break;
+          position = coding.indexOf(orientedMotif, position + 1);
+        }
+        if (!complete) break;
       }
+      if (!complete) break;
     }
   }
-  return sites.sort((left, right) => left.featurePosition - right.featurePosition || left.motif.localeCompare(right.motif));
+  sites.sort((left, right) => left.featurePosition - right.featurePosition || left.motif.localeCompare(right.motif));
+  return { sites, complete, omittedSitesAtLeast, workUnits, limitReason };
 }
 
 /**
@@ -1673,15 +2368,52 @@ function scanDomesticationSitesBySegments(
   segments: readonly DomesticationFeatureSegment[],
   enzymes: readonly RestrictionEnzyme[],
   explicitMotifs: readonly string[],
-): GoldenGateDomesticationSite[] {
-  return segments.flatMap((segment) => scanDomesticationSites(
-    oriented.slice(segment.featureStart, segment.featureStart + segment.coordinates.length),
-    enzymes,
-    explicitMotifs,
-  ).map((site) => ({
-    ...site,
-    featurePosition: site.featurePosition + segment.featureStart,
-  })));
+  maxWorkUnits = MAX_GOLDEN_GATE_DOMESTICATION_WORK_UNITS,
+): DomesticationSiteScanResult {
+  const sites: GoldenGateDomesticationSite[] = [];
+  let complete = true;
+  let omittedSitesAtLeast = 0;
+  let workUnits = 0;
+  let limitReason: DomesticationSiteScanResult['limitReason'] = null;
+  for (const segment of segments) {
+    const remainingWork = maxWorkUnits - workUnits;
+    if (remainingWork <= 0) {
+      complete = false;
+      limitReason = 'work_limit';
+      omittedSitesAtLeast += 1;
+      break;
+    }
+    const segmentResult = scanDomesticationSites(
+      oriented.slice(segment.featureStart, segment.featureStart + segment.coordinates.length),
+      enzymes,
+      explicitMotifs,
+      remainingWork,
+    );
+    workUnits += segmentResult.workUnits;
+    if (!segmentResult.complete) complete = false;
+    if (segmentResult.limitReason !== null) limitReason = segmentResult.limitReason;
+    omittedSitesAtLeast += segmentResult.omittedSitesAtLeast;
+    const remainingSites = MAX_GOLDEN_GATE_DOMESTICATION_SITES - sites.length;
+    if (remainingSites <= 0 && segmentResult.sites.length > 0) {
+      // The cap was reached in an earlier segment.  Any site in a later
+      // segment proves that the retained cap was not exhaustive.
+      complete = false;
+      limitReason = 'site_limit';
+      omittedSitesAtLeast += segmentResult.sites.length;
+    }
+    for (const site of segmentResult.sites) {
+      if (sites.length >= MAX_GOLDEN_GATE_DOMESTICATION_SITES) {
+        complete = false;
+        limitReason = 'site_limit';
+        omittedSitesAtLeast += 1;
+        break;
+      }
+      sites.push({ ...site, featurePosition: site.featurePosition + segment.featureStart });
+    }
+    if (!segmentResult.complete || !complete) break;
+  }
+  sites.sort((left, right) => left.featurePosition - right.featurePosition || left.motif.localeCompare(right.motif));
+  return { sites, complete, omittedSitesAtLeast, workUnits, limitReason };
 }
 
 function mapDomesticationSites(
@@ -1695,6 +2427,29 @@ function mapDomesticationSites(
     const sourceStrand = covered.length < 2 || covered[covered.length - 1] > covered[0] ? 1 : -1;
     return [{ ...site, position: sourcePosition, strand: sourceStrand as 1 | -1 }];
   });
+}
+
+function emptyDomesticationResult(
+  sequence: string,
+  failures: readonly GoldenGateDomesticationFailure[],
+  authoritativeBaseCount = 0,
+  extra: Partial<DomesticateGoldenGateFeatureResult> = {},
+): DomesticateGoldenGateFeatureResult {
+  return {
+    sequence,
+    mutations: [],
+    authoritativeScope: 'feature',
+    authoritativeBaseCount,
+    translatedBaseRange: null,
+    complete: false,
+    remainingSites: [],
+    introducedSites: [],
+    failures: [...failures],
+    sourceProtein: null,
+    productProtein: null,
+    proteinIdentity: false,
+    ...extra,
+  };
 }
 
 /**
@@ -1712,37 +2467,84 @@ function mapDomesticationSites(
 export function domesticateGoldenGateFeature(
   options: DomesticateGoldenGateFeatureOptions,
 ): DomesticateGoldenGateFeatureResult {
-  const source = options.sequence.toUpperCase();
-  const location = sourceCoordinatesForFeature(source.length, options.feature);
-  const failures = [...location.failures];
-  const authoritativeBaseCount = location.coordinates.length;
-  const emptyResult = (extra: Partial<DomesticateGoldenGateFeatureResult> = {}): DomesticateGoldenGateFeatureResult => ({
-    sequence: source,
-    mutations: [],
-    authoritativeScope: 'feature',
-    authoritativeBaseCount,
-    translatedBaseRange: null,
-    complete: false,
-    remainingSites: [],
-    introducedSites: [],
-    failures,
-    sourceProtein: null,
-    productProtein: null,
-    proteinIdentity: false,
-    ...extra,
-  });
-  if (failures.length > 0 || location.coordinates.length === 0) return emptyResult();
-
-  const codonStart = Number(options.codonStart);
-  if (!Number.isInteger(codonStart) || codonStart < 1 || codonStart > 3) {
-    failures.push(domesticationFailure('invalid_codon_start', 'codon_start must be exactly 1, 2, or 3.'));
-    return emptyResult();
+  const invalidInput = (code: GoldenGateDomesticationFailureCode, message: string): DomesticateGoldenGateFeatureResult => (
+    emptyDomesticationResult('', [domesticationFailure(code, message)])
+  );
+  if (!goldenGateIsPlainObject(options)) {
+    return invalidInput('invalid_input', 'Domestication options must be a plain object.');
   }
-  const tableId = options.translationTableId == null ? options.translationTableId : Number(options.translationTableId);
+  const optionRecord = options as unknown as Record<string, unknown>;
+  const rawSequence = goldenGateOwnDataValue(optionRecord, 'sequence');
+  if (rawSequence === INVALID_GOLDEN_GATE_ACCESSOR) {
+    return invalidInput('invalid_input', 'Domestication sequence must be a data property, not an accessor.');
+  }
+  if (typeof rawSequence !== 'string') {
+    return invalidInput('invalid_input', 'Domestication sequence must be a string.');
+  }
+  if (rawSequence.length === 0) {
+    return invalidInput('invalid_input', 'Domestication sequence must not be empty.');
+  }
+  if (rawSequence.length > MAX_GOLDEN_GATE_PART_LENGTH) {
+    return invalidInput('input_limit', `Domestication sequence exceeds ${MAX_GOLDEN_GATE_PART_LENGTH.toLocaleString()} bp.`);
+  }
+  const source = rawSequence.toUpperCase();
+
+  const rawFeature = goldenGateOwnDataValue(optionRecord, 'feature');
+  const featureValidation = validateDomesticationFeature(rawFeature, source.length);
+  let failureOverflow = false;
+  // Reserve one slot for a deterministic truncation receipt. This keeps
+  // malformed agent input from turning diagnostics into an unbounded output.
+  const failures: GoldenGateDomesticationFailure[] = [];
+  const addFailure = (failure: GoldenGateDomesticationFailure): void => {
+    if (failures.length < MAX_GOLDEN_GATE_DOMESTICATION_FAILURES - 1) failures.push(failure);
+    else failureOverflow = true;
+  };
+  for (const failure of featureValidation.failures) addFailure(failure);
+  const finalizedFailures = (): GoldenGateDomesticationFailure[] => {
+    const output = [...failures];
+    if (failureOverflow) {
+      output.push(domesticationFailure(
+        'failure_limit',
+        `Domestication diagnostics were truncated after ${MAX_GOLDEN_GATE_DOMESTICATION_FAILURES - 1} entries.`,
+      ));
+    }
+    return output;
+  };
+  const emptyResult = (extra: Partial<DomesticateGoldenGateFeatureResult> = {}): DomesticateGoldenGateFeatureResult => (
+    emptyDomesticationResult(source, finalizedFailures(), 0, extra)
+  );
+  if (!featureValidation.feature || featureValidation.failures.length > 0) return emptyResult();
+
+  const location = sourceCoordinatesForFeature(source.length, featureValidation.feature);
+  for (const failure of location.failures) addFailure(failure);
+  const authoritativeBaseCount = location.coordinates.length;
+  const emptyLocatedResult = (extra: Partial<DomesticateGoldenGateFeatureResult> = {}): DomesticateGoldenGateFeatureResult => (
+    emptyDomesticationResult(source, finalizedFailures(), authoritativeBaseCount, extra)
+  );
+  if (location.failures.length > 0 || location.coordinates.length === 0) return emptyLocatedResult();
+
+  const rawCodonStart = goldenGateOwnDataValue(optionRecord, 'codonStart');
+  let codonStart: number;
+  try {
+    codonStart = Number(rawCodonStart);
+  } catch {
+    codonStart = Number.NaN;
+  }
+  if (!Number.isInteger(codonStart) || codonStart < 1 || codonStart > 3) {
+    addFailure(domesticationFailure('invalid_codon_start', 'codon_start must be exactly 1, 2, or 3.'));
+    return emptyLocatedResult();
+  }
+  const rawTranslationTableId = goldenGateOwnDataValue(optionRecord, 'translationTableId');
+  let tableId: number | null | undefined;
+  try {
+    tableId = rawTranslationTableId == null ? rawTranslationTableId as null | undefined : Number(rawTranslationTableId);
+  } catch {
+    tableId = Number.NaN;
+  }
   const tableResolution = resolveTranslationTable(tableId);
   if (!tableResolution.supported) {
-    failures.push(domesticationFailure('unsupported_translation_table', tableResolution.message));
-    return emptyResult();
+    addFailure(domesticationFailure('unsupported_translation_table', tableResolution.message));
+    return emptyLocatedResult();
   }
   const table: CodonTable = tableResolution.table;
   const frame = codonStart - 1;
@@ -1752,36 +2554,55 @@ export function domesticateGoldenGateFeature(
   const coding = oriented.slice(frame);
   const translatedBaseRange = { start: frame, end: oriented.length };
   if (coding.length === 0 || coding.length % 3 !== 0) {
-    failures.push(domesticationFailure('invalid_cds_frame', 'CDS sequence after codon_start must contain complete codons.'));
-    return emptyResult({ translatedBaseRange });
+    addFailure(domesticationFailure('invalid_cds_frame', 'CDS sequence after codon_start must contain complete codons.'));
+    return emptyLocatedResult({ translatedBaseRange });
   }
+  let domesticationWorkUnits = 0;
+  let domesticationWorkLimitReached = false;
+  const chargeDomesticationWork = (units: number): boolean => {
+    if (!Number.isSafeInteger(units) || units < 0 || units > MAX_GOLDEN_GATE_DOMESTICATION_WORK_UNITS - domesticationWorkUnits) {
+      domesticationWorkLimitReached = true;
+      return false;
+    }
+    domesticationWorkUnits += units;
+    return true;
+  };
   let sourceProtein: string;
   let translationReceipt: TranslationExceptionReceipt | undefined;
   let translationExceptions: TranslationException[] = [];
+  if (!chargeDomesticationWork(Math.max(1, Math.ceil(coding.length / 3)))) {
+    addFailure(domesticationFailure('work_limit', `Domestication translation exceeded the ${MAX_GOLDEN_GATE_DOMESTICATION_WORK_UNITS.toLocaleString()}-unit safety limit.`));
+    return emptyLocatedResult({ translatedBaseRange });
+  }
   try {
     sourceProtein = translateCompleteCds(coding, 0, table);
   } catch (error) {
-    failures.push(domesticationFailure('untranslatable_cds', error instanceof Error ? error.message : 'CDS could not be translated.'));
-    return emptyResult({ translatedBaseRange });
+    addFailure(domesticationFailure('untranslatable_cds', error instanceof Error ? error.message : 'CDS could not be translated.'));
+    return emptyLocatedResult({ translatedBaseRange });
   }
 
-  const rawTranslationException = options.feature.metadata?.transl_except
-    ?? options.feature.metadata?.translExcept;
+  const feature = featureValidation.feature;
+  const rawTranslationException = feature.metadata?.transl_except
+    ?? feature.metadata?.translExcept;
   if (rawTranslationException !== undefined) {
+    if (!chargeDomesticationWork(Math.max(1, location.coordinates.length))) {
+      addFailure(domesticationFailure('work_limit', `Domestication translation-exception processing exceeded the ${MAX_GOLDEN_GATE_DOMESTICATION_WORK_UNITS.toLocaleString()}-unit safety limit.`));
+      return emptyLocatedResult({ translatedBaseRange, sourceProtein, productProtein: null, proteinIdentity: false });
+    }
     const materialized = materializeTranslationExceptions({
       sequence: source,
-      feature: options.feature,
+      feature,
       qualifier: rawTranslationException,
       codonStart,
       translationTableId: table.id,
     });
     if (!materialized.ok) {
-      failures.push(...materialized.diagnostics.map((entry) => domesticationFailure(
+      for (const entry of materialized.diagnostics) addFailure(domesticationFailure(
         'invalid_translation_exception',
         entry.message,
         { diagnostics: [entry] },
-      )));
-      return emptyResult({
+      ));
+      return emptyLocatedResult({
         translatedBaseRange,
         sourceProtein,
         productProtein: null,
@@ -1793,8 +2614,14 @@ export function domesticateGoldenGateFeature(
     sourceProtein = materialized.materializedProtein;
   }
 
-  const proteinForOrientedSequence = (orientedSequence: string): string => {
-    const translated = translateCompleteCds(orientedSequence.slice(frame), 0, table);
+  const proteinForOrientedSequence = (orientedSequence: string): string | null => {
+    if (!chargeDomesticationWork(Math.max(1, Math.ceil(orientedSequence.slice(frame).length / 3)))) return null;
+    let translated: string;
+    try {
+      translated = translateCompleteCds(orientedSequence.slice(frame), 0, table);
+    } catch {
+      return null;
+    }
     if (translationExceptions.length === 0) return translated;
     return translationExceptions.reduce((protein, exception) => (
       exception.codonIndex < 0 || exception.codonIndex >= protein.length
@@ -1803,31 +2630,95 @@ export function domesticateGoldenGateFeature(
     ), translated);
   };
 
+  const rawForbiddenEnzymes = goldenGateOwnDataValue(optionRecord, 'forbiddenEnzymes');
+  const rawForbiddenSites = goldenGateOwnDataValue(optionRecord, 'forbiddenSites');
+  const validateBoundedOptionArray = (
+    value: unknown,
+    label: string,
+    maxLength: number,
+  ): readonly unknown[] | null => {
+    if (value === undefined) return [];
+    if (!Array.isArray(value)) {
+      addFailure(domesticationFailure('invalid_input', `${label} must be an array when provided.`));
+      return null;
+    }
+    let length: number;
+    try {
+      length = value.length;
+    } catch {
+      addFailure(domesticationFailure('invalid_input', `${label} could not be inspected as an array.`));
+      return null;
+    }
+    if (length > maxLength) {
+      addFailure(domesticationFailure('input_limit', `${label} accepts at most ${maxLength} entries.`));
+      return null;
+    }
+    const snapshot: unknown[] = [];
+    for (let index = 0; index < length; index += 1) {
+      let descriptor: PropertyDescriptor | undefined;
+      try {
+        descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+      } catch {
+        addFailure(domesticationFailure('invalid_input', `${label} contains an unreadable entry.`));
+        return null;
+      }
+      if (!descriptor || !('value' in descriptor)) {
+        addFailure(domesticationFailure('invalid_input', `${label} must contain only data entries without holes or accessors.`));
+        return null;
+      }
+      snapshot.push(descriptor.value);
+    }
+    return snapshot;
+  };
+  const enzymeValues = validateBoundedOptionArray(rawForbiddenEnzymes, 'forbiddenEnzymes', MAX_GOLDEN_GATE_DOMESTICATION_ENZYMES);
+  const siteValues = validateBoundedOptionArray(rawForbiddenSites, 'forbiddenSites', MAX_GOLDEN_GATE_DOMESTICATION_ENZYMES);
+  if (enzymeValues === null || siteValues === null) {
+    return emptyLocatedResult({
+      sourceProtein,
+      productProtein: sourceProtein,
+      proteinIdentity: true,
+      translatedBaseRange,
+    });
+  }
   const selectedEnzymes: RestrictionEnzyme[] = [];
-  for (const rawName of options.forbiddenEnzymes ?? []) {
-    const name = String(rawName);
-    const enzyme = typeof rawName === 'string' ? getEnzyme(rawName) : null;
+  for (const rawName of enzymeValues) {
+    if (typeof rawName !== 'string' || rawName.length === 0 || rawName.length > 256 || goldenGateHasControlCharacters(rawName)) {
+      addFailure(domesticationFailure('invalid_forbidden_enzyme', 'Forbidden enzyme names must be bounded strings without control characters.', {
+        enzyme: typeof rawName === 'string' ? boundedGoldenGateEnzymeLabel(rawName) : '<invalid enzyme value>',
+      }));
+      continue;
+    }
+    const name = rawName.trim();
+    const enzyme = getEnzyme(name);
     if (!enzyme) {
-      failures.push(domesticationFailure('invalid_forbidden_enzyme', unsupportedEnzymeError(name), { enzyme: name }));
+      addFailure(domesticationFailure('invalid_forbidden_enzyme', unsupportedEnzymeError(name), { enzyme: boundedGoldenGateEnzymeLabel(name) }));
     } else if (!selectedEnzymes.some((entry) => entry.name.toLowerCase() === enzyme.name.toLowerCase())) {
       selectedEnzymes.push(enzyme);
     }
   }
   const selectedMotifs: string[] = [];
-  for (const rawMotif of options.forbiddenSites ?? []) {
-    const motif = String(rawMotif).toUpperCase();
-    if (!/^[ACGT]+$/.test(motif)) {
-      failures.push(domesticationFailure(
+  for (const rawMotif of siteValues) {
+    if (typeof rawMotif !== 'string' || rawMotif.length === 0 || rawMotif.length > MAX_GOLDEN_GATE_DOMESTICATION_MOTIF_LENGTH || goldenGateHasControlCharacters(rawMotif)) {
+      addFailure(domesticationFailure(
         'invalid_forbidden_site',
-        `Forbidden site "${rawMotif}" must contain only A/C/G/T.`,
-        { motif: String(rawMotif) },
+        `Forbidden sites must be non-empty strings of at most ${MAX_GOLDEN_GATE_DOMESTICATION_MOTIF_LENGTH} bases without control characters.`,
+        { motif: typeof rawMotif === 'string' ? boundedGoldenGateEnzymeLabel(rawMotif) : '<invalid site value>' },
+      ));
+      continue;
+    }
+    const motif = rawMotif.toUpperCase();
+    if (!/^[ACGT]+$/.test(motif)) {
+      addFailure(domesticationFailure(
+        'invalid_forbidden_site',
+        `Forbidden site "${boundedGoldenGateEnzymeLabel(rawMotif)}" must contain only A/C/G/T.`,
+        { motif: boundedGoldenGateEnzymeLabel(rawMotif) },
       ));
     } else if (!selectedMotifs.includes(motif)) {
       selectedMotifs.push(motif);
     }
   }
-  if (failures.length > 0) {
-    return emptyResult({
+  if (failures.length > 0 || failureOverflow) {
+    return emptyLocatedResult({
       sourceProtein,
       productProtein: sourceProtein,
       proteinIdentity: true,
@@ -1835,12 +2726,48 @@ export function domesticateGoldenGateFeature(
     });
   }
 
-  const initialSites = scanDomesticationSitesBySegments(
-    oriented,
-    location.segments,
-    selectedEnzymes,
-    selectedMotifs,
-  );
+  const scanSegments = (sequence: string): DomesticationSiteScanResult => {
+    const remaining = MAX_GOLDEN_GATE_DOMESTICATION_WORK_UNITS - domesticationWorkUnits;
+    const result = scanDomesticationSitesBySegments(
+      sequence,
+      location.segments,
+      selectedEnzymes,
+      selectedMotifs,
+      remaining,
+    );
+    domesticationWorkUnits += result.workUnits;
+    return result;
+  };
+  let reportedSiteScanLimit = false;
+  let reportedWorkLimit = false;
+  const addScanFailure = (scan: DomesticationSiteScanResult): void => {
+    if (scan.complete) return;
+    const code = scan.limitReason === 'work_limit' ? 'work_limit' : 'site_scan_limit';
+    if (code === 'work_limit' && reportedWorkLimit) return;
+    if (code === 'site_scan_limit' && reportedSiteScanLimit) return;
+    if (code === 'work_limit') reportedWorkLimit = true;
+    else reportedSiteScanLimit = true;
+    addFailure(domesticationFailure(
+      code,
+      code === 'work_limit'
+        ? `Domestication site scanning exceeded the ${MAX_GOLDEN_GATE_DOMESTICATION_WORK_UNITS.toLocaleString()}-unit safety limit.`
+        : `Domestication site scanning was capped after ${MAX_GOLDEN_GATE_DOMESTICATION_SITES.toLocaleString()} sites; at least ${Math.max(1, scan.omittedSitesAtLeast)} additional site${scan.omittedSitesAtLeast === 1 ? '' : 's'} may be present.`,
+    ));
+  };
+
+  const initialScan = scanSegments(oriented);
+  addScanFailure(initialScan);
+  const initialSites = initialScan.sites;
+  if (!initialScan.complete) {
+    return emptyLocatedResult({
+      sourceProtein,
+      productProtein: sourceProtein,
+      proteinIdentity: true,
+      translatedBaseRange,
+      remainingSites: mapDomesticationSites(initialSites, location.coordinates),
+    });
+  }
+
   let workingOriented = oriented;
   const mutationByPosition = new Map<number, { position: number; original: string; replacement: string }>();
   const aminoAcidToCodons = getAminoAcidToCodons(table);
@@ -1881,13 +2808,15 @@ export function domesticateGoldenGateFeature(
     }
   };
 
-  for (let pass = 0; pass < 100; pass += 1) {
-    const sites = scanDomesticationSitesBySegments(
-      workingOriented,
-      location.segments,
-      selectedEnzymes,
-      selectedMotifs,
-    );
+  let scanIncomplete = false;
+  for (let pass = 0; pass < MAX_GOLDEN_GATE_DOMESTICATION_PASSES; pass += 1) {
+    const scan = scanSegments(workingOriented);
+    addScanFailure(scan);
+    if (!scan.complete) {
+      scanIncomplete = true;
+      break;
+    }
+    const sites = scan.sites;
     if (sites.length === 0) break;
     let changed = false;
     for (const site of sites) {
@@ -1898,40 +2827,60 @@ export function domesticateGoldenGateFeature(
         const aminoAcid = table.codons[originalCodon];
         const alternatives = aminoAcid ? aminoAcidToCodons[aminoAcid] ?? [] : [];
         for (const candidateCodon of alternatives) {
+          if (!chargeDomesticationWork(1)) {
+            addFailure(domesticationFailure('work_limit', `Domestication codon search exceeded the ${MAX_GOLDEN_GATE_DOMESTICATION_WORK_UNITS.toLocaleString()}-unit safety limit.`));
+            scanIncomplete = true;
+            break;
+          }
           if (candidateCodon === originalCodon) continue;
           const candidateOriented = `${workingOriented.slice(0, codonOffset)}${candidateCodon}${workingOriented.slice(codonOffset + 3)}`;
-          if (proteinForOrientedSequence(candidateOriented) !== sourceProtein) continue;
-          const candidateSites = scanDomesticationSitesBySegments(
-            candidateOriented,
-            location.segments,
-            selectedEnzymes,
-            selectedMotifs,
-          );
-          if (candidateSites.some((candidate) => domesticationSiteKey(candidate) === domesticationSiteKey(site))) continue;
+          const candidateProtein = proteinForOrientedSequence(candidateOriented);
+          if (candidateProtein === null) {
+            if (domesticationWorkLimitReached) {
+              addFailure(domesticationFailure('work_limit', `Domestication translation exceeded the ${MAX_GOLDEN_GATE_DOMESTICATION_WORK_UNITS.toLocaleString()}-unit safety limit.`));
+              scanIncomplete = true;
+              break;
+            }
+            continue;
+          }
+          if (candidateProtein !== sourceProtein) continue;
+          const candidateScan = scanSegments(candidateOriented);
+          addScanFailure(candidateScan);
+          if (!candidateScan.complete) {
+            scanIncomplete = true;
+            break;
+          }
+          if (candidateScan.sites.some((candidate) => domesticationSiteKey(candidate) === domesticationSiteKey(site))) continue;
           replacement = candidateCodon;
           replacementOffset = codonOffset;
           break;
         }
-        if (replacement !== null) break;
+        if (scanIncomplete || replacement !== null) break;
       }
+      if (scanIncomplete) break;
       if (replacement === null || replacementOffset === null) continue;
       workingOriented = `${workingOriented.slice(0, replacementOffset)}${replacement}${workingOriented.slice(replacementOffset + 3)}`;
       recordCodonMutation(replacementOffset, replacement);
       changed = true;
     }
-    if (!changed) break;
+    if (scanIncomplete || !changed) break;
   }
 
   const mutations = [...mutationByPosition.values()].sort((left, right) => left.position - right.position);
   const productChars = source.split('');
   for (const mutation of mutations) productChars[mutation.position] = mutation.replacement;
   const productSequence = productChars.join('');
-  const finalSitesOriented = scanDomesticationSitesBySegments(
-    workingOriented,
-    location.segments,
-    selectedEnzymes,
-    selectedMotifs,
-  );
+  const finalScan: DomesticationSiteScanResult = domesticationWorkUnits >= MAX_GOLDEN_GATE_DOMESTICATION_WORK_UNITS
+    ? {
+      sites: [],
+      complete: false,
+      omittedSitesAtLeast: 1,
+      workUnits: 0,
+      limitReason: 'work_limit',
+    }
+    : scanSegments(workingOriented);
+  addScanFailure(finalScan);
+  const finalSitesOriented = finalScan.sites;
   const initialSiteKeys = new Set(initialSites.map(domesticationSiteKey));
   const remainingSites = mapDomesticationSites(finalSitesOriented, location.coordinates);
   const introducedSites = mapDomesticationSites(
@@ -1941,7 +2890,7 @@ export function domesticateGoldenGateFeature(
   for (const site of remainingSites) {
     const whollyWithinTranslatedCds = site.featurePosition >= translatedBaseRange.start
       && site.featurePosition + site.motif.length <= translatedBaseRange.end;
-    failures.push(domesticationFailure(
+    addFailure(domesticationFailure(
       'no_synonymous_change',
       whollyWithinTranslatedCds
         ? `No synonymous codon substitution could remove the forbidden site at source coordinate ${site.position}.`
@@ -1949,20 +2898,20 @@ export function domesticateGoldenGateFeature(
       { position: site.position, enzyme: site.enzyme, motif: site.motif },
     ));
     if (!whollyWithinTranslatedCds) {
-      failures.push(domesticationFailure(
+      addFailure(domesticationFailure(
         'unmodifiable_authoritative_site',
         `Forbidden site at source coordinate ${site.position} remains in authoritative feature sequence outside the translated CDS.`,
         { position: site.position, enzyme: site.enzyme, motif: site.motif },
       ));
     }
-    failures.push(domesticationFailure(
+    addFailure(domesticationFailure(
       'remaining_forbidden_site',
       `Forbidden ${site.enzyme ?? 'sequence'} site remains at source coordinate ${site.position}.`,
       { position: site.position, enzyme: site.enzyme, motif: site.motif },
     ));
   }
   for (const site of introducedSites) {
-    failures.push(domesticationFailure(
+    addFailure(domesticationFailure(
       'introduced_forbidden_site',
       `Domestication introduced a forbidden site at source coordinate ${site.position}.`,
       { position: site.position, enzyme: site.enzyme, motif: site.motif },
@@ -1971,21 +2920,25 @@ export function domesticateGoldenGateFeature(
   let productProtein: string | null = null;
   try {
     productProtein = proteinForOrientedSequence(workingOriented);
+    if (productProtein === null && domesticationWorkLimitReached) {
+      addFailure(domesticationFailure('work_limit', `Domestication translation exceeded the ${MAX_GOLDEN_GATE_DOMESTICATION_WORK_UNITS.toLocaleString()}-unit safety limit.`));
+    }
   } catch {
-    failures.push(domesticationFailure('untranslatable_cds', 'Domesticated CDS could not be translated.'));
+    addFailure(domesticationFailure('untranslatable_cds', 'Domesticated CDS could not be translated.'));
   }
   const proteinIdentity = productProtein !== null && productProtein === sourceProtein;
-  if (!proteinIdentity) failures.push(domesticationFailure('protein_identity_mismatch', 'Domesticated product protein differs from the source protein.'));
+  if (!proteinIdentity) addFailure(domesticationFailure('protein_identity_mismatch', 'Domesticated product protein differs from the source protein.'));
+  const finalFailures = finalizedFailures();
   return {
     sequence: productSequence,
     mutations,
     authoritativeScope: 'feature',
     authoritativeBaseCount,
     translatedBaseRange,
-    complete: failures.length === 0 && remainingSites.length === 0 && introducedSites.length === 0 && proteinIdentity,
+    complete: !scanIncomplete && finalScan.complete && finalFailures.length === 0 && remainingSites.length === 0 && introducedSites.length === 0 && proteinIdentity,
     remainingSites,
     introducedSites,
-    failures,
+    failures: finalFailures,
     sourceProtein,
     productProtein,
     proteinIdentity,
@@ -2091,6 +3044,11 @@ export function domesticatePartInternals(
   options?: LegacyDomesticateOptions,
 ): GoldenGateLegacyDomesticationProjection {
   if (!options) throw new GoldenGateLegacyDomesticationError();
+  if (typeof seq !== 'string') throw new GoldenGateLegacyDomesticationError();
+  const inspected = inspectNucleotideSequence(seq);
+  if (inspected.sequence !== seq) {
+    throw new Error('domesticatePartInternals requires an unformatted, uppercase DNA sequence so feature coordinates cannot shift during flank extraction.');
+  }
   const boundary = getGoldenGatePartBoundary({ name: 'part', sequence: seq }, enzyme);
   if (
     boundary.insertStart != null &&

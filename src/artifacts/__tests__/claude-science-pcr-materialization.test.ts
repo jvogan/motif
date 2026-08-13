@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { PrimerCandidate, PrimerPair } from '../../bio/primer-design';
+import {
+  designPrimerPairWithDiagnostics,
+  type PrimerCandidate,
+  type PrimerDesignParams,
+  type PrimerPair,
+} from '../../bio/primer-design';
 import { simulatePCR } from '../../bio/pcr';
 import { reverseComplement } from '../../bio/reverse-complement';
 import type { Feature } from '../../bio/types';
@@ -142,6 +147,9 @@ describe('PCR engine selected-pair semantics', () => {
         reverse: { start: 20, end: 30 },
       },
     );
+
+    feature.metadata.note = 'mutated after simulation';
+    feature.subRanges![0].start = 12;
 
     expect(result?.features).toHaveLength(1);
     expect(result?.features[0]).toMatchObject({
@@ -292,10 +300,21 @@ describe('PCR amplicon materialization', () => {
     expect(() => materialize(inconsistent)).toThrowError(new PcrMaterializationError(
       'Reverse primer fullSequence must equal its 5′ tail followed by its binding sequence.',
     ));
+
+    const malformedReview = structuredClone(baseSelection);
+    malformedReview.evidenceReview = {
+      schema: 'motif.primer.evidence-review.v0',
+      required: false,
+      acknowledged: false,
+      reasonCodes: [],
+    };
+    expect(() => materialize(malformedReview)).toThrowError(new PcrMaterializationError(
+      'Evidence review does not match motif.primer.evidence-review.v1.',
+    ));
   });
 
   it('creates one exact linear record with primer annotations, hashes, and a linked PCR result', () => {
-    const template = 'AAAACCCCGGGGTTTTAAAACCCCGGGGTTTT';
+    const template = 'ATGCGTACGATCAGATCGTACGCAT';
     const feature: Feature = {
       id: 'gene-1',
       name: 'payload',
@@ -323,15 +342,51 @@ describe('PCR amplicon materialization', () => {
       },
     };
     const evidenceReview = {
+      schema: 'motif.primer.evidence-review.v1',
       required: true,
       acknowledged: true,
-      reasonCodes: ['cross-dimer-3-prime'],
+      reasonCodes: ['cross-dimer-cutoff'],
       acknowledgedAt: '2026-07-17T12:00:00.000Z',
     };
-    const selected = {
-      ...selection(pairFor(template, 4, 14, 20, 30, 'GGATCC', 'CATATG')),
-      tmEvidence,
+    const parameters: PrimerDesignParams = {
+        targetStart: 12,
+        targetEnd: 13,
+        minLength: 12,
+        maxLength: 12,
+        minGC: 0,
+        maxGC: 1,
+        enforceTargetTm: false,
+        requireGcClamp: false,
+        flankingWindow: 12,
+        forwardTail: 'GGATCC',
+        reverseTail: 'CATATG',
+        maxHairpinDeltaG: null,
+        maxSelfDimerDeltaG: null,
+        maxCrossDimerDeltaG: null,
+        maxPairs: 100,
+        tmConditionPresetId: 'custom',
+        tmOptions: {
+          method: 'nearest-neighbor',
+          naConcentration: 75,
+          mgConcentration: 2,
+          dntpConcentration: 0.8,
+          primerConcentration: 100,
+          saltCorrection: 'owczarzy',
+        },
+    };
+    const recomputedPair = designPrimerPairWithDiagnostics(template, parameters).pairs.find((pair) => (
+      pair.forward.start === 0 && pair.forward.end === 12
+      && pair.reverse.start === 12 && pair.reverse.end === 24
+    ));
+    expect(recomputedPair).toBeDefined();
+    const selected: PcrMaterializationSelection = {
+      ...selection(recomputedPair!),
+      tmEvidence: {
+        ...tmEvidence,
+        options: { ...tmEvidence.options, mgConcentration: 999 },
+      },
       evidenceReview,
+      parameters,
     };
     const templateRecord = source(template, 'linear', [feature]);
     templateRecord.translationTableId = 2;
@@ -373,7 +428,14 @@ describe('PCR amplicon materialization', () => {
         productSha256: sha256HexSync(result.record.seq),
         translationTableId: 2,
         tmEvidence,
-        evidenceReview,
+        evidenceReview: {
+          schema: 'motif.primer.evidence-review.v1',
+          assertion: {
+            schema: 'motif.primer.evidence-acknowledgment.v1',
+            acknowledged: true,
+            acknowledgedAt: '2026-07-17T12:00:00.000Z',
+          },
+        },
         cloningPreparation: {
           requestSha256: 'a'.repeat(64),
           actionId: 'prep-action',
@@ -399,14 +461,18 @@ describe('PCR amplicon materialization', () => {
       kind: 'pcr',
       inputRecordIds: ['template-1'],
       dependsOnResultIds: ['primer-result'],
-      parameters: { topology: 'linear', tmEvidence, evidenceReview },
+      parameters: {
+        topology: 'linear',
+        tmEvidence: { schema: 'motif.primer.tm-evidence.v1' },
+        evidenceReview: { schema: 'motif.primer.evidence-review.v1' },
+      },
       provenance: {
         engineVersion: result.simulation.provenance.engineVersion,
         metadata: {
           productAssembly: result.simulation.provenance.productAssembly,
           tailPolicy: result.simulation.provenance.tailPolicy,
-          tmEvidence,
-          evidenceReview,
+          tmEvidence: { schema: 'motif.primer.tm-evidence.v1' },
+          evidenceReview: { schema: 'motif.primer.evidence-review.v1' },
         },
       },
       data: {
@@ -416,7 +482,7 @@ describe('PCR amplicon materialization', () => {
           id: 'pcr-product',
           recordId: 'amplicon-record',
           lengthBp: result.record.seq.length,
-          templateRange: { start: 4, end: 30 },
+          templateRange: { start: 0, end: 24 },
         }],
       },
     });
@@ -474,11 +540,315 @@ describe('PCR amplicon materialization', () => {
     expect(findPcrMaterializationDuplicate([], result.materializationKey)).toBeNull();
   });
 
+  it('uses only normalized primer fields for identity without reading ignored caller fields', () => {
+    const template = 'ATGCGTACGATCAGATCGTACGCAT';
+    const parameters: PrimerDesignParams = {
+      targetStart: 12,
+      targetEnd: 13,
+      minLength: 12,
+      maxLength: 12,
+      targetTm: 60,
+      tmTolerance: 5,
+      minGC: 0,
+      maxGC: 1,
+      enforceTargetTm: false,
+      requireGcClamp: false,
+      flankingWindow: 12,
+      forwardTail: 'GGATCC',
+      reverseTail: 'CATATG',
+      maxHairpinDeltaG: null,
+      maxSelfDimerDeltaG: null,
+      maxCrossDimerDeltaG: null,
+      maxPairs: 100,
+      tmConditionPresetId: 'custom',
+      tmOptions: {
+        method: 'nearest-neighbor',
+        naConcentration: 75,
+        mgConcentration: 2,
+        dntpConcentration: 0.8,
+        primerConcentration: 100,
+        saltCorrection: 'owczarzy',
+      },
+    };
+    const pair = designPrimerPairWithDiagnostics(template, parameters).pairs.find((candidatePair) => (
+      candidatePair.forward.start === 0 && candidatePair.forward.end === 12
+      && candidatePair.reverse.start === 12 && candidatePair.reverse.end === 24
+    ));
+    expect(pair).toBeDefined();
+    if (!pair) throw new Error('Expected a PCR fixture.');
+
+    const review = {
+      schema: 'motif.primer.evidence-review.v1',
+      required: true,
+      acknowledged: true,
+      reasonCodes: ['cross-dimer-cutoff'],
+      acknowledgedAt: '2026-07-17T12:00:00.000Z',
+    };
+    const materialize = (designParameters: PrimerDesignParams) => materializePcrAmplicon({
+      sourceRecord: source(template),
+      selection: {
+        ...selection(pair),
+        parameters: designParameters,
+        evidenceReview: review,
+      },
+      identity: {
+        recordId: 'identity-record',
+        resultId: 'identity-result',
+        productId: 'identity-product',
+        createdAt: '2026-07-17T12:00:00.000Z',
+      },
+      primerDesignResultId: 'primer-result',
+    });
+
+    const baseline = materialize(parameters);
+    const noisyParameters = { ...parameters } as Record<string, unknown>;
+    noisyParameters.ignoredHugeField = 'x'.repeat(2_000_000);
+    let ignoredAccessorReads = 0;
+    Object.defineProperty(noisyParameters, 'ignoredAccessorField', {
+      enumerable: true,
+      get() {
+        ignoredAccessorReads += 1;
+        throw new Error('ignored caller fields must not be read');
+      },
+    });
+    let ownKeysCalls = 0;
+    const guardedParameters = new Proxy(noisyParameters, {
+      ownKeys() {
+        ownKeysCalls += 1;
+        throw new Error('caller parameter keys must not be enumerated');
+      },
+    });
+
+    const equivalent = materialize(guardedParameters as never);
+    expect(ownKeysCalls).toBe(0);
+    expect(ignoredAccessorReads).toBe(0);
+    expect(equivalent.primerDesignSha256).toBe(baseline.primerDesignSha256);
+    expect(equivalent.materializationKey).toBe(baseline.materializationKey);
+
+    const changed = materialize({ ...parameters, targetTm: 61 });
+    expect(changed.primerDesignSha256).not.toBe(baseline.primerDesignSha256);
+    expect(changed.materializationKey).not.toBe(baseline.materializationKey);
+  });
+
+  it('recomputes incomplete-search review evidence before accepting its separate acknowledgment', () => {
+    const template = 'ATGCGTACGATCCGTAAGCTGACCTAGTCGATGCTACGGTCAATCG'.repeat(10);
+    const parameters: PrimerDesignParams = {
+      targetStart: 160,
+      targetEnd: 240,
+      minLength: 12,
+      maxLength: 12,
+      minGC: 0,
+      maxGC: 1,
+      enforceTargetTm: false,
+      requireGcClamp: false,
+      flankingWindow: 20,
+      maxHairpinDeltaG: null,
+      maxSelfDimerDeltaG: null,
+      maxCrossDimerDeltaG: null,
+      maxPairingCandidatesPerDirection: 1,
+      maxPairs: 1,
+    };
+    const design = designPrimerPairWithDiagnostics(template, parameters);
+    expect(design.warnings?.join(' ')).toMatch(/not exhaustive/iu);
+    expect(design.pairs[0]).toBeDefined();
+    expect(() => materializePcrAmplicon({
+      sourceRecord: source(template),
+      selection: {
+        ...selection(design.pairs[0]),
+        parameters,
+        evidenceReview: {
+          schema: 'motif.primer.evidence-review.v1',
+          required: true,
+          acknowledged: true,
+          reasonCodes: ['cross-dimer-cutoff'],
+          acknowledgedAt: '2026-07-17T12:00:00.000Z',
+        },
+      },
+      identity: {
+        recordId: 'stale-review-record',
+        resultId: 'stale-review-result',
+        productId: 'stale-review-product',
+        createdAt: '2026-07-17T12:00:00.000Z',
+      },
+      primerDesignResultId: 'bounded-primer-result',
+    })).toThrow(/does not match the recomputed primer evidence/i);
+    const result = materializePcrAmplicon({
+      sourceRecord: source(template),
+      selection: {
+        ...selection(design.pairs[0]),
+        parameters,
+        evidenceReview: {
+          schema: 'motif.primer.evidence-review.v1',
+          required: true,
+          acknowledged: true,
+          reasonCodes: ['search-evidence-incomplete'],
+          acknowledgedAt: '2026-07-17T12:00:00.000Z',
+        },
+      },
+      identity: {
+        recordId: 'bounded-record',
+        resultId: 'bounded-result',
+        productId: 'bounded-product',
+        createdAt: '2026-07-17T12:00:00.000Z',
+      },
+      primerDesignResultId: 'bounded-primer-result',
+    });
+    expect(result.record.provenance.evidenceReview).toMatchObject({
+      required: true,
+      reasonCodes: expect.arrayContaining(['search-evidence-incomplete']),
+      assertion: { acknowledged: true },
+    });
+  });
+
+  it('rejects non-object review assertions and timestamps without acknowledgment', () => {
+    const template = 'AAAACCCCGGGGTTTTAAAACCCCGGGGTTTTAAAACCCC';
+    const pair = pairFor(template, 2, 12, 24, 34);
+    const identity = {
+      recordId: 'review-record',
+      resultId: 'review-result',
+      productId: 'review-product',
+      createdAt: '2026-07-17T12:00:00.000Z',
+    };
+
+    expect(() => materializePcrAmplicon({
+      sourceRecord: source(template),
+      selection: { ...selection(pair), evidenceReview: null as never },
+      identity,
+      primerDesignResultId: 'primer-result',
+    })).toThrow(PcrMaterializationError);
+
+    expect(() => materializePcrAmplicon({
+      sourceRecord: source(template),
+      selection: {
+        ...selection(pair),
+        evidenceReview: {
+          schema: 'motif.primer.evidence-review.v1',
+          required: true,
+          acknowledged: false,
+          reasonCodes: ['cross-dimer-3-prime'],
+          acknowledgedAt: 'not-a-timestamp',
+        },
+      },
+      identity,
+      primerDesignResultId: 'primer-result',
+    })).toThrow(/timestamp is allowed only when the review is acknowledged/i);
+  });
+
+  it('projects only known review fields without enumerating caller keys', () => {
+    const template = 'AAAACCCCGGGGTTTTAAAACCCCGGGGTTTTAAAACCCC';
+    const pair = pairFor(template, 2, 12, 24, 34);
+    const review: Record<string, unknown> = {
+      schema: 'motif.primer.evidence-review.v1',
+      required: true,
+      acknowledged: true,
+      reasonCodes: ['cross-dimer-3-prime'],
+      acknowledgedAt: '2026-07-17T12:00:00.000Z',
+    };
+    for (let index = 0; index < 100_000; index += 1) review[`extra-${index}`] = true;
+    let ownKeysCalls = 0;
+    const guardedReview = new Proxy(review, {
+      ownKeys() {
+        ownKeysCalls += 1;
+        throw new Error('caller-key enumeration must not be used');
+      },
+    });
+    const result = materializePcrAmplicon({
+      sourceRecord: source(template),
+      selection: { ...selection(pair), evidenceReview: guardedReview as never },
+      identity: {
+        recordId: 'bounded-review-record',
+        resultId: 'bounded-review-result',
+        productId: 'bounded-review-product',
+        createdAt: '2026-07-17T12:00:00.000Z',
+      },
+      primerDesignResultId: 'primer-result',
+    });
+    expect(ownKeysCalls).toBe(0);
+    expect(result.record.provenance.evidenceReview).toMatchObject({
+      schema: 'motif.primer.evidence-review.v1',
+      assertion: {
+        schema: 'motif.primer.evidence-acknowledgment.v1',
+        acknowledged: true,
+      },
+    });
+    expect(result.record.provenance.evidenceReview).not.toHaveProperty('extra-0');
+  });
+
+  it('rejects review accessors without evaluating them', () => {
+    const template = 'AAAACCCCGGGGTTTTAAAACCCCGGGGTTTTAAAACCCC';
+    const pair = pairFor(template, 2, 12, 24, 34);
+    let reads = 0;
+    const review: Record<string, unknown> = {
+      schema: 'motif.primer.evidence-review.v1',
+      required: false,
+      acknowledged: false,
+      reasonCodes: [],
+    };
+    Object.defineProperty(review, 'acknowledgedAt', {
+      enumerable: false,
+      get() {
+        reads += 1;
+        return '2026-07-17T12:00:00.000Z';
+      },
+    });
+    expect(() => materializePcrAmplicon({
+      sourceRecord: source(template),
+      selection: { ...selection(pair), evidenceReview: review as never },
+      identity: {
+        recordId: 'accessor-review-record',
+        resultId: 'accessor-review-result',
+        productId: 'accessor-review-product',
+        createdAt: '2026-07-17T12:00:00.000Z',
+      },
+      primerDesignResultId: 'primer-result',
+    })).toThrowError(new PcrMaterializationError(
+      'Evidence review fields must be own data properties.',
+    ));
+    expect(reads).toBe(0);
+  });
+
+  it('turns revoked reason-code proxies into typed invalid evidence', () => {
+    const template = 'AAAACCCCGGGGTTTTAAAACCCCGGGGTTTTAAAACCCC';
+    const pair = pairFor(template, 2, 12, 24, 34);
+    const revoked = Proxy.revocable([], {});
+    revoked.revoke();
+    expect(() => materializePcrAmplicon({
+      sourceRecord: source(template),
+      selection: {
+        ...selection(pair),
+        evidenceReview: {
+          schema: 'motif.primer.evidence-review.v1',
+          required: false,
+          acknowledged: false,
+          reasonCodes: revoked.proxy as never,
+        },
+      },
+      identity: {
+        recordId: 'revoked-review-record',
+        resultId: 'revoked-review-result',
+        productId: 'revoked-review-product',
+        createdAt: '2026-07-17T12:00:00.000Z',
+      },
+      primerDesignResultId: 'primer-result',
+    })).toThrowError(new PcrMaterializationError(
+      'Evidence review does not match motif.primer.evidence-review.v1.',
+    ));
+  });
+
   it('omits an invalid linear template range for an origin-crossing product', () => {
     const template = 'AAAACCCCGGGGTTTTAAAACCCCGGGGTTTTAAAACCCC';
     const result = materializePcrAmplicon({
       sourceRecord: source(template, 'circular'),
-      selection: selection(pairFor(template, 30, 40, 2, 12)),
+      selection: {
+        ...selection(pairFor(template, 30, 40, 2, 12)),
+        evidenceReview: {
+          schema: 'motif.primer.evidence-review.v1',
+          required: true,
+          acknowledged: true,
+          reasonCodes: ['cross-dimer-cutoff', 'cross-dimer-3-prime'],
+          acknowledgedAt: '2026-07-17T12:00:00.000Z',
+        },
+      },
       identity: {
         recordId: 'wrapped-record',
         resultId: 'wrapped-result',

@@ -69,6 +69,24 @@ describe('mutation feature-location integrity', () => {
     expect(() => applySubstitution('ATGC', [], [], 1, 'X', 'dna')).toThrow(/declared dna alphabet/i);
   });
 
+  it('preserves an origin-spanning feature during substitution', () => {
+    const wrapped: Feature = {
+      id: 'wrapped',
+      name: 'wrapped',
+      type: 'misc_feature',
+      start: 3,
+      end: 1,
+      strand: 1,
+      color: '#888888',
+      metadata: {},
+    };
+
+    const result = applySubstitution('ATGC', [], [wrapped], 0, 'C');
+
+    expect(result.raw).toBe('CTGC');
+    expect(result.features).toEqual([wrapped]);
+  });
+
   it('rejects fractional or non-finite edit coordinates before string indexing', () => {
     expect(() => applySubstitution('ATGC', [], [], 1.5, 'C')).toThrow(/pos.*safe integer/i);
     expect(() => applySubstitution('ATGC', [], [], Number.NaN, 'C')).toThrow(/pos.*safe integer/i);

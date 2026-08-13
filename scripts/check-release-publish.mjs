@@ -63,12 +63,34 @@ export function checkReleasePublish(cwd = root, { github = false, environment = 
   return { ...alignment, tag: tag.tag, tagStatus: tag.status, commit: tag.commit ?? null, githubRelease };
 }
 
+export function parseReleasePublishArgs(args) {
+  const options = { github: false, repository: null };
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index];
+    if (argument === '--github') {
+      if (options.github) throw new Error('--github may be provided only once');
+      options.github = true;
+      continue;
+    }
+    if (argument === '--repo') {
+      if (options.repository !== null) throw new Error('--repo may be provided only once');
+      const value = args[++index];
+      if (!value || value.startsWith('-')) throw new Error('--repo requires owner/name');
+      if (!/^[^/\s]+\/[^/\s]+$/u.test(value)) throw new Error('--repo requires owner/name');
+      options.repository = value;
+      continue;
+    }
+    throw new Error(`Unknown option: ${argument}`);
+  }
+  if (options.repository !== null && !options.github) {
+    throw new Error('--repo requires --github; remote release availability was not checked');
+  }
+  return options;
+}
+
 if (isDirectScriptExecution(process.argv[1], fileURLToPath(import.meta.url))) {
   try {
-    const github = process.argv.includes('--github');
-    const repositoryIndex = process.argv.indexOf('--repo');
-    const repository = repositoryIndex >= 0 ? process.argv[repositoryIndex + 1] : null;
-    if (repositoryIndex >= 0 && (!repository || repository.startsWith('--'))) throw new Error('--repo requires owner/name');
+    const { github, repository } = parseReleasePublishArgs(process.argv.slice(2));
     const result = checkReleasePublish(root, { github, repository });
     const remote = github ? `; GitHub release availability checked${result.githubRelease?.existingDraft ? ' (draft exists)' : ''}` : '';
     console.log(`Release publish checks passed: ${result.version} alignment and ${result.tag} ${result.tagStatus}${remote}.`);

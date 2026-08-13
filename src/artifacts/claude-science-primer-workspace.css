@@ -679,7 +679,7 @@
 }
 
 .motif-cs-primer-cross-check strong {
-  font: 10px/1.2 var(--font-mono);
+  font: 12px/1.3 var(--font-mono);
 }
 
 .motif-cs-primer-cross-check[data-state="pass"] strong {
@@ -691,7 +691,8 @@
 }
 
 .motif-cs-primer-cross-check small {
-  color: var(--text-muted);
+  color: var(--text-secondary);
+  font-size: 12px;
   text-align: right;
 }
 
@@ -704,13 +705,13 @@
   border-radius: var(--radius-sm);
   background: var(--bg-primary);
   color: var(--text-secondary);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .motif-cs-primer-evidence-review ul {
   margin: 0;
   padding-left: 17px;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   line-height: 1.45;
 }
 

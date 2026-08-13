@@ -3,17 +3,24 @@ import {
   type DigestFragment,
   type RestrictionDigestIssue,
   type RestrictionDigestOptions,
+  type RestrictionFeatureMappingReceipt,
 } from '../bio/restriction-digest';
 import type {
   Feature,
   RestrictionEnzyme,
+  RestrictionMethylationAssumptions,
   RestrictionMethylationEvidence,
   RestrictionMethylationRequirement,
+  RestrictionMethylationState,
+  RestrictionMethylationTarget,
   RestrictionSite,
   SequenceType,
   Topology,
 } from '../bio/types';
-import { isActiveDoubleStrandRestrictionSite } from '../bio/restriction-sites';
+import {
+  isActiveDoubleStrandRestrictionSite,
+  normalizeRestrictionEnzymes,
+} from '../bio/restriction-sites';
 
 export type DigestRecipeIssueCode =
   | 'empty-enzyme-list'
@@ -30,6 +37,16 @@ export type DigestRecipeIssueCode =
   | 'methylation_unmethylated'
   | 'methylation_context_unknown'
   | 'invalid_geometry'
+  | 'circular_geometry_exceeds_molecule'
+  | 'result_limit'
+  | 'invalid_feature_collection'
+  | 'feature_limit'
+  | 'invalid_feature'
+  | 'subrange_limit'
+  | 'invalid_subrange'
+  | 'metadata_limit'
+  | 'feature_work_limit'
+  | 'feature_mapping_work_limit'
   | 'incompatible_colocated_cleavage';
 
 export interface DigestRecipeIssue {
@@ -41,6 +58,9 @@ export interface DigestRecipeIssue {
   required?: string;
   observed?: string;
   evidence?: RestrictionDigestIssue['evidence'];
+  retainedSites?: number;
+  omittedSitesAtLeast?: number;
+  retainedIssues?: number;
 }
 
 export interface DigestEnzymeResolution {
@@ -91,6 +111,8 @@ export interface DigestRecipe {
   recognitionSiteCount: number;
   /** Explicit state assumptions used for methylation-sensitive enzymes. */
   methylationAssumptions?: RestrictionDigestOptions['methylationAssumptions'];
+  /** Bounded annotation-mapping preflight, when feature propagation was requested. */
+  featureMapping?: RestrictionFeatureMappingReceipt;
   outcome: DigestMoleculeOutcome;
   fragments: DigestFragment[];
 }
@@ -105,6 +127,60 @@ export interface BuildDigestRecipeInput {
   methylation?: RestrictionDigestOptions['methylation'];
   methylationState?: RestrictionDigestOptions['methylationState'];
   methylationAssumptions?: RestrictionDigestOptions['methylationAssumptions'];
+}
+
+const DIGEST_METHYLATION_TARGETS: readonly RestrictionMethylationTarget[] = [
+  'dam',
+  'dcm',
+  'cpg',
+  'custom',
+];
+const DIGEST_METHYLATION_STATES = new Set<RestrictionMethylationState>([
+  'unknown',
+  'methylated',
+  'unmethylated',
+]);
+
+/**
+ * Snapshot the small, fixed methylation-assumption contract at the recipe
+ * boundary. This deliberately reads four known own data descriptors instead
+ * of spreading or enumerating caller-owned objects; an accessor or malformed
+ * value is treated as unavailable and is never evaluated.
+ */
+function normalizeDigestMethylationAssumptions(
+  value: unknown,
+): RestrictionMethylationAssumptions | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === 'string') {
+    return DIGEST_METHYLATION_STATES.has(value as RestrictionMethylationState)
+      ? value as RestrictionMethylationState
+      : undefined;
+  }
+  if (typeof value !== 'object' || value === null) return undefined;
+  try {
+    if (Array.isArray(value)) return undefined;
+  } catch {
+    return undefined;
+  }
+
+  const normalized: Partial<Record<RestrictionMethylationTarget, RestrictionMethylationState>> = {};
+  for (const target of DIGEST_METHYLATION_TARGETS) {
+    let descriptor: PropertyDescriptor | undefined;
+    try {
+      descriptor = Object.getOwnPropertyDescriptor(value, target);
+    } catch {
+      return undefined;
+    }
+    if (!descriptor) continue;
+    if (!('value' in descriptor)) return undefined;
+    const state = descriptor.value;
+    if (state === undefined) continue;
+    if (typeof state !== 'string' || !DIGEST_METHYLATION_STATES.has(state as RestrictionMethylationState)) {
+      return undefined;
+    }
+    normalized[target] = state as RestrictionMethylationState;
+  }
+  return normalized;
 }
 
 function isTypeIISEnzyme(enzyme: RestrictionEnzyme): boolean {
@@ -123,13 +199,14 @@ export function resolveDigestEnzymes(
   input: string,
   enzymeCatalog: readonly RestrictionEnzyme[],
 ): DigestEnzymeResolution {
+  const normalizedCatalog = normalizeRestrictionEnzymes(enzymeCatalog);
   const tokens = input
     .split(/[\s,;]+/)
     .map((token) => token.trim())
     .filter(Boolean);
 
   const catalogByName = new Map<string, RestrictionEnzyme>();
-  for (const enzyme of enzymeCatalog) {
+  for (const enzyme of normalizedCatalog) {
     const key = enzyme.name.trim().toLocaleLowerCase();
     if (key && !catalogByName.has(key)) catalogByName.set(key, enzyme);
   }
@@ -179,6 +256,10 @@ export function resolveDigestEnzymes(
 export function buildDigestRecipe(input: BuildDigestRecipeInput): DigestRecipe {
   const resolution = resolveDigestEnzymes(input.enzymeText, input.enzymeCatalog);
   const issues: DigestRecipeIssue[] = [];
+  const resolvedMethylationAssumptions = input.methylationAssumptions
+    ?? input.methylation
+    ?? input.methylationState;
+  const methylationAssumptions = normalizeDigestMethylationAssumptions(resolvedMethylationAssumptions);
 
   if (input.sequenceType !== 'dna') {
     issues.push({
@@ -208,12 +289,10 @@ export function buildDigestRecipe(input: BuildDigestRecipeInput): DigestRecipe {
       input.sequence,
       resolution.enzymes.map((enzyme) => enzyme.name),
       input.topology,
-      input.features ? [...input.features] : undefined,
+      input.features,
       resolution.enzymes,
       {
-        methylation: input.methylation,
-        methylationState: input.methylationState,
-        methylationAssumptions: input.methylationAssumptions,
+        methylationAssumptions,
       },
     )
     : null;
@@ -227,6 +306,9 @@ export function buildDigestRecipe(input: BuildDigestRecipeInput): DigestRecipe {
     ...(issue.required === undefined ? {} : { required: issue.required }),
     ...(issue.observed === undefined ? {} : { observed: issue.observed }),
     ...(issue.evidence === undefined ? {} : { evidence: issue.evidence }),
+    ...(issue.retainedSites === undefined ? {} : { retainedSites: issue.retainedSites }),
+    ...(issue.omittedSitesAtLeast === undefined ? {} : { omittedSitesAtLeast: issue.omittedSitesAtLeast }),
+    ...(issue.retainedIssues === undefined ? {} : { retainedIssues: issue.retainedIssues }),
   })));
 
   const enzymes = resolution.enzymes.map((enzyme): DigestRecipeEnzyme => {
@@ -289,8 +371,9 @@ export function buildDigestRecipe(input: BuildDigestRecipeInput): DigestRecipe {
     ...(input.methylation === undefined && input.methylationState === undefined && input.methylationAssumptions === undefined
       ? {}
       : {
-          methylationAssumptions: input.methylationAssumptions ?? input.methylation ?? input.methylationState,
+          methylationAssumptions,
         }),
+    ...(digestResult?.featureMapping === undefined ? {} : { featureMapping: digestResult.featureMapping }),
     outcome,
     fragments,
   };

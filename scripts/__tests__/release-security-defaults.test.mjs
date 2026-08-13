@@ -4,18 +4,35 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
 import { assertVersionTagMatchesHead, checkReleaseAlignment } from '../check-release-alignment.mjs';
-import { checkGithubReleaseAvailable, checkReleasePublish } from '../check-release-publish.mjs';
+import { checkGithubReleaseAvailable, checkReleasePublish, parseReleasePublishArgs } from '../check-release-publish.mjs';
 
 const root = resolve(import.meta.dirname, '..', '..');
 
 describe('release security defaults', () => {
+  it('strictly parses publish arguments and keeps remote verification explicit', () => {
+    expect(parseReleasePublishArgs([])).toEqual({ github: false, repository: null });
+    expect(parseReleasePublishArgs(['--github', '--repo', 'owner/repository']))
+      .toEqual({ github: true, repository: 'owner/repository' });
+    for (const args of [
+      ['--githbu'],
+      ['trailing'],
+      ['--github', '--github'],
+      ['--github', '--repo', 'owner/one', '--repo', 'owner/two'],
+      ['--repo'],
+      ['--repo', '--github'],
+      ['--repo', 'owner/repository'],
+      ['--github', '--repo', 'not-a-repository'],
+    ]) {
+      expect(() => parseReleasePublishArgs(args)).toThrow();
+    }
+  });
   it('disables dependency lifecycle scripts in the project npm configuration', () => {
     const npmrc = readFileSync(resolve(root, '.npmrc'), 'utf8');
     expect(npmrc).toMatch(/^\s*ignore-scripts\s*=\s*true\s*$/mu);
   });
 
   it('includes the MCP stdio fallback in release-version alignment', () => {
-    expect(checkReleaseAlignment()).toMatchObject({ version: '0.3.5', surfaces: 10 });
+    expect(checkReleaseAlignment()).toMatchObject({ version: '0.3.6', surfaces: 10 });
   });
 
   it('allows a post-tag development commit in alignment but blocks it for publishing', () => {

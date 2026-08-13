@@ -23,7 +23,17 @@ import {
 } from './restriction-sites';
 import { RESTRICTION_ENZYMES_FULL } from './enzyme-data';
 import { reverseComplement } from './reverse-complement';
-import { remapFeatureLocation, type FeatureCoordinateMapSpan } from './feature-location';
+import {
+  expandCircularFeatureLocation,
+  remapFeatureLocation,
+  type FeatureCoordinateMapSpan,
+} from './feature-location';
+import {
+  FeatureCollectionInputError,
+  cloneCanonicalFeature,
+  snapshotFeatureCollection,
+  type FeatureValidationIssueCode,
+} from './feature-bounds';
 
 export type RestrictionOverhangType = 'blunt' | '5prime' | '3prime';
 
@@ -33,7 +43,7 @@ export interface RestrictionDigestOptions {
   methylationAssumptions?: RestrictionMethylationState | Partial<Record<RestrictionMethylationTarget, RestrictionMethylationState>>;
 }
 
-export type RestrictionDigestIssueCode = RestrictionIssueCode | 'unknown_enzyme' | 'incompatible_colocated_cleavage';
+export type RestrictionDigestIssueCode = RestrictionIssueCode | 'unknown_enzyme' | 'incompatible_colocated_cleavage' | 'feature_mapping_work_limit' | FeatureValidationIssueCode;
 
 export interface RestrictionDigestIssue {
   code: RestrictionDigestIssueCode;
@@ -45,6 +55,9 @@ export interface RestrictionDigestIssue {
   required?: string;
   observed?: string;
   evidence?: RestrictionScanIssue['evidence'];
+  retainedSites?: number;
+  omittedSitesAtLeast?: number;
+  retainedIssues?: number;
 }
 
 export interface RestrictionDigestResult {
@@ -59,6 +72,24 @@ export interface RestrictionDigestResult {
   fragments: DigestFragment[];
   issues: RestrictionDigestIssue[];
   cutCount: number;
+  /** Bounded preflight receipt for annotation work across digest spans. */
+  featureMapping?: RestrictionFeatureMappingReceipt;
+  /** Bounded receipt fields for rejected oversized enzyme arrays. */
+  requestedEnzymeCount?: number;
+  requestedEnzymesTruncated?: boolean;
+}
+
+export const MAX_RESTRICTION_FEATURE_MAPPING_WORK_UNITS = 1_000_000;
+
+export interface RestrictionFeatureMappingReceipt {
+  /** Conservative estimate before any fragment annotation mapping starts. */
+  estimatedWorkUnits: number;
+  maxWorkUnits: number;
+  featureCount: number;
+  featurePieceCount: number;
+  fragmentCount: number;
+  sourceSpanCount: number;
+  complete: boolean;
 }
 
 export class RestrictionDigestError extends Error {
@@ -117,10 +148,74 @@ function issueFromScan(issue: RestrictionScanIssue): RestrictionDigestIssue {
   return { ...issue };
 }
 
-function wholeFragment(seq: string, features: readonly Feature[] | undefined): DigestFragment {
+function saturatingAdd(a: number, b: number): number {
+  if (!Number.isSafeInteger(a) || !Number.isSafeInteger(b) || a > Number.MAX_SAFE_INTEGER - b) {
+    return Number.MAX_SAFE_INTEGER;
+  }
+  return a + b;
+}
+
+function saturatingMultiply(a: number, b: number): number {
+  if (!Number.isSafeInteger(a) || !Number.isSafeInteger(b) || a < 0 || b < 0 || a === 0 || b === 0) {
+    return a === 0 || b === 0 ? 0 : Number.MAX_SAFE_INTEGER;
+  }
+  return a > Math.floor(Number.MAX_SAFE_INTEGER / b)
+    ? Number.MAX_SAFE_INTEGER
+    : a * b;
+}
+
+/**
+ * Estimate the actual remapping cross-product before digest fragments are
+ * materialized. Each authoritative feature piece is searched through every
+ * source span of every prospective fragment; the feature/fragment traversal
+ * itself is included as a small additional term.
+ */
+function restrictionFeatureMappingReceipt(
+  features: readonly Feature[] | undefined,
+  fragmentCount: number,
+  sourceSpanCount: number,
+  topology: Topology,
+  sequenceLength: number,
+): RestrictionFeatureMappingReceipt {
+  let featurePieceCount = 0;
+  const featureCount = features?.length ?? 0;
+  for (const feature of features ?? []) {
+    const sourceFeature = topology === 'circular'
+      ? expandCircularFeatureLocation(feature, sequenceLength)
+      : feature;
+    const pieceCount = Array.isArray(sourceFeature.subRanges) ? sourceFeature.subRanges.length : 1;
+    featurePieceCount = saturatingAdd(featurePieceCount, pieceCount);
+  }
+  const pieceSearchUnits = saturatingMultiply(featurePieceCount, sourceSpanCount);
+  const featureTraversalUnits = saturatingMultiply(featureCount, fragmentCount);
+  const estimatedWorkUnits = saturatingAdd(pieceSearchUnits, featureTraversalUnits);
+  return {
+    estimatedWorkUnits,
+    maxWorkUnits: MAX_RESTRICTION_FEATURE_MAPPING_WORK_UNITS,
+    featureCount,
+    featurePieceCount,
+    fragmentCount,
+    sourceSpanCount,
+    complete: estimatedWorkUnits <= MAX_RESTRICTION_FEATURE_MAPPING_WORK_UNITS,
+  };
+}
+
+function wholeFragment(
+  seq: string,
+  topology: Topology,
+  features: readonly Feature[] | undefined,
+): DigestFragment {
   const mappedFeatures = features?.flatMap((feature) => {
-    const location = remapFeatureLocation(feature, [{ start: 0, end: seq.length, targetStart: 0 }]);
-    return location ? [{ ...feature, ...location, id: crypto.randomUUID() }] : [];
+    const sourceFeature = topology === 'circular'
+      ? expandCircularFeatureLocation(feature, seq.length)
+      : feature;
+    const location = remapFeatureLocation(sourceFeature, [{ start: 0, end: seq.length, targetStart: 0 }]);
+    return location ? [cloneCanonicalFeature(feature, {
+      id: crypto.randomUUID(),
+      start: location.start,
+      end: location.end,
+      ...(location.subRanges === undefined ? { subRanges: undefined } : { subRanges: location.subRanges }),
+    })] : [];
   }) ?? [];
   return {
     sequence: seq,
@@ -148,8 +243,16 @@ function buildFeatureSlicers(
   function sliceFeaturesThroughSpans(sourceSpans: readonly FeatureCoordinateMapSpan[]): Feature[] {
     if (!features || features.length === 0) return [];
     return features.flatMap((feature) => {
-      const location = remapFeatureLocation(feature, sourceSpans);
-      return location ? [{ ...feature, ...location, id: crypto.randomUUID() }] : [];
+      const sourceFeature = topology === 'circular'
+        ? expandCircularFeatureLocation(feature, sequence.length)
+        : feature;
+      const location = remapFeatureLocation(sourceFeature, sourceSpans);
+      return location ? [cloneCanonicalFeature(feature, {
+        id: crypto.randomUUID(),
+        start: location.start,
+        end: location.end,
+        ...(location.subRanges === undefined ? { subRanges: undefined } : { subRanges: location.subRanges }),
+      })] : [];
     });
   }
   return {
@@ -205,10 +308,11 @@ function digestInputFailure(
   requestedEnzymes: unknown,
   issue: RestrictionDigestIssue,
 ): RestrictionDigestResult {
+  const requested = boundedRequestedEnzymeValues(requestedEnzymes);
   return {
     sequence: '',
     topology,
-    requestedEnzymes: Array.isArray(requestedEnzymes) ? requestedEnzymes.map((name) => String(name)) : [],
+    requestedEnzymes: requested.values,
     resolvedEnzymes: [],
     unknownEnzymes: [],
     sites: [],
@@ -216,12 +320,44 @@ function digestInputFailure(
     fragments: [],
     issues: [issue],
     cutCount: 0,
+    ...(requested.truncated ? {
+      requestedEnzymeCount: requested.count,
+      requestedEnzymesTruncated: true,
+    } : {}),
   };
 }
 
-function requestedEnzymeValues(value: unknown): string[] {
-  if (!Array.isArray(value) || value.length > MAX_RESTRICTION_ENZYMES) return [];
-  return value.map((entry) => typeof entry === 'string' ? entry : `<invalid ${entry === null ? 'null' : typeof entry}>`);
+function boundedRequestedEnzymeValues(value: unknown): { values: string[]; count: number; truncated: boolean } {
+  if (!Array.isArray(value)) return { values: [], count: 0, truncated: false };
+  let count: number;
+  try {
+    count = value.length;
+  } catch {
+    return { values: [], count: 0, truncated: true };
+  }
+  const truncated = count > MAX_RESTRICTION_ENZYMES;
+  const values: string[] = [];
+  const limit = Math.min(count, MAX_RESTRICTION_ENZYMES);
+  for (let index = 0; index < limit; index += 1) {
+    let descriptor: PropertyDescriptor | undefined;
+    try {
+      descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+    } catch {
+      values.push('<unreadable>');
+      continue;
+    }
+    if (!descriptor) {
+      values.push('<missing>');
+      continue;
+    }
+    if (!('value' in descriptor)) {
+      values.push('<accessor>');
+      continue;
+    }
+    const entry = descriptor.value;
+    values.push(typeof entry === 'string' ? entry : `<invalid ${entry === null ? 'null' : typeof entry}>`);
+  }
+  return { values, count, truncated };
 }
 
 function activeDoubleStrandSite(site: ReturnType<typeof findRestrictionSites>[number]): boolean {
@@ -240,10 +376,13 @@ function restrictionDigestResultFor(
   try {
     safeTopology = normalizeRestrictionTopology(topology);
   } catch (error) {
+    const requested = boundedRequestedEnzymeValues(enzymeNames);
     return {
       sequence: '',
       topology: 'linear',
-      requestedEnzymes: requestedEnzymeValues(enzymeNames),
+      // Preserve the historical invalid-topology receipt shape for oversized
+      // requests while retaining a bounded count/truncation signal.
+      requestedEnzymes: requested.truncated ? [] : requested.values,
       resolvedEnzymes: [],
       unknownEnzymes: [],
       sites: [],
@@ -254,6 +393,10 @@ function restrictionDigestResultFor(
         message: error instanceof Error ? error.message : 'Invalid restriction topology.',
       }],
       cutCount: 0,
+      ...(requested.truncated ? {
+        requestedEnzymeCount: requested.count,
+        requestedEnzymesTruncated: true,
+      } : {}),
     };
   }
   let normalizedEnzymeNames: string[];
@@ -280,6 +423,34 @@ function restrictionDigestResultFor(
       cuts: [],
       fragments: [],
       issues: [{ code: 'invalid_sequence', message }],
+      cutCount: 0,
+    };
+  }
+  let canonicalFeatures: Feature[];
+  try {
+    canonicalFeatures = snapshotFeatureCollection(features, {
+      label: 'Restriction digest features',
+      sequenceLength: normalized.length,
+      allowCircularWrap: safeTopology === 'circular',
+    });
+  } catch (error) {
+    const validation = error instanceof FeatureCollectionInputError ? error.validation : null;
+    return {
+      sequence: normalized,
+      topology: safeTopology,
+      requestedEnzymes: normalizedEnzymeNames,
+      resolvedEnzymes: [],
+      unknownEnzymes: [],
+      sites: [],
+      cuts: [],
+      fragments: [],
+      issues: validation?.issues.map((issue) => ({
+        code: issue.code,
+        message: issue.message,
+      })) ?? [{
+        code: 'invalid_feature' as const,
+        message: 'Restriction digest features could not be inspected as bounded data.',
+      }],
       cutCount: 0,
     };
   }
@@ -404,10 +575,44 @@ function restrictionDigestResultFor(
     issues,
     cutCount: cuts.length,
   };
+
+  // Feature validation bounds the input collection itself. A digest can still
+  // multiply that bounded collection by every prospective fragment/span pair,
+  // so perform a second, digest-specific preflight before constructing even a
+  // single annotated fragment. This keeps a large valid-looking input from
+  // turning into an unbounded feature-remapping allocation.
+  if (issues.length === 0 && normalized.length > 0) {
+    const fragmentCount = safeTopology === 'circular'
+      ? (cuts.length > 0 ? cuts.length : 1)
+      : cuts.length + 1;
+    const sourceSpanCount = safeTopology === 'circular'
+      ? (cuts.length > 0 ? cuts.length + 1 : 1)
+      : fragmentCount;
+    const featureMapping = restrictionFeatureMappingReceipt(
+      canonicalFeatures,
+      fragmentCount,
+      sourceSpanCount,
+      safeTopology,
+      normalized.length,
+    );
+    base.featureMapping = featureMapping;
+    if (!featureMapping.complete) {
+      base.issues = [...base.issues, {
+        code: 'feature_mapping_work_limit',
+        message: `Restriction digest feature mapping requires ${featureMapping.estimatedWorkUnits.toLocaleString()} bounded units across ${featureMapping.featureCount.toLocaleString()} features and ${featureMapping.fragmentCount.toLocaleString()} fragments, above the ${featureMapping.maxWorkUnits.toLocaleString()}-unit safety limit.`,
+        required: `feature pieces × source spans + feature traversals <= ${featureMapping.maxWorkUnits.toLocaleString()} units`,
+        observed: featureMapping.estimatedWorkUnits.toLocaleString(),
+      }];
+      return base;
+    }
+  }
+
   // Conditional or physically impossible outcomes never become an intact or
   // partially digested success. Callers can inspect the exact issue and sites.
   if (issues.length > 0 || normalized.length === 0 || cuts.length === 0) {
-    if (issues.length === 0 && normalized.length > 0) base.fragments = [wholeFragment(normalized, features)];
+    if (issues.length === 0 && normalized.length > 0) {
+      base.fragments = [wholeFragment(normalized, safeTopology, canonicalFeatures)];
+    }
     return base;
   }
 
@@ -420,7 +625,7 @@ function restrictionDigestResultFor(
     }))
     .sort((a, b) => a.site.cutPosition - b.site.cutPosition);
   const uniqueCuts = cutRecords.filter((cut, index) => index === 0 || cut.site.cutPosition !== cutRecords[index - 1].site.cutPosition);
-  const featureSlicers = buildFeatureSlicers(normalized, safeTopology, features);
+  const featureSlicers = buildFeatureSlicers(normalized, safeTopology, canonicalFeatures);
 
   const endFor = (record: typeof uniqueCuts[number], side: 'left' | 'right'): FragmentEnd => {
     const enzyme = record.enzyme;
@@ -531,7 +736,13 @@ export function digestPreviewDetailed(
   unknownEnzymes: string[];
 } {
   const result = restrictionDigestResultFor(seq, enzymeNames, topology, undefined, enzymeCatalog, options);
-  const counts = new Map<string, number>(enzymeNames.map((name) => [name, 0]));
+  // Counts use one canonical identity model: resolved catalog names for known
+  // enzymes and the first normalized spelling for unknown requests. This
+  // avoids returning both `ecori` and `EcoRI` keys for one requested enzyme.
+  const counts = new Map<string, number>([
+    ...result.resolvedEnzymes.map((name) => [name, 0] as const),
+    ...result.unknownEnzymes.map((name) => [name, 0] as const),
+  ]);
   for (const site of result.sites) {
     if (!activeDoubleStrandSite(site)) continue;
     counts.set(site.enzyme, (counts.get(site.enzyme) ?? 0) + 1);
@@ -568,7 +779,7 @@ export function restrictionDigestDetailed(
   seq: string,
   enzymeNames: string[],
   topology: Topology = 'linear',
-  features?: Feature[],
+  features?: readonly Feature[],
   enzymeCatalog: readonly RestrictionEnzyme[] = RESTRICTION_ENZYMES_FULL,
   options?: RestrictionDigestOptions,
 ): RestrictionDigestResult {
@@ -587,7 +798,7 @@ export function restrictionDigest(
   seq: string,
   enzymeNames: string[],
   topology: Topology = 'linear',
-  features?: Feature[],
+  features?: readonly Feature[],
   enzymeCatalog: readonly RestrictionEnzyme[] = RESTRICTION_ENZYMES_FULL,
   options?: RestrictionDigestOptions,
 ): DigestFragment[] {

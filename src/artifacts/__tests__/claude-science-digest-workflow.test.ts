@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { RESTRICTION_ENZYMES_FULL } from '../../bio/enzyme-data';
+import { MAX_SUBRANGES_PER_FEATURE } from '../../bio/feature-bounds';
+import { MAX_RESTRICTION_ENZYMES, MAX_RESTRICTION_RESULT_SITES } from '../../bio/restriction-sites';
 import type { Feature, RestrictionEnzyme, Topology } from '../../bio/types';
 import { buildDigestRecipe, type DigestRecipe } from '../claude-science-digest-recipe';
 import {
@@ -56,6 +58,7 @@ function materialize(
   return materializeDigestWorkflow({
     sourceRecord: record,
     recipe,
+    enzymeCatalog: overrides.enzymeCatalog ?? recipe.enzymes.map((entry) => entry.enzyme),
     workflow: {
       id: 'digest-workflow-1',
       createdAt: CREATED_AT,
@@ -437,6 +440,96 @@ describe('Claude Science digest workflow materialization', () => {
     ]);
   });
 
+  it('materializes aggregate origin-wrap features as bounded tail/head annotations', () => {
+    const source = sourceRecord('GAATTCAAAAGAATTC', 'circular', [
+      {
+        id: 'forward-wrap',
+        name: 'forward wrap',
+        type: 'cds',
+        start: 12,
+        end: 1,
+        strand: 1,
+        color: '#aaaaaa',
+        metadata: { source: 'aggregate' },
+      },
+      {
+        id: 'reverse-wrap',
+        name: 'reverse wrap',
+        type: 'cds',
+        start: 12,
+        end: 1,
+        strand: -1,
+        color: '#bbbbbb',
+        metadata: { source: 'aggregate' },
+      },
+    ]);
+    const result = materialize(source, recipeFor(source, 'EcoRI'));
+    const wrapping = result.records.find((record) => record.provenance.wrapsOrigin);
+
+    expect(wrapping?.annotations).toEqual([
+      expect.objectContaining({
+        id: 'digest-feature-1',
+        name: 'forward wrap',
+        start: 1,
+        end: 6,
+        strand: 1,
+        subRanges: [
+          { start: 1, end: 5, strand: 1 },
+          { start: 5, end: 6, strand: 1 },
+        ],
+        metadata: expect.objectContaining({
+          source: 'aggregate',
+          sourceFeatureId: 'forward-wrap',
+        }),
+      }),
+      expect.objectContaining({
+        id: 'digest-feature-2',
+        name: 'reverse wrap',
+        start: 1,
+        end: 6,
+        strand: -1,
+        subRanges: [
+          { start: 5, end: 6, strand: -1 },
+          { start: 1, end: 5, strand: -1 },
+        ],
+        metadata: expect.objectContaining({
+          source: 'aggregate',
+          sourceFeatureId: 'reverse-wrap',
+        }),
+      }),
+    ]);
+  });
+
+  it('keeps explicit origin subranges intact when their aggregate envelope wraps', () => {
+    const source = sourceRecord('GAATTCAAAAGAATTC', 'circular', [{
+      id: 'explicit-wrap',
+      name: 'explicit wrap',
+      type: 'cds',
+      start: 12,
+      end: 1,
+      strand: 1,
+      color: '#aaaaaa',
+      metadata: { source: 'explicit' },
+      subRanges: [
+        { start: 12, end: 16, strand: 1 },
+        { start: 0, end: 1, strand: 1 },
+      ],
+    }]);
+    const result = materialize(source, recipeFor(source, 'EcoRI'));
+    const wrapping = result.records.find((record) => record.provenance.wrapsOrigin);
+
+    expect(wrapping?.annotations).toMatchObject([{
+      name: 'explicit wrap',
+      start: 1,
+      end: 6,
+      subRanges: [
+        { start: 1, end: 5, strand: 1 },
+        { start: 5, end: 6, strand: 1 },
+      ],
+      metadata: expect.objectContaining({ source: 'explicit' }),
+    }]);
+  });
+
   it('accepts caller identities while enforcing count, id, and case-insensitive name uniqueness atomically', () => {
     const source = sourceRecord('AAAAGAATTCTTTT');
     const recipe = recipeFor(source, 'EcoRI');
@@ -480,6 +573,198 @@ describe('Claude Science digest workflow materialization', () => {
         (_, index) => `existing-${index}`,
       ),
     })).toMatchErrorCode('resource-limit');
+
+    const inventoryAt98 = Array.from(
+      { length: MAX_DIGEST_WORKFLOW_RECORDS - 2 },
+      (_, index) => ({ id: index === 0 ? source.id : `existing-${index}`, name: index === 0 ? source.name : `Existing ${index}` }),
+    );
+    expect(materialize(source, recipe, {
+      existingRecordIds: inventoryAt98.map(({ id }) => id),
+      existingRecordNames: inventoryAt98.map(({ name }) => name),
+    }).records).toHaveLength(2);
+
+    const uncutRecipe = recipeFor(source, 'BamHI');
+    const fullInventory = Array.from(
+      { length: MAX_DIGEST_WORKFLOW_RECORDS },
+      (_, index) => ({ id: index === 0 ? source.id : `full-${index}`, name: index === 0 ? source.name : `Full ${index}` }),
+    );
+    expect(materialize(source, uncutRecipe, {
+      existingRecordIds: fullInventory.map(({ id }) => id),
+      existingRecordNames: fullInventory.map(({ name }) => name),
+    }).records).toHaveLength(0);
+  });
+
+  it('reads only allowlisted digest input fields and never evaluates unknown accessors', () => {
+    const source = sourceRecord('AAAAGAATTCTTTT');
+    const recipe = recipeFor(source, 'EcoRI');
+    const input: MaterializeDigestWorkflowInput = {
+      sourceRecord: source,
+      recipe,
+      enzymeCatalog: RESTRICTION_ENZYMES_FULL,
+      workflow: {
+        id: 'digest-workflow-1',
+        createdAt: CREATED_AT,
+      },
+    };
+    let unknownReads = 0;
+    Object.defineProperty(input, 'unknown', {
+      configurable: true,
+      enumerable: true,
+      get() {
+        unknownReads += 1;
+        return 'should not be copied';
+      },
+    });
+    const result = materializeDigestWorkflow(input);
+    expect(result.records).toHaveLength(2);
+    expect(unknownReads).toBe(0);
+
+    let workflowReads = 0;
+    const accessorInput: MaterializeDigestWorkflowInput = {
+      sourceRecord: source,
+      recipe,
+      enzymeCatalog: RESTRICTION_ENZYMES_FULL,
+      workflow: input.workflow,
+    };
+    Object.defineProperty(accessorInput, 'workflow', {
+      configurable: true,
+      enumerable: true,
+      get() {
+        workflowReads += 1;
+        return input.workflow;
+      },
+    });
+    expect(() => materializeDigestWorkflow(accessorInput)).toMatchErrorCode('invalid-recipe');
+    expect(workflowReads).toBe(0);
+  });
+
+  it('snapshots output identities, source tags, and workflow timestamps without invoking accessors', () => {
+    const source = sourceRecord('AAAAGAATTCTTTT');
+    const recipe = recipeFor(source, 'EcoRI');
+    const accessorIdentity = { id: 'left-arm' };
+    let identityReads = 0;
+    Object.defineProperty(accessorIdentity, 'id', {
+      configurable: true,
+      enumerable: true,
+      get() {
+        identityReads += 1;
+        return 'left-arm';
+      },
+    });
+    expect(() => materialize(source, recipe, {
+      outputIdentities: [accessorIdentity, { id: 'right-arm' }],
+    })).toMatchErrorCode('invalid-recipe');
+    expect(identityReads).toBe(0);
+
+    expect(() => materialize(source, recipe, {
+      outputIdentities: new Array(MAX_DIGEST_WORKFLOW_FRAGMENTS + 1) as never,
+    })).toMatchErrorCode('resource-limit');
+    expect(() => materialize(source, recipe, {
+      outputIdentities: new Array(2) as never,
+    })).toMatchErrorCode('invalid-recipe');
+
+    const accessorTags = sourceRecord(source.sequence);
+    let tagReads = 0;
+    Object.defineProperty(accessorTags, 'tags', {
+      configurable: true,
+      enumerable: true,
+      get() {
+        tagReads += 1;
+        return ['diagnostic'];
+      },
+    });
+    expect(() => materialize(accessorTags, recipe)).toMatchErrorCode('invalid-source');
+    expect(tagReads).toBe(0);
+    expect(() => materialize({ ...source, tags: new Array(101) as string[] }, recipe))
+      .toMatchErrorCode('resource-limit');
+    expect(() => materialize({ ...source, tags: new Array(1) as string[] }, recipe))
+      .toMatchErrorCode('invalid-source');
+
+    const accessorWorkflow = {
+      id: 'digest-workflow-1',
+      createdAt: CREATED_AT,
+    };
+    let createdAtReads = 0;
+    Object.defineProperty(accessorWorkflow, 'createdAt', {
+      configurable: true,
+      enumerable: true,
+      get() {
+        createdAtReads += 1;
+        return CREATED_AT;
+      },
+    });
+    expect(() => materializeDigestWorkflow({
+      sourceRecord: source,
+      recipe,
+      enzymeCatalog: RESTRICTION_ENZYMES_FULL,
+      workflow: accessorWorkflow,
+    })).toMatchErrorCode('invalid-recipe');
+    expect(createdAtReads).toBe(0);
+  });
+
+  it('snapshots source-record fields before validation without invoking accessors', () => {
+    const source = sourceRecord('AAAAGAATTCTTTT');
+    const recipe = recipeFor(source, 'EcoRI');
+    let sequenceReads = 0;
+    Object.defineProperty(source, 'sequence', {
+      configurable: true,
+      enumerable: true,
+      get() {
+        sequenceReads += 1;
+        return 'AAAAGAATTCTTTT';
+      },
+    });
+
+    expect(() => materialize(source, recipe)).toMatchErrorCode('invalid-source');
+    expect(sequenceReads).toBe(0);
+
+    for (const [key, malformed] of [
+      ['translationTableId', { id: 1 }],
+      ['organism', { name: 'mutable' }],
+      ['group', { name: 'mutable' }],
+    ] as const) {
+      expect(() => materialize({ ...sourceRecord('AAAAGAATTCTTTT'), [key]: malformed }, recipe))
+        .toMatchErrorCode('invalid-source');
+    }
+    expect(() => materialize({ ...sourceRecord('AAAAGAATTCTTTT'), translationTableId: 999 }, recipe))
+      .toMatchErrorCode('invalid-source');
+    for (const active of [1, 'true', {}, []]) {
+      expect(() => materialize({ ...sourceRecord('AAAAGAATTCTTTT'), active } as never, recipe))
+        .toMatchErrorCode('invalid-source');
+    }
+    expect(() => materialize({
+      ...sourceRecord('AAAAGAATTCTTTT'),
+      description: 'x'.repeat(16_385),
+    }, recipe)).toMatchErrorCode('resource-limit');
+  });
+
+  it('rejects oversized existing-record indexes before copying or reading their entries', () => {
+    const source = sourceRecord('AAAAGAATTCTTTT');
+    const recipe = recipeFor(source, 'EcoRI');
+    for (const key of ['existingRecordIds', 'existingRecordNames'] as const) {
+      const entries = new Array(100_000) as string[];
+      let entryReads = 0;
+      Object.defineProperty(entries, '0', {
+        configurable: true,
+        enumerable: true,
+        get() {
+          entryReads += 1;
+          return 'should not be read';
+        },
+      });
+      const input: MaterializeDigestWorkflowInput = {
+        sourceRecord: source,
+        recipe,
+        enzymeCatalog: RESTRICTION_ENZYMES_FULL,
+        workflow: {
+          id: 'digest-workflow-1',
+          createdAt: CREATED_AT,
+        },
+        [key]: entries,
+      } as MaterializeDigestWorkflowInput;
+      expect(() => materializeDigestWorkflow(input)).toMatchErrorCode('resource-limit');
+      expect(entryReads).toBe(0);
+    }
   });
 
   it('rejects inactive/non-DNA sources and stale, invalid, or geometrically altered recipes', () => {
@@ -499,6 +784,132 @@ describe('Claude Science digest workflow materialization', () => {
       )),
     };
     expect(() => materialize(source, altered)).toMatchErrorCode('incoherent-recipe');
+  });
+
+  it('rebuilds geometry from the separately supplied catalog instead of trusting mutable recipe enzyme objects', () => {
+    const authoritative: RestrictionEnzyme = {
+      name: 'BluntI',
+      recognitionSequence: 'GGG',
+      cutOffset: 1,
+      complementCutOffset: 1,
+      overhang: 'blunt',
+    };
+    const source = sourceRecord('AAAGGGTTT');
+    const recipe = recipeFor(source, 'BluntI', [{ ...authoritative }]);
+    recipe.enzymes[0].enzyme.cutOffset = 999;
+    recipe.enzymes[0].enzyme.complementCutOffset = -999;
+
+    const result = materialize(source, recipe, { enzymeCatalog: [authoritative] });
+
+    expect(result.records.map((record) => record.seq)).toEqual(['AAAG', 'GGTTT']);
+    expect(result.workflowResult.parameters.enzymeGeometry).toEqual([
+      expect.objectContaining({ name: 'BluntI', cutOffset: 1, complementCutOffset: 1 }),
+    ]);
+  });
+
+  it('rejects oversized or accessor-backed recipe collections before traversing them', () => {
+    const source = sourceRecord('AAAAGAATTCTTTT');
+    const recipe = recipeFor(source, 'EcoRI');
+    expect(() => materialize(source, {
+      ...recipe,
+      sites: new Array(MAX_RESTRICTION_RESULT_SITES + 1),
+    })).toMatchErrorCode('resource-limit');
+
+    let accessorReads = 0;
+    const accessorEntries = Array.from({ length: MAX_RESTRICTION_ENZYMES + 1 }, () => recipe.enzymes[0]);
+    Object.defineProperty(accessorEntries, '0', {
+      get() {
+        accessorReads += 1;
+        return recipe.enzymes[0];
+      },
+    });
+    expect(() => materialize(source, { ...recipe, enzymes: accessorEntries }, {
+      enzymeCatalog: RESTRICTION_ENZYMES_FULL,
+    }))
+      .toMatchErrorCode('resource-limit');
+    expect(accessorReads).toBe(0);
+  });
+
+  it('bounds methylation-assumption keys and never evaluates their accessors', () => {
+    const source = sourceRecord('AAAAGATCTTTT');
+    const recipe = recipeFor(source, 'DpnI');
+    const assumptions = Object.fromEntries([
+      ['dam', 'methylated'],
+      ['dcm', 'unknown'],
+      ['cpg', 'unknown'],
+      ['custom', 'unknown'],
+      ...Array.from({ length: 50_000 }, (_, index) => [`extra-${index}`, 'unknown']),
+    ]);
+    const originalObjectKeys = Object.keys;
+    let completeKeyEnumerationAttempted = false;
+    Object.keys = ((value: object) => {
+      if (value === assumptions) completeKeyEnumerationAttempted = true;
+      return originalObjectKeys(value);
+    }) as typeof Object.keys;
+    try {
+      expect(() => materialize(source, { ...recipe, methylationAssumptions: assumptions as never }))
+        .toMatchErrorCode('invalid-recipe');
+      expect(completeKeyEnumerationAttempted).toBe(false);
+    } finally {
+      Object.keys = originalObjectKeys;
+    }
+
+    let accessorReads = 0;
+    const accessorAssumptions = Object.defineProperty({}, 'dam', {
+      configurable: true,
+      enumerable: true,
+      get() {
+        accessorReads += 1;
+        return 'methylated';
+      },
+    });
+    expect(() => materialize(source, { ...recipe, methylationAssumptions: accessorAssumptions as never }))
+      .toMatchErrorCode('invalid-recipe');
+    expect(accessorReads).toBe(0);
+  });
+
+  it('rejects sparse, accessor-backed, and excessive source feature pieces before remapping', () => {
+    const source = sourceRecord('AAAAGAATTCTTTT');
+    const recipe = recipeFor(source, 'EcoRI');
+    expect(() => materialize({ ...source, features: new Array(1) as Feature[] }, recipe))
+      .toMatchErrorCode('invalid-source');
+
+    let accessorReads = 0;
+    const accessorFeature = {
+      id: 'accessor',
+      name: 'accessor',
+      type: 'misc_feature',
+      end: 2,
+      strand: 1,
+      color: '#abcdef',
+      metadata: {},
+    } as unknown as Feature;
+    Object.defineProperty(accessorFeature, 'start', {
+      get() {
+        accessorReads += 1;
+        return 0;
+      },
+    });
+    expect(() => materialize({ ...source, features: [accessorFeature] }, recipe))
+      .toMatchErrorCode('invalid-source');
+    expect(accessorReads).toBe(0);
+
+    const excessive: Feature = {
+      id: 'excessive',
+      name: 'excessive pieces',
+      type: 'misc_feature',
+      start: 0,
+      end: source.sequence.length,
+      strand: 1,
+      color: '#abcdef',
+      metadata: {},
+      subRanges: Array.from(
+        { length: MAX_SUBRANGES_PER_FEATURE + 1 },
+        () => ({ start: 0, end: 1, strand: 1 }),
+      ),
+    };
+    expect(() => materialize({ ...source, features: [excessive] }, recipe))
+      .toMatchErrorCode('resource-limit');
   });
 
   it('bounds pathological digests before they can exceed the portable workspace record limit', () => {
