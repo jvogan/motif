@@ -323,6 +323,25 @@ describe('restriction-site scanning', () => {
     expect(result.requestedEnzymesTruncated).toBe(true);
   });
 
+  it('does not invoke rejected enzyme-name accessors while building failure receipts', () => {
+    let accessorReads = 0;
+    const requested: string[] = [];
+    Object.defineProperty(requested, '0', {
+      configurable: true,
+      enumerable: true,
+      get() {
+        accessorReads += 1;
+        return 'EcoRI';
+      },
+    });
+    requested.length = 1;
+
+    const result = restrictionDigestDetailed('GAATTC', requested);
+    expect(result.issues[0]).toMatchObject({ code: 'invalid_enzyme_name' });
+    expect(result.requestedEnzymes).toEqual(['<accessor>']);
+    expect(accessorReads).toBe(0);
+  });
+
   it('rejects sparse enzyme-name and catalog arrays before indexing them', () => {
     const sparseNames = new Array<string>(1);
     expect(() => normalizeRestrictionEnzymeNames(sparseNames)).toThrow(/sparse|missing/i);

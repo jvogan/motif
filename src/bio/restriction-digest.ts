@@ -308,12 +308,23 @@ function boundedRequestedEnzymeValues(value: unknown): { values: string[]; count
   const values: string[] = [];
   const limit = Math.min(count, MAX_RESTRICTION_ENZYMES);
   for (let index = 0; index < limit; index += 1) {
+    let descriptor: PropertyDescriptor | undefined;
     try {
-      const entry = value[index];
-      values.push(typeof entry === 'string' ? entry : `<invalid ${entry === null ? 'null' : typeof entry}>`);
+      descriptor = Object.getOwnPropertyDescriptor(value, String(index));
     } catch {
       values.push('<unreadable>');
+      continue;
     }
+    if (!descriptor) {
+      values.push('<missing>');
+      continue;
+    }
+    if (!('value' in descriptor)) {
+      values.push('<accessor>');
+      continue;
+    }
+    const entry = descriptor.value;
+    values.push(typeof entry === 'string' ? entry : `<invalid ${entry === null ? 'null' : typeof entry}>`);
   }
   return { values, count, truncated };
 }
