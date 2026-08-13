@@ -9,9 +9,9 @@
   and rejected malformed runtime Tm option objects.
 - Made release-publish arguments strict, added manual release-review refreshes,
   and increased the legibility of primer interaction review controls.
-- Bounded restriction result cardinality and derived-feature mapping work,
-  rejected sparse or accessor-backed enzyme inputs, and tightened circular
-  feature-envelope validation.
+- Bounded restriction result cardinality, feature-metadata enumeration, and
+  derived-feature mapping work; rejected sparse or accessor-backed enzyme
+  inputs; and tightened circular feature-envelope validation.
 - Recomputed saved digest geometry from an authoritative bounded catalog,
   snapshot source annotations before remapping, and detached enzyme evidence
   from caller-owned catalog objects.
