@@ -103,6 +103,30 @@ describe('Golden Gate hardening', () => {
     expect(formattedFeature.normalizationDiagnostics).toContainEqual(expect.objectContaining({
       code: 'formatting_with_features',
     }));
+
+    const lowercaseVector = buildSyntheticGoldenGateVector('ACGC', 'TGCC', {
+      enzyme: 'BsaI',
+      filler: 'ACTGACTGACTGACTGACTG',
+    });
+    const lowercaseFeature = validateGoldenGateOverhangs([{
+      name: 'lowercase-feature',
+      sequence: lowercaseVector.sequence.toLowerCase(),
+      features: [{
+        id: 'feature',
+        name: 'feature',
+        type: 'misc_feature',
+        start: 0,
+        end: lowercaseVector.sequence.length,
+        strand: 1,
+        color: '#000000',
+        metadata: {},
+      }],
+    }], 'BsaI');
+    expect(lowercaseFeature.valid).toBe(true);
+    expect(lowercaseFeature.normalizationDiagnostics).toContainEqual(expect.objectContaining({
+      code: 'formatting_normalized',
+      partName: 'lowercase-feature',
+    }));
   });
 
   it('exposes strict direct-scan diagnostics instead of silently missing malformed input', () => {

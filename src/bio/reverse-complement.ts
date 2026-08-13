@@ -69,6 +69,7 @@ export function reverseComplementFeatures(features: readonly Feature[], seqLengt
   const canonicalFeatures = snapshotFeatureCollection(features, {
     label: 'Reverse-complement features',
     sequenceLength: seqLength,
+    allowCircularWrap: true,
   });
   return canonicalFeatures.map((f) => cloneCanonicalFeature(f, {
     id: crypto.randomUUID(),

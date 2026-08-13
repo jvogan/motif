@@ -505,12 +505,13 @@ function normalizeGoldenGatePart(value: unknown): {
     });
   }
   const formattingNormalized = inspected.sequence !== part.sequence;
-  if (formattingNormalized && part.features !== undefined) {
+  const whitespaceNormalized = part.sequence.replace(/\s+/g, '').length !== part.sequence.length;
+  if (whitespaceNormalized && part.features !== undefined) {
     diagnostics.push({
       code: 'formatting_with_features',
       partName: part.name,
       ...(part.id ? { partId: part.id } : {}),
-      message: `Part "${part.name}" contains features and formatting whitespace/case changes; reject normalization to preserve feature coordinates.`,
+      message: `Part "${part.name}" contains features and formatting whitespace changes; reject normalization to preserve feature coordinates.`,
     });
   } else if (formattingNormalized && diagnostics.length === 0) {
     diagnostics.push({

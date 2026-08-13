@@ -345,7 +345,7 @@ describe('PCR amplicon materialization', () => {
       schema: 'motif.primer.evidence-review.v1',
       required: true,
       acknowledged: true,
-      reasonCodes: ['cross-dimer-3-prime'],
+      reasonCodes: ['cross-dimer-cutoff'],
       acknowledgedAt: '2026-07-17T12:00:00.000Z',
     };
     const parameters: PrimerDesignParams = {
@@ -561,6 +561,27 @@ describe('PCR amplicon materialization', () => {
     const design = designPrimerPairWithDiagnostics(template, parameters);
     expect(design.warnings?.join(' ')).toMatch(/not exhaustive/iu);
     expect(design.pairs[0]).toBeDefined();
+    expect(() => materializePcrAmplicon({
+      sourceRecord: source(template),
+      selection: {
+        ...selection(design.pairs[0]),
+        parameters,
+        evidenceReview: {
+          schema: 'motif.primer.evidence-review.v1',
+          required: true,
+          acknowledged: true,
+          reasonCodes: ['cross-dimer-cutoff'],
+          acknowledgedAt: '2026-07-17T12:00:00.000Z',
+        },
+      },
+      identity: {
+        recordId: 'stale-review-record',
+        resultId: 'stale-review-result',
+        productId: 'stale-review-product',
+        createdAt: '2026-07-17T12:00:00.000Z',
+      },
+      primerDesignResultId: 'bounded-primer-result',
+    })).toThrow(/does not match the recomputed primer evidence/i);
     const result = materializePcrAmplicon({
       sourceRecord: source(template),
       selection: {
@@ -612,9 +633,9 @@ describe('PCR amplicon materialization', () => {
         ...selection(pair),
         evidenceReview: {
           schema: 'motif.primer.evidence-review.v1',
-          required: false,
+          required: true,
           acknowledged: false,
-          reasonCodes: [],
+          reasonCodes: ['cross-dimer-3-prime'],
           acknowledgedAt: 'not-a-timestamp',
         },
       },
@@ -630,7 +651,7 @@ describe('PCR amplicon materialization', () => {
       schema: 'motif.primer.evidence-review.v1',
       required: true,
       acknowledged: true,
-      reasonCodes: [],
+      reasonCodes: ['cross-dimer-3-prime'],
       acknowledgedAt: '2026-07-17T12:00:00.000Z',
     };
     for (let index = 0; index < 100_000; index += 1) review[`extra-${index}`] = true;
@@ -734,7 +755,7 @@ describe('PCR amplicon materialization', () => {
           schema: 'motif.primer.evidence-review.v1',
           required: true,
           acknowledged: true,
-          reasonCodes: [],
+          reasonCodes: ['cross-dimer-cutoff', 'cross-dimer-3-prime'],
           acknowledgedAt: '2026-07-17T12:00:00.000Z',
         },
       },

@@ -338,6 +338,15 @@ function derivedEvidenceReview(
     ) {
       throw new PcrMaterializationError('Evidence review does not match motif.primer.evidence-review.v1.');
     }
+    const requiredReview = reasonCodes.length > 0;
+    const suppliedReasonCodeSet = new Set(suppliedReasonCodes);
+    if (
+      required !== requiredReview
+      || suppliedReasonCodeSet.size !== reasonCodes.length
+      || reasonCodes.some((reasonCode) => !suppliedReasonCodeSet.has(reasonCode))
+    ) {
+      throw new PcrMaterializationError('Evidence review does not match the recomputed primer evidence.');
+    }
     reviewAcknowledged = acknowledged;
     reviewAcknowledgedAt = fields.acknowledgedAt;
   }

@@ -173,6 +173,14 @@ describe('feature location semantics', () => {
     expect(transformed.metadata).toEqual({ nested: { note: 'before' } });
   });
 
+  it('reverse-complements a supported origin-spanning feature envelope', () => {
+    const source = feature({ start: 14, end: 3, strand: 1 });
+
+    const transformed = reverseComplementFeatures([source], SEQUENCE.length)[0];
+
+    expect(transformed).toMatchObject({ start: 15, end: 4, strand: -1 });
+  });
+
   it('lets legacy pieces inherit the feature strand', () => {
     const legacy = feature({
       strand: -1,
