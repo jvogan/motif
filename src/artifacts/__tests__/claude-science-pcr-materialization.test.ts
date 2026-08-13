@@ -620,35 +620,44 @@ describe('PCR amplicon materialization', () => {
     })).toThrow(/timestamp is allowed only when the review is acknowledged/i);
   });
 
-  it('bounds review-field inspection without reflecting an unbounded key list', () => {
+  it('projects only known review fields without enumerating caller keys', () => {
     const template = 'AAAACCCCGGGGTTTTAAAACCCCGGGGTTTTAAAACCCC';
     const pair = pairFor(template, 2, 12, 24, 34);
     const review: Record<string, unknown> = {
       schema: 'motif.primer.evidence-review.v1',
-      required: false,
-      acknowledged: false,
+      required: true,
+      acknowledged: true,
       reasonCodes: [],
+      acknowledgedAt: '2026-07-17T12:00:00.000Z',
     };
     for (let index = 0; index < 100_000; index += 1) review[`extra-${index}`] = true;
-    const ownKeys = vi.spyOn(Reflect, 'ownKeys').mockImplementation(() => {
-      throw new Error('unbounded key reflection must not be used');
+    let ownKeysCalls = 0;
+    const guardedReview = new Proxy(review, {
+      ownKeys() {
+        ownKeysCalls += 1;
+        throw new Error('caller-key enumeration must not be used');
+      },
     });
-    try {
-      expect(() => materializePcrAmplicon({
-        sourceRecord: source(template),
-        selection: { ...selection(pair), evidenceReview: review as never },
-        identity: {
-          recordId: 'bounded-review-record',
-          resultId: 'bounded-review-result',
-          productId: 'bounded-review-product',
-          createdAt: '2026-07-17T12:00:00.000Z',
-        },
-        primerDesignResultId: 'primer-result',
-      })).toThrow(/Evidence review contains (?:too many fields|an unknown field)/i);
-      expect(ownKeys).not.toHaveBeenCalled();
-    } finally {
-      ownKeys.mockRestore();
-    }
+    const result = materializePcrAmplicon({
+      sourceRecord: source(template),
+      selection: { ...selection(pair), evidenceReview: guardedReview as never },
+      identity: {
+        recordId: 'bounded-review-record',
+        resultId: 'bounded-review-result',
+        productId: 'bounded-review-product',
+        createdAt: '2026-07-17T12:00:00.000Z',
+      },
+      primerDesignResultId: 'primer-result',
+    });
+    expect(ownKeysCalls).toBe(0);
+    expect(result.record.provenance.evidenceReview).toMatchObject({
+      schema: 'motif.primer.evidence-review.v1',
+      assertion: {
+        schema: 'motif.primer.evidence-acknowledgment.v1',
+        acknowledged: true,
+      },
+    });
+    expect(result.record.provenance.evidenceReview).not.toHaveProperty('extra-0');
   });
 
   it('rejects review accessors without evaluating them', () => {
@@ -682,6 +691,34 @@ describe('PCR amplicon materialization', () => {
       'Evidence review fields must be own data properties.',
     ));
     expect(reads).toBe(0);
+  });
+
+  it('turns revoked reason-code proxies into typed invalid evidence', () => {
+    const template = 'AAAACCCCGGGGTTTTAAAACCCCGGGGTTTTAAAACCCC';
+    const pair = pairFor(template, 2, 12, 24, 34);
+    const revoked = Proxy.revocable([], {});
+    revoked.revoke();
+    expect(() => materializePcrAmplicon({
+      sourceRecord: source(template),
+      selection: {
+        ...selection(pair),
+        evidenceReview: {
+          schema: 'motif.primer.evidence-review.v1',
+          required: false,
+          acknowledged: false,
+          reasonCodes: revoked.proxy as never,
+        },
+      },
+      identity: {
+        recordId: 'revoked-review-record',
+        resultId: 'revoked-review-result',
+        productId: 'revoked-review-product',
+        createdAt: '2026-07-17T12:00:00.000Z',
+      },
+      primerDesignResultId: 'primer-result',
+    })).toThrowError(new PcrMaterializationError(
+      'Evidence review does not match motif.primer.evidence-review.v1.',
+    ));
   });
 
   it('omits an invalid linear template range for an origin-crossing product', () => {

@@ -177,23 +177,22 @@ function primerDesignIdentity(selection: PcrMaterializationSelection): string {
 
 const REVIEW_SCHEMA = 'motif.primer.evidence-review.v1' as const;
 const ACKNOWLEDGMENT_SCHEMA = 'motif.primer.evidence-acknowledgment.v1' as const;
-const MAX_EVIDENCE_REVIEW_KEYS = 5;
 const MAX_EVIDENCE_REVIEW_REASON_CODES = 64;
 
-const EVIDENCE_REVIEW_KEYS = new Set([
+const EVIDENCE_REVIEW_KEYS = [
   'schema',
   'required',
   'acknowledged',
   'reasonCodes',
   'acknowledgedAt',
-]);
+] as const;
 
 const MISSING_OWN_DATA_PROPERTY = Symbol('missing-own-data-property');
 const INVALID_OWN_DATA_PROPERTY = Symbol('invalid-own-data-property');
 
 function isPlainEvidenceReviewObject(value: unknown): value is Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
   try {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
     const prototype = Object.getPrototypeOf(value);
     return prototype === Object.prototype || prototype === null;
   } catch {
@@ -215,36 +214,16 @@ function ownEvidenceReviewDataProperty(
 }
 
 /**
- * Snapshot the small review receipt without allocating an unbounded key list.
- * A bounded for-in walk lets ordinary objects stop at the first excess
- * enumerable field; known non-enumerable fields are read by descriptor without
- * invoking accessors. Proxy traps can still throw, so callers receive a typed
- * materialization error rather than a raw exception.
+ * Snapshot only the fields that can affect the derived receipt. Extra caller
+ * fields are deliberately ignored and are never persisted. Descriptor probes
+ * avoid invoking accessors or enumerating arbitrary caller keys. Proxy traps
+ * can still throw, so callers receive a typed materialization error rather than
+ * a raw exception.
  */
 function boundedEvidenceReviewFields(assertion: Record<string, unknown>): Record<string, unknown> {
   const fields: Record<string, unknown> = {};
-  let enumerableOwnKeyCount = 0;
   try {
-    for (const key in assertion) {
-      const descriptor = Object.getOwnPropertyDescriptor(assertion, key);
-      if (!descriptor) continue;
-      enumerableOwnKeyCount += 1;
-      if (enumerableOwnKeyCount > MAX_EVIDENCE_REVIEW_KEYS) {
-        throw new PcrMaterializationError('Evidence review contains too many fields.');
-      }
-      if (!EVIDENCE_REVIEW_KEYS.has(key)) {
-        throw new PcrMaterializationError('Evidence review contains an unknown field.');
-      }
-      if (!Object.hasOwn(descriptor, 'value')) {
-        throw new PcrMaterializationError('Evidence review fields must be own data properties.');
-      }
-      fields[key] = descriptor.value;
-    }
-
-    // A receipt normally arrives as JSON, but inspect the known keys directly
-    // so non-enumerable inputs cannot hide accessor fields or alter semantics.
     for (const key of EVIDENCE_REVIEW_KEYS) {
-      if (Object.hasOwn(fields, key)) continue;
       const value = ownEvidenceReviewDataProperty(assertion, key);
       if (value === MISSING_OWN_DATA_PROPERTY) continue;
       if (value === INVALID_OWN_DATA_PROPERTY) {
@@ -260,18 +239,22 @@ function boundedEvidenceReviewFields(assertion: Record<string, unknown>): Record
 }
 
 function boundedEvidenceReasonCodes(value: unknown): string[] | null {
-  if (!Array.isArray(value)) return null;
-  const lengthValue = ownEvidenceReviewDataProperty(value, 'length');
-  if (lengthValue === MISSING_OWN_DATA_PROPERTY || lengthValue === INVALID_OWN_DATA_PROPERTY) return null;
-  if (typeof lengthValue !== 'number' || !Number.isSafeInteger(lengthValue) || lengthValue > MAX_EVIDENCE_REVIEW_REASON_CODES) return null;
-  const reasonCodes: string[] = [];
-  for (let index = 0; index < lengthValue; index += 1) {
-    const item = ownEvidenceReviewDataProperty(value, String(index));
-    if (item === MISSING_OWN_DATA_PROPERTY || item === INVALID_OWN_DATA_PROPERTY) return null;
-    if (typeof item !== 'string' || item.length === 0 || item.length > 64) return null;
-    reasonCodes.push(item);
+  try {
+    if (!Array.isArray(value)) return null;
+    const lengthValue = ownEvidenceReviewDataProperty(value, 'length');
+    if (lengthValue === MISSING_OWN_DATA_PROPERTY || lengthValue === INVALID_OWN_DATA_PROPERTY) return null;
+    if (typeof lengthValue !== 'number' || !Number.isSafeInteger(lengthValue) || lengthValue > MAX_EVIDENCE_REVIEW_REASON_CODES) return null;
+    const reasonCodes: string[] = [];
+    for (let index = 0; index < lengthValue; index += 1) {
+      const item = ownEvidenceReviewDataProperty(value, String(index));
+      if (item === MISSING_OWN_DATA_PROPERTY || item === INVALID_OWN_DATA_PROPERTY) return null;
+      if (typeof item !== 'string' || item.length === 0 || item.length > 64) return null;
+      reasonCodes.push(item);
+    }
+    return reasonCodes;
+  } catch {
+    return null;
   }
-  return reasonCodes;
 }
 
 function derivedTmEvidence(
