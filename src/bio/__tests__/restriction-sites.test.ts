@@ -8,6 +8,7 @@ import {
   findRestrictionSites,
   isActiveDoubleStrandRestrictionSite,
   MAX_RESTRICTION_ENZYMES,
+  MAX_RESTRICTION_RESULT_BYTES,
   MAX_RESTRICTION_RESULT_SITES,
   RestrictionScanResultLimitError,
   normalizeRestrictionEnzymeNames,
@@ -286,6 +287,36 @@ describe('restriction-site scanning', () => {
     expect(detailed.issues.at(-1)).toMatchObject({ code: 'result_limit' });
     expect(() => findRestrictionSites(sequence, [anyBase('Any-A'), anyBase('Any-B')]))
       .toThrow(RestrictionScanResultLimitError);
+  });
+
+  it('charges repeated methylation evidence using serialized UTF-8 bytes', () => {
+    const evidenceText = `${'\u0800'.repeat(4_000)}"\\`;
+    const evidence = {
+      source: evidenceText,
+      sourceLabel: evidenceText,
+      conditions: evidenceText,
+      limitation: evidenceText,
+    };
+    const methylationSensitive: RestrictionEnzyme = {
+      name: 'EvidenceHeavyI',
+      recognitionSequence: 'A',
+      cutOffset: 0,
+      complementCutOffset: 0,
+      overhang: 'blunt',
+      methylationRequirement: {
+        target: 'custom',
+        state: 'methylated',
+        evidence,
+      },
+    };
+
+    const detailed = scanRestrictionSites('A'.repeat(1_000), [methylationSensitive]);
+    expect(detailed.complete).toBe(false);
+    expect(detailed.sites.length).toBeLessThan(1_000);
+    expect(detailed.issues[0]?.evidence).toEqual(evidence);
+    expect(detailed.issues.at(-1)).toMatchObject({ code: 'result_limit' });
+    expect(new TextEncoder().encode(JSON.stringify(detailed)).byteLength)
+      .toBeLessThanOrEqual(MAX_RESTRICTION_RESULT_BYTES);
   });
 
   it('normalizes classifier identities and digest-preview count keys once', () => {

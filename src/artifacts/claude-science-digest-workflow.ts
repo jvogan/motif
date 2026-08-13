@@ -191,8 +191,12 @@ function fail(code: DigestWorkflowErrorCode, message: string): never {
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
+  try {
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
+  } catch {
+    return false;
+  }
 }
 
 function ownDataProperty(
@@ -247,25 +251,29 @@ function normalizeMethylationAssumptions(value: unknown): RestrictionMethylation
   if (!isPlainObject(value)) {
     fail('invalid-recipe', 'Digest methylation assumptions must be a state or a plain target-state object.');
   }
-  let keys: string[];
+  const entries: Array<{ key: string; descriptor: PropertyDescriptor }> = [];
   try {
-    keys = Object.keys(value);
-  } catch {
+    for (const key in value) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor?.enumerable) continue;
+      if (entries.length >= METHYLATION_TARGETS.size) {
+        fail('invalid-recipe', 'Digest methylation assumptions contain too many targets.');
+      }
+      entries.push({ key, descriptor });
+    }
+  } catch (error) {
+    if (error instanceof DigestWorkflowMaterializationError) throw error;
     fail('invalid-recipe', 'Digest methylation assumptions could not be inspected safely.');
   }
-  if (keys.length > METHYLATION_TARGETS.size) {
-    fail('invalid-recipe', 'Digest methylation assumptions contain too many targets.');
-  }
   const normalized: Partial<Record<'dam' | 'dcm' | 'cpg' | 'custom', 'unknown' | 'methylated' | 'unmethylated'>> = {};
-  for (const key of keys) {
+  for (const { key, descriptor } of entries) {
     if (!METHYLATION_TARGETS.has(key)) {
       fail('invalid-recipe', `Digest methylation assumptions contain unknown target "${key}".`);
     }
-    const state = ownDataProperty(value, key);
-    if (state === INVALID_DATA_PROPERTY || typeof state !== 'string' || !METHYLATION_STATES.has(state)) {
+    if (!('value' in descriptor) || typeof descriptor.value !== 'string' || !METHYLATION_STATES.has(descriptor.value)) {
       fail('invalid-recipe', `Digest methylation target "${key}" has an invalid state.`);
     }
-    normalized[key as keyof typeof normalized] = state as 'unknown' | 'methylated' | 'unmethylated';
+    normalized[key as keyof typeof normalized] = descriptor.value as 'unknown' | 'methylated' | 'unmethylated';
   }
   return normalized;
 }

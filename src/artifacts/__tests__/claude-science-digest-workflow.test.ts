@@ -548,6 +548,44 @@ describe('Claude Science digest workflow materialization', () => {
     expect(accessorReads).toBe(0);
   });
 
+  it('bounds methylation-assumption keys and never evaluates their accessors', () => {
+    const source = sourceRecord('AAAAGATCTTTT');
+    const recipe = recipeFor(source, 'DpnI');
+    const assumptions = Object.fromEntries([
+      ['dam', 'methylated'],
+      ['dcm', 'unknown'],
+      ['cpg', 'unknown'],
+      ['custom', 'unknown'],
+      ...Array.from({ length: 50_000 }, (_, index) => [`extra-${index}`, 'unknown']),
+    ]);
+    const originalObjectKeys = Object.keys;
+    let completeKeyEnumerationAttempted = false;
+    Object.keys = ((value: object) => {
+      if (value === assumptions) completeKeyEnumerationAttempted = true;
+      return originalObjectKeys(value);
+    }) as typeof Object.keys;
+    try {
+      expect(() => materialize(source, { ...recipe, methylationAssumptions: assumptions as never }))
+        .toMatchErrorCode('invalid-recipe');
+      expect(completeKeyEnumerationAttempted).toBe(false);
+    } finally {
+      Object.keys = originalObjectKeys;
+    }
+
+    let accessorReads = 0;
+    const accessorAssumptions = Object.defineProperty({}, 'dam', {
+      configurable: true,
+      enumerable: true,
+      get() {
+        accessorReads += 1;
+        return 'methylated';
+      },
+    });
+    expect(() => materialize(source, { ...recipe, methylationAssumptions: accessorAssumptions as never }))
+      .toMatchErrorCode('invalid-recipe');
+    expect(accessorReads).toBe(0);
+  });
+
   it('rejects sparse, accessor-backed, and excessive source feature pieces before remapping', () => {
     const source = sourceRecord('AAAAGAATTCTTTT');
     const recipe = recipeFor(source, 'EcoRI');

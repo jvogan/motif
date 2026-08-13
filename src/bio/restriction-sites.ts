@@ -339,6 +339,14 @@ export const MAX_RESTRICTION_RESULT_SITES = 100_000;
 export const MAX_RESTRICTION_RESULT_ISSUES = 100_000;
 /** Approximate serialized output budget for one detailed scan. */
 export const MAX_RESTRICTION_RESULT_BYTES = 32 * 1024 * 1024;
+/** Reserved space for the final typed result-limit diagnostic and issue. */
+const RESTRICTION_RESULT_LIMIT_RECEIPT_RESERVE_BYTES = 16 * 1024;
+
+const restrictionTextEncoder = new TextEncoder();
+
+function serializedRestrictionBytes(value: unknown): number {
+  return restrictionTextEncoder.encode(JSON.stringify(value)).byteLength;
+}
 
 const IUPAC_BASES: Readonly<Record<string, ReadonlySet<string>>> = {
   A: new Set(['A']),
@@ -918,7 +926,14 @@ export function scanRestrictionSites(
   const modulo = (value: number): number => ((value % upper.length) + upper.length) % upper.length;
   let complete = true;
   let omittedSitesAtLeast = 0;
-  let estimatedOutputBytes = upper.length;
+  let estimatedOutputBytes = serializedRestrictionBytes({
+    sequence: upper,
+    topology,
+    sites: [],
+    issues: [],
+    complete: true,
+    diagnostics: [],
+  }) + RESTRICTION_RESULT_LIMIT_RECEIPT_RESERVE_BYTES;
   const markResultLimit = (): void => {
     complete = false;
   };
@@ -965,19 +980,6 @@ export function scanRestrictionSites(
       circularGeometry.valid,
     ]);
     if (seen.has(dedupeKey)) return;
-    const estimatedSiteBytes = 256 + enzyme.name.length + recognition.length;
-    const estimatedIssueBytes = issue ? 256 + enzyme.name.length : 0;
-    if (
-      sites.length >= MAX_RESTRICTION_RESULT_SITES
-      || issues.length >= MAX_RESTRICTION_RESULT_ISSUES - 1
-      || estimatedOutputBytes + estimatedSiteBytes + estimatedIssueBytes > MAX_RESTRICTION_RESULT_BYTES
-    ) {
-      markResultLimit();
-      omittedSitesAtLeast += 1;
-      return;
-    }
-    seen.add(dedupeKey);
-    if (issue) issues.push(issue);
     const site: RestrictionSite = {
       enzyme: enzyme.name,
       position: index,
@@ -990,6 +992,21 @@ export function scanRestrictionSites(
       cleavageStatus: status,
       strand,
     };
+    const estimatedSiteBytes = serializedRestrictionBytes(site) + (sites.length > 0 ? 1 : 0);
+    const estimatedIssueBytes = issue
+      ? serializedRestrictionBytes(issue) + (issues.length > 0 ? 1 : 0)
+      : 0;
+    if (
+      sites.length >= MAX_RESTRICTION_RESULT_SITES
+      || issues.length >= MAX_RESTRICTION_RESULT_ISSUES - 1
+      || estimatedOutputBytes + estimatedSiteBytes + estimatedIssueBytes > MAX_RESTRICTION_RESULT_BYTES
+    ) {
+      markResultLimit();
+      omittedSitesAtLeast += 1;
+      return;
+    }
+    seen.add(dedupeKey);
+    if (issue) issues.push(issue);
     sites.push(site);
     estimatedOutputBytes += estimatedSiteBytes + estimatedIssueBytes;
   };
