@@ -2,6 +2,7 @@ import type { DigestFragment } from '../bio/restriction-digest';
 import { VALID_NCBI_TABLE_IDS } from '../bio/codon-tables';
 import { cloneCanonicalFeature, validateFeatureCollection } from '../bio/feature-bounds';
 import {
+  expandCircularFeatureLocation,
   remapFeatureLocation,
   type FeatureCoordinateMapSpan,
   type RemappedFeatureLocation,
@@ -939,20 +940,32 @@ function sliceSourceFeatures(
         },
       ];
   sourceFeatures.forEach((feature, index) => {
-    if (!Number.isInteger(feature.start) || !Number.isInteger(feature.end)
-      || feature.start < 0 || feature.end <= feature.start || feature.end > source.sequence.length) {
+    const sourceFeature = source.topology === 'circular'
+      ? expandCircularFeatureLocation(feature, source.sequence.length)
+      : feature;
+    if (!Number.isInteger(sourceFeature.start) || !Number.isInteger(sourceFeature.end)
+      || sourceFeature.start < 0 || sourceFeature.end < 0
+      || sourceFeature.start > source.sequence.length || sourceFeature.end > source.sequence.length
+      || sourceFeature.start === sourceFeature.end
+      || (sourceFeature.end < sourceFeature.start && source.topology !== 'circular')) {
       fail('invalid-source', `Source feature ${index + 1} falls outside the source DNA.`);
     }
-    feature.subRanges?.forEach((range, rangeIndex) => {
+    sourceFeature.subRanges?.forEach((range, rangeIndex) => {
+      const remainsInsideEnvelope = feature.subRanges !== undefined
+        && source.topology === 'circular'
+        && feature.start > feature.end
+        ? (range.start >= feature.start && range.end <= source.sequence.length)
+          || (range.start >= 0 && range.end <= feature.end)
+        : range.start >= sourceFeature.start && range.end <= sourceFeature.end;
       if (!Number.isInteger(range.start) || !Number.isInteger(range.end)
-        || range.start < feature.start || range.end <= range.start || range.end > feature.end) {
+        || range.end <= range.start || !remainsInsideEnvelope) {
         fail(
           'invalid-source',
           `Source feature ${index + 1} sub-range ${rangeIndex + 1} must fit within its feature.`,
         );
       }
     });
-    const location = remapFeatureLocation(feature, sourceSpans);
+    const location = remapFeatureLocation(sourceFeature, sourceSpans);
     if (!location) return;
     cloned.push(cloneSourceFeature(
       feature,

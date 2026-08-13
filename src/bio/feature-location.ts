@@ -28,6 +28,54 @@ function effectiveStrand(value: unknown, fallback: FeatureStrand): FeatureStrand
 }
 
 /**
+ * Expand one legacy aggregate origin-wrap into at most two authoritative
+ * pieces before a derived-record mapper intersects it with source spans.
+ *
+ * Circular records historically allowed `start > end` without requiring
+ * `subRanges`. The aggregate is enough for map drawing, but it cannot be
+ * intersected with a linear source span as one interval. Forward and
+ * directionless locations retain genomic tail-then-head order; reverse
+ * locations use head-then-tail biological order. Explicit sub-ranges are
+ * already authoritative and are returned untouched.
+ */
+export function expandCircularFeatureLocation(
+  feature: FeatureLocation,
+  sequenceLength: number,
+): FeatureLocation {
+  if (feature.subRanges !== undefined || feature.end >= feature.start) return feature;
+  if (!Number.isSafeInteger(sequenceLength) || sequenceLength <= 0
+    || !Number.isSafeInteger(feature.start) || !Number.isSafeInteger(feature.end)
+    || feature.start < 0 || feature.start > sequenceLength
+    || feature.end < 0 || feature.end > sequenceLength) {
+    return feature;
+  }
+
+  const strand = effectiveStrand(feature.strand, 1);
+  const genomicSegments = [
+    ...(feature.start < sequenceLength
+      ? [{ start: feature.start, end: sequenceLength, strand }]
+      : []),
+    ...(feature.end > 0
+      ? [{ start: 0, end: feature.end, strand }]
+      : []),
+  ];
+  // The only wrapped envelope with no non-empty tail or head is the explicit
+  // full-circle form [sequenceLength, 0). Keep it materializable as one
+  // bounded segment rather than passing an impossible aggregate downstream.
+  if (genomicSegments.length === 0 && feature.start === sequenceLength && feature.end === 0) {
+    genomicSegments.push({ start: 0, end: sequenceLength, strand });
+  }
+  if (genomicSegments.length === 0) return feature;
+  const subRanges = strand === -1 ? [...genomicSegments].reverse() : genomicSegments;
+  return {
+    ...feature,
+    start: 0,
+    end: sequenceLength,
+    subRanges,
+  };
+}
+
+/**
  * Return the authoritative pieces of a feature in biological 5′→3′ order.
  *
  * `subRanges`, when present, are not merely drawing hints: they are the pieces

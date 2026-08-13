@@ -440,6 +440,96 @@ describe('Claude Science digest workflow materialization', () => {
     ]);
   });
 
+  it('materializes aggregate origin-wrap features as bounded tail/head annotations', () => {
+    const source = sourceRecord('GAATTCAAAAGAATTC', 'circular', [
+      {
+        id: 'forward-wrap',
+        name: 'forward wrap',
+        type: 'cds',
+        start: 12,
+        end: 1,
+        strand: 1,
+        color: '#aaaaaa',
+        metadata: { source: 'aggregate' },
+      },
+      {
+        id: 'reverse-wrap',
+        name: 'reverse wrap',
+        type: 'cds',
+        start: 12,
+        end: 1,
+        strand: -1,
+        color: '#bbbbbb',
+        metadata: { source: 'aggregate' },
+      },
+    ]);
+    const result = materialize(source, recipeFor(source, 'EcoRI'));
+    const wrapping = result.records.find((record) => record.provenance.wrapsOrigin);
+
+    expect(wrapping?.annotations).toEqual([
+      expect.objectContaining({
+        id: 'digest-feature-1',
+        name: 'forward wrap',
+        start: 1,
+        end: 6,
+        strand: 1,
+        subRanges: [
+          { start: 1, end: 5, strand: 1 },
+          { start: 5, end: 6, strand: 1 },
+        ],
+        metadata: expect.objectContaining({
+          source: 'aggregate',
+          sourceFeatureId: 'forward-wrap',
+        }),
+      }),
+      expect.objectContaining({
+        id: 'digest-feature-2',
+        name: 'reverse wrap',
+        start: 1,
+        end: 6,
+        strand: -1,
+        subRanges: [
+          { start: 5, end: 6, strand: -1 },
+          { start: 1, end: 5, strand: -1 },
+        ],
+        metadata: expect.objectContaining({
+          source: 'aggregate',
+          sourceFeatureId: 'reverse-wrap',
+        }),
+      }),
+    ]);
+  });
+
+  it('keeps explicit origin subranges intact when their aggregate envelope wraps', () => {
+    const source = sourceRecord('GAATTCAAAAGAATTC', 'circular', [{
+      id: 'explicit-wrap',
+      name: 'explicit wrap',
+      type: 'cds',
+      start: 12,
+      end: 1,
+      strand: 1,
+      color: '#aaaaaa',
+      metadata: { source: 'explicit' },
+      subRanges: [
+        { start: 12, end: 16, strand: 1 },
+        { start: 0, end: 1, strand: 1 },
+      ],
+    }]);
+    const result = materialize(source, recipeFor(source, 'EcoRI'));
+    const wrapping = result.records.find((record) => record.provenance.wrapsOrigin);
+
+    expect(wrapping?.annotations).toMatchObject([{
+      name: 'explicit wrap',
+      start: 1,
+      end: 6,
+      subRanges: [
+        { start: 1, end: 5, strand: 1 },
+        { start: 5, end: 6, strand: 1 },
+      ],
+      metadata: expect.objectContaining({ source: 'explicit' }),
+    }]);
+  });
+
   it('accepts caller identities while enforcing count, id, and case-insensitive name uniqueness atomically', () => {
     const source = sourceRecord('AAAAGAATTCTTTT');
     const recipe = recipeFor(source, 'EcoRI');

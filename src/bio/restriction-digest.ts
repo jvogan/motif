@@ -23,7 +23,11 @@ import {
 } from './restriction-sites';
 import { RESTRICTION_ENZYMES_FULL } from './enzyme-data';
 import { reverseComplement } from './reverse-complement';
-import { remapFeatureLocation, type FeatureCoordinateMapSpan } from './feature-location';
+import {
+  expandCircularFeatureLocation,
+  remapFeatureLocation,
+  type FeatureCoordinateMapSpan,
+} from './feature-location';
 import {
   FeatureCollectionInputError,
   cloneCanonicalFeature,
@@ -170,11 +174,16 @@ function restrictionFeatureMappingReceipt(
   features: readonly Feature[] | undefined,
   fragmentCount: number,
   sourceSpanCount: number,
+  topology: Topology,
+  sequenceLength: number,
 ): RestrictionFeatureMappingReceipt {
   let featurePieceCount = 0;
   const featureCount = features?.length ?? 0;
   for (const feature of features ?? []) {
-    const pieceCount = Array.isArray(feature.subRanges) ? feature.subRanges.length : 1;
+    const sourceFeature = topology === 'circular'
+      ? expandCircularFeatureLocation(feature, sequenceLength)
+      : feature;
+    const pieceCount = Array.isArray(sourceFeature.subRanges) ? sourceFeature.subRanges.length : 1;
     featurePieceCount = saturatingAdd(featurePieceCount, pieceCount);
   }
   const pieceSearchUnits = saturatingMultiply(featurePieceCount, sourceSpanCount);
@@ -191,9 +200,16 @@ function restrictionFeatureMappingReceipt(
   };
 }
 
-function wholeFragment(seq: string, features: readonly Feature[] | undefined): DigestFragment {
+function wholeFragment(
+  seq: string,
+  topology: Topology,
+  features: readonly Feature[] | undefined,
+): DigestFragment {
   const mappedFeatures = features?.flatMap((feature) => {
-    const location = remapFeatureLocation(feature, [{ start: 0, end: seq.length, targetStart: 0 }]);
+    const sourceFeature = topology === 'circular'
+      ? expandCircularFeatureLocation(feature, seq.length)
+      : feature;
+    const location = remapFeatureLocation(sourceFeature, [{ start: 0, end: seq.length, targetStart: 0 }]);
     return location ? [cloneCanonicalFeature(feature, {
       id: crypto.randomUUID(),
       start: location.start,
@@ -227,7 +243,10 @@ function buildFeatureSlicers(
   function sliceFeaturesThroughSpans(sourceSpans: readonly FeatureCoordinateMapSpan[]): Feature[] {
     if (!features || features.length === 0) return [];
     return features.flatMap((feature) => {
-      const location = remapFeatureLocation(feature, sourceSpans);
+      const sourceFeature = topology === 'circular'
+        ? expandCircularFeatureLocation(feature, sequence.length)
+        : feature;
+      const location = remapFeatureLocation(sourceFeature, sourceSpans);
       return location ? [cloneCanonicalFeature(feature, {
         id: crypto.randomUUID(),
         start: location.start,
@@ -569,7 +588,13 @@ function restrictionDigestResultFor(
     const sourceSpanCount = safeTopology === 'circular'
       ? (cuts.length > 0 ? cuts.length + 1 : 1)
       : fragmentCount;
-    const featureMapping = restrictionFeatureMappingReceipt(canonicalFeatures, fragmentCount, sourceSpanCount);
+    const featureMapping = restrictionFeatureMappingReceipt(
+      canonicalFeatures,
+      fragmentCount,
+      sourceSpanCount,
+      safeTopology,
+      normalized.length,
+    );
     base.featureMapping = featureMapping;
     if (!featureMapping.complete) {
       base.issues = [...base.issues, {
@@ -585,7 +610,9 @@ function restrictionDigestResultFor(
   // Conditional or physically impossible outcomes never become an intact or
   // partially digested success. Callers can inspect the exact issue and sites.
   if (issues.length > 0 || normalized.length === 0 || cuts.length === 0) {
-    if (issues.length === 0 && normalized.length > 0) base.fragments = [wholeFragment(normalized, canonicalFeatures)];
+    if (issues.length === 0 && normalized.length > 0) {
+      base.fragments = [wholeFragment(normalized, safeTopology, canonicalFeatures)];
+    }
     return base;
   }
 

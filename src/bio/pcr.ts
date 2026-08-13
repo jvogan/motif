@@ -3,7 +3,11 @@ import { gcContent } from './gc-content';
 import { calculateTm } from './tm-calculator';
 import { DEFAULT_TM_OPTIONS } from './primer-design';
 import type { Feature, Topology } from './types';
-import { remapFeatureLocation, type FeatureCoordinateMapSpan } from './feature-location';
+import {
+  expandCircularFeatureLocation,
+  remapFeatureLocation,
+  type FeatureCoordinateMapSpan,
+} from './feature-location';
 import {
   FeatureCollectionInputError,
   cloneCanonicalFeature,
@@ -513,16 +517,9 @@ function bindingStatus(forward: PCRBindingCandidate, reverse: PCRBindingCandidat
 }
 
 function featureForCircularSource(feature: Feature, sequenceLength: number, topology: Topology): Feature {
-  if (topology !== 'circular' || feature.subRanges !== undefined || feature.start <= feature.end) return feature;
-  const strand = feature.strand;
-  return cloneCanonicalFeature(feature, {
-    start: 0,
-    end: sequenceLength,
-    subRanges: [
-      { start: feature.start, end: sequenceLength, strand },
-      { start: 0, end: feature.end, strand },
-    ],
-  });
+  return topology === 'circular'
+    ? expandCircularFeatureLocation(feature, sequenceLength) as Feature
+    : feature;
 }
 
 function propagateFeature(

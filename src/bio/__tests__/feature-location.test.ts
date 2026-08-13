@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  expandCircularFeatureLocation,
   extractFeatureSequence,
   featureGenBankLocation,
   featureLocationLength,
@@ -137,6 +138,26 @@ describe('feature location semantics', () => {
     expect(extractFeatureSequence(SEQUENCE, wrapped, 'dna')).toBe('AAAATG');
     expect(featureLocationLength(wrapped)).toBe(6);
     expect(featureGenBankLocation(wrapped)).toBe('join(16..18,1..3)');
+  });
+
+  it('expands an aggregate origin wrap in biological order without changing metadata', () => {
+    const metadata = { source: 'legacy-checkpoint' };
+    const forward = feature({ start: 15, end: 3, strand: 1, metadata });
+    const reverse = feature({ start: 15, end: 3, strand: -1, metadata });
+
+    expect(expandCircularFeatureLocation(forward, SEQUENCE.length)).toMatchObject({
+      start: 0,
+      end: SEQUENCE.length,
+      subRanges: [
+        { start: 15, end: SEQUENCE.length, strand: 1 },
+        { start: 0, end: 3, strand: 1 },
+      ],
+      metadata,
+    });
+    expect(expandCircularFeatureLocation(reverse, SEQUENCE.length).subRanges).toEqual([
+      { start: 0, end: 3, strand: -1 },
+      { start: 15, end: SEQUENCE.length, strand: -1 },
+    ]);
   });
 
   it('preserves the feature product when a whole record is reverse-complemented', () => {
