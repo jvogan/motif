@@ -619,6 +619,10 @@ describe('Claude Science digest workflow materialization', () => {
     }
     expect(() => materialize({ ...sourceRecord('AAAAGAATTCTTTT'), translationTableId: 999 }, recipe))
       .toMatchErrorCode('invalid-source');
+    for (const active of [1, 'true', {}, []]) {
+      expect(() => materialize({ ...sourceRecord('AAAAGAATTCTTTT'), active } as never, recipe))
+        .toMatchErrorCode('invalid-source');
+    }
     expect(() => materialize({
       ...sourceRecord('AAAAGAATTCTTTT'),
       description: 'x'.repeat(16_385),

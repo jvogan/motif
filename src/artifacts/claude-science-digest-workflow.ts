@@ -360,6 +360,9 @@ function snapshotDigestWorkflowSourceRecord(value: unknown): DigestWorkflowSourc
   const source = read('source', false);
   const group = read('group', false);
   const tags = read('tags', false);
+  if (typeof active !== 'boolean') {
+    fail('invalid-source', 'Digest source record.active must be a boolean.');
+  }
   if (translationTableId !== undefined && (
     !Number.isSafeInteger(translationTableId)
     || !VALID_NCBI_TABLE_IDS.includes(translationTableId as number)
@@ -386,7 +389,7 @@ function snapshotDigestWorkflowSourceRecord(value: unknown): DigestWorkflowSourc
     sequence: sequence as string,
     type: type as 'dna',
     topology: topology as Topology,
-    active: active as boolean,
+    active,
     ...(translationTableId === undefined ? {} : { translationTableId: translationTableId as number }),
     ...(features === undefined ? {} : { features: features as readonly Feature[] }),
     ...(normalizedDescription === undefined ? {} : { description: normalizedDescription }),
