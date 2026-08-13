@@ -143,17 +143,12 @@ type NormalizedOverlapRange = { minOverlap: number; maxOverlap: number };
 
 const GIBSON_DNA_SYMBOLS = /^[ACGTRYSWKMBDHVN]*$/u;
 const GIBSON_CANONICAL_DNA = /^[ACGT]*$/u;
-const metadataTextEncoder = new TextEncoder();
 const GIBSON_FEATURE_TYPES: ReadonlySet<Feature['type']> = new Set([
   'orf', 'gene', 'cds', 'promoter', 'terminator', 'rbs', 'origin', 'resistance',
   'restriction_site', 'primer_bind', 'misc_feature', 'mRNA', 'rRNA', 'tRNA',
   'ncRNA', 'regulatory', 'repeat_region', 'sig_peptide', 'mat_peptide',
   'transit_peptide', 'intron', 'exon', 'polyA_signal', 'enhancer', 'custom',
 ]);
-
-function utf8ByteLength(value: string): number {
-  return metadataTextEncoder.encode(value).byteLength;
-}
 
 function hasControlCharacters(value: string): boolean {
   return [...value].some((character) => {
@@ -202,89 +197,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
     && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
 }
 
-interface MetadataValidation {
-  errors: string[];
-  units: number;
-  bytes: number;
-}
-
-function validateMetadata(value: unknown, path: string): MetadataValidation {
-  const errors: string[] = [];
-  const seen = new WeakSet<object>();
-  let units = 0;
-  let bytes = 0;
-  const visit = (candidate: unknown, candidatePath: string, depth: number): void => {
-    units += 1;
-    if (units > MAX_GIBSON_METADATA_KEYS || bytes > MAX_GIBSON_METADATA_BYTES) return;
-    if (candidate === null || typeof candidate === 'boolean') {
-      bytes += candidate === null ? 4 : 5;
-      return;
-    }
-    if (typeof candidate === 'string') {
-      if (candidate.length > MAX_GIBSON_METADATA_STRING_LENGTH || hasControlCharacters(candidate)) {
-        errors.push(`${candidatePath} must be a bounded string without control characters.`);
-        return;
-      }
-      bytes += utf8ByteLength(candidate);
-      return;
-    }
-    if (typeof candidate === 'number') {
-      if (!Number.isFinite(candidate)) errors.push(`${candidatePath} must be finite.`);
-      bytes += 8;
-      return;
-    }
-    if (typeof candidate !== 'object' || candidate === undefined) {
-      errors.push(`${candidatePath} must contain only plain JSON-compatible values.`);
-      return;
-    }
-    if (seen.has(candidate)) {
-      errors.push(`${candidatePath} must not contain cycles.`);
-      return;
-    }
-    seen.add(candidate);
-    if (depth >= MAX_GIBSON_METADATA_DEPTH) {
-      errors.push(`${candidatePath} exceeds the ${MAX_GIBSON_METADATA_DEPTH}-level metadata depth limit.`);
-      return;
-    }
-    if (Array.isArray(candidate)) {
-      if (candidate.length > MAX_GIBSON_METADATA_KEYS) errors.push(`${candidatePath} exceeds the metadata item limit.`);
-      for (const [index, item] of candidate.slice(0, MAX_GIBSON_METADATA_KEYS).entries()) visit(item, `${candidatePath}[${index}]`, depth + 1);
-      return;
-    }
-    if (!isRecord(candidate)) {
-      errors.push(`${candidatePath} must be a plain object.`);
-      return;
-    }
-    const entries = Object.entries(candidate);
-    if (entries.length > MAX_GIBSON_METADATA_KEYS) errors.push(`${candidatePath} exceeds the metadata key limit.`);
-    for (const [key, item] of entries.slice(0, MAX_GIBSON_METADATA_KEYS)) {
-      if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
-        errors.push(`${candidatePath} contains a prohibited object key.`);
-        continue;
-      }
-      if (key.length > MAX_GIBSON_METADATA_STRING_LENGTH || hasControlCharacters(key)) {
-        errors.push(`${candidatePath} contains an overlong or control-character key.`);
-        continue;
-      }
-      bytes += utf8ByteLength(key);
-      visit(item, `${candidatePath}.${key}`, depth + 1);
-    }
-  };
-  visit(value, path, 0);
-  if (units > MAX_GIBSON_METADATA_KEYS) errors.push(`${path} exceeds the ${MAX_GIBSON_METADATA_KEYS}-node metadata work limit.`);
-  if (bytes > MAX_GIBSON_METADATA_BYTES) errors.push(`${path} exceeds the ${MAX_GIBSON_METADATA_BYTES.toLocaleString()}-byte metadata limit.`);
-  return { errors, units, bytes };
-}
-
-function featureValidationErrors(
+/**
+ * Check the Gibson-specific scalar constraints after the shared validator has
+ * bounded all feature, metadata, and subrange traversal. Keeping this pass
+ * scalar-only avoids spending a second full feature-work allowance per part.
+ */
+function gibsonFeatureScalarErrors(
   value: unknown,
-  sequenceLength: number,
   fragmentLabel: string,
   featureIndex: number,
-): { errors: string[]; workUnits: number } {
+): string[] {
   const path = `${fragmentLabel}.features[${featureIndex}]`;
-  if (!isRecord(value)) return { errors: [`${path} must be a plain feature object.`], workUnits: 1 };
-  const feature = value as Partial<Feature> & { metadata?: unknown };
+  if (!isRecord(value)) return [`${path} must be a plain feature object.`];
+  const feature = value as Partial<Feature>;
   const errors: string[] = [];
   const idError = boundedText(feature.id, `${path}.id`);
   if (idError) errors.push(idError);
@@ -298,50 +223,7 @@ function featureValidationErrors(
   if (typeof feature.color !== 'string' || feature.color.length > 128 || hasControlCharacters(feature.color)) {
     errors.push(`${path}.color must be a bounded string without control characters.`);
   }
-  let metadataUnits = 0;
-  if (!isRecord(feature.metadata)) errors.push(`${path}.metadata must be a plain object.`);
-  else {
-    const metadata = validateMetadata(feature.metadata, `${path}.metadata`);
-    metadataUnits = metadata.units;
-    errors.push(...metadata.errors);
-  }
-  const hasValidStrand = feature.strand === -1 || feature.strand === 0 || feature.strand === 1;
-  if (!hasValidStrand) errors.push(`${path}.strand must be -1, 0, or 1.`);
-  const validCoordinate = (coordinate: unknown): coordinate is number => (
-    Number.isSafeInteger(coordinate) && (coordinate as number) >= 0 && (coordinate as number) <= sequenceLength
-  );
-  if (!validCoordinate(feature.start) || !validCoordinate(feature.end) || (feature.end as number) <= (feature.start as number)) {
-    errors.push(`${path} must have safe integer coordinates with 0 <= start < end <= sequence length.`);
-  }
-
-  let workUnits = 1 + metadataUnits;
-  if (feature.subRanges !== undefined) {
-    if (!Array.isArray(feature.subRanges) || feature.subRanges.length === 0) {
-      errors.push(`${path}.subRanges must be a non-empty array when present.`);
-    } else if (feature.subRanges.length > MAX_GIBSON_SUBRANGES_PER_FEATURE) {
-      errors.push(`${path}.subRanges exceeds the ${MAX_GIBSON_SUBRANGES_PER_FEATURE.toLocaleString()}-piece limit.`);
-    } else {
-      workUnits += feature.subRanges.length;
-      for (const [rangeIndex, rawRange] of feature.subRanges.entries()) {
-        const rangePath = `${path}.subRanges[${rangeIndex}]`;
-        if (!isRecord(rawRange)) {
-          errors.push(`${rangePath} must be an object.`);
-          continue;
-        }
-        const range = rawRange as { start?: unknown; end?: unknown; strand?: unknown };
-        if (!validCoordinate(range.start) || !validCoordinate(range.end) || (range.end as number) <= (range.start as number)) {
-          errors.push(`${rangePath} must have safe integer coordinates with 0 <= start < end <= sequence length.`);
-        } else if (validCoordinate(feature.start) && validCoordinate(feature.end)
-          && ((range.start as number) < (feature.start as number) || (range.end as number) > (feature.end as number))) {
-          errors.push(`${rangePath} must remain inside the feature envelope.`);
-        }
-        if (range.strand !== undefined && range.strand !== -1 && range.strand !== 0 && range.strand !== 1) {
-          errors.push(`${rangePath}.strand must be -1, 0, or 1 when provided.`);
-        }
-      }
-    }
-  }
-  return { errors, workUnits };
+  return errors;
 }
 
 /**
@@ -389,25 +271,32 @@ export function validateGibsonFragments(fragments: unknown): GibsonInputValidati
       if (!Array.isArray(fragment.features)) {
         errors.push(`${fragmentLabel}.features must be an array when provided.`);
       } else {
+        const remainingFeatureWork = MAX_GIBSON_FEATURE_WORK_UNITS - featureWorkUnits;
+        if (remainingFeatureWork <= 0) {
+          errors.push(`Gibson feature validation exceeds the ${MAX_GIBSON_FEATURE_WORK_UNITS.toLocaleString()}-unit safety limit across all fragments.`);
+          break;
+        }
         const validation = validateFeatureCollection(fragment.features, {
           label: `${fragmentLabel}.features`,
           sequenceLength: fragment.sequence.length,
+          maxFeatures: MAX_GIBSON_FEATURES_PER_FRAGMENT,
+          maxSubrangesPerFeature: MAX_GIBSON_SUBRANGES_PER_FEATURE,
+          maxWorkUnits: remainingFeatureWork,
         });
-        if (!validation.valid) {
-          featureWorkUnits += validation.featureWorkUnits;
-          errors.push(...validation.issues.map((issue) => issue.message));
-        } else if (fragment.features.length > MAX_GIBSON_FEATURES_PER_FRAGMENT) {
-          errors.push(`${fragmentLabel}.features exceeds the ${MAX_GIBSON_FEATURES_PER_FRAGMENT.toLocaleString()}-feature limit.`);
-        } else {
-          featureWorkUnits += fragment.features.length;
+        featureWorkUnits = Math.min(
+          MAX_GIBSON_FEATURE_WORK_UNITS + 1,
+          featureWorkUnits + validation.featureWorkUnits,
+        );
+        errors.push(...validation.issues.map((issue) => issue.message));
+        const hitWorkLimit = validation.issues.some((issue) => issue.code === 'feature_work_limit')
+          || featureWorkUnits > MAX_GIBSON_FEATURE_WORK_UNITS;
+        if (hitWorkLimit) {
+          errors.push(`Gibson feature validation exceeds the ${MAX_GIBSON_FEATURE_WORK_UNITS.toLocaleString()}-unit safety limit across all fragments.`);
+          break;
+        }
+        if (validation.valid) {
           for (const [featureIndex, rawFeature] of fragment.features.entries()) {
-            const featureValidation = featureValidationErrors(rawFeature, fragment.sequence.length, fragmentLabel, featureIndex);
-            featureWorkUnits += featureValidation.workUnits;
-            errors.push(...featureValidation.errors);
-            if (featureWorkUnits > MAX_GIBSON_FEATURE_WORK_UNITS) {
-              errors.push(`Gibson feature validation exceeds the ${MAX_GIBSON_FEATURE_WORK_UNITS.toLocaleString()}-unit safety limit.`);
-              break;
-            }
+            errors.push(...gibsonFeatureScalarErrors(rawFeature, fragmentLabel, featureIndex));
           }
         }
       }

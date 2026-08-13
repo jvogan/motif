@@ -4,7 +4,9 @@ import {
   findOverlap,
   GibsonInputError,
   gibsonAssemble,
+  MAX_GIBSON_FEATURES_PER_FRAGMENT,
   MAX_GIBSON_FRAGMENTS,
+  MAX_GIBSON_FEATURE_WORK_UNITS,
   MAX_GIBSON_TOTAL_INPUT_LENGTH,
   validateGibsonFragments,
   validateOverlaps,
@@ -147,5 +149,30 @@ describe('Gibson overlap analysis', () => {
     ]);
     expect(validation.valid).toBe(false);
     expect(validation.errors.join(' ')).toMatch(/metadata.*byte/i);
+  });
+
+  it('applies one aggregate feature-work allowance across fragments', () => {
+    const sharedFeature = {
+      id: 'feature-id',
+      name: 'feature',
+      type: 'misc_feature' as const,
+      start: 0,
+      end: 8,
+      strand: 1 as const,
+      color: '#888888',
+      metadata: {},
+    };
+    const features = Array.from({ length: MAX_GIBSON_FEATURES_PER_FRAGMENT }, () => sharedFeature);
+    const fragments = Array.from({ length: 51 }, (_, index) => ({
+      name: `part-${index}`,
+      sequence: 'AAAAAAAA',
+      features,
+    }));
+
+    const validation = validateGibsonFragments(fragments);
+
+    expect(validation.valid).toBe(false);
+    expect(validation.featureWorkUnits).toBe(MAX_GIBSON_FEATURE_WORK_UNITS);
+    expect(validation.errors.join(' ')).toMatch(/across all fragments/i);
   });
 });
