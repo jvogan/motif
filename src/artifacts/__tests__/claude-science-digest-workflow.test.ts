@@ -483,6 +483,25 @@ describe('Claude Science digest workflow materialization', () => {
         (_, index) => `existing-${index}`,
       ),
     })).toMatchErrorCode('resource-limit');
+
+    const inventoryAt98 = Array.from(
+      { length: MAX_DIGEST_WORKFLOW_RECORDS - 2 },
+      (_, index) => ({ id: index === 0 ? source.id : `existing-${index}`, name: index === 0 ? source.name : `Existing ${index}` }),
+    );
+    expect(materialize(source, recipe, {
+      existingRecordIds: inventoryAt98.map(({ id }) => id),
+      existingRecordNames: inventoryAt98.map(({ name }) => name),
+    }).records).toHaveLength(2);
+
+    const uncutRecipe = recipeFor(source, 'BamHI');
+    const fullInventory = Array.from(
+      { length: MAX_DIGEST_WORKFLOW_RECORDS },
+      (_, index) => ({ id: index === 0 ? source.id : `full-${index}`, name: index === 0 ? source.name : `Full ${index}` }),
+    );
+    expect(materialize(source, uncutRecipe, {
+      existingRecordIds: fullInventory.map(({ id }) => id),
+      existingRecordNames: fullInventory.map(({ name }) => name),
+    }).records).toHaveLength(0);
   });
 
   it('reads only allowlisted digest input fields and never evaluates unknown accessors', () => {

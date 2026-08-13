@@ -1012,12 +1012,6 @@ function resolveOutputIdentities(
   const existingNameLength = input.existingRecordNames === undefined
     ? 0
     : boundedArrayLength(input.existingRecordNames, 'Existing digest record names', MAX_DIGEST_WORKFLOW_RECORDS);
-  if (1 + Math.max(existingIdLength, existingNameLength) + outputFragments.length > MAX_DIGEST_WORKFLOW_RECORDS) {
-    fail(
-      'resource-limit',
-      `Digest outputs would exceed the ${MAX_DIGEST_WORKFLOW_RECORDS}-record workspace limit.`,
-    );
-  }
   const existingIds = input.existingRecordIds === undefined
     ? []
     : boundedDenseArray(
@@ -1042,6 +1036,19 @@ function resolveOutputIdentities(
       MAX_DIGEST_WORKFLOW_RECORD_NAME_LENGTH,
       'invalid-recipe',
     ));
+  const sourceNameKey = input.sourceRecord.name.toLocaleLowerCase();
+  const idInventoryCount = input.existingRecordIds === undefined
+    ? 1
+    : existingIdLength + (existingIds.includes(input.sourceRecord.id) ? 0 : 1);
+  const nameInventoryCount = input.existingRecordNames === undefined
+    ? 1
+    : existingNameLength + (existingNames.some((name) => name.toLocaleLowerCase() === sourceNameKey) ? 0 : 1);
+  if (Math.max(idInventoryCount, nameInventoryCount) + outputFragments.length > MAX_DIGEST_WORKFLOW_RECORDS) {
+    fail(
+      'resource-limit',
+      `Digest outputs would exceed the ${MAX_DIGEST_WORKFLOW_RECORDS}-record workspace limit.`,
+    );
+  }
   const usedIds = new Set([input.sourceRecord.id, ...existingIds]);
   const usedNames = new Set(
     [input.sourceRecord.name, ...existingNames]
