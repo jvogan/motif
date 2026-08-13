@@ -485,6 +485,143 @@ describe('Claude Science digest workflow materialization', () => {
     })).toMatchErrorCode('resource-limit');
   });
 
+  it('reads only allowlisted digest input fields and never evaluates unknown accessors', () => {
+    const source = sourceRecord('AAAAGAATTCTTTT');
+    const recipe = recipeFor(source, 'EcoRI');
+    const input: MaterializeDigestWorkflowInput = {
+      sourceRecord: source,
+      recipe,
+      enzymeCatalog: RESTRICTION_ENZYMES_FULL,
+      workflow: {
+        id: 'digest-workflow-1',
+        createdAt: CREATED_AT,
+      },
+    };
+    let unknownReads = 0;
+    Object.defineProperty(input, 'unknown', {
+      configurable: true,
+      enumerable: true,
+      get() {
+        unknownReads += 1;
+        return 'should not be copied';
+      },
+    });
+    const result = materializeDigestWorkflow(input);
+    expect(result.records).toHaveLength(2);
+    expect(unknownReads).toBe(0);
+
+    let workflowReads = 0;
+    const accessorInput: MaterializeDigestWorkflowInput = {
+      sourceRecord: source,
+      recipe,
+      enzymeCatalog: RESTRICTION_ENZYMES_FULL,
+      workflow: input.workflow,
+    };
+    Object.defineProperty(accessorInput, 'workflow', {
+      configurable: true,
+      enumerable: true,
+      get() {
+        workflowReads += 1;
+        return input.workflow;
+      },
+    });
+    expect(() => materializeDigestWorkflow(accessorInput)).toMatchErrorCode('invalid-recipe');
+    expect(workflowReads).toBe(0);
+  });
+
+  it('snapshots output identities, source tags, and workflow timestamps without invoking accessors', () => {
+    const source = sourceRecord('AAAAGAATTCTTTT');
+    const recipe = recipeFor(source, 'EcoRI');
+    const accessorIdentity = { id: 'left-arm' };
+    let identityReads = 0;
+    Object.defineProperty(accessorIdentity, 'id', {
+      configurable: true,
+      enumerable: true,
+      get() {
+        identityReads += 1;
+        return 'left-arm';
+      },
+    });
+    expect(() => materialize(source, recipe, {
+      outputIdentities: [accessorIdentity, { id: 'right-arm' }],
+    })).toMatchErrorCode('invalid-recipe');
+    expect(identityReads).toBe(0);
+
+    expect(() => materialize(source, recipe, {
+      outputIdentities: new Array(MAX_DIGEST_WORKFLOW_FRAGMENTS + 1) as never,
+    })).toMatchErrorCode('resource-limit');
+    expect(() => materialize(source, recipe, {
+      outputIdentities: new Array(2) as never,
+    })).toMatchErrorCode('invalid-recipe');
+
+    const accessorTags = sourceRecord(source.sequence);
+    let tagReads = 0;
+    Object.defineProperty(accessorTags, 'tags', {
+      configurable: true,
+      enumerable: true,
+      get() {
+        tagReads += 1;
+        return ['diagnostic'];
+      },
+    });
+    expect(() => materialize(accessorTags, recipe)).toMatchErrorCode('invalid-source');
+    expect(tagReads).toBe(0);
+    expect(() => materialize({ ...source, tags: new Array(101) as string[] }, recipe))
+      .toMatchErrorCode('resource-limit');
+    expect(() => materialize({ ...source, tags: new Array(1) as string[] }, recipe))
+      .toMatchErrorCode('invalid-source');
+
+    const accessorWorkflow = {
+      id: 'digest-workflow-1',
+      createdAt: CREATED_AT,
+    };
+    let createdAtReads = 0;
+    Object.defineProperty(accessorWorkflow, 'createdAt', {
+      configurable: true,
+      enumerable: true,
+      get() {
+        createdAtReads += 1;
+        return CREATED_AT;
+      },
+    });
+    expect(() => materializeDigestWorkflow({
+      sourceRecord: source,
+      recipe,
+      enzymeCatalog: RESTRICTION_ENZYMES_FULL,
+      workflow: accessorWorkflow,
+    })).toMatchErrorCode('invalid-recipe');
+    expect(createdAtReads).toBe(0);
+  });
+
+  it('rejects oversized existing-record indexes before copying or reading their entries', () => {
+    const source = sourceRecord('AAAAGAATTCTTTT');
+    const recipe = recipeFor(source, 'EcoRI');
+    for (const key of ['existingRecordIds', 'existingRecordNames'] as const) {
+      const entries = new Array(100_000) as string[];
+      let entryReads = 0;
+      Object.defineProperty(entries, '0', {
+        configurable: true,
+        enumerable: true,
+        get() {
+          entryReads += 1;
+          return 'should not be read';
+        },
+      });
+      const input: MaterializeDigestWorkflowInput = {
+        sourceRecord: source,
+        recipe,
+        enzymeCatalog: RESTRICTION_ENZYMES_FULL,
+        workflow: {
+          id: 'digest-workflow-1',
+          createdAt: CREATED_AT,
+        },
+        [key]: entries,
+      } as MaterializeDigestWorkflowInput;
+      expect(() => materializeDigestWorkflow(input)).toMatchErrorCode('resource-limit');
+      expect(entryReads).toBe(0);
+    }
+  });
+
   it('rejects inactive/non-DNA sources and stale, invalid, or geometrically altered recipes', () => {
     const source = sourceRecord('AAAAGAATTCTTTT');
     const recipe = recipeFor(source, 'EcoRI');

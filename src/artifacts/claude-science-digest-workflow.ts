@@ -39,6 +39,8 @@ export const MAX_DIGEST_WORKFLOW_FRAGMENTS = 99;
 export const MAX_DIGEST_WORKFLOW_RECORDS = 100;
 export const MAX_DIGEST_WORKFLOW_FEATURES_PER_RECORD = 2_000;
 export const MAX_DIGEST_WORKFLOW_RECORD_NAME_LENGTH = 1_024;
+const MAX_DIGEST_WORKFLOW_TAGS = 100;
+const MAX_DIGEST_WORKFLOW_TAG_LENGTH = 256;
 
 const MAX_METADATA_DEPTH = 12;
 const MAX_METADATA_NODES = 10_000;
@@ -213,31 +215,161 @@ function ownDataProperty(
   }
 }
 
-function boundedDenseArray(value: unknown, label: string, maximum: number): unknown[] {
-  if (!Array.isArray(value)) fail('invalid-recipe', `${label} must be an array.`);
+function boundedArrayLength(
+  value: unknown,
+  label: string,
+  maximum: number,
+  code: DigestWorkflowErrorCode = 'invalid-recipe',
+): number {
+  if (!Array.isArray(value)) fail(code, `${label} must be an array.`);
   let length: number;
   try {
     length = value.length;
   } catch {
-    fail('invalid-recipe', `${label} could not be inspected safely.`);
+    fail(code, `${label} could not be inspected safely.`);
+  }
+  if (!Number.isSafeInteger(length) || length < 0) {
+    fail(code, `${label} has an invalid length.`);
   }
   if (length > maximum) {
     fail('resource-limit', `${label} cannot exceed ${maximum.toLocaleString()} entries.`);
   }
+  return length;
+}
+
+function boundedDenseArray(
+  value: unknown,
+  label: string,
+  maximum: number,
+  code: DigestWorkflowErrorCode = 'invalid-recipe',
+): unknown[] {
+  const length = boundedArrayLength(value, label, maximum, code);
   const snapshot: unknown[] = [];
   for (let index = 0; index < length; index += 1) {
     let descriptor: PropertyDescriptor | undefined;
     try {
       descriptor = Object.getOwnPropertyDescriptor(value, String(index));
     } catch {
-      fail('invalid-recipe', `${label}[${index}] could not be inspected safely.`);
+      fail(code, `${label}[${index}] could not be inspected safely.`);
     }
     if (!descriptor || !('value' in descriptor)) {
-      fail('invalid-recipe', `${label} must be dense and contain only direct data entries.`);
+      fail(code, `${label} must be dense and contain only direct data entries.`);
     }
     snapshot.push(descriptor.value);
   }
   return snapshot;
+}
+
+function boundedStringArray(
+  value: unknown,
+  label: string,
+  maximum: number,
+  maximumStringLength: number,
+  code: DigestWorkflowErrorCode,
+): string[] {
+  return boundedDenseArray(value, label, maximum, code).map((entry, index) => {
+    if (typeof entry !== 'string') fail(code, `${label} entry ${index + 1} must be a string.`);
+    if (entry.length > maximumStringLength) {
+      fail(
+        'resource-limit',
+        `${label} entry ${index + 1} cannot exceed ${maximumStringLength.toLocaleString()} characters.`,
+      );
+    }
+    return entry;
+  });
+}
+
+function snapshotOutputIdentities(value: unknown): DigestFragmentRecordIdentity[] | undefined {
+  if (value === undefined) return undefined;
+  return boundedDenseArray(
+    value,
+    'Digest output identities',
+    MAX_DIGEST_WORKFLOW_FRAGMENTS,
+  ).map((entry, index) => {
+    if (!isPlainObject(entry)) {
+      fail('invalid-recipe', `Digest output identity ${index + 1} must be a plain object.`);
+    }
+    const id = ownDataProperty(entry, 'id');
+    const name = ownDataProperty(entry, 'name');
+    if (id === INVALID_DATA_PROPERTY || name === INVALID_DATA_PROPERTY) {
+      fail('invalid-recipe', `Digest output identity ${index + 1} must contain direct data.`);
+    }
+    return {
+      ...(id === undefined ? {} : { id: id as string }),
+      ...(name === undefined ? {} : { name: name as string }),
+    } as DigestFragmentRecordIdentity;
+  });
+}
+
+function snapshotDigestWorkflowMetadata(value: unknown): DigestWorkflowMetadata {
+  if (!isPlainObject(value)) fail('invalid-recipe', 'Digest workflow metadata must be a plain object.');
+  const read = (key: string, required: boolean): unknown => {
+    const property = ownDataProperty(value, key);
+    if (property === INVALID_DATA_PROPERTY) {
+      fail('invalid-recipe', `Digest workflow.${key} must be a direct data property.`);
+    }
+    if (required && property === undefined) {
+      fail('invalid-recipe', `Digest workflow.${key} is required.`);
+    }
+    return property;
+  };
+  const id = boundedText(read('id', true), 'Digest workflow id', MAX_ARTIFACT_ID_LENGTH, 'invalid-recipe');
+  const createdAt = boundedText(read('createdAt', true), 'Digest workflow createdAt', 256, 'invalid-recipe');
+  const inputSha256 = read('inputSha256', false);
+  const name = read('name', false);
+  const source = read('source', false);
+  const actor = read('actor', false);
+  const engine = read('engine', false);
+  const engineVersion = read('engineVersion', false);
+  return {
+    id,
+    createdAt,
+    ...(inputSha256 === undefined ? {} : { inputSha256: inputSha256 as string }),
+    ...(name === undefined ? {} : { name: name as string }),
+    ...(source === undefined ? {} : { source: source as string }),
+    ...(actor === undefined ? {} : { actor: actor as string }),
+    ...(engine === undefined ? {} : { engine: engine as string }),
+    ...(engineVersion === undefined ? {} : { engineVersion: engineVersion as string }),
+  };
+}
+
+function snapshotMaterializeDigestWorkflowInput(value: unknown): MaterializeDigestWorkflowInput {
+  if (!isPlainObject(value)) {
+    fail('invalid-recipe', 'Digest workflow input must be a plain object.');
+  }
+  const read = (key: string, required: boolean): unknown => {
+    const property = ownDataProperty(value, key);
+    if (property === INVALID_DATA_PROPERTY) {
+      fail('invalid-recipe', `Digest workflow input.${key} must be a direct data property.`);
+    }
+    if (required && property === undefined) {
+      fail('invalid-recipe', `Digest workflow input.${key} is required.`);
+    }
+    return property;
+  };
+  const sourceRecord = read('sourceRecord', true);
+  const recipe = read('recipe', true);
+  const enzymeCatalog = read('enzymeCatalog', true);
+  const workflow = read('workflow', true);
+  const outputIdentities = read('outputIdentities', false);
+  const outputIdPrefix = read('outputIdPrefix', false);
+  const outputNamePrefix = read('outputNamePrefix', false);
+  const existingRecordIds = read('existingRecordIds', false);
+  const existingRecordNames = read('existingRecordNames', false);
+  const derivedRecordSource = read('derivedRecordSource', false);
+
+  return {
+    sourceRecord: sourceRecord as DigestWorkflowSourceRecord,
+    recipe: recipe as DigestRecipe,
+    enzymeCatalog: enzymeCatalog as readonly RestrictionEnzyme[],
+    workflow: snapshotDigestWorkflowMetadata(workflow),
+    ...(outputIdentities === undefined ? {} : { outputIdentities: snapshotOutputIdentities(outputIdentities) }),
+    ...(outputIdPrefix === undefined ? {} : { outputIdPrefix: outputIdPrefix as string }),
+    ...(outputNamePrefix === undefined ? {} : { outputNamePrefix: outputNamePrefix as string }),
+    ...(existingRecordIds === undefined ? {} : { existingRecordIds: existingRecordIds as readonly string[] }),
+    ...(existingRecordNames === undefined ? {} : { existingRecordNames: existingRecordNames as readonly string[] }),
+    ...(derivedRecordSource === undefined ? {} : { derivedRecordSource: derivedRecordSource as string }),
+  };
 }
 
 function normalizeMethylationAssumptions(value: unknown): RestrictionMethylationAssumptions | undefined {
@@ -809,18 +941,47 @@ function resolveOutputIdentities(
     MAX_DIGEST_WORKFLOW_RECORD_NAME_LENGTH,
     'invalid-recipe',
   );
-  const usedIds = new Set([input.sourceRecord.id, ...(input.existingRecordIds ?? [])]);
-  const usedNames = new Set(
-    [input.sourceRecord.name, ...(input.existingRecordNames ?? [])]
-      .map((name) => name.trim().toLocaleLowerCase()),
-  );
-  const existingIds = new Set([input.sourceRecord.id, ...(input.existingRecordIds ?? [])]);
-  if (existingIds.size + outputFragments.length > MAX_DIGEST_WORKFLOW_RECORDS) {
+  const existingIdLength = input.existingRecordIds === undefined
+    ? 0
+    : boundedArrayLength(input.existingRecordIds, 'Existing digest record ids', MAX_DIGEST_WORKFLOW_RECORDS);
+  const existingNameLength = input.existingRecordNames === undefined
+    ? 0
+    : boundedArrayLength(input.existingRecordNames, 'Existing digest record names', MAX_DIGEST_WORKFLOW_RECORDS);
+  if (1 + Math.max(existingIdLength, existingNameLength) + outputFragments.length > MAX_DIGEST_WORKFLOW_RECORDS) {
     fail(
       'resource-limit',
       `Digest outputs would exceed the ${MAX_DIGEST_WORKFLOW_RECORDS}-record workspace limit.`,
     );
   }
+  const existingIds = input.existingRecordIds === undefined
+    ? []
+    : boundedDenseArray(
+      input.existingRecordIds,
+      'Existing digest record ids',
+      MAX_DIGEST_WORKFLOW_RECORDS,
+    ).map((value, index) => boundedText(
+      value,
+      `Existing digest record id ${index + 1}`,
+      MAX_ARTIFACT_ID_LENGTH,
+      'invalid-recipe',
+    ));
+  const existingNames = input.existingRecordNames === undefined
+    ? []
+    : boundedDenseArray(
+      input.existingRecordNames,
+      'Existing digest record names',
+      MAX_DIGEST_WORKFLOW_RECORDS,
+    ).map((value, index) => boundedText(
+      value,
+      `Existing digest record name ${index + 1}`,
+      MAX_DIGEST_WORKFLOW_RECORD_NAME_LENGTH,
+      'invalid-recipe',
+    ));
+  const usedIds = new Set([input.sourceRecord.id, ...existingIds]);
+  const usedNames = new Set(
+    [input.sourceRecord.name, ...existingNames]
+      .map((name) => name.toLocaleLowerCase()),
+  );
 
   return outputFragments.map((fragment, index) => {
     const defaultIdSuffix = input.recipe.outcome === 'linearized' ? 'linearized' : `fragment-${index + 1}`;
@@ -901,30 +1062,54 @@ function buildWorkflowProvenance(input: MaterializeDigestWorkflowInput): Artifac
 export function materializeDigestWorkflow(
   rawInput: MaterializeDigestWorkflowInput,
 ): MaterializedDigestWorkflow {
-  validateSourceRecord(rawInput.sourceRecord);
-  const sourceFeatures = snapshotSourceFeatures(rawInput.sourceRecord);
+  const submittedInput = snapshotMaterializeDigestWorkflowInput(rawInput);
+  validateSourceRecord(submittedInput.sourceRecord);
+  const sourceTagsValue = ownDataProperty(
+    submittedInput.sourceRecord as unknown as Record<string, unknown>,
+    'tags',
+  );
+  if (sourceTagsValue === INVALID_DATA_PROPERTY) {
+    fail('invalid-source', 'Source record tags must be direct data.');
+  }
+  const sourceTags = sourceTagsValue === undefined
+    ? undefined
+    : boundedStringArray(
+      sourceTagsValue,
+      'Source record tags',
+      MAX_DIGEST_WORKFLOW_TAGS,
+      MAX_DIGEST_WORKFLOW_TAG_LENGTH,
+      'invalid-source',
+    );
+  const sourceFeatures = snapshotSourceFeatures(submittedInput.sourceRecord);
   const sourceRecord: DigestWorkflowSourceRecord = {
-    id: rawInput.sourceRecord.id,
-    name: rawInput.sourceRecord.name,
-    sequence: rawInput.sourceRecord.sequence,
-    type: rawInput.sourceRecord.type,
-    topology: rawInput.sourceRecord.topology,
-    active: rawInput.sourceRecord.active,
+    id: submittedInput.sourceRecord.id,
+    name: submittedInput.sourceRecord.name,
+    sequence: submittedInput.sourceRecord.sequence,
+    type: submittedInput.sourceRecord.type,
+    topology: submittedInput.sourceRecord.topology,
+    active: submittedInput.sourceRecord.active,
     features: sourceFeatures,
-    ...(rawInput.sourceRecord.translationTableId === undefined
+    ...(submittedInput.sourceRecord.translationTableId === undefined
       ? {}
-      : { translationTableId: rawInput.sourceRecord.translationTableId }),
-    ...(rawInput.sourceRecord.description === undefined ? {} : { description: rawInput.sourceRecord.description }),
-    ...(rawInput.sourceRecord.organism === undefined ? {} : { organism: rawInput.sourceRecord.organism }),
-    ...(rawInput.sourceRecord.source === undefined ? {} : { source: rawInput.sourceRecord.source }),
-    ...(rawInput.sourceRecord.group === undefined ? {} : { group: rawInput.sourceRecord.group }),
-    ...(rawInput.sourceRecord.tags === undefined ? {} : { tags: [...rawInput.sourceRecord.tags] }),
+      : { translationTableId: submittedInput.sourceRecord.translationTableId }),
+    ...(submittedInput.sourceRecord.description === undefined ? {} : { description: submittedInput.sourceRecord.description }),
+    ...(submittedInput.sourceRecord.organism === undefined ? {} : { organism: submittedInput.sourceRecord.organism }),
+    ...(submittedInput.sourceRecord.source === undefined ? {} : { source: submittedInput.sourceRecord.source }),
+    ...(submittedInput.sourceRecord.group === undefined ? {} : { group: submittedInput.sourceRecord.group }),
+    ...(sourceTags === undefined ? {} : { tags: sourceTags }),
   };
-  const recipe = rebuildAndVerifyRecipe(sourceRecord, rawInput.recipe, rawInput.enzymeCatalog);
+  const recipe = rebuildAndVerifyRecipe(sourceRecord, submittedInput.recipe, submittedInput.enzymeCatalog);
   const input: MaterializeDigestWorkflowInput = {
-    ...rawInput,
     sourceRecord,
     recipe,
+    enzymeCatalog: submittedInput.enzymeCatalog,
+    workflow: submittedInput.workflow,
+    ...(submittedInput.outputIdentities === undefined ? {} : { outputIdentities: submittedInput.outputIdentities }),
+    ...(submittedInput.outputIdPrefix === undefined ? {} : { outputIdPrefix: submittedInput.outputIdPrefix }),
+    ...(submittedInput.outputNamePrefix === undefined ? {} : { outputNamePrefix: submittedInput.outputNamePrefix }),
+    ...(submittedInput.existingRecordIds === undefined ? {} : { existingRecordIds: submittedInput.existingRecordIds }),
+    ...(submittedInput.existingRecordNames === undefined ? {} : { existingRecordNames: submittedInput.existingRecordNames }),
+    ...(submittedInput.derivedRecordSource === undefined ? {} : { derivedRecordSource: submittedInput.derivedRecordSource }),
   };
   boundedText(input.workflow.id, 'Digest workflow id', MAX_ARTIFACT_ID_LENGTH, 'invalid-recipe');
   validateRecipe(input.sourceRecord, input.recipe);
