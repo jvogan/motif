@@ -333,6 +333,48 @@ function snapshotDigestWorkflowMetadata(value: unknown): DigestWorkflowMetadata 
   };
 }
 
+function snapshotDigestWorkflowSourceRecord(value: unknown): DigestWorkflowSourceRecord {
+  if (!isPlainObject(value)) fail('invalid-source', 'Digest source record must be a plain object.');
+  const read = (key: string, required: boolean): unknown => {
+    const property = ownDataProperty(value, key);
+    if (property === INVALID_DATA_PROPERTY) {
+      fail('invalid-source', `Digest source record.${key} must be a direct data property.`);
+    }
+    if (required && property === undefined) {
+      fail('invalid-source', `Digest source record.${key} is required.`);
+    }
+    return property;
+  };
+  const id = read('id', true);
+  const name = read('name', true);
+  const sequence = read('sequence', true);
+  const type = read('type', true);
+  const topology = read('topology', true);
+  const active = read('active', true);
+  const translationTableId = read('translationTableId', false);
+  const features = read('features', false);
+  const description = read('description', false);
+  const organism = read('organism', false);
+  const source = read('source', false);
+  const group = read('group', false);
+  const tags = read('tags', false);
+  return {
+    id: id as string,
+    name: name as string,
+    sequence: sequence as string,
+    type: type as 'dna',
+    topology: topology as Topology,
+    active: active as boolean,
+    ...(translationTableId === undefined ? {} : { translationTableId: translationTableId as number }),
+    ...(features === undefined ? {} : { features: features as readonly Feature[] }),
+    ...(description === undefined ? {} : { description: description as string }),
+    ...(organism === undefined ? {} : { organism: organism as string }),
+    ...(source === undefined ? {} : { source: source as string }),
+    ...(group === undefined ? {} : { group: group as string }),
+    ...(tags === undefined ? {} : { tags: tags as readonly string[] }),
+  };
+}
+
 function snapshotMaterializeDigestWorkflowInput(value: unknown): MaterializeDigestWorkflowInput {
   if (!isPlainObject(value)) {
     fail('invalid-recipe', 'Digest workflow input must be a plain object.');
@@ -359,7 +401,7 @@ function snapshotMaterializeDigestWorkflowInput(value: unknown): MaterializeDige
   const derivedRecordSource = read('derivedRecordSource', false);
 
   return {
-    sourceRecord: sourceRecord as DigestWorkflowSourceRecord,
+    sourceRecord: snapshotDigestWorkflowSourceRecord(sourceRecord),
     recipe: recipe as DigestRecipe,
     enzymeCatalog: enzymeCatalog as readonly RestrictionEnzyme[],
     workflow: snapshotDigestWorkflowMetadata(workflow),

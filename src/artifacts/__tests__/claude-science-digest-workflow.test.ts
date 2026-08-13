@@ -593,6 +593,23 @@ describe('Claude Science digest workflow materialization', () => {
     expect(createdAtReads).toBe(0);
   });
 
+  it('snapshots source-record fields before validation without invoking accessors', () => {
+    const source = sourceRecord('AAAAGAATTCTTTT');
+    const recipe = recipeFor(source, 'EcoRI');
+    let sequenceReads = 0;
+    Object.defineProperty(source, 'sequence', {
+      configurable: true,
+      enumerable: true,
+      get() {
+        sequenceReads += 1;
+        return 'AAAAGAATTCTTTT';
+      },
+    });
+
+    expect(() => materialize(source, recipe)).toMatchErrorCode('invalid-source');
+    expect(sequenceReads).toBe(0);
+  });
+
   it('rejects oversized existing-record indexes before copying or reading their entries', () => {
     const source = sourceRecord('AAAAGAATTCTTTT');
     const recipe = recipeFor(source, 'EcoRI');
