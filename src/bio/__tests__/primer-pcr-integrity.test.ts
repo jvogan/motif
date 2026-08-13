@@ -485,7 +485,6 @@ describe('primer, PCR, and Tm integrity', () => {
       new TmOptionsClass(),
       accessorOptions,
       customPrototypeOptions,
-      { ...DEFAULT_TM_OPTIONS, unknownField: true },
     ]) {
       expect(normalizePrimerDesignParams(sequenceLength, {
         targetStart: 20,
@@ -494,6 +493,7 @@ describe('primer, PCR, and Tm integrity', () => {
       }, 'forward')).toBeNull();
     }
     expect(getter).not.toHaveBeenCalled();
+
     expect(normalizePrimerDesignParams(sequenceLength, {
       targetStart: 20,
       targetEnd: 80,
@@ -536,6 +536,61 @@ describe('primer, PCR, and Tm integrity', () => {
         selfComplementarity: 'disabled',
       },
     });
+  });
+
+  it('bounds Tm option inspection to supported data fields', () => {
+    const sequenceLength = 160;
+    const options: Record<string, unknown> = { ...DEFAULT_TM_OPTIONS };
+    for (let index = 0; index < 100_000; index += 1) options[`extra-${index}`] = index;
+    let ownKeysCalls = 0;
+    const guardedOptions = new Proxy(options, {
+      ownKeys() {
+        ownKeysCalls += 1;
+        throw new Error('caller-key enumeration must not be used');
+      },
+    });
+
+    const normalized = normalizePrimerDesignParams(sequenceLength, {
+      targetStart: 20,
+      targetEnd: 80,
+      tmOptions: guardedOptions as never,
+    }, 'forward');
+    expect(ownKeysCalls).toBe(0);
+    expect(normalized?.tmOptions).toMatchObject(DEFAULT_TM_OPTIONS);
+    expect(normalized?.tmOptions).not.toHaveProperty('extra-0');
+    expect(normalized?.tmEvidence.options).not.toHaveProperty('extra-0');
+  });
+
+  it('rejects Tm option accessors and revoked proxies without evaluating or throwing', () => {
+    const sequenceLength = 160;
+    let reads = 0;
+    const accessorOptions = { ...DEFAULT_TM_OPTIONS };
+    Object.defineProperty(accessorOptions, 'naConcentration', {
+      enumerable: true,
+      get() {
+        reads += 1;
+        return 50;
+      },
+    });
+    expect(normalizePrimerDesignParams(sequenceLength, {
+      targetStart: 20,
+      targetEnd: 80,
+      tmOptions: accessorOptions as never,
+    }, 'forward')).toBeNull();
+    expect(reads).toBe(0);
+
+    const revoked = Proxy.revocable({ ...DEFAULT_TM_OPTIONS }, {});
+    revoked.revoke();
+    expect(() => normalizePrimerDesignParams(sequenceLength, {
+      targetStart: 20,
+      targetEnd: 80,
+      tmOptions: revoked.proxy as never,
+    }, 'forward')).not.toThrow();
+    expect(normalizePrimerDesignParams(sequenceLength, {
+      targetStart: 20,
+      targetEnd: 80,
+      tmOptions: revoked.proxy as never,
+    }, 'forward')).toBeNull();
   });
 
   it('reports directional pool truncation instead of presenting capped pairing as exhaustive', () => {

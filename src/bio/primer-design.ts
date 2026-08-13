@@ -444,6 +444,17 @@ function invalidPrimerDesignResult(message: string, direction: 'forward' | 'reve
   };
 }
 
+const TM_OPTION_KEYS = [
+  'method',
+  'naConcentration',
+  'mgConcentration',
+  'dntpConcentration',
+  'primerConcentration',
+  'saltCorrection',
+  'selfComplementary',
+] as const;
+type TmOptionKey = typeof TM_OPTION_KEYS[number];
+
 function normalizedTmOptions(options: TmOptions | undefined): TmOptions | null {
   // An omitted value selects the visible workspace's named screening preset.
   // An explicitly supplied object retains the calculator's historical
@@ -451,23 +462,22 @@ function normalizedTmOptions(options: TmOptions | undefined): TmOptions | null {
   // do not silently change chemistry assumptions.
   const supplied: Partial<TmOptions> = {};
   if (options !== undefined) {
-    if (options === null || typeof options !== 'object' || Array.isArray(options)) return null;
-    const prototype = Object.getPrototypeOf(options);
-    if (prototype !== Object.prototype && prototype !== null) return null;
-    const allowedKeys = new Set([
-      'method',
-      'naConcentration',
-      'mgConcentration',
-      'dntpConcentration',
-      'primerConcentration',
-      'saltCorrection',
-      'selfComplementary',
-    ]);
-    for (const key of Reflect.ownKeys(options)) {
-      if (typeof key !== 'string' || !allowedKeys.has(key)) return null;
-      const descriptor = Object.getOwnPropertyDescriptor(options, key);
-      if (!descriptor || !Object.hasOwn(descriptor, 'value')) return null;
-      (supplied as Record<string, unknown>)[key] = descriptor.value;
+    try {
+      if (options === null || typeof options !== 'object' || Array.isArray(options)) return null;
+      const prototype = Object.getPrototypeOf(options);
+      if (prototype !== Object.prototype && prototype !== null) return null;
+      // Probe only the fixed supported fields. Caller-owned keys are ignored so
+      // a large or hostile object cannot force key enumeration or persistence.
+      for (const key of TM_OPTION_KEYS) {
+        const descriptor = Object.getOwnPropertyDescriptor(options, key);
+        if (!descriptor) continue;
+        if (!Object.hasOwn(descriptor, 'value')) return null;
+        (supplied as Record<TmOptionKey, unknown>)[key] = descriptor.value;
+      }
+    } catch {
+      // Revoked proxies, throwing proxy traps, and other malformed runtime
+      // values are invalid inputs; do not let them escape as exceptions.
+      return null;
     }
   }
   const candidate = options === undefined
