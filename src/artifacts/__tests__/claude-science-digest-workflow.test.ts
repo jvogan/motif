@@ -608,6 +608,21 @@ describe('Claude Science digest workflow materialization', () => {
 
     expect(() => materialize(source, recipe)).toMatchErrorCode('invalid-source');
     expect(sequenceReads).toBe(0);
+
+    for (const [key, malformed] of [
+      ['translationTableId', { id: 1 }],
+      ['organism', { name: 'mutable' }],
+      ['group', { name: 'mutable' }],
+    ] as const) {
+      expect(() => materialize({ ...sourceRecord('AAAAGAATTCTTTT'), [key]: malformed }, recipe))
+        .toMatchErrorCode('invalid-source');
+    }
+    expect(() => materialize({ ...sourceRecord('AAAAGAATTCTTTT'), translationTableId: 999 }, recipe))
+      .toMatchErrorCode('invalid-source');
+    expect(() => materialize({
+      ...sourceRecord('AAAAGAATTCTTTT'),
+      description: 'x'.repeat(16_385),
+    }, recipe)).toMatchErrorCode('resource-limit');
   });
 
   it('rejects oversized existing-record indexes before copying or reading their entries', () => {

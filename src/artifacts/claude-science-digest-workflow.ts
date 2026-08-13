@@ -1,4 +1,5 @@
 import type { DigestFragment } from '../bio/restriction-digest';
+import { VALID_NCBI_TABLE_IDS } from '../bio/codon-tables';
 import { cloneCanonicalFeature, validateFeatureCollection } from '../bio/feature-bounds';
 import {
   remapFeatureLocation,
@@ -39,6 +40,7 @@ export const MAX_DIGEST_WORKFLOW_FRAGMENTS = 99;
 export const MAX_DIGEST_WORKFLOW_RECORDS = 100;
 export const MAX_DIGEST_WORKFLOW_FEATURES_PER_RECORD = 2_000;
 export const MAX_DIGEST_WORKFLOW_RECORD_NAME_LENGTH = 1_024;
+const MAX_DIGEST_WORKFLOW_DESCRIPTION_LENGTH = 16_384;
 const MAX_DIGEST_WORKFLOW_TAGS = 100;
 const MAX_DIGEST_WORKFLOW_TAG_LENGTH = 256;
 
@@ -358,6 +360,26 @@ function snapshotDigestWorkflowSourceRecord(value: unknown): DigestWorkflowSourc
   const source = read('source', false);
   const group = read('group', false);
   const tags = read('tags', false);
+  if (translationTableId !== undefined && (
+    !Number.isSafeInteger(translationTableId)
+    || !VALID_NCBI_TABLE_IDS.includes(translationTableId as number)
+  )) {
+    fail('invalid-source', 'Digest source record.translationTableId must be a supported NCBI genetic-code id.');
+  }
+  const optionalText = (candidate: unknown, key: string, maximum: number): string | undefined => {
+    if (candidate === undefined) return undefined;
+    if (typeof candidate !== 'string') {
+      fail('invalid-source', `Digest source record.${key} must be a string.`);
+    }
+    if (candidate.length > maximum) {
+      fail('resource-limit', `Digest source record.${key} cannot exceed ${maximum.toLocaleString()} characters.`);
+    }
+    return candidate;
+  };
+  const normalizedDescription = optionalText(description, 'description', MAX_DIGEST_WORKFLOW_DESCRIPTION_LENGTH);
+  const normalizedOrganism = optionalText(organism, 'organism', MAX_DIGEST_WORKFLOW_RECORD_NAME_LENGTH);
+  const normalizedSource = optionalText(source, 'source', MAX_DIGEST_WORKFLOW_RECORD_NAME_LENGTH);
+  const normalizedGroup = optionalText(group, 'group', MAX_DIGEST_WORKFLOW_RECORD_NAME_LENGTH);
   return {
     id: id as string,
     name: name as string,
@@ -367,10 +389,10 @@ function snapshotDigestWorkflowSourceRecord(value: unknown): DigestWorkflowSourc
     active: active as boolean,
     ...(translationTableId === undefined ? {} : { translationTableId: translationTableId as number }),
     ...(features === undefined ? {} : { features: features as readonly Feature[] }),
-    ...(description === undefined ? {} : { description: description as string }),
-    ...(organism === undefined ? {} : { organism: organism as string }),
-    ...(source === undefined ? {} : { source: source as string }),
-    ...(group === undefined ? {} : { group: group as string }),
+    ...(normalizedDescription === undefined ? {} : { description: normalizedDescription }),
+    ...(normalizedOrganism === undefined ? {} : { organism: normalizedOrganism }),
+    ...(normalizedSource === undefined ? {} : { source: normalizedSource }),
+    ...(normalizedGroup === undefined ? {} : { group: normalizedGroup }),
     ...(tags === undefined ? {} : { tags: tags as readonly string[] }),
   };
 }
