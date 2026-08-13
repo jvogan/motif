@@ -569,7 +569,7 @@ function restrictionDigestResultFor(
     const sourceSpanCount = safeTopology === 'circular'
       ? (cuts.length > 0 ? cuts.length + 1 : 1)
       : fragmentCount;
-  const featureMapping = restrictionFeatureMappingReceipt(canonicalFeatures, fragmentCount, sourceSpanCount);
+    const featureMapping = restrictionFeatureMappingReceipt(canonicalFeatures, fragmentCount, sourceSpanCount);
     base.featureMapping = featureMapping;
     if (!featureMapping.complete) {
       base.issues = [...base.issues, {

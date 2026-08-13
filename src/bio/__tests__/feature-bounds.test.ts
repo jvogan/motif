@@ -3,6 +3,7 @@ import {
   FeatureCollectionInputError,
   MAX_FEATURES_PER_COLLECTION,
   MAX_SUBRANGES_PER_FEATURE,
+  cloneCanonicalFeature,
   snapshotFeatureCollection,
   validateFeatureCollection,
 } from '../feature-bounds';
@@ -34,6 +35,14 @@ function feature(overrides: Partial<Feature> = {}): Feature {
 }
 
 describe('shared derived-feature bounds', () => {
+  it('honors an explicit subrange removal override', () => {
+    const source = feature({ subRanges: [{ start: 2, end: 6, strand: 1 }] });
+
+    const clone = cloneCanonicalFeature(source, { subRanges: undefined });
+
+    expect(clone).not.toHaveProperty('subRanges');
+  });
+
   it('snapshots only supported feature fields and never executes extra-key accessors', () => {
     const source = feature({
       metadata: { qualifier: { note: 'before' } },

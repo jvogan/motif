@@ -335,9 +335,9 @@ describe('restriction-site scanning', () => {
     const encoderPrototype = TextEncoder.prototype;
     const originalEncode = encoderPrototype.encode;
     let encodeCalls = 0;
-    encoderPrototype.encode = function instrumentedEncode(value: string): Uint8Array {
+    encoderPrototype.encode = function instrumentedEncode(value?: string): ReturnType<TextEncoder['encode']> {
       encodeCalls += 1;
-      return originalEncode.call(this, value);
+      return originalEncode.call(this, value) as ReturnType<TextEncoder['encode']>;
     };
 
     try {

@@ -398,6 +398,8 @@ export function cloneCanonicalFeature(
   feature: Feature,
   overrides: Partial<Pick<Feature, 'id' | 'start' | 'end' | 'strand' | 'subRanges' | 'metadata'>> = {},
 ): Feature {
+  const hasSubRangeOverride = Object.prototype.hasOwnProperty.call(overrides, 'subRanges');
+  const subRanges = hasSubRangeOverride ? overrides.subRanges : feature.subRanges;
   return {
     id: overrides.id ?? feature.id,
     name: feature.name,
@@ -407,9 +409,9 @@ export function cloneCanonicalFeature(
     strand: overrides.strand ?? feature.strand,
     color: feature.color,
     metadata: overrides.metadata ?? feature.metadata,
-    ...((overrides.subRanges ?? feature.subRanges) === undefined
+    ...(subRanges === undefined
       ? {}
-      : { subRanges: overrides.subRanges ?? feature.subRanges }),
+      : { subRanges }),
   };
 }
 
