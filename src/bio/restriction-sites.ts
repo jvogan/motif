@@ -1066,17 +1066,16 @@ function scanCategoryForSites(sites: readonly RestrictionSite[]): RestrictionEnz
 }
 
 /**
- * Return a structured activity receipt for each requested enzyme. This is the
- * unambiguous replacement for treating every enzyme without an active
- * double-strand site as a conventional "non-cutter".
+ * Build per-enzyme activity receipts from an already-completed scan.
+ *
+ * Keeping this projection separate from the scanner is important for legacy
+ * compatibility helpers: they can reuse one bounded scan rather than running
+ * the full sequence enumeration a second time.
  */
-export function classifyRestrictionEnzymes(
-  seq: string,
-  enzymes: RestrictionEnzyme[] = RESTRICTION_ENZYMES,
-  options?: FindRestrictionSitesOptions,
+function classifyRestrictionEnzymeScanResult(
+  scan: RestrictionScanResult,
+  normalizedEnzymes: readonly RestrictionEnzyme[],
 ): RestrictionEnzymeScanReceipt[] {
-  const scan = scanRestrictionSites(seq, enzymes, options);
-  const normalizedEnzymes = normalizeRestrictionEnzymes(enzymes);
   return normalizedEnzymes.map((enzyme) => {
     const key = enzyme.name.trim().toLowerCase();
     const sites = scan.sites.filter((site) => site.enzyme.trim().toLowerCase() === key);
@@ -1096,6 +1095,21 @@ export function classifyRestrictionEnzymes(
       diagnostics: [...scan.diagnostics],
     };
   });
+}
+
+/**
+ * Return a structured activity receipt for each requested enzyme. This is the
+ * unambiguous replacement for treating every enzyme without an active
+ * double-strand site as a conventional "non-cutter".
+ */
+export function classifyRestrictionEnzymes(
+  seq: string,
+  enzymes: RestrictionEnzyme[] = RESTRICTION_ENZYMES,
+  options?: FindRestrictionSitesOptions,
+): RestrictionEnzymeScanReceipt[] {
+  const scan = scanRestrictionSites(seq, enzymes, options);
+  const normalizedEnzymes = normalizeRestrictionEnzymes(enzymes);
+  return classifyRestrictionEnzymeScanResult(scan, normalizedEnzymes);
 }
 
 /** Descriptive alias for integrations that call the result a receipt. */
@@ -1164,8 +1178,9 @@ export function findNonCutters(
 ): RestrictionEnzyme[] {
   const scan = scanRestrictionSites(seq, enzymes, options);
   if (!scan.complete) throw new RestrictionScanResultLimitError(scan);
+  const normalizedEnzymes = normalizeRestrictionEnzymes(enzymes);
   const activeEnzymes = new Set(
-    classifyRestrictionEnzymes(seq, enzymes, options)
+    classifyRestrictionEnzymeScanResult(scan, normalizedEnzymes)
       .filter((receipt) => receipt.category === 'active-double-strand')
       .map((receipt) => receipt.enzyme.name.toLowerCase()),
   );

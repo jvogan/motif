@@ -331,6 +331,27 @@ describe('restriction-site scanning', () => {
     expect([...preview.counts.entries()]).toEqual([['EcoRI', 1]]);
   });
 
+  it('projects findNonCutters from one bounded scan', () => {
+    const encoderPrototype = TextEncoder.prototype;
+    const originalEncode = encoderPrototype.encode;
+    let encodeCalls = 0;
+    encoderPrototype.encode = function instrumentedEncode(value: string): Uint8Array {
+      encodeCalls += 1;
+      return originalEncode.call(this, value);
+    };
+
+    try {
+      expect(findNonCutters('GAATTCAAAA', [enzyme('EcoRI')])).toEqual([]);
+    } finally {
+      encoderPrototype.encode = originalEncode;
+    }
+
+    // One initial result-envelope measurement and one retained-site
+    // measurement are enough for this complete one-site scan. A second full
+    // scan would repeat both measurements.
+    expect(encodeCalls).toBe(2);
+  });
+
   it('marks circular geometry that would traverse the source more than once', () => {
     const pathological: RestrictionEnzyme = {
       name: 'LongCircularGeometry',
