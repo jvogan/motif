@@ -214,6 +214,64 @@ describe('Claude Science digest recipe model', () => {
     expect(resolved.methylationAssumptions).toEqual({ dam: 'methylated', cpg: 'unmethylated' });
   });
 
+  it('snapshots only supported methylation targets without enumerating or evaluating caller data', () => {
+    const input = {
+      sequence: 'AAAAGATCAAAA',
+      sequenceType: 'dna' as const,
+      topology: 'linear' as const,
+      enzymeText: 'DpnI',
+      enzymeCatalog: RESTRICTION_ENZYMES_FULL,
+    };
+    const target: Record<string, unknown> = {
+      dam: 'methylated',
+      dcm: 'unknown',
+      cpg: 'unknown',
+      custom: 'unmethylated',
+    };
+    for (let index = 0; index < 50_000; index += 1) {
+      target[`unrelated-${index}`] = 'unknown';
+    }
+    let ownKeysCalls = 0;
+    const largeAssumptions = new Proxy(target, {
+      ownKeys() {
+        ownKeysCalls += 1;
+        throw new Error('methylation assumptions must not be enumerated');
+      },
+    });
+    const resolved = buildDigestRecipe({
+      ...input,
+      methylationAssumptions: largeAssumptions as never,
+    });
+
+    expect(ownKeysCalls).toBe(0);
+    expect(resolved.isValid).toBe(true);
+    expect(resolved.cutCount).toBe(1);
+    expect(resolved.methylationAssumptions).toEqual({
+      dam: 'methylated',
+      dcm: 'unknown',
+      cpg: 'unknown',
+      custom: 'unmethylated',
+    });
+
+    let getterReads = 0;
+    const accessorAssumptions = Object.defineProperty({}, 'dam', {
+      configurable: true,
+      enumerable: true,
+      get() {
+        getterReads += 1;
+        return 'methylated';
+      },
+    });
+    const rejected = buildDigestRecipe({
+      ...input,
+      methylationAssumptions: accessorAssumptions as never,
+    });
+
+    expect(getterReads).toBe(0);
+    expect(rejected.isValid).toBe(false);
+    expect(rejected.issues).toContainEqual(expect.objectContaining({ code: 'methylation_unknown' }));
+  });
+
   it('detaches normalized enzyme geometry and nested evidence from the caller catalog', () => {
     const enzyme: RestrictionEnzyme = {
       name: 'StateI',

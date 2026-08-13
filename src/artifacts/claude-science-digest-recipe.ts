@@ -8,8 +8,11 @@ import {
 import type {
   Feature,
   RestrictionEnzyme,
+  RestrictionMethylationAssumptions,
   RestrictionMethylationEvidence,
   RestrictionMethylationRequirement,
+  RestrictionMethylationState,
+  RestrictionMethylationTarget,
   RestrictionSite,
   SequenceType,
   Topology,
@@ -126,6 +129,60 @@ export interface BuildDigestRecipeInput {
   methylationAssumptions?: RestrictionDigestOptions['methylationAssumptions'];
 }
 
+const DIGEST_METHYLATION_TARGETS: readonly RestrictionMethylationTarget[] = [
+  'dam',
+  'dcm',
+  'cpg',
+  'custom',
+];
+const DIGEST_METHYLATION_STATES = new Set<RestrictionMethylationState>([
+  'unknown',
+  'methylated',
+  'unmethylated',
+]);
+
+/**
+ * Snapshot the small, fixed methylation-assumption contract at the recipe
+ * boundary. This deliberately reads four known own data descriptors instead
+ * of spreading or enumerating caller-owned objects; an accessor or malformed
+ * value is treated as unavailable and is never evaluated.
+ */
+function normalizeDigestMethylationAssumptions(
+  value: unknown,
+): RestrictionMethylationAssumptions | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === 'string') {
+    return DIGEST_METHYLATION_STATES.has(value as RestrictionMethylationState)
+      ? value as RestrictionMethylationState
+      : undefined;
+  }
+  if (typeof value !== 'object' || value === null) return undefined;
+  try {
+    if (Array.isArray(value)) return undefined;
+  } catch {
+    return undefined;
+  }
+
+  const normalized: Partial<Record<RestrictionMethylationTarget, RestrictionMethylationState>> = {};
+  for (const target of DIGEST_METHYLATION_TARGETS) {
+    let descriptor: PropertyDescriptor | undefined;
+    try {
+      descriptor = Object.getOwnPropertyDescriptor(value, target);
+    } catch {
+      return undefined;
+    }
+    if (!descriptor) continue;
+    if (!('value' in descriptor)) return undefined;
+    const state = descriptor.value;
+    if (state === undefined) continue;
+    if (typeof state !== 'string' || !DIGEST_METHYLATION_STATES.has(state as RestrictionMethylationState)) {
+      return undefined;
+    }
+    normalized[target] = state as RestrictionMethylationState;
+  }
+  return normalized;
+}
+
 function isTypeIISEnzyme(enzyme: RestrictionEnzyme): boolean {
   const recognitionLength = enzyme.recognitionSequence.length;
   return Math.min(enzyme.cutOffset, enzyme.complementCutOffset) < 0
@@ -199,6 +256,10 @@ export function resolveDigestEnzymes(
 export function buildDigestRecipe(input: BuildDigestRecipeInput): DigestRecipe {
   const resolution = resolveDigestEnzymes(input.enzymeText, input.enzymeCatalog);
   const issues: DigestRecipeIssue[] = [];
+  const resolvedMethylationAssumptions = input.methylationAssumptions
+    ?? input.methylation
+    ?? input.methylationState;
+  const methylationAssumptions = normalizeDigestMethylationAssumptions(resolvedMethylationAssumptions);
 
   if (input.sequenceType !== 'dna') {
     issues.push({
@@ -231,9 +292,7 @@ export function buildDigestRecipe(input: BuildDigestRecipeInput): DigestRecipe {
       input.features ? [...input.features] : undefined,
       resolution.enzymes,
       {
-        methylation: input.methylation,
-        methylationState: input.methylationState,
-        methylationAssumptions: input.methylationAssumptions,
+        methylationAssumptions,
       },
     )
     : null;
@@ -289,11 +348,6 @@ export function buildDigestRecipe(input: BuildDigestRecipeInput): DigestRecipe {
   const isValid = issues.length === 0;
   const fragments = isValid ? (digestResult?.fragments ?? []) : [];
   const cutCount = digestResult?.cutCount ?? 0;
-  const resolvedMethylationAssumptions = input.methylationAssumptions ?? input.methylation ?? input.methylationState;
-  const methylationAssumptions = typeof resolvedMethylationAssumptions === 'object'
-    && resolvedMethylationAssumptions !== null
-    ? { ...resolvedMethylationAssumptions }
-    : resolvedMethylationAssumptions;
 
   let outcome: DigestMoleculeOutcome = 'not-run';
   if (isValid) {
