@@ -620,6 +620,70 @@ describe('PCR amplicon materialization', () => {
     })).toThrow(/timestamp is allowed only when the review is acknowledged/i);
   });
 
+  it('bounds review-field inspection without reflecting an unbounded key list', () => {
+    const template = 'AAAACCCCGGGGTTTTAAAACCCCGGGGTTTTAAAACCCC';
+    const pair = pairFor(template, 2, 12, 24, 34);
+    const review: Record<string, unknown> = {
+      schema: 'motif.primer.evidence-review.v1',
+      required: false,
+      acknowledged: false,
+      reasonCodes: [],
+    };
+    for (let index = 0; index < 100_000; index += 1) review[`extra-${index}`] = true;
+    const ownKeys = vi.spyOn(Reflect, 'ownKeys').mockImplementation(() => {
+      throw new Error('unbounded key reflection must not be used');
+    });
+    try {
+      expect(() => materializePcrAmplicon({
+        sourceRecord: source(template),
+        selection: { ...selection(pair), evidenceReview: review as never },
+        identity: {
+          recordId: 'bounded-review-record',
+          resultId: 'bounded-review-result',
+          productId: 'bounded-review-product',
+          createdAt: '2026-07-17T12:00:00.000Z',
+        },
+        primerDesignResultId: 'primer-result',
+      })).toThrow(/Evidence review contains (?:too many fields|an unknown field)/i);
+      expect(ownKeys).not.toHaveBeenCalled();
+    } finally {
+      ownKeys.mockRestore();
+    }
+  });
+
+  it('rejects review accessors without evaluating them', () => {
+    const template = 'AAAACCCCGGGGTTTTAAAACCCCGGGGTTTTAAAACCCC';
+    const pair = pairFor(template, 2, 12, 24, 34);
+    let reads = 0;
+    const review: Record<string, unknown> = {
+      schema: 'motif.primer.evidence-review.v1',
+      required: false,
+      acknowledged: false,
+      reasonCodes: [],
+    };
+    Object.defineProperty(review, 'acknowledgedAt', {
+      enumerable: false,
+      get() {
+        reads += 1;
+        return '2026-07-17T12:00:00.000Z';
+      },
+    });
+    expect(() => materializePcrAmplicon({
+      sourceRecord: source(template),
+      selection: { ...selection(pair), evidenceReview: review as never },
+      identity: {
+        recordId: 'accessor-review-record',
+        resultId: 'accessor-review-result',
+        productId: 'accessor-review-product',
+        createdAt: '2026-07-17T12:00:00.000Z',
+      },
+      primerDesignResultId: 'primer-result',
+    })).toThrowError(new PcrMaterializationError(
+      'Evidence review fields must be own data properties.',
+    ));
+    expect(reads).toBe(0);
+  });
+
   it('omits an invalid linear template range for an origin-crossing product', () => {
     const template = 'AAAACCCCGGGGTTTTAAAACCCCGGGGTTTTAAAACCCC';
     const result = materializePcrAmplicon({

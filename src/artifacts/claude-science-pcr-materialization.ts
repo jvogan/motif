@@ -177,6 +177,102 @@ function primerDesignIdentity(selection: PcrMaterializationSelection): string {
 
 const REVIEW_SCHEMA = 'motif.primer.evidence-review.v1' as const;
 const ACKNOWLEDGMENT_SCHEMA = 'motif.primer.evidence-acknowledgment.v1' as const;
+const MAX_EVIDENCE_REVIEW_KEYS = 5;
+const MAX_EVIDENCE_REVIEW_REASON_CODES = 64;
+
+const EVIDENCE_REVIEW_KEYS = new Set([
+  'schema',
+  'required',
+  'acknowledged',
+  'reasonCodes',
+  'acknowledgedAt',
+]);
+
+const MISSING_OWN_DATA_PROPERTY = Symbol('missing-own-data-property');
+const INVALID_OWN_DATA_PROPERTY = Symbol('invalid-own-data-property');
+
+function isPlainEvidenceReviewObject(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  try {
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
+  } catch {
+    return false;
+  }
+}
+
+function ownEvidenceReviewDataProperty(
+  value: object,
+  key: string,
+): unknown | typeof MISSING_OWN_DATA_PROPERTY | typeof INVALID_OWN_DATA_PROPERTY {
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor) return MISSING_OWN_DATA_PROPERTY;
+    return Object.hasOwn(descriptor, 'value') ? descriptor.value : INVALID_OWN_DATA_PROPERTY;
+  } catch {
+    return INVALID_OWN_DATA_PROPERTY;
+  }
+}
+
+/**
+ * Snapshot the small review receipt without allocating an unbounded key list.
+ * A bounded for-in walk lets ordinary objects stop at the first excess
+ * enumerable field; known non-enumerable fields are read by descriptor without
+ * invoking accessors. Proxy traps can still throw, so callers receive a typed
+ * materialization error rather than a raw exception.
+ */
+function boundedEvidenceReviewFields(assertion: Record<string, unknown>): Record<string, unknown> {
+  const fields: Record<string, unknown> = {};
+  let enumerableOwnKeyCount = 0;
+  try {
+    for (const key in assertion) {
+      const descriptor = Object.getOwnPropertyDescriptor(assertion, key);
+      if (!descriptor) continue;
+      enumerableOwnKeyCount += 1;
+      if (enumerableOwnKeyCount > MAX_EVIDENCE_REVIEW_KEYS) {
+        throw new PcrMaterializationError('Evidence review contains too many fields.');
+      }
+      if (!EVIDENCE_REVIEW_KEYS.has(key)) {
+        throw new PcrMaterializationError('Evidence review contains an unknown field.');
+      }
+      if (!Object.hasOwn(descriptor, 'value')) {
+        throw new PcrMaterializationError('Evidence review fields must be own data properties.');
+      }
+      fields[key] = descriptor.value;
+    }
+
+    // A receipt normally arrives as JSON, but inspect the known keys directly
+    // so non-enumerable inputs cannot hide accessor fields or alter semantics.
+    for (const key of EVIDENCE_REVIEW_KEYS) {
+      if (Object.hasOwn(fields, key)) continue;
+      const value = ownEvidenceReviewDataProperty(assertion, key);
+      if (value === MISSING_OWN_DATA_PROPERTY) continue;
+      if (value === INVALID_OWN_DATA_PROPERTY) {
+        throw new PcrMaterializationError('Evidence review fields must be own data properties.');
+      }
+      fields[key] = value;
+    }
+  } catch (error) {
+    if (error instanceof PcrMaterializationError) throw error;
+    throw new PcrMaterializationError('Evidence review could not be inspected safely.');
+  }
+  return fields;
+}
+
+function boundedEvidenceReasonCodes(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null;
+  const lengthValue = ownEvidenceReviewDataProperty(value, 'length');
+  if (lengthValue === MISSING_OWN_DATA_PROPERTY || lengthValue === INVALID_OWN_DATA_PROPERTY) return null;
+  if (typeof lengthValue !== 'number' || !Number.isSafeInteger(lengthValue) || lengthValue > MAX_EVIDENCE_REVIEW_REASON_CODES) return null;
+  const reasonCodes: string[] = [];
+  for (let index = 0; index < lengthValue; index += 1) {
+    const item = ownEvidenceReviewDataProperty(value, String(index));
+    if (item === MISSING_OWN_DATA_PROPERTY || item === INVALID_OWN_DATA_PROPERTY) return null;
+    if (typeof item !== 'string' || item.length === 0 || item.length > 64) return null;
+    reasonCodes.push(item);
+  }
+  return reasonCodes;
+}
 
 function derivedTmEvidence(
   sourceRecord: PcrMaterializationSourceRecord,
@@ -240,48 +336,39 @@ function derivedEvidenceReview(
   }
 
   const assertion = selection.evidenceReview;
+  let reviewAcknowledged = false;
+  let reviewAcknowledgedAt: unknown;
   if (assertion !== undefined) {
-    if (
-      typeof assertion !== 'object'
-      || assertion === null
-      || Array.isArray(assertion)
-      || Object.getPrototypeOf(assertion) !== Object.prototype
-    ) {
+    if (!isPlainEvidenceReviewObject(assertion)) {
       throw new PcrMaterializationError('Evidence review must be a versioned plain-object assertion.');
     }
-    const allowedKeys = new Set(['schema', 'required', 'acknowledged', 'reasonCodes', 'acknowledgedAt']);
-    for (const key of Reflect.ownKeys(assertion)) {
-      if (typeof key !== 'string' || !allowedKeys.has(key)) {
-        throw new PcrMaterializationError('Evidence review contains an unknown field.');
-      }
-      const descriptor = Object.getOwnPropertyDescriptor(assertion, key);
-      if (!descriptor || !Object.hasOwn(descriptor, 'value')) {
-        throw new PcrMaterializationError('Evidence review fields must be own data properties.');
-      }
-    }
+    const fields = boundedEvidenceReviewFields(assertion);
+    const schema = fields.schema;
+    const required = fields.required;
+    const acknowledged = fields.acknowledged;
+    const suppliedReasonCodes = boundedEvidenceReasonCodes(fields.reasonCodes);
     if (
-      assertion.schema !== REVIEW_SCHEMA
-      || typeof assertion.required !== 'boolean'
-      || typeof assertion.acknowledged !== 'boolean'
-      || !Array.isArray(assertion.reasonCodes)
-      || assertion.reasonCodes.some((code) => typeof code !== 'string' || code.length === 0 || code.length > 64)
+      schema !== REVIEW_SCHEMA
+      || typeof required !== 'boolean'
+      || typeof acknowledged !== 'boolean'
+      || suppliedReasonCodes === null
     ) {
       throw new PcrMaterializationError('Evidence review does not match motif.primer.evidence-review.v1.');
     }
+    reviewAcknowledged = acknowledged;
+    reviewAcknowledgedAt = fields.acknowledgedAt;
   }
-  const acknowledged = assertion?.acknowledged === true;
-  const acknowledgedAt = assertion?.acknowledgedAt;
-  if (!acknowledged && acknowledgedAt !== undefined) {
+  if (!reviewAcknowledged && reviewAcknowledgedAt !== undefined) {
     throw new PcrMaterializationError('Evidence acknowledgment timestamp is allowed only when the review is acknowledged.');
   }
-  if (acknowledged && (
-    typeof acknowledgedAt !== 'string'
-    || !Number.isFinite(Date.parse(acknowledgedAt))
-    || new Date(acknowledgedAt).toISOString() !== acknowledgedAt
+  if (reviewAcknowledged && (
+    typeof reviewAcknowledgedAt !== 'string'
+    || !Number.isFinite(Date.parse(reviewAcknowledgedAt))
+    || new Date(reviewAcknowledgedAt).toISOString() !== reviewAcknowledgedAt
   )) {
     throw new PcrMaterializationError('Evidence acknowledgment requires a valid timestamp.');
   }
-  if (reasonCodes.length > 0 && !acknowledged) {
+  if (reasonCodes.length > 0 && !reviewAcknowledged) {
     throw new PcrMaterializationError('Selected primer evidence requires an explicit acknowledgment before materialization.');
   }
   return {
@@ -290,8 +377,8 @@ function derivedEvidenceReview(
     reasonCodes,
     assertion: {
       schema: ACKNOWLEDGMENT_SCHEMA,
-      acknowledged,
-      ...(acknowledged ? { acknowledgedAt: acknowledgedAt as string } : {}),
+      acknowledged: reviewAcknowledged,
+      ...(reviewAcknowledged ? { acknowledgedAt: reviewAcknowledgedAt as string } : {}),
     },
   };
 }
