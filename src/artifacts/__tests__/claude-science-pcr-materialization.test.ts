@@ -540,6 +540,96 @@ describe('PCR amplicon materialization', () => {
     expect(findPcrMaterializationDuplicate([], result.materializationKey)).toBeNull();
   });
 
+  it('uses only normalized primer fields for identity without reading ignored caller fields', () => {
+    const template = 'ATGCGTACGATCAGATCGTACGCAT';
+    const parameters: PrimerDesignParams = {
+      targetStart: 12,
+      targetEnd: 13,
+      minLength: 12,
+      maxLength: 12,
+      targetTm: 60,
+      tmTolerance: 5,
+      minGC: 0,
+      maxGC: 1,
+      enforceTargetTm: false,
+      requireGcClamp: false,
+      flankingWindow: 12,
+      forwardTail: 'GGATCC',
+      reverseTail: 'CATATG',
+      maxHairpinDeltaG: null,
+      maxSelfDimerDeltaG: null,
+      maxCrossDimerDeltaG: null,
+      maxPairs: 100,
+      tmConditionPresetId: 'custom',
+      tmOptions: {
+        method: 'nearest-neighbor',
+        naConcentration: 75,
+        mgConcentration: 2,
+        dntpConcentration: 0.8,
+        primerConcentration: 100,
+        saltCorrection: 'owczarzy',
+      },
+    };
+    const pair = designPrimerPairWithDiagnostics(template, parameters).pairs.find((candidatePair) => (
+      candidatePair.forward.start === 0 && candidatePair.forward.end === 12
+      && candidatePair.reverse.start === 12 && candidatePair.reverse.end === 24
+    ));
+    expect(pair).toBeDefined();
+    if (!pair) throw new Error('Expected a PCR fixture.');
+
+    const review = {
+      schema: 'motif.primer.evidence-review.v1',
+      required: true,
+      acknowledged: true,
+      reasonCodes: ['cross-dimer-cutoff'],
+      acknowledgedAt: '2026-07-17T12:00:00.000Z',
+    };
+    const materialize = (designParameters: PrimerDesignParams) => materializePcrAmplicon({
+      sourceRecord: source(template),
+      selection: {
+        ...selection(pair),
+        parameters: designParameters,
+        evidenceReview: review,
+      },
+      identity: {
+        recordId: 'identity-record',
+        resultId: 'identity-result',
+        productId: 'identity-product',
+        createdAt: '2026-07-17T12:00:00.000Z',
+      },
+      primerDesignResultId: 'primer-result',
+    });
+
+    const baseline = materialize(parameters);
+    const noisyParameters = { ...parameters } as Record<string, unknown>;
+    noisyParameters.ignoredHugeField = 'x'.repeat(2_000_000);
+    let ignoredAccessorReads = 0;
+    Object.defineProperty(noisyParameters, 'ignoredAccessorField', {
+      enumerable: true,
+      get() {
+        ignoredAccessorReads += 1;
+        throw new Error('ignored caller fields must not be read');
+      },
+    });
+    let ownKeysCalls = 0;
+    const guardedParameters = new Proxy(noisyParameters, {
+      ownKeys() {
+        ownKeysCalls += 1;
+        throw new Error('caller parameter keys must not be enumerated');
+      },
+    });
+
+    const equivalent = materialize(guardedParameters as never);
+    expect(ownKeysCalls).toBe(0);
+    expect(ignoredAccessorReads).toBe(0);
+    expect(equivalent.primerDesignSha256).toBe(baseline.primerDesignSha256);
+    expect(equivalent.materializationKey).toBe(baseline.materializationKey);
+
+    const changed = materialize({ ...parameters, targetTm: 61 });
+    expect(changed.primerDesignSha256).not.toBe(baseline.primerDesignSha256);
+    expect(changed.materializationKey).not.toBe(baseline.materializationKey);
+  });
+
   it('recomputes incomplete-search review evidence before accepting its separate acknowledgment', () => {
     const template = 'ATGCGTACGATCCGTAAGCTGACCTAGTCGATGCTACGGTCAATCG'.repeat(10);
     const parameters: PrimerDesignParams = {

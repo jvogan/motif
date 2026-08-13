@@ -5,6 +5,7 @@ import {
   type PrimerCandidate,
   type PrimerDesignParams,
   type PrimerPair,
+  type NormalizedPrimerDesignParams,
   type PrimerTmEvidence,
 } from '../bio/primer-design';
 import {
@@ -160,7 +161,64 @@ function validateExactPrimerCandidate(
   }
 }
 
-function primerDesignIdentity(selection: PcrMaterializationSelection): string {
+type NormalizedPrimerDesignParameterPair = {
+  forward: NormalizedPrimerDesignParams;
+  reverse: NormalizedPrimerDesignParams;
+};
+
+/**
+ * Normalize the caller's design request once for identity and provenance.
+ * `normalizePrimerDesignParams` reads only the supported fixed fields, so
+ * ignored caller keys never become part of the materialization identity.
+ */
+function normalizedPrimerDesignParameterPair(
+  sourceRecord: PcrMaterializationSourceRecord,
+  selection: PcrMaterializationSelection,
+): NormalizedPrimerDesignParameterPair | null {
+  if (!selection.parameters) return null;
+  const forward = normalizePrimerDesignParams(sourceRecord.sequence.length, selection.parameters, 'forward');
+  const reverse = normalizePrimerDesignParams(sourceRecord.sequence.length, selection.parameters, 'reverse');
+  if (!forward || !reverse) return null;
+  return { forward, reverse };
+}
+
+function normalizedPrimerDesignIdentitySnapshot(
+  normalized: NormalizedPrimerDesignParams,
+): Record<string, unknown> {
+  return {
+    targetStart: normalized.targetStart,
+    targetEnd: normalized.targetEnd,
+    minLength: normalized.minLength,
+    maxLength: normalized.maxLength,
+    targetTm: normalized.targetTm,
+    tmTolerance: normalized.tmTolerance,
+    enforceTargetTm: normalized.enforceTargetTm,
+    minGC: normalized.minGC,
+    maxGC: normalized.maxGC,
+    tail: normalized.tail,
+    requireGcClamp: normalized.requireGcClamp,
+    flankingWindow: normalized.flankingWindow,
+    tmOptions: {
+      method: normalized.tmOptions.method ?? 'nearest-neighbor',
+      naConcentration: normalized.tmOptions.naConcentration ?? 50,
+      mgConcentration: normalized.tmOptions.mgConcentration ?? 0,
+      dntpConcentration: normalized.tmOptions.dntpConcentration ?? 0,
+      primerConcentration: normalized.tmOptions.primerConcentration ?? 250,
+      saltCorrection: normalized.tmOptions.saltCorrection ?? 'owczarzy',
+      selfComplementary: normalized.tmOptions.selfComplementary ?? null,
+    },
+    tmEvidence: normalized.tmEvidence,
+    maxHairpinDeltaG: normalized.maxHairpinDeltaG ?? null,
+    maxSelfDimerDeltaG: normalized.maxSelfDimerDeltaG ?? null,
+    maxCrossDimerDeltaG: normalized.maxCrossDimerDeltaG ?? null,
+    warnings: [...normalized.warnings],
+  };
+}
+
+function primerDesignIdentity(
+  selection: PcrMaterializationSelection,
+  normalizedParameters: NormalizedPrimerDesignParameterPair | null,
+): string {
   const { forward, reverse } = selection.pair;
   return JSON.stringify([
     forward.fullSequence.toUpperCase(),
@@ -171,7 +229,12 @@ function primerDesignIdentity(selection: PcrMaterializationSelection): string {
     reverse.end,
     selection.target.start,
     selection.target.end,
-    selection.parameters ?? null,
+    normalizedParameters === null
+      ? null
+      : {
+          forward: normalizedPrimerDesignIdentitySnapshot(normalizedParameters.forward),
+          reverse: normalizedPrimerDesignIdentitySnapshot(normalizedParameters.reverse),
+        },
   ]);
 }
 
@@ -258,8 +321,8 @@ function boundedEvidenceReasonCodes(value: unknown): string[] | null {
 }
 
 function derivedTmEvidence(
-  sourceRecord: PcrMaterializationSourceRecord,
   selection: PcrMaterializationSelection,
+  normalizedParameters: NormalizedPrimerDesignParameterPair | null,
 ): PrimerTmEvidence | null {
   if (!selection.parameters) {
     if (selection.tmEvidence) {
@@ -267,8 +330,8 @@ function derivedTmEvidence(
     }
     return null;
   }
-  const forward = normalizePrimerDesignParams(sourceRecord.sequence.length, selection.parameters, 'forward');
-  const reverse = normalizePrimerDesignParams(sourceRecord.sequence.length, selection.parameters, 'reverse');
+  const forward = normalizedParameters?.forward;
+  const reverse = normalizedParameters?.reverse;
   if (!forward || !reverse || JSON.stringify(forward.tmEvidence) !== JSON.stringify(reverse.tmEvidence)) {
     throw new PcrMaterializationError('Primer-design parameters do not produce valid, consistent Tm evidence.');
   }
@@ -484,11 +547,12 @@ export function materializePcrAmplicon(input: {
 }): MaterializedPcrAmplicon {
   const { sourceRecord, selection, identity, primerDesignResultId, preparation } = input;
   const simulation = simulateSelectedPrimerPair(sourceRecord, selection);
-  const tmEvidence = derivedTmEvidence(sourceRecord, selection);
+  const normalizedParameters = normalizedPrimerDesignParameterPair(sourceRecord, selection);
+  const tmEvidence = derivedTmEvidence(selection, normalizedParameters);
   const evidenceReview = derivedEvidenceReview(sourceRecord, selection);
   const templateSha256 = sha256HexSync(sourceRecord.sequence.toUpperCase());
   const productSha256 = sha256HexSync(simulation.product);
-  const primerDesignSha256 = sha256HexSync(primerDesignIdentity(selection));
+  const primerDesignSha256 = sha256HexSync(primerDesignIdentity(selection, normalizedParameters));
   const materializationKey = createPcrMaterializationKey(
     templateSha256,
     primerDesignSha256,
