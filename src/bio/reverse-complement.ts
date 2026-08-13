@@ -4,7 +4,10 @@
  */
 
 import type { Feature } from './types';
-import { FeatureCollectionInputError, validateFeatureCollection } from './feature-bounds';
+import {
+  cloneCanonicalFeature,
+  snapshotFeatureCollection,
+} from './feature-bounds';
 
 const DNA_COMPLEMENT: Record<string, string> = {
   A: 'T', T: 'A', G: 'C', C: 'G',
@@ -62,14 +65,12 @@ export function reverseComplement(seq: string, isRna = false): string {
  * Transform features to match a reverse-complemented sequence.
  * Coordinates are mirrored and strands are flipped.
  */
-export function reverseComplementFeatures(features: Feature[], seqLength: number): Feature[] {
-  const validation = validateFeatureCollection(features, {
+export function reverseComplementFeatures(features: readonly Feature[], seqLength: number): Feature[] {
+  const canonicalFeatures = snapshotFeatureCollection(features, {
     label: 'Reverse-complement features',
     sequenceLength: seqLength,
   });
-  if (!validation.valid) throw new FeatureCollectionInputError(validation);
-  return features.map((f) => ({
-    ...f,
+  return canonicalFeatures.map((f) => cloneCanonicalFeature(f, {
     id: crypto.randomUUID(),
     start: seqLength - f.end,
     end: seqLength - f.start,
@@ -78,7 +79,6 @@ export function reverseComplementFeatures(features: Feature[], seqLength: number
     // forward-arrow feature.
     strand: (f.strand === 0 ? 0 : f.strand === 1 ? -1 : 1) as Feature['strand'],
     subRanges: f.subRanges?.map((r) => ({
-      ...r,
       start: seqLength - r.end,
       end: seqLength - r.start,
       strand: r.strand != null ? r.strand * -1 : undefined,

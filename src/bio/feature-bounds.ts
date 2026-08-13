@@ -63,6 +63,7 @@ export class FeatureCollectionInputError extends Error {
 }
 
 const INVALID_ACCESSOR = Symbol('invalid-feature-accessor');
+const MISSING_OWN_FEATURE_FIELD = Symbol('missing-own-feature-field');
 const textEncoder = new TextEncoder();
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -124,6 +125,11 @@ interface BoundedMetadataEntries {
   readable: boolean;
 }
 
+interface MetadataCloneBudget {
+  nodes: number;
+  bytes: number;
+}
+
 /**
  * Inspect at most `maximum + 1` enumerable own properties without first
  * materializing the complete key set. Arrays with an excessive logical
@@ -147,6 +153,264 @@ function boundedMetadataEntries(candidate: object, maximum: number): BoundedMeta
     return { entries, truncated: false, readable: false };
   }
   return { entries, truncated: false, readable: true };
+}
+
+function snapshotFailure(
+  label: string,
+  message: string,
+  featureIndex?: number,
+): FeatureCollectionInputError {
+  return new FeatureCollectionInputError({
+    valid: false,
+    issues: [{ code: 'invalid_feature', message: `${label}${message}`, featureIndex }],
+    featureCount: featureIndex === undefined ? 0 : featureIndex + 1,
+    inspectedFeatureCount: featureIndex === undefined ? 0 : featureIndex + 1,
+    featureWorkUnits: 0,
+    complete: false,
+  });
+}
+
+/**
+ * Clone validated metadata without invoking accessors or copying arbitrary
+ * feature-level properties. Metadata keys are part of the supported JSON
+ * contract, so they are copied through the same bounded own-data inspection
+ * used by validation.
+ */
+function cloneValidatedMetadata(
+  value: unknown,
+  path: string,
+  depth: number,
+  budget: MetadataCloneBudget,
+): unknown {
+  budget.nodes += 1;
+  if (budget.nodes > MAX_FEATURE_METADATA_KEYS || depth > MAX_FEATURE_METADATA_DEPTH) {
+    throw new Error(`${path} exceeds the bounded metadata clone limit.`);
+  }
+  if (value === null || typeof value === 'boolean' || typeof value === 'number') {
+    if (typeof value === 'number' && !Number.isFinite(value)) {
+      throw new Error(`${path} must be finite.`);
+    }
+    budget.bytes += typeof value === 'number' ? 8 : value === null ? 4 : 5;
+    return value;
+  }
+  if (typeof value === 'string') {
+    if (value.length > MAX_FEATURE_METADATA_STRING_LENGTH || hasControlCharacters(value)) {
+      throw new Error(`${path} must be a bounded string without control characters.`);
+    }
+    budget.bytes += textEncoder.encode(value).byteLength;
+    if (budget.bytes > MAX_FEATURE_METADATA_BYTES) throw new Error(`${path} exceeds the metadata byte limit.`);
+    return value;
+  }
+  if (typeof value !== 'object' || value === undefined) {
+    throw new Error(`${path} must contain only plain JSON-compatible values.`);
+  }
+  if (!isPlainRecord(value) && !Array.isArray(value)) {
+    throw new Error(`${path} must be a plain object or array.`);
+  }
+
+  const remainingKeys = Math.max(1, MAX_FEATURE_METADATA_KEYS - budget.nodes);
+  const enumeration = boundedMetadataEntries(value, remainingKeys);
+  if (!enumeration.readable || enumeration.truncated) {
+    throw new Error(`${path} exceeds the bounded metadata item limit.`);
+  }
+  const output: Record<string, unknown> | unknown[] = Array.isArray(value)
+    ? new Array(value.length)
+    : Object.create(Object.getPrototypeOf(value) === null ? null : Object.prototype) as Record<string, unknown>;
+  for (const { key, descriptor } of enumeration.entries) {
+    if (!('value' in descriptor)) throw new Error(`${path}.${key} must be an own data property.`);
+    if (key.length > MAX_FEATURE_METADATA_STRING_LENGTH || hasControlCharacters(key)) {
+      throw new Error(`${path} contains an overlong or control-character key.`);
+    }
+    budget.bytes += textEncoder.encode(key).byteLength;
+    if (budget.bytes > MAX_FEATURE_METADATA_BYTES) throw new Error(`${path} exceeds the metadata byte limit.`);
+    const child = cloneValidatedMetadata(descriptor.value, `${path}.${key}`, depth + 1, budget);
+    Object.defineProperty(output, key, {
+      configurable: true,
+      enumerable: true,
+      writable: true,
+      value: child,
+    });
+  }
+  return output;
+}
+
+function ownFeatureField(
+  feature: object,
+  key: keyof Feature,
+  featureIndex: number,
+  label: string,
+): unknown {
+  let descriptor: PropertyDescriptor | undefined;
+  try {
+    descriptor = Object.getOwnPropertyDescriptor(feature, key);
+  } catch {
+    throw snapshotFailure(label, ` feature ${featureIndex + 1} could not be inspected safely.` , featureIndex);
+  }
+  if (!descriptor || !('value' in descriptor)) {
+    throw snapshotFailure(label, ` feature ${featureIndex + 1}.${String(key)} must be an own data property.` , featureIndex);
+  }
+  return descriptor.value;
+}
+
+function ownOptionalFeatureField(
+  feature: object,
+  key: keyof Feature,
+  featureIndex: number,
+  label: string,
+): unknown | typeof MISSING_OWN_FEATURE_FIELD {
+  let descriptor: PropertyDescriptor | undefined;
+  try {
+    descriptor = Object.getOwnPropertyDescriptor(feature, key);
+  } catch {
+    throw snapshotFailure(label, ` feature ${featureIndex + 1} could not be inspected safely.`, featureIndex);
+  }
+  if (!descriptor) return MISSING_OWN_FEATURE_FIELD;
+  if (!('value' in descriptor)) {
+    throw snapshotFailure(label, ` feature ${featureIndex + 1}.${String(key)} must be an own data property.`, featureIndex);
+  }
+  return descriptor.value;
+}
+
+/**
+ * Return a canonical, fixed-field copy of one validated feature collection.
+ * The collection length and every indexed entry are inspected before any
+ * output allocation beyond the bounded result. Only the documented Feature
+ * fields are read; arbitrary enumerable keys and accessors are ignored or
+ * rejected without being executed.
+ */
+export function snapshotFeatureCollection(
+  features: unknown,
+  options: FeatureValidationOptions = {},
+): Feature[] {
+  const label = typeof options.label === 'string' && options.label.length > 0 ? options.label : 'Features';
+  const validation = validateFeatureCollection(features, options);
+  if (!validation.valid) throw new FeatureCollectionInputError(validation);
+  if (features === undefined) return [];
+  if (!Array.isArray(features)) throw snapshotFailure(label, ' must be an array when provided.');
+
+  let lengthDescriptor: PropertyDescriptor | undefined;
+  try {
+    lengthDescriptor = Object.getOwnPropertyDescriptor(features, 'length');
+  } catch {
+    throw snapshotFailure(label, ' array length could not be inspected safely.');
+  }
+  const length = lengthDescriptor && 'value' in lengthDescriptor ? lengthDescriptor.value : undefined;
+  if (!Number.isSafeInteger(length) || (length as number) < 0 || (length as number) > MAX_FEATURES_PER_COLLECTION) {
+    throw snapshotFailure(label, ' array length is outside the bounded feature limit.');
+  }
+
+  const snapshot: Feature[] = [];
+  for (let index = 0; index < (length as number); index += 1) {
+    let entryDescriptor: PropertyDescriptor | undefined;
+    try {
+      entryDescriptor = Object.getOwnPropertyDescriptor(features, String(index));
+    } catch {
+      throw snapshotFailure(label, ` feature ${index + 1} could not be inspected safely.`, index);
+    }
+    if (!entryDescriptor || !('value' in entryDescriptor) || !isPlainRecord(entryDescriptor.value)) {
+      throw snapshotFailure(label, ` feature ${index + 1} must be a plain own-data object.`, index);
+    }
+    const rawFeature = entryDescriptor.value;
+    const id = ownFeatureField(rawFeature, 'id', index, label);
+    const name = ownFeatureField(rawFeature, 'name', index, label);
+    const type = ownFeatureField(rawFeature, 'type', index, label);
+    const start = ownFeatureField(rawFeature, 'start', index, label);
+    const end = ownFeatureField(rawFeature, 'end', index, label);
+    const strand = ownFeatureField(rawFeature, 'strand', index, label);
+    const color = ownFeatureField(rawFeature, 'color', index, label);
+    const metadata = ownFeatureField(rawFeature, 'metadata', index, label);
+    const subRangesValue = ownOptionalFeatureField(rawFeature, 'subRanges', index, label);
+    const subRanges = subRangesValue === MISSING_OWN_FEATURE_FIELD ? undefined : subRangesValue;
+    if (typeof id !== 'string' || typeof name !== 'string' || typeof type !== 'string'
+      || typeof start !== 'number' || typeof end !== 'number'
+      || (strand !== -1 && strand !== 0 && strand !== 1)
+      || typeof color !== 'string' || !isPlainRecord(metadata)
+      || (subRanges !== undefined && !Array.isArray(subRanges))) {
+      throw snapshotFailure(label, ` feature ${index + 1} changed during validation.`, index);
+    }
+
+    let normalizedSubRanges: Feature['subRanges'];
+    if (subRanges !== undefined) {
+      let subrangeLengthDescriptor: PropertyDescriptor | undefined;
+      try {
+        subrangeLengthDescriptor = Object.getOwnPropertyDescriptor(subRanges, 'length');
+      } catch {
+        throw snapshotFailure(label, ` feature ${index + 1} sub-ranges could not be inspected safely.`, index);
+      }
+      const subrangeLength = subrangeLengthDescriptor && 'value' in subrangeLengthDescriptor
+        ? subrangeLengthDescriptor.value
+        : undefined;
+      if (!Number.isSafeInteger(subrangeLength) || (subrangeLength as number) < 1
+        || (subrangeLength as number) > MAX_SUBRANGES_PER_FEATURE) {
+        throw snapshotFailure(label, ` feature ${index + 1} sub-range count is outside the bounded limit.`, index);
+      }
+      normalizedSubRanges = [];
+      for (let rangeIndex = 0; rangeIndex < (subrangeLength as number); rangeIndex += 1) {
+        let rangeDescriptor: PropertyDescriptor | undefined;
+        try {
+          rangeDescriptor = Object.getOwnPropertyDescriptor(subRanges, String(rangeIndex));
+        } catch {
+          throw snapshotFailure(label, ` feature ${index + 1} sub-range ${rangeIndex + 1} could not be inspected safely.`, index);
+        }
+        if (!rangeDescriptor || !('value' in rangeDescriptor) || !isPlainRecord(rangeDescriptor.value)) {
+          throw snapshotFailure(label, ` feature ${index + 1} sub-range ${rangeIndex + 1} must be a plain own-data object.`, index);
+        }
+        const range = rangeDescriptor.value;
+        const rangeStart = ownFeatureField(range, 'start', index, label);
+        const rangeEnd = ownFeatureField(range, 'end', index, label);
+        const rangeStrandValue = ownOptionalFeatureField(range, 'strand', index, label);
+        const rangeStrand = rangeStrandValue === MISSING_OWN_FEATURE_FIELD ? undefined : rangeStrandValue;
+        if (typeof rangeStart !== 'number' || typeof rangeEnd !== 'number'
+          || (rangeStrand !== undefined && rangeStrand !== -1 && rangeStrand !== 0 && rangeStrand !== 1)) {
+          throw snapshotFailure(label, ` feature ${index + 1} sub-range ${rangeIndex + 1} changed during validation.`, index);
+        }
+        normalizedSubRanges.push({
+          start: rangeStart,
+          end: rangeEnd,
+          ...(rangeStrand === undefined ? {} : { strand: rangeStrand }),
+        });
+      }
+    }
+
+    let normalizedMetadata: Record<string, unknown>;
+    try {
+      normalizedMetadata = cloneValidatedMetadata(metadata, `${label}[${index}].metadata`, 0, { nodes: 0, bytes: 0 }) as Record<string, unknown>;
+    } catch {
+      throw snapshotFailure(label, ` feature ${index + 1} metadata changed during validation.`, index);
+    }
+    snapshot.push({
+      id,
+      name,
+      type: type as Feature['type'],
+      start,
+      end,
+      strand: strand as Feature['strand'],
+      color,
+      metadata: normalizedMetadata,
+      ...(normalizedSubRanges === undefined ? {} : { subRanges: normalizedSubRanges }),
+    });
+  }
+  return snapshot;
+}
+
+/** Clone a canonical feature while retaining only supported fields. */
+export function cloneCanonicalFeature(
+  feature: Feature,
+  overrides: Partial<Pick<Feature, 'id' | 'start' | 'end' | 'strand' | 'subRanges' | 'metadata'>> = {},
+): Feature {
+  return {
+    id: overrides.id ?? feature.id,
+    name: feature.name,
+    type: feature.type,
+    start: overrides.start ?? feature.start,
+    end: overrides.end ?? feature.end,
+    strand: overrides.strand ?? feature.strand,
+    color: feature.color,
+    metadata: overrides.metadata ?? feature.metadata,
+    ...((overrides.subRanges ?? feature.subRanges) === undefined
+      ? {}
+      : { subRanges: overrides.subRanges ?? feature.subRanges }),
+  };
 }
 
 function validateMetadata(

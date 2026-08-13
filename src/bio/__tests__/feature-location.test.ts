@@ -153,6 +153,26 @@ describe('feature location semantics', () => {
     );
   });
 
+  it('reverse-complements a canonical snapshot without copying unsupported keys', () => {
+    const source = feature({ metadata: { nested: { note: 'before' } } }) as Feature & { privatePayload: unknown };
+    let privateReads = 0;
+    Object.defineProperty(source, 'privatePayload', {
+      configurable: true,
+      enumerable: true,
+      get() {
+        privateReads += 1;
+        throw new Error('unsupported feature key must not be read');
+      },
+    });
+
+    const transformed = reverseComplementFeatures([source], SEQUENCE.length)[0];
+    source.metadata.nested = { note: 'after' };
+
+    expect(privateReads).toBe(0);
+    expect(transformed).not.toHaveProperty('privatePayload');
+    expect(transformed.metadata).toEqual({ nested: { note: 'before' } });
+  });
+
   it('lets legacy pieces inherit the feature strand', () => {
     const legacy = feature({
       strand: -1,
@@ -317,6 +337,31 @@ describe('feature location semantics', () => {
     expect(result.features).toHaveLength(features.length);
     expect(result.estimatedWorkUnits).toBeLessThan(sourceLength + features.length * 4);
     expect(result.features[0]).toMatchObject({ start: 0, end: sourceLength });
+  });
+
+  it('maps a fixed-field snapshot without copying or executing unsupported feature keys', () => {
+    const source = feature({ metadata: { note: 'before' } }) as Feature & { privatePayload: unknown };
+    let privateReads = 0;
+    Object.defineProperty(source, 'privatePayload', {
+      configurable: true,
+      enumerable: true,
+      get() {
+        privateReads += 1;
+        throw new Error('unsupported feature key must not be read');
+      },
+    });
+
+    const result = mapFeaturesThroughSourceCoordinates([source], {
+      sourceLength: SEQUENCE.length,
+      productLength: SEQUENCE.length,
+      sourceToProduct: Array.from({ length: SEQUENCE.length }, (_, index) => index),
+    });
+    source.metadata.note = 'after';
+
+    expect(result.status).toBe('ready');
+    expect(privateReads).toBe(0);
+    expect(result.features[0]).not.toHaveProperty('privatePayload');
+    expect(result.features[0]?.metadata).toEqual({ note: 'before' });
   });
 
   it('refuses an alternating coordinate map before materializing unbounded pieces', () => {

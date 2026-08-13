@@ -3,6 +3,7 @@ import {
   FeatureCollectionInputError,
   MAX_FEATURES_PER_COLLECTION,
   MAX_SUBRANGES_PER_FEATURE,
+  snapshotFeatureCollection,
   validateFeatureCollection,
 } from '../feature-bounds';
 import {
@@ -33,6 +34,43 @@ function feature(overrides: Partial<Feature> = {}): Feature {
 }
 
 describe('shared derived-feature bounds', () => {
+  it('snapshots only supported feature fields and never executes extra-key accessors', () => {
+    const source = feature({
+      metadata: { qualifier: { note: 'before' } },
+      subRanges: [{ start: 2, end: 6 }],
+    }) as Feature & { internal: unknown };
+    let extraReads = 0;
+    Object.defineProperty(source, 'internal', {
+      configurable: true,
+      enumerable: true,
+      get() {
+        extraReads += 1;
+        throw new Error('unsupported feature key must not be read');
+      },
+    });
+
+    const snapshot = snapshotFeatureCollection([source], { sequenceLength: 20 });
+    source.metadata.qualifier = { note: 'after' };
+    source.subRanges![0].start = 8;
+
+    expect(extraReads).toBe(0);
+    expect(snapshot[0]).not.toHaveProperty('internal');
+    expect(snapshot[0]?.metadata).toEqual({ qualifier: { note: 'before' } });
+    expect(snapshot[0]?.subRanges).toEqual([{ start: 2, end: 6 }]);
+  });
+
+  it('rejects an oversized feature array before inspecting dense entries', () => {
+    const features = new Array(MAX_FEATURES_PER_COLLECTION + 1) as Feature[];
+    Object.defineProperty(features, '0', {
+      configurable: true,
+      enumerable: true,
+      get() {
+        throw new Error('oversized feature entry must not be read');
+      },
+    });
+    expect(() => snapshotFeatureCollection(features, { sequenceLength: 20 })).toThrow(/feature limit/i);
+  });
+
   it('rejects custom prototypes and accessor-backed feature fields', () => {
     const customPrototype = Object.create({ inherited: true });
     Object.assign(customPrototype, feature());
@@ -206,6 +244,22 @@ describe('shared derived-feature bounds', () => {
     const result = restrictionDigestDetailed('GAATTCAAAAGAATTC', ['EcoRI'], 'linear', [hugeFeature]);
     expect(result.fragments).toEqual([]);
     expect(result.issues).toContainEqual(expect.objectContaining({ code: 'subrange_limit' }));
+  });
+
+  it('digest fragments retain a canonical feature snapshot after the source mutates', () => {
+    const sourceFeature = feature({
+      start: 0,
+      end: 6,
+      metadata: { note: 'before' },
+    });
+    const result = restrictionDigestDetailed('AAAAAAGAATTCAAAAA', ['EcoRI'], 'linear', [sourceFeature]);
+    sourceFeature.metadata.note = 'after';
+    sourceFeature.start = 4;
+
+    expect(result.issues).toEqual([]);
+    expect(result.fragments.flatMap((fragment) => fragment.features)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ start: 0, end: 6, metadata: expect.objectContaining({ note: 'before' }) }),
+    ]));
   });
 
   it('reports digest mapping work at both sides of its boundary and propagates an over-limit receipt', () => {

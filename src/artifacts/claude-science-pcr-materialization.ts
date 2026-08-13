@@ -410,7 +410,7 @@ export function simulateSelectedPrimerPair(
     sourceRecord.sequence,
     selection.pair.forward.fullSequence,
     selection.pair.reverse.fullSequence,
-    [...(sourceRecord.features ?? [])],
+    sourceRecord.features,
     sourceRecord.topology,
     {
       forward: { start: selection.pair.forward.start, end: selection.pair.forward.end },

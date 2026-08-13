@@ -1,5 +1,5 @@
 import type { DigestFragment } from '../bio/restriction-digest';
-import { validateFeatureCollection } from '../bio/feature-bounds';
+import { cloneCanonicalFeature, validateFeatureCollection } from '../bio/feature-bounds';
 import {
   remapFeatureLocation,
   type FeatureCoordinateMapSpan,
@@ -823,22 +823,20 @@ function cloneSourceFeature(
   budget: JsonCloneBudget,
 ): Feature {
   const metadata = cloneJsonValue(feature.metadata, `sourceRecord.features[${index}].metadata`, 0, budget);
-  return {
-    ...feature,
-    ...location,
+  return cloneCanonicalFeature(feature, {
     // restrictionDigest historically allocates feature ids with crypto.
     // Re-keying within each new record makes this materializer deterministic.
     id: `digest-feature-${index + 1}`,
+    start: location.start,
+    end: location.end,
+    ...(location.subRanges === undefined ? { subRanges: undefined } : { subRanges: location.subRanges.map((range) => ({ ...range })) }),
     metadata: {
       ...(metadata as Record<string, unknown>),
       sourceRecordId,
       sourceFeatureId: feature.id,
       generatedBy: 'restriction_digest',
     },
-    ...(location.subRanges === undefined
-      ? {}
-      : { subRanges: location.subRanges.map((range) => ({ ...range })) }),
-  };
+  });
 }
 
 function sliceSourceFeatures(

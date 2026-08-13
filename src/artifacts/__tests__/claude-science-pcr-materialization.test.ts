@@ -148,6 +148,9 @@ describe('PCR engine selected-pair semantics', () => {
       },
     );
 
+    feature.metadata.note = 'mutated after simulation';
+    feature.subRanges![0].start = 12;
+
     expect(result?.features).toHaveLength(1);
     expect(result?.features[0]).toMatchObject({
       start: 13,

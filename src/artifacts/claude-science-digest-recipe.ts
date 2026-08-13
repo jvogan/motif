@@ -289,7 +289,7 @@ export function buildDigestRecipe(input: BuildDigestRecipeInput): DigestRecipe {
       input.sequence,
       resolution.enzymes.map((enzyme) => enzyme.name),
       input.topology,
-      input.features ? [...input.features] : undefined,
+      input.features,
       resolution.enzymes,
       {
         methylationAssumptions,

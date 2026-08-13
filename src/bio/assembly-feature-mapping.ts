@@ -1,6 +1,10 @@
 import { isMaterializableFeatureLocation } from './feature-location';
 import type { Feature } from './types';
-import { validateFeatureCollection } from './feature-bounds';
+import {
+  FeatureCollectionInputError,
+  cloneCanonicalFeature,
+  snapshotFeatureCollection,
+} from './feature-bounds';
 
 /** Maximum dense source-map length accepted by this exported boundary. */
 export const MAX_SOURCE_TO_PRODUCT_MAP_LENGTH = 1_000_000;
@@ -283,7 +287,6 @@ export function mapFeaturesThroughSourceCoordinates(
   const maxWorkUnits = Number.isSafeInteger(options.maxWorkUnits)
     ? Math.min(Math.max(1, options.maxWorkUnits as number), MAX_FEATURE_MAPPING_WORK_UNITS)
     : MAX_FEATURE_MAPPING_WORK_UNITS;
-  const featureList = features ?? [];
   const mapSnapshotResult = snapshotSourceToProductMap(map);
   if (mapSnapshotResult.issue || !mapSnapshotResult.snapshot) {
     return {
@@ -291,7 +294,7 @@ export function mapFeaturesThroughSourceCoordinates(
       status: 'invalid_input',
       complete: false,
       mappedFeatureCount: 0,
-      skippedFeatureCount: featureList.length,
+      skippedFeatureCount: 0,
       estimatedWorkUnits: 0,
       maxWorkUnits,
       issues: [mapSnapshotResult.issue ?? {
@@ -301,6 +304,33 @@ export function mapFeaturesThroughSourceCoordinates(
     };
   }
   const mapSnapshot = mapSnapshotResult.snapshot;
+  let featureList: Feature[];
+  try {
+    featureList = snapshotFeatureCollection(features, {
+      label: 'Mapped features',
+      sequenceLength: mapSnapshot.sourceLength,
+      allowCircularWrap: true,
+    });
+  } catch (error) {
+    const validation = error instanceof FeatureCollectionInputError ? error.validation : null;
+    return {
+      features: [],
+      status: 'invalid_input',
+      complete: false,
+      mappedFeatureCount: 0,
+      skippedFeatureCount: 0,
+      estimatedWorkUnits: mapSnapshot.sourceLength,
+      maxWorkUnits,
+      issues: validation?.issues.slice(0, 64).map((issue) => ({
+        code: 'feature_input_limit' as const,
+        message: issue.message,
+        featureIndex: issue.featureIndex,
+      })) ?? [{
+        code: 'feature_input_limit' as const,
+        message: 'Mapped features could not be inspected as bounded data.',
+      }],
+    };
+  }
   if (mapSnapshot.sourceLength > maxWorkUnits) {
     return {
       features: [],
@@ -330,28 +360,6 @@ export function mapFeaturesThroughSourceCoordinates(
     };
   }
   const mapWorkUnits = mapSnapshot.sourceLength;
-  const validation = validateFeatureCollection(featureList, {
-    label: 'Mapped features',
-    sequenceLength: mapSnapshot.sourceLength,
-    allowCircularWrap: true,
-  });
-  if (!validation.valid) {
-    return {
-      features: [],
-      status: 'invalid_input',
-      complete: false,
-      mappedFeatureCount: 0,
-      skippedFeatureCount: featureList.length,
-      estimatedWorkUnits: mapWorkUnits,
-      maxWorkUnits,
-      issues: validation.issues.slice(0, 64).map((issue) => ({
-        code: 'feature_input_limit' as const,
-        message: issue.message,
-        featureIndex: issue.featureIndex,
-      })),
-    };
-  }
-
   // Keep this exported mapping boundary safe even when an engine forgets to
   // validate its collection before calling it directly.
   // Imported quarantines and non-materializable multipart locations may carry
@@ -458,14 +466,12 @@ export function mapFeaturesThroughSourceCoordinates(
       end = Math.max(end, range.end);
     }
 
-    const { subRanges: _subRanges, ...featureWithoutSubRanges } = feature;
-    mappedFeatures.push({
-      ...featureWithoutSubRanges,
+    mappedFeatures.push(cloneCanonicalFeature(feature, {
       start,
       end,
       metadata: partial ? { ...feature.metadata, partial: true } : feature.metadata,
-      ...(hasSubRanges || mappedRanges.length > 1 ? { subRanges: mappedRanges } : {}),
-    });
+      ...(hasSubRanges || mappedRanges.length > 1 ? { subRanges: mappedRanges } : { subRanges: undefined }),
+    }));
   }
   return {
     features: mappedFeatures,
