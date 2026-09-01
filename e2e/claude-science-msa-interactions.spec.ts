@@ -1389,11 +1389,14 @@ test.describe('Motif MSA viewer interactions', () => {
 
   test('changing the template after a manual reorder re-pins the new template to the top', async ({ page }) => {
     await setup(page);
+    // Wait for the floating window's initial-focus frame before moving focus to
+    // its row grip. This test owns template pinning; the adjacent keyboard test
+    // separately verifies that an explicitly focused grip handles Arrow keys.
+    await expect(page.getByRole('dialog', { name: 'Multiple Sequence Alignment' })).toBeFocused();
     // Establish a manual order: step the first movable row down one slot.
     const movedId = await rowIdAt(page, 1);
     if (!movedId) throw new Error('no row id');
-    await gripForId(page, movedId).focus();
-    await page.keyboard.press('ArrowDown');
+    await gripForId(page, movedId).press('ArrowDown');
     await expect(page.getByTestId('msa-order-note')).toBeVisible();
     expect(await rowIdAt(page, 2)).toBe(movedId); // manual order is in effect
     const manualIds = await rowIds(page);

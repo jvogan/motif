@@ -762,7 +762,9 @@ describe('workspace layout guards', () => {
   });
 
   it('makes floating tools focusable and keyboard movable and resizable', () => {
-    expect(artifactSource).toContain('windowRef.current?.focus({ preventScroll: true })');
+    expect(artifactSource).toContain('if (!node || node.contains(document.activeElement)) return;');
+    expect(artifactSource).toContain('node.focus({ preventScroll: true });');
+    expect(artifactSource).toContain('return () => window.cancelAnimationFrame(frame);');
     expect(artifactSource).toContain('const moveFromKeyboard = useCallback');
     expect(artifactSource).toContain('const resizeFromKeyboard = useCallback');
     expect(artifactSource).toContain('aria-label={`Resize ${title} window in 2 dimensions. Left and Right Arrow change width; Up and Down Arrow change height.`}');

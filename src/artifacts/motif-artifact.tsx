@@ -17670,7 +17670,16 @@ function FloatingWindow({
 
   useEffect(() => {
     if (inactive) return;
-    window.requestAnimationFrame(() => windowRef.current?.focus({ preventScroll: true }));
+    const frame = window.requestAnimationFrame(() => {
+      const node = windowRef.current;
+      // Opening a window should focus its container, but the delayed callback
+      // must not take focus back from a control that is already inside it.
+      // That can happen when a keyboard user or assistive technology reaches a
+      // child control before this frame runs on a busy page.
+      if (!node || node.contains(document.activeElement)) return;
+      node.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(frame);
   }, [inactive]);
 
   const stopActiveDrag = useCallback((commit: boolean) => {
