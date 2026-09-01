@@ -64,6 +64,17 @@ describe('Claude Science initial workspace integrity', () => {
     expect(prepared.artifactState.translationLayersByRecord['record-a'][0]).toMatchObject({
       id: 'layer-a', start: 0, end: 6, source: 'layer',
     });
+    expect(prepared.payload.records[0].proposeAnnotations).toBe(false);
+
+    const explicit = prepareInitialArtifactWorkspace({
+      records: [{
+        id: 'proposals-requested',
+        type: 'dna',
+        sequence: 'ATGGAATTCTAA',
+        proposeAnnotations: true,
+      }],
+    });
+    expect(explicit.payload.records[0].proposeAnnotations).toBe(true);
 
     embed(JSON.stringify(validWorkspace));
     expect(loadInitialArtifactWorkspace()).toEqual(prepared);

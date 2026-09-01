@@ -164,6 +164,35 @@ describe('ClaudeScienceAgentResultsPanel', () => {
     expect(within(blastRow).getByLabelText('pUC19 nucleotide search safe text preview').textContent).toContain('TEST.1');
   });
 
+  it('counts results only when there are results to count', () => {
+    // Both empty cases carry their own sentence, and each says more than a
+    // zero: "No analysis results yet" for an empty panel, "No results in this
+    // view" for a filter that hides everything.
+    render(
+      <ClaudeScienceAgentResultsPanel
+        results={[]}
+        assets={[]}
+        recordNames={{}}
+        onRevealRecord={vi.fn()}
+        onRemove={vi.fn()}
+      />,
+    );
+    expect(screen.queryByText(/shown$/)).toBeNull();
+    expect(screen.getByText('No analysis results yet')).toBeTruthy();
+    cleanup();
+
+    render(
+      <ClaudeScienceAgentResultsPanel
+        results={[primerResult, blastResult]}
+        assets={[]}
+        recordNames={{ puc19: 'pUC19' }}
+        onRevealRecord={vi.fn()}
+        onRemove={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(/shown$/)).toBeTruthy();
+  });
+
   it('filters result groups without discarding saved results', () => {
     render(
       <ClaudeScienceAgentResultsPanel

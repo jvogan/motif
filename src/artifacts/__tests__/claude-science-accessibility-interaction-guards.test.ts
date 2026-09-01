@@ -21,9 +21,18 @@ function sliceBetween(startNeedle: string, endNeedle: string): string {
 }
 
 describe('Claude Science accessibility and interaction guards', () => {
-  it('uses deterministic named sequence views', () => {
-    expect(artifactSource).toContain("onClick={() => setSequenceViewMode('standard')}");
-    expect(artifactSource).toContain("onClick={() => setSequenceViewMode('detail')}");
+  it('names the state a sequence-view click will produce', () => {
+    // Detail is now one switch rather than a Standard/Detail pair, so the click
+    // does flip. What the old two-button guard was protecting — that the view
+    // state is readable rather than implicit — is carried by aria-pressed and
+    // data-active, which is what both assistive tech and the tests read. The
+    // handler must still branch on the EFFECTIVE mode, or a large record that
+    // is forced to standard would toggle away from a state it is not in.
+    expect(artifactSource).toContain(
+      "onClick={() => setSequenceViewMode(effectiveSequenceViewMode === 'detail' ? 'standard' : 'detail')}",
+    );
+    expect(artifactSource).toContain("aria-pressed={effectiveSequenceViewMode === 'detail'}");
+    expect(artifactSource).toContain("data-active={effectiveSequenceViewMode === 'detail' || undefined}");
     expect(artifactSource).not.toContain("current === 'standard' ? 'detail' : 'standard'");
     expect(artifactSource).not.toContain("current === 'detail' ? 'standard' : 'detail'");
   });

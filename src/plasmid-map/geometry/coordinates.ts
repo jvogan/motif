@@ -80,8 +80,11 @@ export function describeArcBand(
 
 /**
  * SVG path for a directional feature's terminal annular segment. The 3' end is
- * folded into the same closed band path as a tapered point: forward features
- * point at endAngle+tipDeltaDeg, reverse features at startAngle+tipDeltaDeg.
+ * folded into the same closed band path as a tapered point, and the point is cut
+ * OUT of the segment's own sweep rather than added past it: the tip lands on the
+ * terminal base (endAngle forward, startAngle reverse) and the band stops
+ * |tipDeltaDeg| short of that base. The glyph therefore covers exactly the arc
+ * its bases cover, which is what the selection sector over the same range draws.
  */
 export function describeCircularFeatureArrowBand(
   cx: number,
@@ -93,20 +96,27 @@ export function describeCircularFeatureArrowBand(
   tipDeltaDeg: number,
   direction: 1 | -1,
 ): string {
-  const sweep = endAngle - startAngle;
+  const spanSweep = endAngle - startAngle;
+  // Sweeps run clockwise (end > start) except for a segment stored across the
+  // origin; taper along whichever way this one runs, and never past its own span.
+  const spanSign = spanSweep < 0 ? -1 : 1;
+  const taper = Math.min(Math.abs(tipDeltaDeg), Math.abs(spanSweep)) * spanSign;
+  const bodyStart = direction === 1 ? startAngle : startAngle + taper;
+  const bodyEnd = direction === 1 ? endAngle - taper : endAngle;
+  const tipAngle = direction === 1 ? endAngle : startAngle;
+  const sweep = bodyEnd - bodyStart;
   const outerSweep = sweep >= 0 ? 1 : 0;
   const innerSweep = sweep >= 0 ? 0 : 1;
   const largeArc = Math.abs(sweep) > 180 ? 1 : 0;
-  const midAngle = startAngle + sweep / 2;
+  const midAngle = bodyStart + sweep / 2;
   const fullSweep = Math.abs(sweep) >= 360;
-  const outerStart = pointOnCircle(cx, cy, outerR, startAngle);
-  const outerEnd = pointOnCircle(cx, cy, outerR, endAngle);
-  const innerEnd = pointOnCircle(cx, cy, innerR, endAngle);
-  const innerStart = pointOnCircle(cx, cy, innerR, startAngle);
+  const outerStart = pointOnCircle(cx, cy, outerR, bodyStart);
+  const outerEnd = pointOnCircle(cx, cy, outerR, bodyEnd);
+  const innerEnd = pointOnCircle(cx, cy, innerR, bodyEnd);
+  const innerStart = pointOnCircle(cx, cy, innerR, bodyStart);
   const outerMid = pointOnCircle(cx, cy, outerR, midAngle);
   const innerMid = pointOnCircle(cx, cy, innerR, midAngle);
-  const baseAngle = direction === 1 ? endAngle : startAngle;
-  const tip = pointOnCircle(cx, cy, (innerR + outerR) / 2, baseAngle + tipDeltaDeg);
+  const tip = pointOnCircle(cx, cy, (innerR + outerR) / 2, tipAngle);
 
   const outerArcCommands = fullSweep
     ? [
@@ -145,6 +155,11 @@ export function describeCircularFeatureArrowBand(
 /**
  * SVG path for a directional feature's terminal linear segment. The 3' end is a
  * point in the same closed path; the 5' end keeps the usual rounded corners.
+ *
+ * The point is cut OUT of [x, x+w] rather than added past it: the tip lands on
+ * the terminal base and the body stops arrowLenPx short of it, so the glyph
+ * covers exactly the x-range its bases cover. A ruler selection over the same
+ * bases draws the same range, and the two line up.
  */
 export function describeLinearFeatureArrowPath(
   x: number,
@@ -155,11 +170,12 @@ export function describeLinearFeatureArrowPath(
   direction: 1 | -1,
   arrowLenPx: number,
 ): string {
-  const rr = Math.max(0, Math.min(r, w / 2, h / 2));
-  const tipLen = Math.max(0, arrowLenPx);
+  const tipLen = Math.max(0, Math.min(arrowLenPx, w));
+  const bodyW = w - tipLen;
+  const rr = Math.max(0, Math.min(r, bodyW / 2, h / 2));
   if (direction === 1) {
-    const baseX = x + w;
-    const tipX = baseX + tipLen;
+    const baseX = x + bodyW;
+    const tipX = x + w;
     return [
       `M ${round(x + rr)} ${round(y)}`,
       `H ${round(baseX)}`,
@@ -173,8 +189,8 @@ export function describeLinearFeatureArrowPath(
     ].join(' ');
   }
 
-  const baseX = x;
-  const tipX = baseX - tipLen;
+  const baseX = x + tipLen;
+  const tipX = x;
   return [
     `M ${round(baseX)} ${round(y)}`,
     `H ${round(x + w - rr)}`,

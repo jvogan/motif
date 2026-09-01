@@ -423,8 +423,9 @@ test.describe('state-preserving pane placement', () => {
 
   test('the circular map keeps its status readout inside the part of the column it shows', async ({ page }) => {
     // Regression: the readout hung off the map frame's BOTTOM edge, and between
-    // 768px and 1535px that frame is floored taller than its column can display —
-    // 504px of frame in a 442px column at 1440x900, 141px scrolled away. The
+    // 768px and 1535px that frame WAS floored taller than its column could display —
+    // 504px of frame in a 442px column at 1440x900, 141px scrolled away. The floor
+    // is gone now; the frame sizes to its column. The
     // readout was inside that 141px at every size in the band, at rest and zoomed
     // alike, because the clip is static rather than a zoom artefact. It was
     // reachable by scrolling the map pane, which nothing invites.
@@ -458,13 +459,72 @@ test.describe('state-preserving pane placement', () => {
       });
 
       expect(geometry.mode, 'this test is about the circular map').toBe('circular');
-      // The precondition that makes the assertion meaningful: the column really is
-      // clipping something here. If it ever stops overflowing, the readout being
-      // visible proves nothing and this test should be re-derived rather than
-      // quietly kept.
-      expect(geometry.columnHides, `column stopped overflowing at ${width}x${height}`).toBeGreaterThan(0);
+      // Re-derived, as the note above asked. The column DID overflow here, and the
+      // precondition was what kept "the readout is visible" from being vacuous. The
+      // frame now sizes to its column (`min-height: 0` with `flex: 1 1 0`), so the
+      // overflow the readout could hide inside is gone — which is a stronger
+      // guarantee than the one this test used to make, and the assertion to keep.
+      // If the viewport-height floor ever comes back, this fails first.
+      expect(geometry.columnHides, `column overflows again at ${width}x${height}`).toBe(0);
       expect(geometry.belowBy, `readout below the column's visible edge at ${width}x${height}`).toBeLessThan(0);
       expect(geometry.aboveBy, `readout above the column's visible edge at ${width}x${height}`).toBeLessThan(0);
+    }
+  });
+
+  test('no width from 640px up leaves part of the circular map unreachable', async ({ page }) => {
+    // The map frame used to be sized by a viewport-height clamp rather than by the
+    // column that shows it, so it stood taller than the column and the bottom of the
+    // ring lived below the fold. Two bands, two mechanisms, one symptom: above 768px
+    // the frame was 560px in a 496px column, and between 640 and 767 it was 522px in
+    // a column that could show 392px. The 640-767 band was the worse of the two,
+    // because there NO scroll position showed the whole map.
+    //
+    // The instrument is a scroll SWEEP, not a rest measurement: a label below the fold
+    // at rest is a nuisance, but a label hidden at every scroll position of every
+    // scrollable ancestor is unreachable, and only the sweep tells those apart.
+    for (const width of [640, 660, 700, 767, 768, 900, 1100, 1280, 1440]) {
+      await openArtifact(page, width, 900);
+      await expect(page.locator('.motif-cs-map-frame[data-map-mode="circular"]')).toBeVisible();
+
+      const reach = await page.evaluate(async () => {
+        const svg = document.querySelector('.motif-cs-map-frame svg.motif-plasmid-map')!;
+        const column = document.querySelector('.motif-cs-map-column')!;
+        const main = document.querySelector('.motif-cs-main')!;
+        const strip = document.querySelector('.motif-cs-map-dock-strip');
+        const labels = () => [...svg.querySelectorAll(
+          '.motif-pm-restriction-label, .motif-pm-feature-label, .motif-pm-coord-label',
+        )];
+        const hidden = () => {
+          const box = column.getBoundingClientRect();
+          const floor = strip ? Math.min(box.bottom, strip.getBoundingClientRect().top) : box.bottom;
+          return labels().filter((node) => {
+            const rect = node.getBoundingClientRect();
+            return rect.bottom > floor + 0.5 || rect.top < box.top - 0.5;
+          }).length;
+        };
+        const columnRange = column.scrollHeight - column.clientHeight;
+        const mainRange = main.scrollHeight - main.clientHeight;
+        let best = Infinity;
+        for (let i = 0; i <= 8; i += 1) {
+          for (let j = 0; j <= 8; j += 1) {
+            column.scrollTop = Math.round((columnRange * i) / 8);
+            main.scrollTop = Math.round((mainRange * j) / 8);
+            await new Promise((settle) => requestAnimationFrame(() => settle(null)));
+            best = Math.min(best, hidden());
+          }
+        }
+        column.scrollTop = 0;
+        main.scrollTop = 0;
+        await new Promise((settle) => requestAnimationFrame(() => settle(null)));
+        return { placed: labels().length, atRest: hidden(), best, columnRange };
+      });
+
+      // Guards the guard: a map with no labels would pass everything below.
+      expect(reach.placed, `no map labels to measure at ${width}px`).toBeGreaterThan(20);
+      expect(reach.best, `map labels unreachable at any scroll position at ${width}px`).toBe(0);
+      // The frame fits, so there is nothing to scroll to in the first place.
+      expect(reach.atRest, `map labels below the fold on load at ${width}px`).toBe(0);
+      expect(reach.columnRange, `the map column overflows again at ${width}px`).toBe(0);
     }
   });
 
@@ -510,9 +570,13 @@ test.describe('state-preserving pane placement', () => {
       for (let step = 0; step < 4; step += 1) await zoomIn.click();
 
       const result = await heads();
-      // Precondition: without overflow a sticky footer is inert, and this would pass on
-      // a column that simply fits.
-      expect(result.columnHides, `column does not overflow at ${width}x${height}`).toBeGreaterThan(0);
+      // This used to require overflow, on the grounds that a sticky footer is inert
+      // without it. The frame now sizes to its column, so every size in this loop
+      // behaves like the 1920x1080 control at the end: nothing is below the fold
+      // because nothing is scrolled away. The footer's `bottom` is now belt and
+      // braces rather than the thing keeping these heads reachable, and this
+      // assertion is what proves it.
+      expect(result.columnHides, `column overflows again at ${width}x${height}`).toBe(0);
       expect(result.mapVisibility, `Map Visibility below the fold at ${width}x${height}`).toBeLessThanOrEqual(0);
       expect(result.digestPreview, `Digest Preview below the fold at ${width}x${height}`).toBeLessThanOrEqual(0);
       expect(result.pressReachesStrip, `a press at the dock strip does not reach it at ${width}x${height}`).toBe(true);

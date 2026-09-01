@@ -454,7 +454,16 @@
 .motif-cs-verification-primary-button {
   border: 1px solid var(--accent);
   background: var(--accent);
-  color: var(--text-on-accent);
+  /* --text-on-accent is not a token. It was referenced here and defined
+     nowhere, so the declaration was invalid at computed-value time and the
+     button inherited whatever colour its ancestor had - which is why its label
+     flipped from black to white with the theme and read 3.60 / 2.79 / 2.78 /
+     2.21 against its own accent fill, on the primary action of this workspace.
+     --accent-contrast replaced it and cleared the light themes, but it is the
+     foreground for an --accent-base fill; on this --accent fill it read 2.86 in
+     dark and 2.33 in claude-dark. --accent-fill-contrast is the one for a fill
+     of --accent. */
+  color: var(--accent-fill-contrast);
 }
 
 .motif-cs-verification-secondary-button {
@@ -463,8 +472,16 @@
   color: var(--text-secondary);
 }
 
+/* --accent-hover was the second undefined token on this button. The
+   declaration was invalid at computed-value time, so hovering the primary
+   action dropped its fill to transparent in all four themes and left the label
+   on the action bar at 1.06 (light) and 1.05 (claude-light) - the word
+   disappeared. The mix below is the expression the primer workspace already
+   uses for the same button, and it moves the fill away from the label in every
+   theme because --text-primary is dark where the label is light and light where
+   the label is dark. */
 .motif-cs-verification-primary-button:hover:not(:disabled) {
-  background: var(--accent-hover);
+  background: color-mix(in srgb, var(--accent) 88%, var(--text-primary));
 }
 
 .motif-cs-verification-secondary-button:hover:not(:disabled) {

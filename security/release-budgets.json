@@ -1,13 +1,13 @@
 {
   "schema": "motif.release-budgets.v1",
   "limits": {
-    "artifactHtmlBytes": 2100000,
+    "artifactHtmlBytes": 2175000,
     "pluginDirectoryBytes": 8000000,
     "pluginDirectoryFiles": 64,
     "pluginZipBytes": 8000000,
-    "releaseZipBytes": 6000000,
+    "releaseZipBytes": 6100000,
     "connectorDirectoryBytes": 4000000,
-    "releaseDirectoryBytes": 6000000,
+    "releaseDirectoryBytes": 6100000,
     "releaseDirectoryFiles": 32
   }
 }

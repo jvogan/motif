@@ -28,6 +28,7 @@ import type {
   MapLabelRender,
 } from '../../plasmid-map/types';
 import type { MapRangeOverlayRender } from '../../plasmid-map/range-overlays';
+import { linearSelectionEdgePaths } from '../../plasmid-map/selection-overlay';
 import type { FeatureType } from '../../bio/types';
 import { featureDisplayTokens } from '../sequence-stack/feature-display-colors';
 import './plasmid-map.css';
@@ -111,9 +112,18 @@ function restrictionAccessibleName(restriction: MapRestrictionRender): string {
   const coordinate = Math.max(0, Math.trunc(restriction.anchorBp)) + 1;
   const siteCount = restriction.tickIds.length;
   const kind = siteCount === 1 ? 'site' : 'cluster';
-  // "cut sites", not "map ticks": the cluster's own tooltip counts the same quantity
-  // as "N sites" and the overflow chip as "+N more sites". A third word for it left a
-  // screen-reader user reconciling ticks against sites against the label's "+N" names.
+  // "cut sites", not "map ticks". One noun across every surface that counts them: this
+  // name, the cluster's own tooltip ("N sites"), and the overflow chip ("N unnamed
+  // sites", over a title reading "N of M cut sites"). A third word for the same thing
+  // left a screen-reader user reconciling ticks against sites against the label's "+N",
+  // which counts enzyme NAMES and is the one quantity here in a different unit.
+  //
+  // The chip's noun carries a qualifier the other two do not, and that is deliberate:
+  // this name and the tooltip count ALL of one cluster's cut sites, while the chip
+  // counts the map's cut sites whose enzyme no drawn label states. Same unit, narrower
+  // set — and its title prints the subset against the total in that unit, so the two
+  // numbers reconcile instead of standing side by side. The chip could not do that
+  // while it counted sites under an unlabelled CLUSTER, a set nothing else here names.
   const siteWord = siteCount === 1 ? 'cut site' : 'cut sites';
   return `${name}, restriction ${kind} at ${MAP_NUMBER_FORMAT.format(coordinate)} bp, ${MAP_NUMBER_FORMAT.format(siteCount)} ${siteWord}`;
 }
@@ -512,7 +522,24 @@ export const SequenceMapView = memo(function SequenceMapView({
   const rangeOverlaysInteractive = interactive && !!onRangeOverlayClick;
   const rawSelectionGradientId = useId();
   const selectionGradientId = `motif-pm-selection-gradient-${rawSelectionGradientId.replace(/:/g, '')}`;
+  const selectionEdgeGradientId = `motif-pm-selection-edge-gradient-${rawSelectionGradientId.replace(/:/g, '')}`;
   const selectionGradientRadius = Math.max(1, layout.radius * 1.08);
+  // A stroke can only name a paint server by url(), and the id is generated per
+  // instance, so hand it to the stylesheet as a custom property rather than letting
+  // CSS guess it. A host that styles the selection edges reads
+  // --motif-pm-selection-edge-gradient with its own colour as the fallback.
+  const selectionEdgeGradientStyle = useMemo(
+    () => ({ '--motif-pm-selection-edge-gradient': `url(#${selectionEdgeGradientId})` }) as CSSProperties,
+    [selectionEdgeGradientId],
+  );
+  // A linear selection is a band 18px tall on a drawing 274px deep on pUC19 at
+  // 1440x900, so it marks the ruler and says nothing about the restriction band
+  // or the feature rows the same bases run through. These carry each span's two
+  // boundaries down to where the coordinate gridlines stop.
+  const linearSelectionEdges = useMemo(
+    () => selectionPaths?.flatMap((d) => linearSelectionEdgePaths(layout, d)) ?? [],
+    [selectionPaths, layout],
+  );
   const mapInteractionModel = useMemo(() => {
     const keys = [
       ...layout.features.map((feature) => mapInteractionKey('feature', feature.id)),
@@ -616,12 +643,13 @@ export const SequenceMapView = memo(function SequenceMapView({
     <svg
       ref={svgRef}
       className="motif-plasmid-map"
-      viewBox={layout.viewBox}
+      viewBox={layout.contentViewBox ?? layout.viewBox}
       role={interactive ? 'group' : 'img'}
       aria-label={`${layout.name}, ${layout.length.toLocaleString()} ${unit}, ${
         isCircular ? 'circular map' : 'linear map'
       }`}
       preserveAspectRatio={preserveAspectRatio}
+      style={selectionEdgeGradientStyle}
       data-interactive={interactive ? 'true' : undefined}
       onClick={interactive ? () => onBackgroundClick?.() : undefined}
     >
@@ -654,6 +682,21 @@ export const SequenceMapView = memo(function SequenceMapView({
             <stop className="motif-pm-selection-stop motif-pm-selection-stop-center" offset="0%" />
             <stop className="motif-pm-selection-stop motif-pm-selection-stop-mid" offset="56%" />
             <stop className="motif-pm-selection-stop motif-pm-selection-stop-edge" offset="100%" />
+          </radialGradient>
+          {/* The radial edge lines ride the same ramp as the fill, just opaque
+              enough to read as lines: faint where they approach the center label,
+              solid where they meet the backbone. Both are userSpaceOnUse and
+              centered on the map, so a line's fade tracks its own radius. */}
+          <radialGradient
+            id={selectionEdgeGradientId}
+            gradientUnits="userSpaceOnUse"
+            cx={layout.center.x}
+            cy={layout.center.y}
+            r={selectionGradientRadius}
+          >
+            <stop className="motif-pm-selection-edge-stop motif-pm-selection-edge-stop-center" offset="0%" />
+            <stop className="motif-pm-selection-edge-stop motif-pm-selection-edge-stop-mid" offset="56%" />
+            <stop className="motif-pm-selection-edge-stop motif-pm-selection-edge-stop-edge" offset="100%" />
           </radialGradient>
         </defs>
       ) : null}
@@ -739,11 +782,66 @@ export const SequenceMapView = memo(function SequenceMapView({
           </g>
         ) : null}
 
+        {/* Own group, not more children of the layer above: the artifact styles a
+            circular selection's edges with :nth-child(3n+2)/(3n+3) over that
+            layer's children, and an extra path in it would shift every span's
+            triplet. Painted here, before the coordinate numbers and the feature
+            and enzyme names, so a boundary line passes behind a glyph instead of
+            through it — the same order the coordinate gridlines already draw in. */}
+        {linearSelectionEdges.length > 0 ? (
+          <g className="motif-pm-selection-edges" aria-hidden="true">
+            {linearSelectionEdges.map((d, i) => (
+              <path key={i} className="motif-pm-selection-edge" d={d} />
+            ))}
+          </g>
+        ) : null}
+
         <g className="motif-pm-coords">
           {layout.coordinates.map((coord) => (
             <CoordinateTick key={`c${coord.bp}`} coord={coord} />
           ))}
         </g>
+
+        {layout.overflows?.length ? (
+          // Paint the help target before interactive annotations. It remains
+          // reachable in empty map space, while a feature/restriction painted
+          // over any part of its generous text-sized rect wins hit testing.
+          <g className="motif-pm-overflows">
+            {layout.overflows.map((overflow) => (
+              <g
+                key={overflow.id}
+                className="motif-pm-overflow-chip"
+                data-kind={overflow.kind}
+                onPointerDown={(e) => e.stopPropagation()}
+              >
+                <title>
+                  {restrictionDensityRender.binned && overflow.kind === 'restriction-labels'
+                    ? overflow.title.replace(
+                        'All density ticks remain visible.',
+                        'All sites remain represented in the binned density summary.',
+                      )
+                    : overflow.title}
+                </title>
+                <rect
+                  className="motif-pm-overflow-hit"
+                  x={overflow.hit.x}
+                  y={overflow.hit.y}
+                  width={overflow.hit.width}
+                  height={overflow.hit.height}
+                />
+                <text
+                  className="motif-pm-overflow"
+                  x={overflow.x}
+                  y={overflow.y}
+                  textAnchor={overflow.anchor}
+                  data-kind={overflow.kind}
+                >
+                  {overflow.text}
+                </text>
+              </g>
+            ))}
+          </g>
+        ) : null}
 
         <g className="motif-pm-features">
           {layout.features.map((feature, interactionIndex) => (
@@ -794,45 +892,6 @@ export const SequenceMapView = memo(function SequenceMapView({
             );
           })}
         </g>
-
-        {layout.overflows?.length ? (
-          <g className="motif-pm-overflows">
-            {layout.overflows.map((overflow) => (
-              // The <title> is the ONLY place the map says what the chip's count
-              // means and that nothing was actually dropped from the drawing. It
-              // hangs off the GROUP, not the text, so the layout's hit rect resolves
-              // to it too — a <title> is inherited by whichever child the pointer
-              // lands on. The chip still declares NO pointer handlers of its own, so
-              // a press bubbles on to whatever surface owns the map's drag.
-              <g key={overflow.id} className="motif-pm-overflow-chip" data-kind={overflow.kind}>
-                <title>
-                  {restrictionDensityRender.binned && overflow.kind === 'restriction-labels'
-                    ? overflow.title.replace(
-                        'All density ticks remain visible.',
-                        'All sites remain represented in the binned density summary.',
-                      )
-                    : overflow.title}
-                </title>
-                <rect
-                  className="motif-pm-overflow-hit"
-                  x={overflow.hit.x}
-                  y={overflow.hit.y}
-                  width={overflow.hit.width}
-                  height={overflow.hit.height}
-                />
-                <text
-                  className="motif-pm-overflow"
-                  x={overflow.x}
-                  y={overflow.y}
-                  textAnchor={overflow.anchor}
-                  data-kind={overflow.kind}
-                >
-                  {overflow.text}
-                </text>
-              </g>
-            ))}
-          </g>
-        ) : null}
 
         {isCircular ? (
           <g className="motif-pm-center" aria-hidden="true">

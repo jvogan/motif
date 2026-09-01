@@ -863,9 +863,14 @@ export function ClaudeScienceAgentResultsPanel({
             <option value="evidence">Reports &amp; Tables</option>
           </select>
         </label>
-        <span>{visibleResults.length < ordered.length
-          ? `${visibleResults.length.toLocaleString()} of ${ordered.length.toLocaleString()} shown`
-          : `${ordered.length.toLocaleString()} shown`}</span>
+        {/* Both empty cases below already explain themselves - "No analysis
+            results yet" and "No results in this view" - and each says more than
+            a zero would. */}
+        {ordered.length ? (
+          <span>{visibleResults.length < ordered.length
+            ? `${visibleResults.length.toLocaleString()} of ${ordered.length.toLocaleString()} shown`
+            : `${ordered.length.toLocaleString()} shown`}</span>
+        ) : null}
       </div>
 
       {results.length === 0 ? (

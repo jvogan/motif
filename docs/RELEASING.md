@@ -35,6 +35,9 @@ npm run security:policy
 npm run security:lifecycle
 npm audit
 npm run gate
+npm run build:codex-plugin
+npm run test:codex-plugin
+npm run codex:doctor
 npm run validate:plugin
 git diff --check
 git status --short
@@ -68,18 +71,22 @@ Record the SHA-256 hashes:
 ```bash
 shasum -a 256 \
   dist-motif/motif-artifact.html \
+  dist-motif/motif-for-codex.zip \
+  dist-motif/motif-for-codex.checksums.json \
   dist-motif/motif-for-claude-science.zip \
   dist-motif/motif-for-claude-science.checksums.json \
   dist-motif/motif-for-claude-science-release.zip \
   dist-motif/motif-for-claude-science-release.manifest.sha256
 ```
 
-Inspect the plugin ZIP file list. It must use relative paths and include
+Inspect both plugin ZIP file lists. They must use relative paths and include
 `THIRD_PARTY_NOTICES.md` plus a license file for every dependency bundled into
-the plugin connector. Inspect the release ZIP separately: it must contain its
-installer/doctor/rollback helpers, self-contained connector artifacts, SBOM,
-connector inventory, and one license file for every reviewed bundled
-connector dependency.
+their connector. Confirm the Codex directory contains its manifest, skill,
+`agents/openai.yaml`, local MCP configuration, App resource, integrity
+manifest, and self-contained doctor. Inspect the Claude Science release ZIP
+separately: it must contain its installer/doctor/rollback helpers,
+self-contained connector artifacts, SBOM, connector inventory, and one license
+file for every reviewed bundled connector dependency.
 
 ## 3. Tag and draft
 
@@ -120,13 +127,18 @@ Create and push an annotated `vX.Y.Z` tag that names the validated commit.
 Create the GitHub release as a draft with `--verify-tag`, and attach exactly:
 
 - `motif-artifact.html`
+- `motif-for-codex.zip`
+- `motif-for-codex.checksums.json`
 - `motif-for-claude-science.zip`
 - `motif-for-claude-science.checksums.json`
 - `motif-for-claude-science-release.zip`
 - `motif-for-claude-science-release.manifest.sha256`
 
-The release ZIP is the supported no-npm end-user path. Users verify both release
-assets against the immutable GitHub release before executing bundled code. The
+The Claude Science release ZIP is the supported no-npm end-user path. The
+Codex ZIP is a deterministic sharing and checksum artifact, not a direct
+installer; install Codex through a reviewed local marketplace as documented in
+the [Codex quickstart](CODEX_QUICKSTART.md). Users verify release assets against
+the immutable GitHub release before executing bundled code. The Claude Science
 installer, doctor, and rollback helper require the separately downloaded
 release-manifest checksum as an external integrity anchor; they do not claim to
 authenticate themselves. Its extracted root
@@ -149,6 +161,9 @@ After publication:
 ```bash
 gh release verify vX.Y.Z
 gh release verify-asset vX.Y.Z dist-motif/motif-artifact.html
+gh release verify-asset vX.Y.Z dist-motif/motif-for-codex.zip
+gh release verify-asset vX.Y.Z \
+  dist-motif/motif-for-codex.checksums.json
 gh release verify-asset vX.Y.Z dist-motif/motif-for-claude-science.zip
 gh release verify-asset vX.Y.Z \
   dist-motif/motif-for-claude-science.checksums.json
@@ -161,6 +176,14 @@ gh release verify-asset vX.Y.Z \
 Finally, confirm the release is marked immutable and latest, the public
 downloads match the recorded hashes, Dependabot and CodeQL have no unresolved
 release-blocking alerts, and the working tree remains clean.
+
+For Codex, also stage the exact released source with
+`npm run build:codex-marketplace`, run `npm run codex:doctor:marketplace`,
+install from that local marketplace, start a new thread, and run
+`npm run codex:doctor:installed`. Record the marketplace source, Motif version,
+Node version, operating system, and whether the live App and portable fallback
+each worked. Do not treat a successful tool response alone as visible-mount
+verification.
 
 If an installed bundle is damaged during recovery testing, use a fresh,
 separately verified extraction of the release as the rollback `--bundle`; the

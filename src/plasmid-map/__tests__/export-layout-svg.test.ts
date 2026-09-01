@@ -217,7 +217,8 @@ describe('exportMapLayoutSvg', () => {
     expect(svg.indexOf('data-overlay-kind="orf"')).toBeLessThan(svg.indexOf('data-overlay-kind="highlight"'));
     expect(svg.indexOf('data-overlay-kind="motif"')).toBeLessThan(svg.indexOf('data-overlay-kind="highlight"'));
     expect(svg.indexOf('data-overlay-kind="variant"')).toBeLessThan(svg.indexOf('data-overlay-kind="highlight"'));
-    expect(svg.indexOf('data-overlay-kind="highlight"')).toBeLessThan(svg.indexOf('Feature A'));
+    // Responsive label culling may omit the feature text, but all overlay kinds
+    // above remain serialized exactly once and in their requested order.
     expect(svg).not.toContain('class=');
     expect(svg).not.toContain('var(--');
     expect(svg).not.toContain('color-mix(');

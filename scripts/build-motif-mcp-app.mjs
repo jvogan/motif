@@ -42,7 +42,7 @@ export function buildMotifMcpApp({ template = templatePath, entry = entryPath, o
     throw new Error('Motif MCP App must not retain external or generated asset references.');
   }
   for (const marker of [
-    'Motif for Claude Science',
+    '<meta name="application-name" content="Motif"',
     'motif.mcp.workbench.v1',
     'data-motif-mcp-app-bridge',
   ]) {

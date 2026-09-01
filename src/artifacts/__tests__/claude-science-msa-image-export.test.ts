@@ -37,6 +37,21 @@ describe('computeAlignmentImageLayout', () => {
     expect(layout.height).toBe(Math.ceil(layout.headerHeight + layout.rowCount * layout.cellHeight));
   });
 
+  it('preserves absolute filtered columns and elisions in visible-view geometry', () => {
+    const columns = [
+      { kind: 'column' as const, column: 9 },
+      { kind: 'column' as const, column: 10 },
+      { kind: 'elision' as const, startColumn: 11, endColumn: 40, hiddenCount: 29 },
+      { kind: 'column' as const, column: 40 },
+    ];
+    const layout = computeAlignmentImageLayout(source(3, 100), {
+      scope: 'view', columns, cellWidth: 12, cellHeight: 16,
+    });
+    expect(layout.startColumn).toBe(9);
+    expect(layout.columnCount).toBe(4);
+    expect(layout.columns).toEqual(columns);
+  });
+
   it('spans the whole alignment for the "all" scope', () => {
     const layout = computeAlignmentImageLayout(source(4, 250), { scope: 'all', cellWidth: 12, cellHeight: 16 });
     expect(layout.startColumn).toBe(0);

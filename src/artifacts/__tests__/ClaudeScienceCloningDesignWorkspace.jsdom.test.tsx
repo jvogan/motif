@@ -94,9 +94,10 @@ describe('ClaudeScienceCloningDesignWorkspace', () => {
     const records = [bsaIPart('single-part', 'GGAG', 'ATGAAATTT', 'GCTT')];
     render(<ClaudeScienceCloningDesignWorkspace {...props({ records, initialRecordIds: ['single-part'] })} />);
 
-    expect(screen.getByTestId('cloning-design-product-empty').textContent).toContain('Add Another DNA Input');
-    expect(screen.getByText('Preparation Checklist').parentElement?.textContent).toContain('Not evaluated');
-    expect(screen.getByText('Add another DNA input').parentElement?.textContent).toContain('Preparation has not been evaluated');
+    expect(screen.getByTestId('cloning-design-product-empty').textContent)
+      .toBe('Two Parts NeededAdd a second part in step 02.');
+    expect(screen.getByText('Preparation Checklist').parentElement?.textContent).toContain('Not checked');
+    expect(screen.getByText('Add a second part').parentElement?.textContent).toContain('Checks start at 2 parts.');
     expect(screen.queryByText('Preparation Complete')).toBeNull();
   });
 
@@ -383,7 +384,8 @@ describe('ClaudeScienceCloningDesignWorkspace', () => {
 
     expect((screen.getByRole('button', { name: 'Save Plan' }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByTestId('cloning-design-plan-status').dataset.state).toBe('blocked');
-    expect(screen.getByTestId('cloning-design-product-empty').textContent).toContain('Add Another DNA Input');
+    expect(screen.getByTestId('cloning-design-product-empty').textContent)
+      .toBe('Two Parts NeededAdd a second part in step 02.');
     expect(screen.queryByText('Preparation Complete')).toBeNull();
   });
 

@@ -99,7 +99,7 @@ test.describe('Claude Science multipart feature semantics', () => {
     const translation = page.locator('details[data-rail-tool="translation"]');
     if ((await translation.getAttribute('open')) === null) await translation.locator(':scope > summary').click();
     await expect(translation.locator('.motif-cs-protein-readout')).toHaveText('MP');
-    await expect(translation).toContainText('stitched in biological order');
+    await expect(translation).toContainText('Motif translated multipart feature segments in biological order.');
     await expect(translation.getByRole('button', { name: 'Add AA track' })).toBeDisabled();
 
     const exportPanel = page.locator('.motif-cs-sequence-tools-panel');

@@ -2,6 +2,7 @@ import { App } from '@modelcontextprotocol/ext-apps';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
 import type { MotifWorkbenchPayload, MotifWorkbenchResult } from '../../mcp/motif/contracts.js';
+import { resolveFeatureColor } from '../bio/feature-palette.js';
 
 type MotifRuntimeWindow = Window & {
   motifReplaceWorkspace?: (payload: MotifWorkbenchPayload) => number;
@@ -9,6 +10,49 @@ type MotifRuntimeWindow = Window & {
 
 const RUNTIME_WAIT_TIMEOUT_MS = 10_000;
 const RUNTIME_WAIT_INTERVAL_MS = 25;
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function resolveBridgeFeatureColors(payload: MotifWorkbenchPayload): MotifWorkbenchPayload {
+  let changed = false;
+  const resolveRecord = (record: unknown): unknown => {
+    if (!isPlainObject(record)) return record;
+    let next = record;
+    for (const field of ['features', 'annotations'] as const) {
+      const featureList = record[field];
+      if (!Array.isArray(featureList)) continue;
+      const colored = featureList.map((feature) => {
+        if (!isPlainObject(feature)) return feature;
+        const color = resolveFeatureColor(feature);
+        if (color === feature.color) return feature;
+        changed = true;
+        return { ...feature, color };
+      });
+      if (colored.some((feature, index) => feature !== featureList[index])) {
+        next = { ...next, [field]: colored };
+      }
+    }
+    return next;
+  };
+  let next: MotifWorkbenchPayload = payload;
+  for (const field of ['records', 'entries', 'vectors'] as const) {
+    const recordList = payload[field];
+    if (!Array.isArray(recordList)) continue;
+    const records = recordList.map(resolveRecord);
+    if (records.some((record, index) => record !== recordList[index])) {
+      next = { ...next, [field]: records };
+    }
+  }
+  if (payload.record !== undefined) {
+    const record = resolveRecord(payload.record);
+    if (record !== payload.record) next = { ...next, record };
+  }
+  return changed ? next : payload;
+}
 
 export function isMotifWorkbenchResult(value: unknown): value is MotifWorkbenchResult {
   if (!value || typeof value !== 'object') return false;
@@ -53,7 +97,7 @@ export async function applyMotifToolResult(result: CallToolResult): Promise<void
   }
   try {
     const replaceWorkspace = await waitForRuntime();
-    replaceWorkspace(result.structuredContent.payload);
+    replaceWorkspace(resolveBridgeFeatureColors(result.structuredContent.payload));
     setBridgeState('ready');
   } catch (error) {
     const message = error instanceof Error ? error.message : 'The Motif workspace could not be loaded.';
@@ -64,7 +108,7 @@ export async function applyMotifToolResult(result: CallToolResult): Promise<void
 export async function startMotifMcpBridge(): Promise<App> {
   setBridgeState('connecting');
   const app = new App(
-    { name: 'Motif for Claude Science', version: '0.3.6' },
+    { name: 'Motif', version: '0.3.6' },
     { availableDisplayModes: ['inline', 'fullscreen'] },
     { autoResize: false },
   );

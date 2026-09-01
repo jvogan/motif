@@ -16,7 +16,7 @@ import {
 import { isMotifWorkbenchResult } from '../motif-workbench-bridge.js';
 
 const runtimeBuildId = 'a'.repeat(64);
-const artifactTemplate = `<!doctype html><html><head><meta name="motif-build-id" content="${runtimeBuildId}"><title>Motif for Claude Science</title></head><body><script type="application/json" id="motif-artifact-data">__SEQUENCE_INVENTORY__</script></body></html>`;
+const artifactTemplate = `<!doctype html><html><head><meta name="motif-build-id" content="${runtimeBuildId}"><title>Motif</title></head><body><script type="application/json" id="motif-artifact-data">__SEQUENCE_INVENTORY__</script></body></html>`;
 
 const openedClients: Client[] = [];
 const openedServers: ReturnType<typeof createMotifClaudeScienceServer>[] = [];
@@ -113,6 +113,29 @@ describe('Motif MCP payload boundary', () => {
         }],
       },
     });
+  });
+
+  it('applies the shared palette and carries an explicit proposal opt-out', () => {
+    const result = prepareMotifWorkbench({
+      payload: {
+        records: [{
+          id: 'palette',
+          name: 'Palette',
+          molecule: 'dna',
+          sequence: 'ATGAAATAA',
+          features: [{ name: 'coding region', type: 'cds', start: 0, end: 9 }],
+        }],
+      },
+      proposeAnnotations: false,
+    });
+    expect(result.payload?.records).toEqual([
+      expect.objectContaining({
+        proposeAnnotations: false,
+        features: [expect.objectContaining({
+          color: expect.stringMatching(/^#[0-9a-f]{6}$/i),
+        })],
+      }),
+    ]);
   });
 
   it('keeps valid unprojectable GenBank locations with feature and record diagnostics', () => {
@@ -445,13 +468,13 @@ describe('Motif embedded artifact export', () => {
   });
 });
 
-describe('Motif for Claude Science MCP server', () => {
+describe('Motif MCP server', () => {
   it('exposes a fully branded app resource, viewer binding, and embedded fallback', async () => {
     const traceEvents: MotifMcpTraceEvent[] = [];
     const server = createMotifClaudeScienceServer({
       version: '0.2.1-test',
       runtimeBuildId,
-      readWorkbenchHtml: async () => '<!doctype html><title>Motif for Claude Science</title><div class="motif-cs-brand">Motif</div>',
+      readWorkbenchHtml: async () => '<!doctype html><title>Motif</title><div class="motif-cs-brand">Motif</div>',
       readArtifactTemplate: async () => artifactTemplate,
       trace: event => traceEvents.push(event),
     });
@@ -507,7 +530,7 @@ describe('Motif for Claude Science MCP server', () => {
       type: 'resource_link',
       uri: MOTIF_WORKBENCH_RESOURCE_URI,
       mimeType: 'text/html;profile=mcp-app',
-      name: 'Motif for Claude Science workbench',
+      name: 'Motif Workbench',
     }));
     expect(openResult.content).toContainEqual(expect.objectContaining({
       type: 'text',
@@ -525,7 +548,7 @@ describe('Motif for Claude Science MCP server', () => {
       },
     });
     const resourceContent = resource.contents[0];
-    expect(resourceContent && 'text' in resourceContent ? resourceContent.text : '').toContain('Motif for Claude Science');
+    expect(resourceContent && 'text' in resourceContent ? resourceContent.text : '').toContain('<title>Motif</title>');
 
     const artifactResult = await client.callTool({
       name: 'motif_create_workbench_artifact',
@@ -550,7 +573,7 @@ describe('Motif for Claude Science MCP server', () => {
       resource: expect.objectContaining({
         uri: 'motif://artifact/motif-review.html',
         mimeType: 'text/html',
-        text: expect.stringContaining('Motif for Claude Science'),
+        text: expect.stringContaining('<title>Motif</title>'),
       }),
     }));
     expect(artifactResult.content).toContainEqual(expect.objectContaining({
@@ -572,7 +595,7 @@ describe('Motif for Claude Science MCP server', () => {
     const server = createMotifClaudeScienceServer({
       version: '0.2.1-test',
       runtimeBuildId,
-      readWorkbenchHtml: async () => '<title>Motif for Claude Science</title>',
+      readWorkbenchHtml: async () => '<title>Motif</title>',
       readArtifactTemplate: async () => artifactTemplate,
     });
     openedServers.push(server);
@@ -616,7 +639,7 @@ describe('Motif for Claude Science MCP server', () => {
     const server = createMotifClaudeScienceServer({
       version: '0.2.1-test',
       runtimeBuildId,
-      readWorkbenchHtml: async () => '<title>Motif for Claude Science</title>',
+      readWorkbenchHtml: async () => '<title>Motif</title>',
       readArtifactTemplate: async () => artifactTemplate,
     });
     openedServers.push(server);

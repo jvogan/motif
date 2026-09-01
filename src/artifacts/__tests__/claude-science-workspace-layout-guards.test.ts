@@ -16,15 +16,17 @@ function sliceBetween(source: string, startNeedle: string, endNeedle: string): s
   return source.slice(start, end);
 }
 
-describe('Claude Science workspace layout guards', () => {
-  it('offers four canonical themes and migrates the two legacy theme ids', () => {
-    expect(artifactSource).toContain("type ArtifactThemeName = 'light' | 'dark' | 'claude-light' | 'claude-dark';");
-    expect(artifactSource).toContain("{ id: 'light', label: 'Light', description: 'Neutral surface · blue' }");
-    expect(artifactSource).toContain("{ id: 'dark', label: 'Dark', description: 'Deep neutral · blue' }");
-    expect(artifactSource).toContain("{ id: 'claude-light', label: 'Claude Light', description: 'Warm paper · coral' }");
-    expect(artifactSource).toContain("{ id: 'claude-dark', label: 'Claude Dark', description: 'Warm charcoal · coral' }");
-    expect(artifactSource).toContain("if (value === 'claude') return 'claude-light';");
-    expect(artifactSource).toContain("if (value === 'tokyo') return 'claude-dark';");
+describe('workspace layout guards', () => {
+  it('offers four host-neutral themes and migrates legacy theme ids', () => {
+    expect(artifactSource).toContain("type ArtifactThemeName = 'light' | 'dark' | 'warm-light' | 'warm-dark';");
+    expect(artifactSource).toContain("{ id: 'light', palette: 'light', label: 'Light', description: 'Neutral surface · blue' }");
+    expect(artifactSource).toContain("{ id: 'dark', palette: 'dark', label: 'Dark', description: 'Deep neutral · blue' }");
+    expect(artifactSource).toContain("{ id: 'warm-light', palette: 'claude-light', label: 'Warm Light', description: 'Warm paper · terracotta' }");
+    expect(artifactSource).toContain("{ id: 'warm-dark', palette: 'claude-dark', label: 'Warm Dark', description: 'Warm charcoal · coral' }");
+    expect(artifactSource).toContain("if (value === 'claude-light' || value === 'claude') return 'warm-light';");
+    expect(artifactSource).toContain("if (value === 'claude-dark' || value === 'tokyo') return 'warm-dark';");
+    expect(artifactSource).toContain("const WORKSPACE_LAYOUT_STORAGE_KEY = 'motif.workspace-layout.v1';");
+    expect(artifactSource).toContain("const LEGACY_WORKSPACE_LAYOUT_STORAGE_KEY = 'motif.claude-science.workspace-layout.v1';");
     expect(artifactSource).not.toContain("label: 'Claude Beige'");
     expect(artifactCss).toContain('html[data-theme="claude-light"]');
     expect(artifactCss).toContain('html[data-theme="claude-dark"]');
@@ -33,7 +35,7 @@ describe('Claude Science workspace layout guards', () => {
     expect(artifactSource).toContain('data-theme={mapTheme}');
     expect(artifactSource).toContain('applyArtifactTheme(loadWorkspaceLayoutPrefs().theme);');
     expect(artifactSource).toContain("document.querySelector<HTMLMetaElement>('meta[name=\"theme-color\"]')");
-    expect(artifactSource).toContain("description: 'Warm paper · coral'");
+    expect(artifactSource).toContain("description: 'Warm paper · terracotta'");
     expect(artifactSource).toContain("description: 'Warm charcoal · coral'");
     expect(artifactCss).toContain('.motif-cs-theme-choice[data-theme-choice="claude-light"]');
     expect(artifactCss).toContain('--theme-preview-claude-light-surface: #f9f9f7;');
@@ -263,6 +265,78 @@ describe('Claude Science workspace layout guards', () => {
     // bar and a border-strong thumb and delivered neither — 11px, Chromium's
     // own thumb. Dead text that reads like live styling is worse than none.
     expect(artifactCss).not.toContain('.motif-cs-record-tabs::-webkit-scrollbar');
+  });
+
+  it('names each tool on the collapsed rail the moment it is hovered or focused', () => {
+    // The collapsed rail is the default tools state and every head in it is a
+    // 38x34 icon with its label clipped to 1px, so before this rule nothing on
+    // the first screen said Primer Design, Guide RNA or Construct Verification.
+    // The native title needed a ~1s hover and never fired on keyboard focus.
+    const flyout = sliceBetween(
+      artifactCss,
+      '.motif-cs-inspector[data-tools-pinned="false"]\n  .motif-cs-panel:not([open])\n  > .motif-cs-panel-head:is(:hover, :focus-visible)::before {',
+      '\n}',
+    );
+    expect(flyout).toContain('content: attr(title) / "";');
+    // Absolute, so the name tracks its icon when the rail scrolls. Fixed put it
+    // 33px adrift at 1440x700, because a fixed box takes its static position
+    // from the unscrolled layout.
+    expect(flyout).toContain('position: absolute;');
+    expect(flyout).toContain('top: 50%;');
+    expect(flyout).toContain('transform: translateY(-50%);');
+    expect(flyout).not.toContain('position: fixed;');
+    expect(flyout).toContain('pointer-events: none;');
+    expect(flyout).toContain('text-transform: none;');
+    // The empty alt text keeps generated content out of the accessible name,
+    // which every rail head resolves from its own clipped label.
+    expect(flyout).not.toMatch(/content: attr\(title\);/);
+    // The head is the flyout's containing block.
+    expect(artifactCss).toContain('.motif-cs-inspector[data-tools-pinned="false"] .motif-cs-panel-head {\n  position: relative;');
+    // The base rule that this one overrides must still switch the marker off.
+    expect(artifactCss).toContain('.motif-cs-inspector[data-tools-pinned="false"] .motif-cs-panel-head::before {\n  content: none;\n}');
+    // A scrolling rail clips, so the flyout stands down rather than mislabel an
+    // icon. That rule has to live inside the query that starts the scrolling.
+    // Same specificity as the rule above, so only source order separates them:
+    // the stand-down must come after the flyout or it never applies.
+    const flyoutAt = artifactCss.indexOf('> .motif-cs-panel-head:is(:hover, :focus-visible)::before {\n  content: attr(title)');
+    expect(flyoutAt).toBeGreaterThan(-1);
+    const standDownAt = artifactCss.indexOf('@media (max-height: 731px) {', flyoutAt);
+    expect(standDownAt).toBeGreaterThan(flyoutAt);
+    expect(artifactCss.slice(standDownAt, standDownAt + 400))
+      .toContain('> .motif-cs-panel-head:is(:hover, :focus-visible)::before {\n    content: none;');
+  });
+
+  it('paints the sequence edit toolbar as a scroll strip instead of hiding its bar', () => {
+    // Measured `scrollWidth - clientWidth` on .motif-cs-edit-toolbar: 114px at
+    // 320 wide, 74 at 360, 44 at 390, 4 at 430, 0 through 620, and 11 again at
+    // exactly 640 where the layout crosses a breakpoint. The Complement switch is
+    // what leaves the right edge, so the control that says which strand you are
+    // reading was the one with no cue that it existed: `scrollbar-width: none`
+    // plus a ::-webkit-scrollbar display:none removed the only cue the platform
+    // gives, and nothing replaced it.
+    const toolbar = sliceBetween(artifactCss, '.motif-cs-edit-toolbar {', '}');
+    expect(toolbar).toContain('overflow-x: auto');
+    expect(toolbar, 'the edit toolbar scrolls with its bar switched off').not.toContain('scrollbar-width: none');
+    expect(toolbar).toContain('scrollbar-color:');
+
+    // One scrollbar for the app: the same two tokens the record tabs use.
+    const tabs = sliceBetween(artifactCss, '.motif-cs-record-tabs {', '}');
+    const colourOf = (rule: string) => /scrollbar-color:\s*([^;]+);/.exec(rule)?.[1].replace(/\s+/g, ' ').trim();
+    expect(colourOf(toolbar)).toBeTruthy();
+    expect(colourOf(toolbar)).toBe(colourOf(tabs));
+
+    // Edge fades on both ends, attached `local` so the shadow swaps sides with the
+    // scroll position — the treatment .motif-cs-selection-actions already carries
+    // in this same pane. Verified painted at 390px in all four themes; the thin
+    // bar costs no height, the row stays 36px.
+    expect(toolbar).toContain('background-attachment: local, local, scroll, scroll');
+    expect(toolbar).toContain('linear-gradient(to right, var(--motif-cs-edit-toolbar-bg) 30%, transparent)');
+    expect(toolbar).toContain('linear-gradient(to left, var(--motif-cs-edit-toolbar-bg) 30%, transparent)');
+
+    // Naming a `scrollbar-color` makes Chromium ignore ::-webkit-scrollbar on the
+    // same element, so the old display:none rule became dead text that reads like
+    // live styling. It is deleted rather than overridden.
+    expect(artifactCss).not.toContain('.motif-cs-edit-toolbar::-webkit-scrollbar');
   });
 
   it('only advertises pane reordering where the rendered layout can honor it', () => {
@@ -508,7 +582,19 @@ describe('Claude Science workspace layout guards', () => {
     expect(artifactSource).toContain('aria-label="Typing mode"');
     expect(artifactSource).toContain('className="motif-cs-mini-button motif-cs-display-switch motif-cs-ds-toggle"');
     expect(artifactSource).toContain('<span className="motif-cs-label-full">Complement</span>');
-    expect(artifactSource).toContain("{selectedInlineTranslationTrack ? 'Del AA' : 'Add AA'}");
+    // One action, one name: the bar and the Translation panel both call
+    // addTranslationLayer, so both say "Add AA track". The short pair survives
+    // only as the narrow-width spelling, and aria-label keeps the accessible
+    // name on the full form at every width.
+    expect(artifactSource).toContain(
+      `<span className="motif-cs-label-full">{selectedInlineTranslationTrack ? 'Remove AA track' : 'Add AA track'}</span>`,
+    );
+    expect(artifactSource).toContain(
+      `<span className="motif-cs-label-short">{selectedInlineTranslationTrack ? 'Del AA' : 'Add AA'}</span>`,
+    );
+    expect(artifactSource).toContain(
+      "aria-label={selectedInlineTranslationTrack ? 'Remove AA track' : 'Add AA track'}",
+    );
     expect(artifactSource).toContain('disabled={!selectedInlineTranslationTrack && (!selectionActionTranslation || !canPinPreviewTranslation)}');
     expect(artifactSource).toContain('if (selectedInlineTranslationTrack) deleteTranslationLayer(selectedInlineTranslationTrack.id);');
     expect(artifactSource).toContain('addTranslationLayer();');
@@ -532,8 +618,15 @@ describe('Claude Science workspace layout guards', () => {
     // from assistive tech and must never become the only signal.
     expect(artifactSource).toContain('<span className="motif-cs-selection-action-rule" aria-hidden="true" />');
     expect(artifactCss).toMatch(/\.motif-cs-selection-actions \.motif-cs-selection-action-rule\s*\{[\s\S]*?width:\s*1px/);
-    expect(artifactSource).toContain("onClick={() => setSequenceViewMode('standard')}");
-    expect(artifactSource).toContain("onClick={() => setSequenceViewMode('detail')}");
+    // One switch, not a two-member segmented control: the same click both
+    // enters and leaves Detail, so the row reads like the Complement switch
+    // beside it. Guard the toggling call, which a split control cannot make.
+    expect(artifactSource).toContain(
+      "onClick={() => setSequenceViewMode(effectiveSequenceViewMode === 'detail' ? 'standard' : 'detail')}",
+    );
+    expect(artifactSource).toContain('className="motif-cs-mini-button motif-cs-display-switch motif-cs-detail-toggle"');
+    expect(artifactSource).not.toContain('motif-cs-view-toggle');
+    expect(artifactSource).not.toContain('aria-label="Standard sequence view"');
     expect(artifactSource).toContain('if (selectionSummary) {');
     expect(artifactSource).toContain('if (hasMaterializableSequenceSelection) addSelectionReverseComplementRecord();');
     expect(artifactSource).toContain('onClick={addContextReverseComplementRecord}');
@@ -542,7 +635,7 @@ describe('Claude Science workspace layout guards', () => {
     expect(artifactSource).toContain('disabled={!isNucleotideRecord || (!!selectionSummary && !hasMaterializableSequenceSelection)} onClick={addContextReverseComplementRecord}');
     expect(artifactSource).toContain('className="motif-cs-edit-controls"');
     expect(artifactCss).toContain('.motif-cs-switch-track');
-    expect(artifactCss).toContain('.motif-cs-view-toggle button[data-active]');
+    expect(artifactCss).not.toContain('.motif-cs-view-toggle');
     expect(artifactCss).not.toMatch(/\.motif-cs-selection-bar\[data-empty\] \.motif-cs-selection-actions\s*\{[\s\S]*?display:\s*none/);
     expect(artifactCss).toMatch(/@container \(max-width: 560px\)[\s\S]*?\.motif-cs-selection-bar\s*\{[\s\S]*?flex-direction:\s*column;[\s\S]*?min-height:\s*62px/);
     expect(artifactCss).toMatch(/@container \(max-width: 560px\)[\s\S]*?\.motif-cs-selection-bar\[data-empty\]\s*\{[\s\S]*?min-height:\s*62px/);
@@ -616,8 +709,27 @@ describe('Claude Science workspace layout guards', () => {
     expect(pointerStart).not.toContain('mapViewport.k >');
     expect(artifactSource).toContain('data-map-interaction-surface');
     expect(artifactSource).toContain('data-map-pointer-action={mapPointerAction}');
-    expect(artifactSource).toContain("target.closest('.motif-pm-feature, .motif-pm-restriction, .motif-pm-range-overlay[data-interactive=\"true\"]')");
+    // Features and restriction ticks used to veto the gesture entirely, which made
+    // 25.5% of the disc's area impossible to start a range drag from. They now take
+    // part like any other surface and are told apart from a drag by whether the
+    // pointer moved. Workflow range overlays keep their veto.
+    expect(artifactSource).toContain("target.closest('.motif-pm-range-overlay[data-interactive=\"true\"]')");
+    expect(artifactSource).toContain("mapPressOnObjectRef.current = !!target.closest('.motif-pm-feature, .motif-pm-restriction')");
     expect(artifactSource).toContain('onPointerDown={handleMapSurfacePointerDown}');
+    const pointerCancel = sliceBetween(
+      artifactSource,
+      'const handleMapSurfacePointerCancel = useCallback',
+      'const handleMapBackgroundClick = useCallback',
+    );
+    expect(pointerCancel).toContain('if (event.pointerId !== mapPointerIdRef.current) return;');
+    expect(pointerCancel).toContain('event.currentTarget.releasePointerCapture?.(event.pointerId);');
+    expect(pointerCancel).toContain('mapPointerIdRef.current = null;');
+    expect(pointerCancel).toContain('mapDragRef.current = null;');
+    expect(pointerCancel).toContain('mapPressOnObjectRef.current = false;');
+    expect(pointerCancel).not.toContain('handleMapPointerEnd();');
+    expect(pointerCancel).not.toContain('suppressNextBackgroundClick');
+    expect(pointerCancel).not.toContain('suppressNextMapObjectClick');
+    expect(artifactSource).toContain('onPointerCancel={handleMapSurfacePointerCancel}');
     expect(artifactCss).toMatch(/\.motif-cs-map-frame \.motif-pm-backbone\s*\{[\s\S]*?pointer-events:\s*none/);
     expect(artifactCss).toMatch(/\[data-map-pointer-action="pan"\] \.motif-pm-bg\s*\{[\s\S]*?cursor:\s*grab/);
   });
@@ -711,13 +823,29 @@ describe('Claude Science workspace layout guards', () => {
     expect(artifactSource).toContain('[selectedAaTrackText, selectedMapRange, sequence, topology, writeSelectedAaToClipboard]');
   });
 
-  it('adds fading radial start and end edges without outlining circular selection arcs', () => {
+  it('draws radial start and end edges as lines without outlining circular selection arcs', () => {
     expect(artifactSource).toContain('function artifactSelectionOverlayPaths(');
-    expect(artifactSource).toContain('const radialBoundary = (bp: number) =>');
+    expect(artifactSource).toContain('circularSelectionEdgePath(layout, span.start)');
+    expect(artifactSource).toContain('circularSelectionEdgePath(layout, span.end)');
     expect(artifactSource).toContain('artifactSelectionOverlayPaths(layout, visibleMapRanges)');
-    expect(artifactCss).toMatch(/\.motif-cs-map-frame\[data-map-mode="circular"\][\s\S]*?\.motif-pm-selection:nth-child\(3n \+ 2\)/);
-    expect(artifactCss).toContain('fill-opacity: 0.9;');
-    expect(artifactCss).toContain('stroke: none;');
+    const edgeRule = sliceBetween(
+      artifactCss,
+      '.motif-cs-map-frame[data-map-mode="circular"] .motif-pm-selection-layer .motif-pm-selection:nth-child(3n + 2)',
+      '}',
+    );
+    // Stroked, not filled: the edge paths carry no area, so a fill renders nothing.
+    expect(edgeRule).toContain('fill: none;');
+    // The map hands its per-instance gradient id over as a custom property; the flat
+    // accent stays as the fallback so a host without the gradient still draws a line.
+    expect(edgeRule).toContain('stroke: var(--motif-pm-selection-edge-gradient, var(--accent));');
+    expect(edgeRule).toContain('vector-effect: non-scaling-stroke;');
+  });
+
+  it('suppresses the radial edge a wrapping selection would draw down the origin', () => {
+    expect(artifactSource).toContain('const wrapsOrigin = allSpans.some((span) => span.start === 0)');
+    expect(artifactSource).toContain('&& allSpans.some((span) => span.end === layout.length);');
+    expect(artifactSource).toContain('wrapsOrigin && span.start === 0 ? seam : circularSelectionEdgePath(layout, span.start)');
+    expect(artifactSource).toContain('wrapsOrigin && span.end === layout.length ? seam : circularSelectionEdgePath(layout, span.end)');
   });
 
   it('keeps expanded floating tools movable and resizable at Claude Science widths', () => {
@@ -745,7 +873,10 @@ describe('Claude Science workspace layout guards', () => {
     expect(exportPanel).toContain('if (window.matchMedia(OVERLAY_TOOLS_LAYOUT_MEDIA).matches) return null;');
     expect(exportPanel).toContain("window.addEventListener('resize', syncExportPanelHeight);");
     expect(exportPanel).toContain('if (exportPanelHeight === null) {');
-    expect(exportPanel).toContain('top: column.scrollTop + panelRect.top - columnRect.top,');
+    expect(exportPanel).toContain("panel.querySelectorAll<HTMLElement>('.motif-cs-export-row button')");
+    expect(exportPanel).toContain('actionBottom - columnRect.bottom,');
+    expect(exportPanel).toContain('top: column.scrollTop + scrollDelta,');
+    expect(exportPanel).toContain('const observer = new ResizeObserver(() => {');
     expect(exportPanel).toContain('onDoubleClick={() => resizeExportPanelTo(340)}');
     expect(artifactCss).toMatch(/\.motif-cs-export-resize-handle\s*\{[\s\S]*?cursor:\s*ns-resize/);
     expect(artifactCss).toContain('var(--motif-cs-export-panel-height, 220px)');
@@ -824,5 +955,119 @@ describe('Claude Science workspace layout guards', () => {
     // them in this rail; adding one moves the breakpoint and must fail here.
     expect((artifactSource.match(/data-rail-label="/g) ?? []).length,
       'rail tool count changed -- re-derive the 731px breakpoint').toBe(17);
+  });
+
+  it('does not paint a feature label that can only be an ellipsis', () => {
+    // Feature blocks are sized in `ch` from the bases they cover and a feature
+    // that wraps is drawn once per line, so a line break can leave a 12px
+    // fragment. Below ~34px there is no room for one character and an
+    // ellipsis, so the label resolved to the ellipsis alone: 6.2px of ink
+    // saying nothing. Measured on the built artifact, blocks painting one
+    // character or fewer: 1 at 900x800, 0 at 1100-1440, 2 at 1680x1050, 2 at
+    // 1920x1080. After: 0 everywhere, with no block that could show two or
+    // more characters losing its label, no block resized, and all 8 arrowhead
+    // blocks still clipped.
+    // Bounded to the rule body with [^}] on purpose: a lazy [\s\S]*? happily
+    // runs past the closing brace and matches a container-type declared on some
+    // other selector, which is exactly how this assertion first passed against
+    // a build with the declaration deleted.
+    expect(artifactCss).toMatch(/\.motif-cs-feature-block \{[^}]*container-type:\s*inline-size/);
+    expect(artifactCss).toMatch(/@container \(max-width: 34px\) \{\s*\.motif-cs-feature-block span \{\s*display: none/);
+    // The width comes from an inline style and never from the label, which is
+    // what makes inline-size containment safe on this element.
+    expect(artifactSource).toContain("style={{ left: `${leftCh}ch`, width: `${widthCh}ch`");
+    // The name is still reachable without the label.
+    expect(artifactSource).toContain('title={`${feature.name} · ${feature.type} · ${featureRangeLabel(feature)} · Double-click to edit`}');
+  });
+
+  it('gives two small controls a 24px target without moving their rows', () => {
+    // The Guide RNA toggle measured 47.9x19 and the record-title rename trigger
+    // 48.8x18, both under 24px, both real click targets. Measured before and
+    // after at 900x800, 1440x900, 1680x1050 and 1920x1080: each control goes to
+    // 24px and neither row changes -- the toggle's flex line stays 44px because
+    // its tallest item is a 32px field, and the title row stays 26px because of
+    // the Export button beside it.
+    expect(artifactCss).toMatch(/\.motif-cs-toggle-inline \{[^}]*min-height:\s*24px/);
+    // Padding, not min-height, and still a block container: `text-overflow`
+    // trims inline content, so a flex container here would drop the ellipsis
+    // that keeps a long record name off the edge.
+    expect(artifactCss).toMatch(/\.motif-cs-title-edit-trigger \{[^}]*display: block;[^}]*padding: 3px 0;/);
+    expect(artifactCss).toMatch(/\.motif-cs-title-edit-trigger \{[^}]*text-overflow: ellipsis/);
+  });
+
+  it('does not report a guide count before guides are counted', () => {
+    // findGuidesInRange runs on first open, which is the right call for a scan
+    // this size -- but `guides` is empty until then, and the rail chip printed
+    // that emptiness as a result. Measured on the built artifact at 1440x900:
+    // pUC19's chip read "0" on first paint and "250" after the panel was
+    // opened once; pBR322 reads 89. The zero was on screen in the default
+    // state, for every record, and it was wrong.
+    expect(artifactSource).toContain('() => hasOpened ? findGuidesInRange(sequence, sequenceType, nuclease, activeScopeRange, topology) : [],');
+    expect(artifactSource).toMatch(/const guideChip = !isNucleotide\s*\?\s*'n\/a'\s*:\s*hasOpened\s*\?/);
+    expect(artifactSource).toContain('{guideChip ? <span className="motif-cs-chip">{guideChip}</span> : null}');
+    expect(artifactSource).not.toContain("const guideChip = isNucleotide ? `${guides.length}");
+  });
+
+  it('keeps every rail head to one line by not counting to zero', () => {
+    // "0 reads" was the last zero counter in the rail, and it was also the
+    // reason Construct Verification was the only two-line head in a list of 16.
+    // Measured docked at 1280x800, 1440x900 and 1920x1080: 15 heads at 34px and
+    // this one at 42.2px with a 28.2px label span. Removing the chip alone
+    // drops it to 34px with the full 174px label on one line, so the count and
+    // the ragged row are one defect, not two.
+    expect(artifactSource).toContain('{constructVerificationReadCount ? (');
+    expect(artifactSource).not.toMatch(/<span>Construct Verification<\/span>\s*<span className="motif-cs-chip">/);
+    // The full label stays -- shortening it would have fixed the row and lost
+    // the name.
+    expect(artifactSource).toContain('<span>Construct Verification</span>');
+    // And the count is still reachable from the head itself.
+    expect(artifactSource).toContain('`Construct verification — ${constructVerificationReadCount} eligible Sanger read${constructVerificationReadCount === 1 ? \'\' : \'s\'}`');
+  });
+
+  it('keeps a disabled control readable in the light themes', () => {
+    // Measured on the built artifact, rasterised over each control's real
+    // backdrop (rasteriser checked first against #777 on white = 4.48):
+    //   at 0.48/0.52  map 2.61 light, 2.37 claude-light; mini 2.56, 2.33
+    //   at 0.62       map 3.74 light, 5.56 dark, 3.19 claude-light, 5.05 claude-dark
+    //                 mini 3.64, 5.41, 3.12, 4.82
+    // The dark themes already cleared 3:1 at the old values, so this was a
+    // light-theme defect wearing a global declaration. Enabled controls of the
+    // same class measure 8.17-12.70, so the state is still obvious.
+    for (const sel of ['.motif-cs-map-button', '.motif-cs-pane-toggle', '.motif-cs-row', '.motif-cs-mini-button']) {
+      expect(artifactCss).toMatch(new RegExp(`\\${sel}:disabled \\{[^}]*opacity: 0\\.62`));
+    }
+    // These four only. Fourteen selectors set a disabled opacity and the rest
+    // run from 0.35 to 1 -- .motif-cs-assembly-part-actions button at 0.35,
+    // .motif-cs-pane-placement-button at 0.40, .motif-cs-segmented button at
+    // 0.45, .motif-cs-pane-collapse at 0.46, .motif-cs-restriction-site-row at
+    // 0.55, .motif-cs-icon-button at 0.56. Several are almost certainly worse
+    // than the two that were measured, but they were not measured, and an
+    // unmeasured control is not a finding. Left for a pass that can put each of
+    // them on screen in its disabled state.
+    expect(artifactCss).not.toMatch(/\.motif-cs-map-button:disabled \{[^}]*opacity: 0\.48/);
+    expect(artifactCss).not.toMatch(/\.motif-cs-mini-button:disabled \{[^}]*opacity: 0\.52/);
+  });
+
+  it('applies the stacked map floor at short heights too', () => {
+    // The first version of this cap skipped workspaces under 620px, on the
+    // reasoning that there was no height to redistribute there. Sweeping the
+    // drag range refuted it: at 1100x650 the untouched default gave the
+    // sequence pane 286px and the ring 117.4px, while dragging to 240px gave
+    // the ring 145.3px -- 24% more map -- with one full block of sequence
+    // either way. Measured after, at the default with nothing dragged:
+    //   1100x650  top 240  ring 145.3  1 full block   (was 286 / 117.4)
+    //   1100x600  top 240  ring 127.1  1 full block
+    //   1280x720  top 240  ring 202.3  1 full block   (unchanged)
+    //   1366x768  top 240  ring 256.2  1 full block   (unchanged)
+    //   1440x800  top 251  ring 275.6  1 full block   (unchanged)
+    // The floor is COMPACT_ROW_MIN_HEIGHT, not compactRowMinHeight, because
+    // the latter drops to 150 below 620 and 150px of sequence pane is chrome
+    // with no block under it.
+    expect(artifactSource).toContain('const defaultCompactTopRowFloor = Math.min(COMPACT_ROW_MIN_HEIGHT, compactTopRowMaxHeight);');
+    expect(artifactSource).not.toMatch(/const defaultCompactTopRowMaxHeight = workspaceMainSize\.height <= 620/);
+    // The resize bound is untouched: this caps where the divider starts, never
+    // where it can go.
+    expect(artifactSource).toContain('return { min: compactRowMinHeight, max: compactTopRowMaxHeight };');
+    expect(artifactSource).toContain('const compactBottomRowMinHeight = compactRowMinHeight;');
   });
 });

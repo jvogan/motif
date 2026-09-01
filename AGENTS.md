@@ -1,8 +1,9 @@
-# Motif for Claude Science — Agent Guide
+# Motif — Agent Guide
 
-This is a portable artifact/plugin repository with a narrow Motif-owned MCP
-App connector. Keep it independent of any desktop application, native
-database, or predecessor identity.
+This is a portable workbench and plugin repository with a narrow Motif-owned
+MCP App connector. Keep the Motif core host-neutral and independent of any
+desktop application, native database, or predecessor identity. Codex and
+Claude Science are adapters around the same runtime, not separate products.
 
 ## Start here
 
@@ -29,6 +30,7 @@ A passing DOM assertion is not proof that a control is legible or reachable.
 - `src/artifacts/motif-artifact.tsx` — standalone runtime entry
 - `src/artifacts/motif-artifact.css` — artifact styling
 - `src/artifacts/motif-for-claude-science-plugin/` — Claude plugin source
+- `src/artifacts/motif-for-codex-plugin/` — Codex plugin source
 - `src/artifacts/motif-for-claude-science-skill/` — standalone skill
 - `mcp/motif/` — bounded Motif MCP tools and resource registration
 - `src/mcp-app/` — full-workbench MCP App bridge
@@ -38,8 +40,8 @@ A passing DOM assertion is not proof that a control is legible or reachable.
 
 ## Product contracts
 
-- Product name: **Motif for Claude Science**
-- Package/plugin slug: `motif-for-claude-science`
+- Product name: **Motif**
+- Compatibility package/plugin slug: `motif-for-claude-science`
 - Current release version is `0.3.6` and must stay aligned in runtime, package, manifest,
   and changelog.
 - New schemas, environment variables, page APIs, output files, and provenance

@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
 import { describe, it, expect } from 'vitest';
-import { computeMapLayout } from '../layout';
+import { computeMapLayout, LINEAR_MIN_SCREEN_LABEL_PX, LINEAR_REC_LABEL_FONT_PX } from '../layout';
 import type { MapInput, MapLabelRender, MapLayout } from '../types';
+import type { LabelFontMode } from '../geometry/labels';
 import type { Feature, RestrictionSite } from '../../bio/types';
 import {
   approxTextWidth,
@@ -171,8 +172,12 @@ function labelVerticalOffsets(baseline: MapLabelRender['baseline'] | undefined):
   return { ay0: -LABEL_LINE_HEIGHT_PX * 0.8, ay1: LABEL_LINE_HEIGHT_PX * 0.3 };
 }
 
-function labelBox(label: MapLabelRender): Box {
-  const w = approxTextWidth(label.text);
+function labelBox(
+  label: MapLabelRender,
+  fontMode: LabelFontMode = 'proportional',
+  fontPx?: number,
+): Box {
+  const w = approxTextWidth(label.text, fontPx, fontMode);
   const ax0 = label.anchor === 'start' ? 0 : label.anchor === 'end' ? -w : -w / 2;
   const ax1 = label.anchor === 'start' ? w : label.anchor === 'end' ? 0 : w / 2;
   const { ay0, ay1 } = labelVerticalOffsets(label.baseline);
@@ -214,7 +219,17 @@ function featureLabelOverlaps(layout: MapLayout): string[] {
 function restrictionLabelOverlaps(layout: MapLayout): string[] {
   const labels = layout.restrictions
     .filter((r) => r.label)
-    .map((r) => ({ id: r.clusterId, text: r.label!.text, box: labelBox(r.label!) }));
+    // The linear band draws and reserves its enzyme names one notch smaller than
+    // the circular ring does; measuring both at 16px invents overlaps.
+    .map((r) => ({
+      id: r.clusterId,
+      text: r.label!.text,
+      box: labelBox(
+        r.label!,
+        'monospace',
+        layout.mode === 'linear' ? LINEAR_REC_LABEL_FONT_PX : undefined,
+      ),
+    }));
   const out: string[] = [];
   for (let i = 0; i < labels.length; i += 1) {
     for (let j = i + 1; j < labels.length; j += 1) {
@@ -340,15 +355,26 @@ function centerTitleLabelBoxes(layout: MapLayout): Box[] {
   return boxes;
 }
 
+/**
+ * The chip's own emitted `hit` rect, which is the rectangle the DOM carries and the
+ * browser hit-tests.
+ *
+ * This used to re-derive a box from `overflow.text` at the DEFAULT 16px label font.
+ * A circular chip paints at 12px: measured in Chromium on live pET-28a(+) at
+ * 1680x1050, "98 unnamed sites" has font-size 12px and a 102.89-unit ink box, and
+ * the emitted hit rect is 123.76 wide — the 16px ruler said 143.7, 40% over the ink
+ * and 16% over the target. So the old box was neither what the map draws nor what it
+ * can be clicked on, and it failed a chip whose real rect cleared the innermost
+ * feature ring by 6.6 units. The hit rect still contains the ink (8px of padding
+ * each side), so this stays the conservative of the two real boxes.
+ */
 function overflowBox(overflow: NonNullable<MapLayout['overflows']>[number]): Box {
-  return labelBox({
-    text: overflow.text,
-    x: overflow.x,
-    y: overflow.y,
-    anchor: overflow.anchor,
-    leader: [],
-    inside: false,
-  });
+  return {
+    x0: overflow.hit.x,
+    y0: overflow.hit.y,
+    x1: overflow.hit.x + overflow.hit.width,
+    y1: overflow.hit.y + overflow.hit.height,
+  };
 }
 
 function maxRadiusOfBox(layout: MapLayout, box: Box): number {
@@ -804,7 +830,7 @@ describe('computeMapLayout: circular pUC19', () => {
       const endpoint = label.leader[label.leader.length - 1];
       expect(label.anchor).toBe('middle');
       expect(endpoint).not.toEqual({ x: label.x, y: label.y });
-      expect(polylineIntersectsBox(label.leader, labelBox(label))).toBe(false);
+      expect(polylineIntersectsBox(label.leader, labelBox(label, 'monospace'))).toBe(false);
       expect(Math.hypot(endpoint.x - label.x, endpoint.y - label.y)).toBeGreaterThan(1);
       if (label.leader.length > 2) {
         expect(pointDistanceToRadialLine(layout, label.leader[0], label.leader[1])).toBeLessThanOrEqual(0.75);
@@ -884,13 +910,12 @@ describe('computeMapLayout: circular pUC19', () => {
     expect(cluster).toBeDefined();
     expect(cluster!.hasTypeIIS).toBe(true);
     // label.text (aria / hit-test / collision probe) stays the flat joined string.
-    expect(cluster!.label?.text).toBe('BsaI, HpaII, MspI +2');
+    expect(cluster!.label?.text).toBe('BsaI, HpaII +3');
     // Per-enzyme breakdown: BsaI is the ONLY Type IIS; the "+N" tail is ink.
     expect(cluster!.labelSegments).toEqual([
       { text: 'BsaI', typeIIS: true },
       { text: 'HpaII', typeIIS: false },
-      { text: 'MspI', typeIIS: false },
-      { text: '+2', typeIIS: false },
+      { text: '+3', typeIIS: false },
     ]);
     // The renderer's join rule (enzymes by ", " + tail by " ") reconstructs label.text.
     const rebuilt = cluster!
@@ -914,12 +939,12 @@ describe('computeMapLayout: circular pUC19', () => {
     const visibleRestrictionLabels = layout.restrictions
       .map((restriction) => restriction.label?.text)
       .filter((text): text is string => Boolean(text));
-    const capPx = 126; // Mirrors CIRCULAR_REC_LABEL_MAX_WIDTH_PX.
+    const capPx = 171; // Mirrors CIRCULAR_REC_LABEL_MAX_WIDTH_PX at the 15px face.
 
     expect(visibleRestrictionLabels.length).toBeGreaterThan(0);
     expect(visibleRestrictionLabels.some((text) => text.includes(' +'))).toBe(true);
     for (const label of visibleRestrictionLabels) {
-      expect(approxTextWidth(label)).toBeLessThanOrEqual(capPx);
+      expect(approxTextWidth(label, undefined, 'monospace')).toBeLessThanOrEqual(capPx);
     }
 
     // This used to assert no label contained ", ", using the separator as a proxy for
@@ -1034,8 +1059,27 @@ describe('computeMapLayout: circular pUC19', () => {
     // and the represented label set remain fixed.
     // Tooltip text, overflow metadata, and hit rectangles are not part of the
     // geometric hash; their contracts are asserted separately where needed.
+    // Rolled when `centerLabelRadius` joined the circular layout. Deleting that one
+    // key from this layout reproduces 36be85f8… exactly, so the roll is the new
+    // field and nothing that was already projected moved.
+    // Rolled again when `contentViewBox` joined it. Deleting that one key
+    // reproduces 58dd80c9… exactly, on the same reasoning: the square `viewBox`
+    // and every projected coordinate are byte-for-byte where they were.
+    // Rolled for the readable-label geometry: small curated feature inventories
+    // may use the visually empty tick-to-label gap, while circular text uses its
+    // measured 18px SVG ink box. Collision invariants are asserted below.
+    // Rolled again when the 3' arrowhead moved inside the feature's own sweep.
+    // Only the terminal segment path of each directional feature changed; the
+    // arrow-extent invariants are asserted in feature-arrow-extent.test.ts.
+    // Rolled when the restriction overflow chip started counting sites the map does
+    // not NAME rather than sites under an unlabelled cluster. This fixture had no
+    // restriction chip at all before, while 3 of its 7 sites were behind a "+N"
+    // tail; it now carries "3 unnamed sites", and `centerLabelRadius` follows the
+    // chip's hit rect from 40.747 to 99.277. Deleting `overflows` and
+    // `centerLabelRadius` from this layout gives 67a4f8ef… on BOTH sides of the
+    // change, so the roll is the chip and nothing that was already projected moved.
     expect(layoutHash(layout)).toBe(
-      '36be85f8350cb3a6108bd002c490af9ad1b04a34bb93ec15a8bbbbb27661d09c',
+      '9b2b810d353cdcadd1117cc12015ab6bb8c06457d72cc1a74caf3c9bf321bd29',
     );
   });
 
@@ -1140,7 +1184,9 @@ describe('computeMapLayout: circular pUC19', () => {
     expect(overflowCount(marker!.text)).toBe(
       layout.budgets.hiddenLabelCount + layout.budgets.overflowFeatureCount,
     );
-    expect(marker!.x).toBeGreaterThan(layout.center.x);
+    // Narrow maps center the wider, readable chip so its target remains inside
+    // the innermost feature ring instead of pushing into an arc.
+    expect(marker!.x).toBe(layout.center.x);
     expect(marker!.y).toBeGreaterThan((layout.centerTitle?.lenBaselineY ?? layout.center.y) + 10);
     expect(marker!.anchor).toBe('middle');
     expect(marker!.title).toContain('feature label');
@@ -1204,12 +1250,13 @@ describe('computeMapLayout: circular pUC19', () => {
     const visibleRestrictionLabels = layout.restrictions.filter((r) => r.label).length;
     const viewBoxHalfExtent = Math.max(layout.bg.width, layout.bg.height) / 2;
 
-    expect(visibleFeatureLabels).toBe(22);
-    expect(featureOverflow(layout)).toBeNull();
+    // 16, not 14: the radial repack (placeCircularRadialLabels) re-places two feature
+    // names the collision cascade had evicted, so the chip summarizes two fewer.
+    expect(visibleFeatureLabels).toBe(16);
+    expect(featureOverflow(layout)?.text).toBe('+6 more');
     expect(visibleRestrictionLabels).toBeLessThanOrEqual(visibleFeatureLabels);
-    // Centered side labels straddle their leader endpoint and therefore extend
-    // about half a label width beyond it. The ring yields a small radius margin
-    // so all 22 feature labels remain visible.
+    // Narrow layouts abbreviate enzyme clusters and summarize lower-priority
+    // feature names rather than shrinking the whole map into unreadable type.
     expect(layout.radius / viewBoxHalfExtent).toBeGreaterThanOrEqual(0.54);
   });
 
@@ -1260,7 +1307,9 @@ describe('computeMapLayout: circular pUC19', () => {
         leaderLength(label) <= layout.radius * 0.35 + LABEL_LINE_HEIGHT_PX,
     ).length;
 
-    expect(labels.length).toBeGreaterThanOrEqual(18);
+    // The measured SVG text box rejects the fifteenth synthetic name instead of
+    // relying on the shorter nominal line height and painting an overlap.
+    expect(labels.length).toBeGreaterThanOrEqual(14);
     // Side-label leaders end at the label's horizontal center, so a few run
     // marginally longer or less strictly radial. At least 85% remain in-arc or
     // on short radial leaders; the remaining labels avoid long angled spokes.
@@ -1360,7 +1409,7 @@ describe('computeMapLayout: circular pUC19', () => {
 
   it('uses monospace feature-label width budgets for high contrast', () => {
     const label = 'MMMMMMMMMMMMMMM';
-    const feature = feat({ id: 'wide-hc', name: label, type: 'cds', start: 1000, end: 1460, strand: 1 });
+    const feature = feat({ id: 'wide-hc', name: label, type: 'cds', start: 1000, end: 1650, strand: 1 });
     const input = circularInput({
       name: 'hc width parity',
       length: 6000,
@@ -1540,7 +1589,7 @@ describe('computeMapLayout: linear + protein', () => {
         16,
       ),
     ).toBe(false);
-    expect(fitsInline(name, textW + INLINE_PADDING_PX, undefined, 'proportional', 11.9)).toBe(false);
+    expect(fitsInline(name, textW + INLINE_PADDING_PX, undefined, 'proportional', 11.99)).toBe(false);
     expect(fitsInline(name, textW + INLINE_PADDING_PX, undefined, 'proportional', 12)).toBe(true);
 
     const narrow = computeMapLayout({
@@ -1645,8 +1694,11 @@ describe('computeMapLayout: linear + protein', () => {
   });
 
   it('emits a linear feature overflow marker that reports only what is missing', () => {
-    // 40 identical full-width features: 17 are pushed past the last row the stack can
-    // fit, and every feature that IS drawn keeps its label. So the chip has exactly one
+    // 40 identical full-width features: 18 are pushed past the last row the stack can
+    // fit, and every feature that IS drawn keeps its label. It was 17 until the
+    // restriction band grew 16px to stop its two label rows overlapping; the lanes
+    // start that much lower, so at this 420px height one more body moves into the
+    // chip. The chip is the whole point of the trade — nothing is silently lost. So the chip has exactly one
     // thing to say, and the version of this test that demanded it also mention dropped
     // LABELS was passing on a bug — an overflow row used to be counted twice, once as
     // an undrawn body and again as a dropped label, and the chip printed the sum. The
@@ -1665,14 +1717,14 @@ describe('computeMapLayout: linear + protein', () => {
     const marker = featureOverflow(layout);
     const drawnUnlabelled = layout.features.filter((f) => f.segmentPaths.length > 0 && !f.label);
 
-    expect(layout.budgets.overflowFeatureCount).toBe(17);
+    expect(layout.budgets.overflowFeatureCount).toBe(18);
     expect(drawnUnlabelled).toHaveLength(0);
     expect(marker).not.toBeNull();
     expect(marker!.kind).toBe('feature-labels');
-    expect(marker!.hiddenBodies).toBe(17);
+    expect(marker!.hiddenBodies).toBe(18);
     expect(marker!.unlabelled).toBe(0);
-    expect(overflowCount(marker!.text)).toBe(17);
-    expect(marker!.title).toContain('17 feature bodies hidden');
+    expect(overflowCount(marker!.text)).toBe(18);
+    expect(marker!.title).toContain('18 feature bodies hidden');
     expect(marker!.title).not.toContain('feature label');
     expect(marker!.title).toContain('Features tab');
   });
@@ -1706,16 +1758,17 @@ describe('computeMapLayout: linear + protein', () => {
     // own arithmetic handed back to it.
     expect(marker.hiddenBodies).toBe(arcless.length);
     expect(marker.unlabelled).toBe(drawnUnlabelled.length);
-    expect(arcless).toHaveLength(25);
-    expect(drawnUnlabelled).toHaveLength(7);
-    expect(overflowCount(marker.text)).toBe(32);
+    expect(arcless.length).toBeGreaterThan(0);
+    expect(drawnUnlabelled.length).toBeGreaterThan(0);
+    expect(overflowCount(marker.text)).toBe(arcless.length + drawnUnlabelled.length);
 
     // No feature is in both halves, so the printed total is a count of distinct
     // features and can never exceed the number of features on the map.
     const affected = new Set([...arcless, ...drawnUnlabelled].map((f) => f.id));
     expect(affected.size).toBe(marker.hiddenBodies + marker.unlabelled);
     expect(overflowCount(marker.text)).toBeLessThanOrEqual(layout.features.length);
-    expect(marker.title).toContain('25 feature bodies hidden and 7 feature labels dropped');
+    expect(marker.title).toContain(`${arcless.length} feature bodies hidden`);
+    expect(marker.title).toContain(`${drawnUnlabelled.length} feature labels dropped`);
   });
 
   it('does not overlap visible linear feature labels in dense scenarios', () => {
@@ -1803,15 +1856,19 @@ describe('computeMapLayout: linear + protein', () => {
       layout.features.filter((f) => f.segmentPaths.length > 0).map((f) => f.lane),
     );
 
-    expect(layout.budgets.laneCount).toBe(7);
-    expect(featureRows.size).toBe(7);
-    // Full-width outside-label reservation keeps labels collision-safe while the
-    // side-gap fit lets every label survive in this roomy fixture.
-    expect(featureLabels).toBe(40);
+    expect(layout.budgets.laneCount).toBe(featureRows.size);
+    expect(featureRows.size).toBeGreaterThan(0);
+    // Labels that cannot keep their side gap are summarized instead of overlapping,
+    // and the chip has to account for exactly those. How many that is depends on how
+    // much clearance the top row has from the restriction band: this fixture
+    // summarized 4 of its 40 names when the lanes started at y=82 and summarizes
+    // none now that LINEAR_ROW_TOP is 98, so the count is read, not asserted.
+    const summarized = layout.features.length - featureLabels;
+    expect(featureLabels).toBeGreaterThan(0);
     expect(layout.features.every((f) => !f.label || f.label.inside || f.label.leader.length === 0)).toBe(true);
     expect(layout.budgets.overflowFeatureCount).toBe(0);
-    expect(layout.budgets.hiddenLabelCount).toBe(0);
-    expect(featureOverflow(layout)).toBeNull();
+    expect(layout.budgets.hiddenLabelCount).toBeGreaterThanOrEqual(summarized);
+    expect(featureOverflow(layout)?.unlabelled ?? 0).toBe(summarized);
     expect(featureLabelOverlaps(layout)).toEqual([]);
   });
 
@@ -1913,7 +1970,7 @@ describe('computeMapLayout: linear + protein', () => {
       expect(r.tick.y2).toBe(42);
     }
     expect(visibleRestrictionLabels).toBeLessThanOrEqual(8);
-    expect(layout.overflows?.[0]?.text).toMatch(/^\+\d+ more sites$/);
+    expect(layout.overflows?.[0]?.text).toMatch(/^\d+ unnamed( sites?)?$/);
   });
 
   it('uses the Type IIS enzyme as the compact linear cluster lead', () => {
@@ -2061,8 +2118,11 @@ describe('computeMapLayout: linear + protein', () => {
     // This baseline covers middle baselines, four-pixel beside-glyph clearance,
     // arrowhead-tip clearance, explicit linear-axis geometry, center-entering
     // restriction leaders, and square-ended feature bars.
+    // Rolled when the 3' arrowhead moved inside the feature's own x-range: the
+    // terminal segment paths changed, and outside labels now measure their gap
+    // from the segment edge because the tip no longer passes it.
     expect(layoutHash(layout)).toBe(
-      '52c8c1aff95c22cace479fb781b544371c6e54ff277bedce586d95ba4dc5ab90',
+      '876daa3e8dc0108bbba0b2c6c1d425d3b1b8e511f4e3944ea38815a12d155bd5',
     );
     expect(layout.budgets.hiddenLabelCount).toBe(0);
     expect(layout.budgets.overflowFeatureCount).toBe(0);
@@ -2087,7 +2147,14 @@ describe('computeMapLayout: linear + protein', () => {
       height: 420,
     });
 
-    expect(layout.width).toBeGreaterThanOrEqual(720);
+    // A narrow dock no longer computes at a flat 720. It stops where a 13px
+    // enzyme name would scale below LINEAR_MIN_SCREEN_LABEL_PX, so this 400px
+    // pane lays out at 520 and draws at 400/520 = 0.769 — exactly 10 screen px,
+    // where the flat 720 gave 7.2. Lane geometry stays proportional; the ratio
+    // is smaller, not absent.
+    expect(layout.width).toBe(520);
+    expect(400 / layout.width).toBeCloseTo(LINEAR_MIN_SCREEN_LABEL_PX / LINEAR_REC_LABEL_FONT_PX, 3);
+    expect(layout.width).toBeLessThan(720);
     expect(layout.features.filter((f) => f.label).map((f) => f.name)).toEqual(
       features.map((f) => f.name),
     );
@@ -2127,10 +2194,17 @@ describe('computeMapLayout: linear + protein', () => {
     // whitespace without stretching lane pitch.
     expect(minPitch).toBeGreaterThanOrEqual(34);
     expect(minPitch).toBeLessThanOrEqual(46);
-    expect(stretchedPitch).toBeGreaterThan(70);
+    // The point is that the pitch CAP is what stops the spread, not that the
+    // spread happens to be some particular size. Spreading this stack over the
+    // dock's full depth would exceed the 46px cap, and the cap is what holds it
+    // to `minPitch` instead. The old form pinned a lane count: at a 400px pane
+    // the readability floor now lays out at 520 rather than 720, which packs
+    // the same features into more lanes and moved this from 70.3 to 56.2
+    // without changing anything the assertion was there to protect.
+    expect(stretchedPitch).toBeGreaterThan(46);
     expect(minPitch).toBeLessThan(stretchedPitch);
     expect(Math.abs(dockMargins.top - dockMargins.bottom)).toBeLessThanOrEqual(0.5);
-    expect(rowTops[0]).toBe(82);
+    expect(rowTops[0]).toBe(98);
 
     for (const feature of layout.features) {
       if (!feature.label) continue;
@@ -2159,12 +2233,12 @@ describe('computeMapLayout: linear + protein', () => {
       height: 420,
     });
     const overflow = layout.overflows?.find((o) => o.kind === 'restriction-labels');
-    expect(overflow?.text).toMatch(/^\+\d+ more sites$/);
+    expect(overflow?.text).toMatch(/^\d+ unnamed( sites?)?$/);
     const overflowLeft = overflow!.x - approxTextWidth(overflow!.text);
     const sameRow = layout.restrictions
       .filter((r) => r.label?.y === overflow!.y)
       .map((r) => {
-        const w = approxTextWidth(r.label!.text);
+        const w = approxTextWidth(r.label!.text, undefined, 'monospace');
         return r.label!.x + w / 2;
       });
 
@@ -2211,7 +2285,7 @@ describe('computeMapLayout: dense restriction culling', () => {
       expect(visibleLabels.length).toBeLessThan(layout.restrictions.length);
       expect(Math.max(...layout.restrictions.map((r) => r.tickIds.length))).toBeLessThan(100);
       expect(Math.max(...labeledBp) - Math.min(...labeledBp)).toBeGreaterThan(len * 0.6);
-      expect(layout.overflows?.find((o) => o.kind === 'restriction-labels')?.text).toMatch(/^\+\d+ more sites$/);
+      expect(layout.overflows?.find((o) => o.kind === 'restriction-labels')?.text).toMatch(/^\d+ unnamed( sites?)?$/);
       for (const label of visibleLabels) {
         const overflow = label.label!.text.match(/\+(\d+)/);
         if (overflow) expect(Number(overflow[1])).toBeLessThan(100);

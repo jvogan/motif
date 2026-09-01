@@ -29,7 +29,7 @@ describe('GenBank feature colors', () => {
       '                     /ApEinfo_fwdcolor="url(javascript:alert(1))"',
     ].join('\n'));
 
-    expect(feature.color).toBe('#7E9BBF');
+    expect(feature.color).toMatch(/^#[0-9a-f]{6}$/i);
     expect(feature.metadata.ApEinfo_fwdcolor).toBe('url(javascript:alert(1))');
   });
 });

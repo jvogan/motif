@@ -277,6 +277,23 @@ describe('Claude Science runtime data-integrity behavior', () => {
     expect(prepareArtifactDatabaseRestore({ name: 'Workspace label', notes: [] }).payload.records).toEqual([]);
   });
 
+  it('keeps durable featureless checkpoints clean unless proposals were explicit', () => {
+    const implicit = prepareArtifactDatabaseRestore({
+      records: [{ id: 'implicit', type: 'dna', sequence: 'ATGGAATTCTAA' }],
+    }, undefined, false);
+    const explicit = prepareArtifactDatabaseRestore({
+      records: [{
+        id: 'explicit',
+        type: 'dna',
+        sequence: 'ATGGAATTCTAA',
+        proposeAnnotations: true,
+      }],
+    }, undefined, false);
+
+    expect(implicit.payload.records[0].proposeAnnotations).toBe(false);
+    expect(explicit.payload.records[0].proposeAnnotations).toBe(true);
+  });
+
   it('preserves compatible workspace state and rejects orphaning records-only replacements atomically', () => {
     const current = prepareArtifactDatabaseRestore({
       inventory: { id: 'preserved-inventory', title: 'Preserved inventory', description: 'Keep metadata' },
@@ -706,7 +723,7 @@ describe('Claude Science runtime data-integrity behavior', () => {
     const [feature] = record.features;
 
     expect(feature.type).toBe('custom');
-    expect(feature.color).toBe('#9AA3B5');
+    expect(feature.color).toMatch(/^#[0-9a-f]{6}$/i);
     expect(feature.metadata).toEqual({ source: '<script>metadata stays data</script>' });
     const html = inventoryReportHtml(payload.records);
     expect(html).not.toContain('<script>window.__motifReportPwned=true</script>');

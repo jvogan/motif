@@ -8,6 +8,7 @@ const artifactSource = readFileSync(resolve(here, '..', 'motif-artifact.tsx'), '
 const viewerSource = readFileSync(resolve(here, '..', 'ClaudeScienceMsaViewer.tsx'), 'utf8');
 const viewPreferencesSource = readFileSync(resolve(here, '..', 'claude-science-msa-view-preferences.ts'), 'utf8');
 const artifactCss = readFileSync(resolve(here, '..', 'motif-artifact.css'), 'utf8');
+const msaCss = readFileSync(resolve(here, '..', 'claude-science-msa.css'), 'utf8');
 
 function sliceBetween(source: string, startNeedle: string, endNeedle: string): string {
   const start = source.indexOf(startNeedle);
@@ -17,10 +18,28 @@ function sliceBetween(source: string, startNeedle: string, endNeedle: string): s
   return source.slice(start, end);
 }
 
+function ruleBody(source: string, selector: string): string {
+  const start = source.indexOf(`${selector} {`);
+  expect(start, `${selector} rule`).toBeGreaterThanOrEqual(0);
+  return source.slice(start, source.indexOf('}', start) + 1);
+}
+
+function contrast(a: string, b: string): number {
+  const luminance = (hex: string) => {
+    const channels = [1, 3, 5].map((offset) => Number.parseInt(hex.slice(offset, offset + 2), 16) / 255);
+    const [r, g, blue] = channels.map((channel) =>
+      channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4,
+    );
+    return 0.2126 * r + 0.7152 * g + 0.0722 * blue;
+  };
+  const [lighter, darker] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
 describe('Claude Science MSA integration guards', () => {
   it('keeps Alignment discoverable as a Tools workspace and a movable, focus-restoring window', () => {
     expect(artifactSource).toContain("import { ClaudeScienceMsaViewer } from './ClaudeScienceMsaViewer';");
-    expect(artifactSource).toContain('function defaultAlignmentWindowRect(): WindowRect');
+    expect(artifactSource).toContain('export function defaultAlignmentWindowRect(');
     expect(artifactSource).toContain('const [showAlignment, setShowAlignment] = useState(false);');
     expect(artifactSource).toContain('const [alignmentWin, setAlignmentWin] = useState<WindowRect>(defaultAlignmentWindowRect);');
     expect(artifactSource).toContain('data-rail-tool="alignment"');
@@ -94,6 +113,56 @@ describe('Claude Science MSA integration guards', () => {
 });
 
 describe('Claude Science MSA interaction and rendering guards', () => {
+  it('paints the conservation track above the 3:1 floor in every theme', () => {
+    // Every bar here was mixed toward `transparent`, which is what a bar is painted
+    // ON, not a colour. Over a white ground the mix lightens toward white: sampled
+    // live in Chromium across 90 bars the buckets ran 1.44 to 2.34 in `light` and
+    // 1.42 to 2.33 in `claude-light`, against a 3.0 floor for a non-text graphic.
+    // Raising the mix percentage could not fix it — solid, three of the five old
+    // hexes still measure under 3 on white — so the ramp is per theme now.
+    expect(msaCss).not.toMatch(/\.motif-cs-msa-hist-bar[^{]*\{[^}]*color-mix\([^)]*transparent/);
+
+    const light = ruleBody(msaCss, ':root');
+    const dark = ruleBody(msaCss, "html:is([data-theme='dark'], [data-theme='claude-dark'])");
+    const ground = (theme: string) => {
+      const body = ruleBody(artifactCss, theme);
+      const match = body.match(/--bg-primary:\s*(#[0-9a-fA-F]{6})/);
+      expect(match, `${theme} --bg-primary`).not.toBeNull();
+      return match![1];
+    };
+    const bucket = (body: string, index: number) => {
+      const match = body.match(new RegExp(`--motif-cs-msa-hist-${index}:\\s*(#[0-9a-fA-F]{6})`));
+      expect(match, `bucket ${index}`).not.toBeNull();
+      return match![1];
+    };
+
+    for (const [body, themes] of [
+      [light, [':root,\nhtml[data-theme="light"]', 'html[data-theme="claude-light"]']],
+      [dark, ['html[data-theme="dark"]', 'html[data-theme="claude-dark"]']],
+    ] as const) {
+      for (const theme of themes) {
+        for (let index = 0; index < 5; index += 1) {
+          expect(contrast(bucket(body, index), ground(theme)), `${theme} bucket ${index}`)
+            .toBeGreaterThanOrEqual(3);
+        }
+      }
+    }
+
+    // The neutral bars failed in all four themes for the same reason — 2.12 to 2.68
+    // — and a solid accent clears the floor everywhere, so they need no ramp.
+    expect(ruleBody(msaCss, '.motif-cs-msa-hist-bar-occupancy')).toContain('background: var(--accent)');
+    for (const theme of [
+      'html[data-theme="dark"]',
+      ':root,\nhtml[data-theme="light"]',
+      'html[data-theme="claude-light"]',
+      'html[data-theme="claude-dark"]',
+    ]) {
+      const body = ruleBody(artifactCss, theme);
+      const accent = body.match(/--accent:\s*(#[0-9a-fA-F]{6})/)![1];
+      expect(contrast(accent, ground(theme)), `${theme} accent`).toBeGreaterThanOrEqual(3);
+    }
+  });
+
   it('marks every dismissable toolbar menu so its host window can see it open', () => {
     // The window's Escape handler defers to an open menu. It cannot use the
     // panel's rendered scope attribute for a native <details>, because React
@@ -239,12 +308,17 @@ describe('Claude Science MSA interaction and rendering guards', () => {
     expect(viewerSource).toContain('aria-live="polite"');
   });
 
-  it('restores dense matrix review position after switching through Text or Traces', () => {
-    expect(viewerSource).toContain('const msaMatrixViewportSession = new Map');
+  it('restores the biological review position across responsive resize and remounts', () => {
+    expect(viewerSource).toContain('const msaMatrixViewportSession = new Map<string, { centerColumn: number; top: number; handledJumpToken: number | null }>();');
     expect(viewerSource).toContain('const initialViewport = useMemo(() => msaMatrixViewportSession.get(alignment.id)');
-    expect(viewerSource).toContain('viewport.scrollLeft = saved?.left ?? 0;');
-    expect(viewerSource).toContain('viewport.scrollTop = saved?.top ?? 0;');
-    expect(viewerSource).toContain('msaMatrixViewportSession.set(alignment.id, { left, top });');
+    expect(viewerSource).toContain('const desiredCenterColumnRef = useRef<number | null>(initialViewport?.centerColumn ?? null);');
+    expect(viewerSource).toContain('const scrollLeftForAbsoluteCenterColumn = useCallback((centerColumn: number) => {');
+    expect(viewerSource).toContain('const target = scrollLeftForAbsoluteCenterColumn(centerColumn);');
+    expect(viewerSource).toContain('if (centerColumn === null) return;');
+    expect(viewerSource).toContain('const handledJumpTokenRef = useRef<number | null>');
+    expect(viewerSource).toContain('if (handledJumpTokenRef.current === jumpToken) return;');
+    expect(viewerSource).toContain('msaMatrixViewportSession.set(alignment.id, {');
+    expect(viewerSource).toContain('handledJumpToken: handledJumpTokenRef.current,');
     expect(viewerSource).toContain('msaMatrixViewportSession.delete(alignment.id);');
   });
 
@@ -270,7 +344,8 @@ describe('Claude Science MSA interaction and rendering guards', () => {
     expect(viewerSource).toContain("if (aligned[column] === '-') coordinates[column] = null;");
     expect(viewerSource).toContain('position += 1;');
     expect(matrix).toContain("() => templatePositionCoordinates(template?.aligned ?? '')");
-    expect(matrix).toContain('templateCoordinates.slice(startColumn, endColumn)');
+    expect(matrix).toContain('const position = templateCoordinates[column] ?? null;');
+    expect(matrix).toContain('data-alignment-column={String(column + 1)}');
     expect(matrix).toContain("data-template-position={position === null ? 'gap' : String(position)}");
     expect(matrix).toContain('aria-rowcount={tableRowCount}');
     expect(matrix).toContain('aria-rowindex={firstSequenceRow + rowIndex}');
@@ -358,11 +433,13 @@ describe('Claude Science MSA interaction and rendering guards', () => {
     const matrix = sliceBetween(viewerSource, 'function AlignmentMatrix({', 'export function ClaudeScienceMsaViewer({');
     expect(matrix).toContain('const overscan = 24;');
     expect(matrix).toContain('Math.floor(scrollLeft / cellWidth),');
-    expect(matrix).toContain('const startColumn = Math.max(0, visibleStartColumn - overscan);');
-    expect(matrix).toContain('const endColumn = Math.min(alignment.alignmentLength, visibleEndColumn + overscan);');
-    expect(matrix).toContain('Array.from(sequence.slice(startColumn, endColumn))');
-    expect(matrix).toContain('alignment.conserved.slice(startColumn, endColumn)');
+    expect(matrix).toContain('const startSlot = Math.max(0, visibleStartSlot - overscan);');
+    expect(matrix).toContain('const endSlot = Math.min(columnSlots.length, visibleEndSlot + overscan);');
+    expect(matrix).toContain('const renderedSlots = columnSlots.slice(startSlot, endSlot);');
+    expect(matrix).toContain('const symbol = sequence[column] ??');
+    expect(matrix).toContain('alignment.conserved[slot.column]');
     expect(matrix).toContain('aria-colcount={alignment.alignmentLength}');
+    expect(matrix).toContain('aria-colindex={isGridCell ? column + 1 : undefined}');
     expect(matrix).not.toContain('Array.from(sequence).map');
     expect(artifactCss).toMatch(/\.motif-cs-msa-matrix-scroll\s*\{[\s\S]*?overflow-x:\s*hidden;[\s\S]*?overflow-y:\s*auto/);
     expect(artifactCss).toMatch(/\.motif-cs-msa-matrix-scroll\s*\{[\s\S]*?overscroll-behavior-x:\s*contain;[\s\S]*?overscroll-behavior-y:\s*auto/);
@@ -437,6 +514,19 @@ describe('Claude Science MSA interaction and rendering guards', () => {
     // can outgrow the 38px head.
     expect(dot).not.toMatch(/content:\s*attr\(/);
     expect(dot).not.toMatch(/font-size/);
+  });
+
+  it('marks the collapsed Tools rail only for verifier-eligible Sanger reads', () => {
+    const head = sliceBetween(artifactSource, 'data-rail-tool="construct-verification"', '</summary>');
+    // The dot means the verifier has usable evidence, not merely that a record
+    // still carries an imported trace. Ineligible or inactive traces are omitted
+    // when constructVerificationRecords is assembled, so this count is honest.
+    expect(artifactSource).toContain('const constructVerificationReadCount = useMemo(() => constructVerificationRecords.filter(');
+    expect(head).toContain('data-rail-count={constructVerificationReadCount || undefined}');
+    expect(head).toContain('`Construct verification — ${constructVerificationReadCount} eligible Sanger read${constructVerificationReadCount === 1 ? \'\' : \'s\'}`');
+    // A verification session without eligible evidence retains its ordinary
+    // accessible name and carries no dot.
+    expect(head).toContain("|| undefined");
   });
 
   it('records why the matrix hides its own horizontal scrollbar', () => {

@@ -101,3 +101,139 @@ describe('translation-table-aware ORF detection', () => {
     expect(orfs.every((orf) => orf.end <= orf.start + 6)).toBe(true);
   });
 });
+
+describe('ORF scan memoisation', () => {
+  // A 2,578-base circular record, the size the workspace actually opens. The
+  // scan doubles both strands for a circular topology and tests every codon in
+  // six frames, so it is the most expensive pure function the artifact calls.
+  const sequence = (() => {
+    let out = 'ATG';
+    // Deterministic pseudo-random bases: a fixed LCG, so the cost and the ORF
+    // set are the same on every machine and every run.
+    let seed = 20260831;
+    while (out.length < 2578) {
+      seed = (seed * 1103515245 + 12345) % 2147483648;
+      // High bits only. An LCG's low bits cycle with a tiny period — `seed % 4`
+      // here produced a repeating base pattern, and a periodic record has the
+      // same ORF count at every minimum length, which quietly made the
+      // cache-key assertions below unable to fail.
+      out += 'ACGT'[(seed >>> 16) % 4];
+    }
+    return out;
+  })();
+
+  it('answers a repeated scan from cache instead of walking the record again', () => {
+    const first = findORFs(sequence, 30, STANDARD_CODE, { topology: 'circular' });
+    expect(first.length).toBeGreaterThan(0);
+
+    const coldStart = performance.now();
+    findORFs(`${sequence}A`, 30, STANDARD_CODE, { topology: 'circular' });
+    const cold = performance.now() - coldStart;
+
+    const warmStart = performance.now();
+    const second = findORFs(sequence, 30, STANDARD_CODE, { topology: 'circular' });
+    const warm = performance.now() - warmStart;
+
+    expect(second).toEqual(first);
+    // A hit is a map lookup and an array copy against a six-frame walk. The
+    // margin is wide on purpose: this guards that the cache exists at all, not
+    // a particular speed. Dragging a selection re-asked this same question on
+    // every pointermove.
+    expect(warm).toBeLessThan(cold / 10);
+  });
+
+  it('does not let a caller that sorts its result rewrite the cached answer', () => {
+    const table = getTranslationTable(11);
+    // A sequence nothing has scanned yet, so the first call below is the MISS
+    // that fills the slot. Both the miss and the hit have to hand out copies:
+    // the scan sorts its own array by length on the way out, and a caller that
+    // sorts or truncates the array it was handed would otherwise be editing the
+    // answer every later caller receives.
+    const fresh = `${sequence}ATGAAATTTGGGCCCTAA`;
+    const first = findORFs(fresh, 30, table, { topology: 'linear' });
+    expect(first.length).toBeGreaterThan(1);
+    const expected = first.map((orf) => ({ ...orf }));
+
+    first.sort((a, b) => a.start - b.start);
+    first.length = 1;
+    const second = findORFs(fresh, 30, table, { topology: 'linear' });
+    expect(second).toEqual(expected);
+
+    second.reverse();
+    expect(findORFs(fresh, 30, table, { topology: 'linear' })).toEqual(expected);
+  });
+
+  it('holds a whole shipped inventory without evicting the record you came from', () => {
+    // The shipped artifact carries 13 vector records and the cache held 12, so
+    // walking the tab strip evicted the entry the next tab was about to ask
+    // for and every lap missed. Round-robin switching improved from 48.5ms to
+    // only 42.5ms because of it, while a two-record alternation reached 27.0ms.
+    const inventory = Array.from({ length: 13 }, (_, index) => `${sequence.slice(index * 3)}${'ACG'.repeat(index + 1)}`);
+    const answers = inventory.map((seq) => findORFs(seq, 30, STANDARD_CODE, { topology: 'circular' }));
+
+    const coldStart = performance.now();
+    findORFs(`${sequence}TTTTTTTTT`, 30, STANDARD_CODE, { topology: 'circular' });
+    const cold = performance.now() - coldStart;
+
+    // A full lap: every record must still answer from cache after all 13 have
+    // been scanned, which is exactly what a 12-entry cache could not do.
+    const lapStart = performance.now();
+    const secondLap = inventory.map((seq) => findORFs(seq, 30, STANDARD_CODE, { topology: 'circular' }));
+    const lap = performance.now() - lapStart;
+
+    expect(secondLap).toEqual(answers);
+    expect(lap).toBeLessThan(cold);
+  });
+
+  it('survives a record that yields more ORFs than an argument list can hold', () => {
+    // Found by the size-bound test above. The forward frames were appended with
+    // `orfs.push(...found)`, which passes every ORF as an argument: a 2.4 Mb
+    // record threw `RangeError: Maximum call stack size exceeded` before it
+    // could return, so the scan failed on exactly the records it runs longest
+    // on. This engine's argument list gives out between 100,000 and 125,000, so
+    // the sequence has to be long enough to clear that: 140,000 minimal ORFs.
+    const many = 'ATGTAA'.repeat(140_000);
+    const found = findORFs(many, 1, STANDARD_CODE, { topology: 'linear' });
+    expect(found.length).toBeGreaterThan(130_000);
+  });
+
+  it('drops old scans rather than holding an unbounded amount of sequence', () => {
+    // The count cap alone cannot bound memory: one 5 Mb record is a 5 Mb key.
+    // A verification run confirmed the character bound never binds on a normal
+    // inventory of thirteen plasmids, so this is the only exercise the branch
+    // gets. What it has to guarantee is that eviction terminates and never
+    // throws away the answer it was just asked for.
+    // All stop codons, so the scan finds nothing and the test stays fast; the
+    // point here is the eviction arithmetic, not the scan.
+    const huge = 'TAA'.repeat(800_000); // 2.4 M characters
+    const first = findORFs(huge, 30, STANDARD_CODE, { topology: 'linear' });
+    const second = findORFs(`${huge}TTT`, 30, STANDARD_CODE, { topology: 'linear' });
+
+    // Two of these together exceed the four-million-character bound, so the
+    // first is evicted and the second — the one just inserted — is kept.
+    expect(findORFs(`${huge}TTT`, 30, STANDARD_CODE, { topology: 'linear' })).toEqual(second);
+    expect(findORFs(huge, 30, STANDARD_CODE, { topology: 'linear' })).toEqual(first);
+
+    // And the cache still works for ordinary records afterwards.
+    const small = findORFs(sequence, 30, STANDARD_CODE, { topology: 'linear' });
+    expect(findORFs(sequence, 30, STANDARD_CODE, { topology: 'linear' })).toEqual(small);
+  });
+
+  it('keys the cache on every input that changes the answer', () => {
+    const base = findORFs(sequence, 30, STANDARD_CODE, { topology: 'linear' });
+    const circular = findORFs(sequence, 30, STANDARD_CODE, { topology: 'circular' });
+    const permissive = findORFs(sequence, 1, STANDARD_CODE, { topology: 'linear' });
+    const otherTable = findORFs(sequence, 30, getTranslationTable(2), { topology: 'linear' });
+
+    // Each of the four inputs must reach a different cache slot, so each answer
+    // has to differ from the one taken at the default settings. Ask the same
+    // questions again: an unkeyed cache would hand back the first answer.
+    expect(circular).not.toEqual(base);
+    expect(permissive.length).toBeGreaterThan(base.length);
+    expect(otherTable).not.toEqual(base);
+    expect(findORFs(sequence, 30, STANDARD_CODE, { topology: 'linear' })).toEqual(base);
+    expect(findORFs(sequence, 30, STANDARD_CODE, { topology: 'circular' })).toEqual(circular);
+    expect(findORFs(sequence, 1, STANDARD_CODE, { topology: 'linear' })).toEqual(permissive);
+    expect(findORFs(sequence, 30, getTranslationTable(2), { topology: 'linear' })).toEqual(otherTable);
+  });
+});

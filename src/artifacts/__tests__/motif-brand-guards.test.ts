@@ -63,9 +63,11 @@ describe('Motif public-brand guard', () => {
   });
 
   it('keeps the Motif identity visible in Claude Science frame widths', () => {
-    expect(artifactSource).toContain('aria-label="Motif for Claude Science workspace"');
+    expect(artifactSource).toContain('aria-label="Motif workspace"');
     expect(artifactSource).toContain('<span translate="no">Motif</span>');
-    expect(artifactSource).toContain('<small translate="no">for Claude Science</small>');
+    // The topbar names the product, not the distribution. "for Claude Science" lives
+    // in the About block and in exported provenance, where the build matters.
+    expect(artifactSource).not.toContain('<small translate="no">for Claude Science</small>');
     expect(artifactCss).not.toMatch(/@media \(max-width: (?:1180|840)px\)[\s\S]*?\.motif-cs-brand\s*\{\s*display:\s*none;/);
   });
 

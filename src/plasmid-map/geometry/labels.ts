@@ -15,19 +15,21 @@ import type { MapDisplayOptions, Pt } from '../types';
 const DEG2RAD = Math.PI / 180;
 
 /** Nominal label font size (px). */
-export const LABEL_FONT_PX = 11;
+export const LABEL_FONT_PX = 16;
 /**
  * Fixed average glyph advance at LABEL_FONT_PX. ~6.2px/char is a deliberate
  * over-estimate for the proportional UI font so an "inline" label never overflows
  * its segment. Scales linearly with font size in approxTextWidth.
  */
-export const LABEL_CHAR_WIDTH_PX = 6.2;
-/** Monospace labels in high contrast need a conservative advance to avoid HC-only collisions. */
-export const LABEL_MONO_CHAR_EM = 0.68;
-/** Minimum center-to-center spacing between stacked outside labels (~one line). */
-export const LABEL_LINE_HEIGHT_PX = 14;
+export const LABEL_CHAR_WIDTH_PX = 8.98;
+/** Monospace labels use the measured ~0.60em face plus conservative layout slack. */
+export const LABEL_MONO_CHAR_EM = 0.64;
+/** Minimum center-to-center spacing between stacked labels (~one line). */
+export const LABEL_LINE_HEIGHT_PX = 15;
+/** Measured Chromium SVG ink box for the 16px circular-map face. */
+export const CIRCULAR_LABEL_BOX_HEIGHT_PX = 18;
 /** Conservative vertical glyph extent used for radial inline-band clearance. */
-export const LABEL_CAP_HEIGHT_PX = 9;
+export const LABEL_CAP_HEIGHT_PX = 11.6;
 /** Total slack subtracted from a segment's extent before an inline label is allowed. */
 export const INLINE_PADDING_PX = 14;
 
@@ -69,7 +71,7 @@ export function fitsInline(
   bandThicknessPx: number = Infinity,
 ): boolean {
   const scaledCapHeight = LABEL_CAP_HEIGHT_PX * (fontPx / LABEL_FONT_PX);
-  const radialPad = 3 * (fontPx / LABEL_FONT_PX);
+  const radialPad = 0.4 * (fontPx / LABEL_FONT_PX);
   return (
     approxTextWidth(text, fontPx, mode) + inlinePaddingPx(fontPx) <= extentPx &&
     bandThicknessPx >= scaledCapHeight + radialPad

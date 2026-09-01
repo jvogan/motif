@@ -806,16 +806,18 @@
   opacity: 0.56;
 }
 
+/* This button already had the right foreground for an --accent fill and said it
+   as a raw surface token. --accent-fill-contrast is the same value, named. */
 .motif-cs-primer-footer-actions .motif-cs-primer-primary-action {
   border-color: var(--accent);
   background: var(--accent);
-  color: var(--bg-primary);
+  color: var(--accent-fill-contrast);
   font-weight: 700;
 }
 
 .motif-cs-primer-footer-actions .motif-cs-primer-primary-action:hover:not(:disabled) {
   background: color-mix(in srgb, var(--accent) 88%, var(--text-primary));
-  color: var(--bg-primary);
+  color: var(--accent-fill-contrast);
 }
 
 .motif-cs-primer-sr-only {

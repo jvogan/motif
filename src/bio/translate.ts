@@ -105,7 +105,14 @@ export function translate(
 
   for (let i = frame; i + 2 < dna.length; i += 3) {
     const codon = dna.slice(i, i + 3);
-    const aa = resolveIupacCodon(codon, table).residue ?? 'X';
+    // A concrete ACGT codon is a key of the table and is its own only
+    // expansion, so resolveIupacCodon can only return this same lookup — after
+    // allocating an expansion array, a mapped array, a Set and a result object
+    // to get there. An IUPAC ambiguity code is never a key, so every codon that
+    // actually needs expanding still takes the full path. The stop test in the
+    // ORF scanner uses this same discriminator.
+    const direct = table.codons[codon];
+    const aa = direct !== undefined ? direct : resolveIupacCodon(codon, table).residue ?? 'X';
     if (aa === '*' && stopAtFirst) {
       protein.push('*');
       break;

@@ -8,6 +8,7 @@ import {
 export type ClaudeScienceMsaTextFormat = 'fasta' | 'clustal' | 'consensus' | 'json';
 export type ClaudeScienceMsaDisplayMode = 'viewer' | 'trace' | 'text';
 export type ClaudeScienceMsaEmphasisMode = 'differences' | 'letters';
+export type ClaudeScienceMsaColumnFilter = 'all' | 'differences';
 export type ClaudeScienceMsaColorMode = 'mono' | 'residue';
 export type ClaudeScienceMsaRowSortMode = 'original' | 'name' | 'identity' | 'mismatches' | 'length';
 export type ClaudeScienceMsaColorScheme = MsaColorScheme;
@@ -65,6 +66,8 @@ export function resolveMsaFitZoom({
 export type ClaudeScienceMsaViewPreferences = {
   displayMode: ClaudeScienceMsaDisplayMode;
   emphasis: ClaudeScienceMsaEmphasisMode;
+  columnFilter: ClaudeScienceMsaColumnFilter;
+  columnFilterContext: number;
   colorMode: ClaudeScienceMsaColorMode;
   colorScheme: ClaudeScienceMsaColorScheme;
   shadeMode: ClaudeScienceMsaShadeMode;
@@ -92,6 +95,8 @@ export type ClaudeScienceMsaViewPreferences = {
 export const DEFAULT_CLAUDE_SCIENCE_MSA_VIEW_PREFERENCES: ClaudeScienceMsaViewPreferences = {
   displayMode: 'viewer',
   emphasis: 'differences',
+  columnFilter: 'all',
+  columnFilterContext: 3,
   colorMode: 'mono',
   colorScheme: 'auto',
   shadeMode: 'none',
@@ -133,6 +138,10 @@ export function normalizeClaudeScienceMsaViewPreferences(value: unknown): Claude
   return {
     displayMode: source.displayMode === 'trace' || source.displayMode === 'text' ? source.displayMode : 'viewer',
     emphasis: source.emphasis === 'letters' ? 'letters' : 'differences',
+    columnFilter: source.columnFilter === 'differences' ? 'differences' : 'all',
+    columnFilterContext: Number.isFinite(source.columnFilterContext)
+      ? Math.max(0, Math.min(20, Math.round(source.columnFilterContext as number)))
+      : DEFAULT_CLAUDE_SCIENCE_MSA_VIEW_PREFERENCES.columnFilterContext,
     colorMode: source.colorMode === 'residue' ? 'residue' : 'mono',
     colorScheme: MSA_COLOR_SCHEMES.includes(source.colorScheme as MsaColorScheme)
       ? source.colorScheme as MsaColorScheme

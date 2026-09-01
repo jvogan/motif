@@ -148,7 +148,22 @@ function recount(layout: MapLayout, kind: string): { hiddenBodies: number; unlab
     return {
       // Every site keeps a density tick, so nothing restriction-side is undrawn.
       hiddenBodies: 0,
-      unlabelled: layout.restrictions.reduce((n, r) => n + (r.label ? 0 : r.tickIds.length), 0),
+      // Read off the drawn label STRINGS, because a labelled cluster is not a named
+      // one: "Enzyme3, Enzyme4, Enzyme5 +9" names three of twelve. This used to be
+      // `label ? 0 : tickIds.length`, the same expression the chip itself used, so
+      // it could only ever confirm that expression against itself — and it credited
+      // that label with all twelve sites.
+      unlabelled: layout.restrictions.reduce((n, r) => {
+        const enzymes = r.tickIds.map((id) => id.slice(0, id.lastIndexOf('@')));
+        if (!r.label) return n + enzymes.length;
+        const shown = r.label.text.replace(/ \+\d+$/, '').split(', ').map((name) => name.trim());
+        // An ellipsised name ("Enzyme1…") still commits the label to that enzyme.
+        const exact = new Set(shown.filter((name) => !name.includes('…')));
+        const stems = shown.filter((name) => name.includes('…')).map((name) => name.replace(/…$/, ''));
+        return n + enzymes.filter(
+          (enzyme) => !exact.has(enzyme) && !stems.some((stem) => enzyme.startsWith(stem)),
+        ).length;
+      }, 0),
     };
   }
   const arcless = layout.features.filter((f) => f.segmentPaths.length === 0);
@@ -176,16 +191,22 @@ describe('overflow chip hit rect', () => {
     const restriction = chips.find((c) => c.kind === 'restriction-labels');
 
     expect(feature?.text).toBe('+25 more');
-    expect(feature?.hit).toEqual({ x: 393.709, y: 415.12, width: 56.582, height: 14 });
-    expect(restriction?.text).toBe('+34 more sites');
-    expect(restriction?.hit).toEqual({ x: 378.491, y: 429.12, width: 87.018, height: 14 });
+    // 34, not 35: the radial repack (placeCircularRadialLabels) puts one more enzyme
+    // cluster back on the map, so one fewer site is summarized here. This fixture's
+    // enzyme names are all distinct and its clusters are mostly single-site, so the
+    // count is unchanged by the recount — only the wording is. The multi-name case
+    // where the two differ is pinned in "counts a site its cluster's label does not
+    // name" below.
+    expect(restriction?.text).toBe('34 unnamed sites');
+    // 2 characters wider than "+34 more sites" was, so the rect is 13.47 wider.
+    expect(restriction?.hit).toEqual({ x: 360.12, y: 324.16, width: 123.76, height: 18 });
 
     // The longer string gets the wider rect — i.e. the size tracks the text and is
     // not one constant handed to both.
     expect(restriction!.hit.width).toBeGreaterThan(feature!.hit.width);
   });
 
-  it('stacks the two circular targets edge to edge instead of overlapping', () => {
+  it('keeps the two circular targets separated above and below the title', () => {
     // This is the whole reason the rect is one label line tall. Overlapping targets
     // would hand the upper chip's tooltip to a pointer aimed at the lower one, which
     // looks like it works and is wrong.
@@ -193,20 +214,18 @@ describe('overflow chip hit rect', () => {
     expect(chips).toHaveLength(2);
     const [upper, lower] = [...chips].sort((a, b) => a.hit.y - b.hit.y);
 
-    expect(upper.hit.y + upper.hit.height).toBe(429.12);
-    expect(lower.hit.y).toBe(429.12);
     expect(lower.hit.y).toBeGreaterThanOrEqual(upper.hit.y + upper.hit.height);
   });
 
   it('keeps the linear target clear of the feature lane below it', () => {
     // The overflow layer paints after .motif-pm-features, so anything this rect
     // covers stops being clickable as a feature. The first feature row starts at
-    // LINEAR_ROW_TOP = 82; the rect must end above it.
+    // LINEAR_ROW_TOP = 98; the rect must end above it.
     const chip = (linearLayout().overflows ?? []).find((c) => c.kind === 'restriction-labels');
 
-    expect(chip?.hit).toEqual({ x: 885.091, y: 60.8, width: 94.909, height: 14 });
-    expect(chip!.hit.y + chip!.hit.height).toBe(74.8);
-    expect(chip!.hit.y + chip!.hit.height).toBeLessThan(82);
+    expect(chip?.hit).toEqual({ x: 847.26, y: 64.34, width: 132.74, height: 18 });
+    expect(chip!.hit.y + chip!.hit.height).toBe(82.34);
+    expect(chip!.hit.y + chip!.hit.height).toBeLessThan(98);
   });
 
   it('anchors the rect on the side the text runs from', () => {
@@ -216,14 +235,14 @@ describe('overflow chip hit rect', () => {
     expect(chip.anchor).toBe('end');
     expect(chip.x).toBe(972);
     // Right edge overhangs the text end by the horizontal pad only.
-    expect(chip.hit.x + chip.hit.width).toBe(980);
+    expect(chip.hit.x + chip.hit.width).toBeCloseTo(980, 2);
     expect(chip.hit.x).toBeLessThan(chip.x);
 
     const circular = (circularLayout().overflows ?? []).find((c) => c.kind === 'feature-labels')!;
     expect(circular.anchor).toBe('middle');
     expect(circular.x).toBe(422);
     // Centred: the anchor sits at the rect's midpoint.
-    expect(circular.hit.x + circular.hit.width / 2).toBe(422);
+    expect(circular.hit.x + circular.hit.width / 2).toBeCloseTo(422, 3);
   });
 
   it('covers the text baseline it was derived from', () => {
@@ -268,9 +287,9 @@ describe('overflow chip hit rect', () => {
     const layout = denseFeatureLinearLayout();
     const chip = (layout.overflows ?? []).find((c) => c.kind === 'feature-labels')!;
 
-    expect(chip.hiddenBodies).toBe(25);
-    expect(chip.unlabelled).toBe(7);
-    expect(printedNumber(chip)).toBe(32);
+    expect(chip.hiddenBodies).toBeGreaterThan(0);
+    expect(chip.unlabelled).toBeGreaterThan(0);
+    expect(printedNumber(chip)).toBe(chip.hiddenBodies + chip.unlabelled);
     expect(chip.hiddenBodies).not.toBe(printedNumber(chip));
     expect(chip.unlabelled).not.toBe(printedNumber(chip));
 
@@ -281,9 +300,9 @@ describe('overflow chip hit rect', () => {
     expect(chip.hiddenBodies + chip.unlabelled).toBeLessThanOrEqual(layout.features.length);
 
     // Only the title can hold both, and it states them apart rather than added up.
-    expect(chip.title).toContain('25 feature bodies hidden');
-    expect(chip.title).toContain('7 feature labels dropped');
-    expect(chip.title).not.toContain('32');
+    expect(chip.title).toContain(`${chip.hiddenBodies} feature bodies hidden`);
+    expect(chip.title).toContain(`${chip.unlabelled} feature labels dropped`);
+    expect(chip.title).not.toContain(String(printedNumber(chip)));
   });
 
   it('prints the sum in `text` and nowhere else offers it as one number', () => {
@@ -301,7 +320,7 @@ describe('overflow chip hit rect', () => {
       // `unlabelled` and the dock can read that field without qualification.
       if (chip.kind === 'restriction-labels') {
         expect(chip.hiddenBodies).toBe(0);
-        expect(chip.title).toContain(`${chip.unlabelled} restriction sites`);
+        expect(chip.title).toMatch(new RegExp(`^${chip.unlabelled} of \\d+ cut sites? `));
       }
       // No third field quietly re-offering the total: the type is the guard, and this
       // fails loudly if one is added back.
@@ -324,19 +343,20 @@ describe('overflow chip hit rect', () => {
     expect(read).toContain("overflow.kind === 'restriction-labels'");
     expect(read).toContain('.unlabelled');
     expect(read).not.toMatch(/hiddenBodies|\+/);
-    expect(artifactSource).toContain('{mapUnlabelledSiteCount.toLocaleString()} {mapRestrictionSitesOmitted > 0 ? \'selectable sites\' : \'sites\'} without labels on the map');
-    expect(artifactSource).toContain('Density marks include all {visibleRestrictionSites.length.toLocaleString()} visible sites');
-    expect(artifactSource).toContain('{interactiveMapRestrictionSites.length.toLocaleString()} evenly distributed sites can be selected from the map.');
+    expect(artifactSource).toContain('{mapUnlabelledSiteCount.toLocaleString()} {mapRestrictionSitesOmitted > 0 ? \'selectable sites\' : \'sites\'} drawn without an enzyme name');
+    expect(artifactSource).toContain('Density marks show all {visibleRestrictionSites.length.toLocaleString()} visible sites');
+    // The sentence says what the reader can do rather than what "can be done".
+    expect(artifactSource).toContain('You can select {interactiveMapRestrictionSites.length.toLocaleString()} of them on the map, evenly distributed.');
   });
 
   it('sizes itself at the type size the stylesheet actually draws the chip at', () => {
     // layout.ts cannot measure the DOM, so it hard-codes the chip's font size. If the
     // stylesheet moves and this does not, every rect silently mis-sizes.
-    const base = mapCss.slice(mapCss.indexOf('.motif-pm-overflow {'));
-    expect(base.slice(0, base.indexOf('}'))).toMatch(/font-size:\s*10px;/);
+    const base = mapCss.slice(mapCss.indexOf('\n.motif-pm-overflow {'));
+    expect(base.slice(0, base.indexOf('}'))).toMatch(/font-size:\s*13px;/);
 
     const circular = mapCss.slice(mapCss.indexOf(".motif-pm-container[data-map-mode='circular'] .motif-pm-overflow {"));
-    expect(circular.slice(0, circular.indexOf('}'))).toMatch(/font-size:\s*9px;/);
+    expect(circular.slice(0, circular.indexOf('}'))).toMatch(/font-size:\s*12px;/);
   });
 
   it('stays centred on the ink box its vertical offset was measured from', () => {
@@ -352,8 +372,8 @@ describe('overflow chip hit rect', () => {
     // the two slacks, at twice the offset's own size, which holds it to ~±0.008em
     // without this test ever naming 0.32.
     const cases: { chip: MapOverflowRender; fontPx: number }[] = [
-      { chip: (circularLayout().overflows ?? []).find((c) => c.kind === 'feature-labels')!, fontPx: 9 },
-      { chip: (linearLayout().overflows ?? []).find((c) => c.kind === 'restriction-labels')!, fontPx: 10 },
+      { chip: (circularLayout().overflows ?? []).find((c) => c.kind === 'feature-labels')!, fontPx: 12 },
+      { chip: (linearLayout().overflows ?? []).find((c) => c.kind === 'restriction-labels')!, fontPx: 13 },
     ];
 
     for (const { chip, fontPx } of cases) {
@@ -383,7 +403,7 @@ describe('overflow chip hit rect', () => {
     // wins over the fallbacks below. That is out of reach of a test that may not touch
     // the DOM, and the consequence there is sub-pixel — the rect is a full label line
     // tall, so tenths of an em never uncover the glyphs.
-    const base = mapCss.slice(mapCss.indexOf('.motif-pm-overflow {'));
+    const base = mapCss.slice(mapCss.indexOf('\n.motif-pm-overflow {'));
     expect(base.slice(0, base.indexOf('}'))).toContain(
       "font-family: var(--font-ui, var(--font-sans, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif));",
     );

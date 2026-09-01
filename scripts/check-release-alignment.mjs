@@ -60,14 +60,14 @@ export function checkReleaseAlignment(cwd = root) {
   }
   const lock = readJson(workspace, 'package-lock.json');
   const plugin = readJson(workspace, 'src/artifacts/motif-for-claude-science-plugin/.claude-plugin/plugin.json');
-  const stdioServer = read(workspace, 'mcp/motif/stdio-server.ts');
+  const stdioBootstrap = read(workspace, 'mcp/motif/stdio-bootstrap.ts');
   const surfaces = [
     ['package-lock.json', lock.version],
     ['package-lock root entry', lock.packages?.['']?.version],
     ['plugin manifest', plugin.version],
     ['artifact runtime', read(workspace, 'src/artifacts/motif-artifact.tsx').match(/const MOTIF_ARTIFACT_VERSION = '([^']+)'/u)?.[1]],
-    ['MCP App bridge', read(workspace, 'src/mcp-app/motif-workbench-bridge.ts').match(/name: 'Motif for Claude Science', version: '([^']+)'/u)?.[1]],
-    ['MCP stdio fallback', stdioServer.match(/async function readVersion\([^)]*\): Promise<string>[\s\S]*?return '([^']+)'[;]?\s*\}\s*async function readRuntimeBuildId/u)?.[1]],
+    ['MCP App bridge', read(workspace, 'src/mcp-app/motif-workbench-bridge.ts').match(/name: 'Motif', version: '([^']+)'/u)?.[1]],
+    ['MCP stdio fallback', stdioBootstrap.match(/fallbackVersion\s*=\s*'([^']+)'/u)?.[1]],
   ];
   for (const [label, value] of surfaces) {
     if (value !== packageVersion) throw new Error(`${label} is ${String(value)}, expected ${packageVersion}`);

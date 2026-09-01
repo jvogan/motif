@@ -22,6 +22,7 @@ logs/
 *.local
 .mcp.json
 !src/artifacts/motif-for-claude-science-plugin/.mcp.json
+!src/artifacts/motif-for-codex-plugin/motif-for-claude-science/.mcp.json
 .claude/
 
 # Local workbench data

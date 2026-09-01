@@ -15,6 +15,8 @@ describe('Claude Science MSA view preferences', () => {
     expect(normalizeClaudeScienceMsaViewPreferences({
       displayMode: 'text',
       emphasis: 'letters',
+      columnFilter: 'differences',
+      columnFilterContext: 5,
       colorMode: 'residue',
       colorScheme: 'clustal',
       shadeMode: 'conservation',
@@ -39,6 +41,8 @@ describe('Claude Science MSA view preferences', () => {
     })).toEqual({
       displayMode: 'text',
       emphasis: 'letters',
+      columnFilter: 'differences',
+      columnFilterContext: 5,
       colorMode: 'residue',
       colorScheme: 'clustal',
       shadeMode: 'conservation',
@@ -84,6 +88,15 @@ describe('Claude Science MSA view preferences', () => {
     expect(normalizeClaudeScienceMsaViewPreferences({ zoom: 9 }).zoom).toBe(2);
     expect(normalizeClaudeScienceMsaViewPreferences({ zoom: 0 }).zoom).toBe(0.2);
     expect(normalizeClaudeScienceMsaViewPreferences({ zoom: 0.5 }).zoom).toBe(0.5);
+  });
+
+  it('defaults and normalizes the differing-column filter preferences', () => {
+    expect(normalizeClaudeScienceMsaViewPreferences({}).columnFilter).toBe('all');
+    expect(normalizeClaudeScienceMsaViewPreferences({}).columnFilterContext).toBe(3);
+    expect(normalizeClaudeScienceMsaViewPreferences({ columnFilter: 'differences' }).columnFilter).toBe('differences');
+    expect(normalizeClaudeScienceMsaViewPreferences({ columnFilter: 'hidden' }).columnFilter).toBe('all');
+    expect(normalizeClaudeScienceMsaViewPreferences({ columnFilterContext: -2 }).columnFilterContext).toBe(0);
+    expect(normalizeClaudeScienceMsaViewPreferences({ columnFilterContext: 99 }).columnFilterContext).toBe(20);
   });
 
   it('fits using the final persisted zoom and rendered cell-width rounding', () => {

@@ -32,6 +32,13 @@ export type MsaColumnHitTestMetrics = {
 
 export type MsaGridCellPosition = { rowIndex: number; column: number };
 
+export type MsaWheelAxis = 'horizontal' | 'vertical';
+
+export type MsaWheelGestureState = {
+  axis: MsaWheelAxis;
+  lastEventTime: number;
+};
+
 export type MsaGridNavigationOptions = {
   rowCount: number;
   columnCount: number;
@@ -42,6 +49,7 @@ export type MsaGridNavigationOptions = {
 const MSA_DRAG_EDGE_MIN_SPEED = 2;
 const MSA_DRAG_EDGE_MAX_SPEED = 32;
 const MSA_DRAG_EDGE_SPEED_SCALE = 0.35;
+export const MSA_WHEEL_GESTURE_IDLE_MS = 140;
 
 /** Clamp a drag pointer just inside a client-coordinate rectangle. */
 export function clampMsaClientPoint(
@@ -66,6 +74,33 @@ export function msaEdgeAutoScrollDelta(pointer: number, start: number, end: numb
     Math.max(MSA_DRAG_EDGE_MIN_SPEED, Math.ceil(Math.abs(overshoot) * MSA_DRAG_EDGE_SPEED_SCALE)),
   );
   return overshoot < 0 ? -speed : speed;
+}
+
+/**
+ * Keep one axis for the short burst of wheel events that makes up a trackpad
+ * gesture. Without the idle boundary, tiny alternating diagonal deltas can pan
+ * columns on one frame and rows on the next, even though the hand motion never
+ * changed direction.
+ */
+export function resolveMsaWheelGesture(
+  deltaX: number,
+  deltaY: number,
+  shiftKey: boolean,
+  eventTime: number,
+  previous: MsaWheelGestureState | null,
+): MsaWheelGestureState {
+  const requestedAxis: MsaWheelAxis = shiftKey
+    || (deltaX !== 0 && Math.abs(deltaX) >= Math.abs(deltaY))
+    ? 'horizontal'
+    : 'vertical';
+  const continuesGesture = !shiftKey
+    && previous !== null
+    && eventTime >= previous.lastEventTime
+    && eventTime - previous.lastEventTime <= MSA_WHEEL_GESTURE_IDLE_MS;
+  return {
+    axis: continuesGesture ? previous.axis : requestedAxis,
+    lastEventTime: eventTime,
+  };
 }
 
 /** Map a client X coordinate to an alignment column, optionally clamping drag overflow. */
@@ -1328,14 +1363,50 @@ export type MsaMotifMatch = {
 
 export type MsaMotifSearchResult = { matches: MsaMotifMatch[]; truncated: boolean };
 
+export type MsaSearchMatch = MsaMotifMatch & {
+  kind: 'motif' | 'row-name';
+};
+
+export type MsaSearchResult = { matches: MsaSearchMatch[]; truncated: boolean };
+
 export const MSA_MOTIF_SEARCH_MAX_MATCHES = 5_000;
 export const MSA_MOTIF_SEARCH_MAX_QUERY_LENGTH = 256;
 export const MSA_MOTIF_SEARCH_MAX_RETAINED_COLUMNS = 200_000;
+export const MSA_SEARCH_DEBOUNCE_MIN_CELLS = 100_000;
+export const MSA_SEARCH_DEBOUNCE_MS = 200;
 
 // Upper bound on residue comparisons per search so a long, rare, or absent query
 // on a large alignment cannot block the render thread: once exceeded the scan
 // stops and reports `truncated` instead of running to completion.
 export const MSA_MOTIF_SEARCH_MAX_COMPARISONS = 2_000_000;
+
+/**
+ * Small alignments settle immediately, while expensive scans wait for a short
+ * pause so a reader composing a query does not pay the full scan cost for every
+ * intermediate value.
+ */
+export function resolveMsaSearchDebounceMs(
+  rows: readonly { aligned: string }[],
+): number {
+  let cells = 0;
+  for (const row of rows) {
+    cells += row.aligned.length;
+    if (cells >= MSA_SEARCH_DEBOUNCE_MIN_CELLS) return MSA_SEARCH_DEBOUNCE_MS;
+  }
+  return 0;
+}
+
+/** Schedule one bounded search scan and return the cancellation used when the
+ * query changes before the reader pauses. Immediate scans share this path so
+ * callers keep identical cleanup semantics at either alignment size. */
+export function scheduleMsaSearch(run: () => void, delayMs: number): () => void {
+  if (delayMs <= 0) {
+    run();
+    return () => undefined;
+  }
+  const timer = globalThis.setTimeout(run, delayMs);
+  return () => globalThis.clearTimeout(timer);
+}
 
 /** Compare two present residues for difference highlighting without conflating
  * compatible ambiguity codes with literal identity or hard substitutions. */
@@ -1505,6 +1576,114 @@ export function findMsaMotifMatches(
   return { matches: collector.toSortedArray(), truncated };
 }
 
+/**
+ * Search the two user-visible alignment targets: residue motifs and row names.
+ * Motif matching keeps the bounded, ambiguity-aware behaviour above. A row-name
+ * hit is one result per matching row and points at that row's first covered
+ * alignment column so navigation can reveal it without inventing a new
+ * coordinate system.
+ */
+export function findMsaMatches(
+  rows: readonly { id: string; name: string; aligned: string }[],
+  query: string,
+  options: {
+    molecule: SequenceType;
+    maxMatches?: number;
+    maxComparisons?: number;
+    maxQueryLength?: number;
+    maxRetainedColumns?: number;
+  },
+): MsaSearchResult {
+  const trimmed = query.trim();
+  if (!trimmed) return { matches: [], truncated: false };
+  const maxMatches = Math.max(0, Math.floor(options.maxMatches ?? MSA_MOTIF_SEARCH_MAX_MATCHES));
+  const motifResult = findMsaMotifMatches(rows, trimmed, { ...options, maxMatches });
+  const motifMatches = motifResult.matches.map((match): MsaSearchMatch => ({ ...match, kind: 'motif' }));
+  const remaining = Math.max(0, maxMatches - motifMatches.length);
+  const normalizedNameQuery = trimmed.toLocaleLowerCase();
+  const nameMatches: MsaSearchMatch[] = [];
+  let truncated = motifResult.truncated;
+  for (const row of rows) {
+    if (!row.name.toLocaleLowerCase().includes(normalizedNameQuery)) continue;
+    if (nameMatches.length >= remaining) { truncated = true; break; }
+    const firstCovered = row.aligned.search(/[^-.]/);
+    const column = firstCovered >= 0 ? firstCovered : 0;
+    nameMatches.push({
+      kind: 'row-name',
+      rowId: row.id,
+      rowName: row.name,
+      startColumn: column,
+      endColumn: column,
+      columns: [],
+    });
+  }
+
+  return {
+    matches: [...motifMatches, ...nameMatches],
+    truncated,
+  };
+}
+
+export type MsaColumnViewSlot =
+  | { kind: 'column'; column: number }
+  | { kind: 'elision'; startColumn: number; endColumn: number; hiddenCount: number };
+
+export type MsaExpandedColumnRange = { startColumn: number; endColumn: number };
+
+/**
+ * Build the visible-space slots for a difference-focused alignment view.
+ * Ranges and slot columns are zero-based absolute alignment coordinates;
+ * elisions consume one visual slot but never become biological coordinates.
+ */
+export function buildMsaDifferenceColumnSlots(
+  alignmentLength: number,
+  differingColumns: readonly number[],
+  context = 3,
+  expandedRanges: readonly MsaExpandedColumnRange[] = [],
+): MsaColumnViewSlot[] {
+  const length = Math.max(0, Math.floor(alignmentLength));
+  if (length === 0) return [];
+  const margin = Number.isFinite(context) ? Math.max(0, Math.floor(context)) : 3;
+  const ranges: MsaExpandedColumnRange[] = [];
+  for (const rawColumn of differingColumns) {
+    if (!Number.isFinite(rawColumn)) continue;
+    const column = Math.floor(rawColumn);
+    if (column < 0 || column >= length) continue;
+    ranges.push({
+      startColumn: Math.max(0, column - margin),
+      endColumn: Math.min(length, column + margin + 1),
+    });
+  }
+  for (const range of expandedRanges) {
+    const startColumn = Math.max(0, Math.min(length, Math.floor(range.startColumn)));
+    const endColumn = Math.max(startColumn, Math.min(length, Math.ceil(range.endColumn)));
+    if (endColumn > startColumn) ranges.push({ startColumn, endColumn });
+  }
+  ranges.sort((a, b) => a.startColumn - b.startColumn || a.endColumn - b.endColumn);
+  const merged: MsaExpandedColumnRange[] = [];
+  for (const range of ranges) {
+    const previous = merged[merged.length - 1];
+    if (!previous || range.startColumn > previous.endColumn) merged.push({ ...range });
+    else previous.endColumn = Math.max(previous.endColumn, range.endColumn);
+  }
+
+  const slots: MsaColumnViewSlot[] = [];
+  let cursor = 0;
+  const pushElision = (startColumn: number, endColumn: number) => {
+    if (endColumn <= startColumn) return;
+    slots.push({ kind: 'elision', startColumn, endColumn, hiddenCount: endColumn - startColumn });
+  };
+  for (const range of merged) {
+    pushElision(cursor, range.startColumn);
+    for (let column = range.startColumn; column < range.endColumn; column += 1) {
+      slots.push({ kind: 'column', column });
+    }
+    cursor = range.endColumn;
+  }
+  pushElision(cursor, length);
+  return slots;
+}
+
 // ===== Alignment image export (pure geometry + palette) =====
 //
 // PNG/SVG export must render from the data model, not the DOM: the matrix is
@@ -1528,6 +1707,8 @@ export type AlignmentImageLayoutOptions = {
   /** Half-open [startColumn, endColumn) window used when scope === 'view'. */
   startColumn?: number;
   endColumn?: number;
+  /** Optional visible-space slots for a filtered view export. */
+  columns?: readonly MsaColumnViewSlot[];
   cellWidth?: number;
   cellHeight?: number;
   fontSize?: number;
@@ -1541,6 +1722,8 @@ export type AlignmentImageLayout = {
   scope: AlignmentImageScope;
   startColumn: number;
   columnCount: number;
+  /** Visual slots in export order; column entries retain absolute coordinates. */
+  columns: MsaColumnViewSlot[];
   rowCount: number;
   cellWidth: number;
   cellHeight: number;
@@ -1602,25 +1785,51 @@ export function computeAlignmentImageLayout(
   const maxCells = Math.max(1, Math.floor(options.maxCells ?? MSA_IMAGE_MAX_CELLS));
 
   // Resolve the column window.
-  let startColumn = 0;
-  let columnCount = alignmentLength;
-  if (options.scope === 'view') {
+  let columns: MsaColumnViewSlot[] = Array.from(
+    { length: alignmentLength },
+    (_, column): MsaColumnViewSlot => ({ kind: 'column', column }),
+  );
+  if (options.scope === 'view' && options.columns && options.columns.length > 0) {
+    columns = options.columns.flatMap((slot): MsaColumnViewSlot[] => {
+      if (slot.kind === 'column') {
+        const column = Math.floor(slot.column);
+        return column >= 0 && column < alignmentLength ? [{ kind: 'column', column }] : [];
+      }
+      const startColumn = Math.max(0, Math.min(alignmentLength, Math.floor(slot.startColumn)));
+      const endColumn = Math.max(startColumn, Math.min(alignmentLength, Math.ceil(slot.endColumn)));
+      return endColumn > startColumn
+        ? [{ kind: 'elision', startColumn, endColumn, hiddenCount: endColumn - startColumn }]
+        : [];
+    });
+  } else if (options.scope === 'view') {
     const rawStart = Math.floor(options.startColumn ?? 0);
     const rawEnd = Math.ceil(options.endColumn ?? alignmentLength);
     const start = Math.max(0, Math.min(alignmentLength, rawStart));
     const end = Math.max(start, Math.min(alignmentLength, rawEnd));
-    startColumn = start;
-    columnCount = end - start;
+    columns = Array.from(
+      { length: end - start },
+      (_, offset): MsaColumnViewSlot => ({ kind: 'column', column: start + offset }),
+    );
     // A degenerate/empty window falls back to the whole alignment.
-    if (columnCount <= 0) { startColumn = 0; columnCount = alignmentLength; }
+    if (columns.length <= 0) {
+      columns = Array.from(
+        { length: alignmentLength },
+        (_, column): MsaColumnViewSlot => ({ kind: 'column', column }),
+      );
+    }
   }
-  columnCount = Math.max(0, columnCount);
+  let columnCount = columns.length;
+  const firstColumnSlot = columns.find((slot): slot is Extract<MsaColumnViewSlot, { kind: 'column' }> => slot.kind === 'column');
+  const firstSlot = columns[0];
+  const startColumn = firstColumnSlot?.column
+    ?? (firstSlot?.kind === 'elision' ? firstSlot.startColumn : 0);
 
   let clamped = false;
 
   // Cell-count cap: draw a leading window rather than an unbounded image.
   if (rowCount > 0 && columnCount * rowCount > maxCells) {
     columnCount = Math.max(1, Math.floor(maxCells / rowCount));
+    columns = columns.slice(0, columnCount);
     clamped = true;
   }
 
@@ -1660,6 +1869,7 @@ export function computeAlignmentImageLayout(
     scope: options.scope,
     startColumn,
     columnCount,
+    columns,
     rowCount,
     cellWidth,
     cellHeight,

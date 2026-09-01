@@ -262,6 +262,7 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
   const titleId = useId();
   const tabPanelId = useId();
   const partHelpId = useId();
+  const addHintId = useId();
   const workspaceRef = useRef<HTMLElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const [method, setMethod] = useState<ClaudeScienceCloningDesignMethod>(initialMethod);
@@ -410,6 +411,22 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
   const primerActions = plan.preparation.filter(isPrimerPreparation);
   const readyPrimerActions = primerActions.filter((action) => primerPreparationBlocker(plan, action) === null);
   const goldenGateNeedsAnotherInput = plan.kind === 'golden_gate_design' && plan.inputs.length < 2;
+  // Two shortfalls block a Golden Gate check for different reasons: too few rows,
+  // or enough rows where one cannot be read as DNA. Adding a part only fixes the first.
+  const goldenGateShortfall: 'count' | 'unusable' | null = goldenGateNeedsAnotherInput
+    ? (parts.length < 2 ? 'count' : 'unusable')
+    : null;
+  const unusablePartCount = Math.max(0, parts.length - plan.inputs.length);
+  const missingPartCount = Math.max(0, 2 - parts.length);
+  // The checklist row states the same requirement as the planner's `too_few_inputs`
+  // error, so the issue list drops that one code while the row is on screen.
+  const shownIssues = useMemo(() => {
+    const all = [...plan.errors, ...plan.warnings];
+    return goldenGateShortfall === 'count'
+      ? all.filter((entry) => entry.code !== 'too_few_inputs')
+      : all;
+  }, [goldenGateShortfall, plan]);
+  const shownErrorCount = shownIssues.filter((entry) => entry.severity === 'error').length;
 
   useImperativeHandle(forwardedRef, () => ({
     replacePreparedPart(replacement) {
@@ -915,7 +932,7 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
                   <em>{parts.length}/{partLimit}</em>
                 </div>
                 <div className="motif-cs-cloning-design-section-actions">
-                  {plan.kind === 'golden_gate_design' ? (
+                  {plan.kind === 'golden_gate_design' && !goldenGateNeedsAnotherInput ? (
                     <button
                       type="button"
                       className="motif-cs-cloning-design-quiet-button"
@@ -936,7 +953,7 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
                 {parts.length === 0 ? (
                   <div className="motif-cs-cloning-design-empty">
                     <strong>No Parts Selected</strong>
-                    <span>Search the DNA inventory below and add at least 2 records.</span>
+                    <span>Search the DNA inventory below.</span>
                   </div>
                 ) : parts.map((part, index) => {
                   const record = recordsById.get(part.recordId);
@@ -1079,7 +1096,19 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
 
               {organizationMode === 'golden_braid_binary' && parts.length >= partLimit ? (
                 <p className="motif-cs-cloning-design-source-limit" role="status">Two source modules selected. Replace a row or remove one to choose another source.</p>
-              ) : <div className="motif-cs-cloning-design-add">
+              ) : <>
+                {goldenGateShortfall === 'count' ? (
+                  <p
+                    id={addHintId}
+                    className="motif-cs-cloning-design-add-hint"
+                    data-testid="cloning-design-add-hint"
+                  >
+                    {missingPartCount === 1
+                      ? 'Add a second part to check fusion boundaries and assembly order.'
+                      : 'Add 2 parts to check fusion boundaries and assembly order.'}
+                  </p>
+                ) : null}
+                <div className="motif-cs-cloning-design-add">
                 <label>
                   <span>Search Inventory</span>
                   <input
@@ -1114,12 +1143,14 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
                   type="button"
                   className="motif-cs-cloning-design-primary-button"
                   data-testid="cloning-design-add-part"
+                  {...(goldenGateShortfall === 'count' ? { 'aria-describedby': addHintId } : {})}
                   disabled={!candidateId || parts.length >= partLimit}
                   onClick={addPart}
                 >
                   {parts.length >= partLimit ? `${partLimit}-Part Limit` : 'Add Part'}
                 </button>
-              </div>}
+                </div>
+              </>}
             </section>
 
             {plan.kind === 'gibson_design' ? (
@@ -1170,13 +1201,15 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
                 </div>
               ) : goldenGateNeedsAnotherInput ? (
                 <div className="motif-cs-cloning-design-empty" data-testid="cloning-design-product-empty">
-                  <strong>Add Another DNA Input</strong>
-                  <span>Golden Gate preparation is not evaluated until at least 2 DNA inputs are present.</span>
+                  <strong>{goldenGateShortfall === 'unusable' ? 'Two Usable Parts Needed' : 'Two Parts Needed'}</strong>
+                  <span>{goldenGateShortfall === 'unusable'
+                    ? `${unusablePartCount} of ${parts.length} parts cannot be read as DNA. See Issues & Warnings.`
+                    : `Add ${missingPartCount === 1 ? 'a second part' : '2 parts'} in step 02.`}</span>
                 </div>
               ) : plan.preparation.length === 0 ? (
                 <div className="motif-cs-cloning-design-empty" data-testid="cloning-design-product-empty">
                   <strong>Review Blocking Issues</strong>
-                  <span>No product can be previewed and no automated preparation step is available. Review Issues &amp; Warnings or adjust the inputs.</span>
+                  <span>No preparation step can fix these inputs.</span>
                 </div>
               ) : (
                 <div className="motif-cs-cloning-design-empty" data-testid="cloning-design-product-empty">
@@ -1207,13 +1240,20 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
             <section>
               <div className="motif-cs-cloning-design-review-head">
                 <span>Preparation Checklist</span>
-                <small>{goldenGateNeedsAnotherInput ? 'Not evaluated' : plan.preparation.length}</small>
+                <small>{goldenGateNeedsAnotherInput ? 'Not checked' : plan.preparation.length}</small>
               </div>
               <div className="motif-cs-cloning-design-checklist">
                 {goldenGateNeedsAnotherInput ? (
                   <div className="motif-cs-cloning-design-check" data-state="required">
                     <span aria-hidden="true">!</span>
-                    <div><strong>Add another DNA input</strong><small>Preparation has not been evaluated. Add at least 2 DNA inputs to check fusion boundaries and assembly order.</small></div>
+                    <div>
+                      <strong>{goldenGateShortfall === 'unusable'
+                        ? `Fix ${unusablePartCount === 1 ? 'an unusable part' : `${unusablePartCount} unusable parts`}`
+                        : `Add ${missingPartCount === 1 ? 'a second part' : '2 parts'}`}</strong>
+                      <small>{goldenGateShortfall === 'unusable'
+                        ? 'Checks start at 2 usable parts.'
+                        : 'Checks start at 2 parts.'}</small>
+                    </div>
                     <em>Required</em>
                   </div>
                 ) : plan.preparation.length === 0 && plan.product ? (
@@ -1224,7 +1264,7 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
                 ) : plan.preparation.length === 0 ? (
                   <div className="motif-cs-cloning-design-check" data-state="required">
                     <span aria-hidden="true">!</span>
-                    <div><strong>Review blocking issues</strong><small>No automated preparation action is available. Review Issues &amp; Warnings or adjust the design inputs.</small></div>
+                    <div><strong>Review blocking issues</strong><small>See Issues &amp; Warnings.</small></div>
                     <em>Review</em>
                   </div>
                 ) : plan.preparation.map((action) => {
@@ -1263,11 +1303,11 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
               ) : null}
             </section>
 
-            {plan.errors.length > 0 || plan.warnings.length > 0 ? (
-              <details className="motif-cs-cloning-design-issues" open={plan.errors.length > 0}>
-                <summary>Issues & Warnings ({plan.errors.length + plan.warnings.length})</summary>
+            {shownIssues.length > 0 ? (
+              <details className="motif-cs-cloning-design-issues" open={shownErrorCount > 0}>
+                <summary>Issues & Warnings ({shownIssues.length})</summary>
                 <ul>
-                  {[...plan.errors, ...plan.warnings].map((issue, index) => (
+                  {shownIssues.map((issue, index) => (
                     <li key={`${issue.code}-${issue.recordId ?? ''}-${index}`} data-level={issue.severity}>{issue.message}</li>
                   ))}
                 </ul>

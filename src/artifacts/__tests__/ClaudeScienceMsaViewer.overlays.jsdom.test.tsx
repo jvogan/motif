@@ -130,9 +130,14 @@ describe('ClaudeScienceMsaViewer interaction-state overlays', () => {
     expect(overlayCss).toMatch(/\.motif-cs-msa-symbol\[data-search-match\][\s\S]*?inset 0 -3px 0 var\(--amber\)/);
     expect(overlayCss).toMatch(/\.motif-cs-msa-symbol\[data-search-active\][\s\S]*?inset 0 0 0 2px var\(--amber\)/);
     expect(overlayCss).toContain('--motif-cs-msa-jump-rule: var(--purple);');
-    // Width is capped at 3px but shrinks with the cell, so zooming out cannot
-    // leave the tick wider than the column it marks.
-    expect(overlayCss).toMatch(/\.motif-cs-msa-symbol\[data-jump='true'\]::after[\s\S]*?width:\s*min\(3px,[\s\S]*?background:\s*var\(--motif-cs-msa-jump-rule\)/);
+    // The jump marker covers the whole cell as a translucent band rather than
+    // drawing a rule inside it. It used to be a 3px bar inset 1px from the left
+    // edge, which at a 10.6px column lands on the glyph's left stroke, so the
+    // marked column read as letters with a line struck through them. Assert the
+    // band explicitly, and assert no width, so the rule cannot come back.
+    expect(overlayCss).toMatch(/\.motif-cs-msa-symbol\[data-jump='true'\]::after[\s\S]*?inset:\s*0;[\s\S]*?background:\s*color-mix\(in srgb, var\(--motif-cs-msa-jump-rule\)/);
+    const jumpBlock = overlayCss.slice(overlayCss.indexOf(".motif-cs-msa-symbol[data-jump='true']::after"));
+    expect(jumpBlock.slice(0, jumpBlock.indexOf('}'))).not.toMatch(/width:/);
     // The roving cursor used to be the one state this test's own title excludes:
     // raw var(--accent), no token, which put it within 1.2:1 of the selection
     // rule it sits on top of by default.

@@ -28,39 +28,27 @@ const CSS_DEF_FILES = walkDir(SRC, /\.css$/);
 const args = new Set(process.argv.slice(2));
 const QUIET = args.has('--quiet');
 
-// Tokens whose definition is deliberately external or runtime (theme color
-// palettes that get inlined as accent overrides via JS, browser-internal vars).
-// Add here only when a token is genuinely unconstrained.
+// Tokens that no stylesheet defines because JavaScript writes them at runtime.
+//
+// An entry here switches off the only check that would catch a typo in that
+// token's name, so each one has to earn its place. `assertAllowlistIsLive()`
+// below fails the run when nothing in src/ actually writes the variable,
+// because this list had drifted into the opposite of its purpose: it carried
+// 23 entries whose comments cited `src/store/ui-store.ts`,
+// `applySelectionHighlightVars()` and `setMonochrome` — a file and two
+// functions this repository does not contain. Twenty-one of the 23 were
+// referenced nowhere, defined nowhere, and written nowhere, so they suppressed
+// nothing but future typos.
+//
+// The two that a stylesheet did reference each hid a defect the checker was
+// built to find. `--text-on-accent` left a primary button's label inheriting
+// whatever colour its ancestor happened to carry. `--accent-hover` made a
+// primary button's fill transparent on hover, dropping its label to 1.06:1 in
+// the light themes — the word vanished under the pointer.
 const ALLOWLIST = new Set([
-  // CSS-wide root vars set dynamically in JS theme code
-  '--accent', '--accent-rgb',
-  '--accent-bg-soft', '--accent-bg-medium', '--accent-bg-strong',
-  '--accent-border', '--accent-border-active',
-  '--accent-hover', '--accent-dim',
-  '--text-on-accent',
-  // Selection highlight palette (4 user-pickable variants)
-  '--selection-highlight', '--selection-highlight-rgb',
-  // `--selection-fg-override` is set inline by
-  // `applySelectionHighlightVars()` in `src/store/ui-store.ts` only for
-  // palettes that demand a deliberate base-fg swap (charcoal +
-  // monochrome). Default blue/amber/green/pink palettes leave it
-  // unset on purpose — that's how the line-class CSS rule
-  // (`[data-line-has-selection][data-sequence-bases] span`) gates
-  // itself to NOT regress coloring-mode visuals on default palettes.
-  // Defining a `:root` default would defeat that gate, so the variable
-  // is intentionally runtime-only.
-  '--selection-fg-override',
-  // Monochrome theme — applied via ui-store setMonochrome at runtime
-  '--mono', '--mono-softer', '--mono-border', '--mono-medium', '--mono-swatch',
-  '--mono-feature-bg',
-  // The monochrome three-stop ladder and feature foreground are also
-  // applied dynamically at runtime through `MONOCHROME_INLINE_VARS`. They're
-  // never defined in :root because they don't have a non-mono semantic — they
-  // exist only as inline overrides.
-  '--mono-base', '--mono-base-strong', '--mono-base-muted',
-  '--mono-feature-fg',
-  // Claude Science artifact feature ribbons — set inline per feature block
-  // in src/artifacts/motif-artifact.tsx.
+  // Set per feature block as an inline style in
+  // src/artifacts/motif-artifact.tsx. There is no sensible :root default: the
+  // value is the feature's own colour.
   '--feature-color',
 ]);
 
@@ -128,7 +116,55 @@ for (const file of REFERENCE_FILES) {
   }
 }
 
-// 3. Identify references with no definition + not in allowlist.
+// 3. Every allowlisted token must be one JavaScript actually writes.
+//
+// The allowlist's whole claim is "a stylesheet does not define this because
+// code sets it at runtime". That claim is checkable, and for twenty-one
+// entries it was false. A variable nothing writes and nothing defines resolves
+// to nothing, so a rule that names one is dead CSS -- and an allowlist entry
+// for it is indistinguishable from a typo, which is precisely the thing this
+// script exists to catch.
+//
+// Two ways to write a custom property reach the DOM: `setProperty('--x', v)`
+// and a style-object key, `{ '--x': v }` in JSX. Both are literal enough to
+// find without running anything.
+const RUNTIME_WRITE_FILES = walkDir(SRC, /\.(tsx?|mjs|cjs)$/);
+function findRuntimeWrites() {
+  const writes = new Map(); // token -> { file, line }
+  for (const file of RUNTIME_WRITE_FILES) {
+    const lines = readFileSafe(file).split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const patterns = [
+        /setProperty\(\s*['"`](--[a-zA-Z0-9_-]+)['"`]/g,
+        /['"](--[a-zA-Z0-9_-]+)['"]\s*:/g,
+      ];
+      for (const pattern of patterns) {
+        for (const match of lines[i].matchAll(pattern)) {
+          if (!writes.has(match[1])) {
+            writes.set(match[1], { file: path.relative(ROOT, file), line: i + 1 });
+          }
+        }
+      }
+    }
+  }
+  return writes;
+}
+
+const runtimeWrites = findRuntimeWrites();
+const deadAllowlist = [...ALLOWLIST].filter((token) => !runtimeWrites.has(token));
+if (deadAllowlist.length > 0) {
+  console.error(`✗ check-css-tokens: ${deadAllowlist.length} allowlisted token(s) that nothing writes`);
+  console.error('  Each is allowlisted as runtime-set, but no setProperty() call and no');
+  console.error('  style-object key in src/ ever sets it:');
+  console.error('');
+  for (const token of deadAllowlist) console.error(`  ${token}`);
+  console.error('');
+  console.error('Fix: delete the entry. If the token is genuinely needed, define it in a');
+  console.error('     stylesheet, or write it at runtime so the allowlist tells the truth.');
+  process.exit(1);
+}
+
+// 4. Identify references with no definition + not in allowlist.
 const undefinedRefs = [];
 for (const [token, hits] of references) {
   if (defs.has(token)) continue;

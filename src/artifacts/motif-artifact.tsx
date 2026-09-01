@@ -5,6 +5,13 @@ import { createRoot } from 'react-dom/client';
 import { Activity, AlignCenter, Beaker, ChevronDown, ChevronLeft, ChevronRight, Circle, Crosshair, Dna, FileText, History, Info, Languages, LayoutGrid, List, Map as MapIcon, Maximize2, Minimize2, MoveHorizontal, NotebookPen, Plus, Redo2, Scissors, Search, Settings, ShieldCheck, Tag, Trash2, Undo2, Workflow, Wrench, X, type LucideIcon } from 'lucide-react';
 import vectorsRaw from '../../public/data/vectors.json?raw';
 import type { Feature, FeatureStrand, FeatureType, ORF, RestrictionEnzyme, RestrictionMethylationState, RestrictionMethylationTarget, RestrictionSite, SequenceType, Topology } from '../bio/types';
+import { resolveFeatureColor } from '../bio/feature-palette';
+import {
+  acceptProposedAnnotation,
+  isProposedAnnotation,
+  MOTIF_PROPOSAL_METADATA_KEY,
+  proposeDefaultAnnotations,
+} from '../bio/proposed-annotations';
 import { extractEmbeddedFastaContent, parseFasta } from '../bio/fasta-parser';
 import {
   parseFeatures,
@@ -31,6 +38,7 @@ import {
   applySubstitution,
   applyInsertion,
   applyDeletion,
+  applyReplacement,
   preflightSequenceEdit,
   type MutationResult,
 } from '../bio/mutate';
@@ -55,10 +63,9 @@ import {
 import { normalizeSequenceStrict } from '../bio/sequence-normalization';
 import { translate, translateCompleteCds } from '../bio/translate';
 import { materializeTranslationExceptions } from '../bio/transl-except';
-import { computeMapLayout } from '../plasmid-map/layout';
-import { bpToAngle, pointOnCircle } from '../plasmid-map/geometry/coordinates';
+import { computeMapLayout, LINEAR_MAP_DEPTH_BUDGET } from '../plasmid-map/layout';
 import { featureSegments as mapFeatureSegments, featureSpans, normalizeSpan } from '../plasmid-map/geometry/ranges';
-import { selectionOverlayPaths } from '../plasmid-map/selection-overlay';
+import { circularSelectionEdgePath, selectionOverlayPaths } from '../plasmid-map/selection-overlay';
 import { mapModeForBlock, type MapLayout, type MapMode, type MapSpan } from '../plasmid-map/types';
 import {
   restrictionDensitySourcesForMap,
@@ -90,6 +97,7 @@ import ClaudeScienceGelWorkspace, {
   type ClaudeScienceGelResultIdentity,
 } from './ClaudeScienceGelWorkspace';
 import { type ArtifactGelLadderPreset, type ArtifactGelPreview } from './claude-science-gel-preview';
+import { parsePastedSequence } from './claude-science-paste-sequence';
 import { ClaudeScienceAssemblyWorkspace, type ClaudeScienceAssemblySavePayload } from './ClaudeScienceAssemblyWorkspace';
 import {
   ClaudeScienceCloningDesignWorkspace,
@@ -298,6 +306,8 @@ type ArtifactRecordInput = {
   length?: number;
   annotations?: ArtifactFeatureInput[];
   features?: ArtifactFeatureInput[];
+  /** Set false to disable the bounded post-paint annotation proposal pass. */
+  proposeAnnotations?: boolean;
   sites?: InventorySiteInput[];
   organism?: string;
   source?: string;
@@ -349,6 +359,7 @@ type ArtifactVector = {
   type: SequenceType;
   translationTableId?: number;
   features: Feature[];
+  proposeAnnotations?: boolean;
   organism?: string;
   source?: string;
   dateAdded?: string;
@@ -503,7 +514,8 @@ type MapViewport = {
   ty: number;
 };
 
-type ArtifactThemeName = 'light' | 'dark' | 'claude-light' | 'claude-dark';
+type ArtifactThemeName = 'light' | 'dark' | 'warm-light' | 'warm-dark';
+type ArtifactThemePaletteName = 'light' | 'dark' | 'claude-light' | 'claude-dark';
 type SequenceViewMode = 'standard' | 'detail';
 type MapThemeName = 'dark' | 'light';
 type PaneKey = 'inventory' | 'map' | 'sequence' | 'tools';
@@ -567,11 +579,16 @@ type TranslateTarget = {
   translationSource?: 'feature' | 'layer';
 };
 
-const THEME_OPTIONS: Array<{ id: ArtifactThemeName; label: string; description: string }> = [
-  { id: 'light', label: 'Light', description: 'Neutral surface · blue' },
-  { id: 'dark', label: 'Dark', description: 'Deep neutral · blue' },
-  { id: 'claude-light', label: 'Claude Light', description: 'Warm paper · coral' },
-  { id: 'claude-dark', label: 'Claude Dark', description: 'Warm charcoal · coral' },
+const THEME_OPTIONS: Array<{
+  id: ArtifactThemeName;
+  palette: ArtifactThemePaletteName;
+  label: string;
+  description: string;
+}> = [
+  { id: 'light', palette: 'light', label: 'Light', description: 'Neutral surface · blue' },
+  { id: 'dark', palette: 'dark', label: 'Dark', description: 'Deep neutral · blue' },
+  { id: 'warm-light', palette: 'claude-light', label: 'Warm Light', description: 'Warm paper · terracotta' },
+  { id: 'warm-dark', palette: 'claude-dark', label: 'Warm Dark', description: 'Warm charcoal · coral' },
 ];
 
 const DEFAULT_ENZYME_SOURCES: readonly RestrictionEnzymeSourceId[] = ['common', 'golden-gate-type-iis'];
@@ -584,7 +601,7 @@ const RESTRICTION_SOURCE_OPTIONS: Array<{
   {
     id: 'common',
     label: 'Common',
-    description: 'Default working-set enzymes for routine maps.',
+    description: 'Default enzymes for routine maps.',
     enzymeCount: RESTRICTION_ENZYMES.length,
   },
   ...RESTRICTION_PRESETS.map((preset) => ({
@@ -683,6 +700,13 @@ const COMPACT_PINNED_PANE_WIDTH_LIMITS: Partial<Record<ResizablePaneKey, { min: 
 };
 const COMPACT_ROW_DIVIDER_HEIGHT = 9;
 const COMPACT_ROW_MIN_HEIGHT = 240;
+// How much height the map row starts with when the workspace stacks. The 0.46
+// split below reads as even-handed and is not: the map is a fixed-aspect drawing
+// that shrinks on its short axis, so at a 800px-tall window it opened as a 198px
+// ring inside a 1372x300 frame, with ~990px of horizontal letterbox either side.
+// This is a floor on the map's DEFAULT only — the resize bounds still go down to
+// COMPACT_ROW_MIN_HEIGHT, so dragging the divider is unaffected.
+const COMPACT_MAP_ROW_DEFAULT_MIN_HEIGHT = 470;
 const COMPACT_SHORT_ROW_MIN_HEIGHT = 150;
 const TWO_ROW_VERY_SHORT_MIN_HEIGHT = 120;
 const DEFAULT_STACKED_PANE_HEIGHTS: StackedPaneHeights = { inventory: null, sequence: null };
@@ -805,7 +829,8 @@ type WorkspaceLayoutPrefs = {
   floatingPaneRects: FloatingPaneRects;
 };
 
-const WORKSPACE_LAYOUT_STORAGE_KEY = 'motif.claude-science.workspace-layout.v1';
+const WORKSPACE_LAYOUT_STORAGE_KEY = 'motif.workspace-layout.v1';
+const LEGACY_WORKSPACE_LAYOUT_STORAGE_KEY = 'motif.claude-science.workspace-layout.v1';
 const MSA_VIEW_STORAGE_KEY = 'motif.claude-science.msa-view.v1';
 const DEFAULT_WORKSPACE_LAYOUT: WorkspaceLayoutPrefs = {
   theme: 'light',
@@ -823,16 +848,25 @@ function isPaneKey(value: unknown): value is PaneKey {
 }
 
 function normalizeArtifactThemeName(value: unknown): ArtifactThemeName {
-  if (value === 'light' || value === 'dark' || value === 'claude-light' || value === 'claude-dark') return value;
-  if (value === 'claude') return 'claude-light';
-  if (value === 'tokyo') return 'claude-dark';
+  if (value === 'light' || value === 'dark' || value === 'warm-light' || value === 'warm-dark') return value;
+  if (value === 'claude-light' || value === 'claude') return 'warm-light';
+  if (value === 'claude-dark' || value === 'tokyo') return 'warm-dark';
   return DEFAULT_WORKSPACE_LAYOUT.theme;
+}
+
+function artifactThemePaletteName(theme: ArtifactThemeName): ArtifactThemePaletteName {
+  if (theme === 'warm-light') return 'claude-light';
+  if (theme === 'warm-dark') return 'claude-dark';
+  return theme;
 }
 
 function applyArtifactTheme(theme: ArtifactThemeName): void {
   if (typeof document === 'undefined' || typeof window === 'undefined') return;
   const root = document.documentElement;
-  root.dataset.theme = theme;
+  // The public theme identifiers are host-neutral. Keep the established CSS
+  // palette selectors behind this adapter until the concurrent stylesheet
+  // migration can land as its own reviewed change.
+  root.dataset.theme = artifactThemePaletteName(theme);
   const themeColor = window.getComputedStyle(root).getPropertyValue('--workspace-bg').trim();
   if (themeColor) document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')?.setAttribute('content', themeColor);
 }
@@ -938,7 +972,8 @@ function normalizeWorkspaceLayout(value: unknown): WorkspaceLayoutPrefs {
 function loadWorkspaceLayoutPrefs(): WorkspaceLayoutPrefs {
   if (typeof window === 'undefined') return DEFAULT_WORKSPACE_LAYOUT;
   try {
-    const raw = window.localStorage?.getItem(WORKSPACE_LAYOUT_STORAGE_KEY);
+    const raw = window.localStorage?.getItem(WORKSPACE_LAYOUT_STORAGE_KEY)
+      ?? window.localStorage?.getItem(LEGACY_WORKSPACE_LAYOUT_STORAGE_KEY);
     return raw ? normalizeWorkspaceLayout(JSON.parse(raw)) : DEFAULT_WORKSPACE_LAYOUT;
   } catch {
     return DEFAULT_WORKSPACE_LAYOUT;
@@ -958,6 +993,7 @@ function clearWorkspaceLayoutPrefs(): void {
   if (typeof window === 'undefined') return;
   try {
     window.localStorage?.removeItem(WORKSPACE_LAYOUT_STORAGE_KEY);
+    window.localStorage?.removeItem(LEGACY_WORKSPACE_LAYOUT_STORAGE_KEY);
   } catch {
     /* ignore unavailable storage */
   }
@@ -1004,7 +1040,7 @@ const INVENTORY_SYSTEM_GROUP_LABELS: Record<InventorySystemGroupKey, string> = {
 };
 
 function mapThemeForArtifactTheme(theme: ArtifactThemeName): MapThemeName {
-  return theme === 'light' || theme === 'claude-light' ? 'light' : 'dark';
+  return theme === 'light' || theme === 'warm-light' ? 'light' : 'dark';
 }
 
 type MapSelectionRange = {
@@ -1051,28 +1087,48 @@ function clampWindowRect(
   return { x, y, w, h };
 }
 
-function defaultTranslationsWindowRect(): WindowRect {
-  const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1280;
-  const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 800;
+export function defaultTranslationsWindowRect(
+  viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1280,
+  viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 800,
+): WindowRect {
+  // The height was a flat 360 with no viewport term at all, so this window cut
+  // off the same 307px of its own reading frames at every size from 1100x650 to
+  // 1920x1080 while 274px to 704px of screen height below it went unused. The
+  // body wants 622px for the shipped pUC19 record, and window chrome takes 45,
+  // so 680 clears the frames from a 900px-tall viewport up and the viewport term
+  // beside it still shrinks the window on a short screen. Width stays 420:
+  // nothing inside this window overflows horizontally at that size.
+  const height = Math.min(680, Math.max(300, viewportHeight - 150));
   return clampWindowRect({
     x: Math.max(16, viewportWidth - 760),
-    y: Math.max(88, viewportHeight - 440),
+    y: Math.max(56, viewportHeight - height - 80),
     w: 420,
-    h: 360,
+    h: height,
   }, viewportWidth, viewportHeight);
 }
 
-function defaultAlignmentWindowRect(): WindowRect {
-  const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1280;
-  const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 800;
-  // An alignment is the widest, tallest thing this workspace shows, and the
-  // caps are what it opens at before anyone drags a corner. The old 940x600
-  // ignored the screen entirely: on a 2560x1400 display it left 810px of unused
-  // width and 400px of unused height while the residues scrolled in a 194px
-  // slot. These caps still keep a visible margin, so it reads as a window
-  // rather than a takeover, and both are clamped by the viewport terms beside
-  // them on small screens.
-  const width = Math.min(940, Math.max(320, viewportWidth - 40));
+export function defaultAlignmentWindowRect(
+  viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1280,
+  viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 800,
+): WindowRect {
+  // An alignment is the one surface here whose content has no natural width: a
+  // 600-column alignment paints 6,571px of residues. Under the flat 940 cap the
+  // matrix showed 82 of those 600 columns at 1100x650 and the same 82 at
+  // 1920x1080, where 916px of screen sat unused beside it. The four workflow
+  // windows below take no such fraction because measurement says they do not
+  // want one: at 1920x1080 no element inside Primer Design, Cloning Design,
+  // Cloning Workspace, or Gel Preview overflows its own width at their caps.
+  // The 940 floor holds every viewport up to 1245px exactly where it was, so
+  // the growth starts only where there is screen to gain, and the 1480 ceiling
+  // keeps a large display from being taken over.
+  const available = Math.max(320, viewportWidth - 40);
+  const width = Math.min(1480, Math.max(Math.min(940, available), Math.round(available * 0.78)));
+  // Height already scaled and needed no change. It is the axis that gains least
+  // here: with 3 rows the matrix is 79.6% empty at 1920x1080 against 55% at
+  // 1100x650, so growing it further buys blank space. A content-derived height
+  // was rejected — this runs in a mount-time initialiser, before the viewer
+  // mounts and while the session may hold no alignment at all, and the row
+  // count then changes under the open window on every import, run, and hide.
   const height = Math.min(820, Math.max(300, viewportHeight - 150));
   return clampWindowRect({
     x: Math.max(16, Math.round((viewportWidth - width) / 2)),
@@ -1250,7 +1306,7 @@ const MOTIF_HELP_API: Record<string, string> = {
   'motifAddRecords(recordOrRecords)': 'Append one record or an array; returns number added; focuses the first new record.',
   'motifRenderInventory(recordsOrPayload)': 'Replace records while preserving compatible alignments, notes, results, and durable settings. Workspace fields or orphaning replacements are rejected transactionally; use motifReplaceWorkspace for intentional full replacement.',
   'motifGetInventory()': 'Return all current records (serialized, round-trippable into motifAddRecords/motifRenderInventory).',
-  'motifGetActiveRecord()': 'Return the currently selected record, or null.',
+  'motifGetActiveRecord()': 'Return the selected record, or null.',
   'motifAddAlignments(alignmentOrAlignments)': 'Validate and append one precomputed gapped alignment or an array; returns number added.',
   'motifGetAlignments()': 'Return alignments held in this session with engine provenance and gapped rows.',
   'motifAddNotes(noteOrNotes)': 'Validate and append workspace, record, or range notes transactionally; returns number added.',
@@ -1298,7 +1354,7 @@ const MOTIF_HELP: MotifHelp = {
     restrictionMaps: "Switch restriction source groups with motifSetRestrictionSources([...]); use [] to scan no bundled enzymes, or ['all'] for the full bundled list including Type IIS enzymes.",
     reverseComplement: 'The UI can show/add reverse complements for DNA/RNA records and preserve feature coordinates.',
     translate: 'Translate ranges, complete coding features, or whole nucleotide records with selectable supported NCBI genetic codes. CDS/ORF metadata.transl_table overrides the record translationTableId; unsupported explicit qualifiers block instead of falling back.',
-    multipleSequenceAlignment: 'Open Alignment from Tools to compare 2–10 same-type records locally, or inspect/import precomputed MAFFT, MUSCLE, or Clustal Omega aligned FASTA. Alignment nucleotide-to-protein overlays currently use the Standard code.',
+    multipleSequenceAlignment: 'Open Alignment from Tools to compare 2–10 same-type records locally, or inspect or import precomputed MAFFT, MUSCLE, or Clustal Omega aligned FASTA. Alignment nucleotide-to-protein overlays use the Standard code.',
     notes: 'Save workspace, record, or selected-range notes in the Tools pane or with motifAddNotes(...). Markdown is stored as inert text.',
     workflowHistory: 'Store digest, gel, Golden Gate, and ligation result summaries with explicit input/output record ids and engine provenance.',
     analysisResults: 'Store typed primer, PCR, assembly, construct-verification, BLAST, structure, report, or table results. The UI renders supplied content as inert text/data only.',
@@ -1330,6 +1386,7 @@ const MOTIF_HELP: MotifHelp = {
     translationTableId: 'number — optional supported NCBI genetic-code id for DNA/RNA records; defaults to table 1. A CDS/ORF metadata.transl_table qualifier takes precedence.',
     description: 'string — optional one-line description.',
     features: 'ArtifactFeatureInput[] — optional annotations. Alias: annotations.',
+    proposeAnnotations: 'boolean — optional; defaults to true only when the record supplies no features. Set false to opt out of the bounded post-paint proposal pass.',
     group: 'string — optional compact inventory group. Aliases: project, folder, collection; aliases serialize back as canonical group.',
     organism: 'string — optional.',
     source: 'string — optional provenance label.',
@@ -1343,7 +1400,7 @@ const MOTIF_HELP: MotifHelp = {
   },
   featureSchema: {
     name: 'string — feature label.',
-    type: "FeatureType — e.g. 'cds' | 'gene' | 'promoter' | 'terminator' | 'primer_bind' | 'misc_feature' | 'resistance' | 'origin'.",
+    type: "FeatureType — for example, 'cds' | 'gene' | 'promoter' | 'terminator' | 'primer_bind' | 'misc_feature' | 'resistance' | 'origin'.",
     start: 'number — 0-indexed inclusive start.',
     end: 'number — exclusive end (end > start).',
     direction: "'forward' | 'reverse' | 'none' (or 1 | -1 | 0) — strand.",
@@ -1433,6 +1490,7 @@ const EMPTY_ARTIFACT_VECTOR: ArtifactVector = {
   topology: 'linear',
   type: 'dna',
   features: [],
+  proposeAnnotations: false,
   sites: [],
   active: false,
 };
@@ -1479,7 +1537,6 @@ const ALLOWED_FEATURE_TYPES: readonly FeatureType[] = [
   'custom',
 ];
 const featureTypeByLowerName = new Map(ALLOWED_FEATURE_TYPES.map((type) => [type.toLowerCase(), type]));
-const SAFE_FEATURE_COLOR = /^(?:#[0-9a-f]{3,8}|(?:rgb|hsl)a?\([\d\s.,%+\-/]+\)|[a-z]+)$/i;
 const UNSAFE_OBJECT_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -1688,12 +1745,6 @@ function normalizeFeatureType(value: unknown): FeatureType {
   return featureTypeByLowerName.get(value.trim().toLowerCase()) ?? 'custom';
 }
 
-function normalizeFeatureColor(value: unknown): string {
-  if (typeof value !== 'string') return '#9AA3B5';
-  const color = value.trim();
-  return color.length <= 80 && SAFE_FEATURE_COLOR.test(color) ? color : '#9AA3B5';
-}
-
 function nextUniqueId(base: string, usedIds: Set<string>): string {
   if (!usedIds.has(base)) {
     usedIds.add(base);
@@ -1875,14 +1926,16 @@ function normalizeFeature(
   const normalizedStart = subRanges ? Math.min(...subRanges.map((range) => range.start)) : start;
   const normalizedEnd = subRanges ? Math.max(...subRanges.map((range) => range.end)) : end;
 
+  const name = normalizeOptionalText(feature.name) ?? `Feature ${index + 1}`;
+  const type = normalizeFeatureType(feature.type);
   return {
     id: normalizeOptionalText(feature.id) ?? `feature-${index + 1}`,
-    name: normalizeOptionalText(feature.name) ?? `Feature ${index + 1}`,
-    type: normalizeFeatureType(feature.type),
+    name,
+    type,
     start: normalizedStart,
     end: normalizedEnd,
     strand: normalizedStrand,
-    color: normalizeFeatureColor(feature.color),
+    color: resolveFeatureColor({ name, type, color: feature.color }),
     metadata,
     subRanges,
   };
@@ -1979,6 +2032,7 @@ function truncatedGenBankReason(record: unknown): string | null {
 export function normalizeRecord(
   record: ArtifactRecordInput,
   index: number,
+  implicitProposals = true,
 ): ArtifactVector | null {
   if (!isObject(record) || truncatedGenBankReason(record)) return null;
   const sequenceTypeHint = record.molecule ?? record.type;
@@ -2001,11 +2055,10 @@ export function normalizeRecord(
   const topology = normalizeTopology(record.topology, type);
   const rawId = normalizeOptionalText(record.id) ?? normalizeOptionalText(record.name) ?? `record-${index + 1}`;
   const id = rawId || `record-${index + 1}`;
-  const rawFeatures = Array.isArray(record.annotations)
-    ? record.annotations
-    : Array.isArray(record.features)
-      ? record.features
-      : [];
+  const rawFeatures = [
+    ...(Array.isArray(record.features) ? record.features : []),
+    ...(Array.isArray(record.annotations) ? record.annotations : []),
+  ];
   const usedFeatureIds = new Set<string>();
   const features = rawFeatures
     .map((feature, featureIndex) => normalizeFeature(feature, featureIndex, sequence.length))
@@ -2023,6 +2076,8 @@ export function normalizeRecord(
     type,
     translationTableId,
     features,
+    proposeAnnotations: rawFeatures.length === 0
+      && (record.proposeAnnotations ?? implicitProposals),
     sites: normalizeSites(record.sites, sequence.length),
     organism: normalizeOptionalText(record.organism),
     source: normalizeOptionalText(record.source),
@@ -2042,12 +2097,15 @@ export function normalizeRecord(
   };
 }
 
-function normalizeRecords(records: ArtifactRecordInput[]): ArtifactVector[] {
+function normalizeRecords(
+  records: ArtifactRecordInput[],
+  implicitProposals = true,
+): ArtifactVector[] {
   const usedIds = new Set<string>();
   const normalized: ArtifactVector[] = [];
 
   records.forEach((record, index) => {
-    const next = normalizeRecord(record, index);
+    const next = normalizeRecord(record, index, implicitProposals);
     if (!next) return;
 
     const id = nextUniqueId(next.id, usedIds);
@@ -2203,6 +2261,7 @@ function serializeRecord(record: ArtifactVector): ArtifactRecordInput {
     translationTableId: record.translationTableId,
     seq: record.sequence,
     length: record.sequence.length,
+    proposeAnnotations: record.proposeAnnotations,
     annotations: record.features.map((feature) => ({
       id: feature.id,
       name: feature.name,
@@ -2231,6 +2290,31 @@ function serializeRecord(record: ArtifactVector): ArtifactRecordInput {
     sangerTrace: record.sangerTrace
       ? normalizeArtifactSangerTrace(record.sangerTrace, record.sequence)
       : undefined,
+  };
+}
+
+function annotationReviewProvenance(
+  record: ArtifactVector,
+  features: readonly Feature[],
+  dismissedDelta = 0,
+): Record<string, unknown> | undefined {
+  const current = record.provenance?.motifAutoAnnotation;
+  if (!isPlainObject(current)) return record.provenance;
+  const pendingCount = features.filter(isProposedAnnotation).length;
+  const acceptedCount = features.filter((feature) => {
+    const proposal = feature.metadata[MOTIF_PROPOSAL_METADATA_KEY];
+    return isPlainObject(proposal) && proposal.status === 'accepted';
+  }).length;
+  const dismissedCount = (typeof current.dismissedCount === 'number' ? current.dismissedCount : 0) + dismissedDelta;
+  return {
+    ...record.provenance,
+    motifAutoAnnotation: {
+      ...current,
+      status: pendingCount > 0 ? 'review_required' : 'review_complete',
+      pendingCount,
+      acceptedCount,
+      dismissedCount,
+    },
   };
 }
 
@@ -2674,7 +2758,7 @@ function assertArtifactCheckpointRecordsRestorable(records: readonly ArtifactVec
     .join(' ');
   throw new MotifArtifactRuntimeError(
     'MOTIF_INPUT_LIMIT_EXCEEDED',
-    `Database JSON and workspace ZIP export were blocked because the checkpoint would not pass restore validation. ${recordSummary || issues[0].message} No data was truncated.`,
+    `Database JSON and workspace ZIP export failed restore validation. ${recordSummary || issues[0].message} Fix the listed records, then export again. No data was truncated.`,
     { operation: 'checkpointExport', issues, mutated: false },
   );
 }
@@ -3158,7 +3242,7 @@ export function toGenBankLite(record: ArtifactVector, topology: Topology): strin
     locus,
     `DEFINITION  ${record.description || record.name}.`,
     `ACCESSION   ${record.id}`,
-    `SOURCE      ${record.source || 'Motif for Claude Science'}`,
+    `SOURCE      ${record.source || 'Motif'}`,
     ...exportComments,
     'FEATURES             Location/Qualifiers',
     features || '     source          1..1',
@@ -3566,6 +3650,33 @@ function recordInputFromGenBank(record: ReturnType<typeof parseGenBank>[number],
   };
 }
 
+/**
+ * Why ONE file in a multi-file import could not be opened, in words a person who
+ * chose files from a picker can act on.
+ *
+ * `actionableImportError` returns the runtime API's own message, which opens with
+ * the name of the `window` function that raised it and closes with "No records
+ * were added." Both are right for a caller of `motifAddRecords` and wrong here:
+ * the user never typed that name, and after the per-file split other records in
+ * the same selection usually WERE added. The error codes are a stable enum, so
+ * the advice can be rebuilt without either sentence.
+ */
+function importFailureReason(error: unknown): string {
+  if (error instanceof MotifArtifactRuntimeError) {
+    switch (error.code) {
+      case 'MOTIF_TRUNCATED_GENBANK_IMPORT':
+        return 'the GenBank record stops before the end of ORIGIN. Import the complete record and retry.';
+      case 'MOTIF_RECORD_TOO_LARGE':
+        return `the sequence is over the ${MOTIF_MAX_RECORD_LENGTH.toLocaleString()}-residue artifact limit. Split it and retry.`;
+      case 'MOTIF_INPUT_LIMIT_EXCEEDED':
+        return "it exceeds the artifact's bounded resource limits. Reduce its annotations or metadata and retry.";
+      default:
+        return 'it is not a record this artifact can open.';
+    }
+  }
+  return actionableImportError(error);
+}
+
 function actionableImportError(error: unknown): string {
   if (error instanceof MotifArtifactRuntimeError) return error.message;
   if (error instanceof Error && error.message.trim()) return error.message;
@@ -3762,37 +3873,46 @@ function mapRangeLabel(range: MapSelectionRange, sequenceLength: number): string
   return `${range.start + 1}-${end}${wraps ? ' wrap' : ''} (${length.toLocaleString()})`;
 }
 
+/**
+ * Circular selection as fill/start-edge/end-edge triplets: the annular sector, then
+ * a projection line along each of its two straight radial edges. The sector fill is
+ * deliberately faint, which leaves the exact first and last base of a span unreadable;
+ * the edge lines say where it starts and stops without outlining the arcs, which
+ * would read as a boxed-in object rather than a highlight.
+ *
+ * A boundary that only exists because the span was cut at the origin gets a
+ * degenerate placeholder path instead of a line, so a wrapping selection is not
+ * drawn as two spans butted together with a spurious third edge down bp 0. Seam-ness
+ * is decided from the whole span set rather than from a span's index within its own
+ * range: callers hand this function ranges that are ALREADY split at the origin, so
+ * each range arrives as a single span and an index test would call both of its
+ * boundaries real. The triplet stride is what the stylesheet's :nth-child rules key
+ * on, so every span emits exactly three paths whether or not all three are drawn.
+ */
 function artifactSelectionOverlayPaths(layout: MapLayout, ranges: readonly MapSelectionRange[]): string[] {
   if (layout.mode !== 'circular') return selectionOverlayPaths(layout, ranges);
   const result: string[] = [];
-  const radius = Math.max(1, layout.radius + 7);
-  const radialBoundary = (bp: number) => {
-    const angle = bpToAngle(bp, layout.length);
-    const halfWidthDegrees = clamp((0.8 / radius) * (180 / Math.PI), 0.08, 0.28);
-    const edgeA = pointOnCircle(layout.center.x, layout.center.y, radius, angle - halfWidthDegrees);
-    const edgeB = pointOnCircle(layout.center.x, layout.center.y, radius, angle + halfWidthDegrees);
-    return [
-      `M ${layout.center.x.toFixed(2)} ${layout.center.y.toFixed(2)}`,
-      `L ${edgeA.x.toFixed(2)} ${edgeA.y.toFixed(2)}`,
-      `L ${edgeB.x.toFixed(2)} ${edgeB.y.toFixed(2)}`,
-      'Z',
-    ].join(' ');
-  };
-  const emptyLine = `M ${layout.center.x.toFixed(2)} ${layout.center.y.toFixed(2)}`;
+  const seam = `M ${layout.center.x.toFixed(2)} ${layout.center.y.toFixed(2)}`;
+  const spansByRange = ranges.map((range) =>
+    normalizeSpan(range.start, range.end, layout.length, layout.topology));
+  const allSpans = spansByRange.flat();
+  // The origin is a seam only when the selection continues on both sides of it.
+  const wrapsOrigin = allSpans.some((span) => span.start === 0)
+    && allSpans.some((span) => span.end === layout.length);
 
-  for (const range of ranges) {
-    const spans = normalizeSpan(range.start, range.end, layout.length, layout.topology);
+  ranges.forEach((range, rangeIndex) => {
+    const spans = spansByRange[rangeIndex] ?? [];
     const fills = selectionOverlayPaths(layout, [range]);
     fills.forEach((fill, index) => {
       const span = spans[index];
       if (!span) return;
       result.push(
         fill,
-        index === 0 ? radialBoundary(span.start) : emptyLine,
-        index === spans.length - 1 ? radialBoundary(span.end) : emptyLine,
+        wrapsOrigin && span.start === 0 ? seam : circularSelectionEdgePath(layout, span.start),
+        wrapsOrigin && span.end === layout.length ? seam : circularSelectionEdgePath(layout, span.end),
       );
     });
-  }
+  });
   return result;
 }
 
@@ -4045,13 +4165,17 @@ function resolveSelectedRecordId(
   return records[0]?.id ?? 'record-1';
 }
 
-function loadArtifactPayload(rawPayload: unknown = null, fallbackSelectedRecordId?: string): LoadedPayload {
+function loadArtifactPayload(
+  rawPayload: unknown = null,
+  fallbackSelectedRecordId?: string,
+  implicitProposals = true,
+): LoadedPayload {
   const fallbackRecords = normalizeRecords(builtInRecords).filter((record) => record.active);
   const fallbackPayload: LoadedPayload = {
     schema: DEFAULT_SCHEMA,
     inventory: {
       id: 'motif-built-in-vectors',
-      title: 'Motif for Claude Science',
+      title: 'Motif',
       description: 'Built-in Motif vector set. Inject a JSON payload to render a Claude Science inventory.',
     },
     records: fallbackRecords,
@@ -4070,7 +4194,8 @@ function loadArtifactPayload(rawPayload: unknown = null, fallbackSelectedRecordI
   const rawRecords = payloadRecords(payload) as unknown[];
   if (rawRecords.length > 0) validateRuntimeRecordInputs(rawRecords, 'motifRenderInventory', true);
   validateRuntimePayloadEnvelope(rawPayload);
-  const records = normalizeRecords(rawRecords as ArtifactRecordInput[]).filter((record) => record.active);
+  const records = normalizeRecords(rawRecords as ArtifactRecordInput[], implicitProposals)
+    .filter((record) => record.active);
   const hasExplicitRecords = payloadHasExplicitRecords(rawPayload, payload);
   const usableRecords = hasExplicitRecords ? records : records.length > 0 ? records : fallbackRecords;
   const inventory = isPlainObject(payload.inventory) ? payload.inventory : undefined;
@@ -4115,7 +4240,11 @@ export function prepareInitialArtifactWorkspace(
   origin: 'script' | 'window' = 'script',
 ): PreparedArtifactWorkspace {
   try {
-    return prepareArtifactDatabaseRestore(rawWorkspace);
+    // Opening a host-supplied workspace must be observational: featureless
+    // records do not become dirty merely because the workbench rendered them.
+    // Hosts can still opt in per record with proposeAnnotations: true, while
+    // newly added/imported records retain the proactive default.
+    return prepareArtifactDatabaseRestore(rawWorkspace, undefined, false);
   } catch (cause) {
     if (cause instanceof MotifArtifactRuntimeError && cause.code === 'MOTIF_INVALID_PRELOAD') throw cause;
     const detail = cause instanceof Error ? cause.message : String(cause);
@@ -4303,6 +4432,9 @@ function collectMalformedRecordIssues(
         }
       });
     }
+  }
+  if (record.proposeAnnotations !== undefined && typeof record.proposeAnnotations !== 'boolean') {
+    add(`${basePath}.proposeAnnotations`, 'proposeAnnotations must be a boolean when provided');
   }
   if (record.provenance !== undefined) {
     if (!isPlainObject(record.provenance)) add(`${basePath}.provenance`, 'provenance must be a plain JSON object');
@@ -4730,6 +4862,7 @@ function validateRuntimePayloadEnvelope(rawPayload: unknown): void {
 export function prepareInventoryReplacement(
   rawPayload: ArtifactPayload | ArtifactRecordInput | ArtifactRecordInput[],
   fallbackSelectedRecordId?: string,
+  implicitProposals = true,
 ): LoadedPayload {
   const payload = coercePayload(rawPayload);
   const hasExplicitRecords = payloadHasExplicitRecords(rawPayload, payload);
@@ -4744,7 +4877,7 @@ export function prepareInventoryReplacement(
   const rawRecords = payloadRecords(payload) as unknown[];
   // An explicit literal empty collection is the only replacement form that is
   // allowed to clear. Every non-empty collection must validate in full first.
-  const nextPayload = loadArtifactPayload(rawPayload, fallbackSelectedRecordId);
+  const nextPayload = loadArtifactPayload(rawPayload, fallbackSelectedRecordId, implicitProposals);
   if (rawRecords.length > 0 && nextPayload.records.length === 0) {
     throw new MotifArtifactRuntimeError(
       'MOTIF_INVALID_INVENTORY_REPLACEMENT',
@@ -4804,7 +4937,7 @@ export function prepareRecordsOnlyWorkspaceReplacement(
     if (forbiddenFields.length > 0) {
       throw new MotifArtifactRuntimeError(
         'MOTIF_INVALID_WORKSPACE_INPUT',
-        'motifRenderInventory is records-only and will not discard workspace state silently. Use motifReplaceWorkspace for a complete backup payload.',
+        'motifRenderInventory accepts records only and preserves workspace state. Use motifReplaceWorkspace for a complete backup payload.',
         { operation: 'motifRenderInventory', forbiddenFields, mutated: false },
       );
     }
@@ -4920,7 +5053,7 @@ export function prepareRecordsOnlyWorkspaceReplacement(
     if (newlyMissingFeatureIds.length > 0) {
       issues.push({
         category: 'artifactState',
-        message: `artifactState.hiddenFeatureTranslationsByRecord.${recordId} would reference removed feature${newlyMissingFeatureIds.length === 1 ? '' : 's'}: ${newlyMissingFeatureIds.join(', ')}.`,
+        message: `artifactState.hiddenFeatureTranslationsByRecord.${recordId} references feature${newlyMissingFeatureIds.length === 1 ? '' : 's'} removed by the replacement: ${newlyMissingFeatureIds.join(', ')}.`,
       });
     }
   }
@@ -4932,7 +5065,7 @@ export function prepareRecordsOnlyWorkspaceReplacement(
   if (issues.length > 0 || !alignments || !noteCollections || !workflowCollections || !analysisWorkspace || !artifactState) {
     throw new MotifArtifactRuntimeError(
       'MOTIF_INVALID_INVENTORY_REPLACEMENT',
-      'motifRenderInventory would orphan existing workspace data. The existing workspace was preserved; use motifReplaceWorkspace for an intentional complete replacement.',
+      'motifRenderInventory cannot replace records that existing workspace data references. The workspace was preserved. Use motifReplaceWorkspace for an intentional complete replacement.',
       { operation: 'motifRenderInventory', issues, mutated: false },
     );
   }
@@ -4966,6 +5099,7 @@ export function prepareRecordsOnlyWorkspaceReplacement(
 export function prepareArtifactDatabaseRestore(
   rawDatabase: unknown,
   fallbackSelectedRecordId?: string,
+  implicitProposals = true,
 ): PreparedArtifactWorkspace {
   // Validate both halves before returning either one. Callers can therefore
   // replace the current workspace in one commit without leaving a partially
@@ -4980,6 +5114,7 @@ export function prepareArtifactDatabaseRestore(
   const preparedPayload = prepareInventoryReplacement(
     restoreInput as ArtifactPayload | ArtifactRecordInput | ArtifactRecordInput[],
     fallbackSelectedRecordId,
+    implicitProposals,
   );
   const recordLengths = new Map(preparedPayload.records.map((record) => [record.id, record.sequence.length]));
   if (!isPlainObject(rawDatabase)) {
@@ -5376,16 +5511,25 @@ function portableTranslationLayersByRecord(
 // Accepted keystrokes for base editing: canonical bases + IUPAC ambiguity codes.
 const DNA_EDIT_ALPHABET = 'ACGTRYSWKMBDHVN';
 const RNA_EDIT_ALPHABET = 'ACGURYSWKMBDHVN';
+const ORIGIN_WRAPPING_RANGE_EDIT_NOTICE = 'This selection wraps the circular origin and cannot be edited as one range yet. Clear it and edit each side of the origin separately.';
 
 function hasNativeTextSelection(): boolean {
   return (window.getSelection?.()?.toString() ?? '').length > 0;
 }
 
-function cleanPastedSequenceForEdit(value: string, alphabet: string): string {
-  const allowed = new Set(alphabet.split(''));
-  return value.toUpperCase().split('').filter((char) => allowed.has(char)).join('');
+export function applySequenceRangeReplacement(
+  sequence: string,
+  features: Feature[],
+  start: number,
+  end: number,
+  replacement: string,
+  sequenceType: SequenceType,
+): MutationResult {
+  if (sequenceType !== 'dna' && sequenceType !== 'rna') {
+    throw new Error('Range replacement is available only for editable nucleotide sequences.');
+  }
+  return applyReplacement(sequence, [], features, start, end - start, replacement, sequenceType);
 }
-
 // Max feature-name length shown on the plasmid map before it is ellipsized, so
 // an over-long name doesn't get its label dropped or shrink the whole fitted map
 // for lack of room. Full names are untouched in the sequence pane, inspector,
@@ -5426,14 +5570,14 @@ export class ArtifactRuntimeErrorBoundary extends Component<{ children: ReactNod
   private copyRecoveryJson = async () => {
     const snapshot = lastGoodRuntimeRecoveryPayload;
     if (!snapshot) {
-      this.setState({ recoveryStatus: 'No recovery snapshot is available yet.' });
+      this.setState({ recoveryStatus: 'No recovery JSON is available.' });
       return;
     }
     const copied = await writeTextToClipboard(JSON.stringify(snapshot));
     this.setState({
       recoveryStatus: copied
-        ? 'Recovery JSON copied. Reload, then restore it from Add Entry.'
-        : 'Copy was blocked. Use your browser developer tools to read window.motifGetInventory before reloading.',
+        ? 'Recovery JSON copied. Reload the artifact, then restore it with Add entry.'
+        : "Copy failed. Before reloading, retrieve window.motifGetInventory() in your browser's developer tools.",
     });
   };
 
@@ -5457,8 +5601,7 @@ export class ArtifactRuntimeErrorBoundary extends Component<{ children: ReactNod
             </p>
           ) : (
             <p>
-              The artifact kept the last accepted inventory separate from this failed render. Copy its recovery JSON before
-              reloading, then use Add Entry to restore the database JSON.
+              Copy the recovery JSON before reloading. Then use Add entry to restore the last accepted inventory.
             </p>
           )}
           <p className="motif-cs-muted">{this.state.errorMessage}</p>
@@ -5479,10 +5622,10 @@ export class ArtifactRuntimeErrorBoundary extends Component<{ children: ReactNod
           </div>
           <p className="motif-cs-muted" role="status" aria-live="polite">
             {this.state.recoveryStatus ?? (hasRecoverySnapshot
-              ? 'A last-good recovery snapshot is ready.'
+              ? 'Recovery JSON is ready to copy.'
               : isPreloadFailure
                 ? 'No workspace was accepted. The embedded source remains unchanged.'
-                : 'No recovery snapshot is available yet.')}
+                : 'No recovery JSON is available.')}
           </p>
         </section>
       </main>
@@ -5712,6 +5855,13 @@ function App() {
   // Root space: this is handed straight to zoomAtPoint, which pins a root point.
   const lastZoomAnchorRef = useRef<MapRootPoint | null>(null);
   const suppressNextBackgroundClick = useRef(false);
+  // A drag that STARTED on a feature or a restriction tick still ends as a browser
+  // `click` on that object, which would replace the range the user just dragged.
+  const suppressNextMapObjectClick = useRef(false);
+  // Whether the press that began the current gesture landed on a feature or a
+  // restriction tick. A press that did NOT is a click on the map itself, and a
+  // click on the map places a 1 bp range at that base.
+  const mapPressOnObjectRef = useRef(false);
   const selectedRecord = payload.records.find((record) => record.id === selectedRecordId) ?? payload.records[0];
   const vector = selectedRecord ?? EMPTY_ARTIFACT_VECTOR;
   const hasActiveRecord = Boolean(selectedRecord);
@@ -5956,6 +6106,8 @@ function App() {
   const enzymeSourcesByRecordRef = useRef<Record<string, readonly RestrictionEnzymeSourceId[]>>(enzymeSourcesByRecord);
   const customEnzymesRef = useRef<readonly RestrictionEnzyme[]>(customEnzymes);
   const lastVisibleEnzymeSourcesRef = useRef<Record<string, RestrictionEnzymeSourceId[]>>({});
+  /** What was hidden before the single-cutter filter went on, so releasing it restores. */
+  const preSingleCutterHiddenRef = useRef<Record<string, string[]>>({});
 
   const describeRuntimePayloadSnapshot = useCallback((
     nextPayload: LoadedPayload,
@@ -6193,13 +6345,18 @@ function App() {
         ? 'RNA Map'
         : 'Sequence Map';
   const restrictionVisibilityMeta = isDnaRecord
-    ? {
-      full: `${visibleRestrictionSites.length}/${restrictionSites.length} sites · ${scanEnzymes.length} enzymes`,
-      compact: `${visibleRestrictionSites.length}/${restrictionSites.length} · ${scanEnzymes.length} enz`,
-    }
+    ? restrictionSites.length === 0
+      ? {
+        full: scanEnzymes.length > 0 ? `${scanEnzymes.length} enzymes · no sites` : 'No sites',
+        compact: 'No sites',
+      }
+      : {
+        full: `${visibleRestrictionSites.length}/${restrictionSites.length} sites${scanEnzymes.length > 0 ? ` · ${scanEnzymes.length} enzymes` : ''}`,
+        compact: `${visibleRestrictionSites.length}/${restrictionSites.length} sites`,
+      }
     : hasActiveRecord
-      ? { full: 'DNA restriction only', compact: 'DNA only' }
-      : { full: 'no active record', compact: 'empty' };
+      ? { full: 'DNA records only', compact: 'DNA only' }
+      : { full: 'No record selected', compact: 'No record' };
   const [caret, setCaret] = useState<number | null>(null);
   const [insertMode, setInsertMode] = useState(false);
   const editHistoryRef = useRef<Record<string, { undo: EditTransaction[]; redo: EditTransaction[] }>>({});
@@ -6348,7 +6505,11 @@ function App() {
     // Fully validate and normalize both halves before showing the destructive
     // confirmation. Confirming therefore performs one prepared, transactional
     // replacement; cancelling leaves the current workspace byte-for-byte intact.
-    const prepared = prepareArtifactDatabaseRestore(rawDatabase, selectedRecordIdRef.current);
+    const prepared = prepareArtifactDatabaseRestore(
+      rawDatabase,
+      selectedRecordIdRef.current,
+      durability !== 'durable-checkpoint',
+    );
     const activeElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const importTrigger = document.querySelector<HTMLButtonElement>('.motif-cs-add-entry-button');
     // Add / restore lives inside a details element that closes while the modal is
@@ -6465,6 +6626,7 @@ function App() {
       delete sequenceScrollByRecordRef.current[id];
       delete editHistoryRef.current[id];
       delete lastVisibleEnzymeSourcesRef.current[id];
+      delete preSingleCutterHiddenRef.current[id];
     }
     bumpEditHistory();
     payloadRef.current = nextPayload;
@@ -6482,6 +6644,55 @@ function App() {
     payloadRef.current = payload;
     rememberLastGoodRuntimePayload(payload, artifactState);
   }, [artifactState, payload]);
+
+  // Process one eligible record per idle turn. useEffect runs after first paint;
+  // requestIdleCallback (or a zero-delay timer fallback) keeps the bounded ORF
+  // scan out of the synchronous host-ingestion and initial-render paths.
+  useEffect(() => {
+    const eligible = payload.records.find((record) => (
+      record.proposeAnnotations
+      && record.features.length === 0
+    ));
+    if (!eligible) return undefined;
+
+    const runProposal = () => {
+      setPayload((current) => {
+        const record = current.records.find((candidate) => candidate.id === eligible.id);
+        if (!record || !record.proposeAnnotations || record.features.length > 0) return current;
+        const result = proposeDefaultAnnotations(record);
+        const nextRecord: ArtifactVector = {
+          ...record,
+          features: result.features,
+          proposeAnnotations: false,
+          provenance: {
+            ...record.provenance,
+            motifAutoAnnotation: {
+              status: result.status === 'proposed' ? 'review_required' : 'completed_without_proposals',
+              proposedBy: 'motif-auto-annotation',
+              detector: 'motif-orf-detection',
+              reason: result.reason,
+              proposedCount: result.features.length,
+              workUnits: result.workUnits,
+              capped: result.capped,
+            },
+          },
+        };
+        const nextPayload = {
+          ...current,
+          records: current.records.map((candidate) => candidate.id === record.id ? nextRecord : candidate),
+        };
+        payloadRef.current = nextPayload;
+        return nextPayload;
+      });
+    };
+
+    if (typeof window.requestIdleCallback === 'function') {
+      const handle = window.requestIdleCallback(runProposal, { timeout: 500 });
+      return () => window.cancelIdleCallback(handle);
+    }
+    const handle = window.setTimeout(runProposal, 0);
+    return () => window.clearTimeout(handle);
+  }, [payload.records]);
 
   useEffect(() => {
     setActiveAlignmentId((current) => (
@@ -6572,7 +6783,7 @@ function App() {
       if (currentPayload.records.length + raw.length > MOTIF_MAX_RECORDS) {
         throw new MotifArtifactRuntimeError(
           'MOTIF_INPUT_LIMIT_EXCEEDED',
-          `motifAddRecords would exceed the ${MOTIF_MAX_RECORDS}-record artifact limit. No records were added.`,
+          `motifAddRecords exceeds the ${MOTIF_MAX_RECORDS}-record artifact limit. Remove records or add fewer records. No records were added.`,
           {
             operation: 'motifAddRecords',
             inputCount: raw.length,
@@ -6604,7 +6815,7 @@ function App() {
       if (traceSampleEntries > ARTIFACT_SANGER_MAX_WORKSPACE_SAMPLE_ENTRIES) {
         throw new MotifArtifactRuntimeError(
           'MOTIF_INPUT_LIMIT_EXCEEDED',
-          `motifAddRecords would exceed the ${ARTIFACT_SANGER_MAX_WORKSPACE_SAMPLE_ENTRIES.toLocaleString()}-sample workspace trace limit. No records were added.`,
+          `motifAddRecords exceeds the ${ARTIFACT_SANGER_MAX_WORKSPACE_SAMPLE_ENTRIES.toLocaleString()}-sample workspace trace limit. Remove trace samples or add fewer traces. No records were added.`,
           {
             operation: 'motifAddRecords',
             inputCount: raw.length,
@@ -7046,7 +7257,20 @@ function App() {
       restrictionSites: interactiveMapRestrictionSites,
       restrictionDensitySources: mapRestrictionDensitySources,
       width: mapSize.width,
-      height: mapSize.height,
+      // A circular drawing is scaled by whichever of the frame's two dimensions
+      // is smaller, so height buys it ring. A linear one is not: its viewBox is
+      // as wide as the pane, so `meet` pins the scale at 1 and every pixel of
+      // frame beyond the drawing is padding. Measured on pUC19: the frame left
+      // 67.3% of itself empty at 1600x1100 and 75.2% at 2000x1400, which put
+      // the map's own visibility and digest controls the better part of a
+      // thousand pixels below the map they control.
+      //
+      // So the linear frame is sized to the drawing (CSS, from the SVG's own
+      // aspect ratio) rather than the drawing to the frame, and the layout
+      // takes a fixed depth budget instead of the measured height. Reading the
+      // measurement here would close the loop the frame just opened — see
+      // LINEAR_MAP_DEPTH_BUDGET for the collapse that produces.
+      height: mapRenderMode === 'linear' ? LINEAR_MAP_DEPTH_BUDGET : mapSize.height,
       // Cap the linear lane pitch (LINEAR_LANE_PITCH_MAX) so rows pack tightly
       // instead of spreading across the whole pane height (fixes the sparse,
       // whitespace-heavy linear map). No effect on circular layouts.
@@ -7138,7 +7362,25 @@ function App() {
     return null;
   }, [selectedFeature, selectedMapRange, inspectorSelectionSeq, sequence.length]);
   const selectionBarLabel = selectionSummary?.label
-    ?? (selectedRestriction ? `${selection?.kind === 'restriction' && selection.enzyme ? selection.enzyme : selectedRestriction.label?.text ?? 'Restriction'} site` : 'No range selected');
+    ?? (selectedRestriction
+      ? `${selection?.kind === 'restriction' && selection.enzyme ? selection.enzyme : selectedRestriction.label?.text ?? 'Restriction'} site`
+      // The resting state of this bar is where the drag gesture has to be
+      // taught, because it is the state the gesture ends. Walked every text
+      // node mounted in a loaded workspace — 2,719 at rest, 3,020 with panels
+      // forced open — and not one PAINTED word in either pass said "drag".
+      // The gesture lived only in `title` attributes: this bar's disabled
+      // "+ Feature" button, a four-clause tooltip on the map frame, and the
+      // Translation panel's "Select a region to pin its translation". So the
+      // one thing that turns four greyed buttons on was hover-only, and one of
+      // its homes was a control a pointer has no reason to visit. "No range
+      // selected" named the state instead, which is also what the greyed
+      // buttons and the missing length chip already say twice.
+      //
+      // The scan covers what React has MOUNTED. Sixteen of the twenty-one
+      // panels keep their children unmounted while closed and re-close when
+      // forced, so their contents were never scanned; the claim is about the
+      // workspace a reader is looking at, not about every string in the app.
+      : 'Drag to select a range');
   const selectedFeatureQuarantineStatus = selectedFeature ? quarantineStatusForFeature(selectedFeature) : null;
 
   // The map's status corner reports two independent facts: how the view is
@@ -7326,7 +7568,7 @@ function App() {
     : hasUndefinedCodingStrand
       ? 'This coding feature has no strand direction. Choose forward or reverse before translating it.'
     : translateTargetSemanticFeature && isOrderedFeatureLocation(translateTargetSemanticFeature)
-    ? 'INSDC order(...) records segment order but does not assert one materializable sequence, so Motif will not translate it implicitly.'
+    ? 'INSDC order(...) records segment order but does not assert one materializable sequence. Motif leaves this feature untranslated.'
     : translateTargetSemanticFeature && isAmbiguousFeatureLocation(translateTargetSemanticFeature)
       ? 'This unmarked reverse multipart location has ambiguous segment order. Re-import its original GenBank record or confirm biological order in the source data before translation.'
       : undefined;
@@ -7339,11 +7581,20 @@ function App() {
   }, [translateTarget, previewProtein, translateStrand]);
   const selectionActionTranslation = (selectedFeature || selectedMapRange) ? selectionTranslation : null;
   const hasMaterializableSequenceSelection = !!selectionSummary && inspectorSelectionSeq.length > 0;
-  const singleCutters = useMemo(() => {
+  // Both halves are counted over every site the enabled sources find, not over the
+  // visible ones, so the pair describes the record rather than the current picture.
+  // Counting the visible sites breaks the filter in both directions: the multi
+  // list empties itself the moment it is applied, and hiding EcoRI by hand drops
+  // it out of the single list instead of releasing a toggle that no longer
+  // describes the map.
+  const { singleCutters, multiCutters } = useMemo(() => {
     const counts = new Map<string, number>();
-    for (const site of visibleRestrictionSites) counts.set(site.enzyme, (counts.get(site.enzyme) ?? 0) + 1);
-    return Array.from(counts.entries()).filter(([, count]) => count === 1).map(([name]) => name).sort();
-  }, [visibleRestrictionSites]);
+    for (const site of restrictionSites) counts.set(site.enzyme, (counts.get(site.enzyme) ?? 0) + 1);
+    const single: string[] = [];
+    const multi: string[] = [];
+    for (const [name, count] of counts) (count === 1 ? single : multi).push(name);
+    return { singleCutters: single.sort(), multiCutters: multi.sort() };
+  }, [restrictionSites]);
 
   const setCurrentMapViewport = useCallback((updater: MapViewport | ((viewport: MapViewport) => MapViewport)) => {
     setMapViewportsByRecord((current) => {
@@ -7431,6 +7682,19 @@ function App() {
     const startBp = pointToSequenceOffset(contentPoint, layout);
     const startAngle = pointToSequenceAngle(contentPoint, layout);
     mapDragRef.current = { mode: 'range', start: contentPoint, startBp, lastAngle: startAngle, cumulativeAngle: 0, moved: false };
+    // Nothing is committed on the press itself. Committing here meant a press had
+    // to be kept away from anything clickable, which is why a quarter of the disc
+    // could not start a drag at all. It is committed on the first movement of a
+    // drag, or on the release of a click that did not land on an object.
+    return true;
+  }, [layout, mapViewport]);
+
+  /**
+   * Hand the selection to the current map gesture: drop any feature or
+   * restriction selection and seed a 1 bp range at the base the gesture began on.
+   * A drag then widens it; a click leaves it as the base that was clicked.
+   */
+  const beginMapRangeSelection = useCallback((startBp: number) => {
     setLockedTranslateTarget(null);
     setSelectedTranslationLayerByRecord((current) => (current[recordId] ? { ...current, [recordId]: null } : current));
     setSelection(null);
@@ -7442,8 +7706,7 @@ function App() {
       // and a wrapping range is not expressible by one drag along an axis.
       [recordId]: rangeFromMapDrag(startBp, startBp + 1, sequence.length, layout.mode),
     }));
-    return true;
-  }, [layout, mapViewport, recordId, sequence.length]);
+  }, [layout.mode, recordId, sequence.length]);
 
   const handleMapPointerMove = useCallback((rootPoint: MapRootPoint, contentPoint: MapContentPoint) => {
     const drag = mapDragRef.current;
@@ -7451,7 +7714,11 @@ function App() {
     const point = drag.mode === 'pan' ? rootPoint : contentPoint;
     const dx = point.x - drag.start.x;
     const dy = point.y - drag.start.y;
-    if (!drag.moved && Math.hypot(dx, dy) > 2) drag.moved = true;
+    const startedMoving = !drag.moved && Math.hypot(dx, dy) > 2;
+    if (startedMoving) drag.moved = true;
+    // The gesture is a drag, so it owns the selection from here — including when it
+    // began on a feature, which is what the press deliberately no longer decides.
+    if (startedMoving && drag.mode === 'range') beginMapRangeSelection(drag.startBp);
 
     if (drag.mode === 'pan') {
       setCurrentMapViewport({
@@ -7482,18 +7749,36 @@ function App() {
       if (previous && previous.start === nextRange.start && previous.end === nextRange.end) return current;
       return { ...current, [recordId]: nextRange };
     });
-  }, [layout, recordId, sequence.length, setCurrentMapViewport]);
+  }, [beginMapRangeSelection, layout, recordId, sequence.length, setCurrentMapViewport]);
 
   const handleMapPointerEnd = useCallback(() => {
     const drag = mapDragRef.current;
-    if (drag?.moved) {
+    // A press that never moved and never landed on an object is a click on the map,
+    // and a click on the map places a 1 bp range at that base — the backbone's
+    // click-to-position. A press that landed on a feature or a tick belongs to that
+    // object's own click instead.
+    if (drag && !drag.moved && drag.mode === 'range' && !mapPressOnObjectRef.current) {
+      beginMapRangeSelection(drag.startBp);
+      // The browser's `click` follows, and clearing on a background click would
+      // undo the range this press just placed. This used to be handled implicitly,
+      // by preventDefault on the press suppressing the compatibility mouse events
+      // — which also suppressed the click a feature needs, so it is explicit now.
       suppressNextBackgroundClick.current = true;
       window.setTimeout(() => {
         suppressNextBackgroundClick.current = false;
       }, 120);
     }
+    if (drag?.moved) {
+      suppressNextBackgroundClick.current = true;
+      suppressNextMapObjectClick.current = true;
+      window.setTimeout(() => {
+        suppressNextBackgroundClick.current = false;
+        suppressNextMapObjectClick.current = false;
+      }, 120);
+    }
     mapDragRef.current = null;
-  }, []);
+    mapPressOnObjectRef.current = false;
+  }, [beginMapRangeSelection]);
 
   /**
    * Client -> SVG ROOT space. `getScreenCTM()` on the `<svg>` accounts for the
@@ -7533,14 +7818,23 @@ function App() {
   const handleMapSurfacePointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     if (!event.isPrimary || event.button !== 0) return;
     const target = event.target as Element;
-    if (target.closest('.motif-pm-feature, .motif-pm-restriction, .motif-pm-range-overlay[data-interactive="true"]')) return;
+    // Features and restriction ticks no longer block the gesture: a press on them
+    // starts a range drag like anywhere else, and their own click still runs when
+    // the pointer did not move. Workflow range overlays are a different
+    // interaction and keep their veto.
+    if (target.closest('.motif-pm-range-overlay[data-interactive="true"]')) return;
+    mapPressOnObjectRef.current = !!target.closest('.motif-pm-feature, .motif-pm-restriction');
     const rootPoint = mapRootPointFromClient(event.clientX, event.clientY);
     if (!rootPoint) return;
     lastZoomAnchorRef.current = rootPoint;
     if (!handleMapPointerStart(rootPoint, contentPointFromRoot(rootPoint, mapViewport))) return;
     mapPointerIdRef.current = event.pointerId;
-    event.currentTarget.setPointerCapture?.(event.pointerId);
-    event.preventDefault();
+    // Capture is taken LAZILY, on the first move that clears the drag threshold —
+    // see handleMapSurfacePointerMove. Capturing on the press retargets the whole
+    // mouse-event sequence at this surface, so the `click` that a feature or a
+    // restriction tick needs to select itself is dispatched here instead of on the
+    // object, and clicking a feature does nothing. preventDefault has the same
+    // effect by suppressing the compatibility mouse events, so it waits too.
   }, [handleMapPointerStart, mapRootPointFromClient, mapViewport]);
 
   const handleMapSurfacePointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
@@ -7553,8 +7847,16 @@ function App() {
     }
     if (event.pointerId !== mapPointerIdRef.current) return;
     lastZoomAnchorRef.current = rootPoint;
-    event.preventDefault();
     handleMapPointerMove(rootPoint, contentPoint);
+    // Now that this is a drag rather than a press, own the pointer: capture keeps
+    // it coming when it leaves the surface, and preventDefault stops the browser
+    // starting a text or image drag of its own.
+    if (mapDragRef.current?.moved) {
+      if (!event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+        event.currentTarget.setPointerCapture?.(event.pointerId);
+      }
+      event.preventDefault();
+    }
   }, [handleMapPointerMove, layout, mapRootPointFromClient, mapViewport]);
 
   const handleMapSurfacePointerEnd = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
@@ -7563,9 +7865,21 @@ function App() {
       event.currentTarget.releasePointerCapture?.(event.pointerId);
     }
     mapPointerIdRef.current = null;
-    event.preventDefault();
+    if (mapDragRef.current?.moved) event.preventDefault();
     handleMapPointerEnd();
   }, [handleMapPointerEnd]);
+
+  const handleMapSurfacePointerCancel = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.pointerId !== mapPointerIdRef.current) return;
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture?.(event.pointerId);
+    }
+    // Cancellation abandons the gesture. It must not run the pointer-up commit
+    // path or arm click suppression for a compatibility click that will not come.
+    mapPointerIdRef.current = null;
+    mapDragRef.current = null;
+    mapPressOnObjectRef.current = false;
+  }, []);
 
   const handleMapBackgroundClick = useCallback(() => {
     if (suppressNextBackgroundClick.current) {
@@ -7603,10 +7917,34 @@ function App() {
     });
   }, [features, hiddenFeatureTranslationIds, recordId]);
 
+  // A single click keeps its selection-and-reveal contract. Double-click is the
+  // separate edit gesture, so repeated map selections never move the target after
+  // the first click.
   const handleMapFeatureClick = useCallback((featureId: string) => {
+    if (suppressNextMapObjectClick.current) {
+      suppressNextMapObjectClick.current = false;
+      return;
+    }
     requestSequenceFocus();
     handleFeatureClick(featureId);
+  }, [handleFeatureClick, requestSequenceFocus]);
+
+
+  const openFeatureEditor = useCallback((featureId: string) => {
+    handleFeatureClick(featureId);
+    requestFeatureEditor();
   }, [handleFeatureClick]);
+
+  const handleMapFeatureDoubleClick = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    const target = event.target instanceof Element
+      ? event.target.closest<SVGGElement>('.motif-pm-feature[data-feature-id]')
+      : null;
+    const featureId = target?.dataset.featureId;
+    if (!featureId || !event.currentTarget.contains(target)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    openFeatureEditor(featureId);
+  }, [openFeatureEditor]);
 
   const handleRestrictionClick = useCallback((clusterId: string, tickIds: readonly string[], enzyme?: string) => {
     requestSequenceFocus();
@@ -7621,6 +7959,19 @@ function App() {
       return { ...current, [recordId]: null };
     });
   }, [recordId, requestSequenceFocus]);
+
+  /**
+   * The map's entry to restriction selection. `handleRestrictionClick` is shared
+   * with the sequence panel, where no drag can precede a click, so the suppression
+   * belongs here rather than there.
+   */
+  const handleMapRestrictionClick = useCallback((clusterId: string, tickIds: readonly string[], enzyme?: string) => {
+    if (suppressNextMapObjectClick.current) {
+      suppressNextMapObjectClick.current = false;
+      return;
+    }
+    handleRestrictionClick(clusterId, tickIds, enzyme);
+  }, [handleRestrictionClick]);
 
   const handleSequenceRestrictionClick = useCallback((site: RestrictionSite) => {
     const tickId = restrictionSiteTickId(site);
@@ -7864,7 +8215,7 @@ function App() {
   ) => {
     const capacity = preflightSequenceEdit(edit.oldLength, edit, MOTIF_MAX_RECORD_LENGTH);
     if (!capacity.ok) {
-      showWorkbenchNotice(capacity.message ?? `This edit would exceed the ${MOTIF_MAX_RECORD_LENGTH.toLocaleString()}-residue record limit.`, 'error');
+      showWorkbenchNotice(capacity.message ?? `This edit exceeds the ${MOTIF_MAX_RECORD_LENGTH.toLocaleString()}-residue record limit. Delete residues or split the record before editing.`, 'error');
       return;
     }
     const current = payloadRef.current;
@@ -7875,7 +8226,7 @@ function App() {
       edit.oldLength !== currentRecord.sequence.length
       || result.raw.length !== edit.oldLength - edit.deletedLength + edit.insertedLength
     ) {
-      showWorkbenchNotice('The edit was rejected because its coordinate transaction did not match the active sequence.', 'error');
+      showWorkbenchNotice('The sequence changed before the edit could be applied. Try the edit again.', 'error');
       return;
     }
 
@@ -7986,7 +8337,7 @@ function App() {
   ) => {
     const capacity = preflightSequenceEdit(edit.oldLength, edit, MOTIF_MAX_RECORD_LENGTH);
     if (!capacity.ok) {
-      showWorkbenchNotice(capacity.message ?? `This edit would exceed the ${MOTIF_MAX_RECORD_LENGTH.toLocaleString()}-residue record limit.`, 'error');
+      showWorkbenchNotice(capacity.message ?? `This edit exceeds the ${MOTIF_MAX_RECORD_LENGTH.toLocaleString()}-residue record limit. Delete residues or split the record before editing.`, 'error');
       return;
     }
     try {
@@ -8099,6 +8450,27 @@ function App() {
     setCaret(clamp(index, 0, sequence.length));
   }, [recordId, sequence.length]);
 
+  const commitSelectedRangeEdit = useCallback((range: MapSelectionRange, replacement: string) => {
+    const edit = {
+      start: range.start,
+      deletedLength: range.end - range.start,
+      insertedLength: replacement.length,
+      oldLength: sequence.length,
+    };
+    commitMutation(
+      () => applySequenceRangeReplacement(
+        sequence,
+        features as Feature[],
+        range.start,
+        range.end,
+        replacement,
+        sequenceType,
+      ),
+      range.start + replacement.length,
+      edit,
+    );
+  }, [commitMutation, features, sequence, sequenceType]);
+
   const handleSequenceEditKey = useCallback((event: ReactKeyboardEvent) => {
     if (!isEditable) return;
     const mod = event.metaKey || event.ctrlKey;
@@ -8109,17 +8481,40 @@ function App() {
     }
     if (mod && (event.key === 'y' || event.key === 'Y')) { event.preventDefault(); redoEdit(); return; }
     if (mod) return;
-    const c = caret;
-    if (c === null) return;
     const len = sequence.length;
+    const originWrappingRange = topology === 'circular'
+      && selectedMapRange
+      && selectedMapRange.start >= 0
+      && selectedMapRange.start < len
+      && selectedMapRange.end > len
+      && selectedMapRange.end - selectedMapRange.start <= len
+      ? selectedMapRange
+      : null;
+    const selectedRange = selectedMapRange
+      && selectedMapRange.start >= 0
+      && selectedMapRange.end > selectedMapRange.start
+      && selectedMapRange.end <= len
+      ? selectedMapRange
+      : null;
+    const navigationRange = selectedRange ?? originWrappingRange;
+    const c = navigationRange?.start ?? caret;
+    if (c === null) return;
     const featureList = features as Feature[];
     switch (event.key) {
-      case 'ArrowLeft': event.preventDefault(); setCaret(Math.max(0, c - 1)); return;
-      case 'ArrowRight': event.preventDefault(); setCaret(Math.min(len, c + 1)); return;
-      case 'Home': event.preventDefault(); setCaret(0); return;
-      case 'End': event.preventDefault(); setCaret(len); return;
+      case 'ArrowLeft': event.preventDefault(); handlePlaceCaret(navigationRange ? navigationRange.start : Math.max(0, c - 1)); return;
+      case 'ArrowRight': event.preventDefault(); handlePlaceCaret(navigationRange ? navigationRange.end : Math.min(len, c + 1)); return;
+      case 'Home': event.preventDefault(); handlePlaceCaret(0); return;
+      case 'End': event.preventDefault(); handlePlaceCaret(len); return;
       case 'Backspace': {
         event.preventDefault();
+        if (originWrappingRange) {
+          showWorkbenchNotice(ORIGIN_WRAPPING_RANGE_EDIT_NOTICE, 'error');
+          return;
+        }
+        if (selectedRange) {
+          commitSelectedRangeEdit(selectedRange, '');
+          return;
+        }
         if (c > 0) {
           const edit = { start: c - 1, deletedLength: 1, insertedLength: 0, oldLength: len };
           commitMutation(() => applyDeletion(sequence, [], featureList, c - 1, 1), c - 1, edit);
@@ -8128,6 +8523,14 @@ function App() {
       }
       case 'Delete': {
         event.preventDefault();
+        if (originWrappingRange) {
+          showWorkbenchNotice(ORIGIN_WRAPPING_RANGE_EDIT_NOTICE, 'error');
+          return;
+        }
+        if (selectedRange) {
+          commitSelectedRangeEdit(selectedRange, '');
+          return;
+        }
         if (c < len) {
           const edit = { start: c, deletedLength: 1, insertedLength: 0, oldLength: len };
           commitMutation(() => applyDeletion(sequence, [], featureList, c, 1), c, edit);
@@ -8141,7 +8544,13 @@ function App() {
       const alphabet = sequenceType === 'rna' ? RNA_EDIT_ALPHABET : DNA_EDIT_ALPHABET;
       if (!alphabet.includes(ch)) return;
       event.preventDefault();
-      if (insertMode || c >= len) {
+      if (originWrappingRange) {
+        showWorkbenchNotice(ORIGIN_WRAPPING_RANGE_EDIT_NOTICE, 'error');
+        return;
+      }
+      if (selectedRange) {
+        commitSelectedRangeEdit(selectedRange, ch);
+      } else if (insertMode || c >= len) {
         const edit = { start: c, deletedLength: 0, insertedLength: 1, oldLength: len };
         commitMutation(() => applyInsertion(sequence, [], featureList, c - 1, ch, sequenceType), c + 1, edit);
       } else {
@@ -8153,27 +8562,84 @@ function App() {
         commitMutation(() => applySubstitution(sequence, [], featureList, c, ch, sequenceType), c + 1, edit);
       }
     }
-  }, [isEditable, caret, sequence, features, sequenceType, insertMode, commitMutation, undoEdit, redoEdit]);
+  }, [isEditable, caret, selectedMapRange, sequence, features, sequenceType, topology, insertMode, commitMutation, commitSelectedRangeEdit, handlePlaceCaret, showWorkbenchNotice, undoEdit, redoEdit]);
 
   const handleSequencePaste = useCallback((event: ReactClipboardEvent) => {
-    if (!isEditable || caret === null) return;
+    if (!isEditable) return;
+    const originWrappingRange = topology === 'circular'
+      && selectedMapRange
+      && selectedMapRange.start >= 0
+      && selectedMapRange.start < sequence.length
+      && selectedMapRange.end > sequence.length
+      && selectedMapRange.end - selectedMapRange.start <= sequence.length
+      ? selectedMapRange
+      : null;
+    if (originWrappingRange) {
+      event.preventDefault();
+      showWorkbenchNotice(ORIGIN_WRAPPING_RANGE_EDIT_NOTICE, 'error');
+      return;
+    }
+    const selectedRange = selectedMapRange
+      && selectedMapRange.start >= 0
+      && selectedMapRange.end > selectedMapRange.start
+      && selectedMapRange.end <= sequence.length
+      ? selectedMapRange
+      : null;
+    const insertionStart = selectedRange?.start ?? caret;
+    if (insertionStart === null) return;
     const alphabet = sequenceType === 'rna' ? RNA_EDIT_ALPHABET : DNA_EDIT_ALPHABET;
-    const pasted = cleanPastedSequenceForEdit(event.clipboardData.getData('text/plain'), alphabet);
-    if (!pasted) return;
+    const clipboard = event.clipboardData.getData('text/plain');
+    if (!clipboard) return;
     event.preventDefault();
-    const edit = { start: caret, deletedLength: 0, insertedLength: pasted.length, oldLength: sequence.length };
+    // Strip FASTA and GenBank structure by LINE before filtering by character.
+    // Filtering alone turned `>gi|12345|ref|NM_001` into four bases at the head of
+    // the insert, because G, R, N and M are all legal IUPAC codes and render as
+    // ordinary sequence. See claude-science-paste-sequence.
+    const parsed = parsePastedSequence(clipboard, alphabet);
+    const unit = sequenceType === 'rna' ? 'RNA' : 'DNA';
+    if (!parsed.ok && parsed.error === 'multiple-fasta-records') {
+      showWorkbenchNotice(
+        `This paste contains ${parsed.fastaRecordCount.toLocaleString()} FASTA records. ` +
+        'The sequence editor changes one active record, so nothing was pasted. ' +
+        'Use Add entry to import multiple records.',
+        'error',
+      );
+      return;
+    }
+    if (!parsed.sequence) {
+      showWorkbenchNotice(`Nothing in the pasted text was ${unit}. The record is unchanged.`, 'error');
+      return;
+    }
+    const pasteNotes: string[] = [];
+    if (parsed.droppedLines > 0) {
+      const lines = parsed.droppedLines === 1 ? '1 structure line' : `${parsed.droppedLines.toLocaleString()} structure lines`;
+      pasteNotes.push(`Ignored ${lines}.`);
+    }
+    if (parsed.droppedCharacters > 0) {
+      const dropped = parsed.droppedCharacters === 1 ? '1 character' : `${parsed.droppedCharacters.toLocaleString()} characters`;
+      pasteNotes.push(`${dropped} were not ${unit} and were left out.`);
+    }
+    if (pasteNotes.length > 0) {
+      showWorkbenchNotice(`Pasted ${parsed.sequence.length.toLocaleString()} bases. ${pasteNotes.join(' ')}`);
+    }
+    const pasted = parsed.sequence;
+    if (selectedRange) {
+      commitSelectedRangeEdit(selectedRange, pasted);
+      return;
+    }
+    const edit = { start: insertionStart, deletedLength: 0, insertedLength: pasted.length, oldLength: sequence.length };
     commitMutation(
-      () => applyInsertion(sequence, [], features as Feature[], caret - 1, pasted, sequenceType),
-      caret + pasted.length,
+      () => applyInsertion(sequence, [], features as Feature[], insertionStart - 1, pasted, sequenceType),
+      insertionStart + pasted.length,
       edit,
     );
-  }, [caret, commitMutation, features, isEditable, sequence, sequenceType]);
+  }, [caret, commitMutation, commitSelectedRangeEdit, features, isEditable, selectedMapRange, sequence, sequenceType, showWorkbenchNotice, topology]);
 
   const addRecords = useCallback((recordInputs: readonly ArtifactRecordInput[]): number => {
     if (recordInputs.length === 0) return 0;
     const current = payloadRef.current;
     if (current.records.length + recordInputs.length > MOTIF_MAX_RECORDS) {
-      showWorkbenchNotice(`Adding ${recordInputs.length} records would exceed the ${MOTIF_MAX_RECORDS}-record artifact limit. No records were added.`, 'error');
+      showWorkbenchNotice(`Adding ${recordInputs.length} records exceeds the ${MOTIF_MAX_RECORDS}-record artifact limit. Remove records or import fewer records. No records were added.`, 'error');
       return 0;
     }
 
@@ -8209,7 +8675,7 @@ function App() {
       total + (record.sangerTrace ? artifactSangerTraceSampleEntries(record.sangerTrace) : 0)
     ), 0);
     if (traceSampleEntries > ARTIFACT_SANGER_MAX_WORKSPACE_SAMPLE_ENTRIES) {
-      showWorkbenchNotice(`Adding these traces would exceed the ${ARTIFACT_SANGER_MAX_WORKSPACE_SAMPLE_ENTRIES.toLocaleString()}-sample workspace limit. No records were added.`, 'error');
+      showWorkbenchNotice(`These traces exceed the ${ARTIFACT_SANGER_MAX_WORKSPACE_SAMPLE_ENTRIES.toLocaleString()}-sample workspace limit. Remove trace samples or import fewer traces. No records were added.`, 'error');
       return 0;
     }
 
@@ -8233,7 +8699,7 @@ function App() {
     const derivedCount = recipe.outcome === 'uncut' ? 0 : recipe.fragments.length;
     if (current.records.length + derivedCount > MOTIF_MAX_RECORDS) {
       showWorkbenchNotice(
-        `Saving ${derivedCount} digest fragment${derivedCount === 1 ? '' : 's'} would exceed the ${MOTIF_MAX_RECORDS}-record artifact limit. Nothing was saved.`,
+        `Saving ${derivedCount} digest fragment${derivedCount === 1 ? '' : 's'} exceeds the ${MOTIF_MAX_RECORDS}-record artifact limit. Remove records, then try again. Nothing was saved.`,
         'error',
       );
       return null;
@@ -8400,7 +8866,7 @@ function App() {
           const parsed = parseAbiImport(await file.arrayBuffer(), baseName);
           const parsedTraceEntries = artifactSangerTraceSampleEntries(parsed.sangerTrace);
           if (pendingTraceSampleEntries + parsedTraceEntries > ARTIFACT_SANGER_MAX_WORKSPACE_SAMPLE_ENTRIES) {
-            throw new Error(`This plate would exceed the ${ARTIFACT_SANGER_MAX_WORKSPACE_SAMPLE_ENTRIES.toLocaleString()}-sample workspace trace limit.`);
+            throw new Error(`This plate exceeds the ${ARTIFACT_SANGER_MAX_WORKSPACE_SAMPLE_ENTRIES.toLocaleString()}-sample workspace trace limit. Remove samples or import a smaller plate.`);
           }
           pendingTraceSampleEntries += parsedTraceEntries;
           const sampleName = parsed.sangerTrace.metadata.sampleName?.trim();
@@ -8490,9 +8956,27 @@ function App() {
         errors.push(`${file.name}: ${actionableImportError(error)}`);
       }
     }
-    const added = addRecords(additions);
+    // `addRecords` validates its whole argument and returns 0 for all of it, so a
+    // single unusable file used to discard every other file chosen with it: a clean
+    // FASTA selected alongside a truncated GenBank record imported NOTHING, and the
+    // two notices then contradicted each other — one said a record was invalid, the
+    // other that no usable sequence was found, and neither named the file. Validate
+    // each record first so only the ones that cannot be added are dropped. The batch
+    // call still runs once, so the record-count and trace-budget limits are still
+    // checked against the selection as a whole rather than per file.
+    const importable: ArtifactRecordInput[] = [];
+    for (const record of additions) {
+      try {
+        validateRuntimeRecordInputs([omitUndefinedObjectProperties(record)], 'motifAddRecords', true);
+        importable.push(record);
+      } catch (error) {
+        errors.push(`${record.name}: ${importFailureReason(error)}`);
+      }
+    }
+    const added = addRecords(importable);
+    const alsoFailed = errors.length - 1;
     const importMessage = errors.length > 0
-      ? `${added > 0 ? `Imported ${added}; ` : ''}${errors[0]}`
+      ? `${added > 0 ? `Imported ${added}; ` : ''}${errors[0]}${alsoFailed > 0 ? ` (${alsoFailed} more file${alsoFailed === 1 ? '' : 's'} also failed)` : ''}`
       : added > 0
         ? `Imported ${added} record${added === 1 ? '' : 's'}`
         : 'No usable sequence found. Check the file format or choose the molecule type explicitly.';
@@ -8565,7 +9049,7 @@ function App() {
 
   const addFeatures = useCallback((featureInputs: readonly ArtifactFeatureInput[]) => {
     if (features.length + featureInputs.length > MOTIF_MAX_FEATURES_PER_RECORD) {
-      showWorkbenchNotice(`Adding these features would exceed the ${MOTIF_MAX_FEATURES_PER_RECORD.toLocaleString()}-feature record limit. No features were added.`, 'error');
+      showWorkbenchNotice(`These features exceed the ${MOTIF_MAX_FEATURES_PER_RECORD.toLocaleString()}-feature record limit. Remove features or add fewer features. No features were added.`, 'error');
       return;
     }
     setPayload((current) => {
@@ -8713,6 +9197,35 @@ function App() {
     });
   }, [markFeatureTranslationLayersForReview, recordId]);
 
+  const acceptProposedFeature = useCallback((featureId: string) => {
+    setPayload((current) => ({
+      ...current,
+      records: current.records.map((record) => {
+        if (record.id !== recordId) return record;
+        const features = record.features.map((feature) => feature.id === featureId
+          ? acceptProposedAnnotation(feature)
+          : feature);
+        return { ...record, features, provenance: annotationReviewProvenance(record, features) };
+      }),
+    }));
+    setSelection({ kind: 'feature', id: featureId });
+  }, [recordId]);
+
+  const dismissProposedFeature = useCallback((featureId: string) => {
+    markFeatureTranslationLayersForReview(featureId);
+    setPayload((current) => ({
+      ...current,
+      records: current.records.map((record) => {
+        if (record.id !== recordId) return record;
+        const dismissed = record.features.find((feature) => feature.id === featureId);
+        if (!dismissed || !isProposedAnnotation(dismissed)) return record;
+        const features = record.features.filter((feature) => feature.id !== featureId);
+        return { ...record, features, provenance: annotationReviewProvenance(record, features, 1) };
+      }),
+    }));
+    setSelection((current) => current?.kind === 'feature' && current.id === featureId ? null : current);
+  }, [markFeatureTranslationLayersForReview, recordId]);
+
   const addReverseComplementRecord = useCallback(() => {
     if (!isNucleotideType(sequenceType)) return;
     const isRna = sequenceType === 'rna';
@@ -8734,7 +9247,7 @@ function App() {
       })),
       sites: serializeSites(reverseComplementRestrictionSites(vector.sites, sequence.length)),
       active: true,
-      source: 'Motif for Claude Science',
+      source: 'Motif',
       group: vector.group,
       provenance: { parentRecordId: recordId, operation: 'reverse_complement' },
     });
@@ -8800,7 +9313,7 @@ function App() {
         metadata: selectedFeatureMetadata ?? {},
       }] : undefined,
       active: true,
-      source: 'Motif for Claude Science',
+      source: 'Motif',
       group: vector.group,
       provenance: {
         parentRecordId: recordId,
@@ -8851,7 +9364,7 @@ function App() {
         },
       }],
       active: true,
-      source: 'Motif for Claude Science',
+      source: 'Motif',
       group: vector.group,
       provenance: {
         parentRecordId: recordId,
@@ -8876,7 +9389,7 @@ function App() {
       topology: 'linear',
       seq: previewProtein,
       active: true,
-      source: 'Motif for Claude Science',
+      source: 'Motif',
       group: vector.group,
       provenance: {
         parentRecordId: recordId,
@@ -8927,7 +9440,7 @@ function App() {
       topology: 'linear',
       seq: protein,
       active: true,
-      source: 'Motif for Claude Science',
+      source: 'Motif',
       group: vector.group,
       provenance: {
         parentRecordId: recordId,
@@ -9059,7 +9572,7 @@ function App() {
   // from the global Translate control, so this action does not spawn surprise UI.
   const translateSelectionInline = useCallback(() => {
     // Keep the new layer selected without opening another surface. The same
-    // stable action dock can then remove it immediately with "Del AA".
+    // stable action dock can then remove it immediately with "Remove AA track".
     addTranslationLayer();
     setSequenceViewMode('detail');
   }, [addTranslationLayer]);
@@ -9145,9 +9658,9 @@ function App() {
       next = Array.from(set);
     }
     activeEnzymeSourcesRef.current = next;
-    // A source-button click is an explicit visibility choice. Only Hide sites
-    // records a restorable set; otherwise Show sites could resurrect a source
-    // the user deliberately turned off.
+    // A source-button click is an explicit visibility choice. Only turning the
+    // Sites toggle off records a restorable set; otherwise turning it back on
+    // could resurrect a source the user deliberately turned off.
     delete lastVisibleEnzymeSourcesRef.current[recordId];
     setEnzymeSourcesByRecord((current) => ({ ...current, [recordId]: next }));
     if (enabled) unhideRestrictionSourceEnzymes(source === 'all' ? ['all'] : [source]);
@@ -9194,6 +9707,28 @@ function App() {
       [recordId]: enzymeNames,
     }));
   }, [enzymeNames, recordId]);
+
+  // Pressed means the map is showing exactly the enzymes that cut this record once:
+  // every multi-cutter hidden and no single-cutter hidden. Both halves are needed —
+  // hiding the multi-cutters and then hiding EcoRI as well is not the single-cutter
+  // view, and a control that stayed pressed through it would be lying.
+  const singleCuttersOnly = multiCutters.length > 0
+    && singleCutters.length > 0
+    && multiCutters.every((enzyme) => hiddenEnzymes.has(enzyme))
+    && !singleCutters.some((enzyme) => hiddenEnzymes.has(enzyme));
+
+  const setSingleCuttersOnly = useCallback((only: boolean) => {
+    // Ref writes stay outside the state updater: React may run an updater twice,
+    // and a second run would overwrite the saved set with the filtered one.
+    if (only) {
+      preSingleCutterHiddenRef.current[recordId] = Array.from(hiddenEnzymes).sort();
+      setHiddenEnzymesByRecord((current) => ({ ...current, [recordId]: [...multiCutters] }));
+      return;
+    }
+    const restored = preSingleCutterHiddenRef.current[recordId] ?? [];
+    delete preSingleCutterHiddenRef.current[recordId];
+    setHiddenEnzymesByRecord((current) => ({ ...current, [recordId]: restored }));
+  }, [hiddenEnzymes, multiCutters, recordId]);
 
   const toggleRestrictionLabels = useCallback(() => {
     setRestrictionLabelsByRecord((current) => ({
@@ -9534,7 +10069,7 @@ function App() {
       setPayload(nextPayload);
       return true;
     } catch (error) {
-      showWorkbenchNotice(error instanceof Error ? error.message : 'The analysis result could not be removed.', 'error');
+      showWorkbenchNotice(error instanceof Error ? error.message : 'The result could not be removed. Reload the workspace and try again.', 'error');
       return false;
     }
   }, [showWorkbenchNotice]);
@@ -9860,7 +10395,7 @@ function App() {
       return;
     }
     if (current.records.length >= MOTIF_MAX_RECORDS) {
-      throw new Error(`Creating this amplicon would exceed the ${MOTIF_MAX_RECORDS}-record artifact limit.`);
+      throw new Error(`Creating this amplicon exceeds the ${MOTIF_MAX_RECORDS}-record artifact limit. Remove a record, then try again.`);
     }
 
     const recordInput = omitUndefinedObjectProperties(materialized.record) as ArtifactRecordInput;
@@ -9973,7 +10508,7 @@ function App() {
   const openGelForWorkflow = useCallback((digestWorkflowResultId: string) => {
     const result = payloadRef.current.workflowResults.find((entry) => entry.id === digestWorkflowResultId && entry.kind === 'digest');
     if (!result) {
-      showWorkbenchNotice('The saved digest result is no longer available for gel preview.', 'error');
+      showWorkbenchNotice('The saved digest is no longer available. Select another digest or save a new one.', 'error');
       return;
     }
     gelReturnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -10042,7 +10577,7 @@ function App() {
       setGelError('');
       setGelStatus('Gel result saved in Workflow Results.');
     } catch (error) {
-      setGelError(error instanceof Error ? `Gel result was not saved: ${error.message}` : 'Gel result was not saved.');
+      setGelError(error instanceof Error ? `Gel result was not saved: ${error.message}` : 'Gel result was not saved. Review the gel inputs and try again.');
     }
   }, [gelSaved]);
 
@@ -10092,7 +10627,7 @@ function App() {
       throw new Error(`This exact ${saved.workflowResult.kind === 'golden_gate' ? 'Golden Gate' : 'ligation'} result is already saved as “${duplicate.name}”.`);
     }
     if (saved.derivedRecord && current.records.length >= MOTIF_MAX_RECORDS) {
-      throw new Error(`Creating this product would exceed the ${MOTIF_MAX_RECORDS}-record artifact limit.`);
+      throw new Error(`Creating this product exceeds the ${MOTIF_MAX_RECORDS}-record artifact limit. Remove a record, then try again.`);
     }
     if (saved.derivedRecord && current.records.some((record) => (
       record.name.trim().toLocaleLowerCase() === saved.derivedRecord?.name.trim().toLocaleLowerCase()
@@ -10178,7 +10713,7 @@ function App() {
     const targetId = cloningPrimerWorklist[nextIndex]?.recordId;
     if (!targetId) return;
     if (!payloadRef.current.records.some((record) => record.id === targetId)) {
-      showWorkbenchNotice('That primer-plan input is no longer available.', 'error');
+      showWorkbenchNotice('The primer-plan input is no longer available. Reopen the cloning design.', 'error');
       return;
     }
     setCloningPrimerRecordIndex(nextIndex);
@@ -10315,7 +10850,7 @@ function App() {
       : undefined;
     const productTranslationTableId = singleParentRecord?.translationTableId;
     if (shouldCreateProduct && current.records.length >= MOTIF_MAX_RECORDS) {
-      throw new Error(`Creating this product would exceed the ${MOTIF_MAX_RECORDS}-record artifact limit.`);
+      throw new Error(`Creating this product exceeds the ${MOTIF_MAX_RECORDS}-record artifact limit. Remove a record, then try again.`);
     }
     if (shouldCreateProduct && current.records.some((record) => record.name.trim().toLocaleLowerCase() === saved.name.trim().toLocaleLowerCase())) {
       throw new Error(`A record named “${saved.name}” already exists. Choose a unique design name.`);
@@ -10331,7 +10866,7 @@ function App() {
         topology: verifiedProduct.topology,
         ...(productTranslationTableId !== undefined ? { translationTableId: productTranslationTableId } : {}),
         sequence: verifiedProduct.sequence,
-        source: 'Motif for Claude Science',
+        source: 'Motif',
         group: 'Cloning products',
         provenance: {
           operation: saved.method === 'gibson' ? 'gibson_design' : 'golden_gate_design',
@@ -10660,16 +11195,27 @@ function App() {
   useLayoutEffect(() => {
     const inspector = toolsInspectorRef.current;
     if (!inspector) return undefined;
+    const syncDisclosure = (panel: HTMLDetailsElement) => {
+      panel.querySelector<HTMLElement>(':scope > summary[data-rail-label]')
+        ?.setAttribute('aria-expanded', String(panel.open));
+      if (toolsPinned) panel.removeAttribute('name');
+      else panel.setAttribute('name', 'motif-cs-tools');
+    };
     const syncDisclosureGroups = () => {
-      inspector.querySelectorAll<HTMLDetailsElement>('details[data-rail-tool]').forEach((panel) => {
-        if (toolsPinned) panel.removeAttribute('name');
-        else panel.setAttribute('name', 'motif-cs-tools');
-      });
+      inspector.querySelectorAll<HTMLDetailsElement>('details[data-rail-tool]').forEach(syncDisclosure);
+    };
+    const syncToggledDisclosure = (event: Event) => {
+      if (!(event.target instanceof HTMLDetailsElement) || !event.target.matches('details[data-rail-tool]')) return;
+      syncDisclosure(event.target);
     };
     syncDisclosureGroups();
     const observer = new MutationObserver(syncDisclosureGroups);
     observer.observe(inspector, { childList: true, subtree: true });
-    return () => observer.disconnect();
+    inspector.addEventListener('toggle', syncToggledDisclosure, true);
+    return () => {
+      observer.disconnect();
+      inspector.removeEventListener('toggle', syncToggledDisclosure, true);
+    };
   }, [paneVisibility.tools, recordId, toolsPinned]);
 
   const handleMapDockOpen = useCallback(() => {
@@ -10690,6 +11236,54 @@ function App() {
       revealOpenedDockInStackedLayout();
     });
   }, [closeOpenToolDetails, mapFrameRef]);
+
+  /**
+   * Where the reader was before Export took the pane over.
+   *
+   * The panel is the last child of the sequence column, so revealing it scrolls
+   * the column almost to its end: measured at 1440x1000, opening Export from a
+   * reading position of scrollTop 300 lands at 1947 of 1966 and leaves 0 of the
+   * sequence's 1778px on screen. Closing it again used to leave the reader at
+   * 1574 — the new bottom — 1274px from the line they were on, with nothing in
+   * the UI to say where that line went.
+   */
+  const exportReturnScrollRef = useRef<number | null>(null);
+  const revealExportPanel = useCallback(() => {
+    const column = sequenceColumnRef.current;
+    const panel = column?.querySelector<HTMLDetailsElement>('#motif-cs-export-panel');
+    if (!panel || !column) return;
+    // Only the first reveal records it. Pressing Export while the panel is
+    // already open must not overwrite the reading position with the panel's own.
+    if (!panel.open) exportReturnScrollRef.current = column.scrollTop;
+    panel.open = true;
+    window.requestAnimationFrame(() => {
+      panel.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'auto' });
+      panel.querySelector<HTMLElement>(':scope > summary')?.focus({ preventScroll: true });
+    });
+  }, []);
+
+  // `toggle` does not bubble, so this listens in the capture phase on the column
+  // rather than on the panel: the panel remounts with the record and a listener
+  // bound to the element itself would go stale. Opening the panel by its own
+  // summary records nothing and restores nothing — that reader scrolled here
+  // themselves and is already where they meant to be.
+  useEffect(() => {
+    const column = sequenceColumnRef.current;
+    if (!column) return undefined;
+    const onToggle = (event: Event) => {
+      const panel = event.target;
+      if (!(panel instanceof HTMLDetailsElement) || panel.id !== 'motif-cs-export-panel') return;
+      if (panel.open) return;
+      const target = exportReturnScrollRef.current;
+      exportReturnScrollRef.current = null;
+      if (target === null) return;
+      // After the commit that removes the panel body, so the column has already
+      // shrunk back and the browser will not clamp a valid position away.
+      window.requestAnimationFrame(() => { column.scrollTop = target; });
+    };
+    column.addEventListener('toggle', onToggle, true);
+    return () => column.removeEventListener('toggle', onToggle, true);
+  }, []);
 
   useEffect(() => {
     saveWorkspaceLayoutPrefs({
@@ -11388,6 +11982,31 @@ function App() {
   const effectiveStackedSequenceHeight = stackedPaneHeights.sequence === null
     ? null
     : clamp(stackedPaneHeights.sequence, stackedSequenceBounds.min, stackedSequenceBounds.max);
+  // Cap the DEFAULT, not the bound. compactTopRowMaxHeight still governs the
+  // resize handle, so the sequence pane can still be dragged to the full height
+  // it always could; this only decides where the divider sits before anyone
+  // touches it.
+  //
+  // This used to skip short workspaces entirely, on the reasoning that below
+  // 620px there is no height to redistribute. Measuring the drag range refuted
+  // that: at 1100x650 the untouched default gave the sequence pane 286px and
+  // the ring 117.4px, while dragging the divider to 240px grew the ring to
+  // 145.3px -- 24% more map -- with the same single full block of sequence
+  // either way. The short case was giving away 46px for nothing.
+  //
+  // So the cap applies at every height, and the floor is the height at which
+  // the sequence pane still shows its first full block. Below that the pane is
+  // chrome and nothing else, which is why the short case needs a floor of its
+  // own rather than compactRowMinHeight's 150. On a workspace too short to
+  // reach even that, the floor gives way to whatever height exists.
+  const defaultCompactTopRowFloor = Math.min(COMPACT_ROW_MIN_HEIGHT, compactTopRowMaxHeight);
+  const defaultCompactTopRowMaxHeight = Math.max(
+    defaultCompactTopRowFloor,
+    Math.min(
+      compactTopRowMaxHeight,
+      workspaceMainSize.height - COMPACT_ROW_DIVIDER_HEIGHT - COMPACT_MAP_ROW_DEFAULT_MIN_HEIGHT,
+    ),
+  );
   const defaultCompactTopRowHeight = clamp(
     Math.round((workspaceMainSize.height - COMPACT_ROW_DIVIDER_HEIGHT) * (
       workspaceMainSize.height <= 620
@@ -11395,7 +12014,7 @@ function App() {
         : 0.46
     )),
     compactRowMinHeight,
-    compactTopRowMaxHeight,
+    defaultCompactTopRowMaxHeight,
   );
   const renderedStackedSequenceHeight = effectiveStackedSequenceHeight
     ?? (workspaceRowResizeActive ? defaultCompactTopRowHeight : 360);
@@ -11447,30 +12066,43 @@ function App() {
     const restorableSourceCount = lastVisibleEnzymeSourcesRef.current[recordId]?.length ?? 0;
     const canShowSites = visibleRestrictionSites.length < restrictionSites.length
       || (scanEnzymes.length === 0 && restorableSourceCount > 0);
+    // "On" for the Sites toggle means every site the enabled sources can draw is
+    // drawn. Not `!canShowSites`: with every source switched off there is nothing
+    // left to show AND nothing on screen, and that state has to read as off.
+    const allSitesVisible = restrictionSites.length > 0
+      && visibleRestrictionSites.length === restrictionSites.length;
     return (
       <>
         <div className="motif-cs-layer-actions">
+          {/* One switch over one boolean, not two buttons over it. As a pair, the
+              button that could not act was the disabled one, so at rest — every site
+              drawn — `Show sites` dimmed and `Hide sites` stayed bright, and three
+              same-sized buttons in a row with one dim member read as a segmented
+              control whose bright member is the current state. The row said sites
+              were hidden while they were shown.
+
+              Pressed means everything the enabled source groups can draw is drawn,
+              so a partly hidden layer reads as off and one click restores it — the
+              transition `Show sites` used to make. `canShowSites` still decides
+              whether the control can act at all, which keeps the case where every
+              source is off but a hidden set is restorable. */}
           <button
             type="button"
             className="motif-cs-mini-button"
-            onClick={() => setAllEnzymesVisible(true)}
-            disabled={!canShowSites}
-            title={scanEnzymes.length === 0
-              ? restorableSourceCount > 0
-                ? 'Restore the source groups hidden with Hide sites'
-                : 'Enable a source group first'
-              : 'Show every site in the enabled source groups'}
+            data-active={allSitesVisible || undefined}
+            aria-pressed={allSitesVisible}
+            aria-label={`${allSitesVisible ? 'Hide' : 'Show'} all restriction sites`}
+            onClick={() => setAllEnzymesVisible(!allSitesVisible)}
+            disabled={!allSitesVisible && !canShowSites}
+            title={allSitesVisible
+              ? 'Hide all restriction sites'
+              : scanEnzymes.length === 0
+                ? restorableSourceCount > 0
+                  ? 'Restore the hidden source groups'
+                  : 'Enable a source group first'
+                : 'Show every site in the enabled source groups'}
           >
-            Show sites
-          </button>
-          <button
-            type="button"
-            className="motif-cs-mini-button"
-            onClick={() => setAllEnzymesVisible(false)}
-            disabled={!restrictionLayerVisible}
-            title="Hide all restriction sites"
-          >
-            Hide sites
+            Sites
           </button>
           <button
             type="button"
@@ -11478,20 +12110,50 @@ function App() {
             data-active={showRestrictionLabels || undefined}
             aria-pressed={showRestrictionLabels}
             onClick={toggleRestrictionLabels}
+            disabled={!restrictionLayerVisible}
             aria-label={`${showRestrictionLabels ? 'Hide' : 'Show'} restriction-site labels`}
-            title={`${showRestrictionLabels ? 'Hide' : 'Show'} restriction-site labels`}
+            title={restrictionLayerVisible
+              ? `${showRestrictionLabels ? 'Hide' : 'Show'} restriction-site labels`
+              : 'Show the sites first'}
           >
             Site labels
           </button>
-          <span className="motif-cs-muted">{singleCutters.length} single-cutters</span>
+          {/* This count used to be muted text sitting between two buttons that act.
+              The map opens with every site the enabled sources find — 77 across 34
+              enzymes on pUC19, drawn as 99 ticks of which 20 carry labels — and the
+              view a cloning workflow actually wants was reachable only by unticking
+              11 enzymes by hand, with nothing on screen saying which 11. Measured
+              on pUC19: 99 ticks and 20 labels become 15 and 4, and the site
+              overflow chip disappears. The number was already computed; only the
+              press was missing. */}
+          <button
+            type="button"
+            className="motif-cs-mini-button"
+            data-active={singleCuttersOnly || undefined}
+            aria-pressed={singleCuttersOnly}
+            onClick={() => setSingleCuttersOnly(!singleCuttersOnly)}
+            disabled={multiCutters.length === 0 || singleCutters.length === 0}
+            aria-label={singleCuttersOnly
+              ? 'Show every enzyme again'
+              : `Show only the ${singleCutters.length} enzymes that cut once`}
+            title={multiCutters.length === 0
+              ? 'Every enzyme here already cuts once'
+              : singleCutters.length === 0
+                ? 'No enzyme in the enabled sources cuts this record once'
+                : singleCuttersOnly
+                  ? 'Show every enzyme again'
+                  : `Hide the ${multiCutters.length} enzymes that cut more than once`}
+          >
+            {singleCutters.length} single-cutters
+          </button>
           {includeMapSummary && mapUnlabelledSiteCount > 0 ? (
             <span className="motif-cs-muted">
-              {mapUnlabelledSiteCount.toLocaleString()} {mapRestrictionSitesOmitted > 0 ? 'selectable sites' : 'sites'} without labels on the map
+              {mapUnlabelledSiteCount.toLocaleString()} {mapRestrictionSitesOmitted > 0 ? 'selectable sites' : 'sites'} drawn without an enzyme name
             </span>
           ) : null}
           {includeMapSummary && mapRestrictionSitesOmitted > 0 ? (
             <span className="motif-cs-muted">
-              Density marks include all {visibleRestrictionSites.length.toLocaleString()} visible sites; {interactiveMapRestrictionSites.length.toLocaleString()} evenly distributed sites can be selected from the map.
+              Density marks show all {visibleRestrictionSites.length.toLocaleString()} visible sites. You can select {interactiveMapRestrictionSites.length.toLocaleString()} of them on the map, evenly distributed.
             </span>
           ) : null}
         </div>
@@ -11576,10 +12238,12 @@ function App() {
           {workbenchNotice.message}
         </div>
       ) : null}
-      <header ref={topbarRef} className="motif-cs-topbar" aria-label="Motif for Claude Science workspace">
-        <div className="motif-cs-brand" aria-label="Motif for Claude Science">
+      <header ref={topbarRef} className="motif-cs-topbar" aria-label="Motif workspace">
+        {/* The product is Motif. "for Claude Science" is the distribution, and it was
+            reading as part of the name in the one place a name has to be shortest.
+            It still names the build in the About block and in exported provenance. */}
+        <div className="motif-cs-brand">
           <span translate="no">Motif</span>
-          <small translate="no">for Claude Science</small>
         </div>
         {/* A record-count and a sequence-length chip used to render here on every
             load and were hidden by `.motif-cs-topbar-meta > .motif-cs-chip` in the
@@ -11588,7 +12252,7 @@ function App() {
             the topbar reserves 172px on the right for the host's Annotate pill
             and leaves an 8px gap, so there is nowhere to put them, and both facts
             are already on screen — the inventory badge carries the count and the
-            inventory row and map header both carry "circular · 2,578 bp". */}
+            inventory row carries "dna · circular · 2,578 bp". */}
         <div className="motif-cs-topbar-meta">
           <div
             className="motif-cs-pane-switcher"
@@ -11650,13 +12314,20 @@ function App() {
             title={isEditable ? 'Toggle the floating Translations window' : hasActiveRecord ? 'Translations are available for DNA and RNA records' : 'Add a DNA or RNA record to enable translations'}
           >
             <Languages className="motif-cs-nav-icon" aria-hidden="true" />
-            <span>Translate</span>
+            {/* The window this opens is titled "Translations" and the tool
+                behind it is "Translation". A verb here made one concept read as
+                three names in one screen. */}
+            <span>Translations</span>
           </button>
           <label className="motif-cs-theme-picker">
             <span className="motif-cs-visually-hidden">Theme</span>
-            <select name="artifact-theme" value={theme} onChange={(event) => setTheme(event.target.value as ArtifactThemeName)}>
+            <select
+              name="artifact-theme"
+              value={artifactThemePaletteName(theme)}
+              onChange={(event) => setTheme(normalizeArtifactThemeName(event.target.value))}
+            >
               {THEME_OPTIONS.map((option) => (
-                <option key={option.id} value={option.id}>{option.label}</option>
+                <option key={option.id} value={option.palette}>{option.label}</option>
               ))}
             </select>
           </label>
@@ -11682,6 +12353,11 @@ function App() {
               aria-controls="motif-cs-workspace"
               aria-selected={active}
               aria-label={record.name}
+              // The tab is pinned at 166px at every viewport from 900 to 1920,
+              // so a 95-character name loses 266px of itself and neighbouring
+              // constructs can differ only in the tail the ellipsis ate. The
+              // aria-label already carried the name; a mouse had nothing.
+              title={record.name}
               tabIndex={active ? 0 : -1}
               data-active={active || undefined}
               onClick={() => selectRecord(record.id)}
@@ -11848,7 +12524,16 @@ function App() {
                 <div>
                   <span className="motif-cs-map-title-full">{hasActiveRecord ? mapPaneTitle : 'Map'}</span>
                   <span className="motif-cs-map-title-compact">Map</span>
-                  <small>{hasActiveRecord ? `${topology} · ${sequenceLengthLabel(sequence.length, sequenceType)}` : 'No active record'}</small>
+                  {/* The drawing under this line, and the shape button to its
+                      right, both already say circular or linear, so the word is
+                      noise here — except when the drawing DISAGREES with the
+                      record, which is the one case the reader cannot see. Then
+                      it is the only thing on screen that says what the molecule
+                      actually is, so it comes back. A protein has one topology
+                      and never reaches this branch. */}
+                  <small>{hasActiveRecord
+                    ? `${mapRenderMode === mapModeForBlock(topology, sequenceType) ? '' : `${topology} · `}${sequenceLengthLabel(sequence.length, sequenceType)}`
+                    : 'No active record'}</small>
                 </div>
                 {hasActiveRecord ? (
                   <div className="motif-cs-map-toolbar" role="group" aria-label="Map view controls">
@@ -11928,17 +12613,24 @@ function App() {
                 data-map-pointer-action={mapPointerAction}
                 data-theme={mapTheme}
                 data-empty={!hasActiveRecord || undefined}
-                title="Wheel or drag outside the sequence to pan; Shift-wheel pans horizontally; Ctrl/Command-wheel zooms; drag inside a circular map or along a linear map to select a range"
+                /* Four semicolon-joined clauses and 30 words, in a native
+                   tooltip, on a box the size of the map. The cursor already
+                   distinguishes panning from selecting — .motif-pm-bg switches
+                   to grab under [data-map-pointer-action="pan"] — so the words
+                   only have to name what the cursor cannot: that a drag makes a
+                   range, and which modifier zooms. */
+                title="Drag across the map to select a range. Wheel pans, Ctrl/Command-wheel zooms."
               >
                 <div
                   className="motif-pm-container"
                   data-map-mode={layout.mode}
                   data-theme={mapTheme}
                   data-map-interaction-surface
+                  onDoubleClick={handleMapFeatureDoubleClick}
                   onPointerDown={handleMapSurfacePointerDown}
                   onPointerMove={handleMapSurfacePointerMove}
                   onPointerUp={handleMapSurfacePointerEnd}
-                  onPointerCancel={handleMapSurfacePointerEnd}
+                  onPointerCancel={handleMapSurfacePointerCancel}
                 >
                   <SequenceMapView
                     layout={layout}
@@ -11949,7 +12641,7 @@ function App() {
                     selectionPaths={selectionPaths}
                     viewport={mapViewport}
                     onFeatureClick={handleMapFeatureClick}
-                    onRestrictionClick={handleRestrictionClick}
+                    onRestrictionClick={handleMapRestrictionClick}
                     onBackgroundClick={handleMapBackgroundClick}
                     onWheelZoom={handleMapWheel}
                   />
@@ -11989,10 +12681,14 @@ function App() {
                             controls that change only the picture. It now picks a
                             DRAWING. The record is untouched, so nothing is cleared,
                             and the signals that say what the molecule is stay put as
-                            the confirmation: the pane subtitle still reads "circular
-                            · 2,578 bp" and the inventory line still says circular.
-                            Converting lives in Entry Details with the other fields
-                            that describe the molecule. */}
+                            the confirmation: the inventory line still says
+                            circular, and the map subtitle — which drops the word
+                            while the drawing agrees with the record, because the
+                            picture says it — puts "circular ·" back the moment
+                            you draw a ring as a line, which is the only moment
+                            the picture would mislead. Converting lives in Entry
+                            Details with the other fields that describe the
+                            molecule. */}
                         <span className="motif-cs-muted">Draw as</span>
                         <div className="motif-cs-segmented motif-cs-shape-toggle" role="group" aria-label="Map drawing">
                           <button
@@ -12002,7 +12698,7 @@ function App() {
                             disabled={!canDrawAsRing}
                             title={canDrawAsRing
                               ? 'Draw this map as a ring'
-                              : 'A linear molecule has two ends; convert it in Entry Details to draw it as a ring'}
+                              : 'A linear molecule has two ends; convert it in Entry details to draw it as a ring'}
                             onClick={() => setMapRenderMode('circular')}
                           >
                             ◯ Circular
@@ -12019,7 +12715,7 @@ function App() {
                           </button>
                         </div>
                         {mapRenderMode !== mapModeForBlock(topology, sequenceType) ? (
-                          <span className="motif-cs-muted">Drawing only — still a {topology} {sequenceType.toUpperCase()}</span>
+                          <span className="motif-cs-muted">The record remains {topology} {sequenceType.toUpperCase()}.</span>
                         ) : null}
                         {!isDnaRecord ? (
                           <span className="motif-cs-muted">Restriction enzymes act on DNA; RNA is not converted implicitly.</span>
@@ -12028,7 +12724,7 @@ function App() {
                       {isDnaRecord ? renderRestrictionSiteControls(true) : null}
                     </>
                   ) : (
-                    <p className="motif-cs-muted">Map shape and restriction controls are available for nucleotide records.</p>
+                    <p className="motif-cs-muted">Select a DNA or RNA record to use map shape and restriction controls.</p>
                   )}
                 </details>
 
@@ -12104,8 +12800,17 @@ function App() {
                   `.motif-cs-sequence-title .motif-cs-title-actions .motif-cs-chip`
                   in the base block. Four dead chips in total, not the two filed.
                   Both facts survive in the inventory row's "dna · circular ·
-                  2,578 bp" and the map header's "circular · 2,578 bp". */}
+                  2,578 bp". */}
               <div className="motif-cs-title-actions">
+                <button
+                  className="motif-cs-mini-button"
+                  type="button"
+                  aria-controls="motif-cs-export-panel"
+                  onClick={revealExportPanel}
+                  title="Open export and copy"
+                >
+                  Export
+                </button>
                 <PanePlacementControl
                   pane="sequence"
                   title="Sequence"
@@ -12144,16 +12849,12 @@ function App() {
                 <div className="motif-cs-edit-controls">
                   {isSequenceEditable ? (
                   <>
-                    {canUndo ? (
-                      <button className="motif-cs-mini-button motif-cs-icon-mini" type="button" onClick={undoEdit} title="Undo (Cmd/Ctrl+Z)" aria-label="Undo">
-                        <Undo2 size={14} strokeWidth={2.2} aria-hidden="true" />
-                      </button>
-                    ) : null}
-                    {canRedo ? (
-                      <button className="motif-cs-mini-button motif-cs-icon-mini" type="button" onClick={redoEdit} title="Redo (Cmd/Ctrl+Shift+Z)" aria-label="Redo">
-                        <Redo2 size={14} strokeWidth={2.2} aria-hidden="true" />
-                      </button>
-                    ) : null}
+                    <button className="motif-cs-mini-button motif-cs-icon-mini" type="button" onClick={undoEdit} disabled={!canUndo} title="Undo (Cmd/Ctrl+Z)" aria-label="Undo">
+                      <Undo2 size={14} strokeWidth={2.2} aria-hidden="true" />
+                    </button>
+                    <button className="motif-cs-mini-button motif-cs-icon-mini" type="button" onClick={redoEdit} disabled={!canRedo} title="Redo (Cmd/Ctrl+Shift+Z)" aria-label="Redo">
+                      <Redo2 size={14} strokeWidth={2.2} aria-hidden="true" />
+                    </button>
                     <div className="motif-cs-segmented motif-cs-edit-mode-toggle" role="group" aria-label="Typing mode">
                       <button
                         type="button"
@@ -12185,29 +12886,27 @@ function App() {
                 ) : null}
                 </div>
                 <div className="motif-cs-display-toggles">
-                  <div className="motif-cs-segmented motif-cs-view-toggle" role="group" aria-label="Sequence view">
-                    <button
-                      type="button"
-                      data-active={effectiveSequenceViewMode === 'standard' || undefined}
-                      aria-pressed={effectiveSequenceViewMode === 'standard'}
-                      aria-label="Standard sequence view"
-                      onClick={() => setSequenceViewMode('standard')}
-                    >
-                      <span className="motif-cs-label-full">Standard</span>
-                      <span className="motif-cs-label-short">Std</span>
-                    </button>
-                    <button
-                      type="button"
-                      data-active={effectiveSequenceViewMode === 'detail' || undefined}
-                      aria-pressed={effectiveSequenceViewMode === 'detail'}
-                      aria-label="Detail sequence view"
-                      disabled={usesLargeSequenceViewer}
-                      onClick={() => setSequenceViewMode('detail')}
-                      title={usesLargeSequenceViewer ? `Detail view is available for records up to ${LARGE_SEQUENCE_DETAIL_THRESHOLD.toLocaleString()} residues` : undefined}
-                    >
-                      Detail
-                    </button>
-                  </div>
+                  {/* One control, not two. Standard and Detail are the two
+                      states of a single thing — whether feature bars, enzyme
+                      sites and translation tracks are drawn under the sequence
+                      — so this is a switch, and it uses the same grammar as the
+                      Complement switch beside it instead of arguing with it. */}
+                  <button
+                    className="motif-cs-mini-button motif-cs-display-switch motif-cs-detail-toggle"
+                    type="button"
+                    data-active={effectiveSequenceViewMode === 'detail' || undefined}
+                    aria-pressed={effectiveSequenceViewMode === 'detail'}
+                    aria-label="Detail sequence view"
+                    disabled={usesLargeSequenceViewer}
+                    onClick={() => setSequenceViewMode(effectiveSequenceViewMode === 'detail' ? 'standard' : 'detail')}
+                    title={usesLargeSequenceViewer
+                      ? `Detail view is available for records up to ${LARGE_SEQUENCE_DETAIL_THRESHOLD.toLocaleString()} residues`
+                      : 'Draw feature bars, enzyme sites and translations under the sequence'}
+                  >
+                    <span className="motif-cs-label-full">Detail</span>
+                    <span className="motif-cs-label-short">Det</span>
+                    <span className="motif-cs-switch-track" aria-hidden="true"><span /></span>
+                  </button>
                   {isNucleotideRecord ? (
                     <button
                       className="motif-cs-mini-button motif-cs-display-switch motif-cs-ds-toggle"
@@ -12228,7 +12927,12 @@ function App() {
               </div>
               {/* Always mounted so range-selection actions have a stable dock;
                   the empty state is visually quiet to keep the sequence canvas dense. */}
-              <div className="motif-cs-selection-bar" role="group" aria-label="Selection actions" data-empty={!(selectedFeature || selectedMapRange) || undefined}>
+              <div
+                className="motif-cs-selection-bar"
+                role="group"
+                aria-label="Selection actions"
+                data-empty={!(selectedFeature || selectedMapRange) || undefined}
+              >
                 <span className="motif-cs-selection-label" title={selectionSummary?.label ?? (selectedRestriction ? 'Restriction tick selected; drag a sequence range for sequence actions.' : undefined)}>
                   <span className="motif-cs-selection-name">{selectionBarLabel}</span>
                   {inspectorSelectionSeq ? (
@@ -12250,8 +12954,20 @@ function App() {
                       : multipartTranslateFeature
                         ? 'Multipart translation is available in the Translation panel, but cannot be pinned as one contiguous track'
                         : 'Add this selection as an inline amino-acid translation track'}
+                    /* One action, one name. This button and the Translation
+                       panel's both call addTranslationLayer, and they were
+                       spelled "Add AA" and "Add AA track" — two names for the
+                       same thing, so neither one teaches the other. The panel's
+                       name wins because it says what gets added; the bar keeps
+                       the two-character form for the widths where the full name
+                       does not fit, the same full/short pair "New rev comp" and
+                       "+ RC" already use here. aria-label pins the accessible
+                       name to the full form at every width, so the control
+                       answers to one name whichever span is painted. */
+                    aria-label={selectedInlineTranslationTrack ? 'Remove AA track' : 'Add AA track'}
                   >
-                    {selectedInlineTranslationTrack ? 'Del AA' : 'Add AA'}
+                    <span className="motif-cs-label-full">{selectedInlineTranslationTrack ? 'Remove AA track' : 'Add AA track'}</span>
+                    <span className="motif-cs-label-short">{selectedInlineTranslationTrack ? 'Del AA' : 'Add AA'}</span>
                   </button>
                   <button
                     className="motif-cs-mini-button"
@@ -12261,6 +12977,21 @@ function App() {
                     title={selectedMapRange ? 'Annotate this range as a new feature' : 'Drag-select a range on the sequence to add a feature'}
                   >
                     + Feature
+                  </button>
+                  {/* Primer design already targets whatever is selected, but it
+                      opened only from a panel in the Tools rail, so nobody
+                      selecting a range ever met it. It belongs beside the other
+                      things a selection can become. */}
+                  <button
+                    className="motif-cs-mini-button"
+                    type="button"
+                    disabled={!isEditable}
+                    onClick={openPrimerWorkspace}
+                    aria-label="Design primers"
+                    title={guideScopeRange ? 'Design primers against this selection' : 'Design primers against the whole record'}
+                  >
+                    <span className="motif-cs-label-full">Design primers</span>
+                    <span className="motif-cs-label-short">Primers</span>
                   </button>
                   {/* Everything above acts on the record you are looking at;
                       everything below adds a NEW one to the inventory. The two
@@ -12311,7 +13042,7 @@ function App() {
               ) : (
                 <div className="motif-cs-empty-sequence-state">
                   <strong>No records yet</strong>
-                  <span>Use Add Entry or drop a FASTA, GenBank, AB1/ABI, raw sequence, or Database JSON file.</span>
+                  <span>Add an entry to begin.</span>
                   <button className="motif-cs-mini-button" type="button" onClick={() => setImportPanelOpen(true)}>Add entry</button>
                 </div>
               )}
@@ -12341,7 +13072,8 @@ function App() {
                 detailMode={effectiveSequenceViewMode === 'detail'}
                 caret={caret}
                 editable={isSequenceEditable}
-                onFeatureSelect={handleFeatureClick}
+                onFeatureSelect={handleMapFeatureClick}
+                onFeatureOpen={openFeatureEditor}
                 onRestrictionSelect={handleSequenceRestrictionClick}
                 onTranslationTrackSelect={handleTranslationTrackSelectAndReveal}
                 onTranslationCodonSelect={selectTranslationCodonAndReveal}
@@ -12436,7 +13168,7 @@ function App() {
               >
                 <div>
                   <span>Tools</span>
-                  <small>selection + analysis</small>
+                  <small>Selection and analysis</small>
                 </div>
                 {toolsDocked || toolsFloating ? (
                   <PanePlacementControl
@@ -12519,6 +13251,8 @@ function App() {
                 onAddFeature={addFeature}
                 onUpdateFeature={updateFeature}
                 onDeleteFeature={deleteFeature}
+                onAcceptProposedFeature={acceptProposedFeature}
+                onDismissProposedFeature={dismissProposedFeature}
                 onCreateRecord={addSelectedFeatureRecord}
                 onCreateProteinRecord={
                   selectedFeature
@@ -12538,13 +13272,15 @@ function App() {
             </div>
           )}
           <details className="motif-cs-panel" name="motif-cs-tools" data-rail-tool="notes">
-            <summary className="motif-cs-panel-head" data-rail-label="N" title="Notes">
+            <summary className="motif-cs-panel-head" data-rail-label="N" role="button" title="Notes">
               <NotebookPen className="motif-cs-panel-icon" size={14} strokeWidth={2.2} aria-hidden="true" />
               <span>Notes</span>
-              <span className="motif-cs-chip">{payload.notes.length}</span>
+              {payload.notes.length ? (
+                <span className="motif-cs-chip">{payload.notes.length}</span>
+              ) : null}
             </summary>
             <div className="motif-cs-tool-panel-body motif-cs-notes-tool-body">
-              <RailPopoverTitle title="Notes" meta={`${payload.notes.length} saved`} />
+              <RailPopoverTitle title="Notes" meta={payload.notes.length ? `${payload.notes.length} saved` : undefined} />
               <ClaudeScienceNotesPanel
                 notes={payload.notes}
                 activeRecordId={hasActiveRecord ? recordId : null}
@@ -12561,13 +13297,12 @@ function App() {
             </div>
           </details>
           <details className="motif-cs-panel" name="motif-cs-tools" data-rail-tool="inspector">
-            <summary className="motif-cs-panel-head" data-rail-label="I" title="Inspector">
+            <summary className="motif-cs-panel-head" data-rail-label="I" role="button" title="Inspector">
               <Info className="motif-cs-panel-icon" size={14} strokeWidth={2.2} aria-hidden="true" />
               <span>Inspector</span>
-              <span className="motif-cs-chip">live</span>
             </summary>
             <div className="motif-cs-inspector-body motif-cs-tool-panel-body">
-              <RailPopoverTitle title="Inspector" meta="live" />
+              <RailPopoverTitle title="Inspector" />
               {selectedFeature ? (
                 <>
                   <strong>{selectedFeature.name}</strong>
@@ -12614,7 +13349,7 @@ function App() {
           </details>
 
           <details className="motif-cs-panel" name="motif-cs-tools" data-rail-tool="restriction-sites">
-            <summary className="motif-cs-panel-head" data-rail-label="E" title="Restriction sites">
+            <summary className="motif-cs-panel-head" data-rail-label="E" role="button" title="Restriction sites">
               <Scissors className="motif-cs-panel-icon" size={14} strokeWidth={2.2} aria-hidden="true" />
               <span>Restriction Sites</span>
               <span className="motif-cs-chip">
@@ -12624,16 +13359,22 @@ function App() {
               </span>
             </summary>
             <div className="motif-cs-tool-panel-body motif-cs-restriction-tool-body">
+              {/* No count here. This header sat directly above the two section
+                  heads that already carry the same two numbers — the visible/total
+                  sites and the enzyme count — so it said them a third time, 78px
+                  and 344px before they were said properly. The map footer keeps
+                  the count for when this panel is shut. 'DNA only' stays: on a
+                  protein or RNA record it is the reason the panel is empty. */}
               <RailPopoverTitle
                 title="Restriction Sites"
-                meta={hasActiveRecord && isDnaRecord ? restrictionVisibilityMeta.full : 'DNA only'}
+                meta={hasActiveRecord && isDnaRecord ? undefined : 'DNA only'}
               />
               {renderRestrictionSiteControls(false)}
             </div>
           </details>
 
           <details className="motif-cs-panel" name="motif-cs-tools" data-rail-tool="pattern-search">
-            <summary className="motif-cs-panel-head" data-rail-label="F" title="Pattern search">
+            <summary className="motif-cs-panel-head" data-rail-label="F" role="button" title="Pattern Search">
               <Search className="motif-cs-panel-icon" size={14} strokeWidth={2.2} aria-hidden="true" />
               <span>Pattern Search</span>
               <span className="motif-cs-chip">{motifHits.length} hit{motifHits.length === 1 ? '' : 's'}</span>
@@ -12650,7 +13391,7 @@ function App() {
                 disabled={!hasActiveRecord}
                 onChange={(event) => handleMotifChange(event.target.value)}
                 aria-label="Pattern search"
-                placeholder={sequenceType === 'protein' ? 'Find residues, e.g. HHHHHH…' : 'Find sequence, e.g. GAATTC…'}
+                placeholder={sequenceType === 'protein' ? 'Search residues (for example, HHHHHH)…' : 'Search sequence (for example, GAATTC)…'}
               />
               {motifHits.length > 0 ? (
                 <div className="motif-cs-motif-hit-list" aria-label="Pattern hits">
@@ -12681,7 +13422,7 @@ function App() {
                   ) : null}
                 </div>
               ) : (
-                <p className="motif-cs-muted">{motif.trim() ? 'No hits on either strand' : 'Type a sequence to find and jump to every match (both strands).'}</p>
+                <p className="motif-cs-muted">{motif.trim() ? 'No matches on either strand.' : 'Enter a sequence to find matches on both strands.'}</p>
               )}
             </div>
           </details>
@@ -12696,13 +13437,18 @@ function App() {
               if (open) setShowTranslations(false);
             }}
           >
-            <summary className="motif-cs-panel-head" data-rail-label="T" title="Translation">
+            <summary className="motif-cs-panel-head" data-rail-label="T" role="button" title="Translation">
               <Languages className="motif-cs-panel-icon" size={14} strokeWidth={2.2} aria-hidden="true" />
               <span>Translation</span>
               <span className="motif-cs-chip">+{translateFrame + 1}</span>
             </summary>
             <div className="motif-cs-tool-panel-body motif-cs-translation-tool-body">
-              <RailPopoverTitle title="Translation" meta={`+${translateFrame + 1}`} />
+              {/* No frame here. The Reading frame control 169px below shows all
+                  three frames with the current one pressed, and says which is
+                  which; "+1" on its own above it is the same fact stated less
+                  clearly. Both are on screen together at 1280x720 and above.
+                  The summary chip keeps it for when the panel is shut. */}
+              <RailPopoverTitle title="Translation" />
               <TranslationPanel
                 canTranslate={isEditable}
                 targetLabel={translateTarget.label}
@@ -12736,16 +13482,18 @@ function App() {
           </details>
 
           <details className="motif-cs-panel" name="motif-cs-tools" data-rail-tool="primer-design">
-            <summary ref={primerToggleRef} className="motif-cs-panel-head" data-rail-label="P" title="Primer design">
+            <summary ref={primerToggleRef} className="motif-cs-panel-head" data-rail-label="P" role="button" title="Primer design">
               <Dna className="motif-cs-panel-icon" size={14} strokeWidth={2.2} aria-hidden="true" />
               <span>Primer Design</span>
-              <span className="motif-cs-chip">{guideScopeRange ? `${Math.max(0, guideScopeRange.end - guideScopeRange.start).toLocaleString()} bp` : 'PCR'}</span>
+              {guideScopeRange ? (
+                <span className="motif-cs-chip">{Math.max(0, guideScopeRange.end - guideScopeRange.start).toLocaleString()} bp</span>
+              ) : null}
             </summary>
             <div className="motif-cs-tool-panel-body motif-cs-cloning-launcher">
               <RailPopoverTitle title="Primer Design" meta={guideScopeRange ? 'current target' : 'whole record'} />
               <div className="motif-cs-cloning-launcher-copy">
                 <strong>Ranked primer workspace</strong>
-                <span>Set the target and conditions, inspect Tm, GC, hairpin and dimer evidence, then save or hand the pair to PCR and cloning.</span>
+                <span>Set the target and conditions, review primer quality, then save the pair or send it to PCR or cloning.</span>
               </div>
               <button
                 className="motif-cs-mini-button motif-cs-mini-button-accent"
@@ -12781,16 +13529,15 @@ function App() {
           />
 
           <details className="motif-cs-panel" name="motif-cs-tools" data-rail-tool="cloning">
-            <summary ref={cloningToggleRef} className="motif-cs-panel-head" data-rail-label="C" title="Cloning workflows">
+            <summary ref={cloningToggleRef} className="motif-cs-panel-head" data-rail-label="C" role="button" title="Cloning workflows">
               <Workflow className="motif-cs-panel-icon" size={14} strokeWidth={2.2} aria-hidden="true" />
               <span>Cloning</span>
-              <span className="motif-cs-chip">design</span>
             </summary>
             <div className="motif-cs-tool-panel-body motif-cs-cloning-launcher">
-              <RailPopoverTitle title="Cloning" meta="design + validate" />
+              <RailPopoverTitle title="Cloning" />
               <div className="motif-cs-cloning-launcher-copy">
                 <strong>Guided design workspace</strong>
-                <span>Choose a Golden Gate profile or Gibson, order parts, resolve preparation, and save a provenance-linked plan or product.</span>
+                <span>Choose a method, order the parts, resolve preparation, then save the plan or product.</span>
               </div>
               <button
                 className="motif-cs-mini-button motif-cs-mini-button-accent"
@@ -12802,8 +13549,8 @@ function App() {
                 Open design workspace
               </button>
               <div className="motif-cs-cloning-launcher-copy">
-                <strong>Restriction / ligation bench</strong>
-                <span>Use the bounded quick workspace for pre-flanked Golden Gate parts or explicit sticky/blunt-end ligation.</span>
+                <strong>Quick assembly</strong>
+                <span>Assemble pre-flanked parts or define sticky- or blunt-end ligation.</span>
               </div>
               <button
                 className="motif-cs-mini-button"
@@ -12816,7 +13563,7 @@ function App() {
               </button>
               <div className="motif-cs-cloning-launcher-copy">
                 <strong>Gel preview</strong>
-                <span>Compare saved digests and linear DNA with a qualitative 1 kb or 100 bp ladder.</span>
+                <span>Compare saved digests and linear DNA with a 1 kb or 100 bp ladder.</span>
               </div>
               <button
                 className="motif-cs-mini-button"
@@ -12827,23 +13574,48 @@ function App() {
               >
                 Open gel workspace
               </button>
-              <p className="motif-cs-form-note">
-                {assemblyRecords.length} DNA record{assemblyRecords.length === 1 ? '' : 's'} · {gelLaneCandidates.length} gel lane source{gelLaneCandidates.length === 1 ? '' : 's'}
+              {/* At zero the count was the only thing on screen, and it named
+                  a term that appears nowhere else. A workspace of circular
+                  plasmids qualifies for no lane at all, so say what makes one
+                  rather than leave a locked button beside a bare 0. */}
+              <p className="motif-cs-form-note" data-testid="gel-lane-source-note">
+                {gelLaneCandidates.length === 0
+                  ? `${assemblyRecords.length} DNA record${assemblyRecords.length === 1 ? '' : 's'} · no gel lanes yet. Save a digest result, or add a linear DNA record.`
+                  : `${assemblyRecords.length} DNA record${assemblyRecords.length === 1 ? '' : 's'} · ${gelLaneCandidates.length} gel lane source${gelLaneCandidates.length === 1 ? '' : 's'}`}
               </p>
             </div>
           </details>
 
           <details className="motif-cs-panel" name="motif-cs-tools" data-rail-tool="construct-verification">
-            <summary ref={constructVerificationToggleRef} className="motif-cs-panel-head" data-rail-label="V" title="Construct verification">
+            <summary
+              ref={constructVerificationToggleRef}
+              className="motif-cs-panel-head"
+              data-rail-label="V"
+              data-rail-count={constructVerificationReadCount || undefined}
+              role="button"
+              title={constructVerificationReadCount
+                ? `Construct verification — ${constructVerificationReadCount} eligible Sanger read${constructVerificationReadCount === 1 ? '' : 's'}`
+                : 'Construct verification'}
+            >
               <ShieldCheck className="motif-cs-panel-icon" size={14} strokeWidth={2.2} aria-hidden="true" />
               <span>Construct Verification</span>
-              <span className="motif-cs-chip">{constructVerificationReadCount} read{constructVerificationReadCount === 1 ? '' : 's'}</span>
+              {/* The zero was also why this head was the only two-line row in a
+                  list of 16. The label needs 174px and the head is 244px, but
+                  the chip took 41px of it and pushed "Verification" onto a
+                  second line: 42.2px against 34px for every other head, at
+                  1280, 1440 and 1920. Dropping the chip when there is nothing
+                  to count fixes the count and the row together, and keeps the
+                  full name -- shortening the label would have fixed only the
+                  row. The summary's own title still carries the read count. */}
+              {constructVerificationReadCount ? (
+                <span className="motif-cs-chip">{constructVerificationReadCount} read{constructVerificationReadCount === 1 ? '' : 's'}</span>
+              ) : null}
             </summary>
             <div className="motif-cs-tool-panel-body motif-cs-cloning-launcher">
-              <RailPopoverTitle title="Construct Verification" meta="predicted vs observed" />
+              <RailPopoverTitle title="Construct Verification" />
               <div className="motif-cs-cloning-launcher-copy">
                 <strong>Sanger evidence review</strong>
-                <span>Compare imported trace-backed reads with a predicted DNA construct, review coverage and variants, then save a provenance-linked report.</span>
+                <span>Compare trace-backed reads with a predicted construct, review coverage and variants, then save the report.</span>
               </div>
               <button
                 className="motif-cs-mini-button motif-cs-mini-button-accent"
@@ -12861,13 +13633,15 @@ function App() {
           </details>
 
           <details className="motif-cs-panel" name="motif-cs-tools" data-rail-tool="analysis-results">
-            <summary className="motif-cs-panel-head" data-rail-label="R" title="Agent and analysis results">
+            <summary className="motif-cs-panel-head" data-rail-label="R" role="button" title="Agent and analysis results">
               <Beaker className="motif-cs-panel-icon" size={14} strokeWidth={2.2} aria-hidden="true" />
               <span>Results</span>
-              <span className="motif-cs-chip">{payload.analysisResults.length}</span>
+              {payload.analysisResults.length ? (
+                <span className="motif-cs-chip">{payload.analysisResults.length}</span>
+              ) : null}
             </summary>
             <div className="motif-cs-tool-panel-body motif-cs-workflow-tool-body">
-              <RailPopoverTitle title="Results" meta={`${payload.analysisResults.length} saved`} />
+              <RailPopoverTitle title="Results" meta={payload.analysisResults.length ? `${payload.analysisResults.length} saved` : undefined} />
               <ClaudeScienceAgentResultsPanel
                 results={payload.analysisResults}
                 assets={payload.analysisAssets}
@@ -12880,13 +13654,15 @@ function App() {
           </details>
 
           <details className="motif-cs-panel" name="motif-cs-tools" data-rail-tool="workflows">
-            <summary className="motif-cs-panel-head" data-rail-label="W" title="Saved workflow results">
+            <summary className="motif-cs-panel-head" data-rail-label="W" role="button" title="Saved workflow results">
               <History className="motif-cs-panel-icon" size={14} strokeWidth={2.2} aria-hidden="true" />
               <span>Workflow Results</span>
-              <span className="motif-cs-chip">{payload.workflowResults.length}</span>
+              {payload.workflowResults.length ? (
+                <span className="motif-cs-chip">{payload.workflowResults.length}</span>
+              ) : null}
             </summary>
             <div className="motif-cs-tool-panel-body motif-cs-workflow-tool-body">
-              <RailPopoverTitle title="Workflow Results" meta={`${payload.workflowResults.length} saved`} />
+              <RailPopoverTitle title="Workflow Results" meta={payload.workflowResults.length ? `${payload.workflowResults.length} saved` : undefined} />
               <ClaudeScienceWorkflowHistoryPanel
                 results={payload.workflowResults}
                 recordNames={recordNamesById}
@@ -12909,23 +13685,26 @@ function App() {
               className="motif-cs-panel-head"
               data-rail-label="M"
               data-rail-count={payload.alignments.length || undefined}
+              role="button"
               title={payload.alignments.length
-                ? `Multiple sequence alignment — ${payload.alignments.length} in session`
-                : 'Multiple sequence alignment'}
+                ? `Alignment and Sanger traces — ${payload.alignments.length} in session`
+                : 'Alignment and Sanger traces'}
             >
               <AlignCenter className="motif-cs-panel-icon" size={14} strokeWidth={2.2} aria-hidden="true" />
               <span>Alignment</span>
-              <span className="motif-cs-chip">{payload.alignments.length ? `${payload.alignments.length} MSA` : 'MSA'}</span>
+              {payload.alignments.length ? (
+                <span className="motif-cs-chip">{payload.alignments.length} MSA</span>
+              ) : null}
             </summary>
             <div className="motif-cs-tool-panel-body motif-cs-alignment-tool-body">
               <RailPopoverTitle
                 title="Alignment"
                 meta={payload.alignments.length
                   ? `${payload.alignments.length} in session${alignmentsNeedingReview.length ? ` · ${alignmentsNeedingReview.length} review` : ''}`
-                  : 'MSA'}
+                  : undefined}
               />
               <p className="motif-cs-alignment-tool-intro">
-                Compare 2–10 compatible records locally, or review aligned output from MAFFT, MUSCLE, or Clustal Omega.
+                Compare 2–10 compatible records locally, review an imported alignment, or open a Sanger trace.
               </p>
               {representativeAlignmentFreshness ? (
                 <div className="motif-cs-alignment-freshness-summary" data-testid="alignment-freshness-summary">
@@ -12942,8 +13721,8 @@ function App() {
                 <span className="motif-cs-alignment-launch-copy">
                   <strong>Open alignment workspace</strong>
                   <small>{payload.alignments.length
-                    ? `${payload.alignments.length} alignment${payload.alignments.length === 1 ? '' : 's'} in session · review or create another`
-                    : 'Choose inputs, import an alignment, or inspect Sanger traces'}</small>
+                    ? `${payload.alignments.length} alignment${payload.alignments.length === 1 ? '' : 's'} in session · review one, create another, or open a Sanger trace`
+                    : 'Choose inputs, import an alignment, or open a Sanger trace'}</small>
                 </span>
                 <ChevronRight size={15} strokeWidth={2.2} aria-hidden="true" />
               </button>
@@ -12955,13 +13734,17 @@ function App() {
           </details>
 
           <details className="motif-cs-panel" name="motif-cs-tools" data-rail-tool="settings">
-            <summary className="motif-cs-panel-head" data-rail-label="S" title="Settings and about">
+            <summary className="motif-cs-panel-head" data-rail-label="S" role="button" title="Settings and about">
               <Settings className="motif-cs-panel-icon" size={14} strokeWidth={2.2} aria-hidden="true" />
               <span>Settings</span>
               <span className="motif-cs-chip">{activeThemeLabel}</span>
             </summary>
             <div className="motif-cs-tool-panel-body motif-cs-settings-body">
-              <RailPopoverTitle title="Settings" meta={activeThemeLabel} />
+              {/* No theme here. The Appearance grid starts 46px below and names
+                  every theme with the current one checked and described; the
+                  label alone above it adds nothing. The summary chip keeps it
+                  for when the panel is shut. */}
+              <RailPopoverTitle title="Settings" />
               <div className="motif-cs-settings-section">
                 <fieldset className="motif-cs-theme-fieldset">
                   <legend>Appearance</legend>
@@ -12971,7 +13754,7 @@ function App() {
                         key={option.id}
                         className="motif-cs-theme-choice"
                         data-active={theme === option.id || undefined}
-                        data-theme-choice={option.id}
+                        data-theme-choice={option.palette}
                       >
                         <input
                           type="radio"
@@ -13010,7 +13793,7 @@ function App() {
                 onResetDisplayPreferences={resetDisplayPreferences}
               />
               <div className="motif-cs-about-block">
-                <strong>Motif for Claude Science</strong>
+                <strong>Motif</strong>
                 <span title={`Runtime build ${MOTIF_ARTIFACT_BUILD_ID}`}>Version {MOTIF_ARTIFACT_VERSION} · Build {MOTIF_ARTIFACT_BUILD_LABEL}</span>
                 <p>Motif is an open-source, AI-native molecular biology suite for researchers.</p>
                 <p className="motif-cs-share-note">Share the generated HTML for local browser review. Download a workspace backup to carry records, alignments, notes, results, and display-independent session state to another copy.</p>
@@ -13339,10 +14122,10 @@ function RestoreWorkspaceDialog({
         <h2 id="motif-cs-restore-title">Replace this workspace?</h2>
         <p id="motif-cs-restore-description">
           <strong>{sourceLabel}</strong> contains {incomingRecordCount} record{incomingRecordCount === 1 ? '' : 's'}.
-          {' '}Replacing will remove the current {currentRecordCount} record{currentRecordCount === 1 ? '' : 's'} and its workbench state.
+          {' '}Replacing removes the current {currentRecordCount} record{currentRecordCount === 1 ? '' : 's'} and its workbench state.
         </p>
         {hasUnsavedChanges ? (
-          <p className="motif-cs-restore-warning">The current workspace has unsaved changes. Export Database JSON or ZIP first if you may need them.</p>
+          <p className="motif-cs-restore-warning">The current workspace has unsaved changes. Export Database JSON or ZIP package before replacing it.</p>
         ) : null}
         <div className="motif-cs-modal-actions">
           <button ref={cancelRef} className="motif-cs-mini-button" type="button" onClick={onCancel}>Cancel</button>
@@ -13609,7 +14392,12 @@ function InventoryList({
         placeholder="Filter inventory…"
         aria-label="Filter inventory"
       />
-        <span className="motif-cs-chip">{filteredRecords.length}/{records.length}</span>
+        {/* With nothing typed this read "13/13" — the number 13 twice, 39px
+            above the group header that already counts the same records. It is
+            a filter readout, so it appears when there is a filter. */}
+        {filteredRecords.length === records.length ? null : (
+          <span className="motif-cs-chip">{filteredRecords.length}/{records.length}</span>
+        )}
       </div>
       <div className="motif-cs-list motif-cs-inventory-groups">
         {groupedRecords.length > 0 ? groupedRecords.map((group) => {
@@ -13646,14 +14434,20 @@ function InventoryList({
                         control here carries the full string in a title; this row
                         was the one that did not. */}
                     <span translate="no" title={record.name}>{record.name}</span>
-                    <small>{record.type} · {record.topology} · {sequenceLengthLabel(record.sequence.length, record.type)}</small>
+                    {/* Every protein is linear — the app coerces it in
+                        mapModeForBlock and ignores record.topology for protein
+                        everywhere else — so the word tells the reader nothing it
+                        could have been instead. For a nucleotide it is the one
+                        property that changes what the tools do at the origin, so
+                        it stays. */}
+                    <small>{record.type}{record.type === 'protein' ? '' : ` · ${record.topology}`} · {sequenceLengthLabel(record.sequence.length, record.type)}</small>
                   </span>
                 </button>
               )) : null}
             </section>
           );
         }) : (
-          <p className="motif-cs-muted">{records.length === 0 && !normalizedQuery ? 'No records yet. Add or drop a sequence to begin.' : 'No records match this filter.'}</p>
+          <p className="motif-cs-muted">{records.length === 0 && !normalizedQuery ? 'No records. Add an entry, or drop a FASTA, GenBank, or AB1 file.' : 'No records match this filter.'}</p>
         )}
       </div>
     </section>
@@ -13817,29 +14611,29 @@ function ImportSequencePanel({
         <div className="motif-cs-form-body motif-cs-import-form">
           <div className="motif-cs-form-grid">
             <label>
-              <span>Name override</span>
-              <input className="motif-cs-field" name="import-name" autoComplete="off" maxLength={MOTIF_MAX_SHORT_TEXT_LENGTH} value={defaults.name} onChange={(event) => updateDefaults({ name: event.target.value })} placeholder="Optional name…" />
+              <span>Name</span>
+              <input className="motif-cs-field" name="import-name" autoComplete="off" maxLength={MOTIF_MAX_SHORT_TEXT_LENGTH} value={defaults.name} onChange={(event) => updateDefaults({ name: event.target.value })} placeholder="Optional name" />
             </label>
             <label>
-              <span>Project / group</span>
-              <input className="motif-cs-field" name="import-group" autoComplete="off" maxLength={MOTIF_MAX_SHORT_TEXT_LENGTH} value={defaults.group} onChange={(event) => updateDefaults({ group: event.target.value })} placeholder="Optional folder…" />
+              <span>Group</span>
+              <input className="motif-cs-field" name="import-group" autoComplete="off" maxLength={MOTIF_MAX_SHORT_TEXT_LENGTH} value={defaults.group} onChange={(event) => updateDefaults({ group: event.target.value })} placeholder="Optional group" />
             </label>
           </div>
           <div className="motif-cs-form-grid">
             <label>
               <span>Molecule</span>
               <select className="motif-cs-field" name="import-molecule" value={defaults.type} onChange={(event) => updateDefaults({ type: event.target.value as SequenceType | 'auto' })}>
-                <option value="auto">auto</option>
-                <option value="dna">dna</option>
-                <option value="rna">rna</option>
-                <option value="protein">protein</option>
+                <option value="auto">Auto</option>
+                <option value="dna">DNA</option>
+                <option value="rna">RNA</option>
+                <option value="protein">Protein</option>
               </select>
             </label>
             <label>
               <span>Topology</span>
               <select className="motif-cs-field" name="import-topology" value={defaults.topology} onChange={(event) => updateDefaults({ topology: event.target.value as Topology })}>
-                <option value="linear">linear</option>
-                <option value="circular">circular</option>
+                <option value="linear">Linear</option>
+                <option value="circular">Circular</option>
               </select>
             </label>
           </div>
@@ -13883,7 +14677,7 @@ function ImportSequencePanel({
             <button className="motif-cs-mini-button" type="button" onClick={() => fileInputRef.current?.click()}>
               <FileText size={13} aria-hidden="true" /> Choose files
             </button>
-            <button className="motif-cs-mini-button" type="button" onClick={addImportedRecords} disabled={!input.trim()}>Add / restore</button>
+            <button className="motif-cs-mini-button" type="button" onClick={addImportedRecords} disabled={!input.trim()}>Add or restore</button>
             <button className="motif-cs-mini-button" type="button" onClick={() => { setInput(''); setStatus('Cleared'); setStatusError(false); }} disabled={!input}>Clear</button>
           </div>
           {status ? (
@@ -13995,7 +14789,7 @@ function FeatureList({
         setOpen((event.target as HTMLDetailsElement).open);
       }}
     >
-      <summary className="motif-cs-panel-head" data-rail-label="T" title="Annotations">
+      <summary className="motif-cs-panel-head" data-rail-label="T" role="button" title="Annotations">
         <Tag className="motif-cs-panel-icon" size={14} strokeWidth={2.2} aria-hidden="true" />
         <span>Annotations</span>
         <span className="motif-cs-chip">{features.length + translationTracks.length}</span>
@@ -14021,7 +14815,10 @@ function FeatureList({
               }}
             >
               <span className="motif-cs-swatch" style={{ backgroundColor: feature.color }} />
-              <span className="motif-cs-row-main" translate="no">{feature.name}</span>
+              <span className="motif-cs-row-main" translate="no">
+                {feature.name}
+                {isProposedAnnotation(feature) ? <small>Proposed · review before use</small> : null}
+              </span>
               <span className="motif-cs-row-meta">{featureRangeLabel(feature)}</span>
             </button>
           )) : (
@@ -14485,26 +15282,7 @@ function RailPopoverTitle({ title, meta }: { title: string; meta?: string }) {
 }
 
 function defaultFeatureColor(type: FeatureType): string {
-  switch (type) {
-    case 'cds':
-    case 'gene':
-      return '#3ddc97';
-    case 'promoter':
-    case 'regulatory':
-      return '#4aa3ff';
-    case 'terminator':
-    case 'polyA_signal':
-      return '#f472b6';
-    case 'origin':
-      return '#ad7bf9';
-    case 'resistance':
-      return '#ef4444';
-    case 'restriction_site':
-    case 'primer_bind':
-      return '#f7c948';
-    default:
-      return '#9aa3b5';
-  }
+  return resolveFeatureColor({ name: `${type} annotation`, type });
 }
 
 function EntryDetailsPanel({
@@ -14552,13 +15330,13 @@ function EntryDetailsPanel({
 
   return (
     <details className="motif-cs-panel motif-cs-entry-panel" name="motif-cs-tools" data-rail-tool="entry">
-      <summary className="motif-cs-panel-head" data-rail-label="D" title="Entry details">
+      <summary className="motif-cs-panel-head" data-rail-label="D" role="button" title="Entry Details">
         <FileText className="motif-cs-panel-icon" size={14} strokeWidth={2.2} aria-hidden="true" />
         <span>Entry Details</span>
-        <span className="motif-cs-chip">{dirty ? 'edited' : 'record'}</span>
+        {dirty ? <span className="motif-cs-chip">edited</span> : null}
       </summary>
       <div className="motif-cs-entry-form motif-cs-tool-panel-body">
-        <RailPopoverTitle title="Entry Details" meta={dirty ? 'edited' : 'record'} />
+        <RailPopoverTitle title="Entry Details" meta={dirty ? 'edited' : undefined} />
         <label>
           <span>Name</span>
           <div className="motif-cs-name-edit-row">
@@ -14592,7 +15370,7 @@ function EntryDetailsPanel({
           />
         </label>
         <label>
-          <span>Project / group</span>
+          <span>Group</span>
           <input
             className="motif-cs-field"
             name="record-group"
@@ -14600,8 +15378,8 @@ function EntryDetailsPanel({
             maxLength={MOTIF_MAX_SHORT_TEXT_LENGTH}
             value={group}
             onChange={(event) => setGroup(event.target.value)}
-            aria-label="Entry project or group"
-            placeholder="Optional folder…"
+            aria-label="Entry group"
+            placeholder="Optional group"
           />
         </label>
         {/* Converting the molecule belongs with the fields that describe it, not
@@ -14652,7 +15430,7 @@ function EntryDetailsPanel({
         <div className="motif-cs-entry-delete-row">
           <span>
             <strong>Delete entry</strong>
-            <small>Also removes linked notes, alignments, and saved results.</small>
+            <small>Removes linked notes, alignments, and saved results.</small>
           </span>
           <ConfirmDeleteButton
             noun={`entry ${record.name}`}
@@ -14743,7 +15521,10 @@ function EditableRecordTitle({
           event.preventDefault();
           setEditing(true);
         }}
-        title="Double-click to rename this entry"
+        // The name ellipsizes at narrow pane widths — 243px of it is cut at a
+        // 1680px window — so the tooltip is the only way a mouse user reads the
+        // rest. It has to lead with the name; the rename hint follows it.
+        title={`${record.name} — double-click to rename this entry`}
         aria-label={`${record.name}. Double-click to rename this entry.`}
       >
         {record.name}
@@ -14823,6 +15604,8 @@ function QuickFeatureEditor({
   onAddFeature,
   onUpdateFeature,
   onDeleteFeature,
+  onAcceptProposedFeature,
+  onDismissProposedFeature,
   onCreateRecord,
   onCreateProteinRecord,
 }: {
@@ -14839,6 +15622,8 @@ function QuickFeatureEditor({
   onAddFeature: (feature: ArtifactFeatureInput) => void;
   onUpdateFeature: (featureId: string, feature: ArtifactFeatureInput) => void;
   onDeleteFeature: (featureId: string) => void;
+  onAcceptProposedFeature: (featureId: string) => void;
+  onDismissProposedFeature: (featureId: string) => void;
   onCreateRecord: () => void;
   onCreateProteinRecord?: () => void;
 }) {
@@ -14855,6 +15640,13 @@ function QuickFeatureEditor({
   const selectedFeatureHasSegments = !!selectedFeature && isMultipartFeature(selectedFeature);
   const selectedFeatureIsOrdered = !!selectedFeature && isOrderedFeatureLocation(selectedFeature);
   const selectedFeatureCannotMaterialize = !!selectedFeature && !isMaterializableFeatureLocation(selectedFeature);
+  const selectedFeatureIsProposed = !!selectedFeature && isProposedAnnotation(selectedFeature);
+  const selectedProposal = selectedFeatureIsProposed
+    ? selectedFeature.metadata[MOTIF_PROPOSAL_METADATA_KEY]
+    : null;
+  const selectedProposalReason = isPlainObject(selectedProposal) && typeof selectedProposal.reason === 'string'
+    ? selectedProposal.reason
+    : 'A bounded local detector found this candidate.';
 
   useEffect(() => {
     if (selectedFeature) return;
@@ -15064,6 +15856,16 @@ function QuickFeatureEditor({
 
   const editor = (
     <div className="motif-cs-feature-form motif-cs-tool-panel-body">
+        {selectedFeatureIsProposed && selectedFeature ? (
+          <div className="motif-cs-form-note" role="status" data-testid="proposed-annotation-review">
+            <strong>Proposed annotation</strong>
+            <span>{selectedProposalReason}</span>
+            <div className="motif-cs-layer-actions motif-cs-layer-actions-flush">
+              <button className="motif-cs-mini-button motif-cs-mini-button-accent" type="button" onClick={() => onAcceptProposedFeature(selectedFeature.id)}>Accept</button>
+              <button className="motif-cs-mini-button" type="button" onClick={() => onDismissProposedFeature(selectedFeature.id)}>Dismiss</button>
+            </div>
+          </div>
+        ) : null}
         <label>
           <span>Name</span>
           <div className="motif-cs-name-edit-row">
@@ -15098,12 +15900,12 @@ function QuickFeatureEditor({
               disabled={sequenceType === 'protein' || selectedFeatureHasSegments}
             >
               {sequenceType === 'protein' ? (
-                <option value="0">none</option>
+                <option value="0">None</option>
               ) : (
                 <>
-                  <option value="1">forward</option>
-                  <option value="-1">reverse</option>
-                  <option value="0">none</option>
+                  <option value="1">Forward</option>
+                  <option value="-1">Reverse</option>
+                  <option value="0">None</option>
                 </>
               )}
             </select>
@@ -15112,7 +15914,7 @@ function QuickFeatureEditor({
         {showTranslationMetadata ? (
           <div className="motif-cs-feature-translation-meta">
             <label>
-              <span>AA frame</span>
+              <span>Reading frame</span>
               <select
                 className="motif-cs-field"
                 name="feature-codon-start"
@@ -15154,7 +15956,7 @@ function QuickFeatureEditor({
               </label>
             ) : null}
             <span id={translationTableMessageId} role={unsupportedTranslationTableValue ? 'alert' : undefined}>
-              feature translation · codon_start {codonStart}{supportsFeatureTranslationCode
+              Feature translation · codon start {codonStart}{supportsFeatureTranslationCode
                 ? ` · ${translationTableValue
                     ? `feature table ${translationTableValue === '__invalid__' ? 'invalid' : translationTableValue}`
                     : `record table ${recordTranslationCode.supported ? recordTranslationCode.id : 'unavailable'}`}`
@@ -15233,9 +16035,9 @@ function QuickFeatureEditor({
 
   return (
     <details className="motif-cs-panel" name="motif-cs-tools" data-rail-tool="feature-editor">
-      <summary className="motif-cs-panel-head" data-rail-label="+" title="Add or edit feature">
+      <summary className="motif-cs-panel-head" data-rail-label="+" role="button" title="Add or edit feature">
         <Plus className="motif-cs-panel-icon" size={14} strokeWidth={2.3} aria-hidden="true" />
-        <span>Add / Edit Feature</span>
+        <span>Add or edit feature</span>
         <span className="motif-cs-chip">{selectedFeature ? 'selected' : selectedMapRange ? 'range' : 'local'}</span>
       </summary>
       {editor}
@@ -15332,7 +16134,7 @@ function TranslationLayerEditor({
       <div className="motif-cs-feature-form motif-cs-tool-panel-body">
         {track.needsReview ? (
           <p className="motif-cs-form-note" role="status">
-            Its source sequence or feature semantics changed. Review the range, strand, and frame; Update converts it to an independent range translation.
+            The source sequence or feature changed. Review the range, strand, and frame. Update converts this track to an independent range translation.
           </p>
         ) : null}
         <label>
@@ -15354,8 +16156,8 @@ function TranslationLayerEditor({
           <label>
             <span>Strand</span>
             <select className="motif-cs-field" name="translation-strand" value={String(strand)} onChange={(event) => setStrand(Number(event.target.value) === -1 ? -1 : 1)}>
-              <option value="1">sense</option>
-              <option value="-1">antisense</option>
+              <option value="1">Sense</option>
+              <option value="-1">Antisense</option>
             </select>
           </label>
           <label>
@@ -15526,7 +16328,7 @@ function AnalysisPanel({
 
   return (
     <details className="motif-cs-panel" name="motif-cs-tools" data-rail-tool="analysis">
-      <summary className="motif-cs-panel-head" data-rail-label="A" title="Analysis">
+      <summary className="motif-cs-panel-head" data-rail-label="A" role="button" title="Analysis">
         <Activity className="motif-cs-panel-icon" size={14} strokeWidth={2.2} aria-hidden="true" />
         <span>Analysis</span>
         <span className="motif-cs-chip">{isNucleotide ? `${allOrfs.length} ORFs ≥${ANALYSIS_ORF_MIN_AA} aa` : 'protein'}</span>
@@ -15628,7 +16430,7 @@ function AnalysisPanel({
                 </div>
               );
             }) : (
-              <p className="motif-cs-muted">No ORFs above the artifact threshold.</p>
+              <p className="motif-cs-muted">No ORFs meet the minimum length.</p>
             )}
           </div>
           </>
@@ -15732,7 +16534,7 @@ function digestIssueExplanation(issue: DigestRecipeIssue): { title: string; mess
   if (issue.code === 'methylation_unknown') {
     return {
       title: 'Methylation state is needed.',
-      message: 'A recognition site was found, but cleavage depends on methylation that is not specified. Choose a molecular state in the control above; Motif will not assume a cut.',
+      message: 'A recognition site was found, but cleavage depends on methylation that is not specified. Choose a molecular state for this target; Motif does not assume a cut.',
     };
   }
   if (issue.code === 'methylation_unmethylated') {
@@ -16016,7 +16818,7 @@ function DigestPanel({
       : recipe.outcome === 'uncut'
         ? nickCount > 0
           ? { full: `${nickCount} nick${nickCount === 1 ? '' : 's'} · continuous`, compact: `${nickCount} nick${nickCount === 1 ? '' : 's'}` }
-          : { full: '0 cuts · uncut', compact: '0 cuts' }
+          : { full: 'Uncut', compact: 'Uncut' }
         : recipe.outcome === 'linearized'
           ? { full: '1 cut · linearized', compact: '1 cut' }
           : {
@@ -16040,8 +16842,8 @@ function DigestPanel({
     const receipt = onSave(recipe);
     if (!receipt) return null;
     setSaveStatus(receipt.recordCount === 0
-      ? 'Saved result · no derived record'
-      : `Saved ${receipt.recordCount} fragment${receipt.recordCount === 1 ? '' : 's'} · see Inventory or Workflow Results`);
+      ? 'Result saved in Workflow Results.'
+      : `Saved ${receipt.recordCount} fragment${receipt.recordCount === 1 ? '' : 's'} in Inventory and Workflow Results.`);
     return receipt;
   };
 
@@ -16121,7 +16923,7 @@ function DigestPanel({
                 if (receipt) onOpenGel(receipt.workflowResultId);
               }}
             >
-              {recipeAlreadySaved ? 'Open gel' : 'Save & open gel'}
+              {recipeAlreadySaved ? 'Open gel' : 'Save and open gel'}
             </button>
           </div>
           {methylationControls.length > 0 ? (
@@ -16240,7 +17042,7 @@ function DigestPanel({
           ) : null}
         </>
       ) : (
-        <p className="motif-cs-muted">Restriction digest is available for DNA records only. RNA and protein records are not converted implicitly.</p>
+        <p className="motif-cs-muted">Select a DNA record to preview a restriction digest. Motif does not convert RNA or protein records to DNA.</p>
       )}
     </details>
   );
@@ -16362,7 +17164,7 @@ function SequenceToolsPanel({
 
   useLayoutEffect(() => {
     if (!exportPanelOpen) return;
-    const frame = window.requestAnimationFrame(() => {
+    const revealExportActions = () => {
       const panel = exportPanelRef.current;
       const column = panel?.closest<HTMLElement>('.motif-cs-sequence-column');
       if (!panel || !column) return;
@@ -16371,10 +17173,20 @@ function SequenceToolsPanel({
       const columnRect = column.getBoundingClientRect();
       if (exportPanelHeight === null) {
         // Natural-height compact panels use the Sequence pane as their only
-        // scroll owner. Reveal the Export heading first, then let ordinary
-        // scrolling move through every action and preview in document order.
+        // scroll owner. Native details scrolling may already have placed the
+        // heading at the pane's top while leaving the last immediate action row
+        // underneath the stacked Map. Move only far enough to keep both the
+        // heading and every Copy/Strand button pointer-reachable; the remaining
+        // formats and preview stay in ordinary document-order scrolling.
+        const actionBottom = [...panel.querySelectorAll<HTMLElement>('.motif-cs-export-row button')]
+          .reduce((bottom, button) => Math.max(bottom, button.getBoundingClientRect().bottom), panelRect.top);
+        const scrollDelta = Math.max(
+          panelRect.top - columnRect.top,
+          actionBottom - columnRect.bottom,
+          0,
+        );
         column.scrollTo({
-          top: column.scrollTop + panelRect.top - columnRect.top,
+          top: column.scrollTop + scrollDelta,
           behavior: 'auto',
         });
         return;
@@ -16383,8 +17195,25 @@ function SequenceToolsPanel({
       if (overflowBelow > 0) {
         column.scrollTo({ top: column.scrollTop + overflowBelow, behavior: 'auto' });
       }
+    };
+    // Run during layout so compact↔wide transitions cannot paint one frame with
+    // the Strand controls under the Map. Repeat after the resulting geometry
+    // settles: CSS media-query reflow and the browser's native <details> reveal
+    // can both adjust this scrollport after the React commit.
+    revealExportActions();
+    let frame = window.requestAnimationFrame(revealExportActions);
+    const observer = new ResizeObserver(() => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(revealExportActions);
     });
-    return () => window.cancelAnimationFrame(frame);
+    const panel = exportPanelRef.current;
+    const column = panel?.closest<HTMLElement>('.motif-cs-sequence-column');
+    if (panel) observer.observe(panel);
+    if (column) observer.observe(column);
+    return () => {
+      observer.disconnect();
+      window.cancelAnimationFrame(frame);
+    };
   }, [exportPanelHeight, exportPanelOpen]);
 
   const startExportPanelResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
@@ -16457,7 +17286,7 @@ function SequenceToolsPanel({
   );
   const checkpointExportBlocked = checkpointExportIssues.length > 0;
   const checkpointExportMessage = checkpointExportBlocked
-    ? `Database JSON and workspace ZIP export are unavailable because the checkpoint would not pass restore validation. ${checkpointExportIssues.map((issue) => `${issue.recordName ?? 'Workspace'}: ${issue.message}`).join(' ')} No data was truncated.`
+    ? `Database JSON and workspace ZIP export are unavailable because the checkpoint failed restore validation. ${checkpointExportIssues.map((issue) => `${issue.recordName ?? 'Workspace'}: ${issue.message}`).join(' ')} Fix the listed records, then export again. No data was truncated.`
     : '';
   const inventoryJson = useMemo(() => (
     needsInventoryJson && !checkpointExportBlocked
@@ -16539,9 +17368,9 @@ function SequenceToolsPanel({
     { id: 'sites-csv', group: 'Whole inventory', label: 'Restriction-site CSV', copyLabel: 'Restriction-site CSV', content: siteCsv, downloadName: 'motif-restriction-sites.csv', mime: 'text/csv' },
     { id: 'multi-fasta', group: 'Whole inventory', label: 'Multi-FASTA', copyLabel: 'Multi FASTA', content: multiFasta, downloadName: 'motif-records.fasta', mime: 'text/x-fasta' },
     { id: 'multi-genbank', group: 'Whole inventory', label: 'Basic multi-GenBank', copyLabel: 'Basic multi-GenBank', content: multiGenbank, downloadName: 'motif-records.gb', mime: 'chemical/x-genbank' },
-    { id: 'report-md', group: 'Report', label: 'Pretty report Markdown', copyLabel: 'Report Markdown', content: reportMarkdown, downloadName: 'motif-inventory-report.md', mime: 'text/markdown' },
-    { id: 'report-html', group: 'Report', label: 'Pretty report HTML', copyLabel: 'Report HTML', content: reportHtml, downloadName: 'motif-inventory-report.html', mime: 'text/html' },
-    { id: 'report-print', group: 'Report', label: 'Pretty print / PDF', print: () => printHtmlReport(reportHtml) },
+    { id: 'report-md', group: 'Report', label: 'Markdown report', copyLabel: 'Report Markdown', content: reportMarkdown, downloadName: 'motif-inventory-report.md', mime: 'text/markdown' },
+    { id: 'report-html', group: 'Report', label: 'HTML report', copyLabel: 'Report HTML', content: reportHtml, downloadName: 'motif-inventory-report.html', mime: 'text/html' },
+    { id: 'report-print', group: 'Report', label: 'Print or save PDF', print: () => printHtmlReport(reportHtml) },
     { id: 'inventory-zip', group: 'Whole inventory', label: 'ZIP package', blocked: checkpointExportBlocked, download: checkpointExportBlocked ? undefined : () => downloadBlobFile('motif-inventory-export.zip', createZipBlob(zipFiles)) },
   ], [checkpointExportBlocked, fasta, featureCsv, genbank, gff3, hasActiveRecord, inventoryCsv, inventoryJson, multiFasta, multiGenbank, record.name, record.sequence, recordJson, reportHtml, reportMarkdown, siteCsv, zipFiles]);
   const exportChoice = exportChoices.find((choice) => choice.id === exportChoiceId) ?? exportChoices[0];
@@ -16560,7 +17389,7 @@ function SequenceToolsPanel({
   const exportFallbackPreview = exportChoice?.id === 'inventory-zip'
     ? `ZIP package · ${zipFiles.length} files\n\n${zipFiles.map((file) => file.name).join('\n')}`
     : exportChoice?.id === 'report-print'
-      ? `Printable inventory report · ${exportRecordsWithSites.length} records\n\nUse Print / PDF to open the system print dialog.`
+      ? `Printable inventory report · ${exportRecordsWithSites.length} records\n\nUse Print or save PDF to open the system print dialog.`
       : preview;
   const exportPreview = exportChoice?.blocked
     ? checkpointExportMessage
@@ -16602,6 +17431,7 @@ function SequenceToolsPanel({
 
   return (
     <details
+      id="motif-cs-export-panel"
       ref={exportPanelRef}
       className="motif-cs-panel motif-cs-sequence-tools-panel"
       data-resized={exportPanelHeight !== null || undefined}
@@ -16613,7 +17443,7 @@ function SequenceToolsPanel({
       }}
     >
       <summary className="motif-cs-panel-head">
-        <span>Export & Copy</span>
+        <span>Export and copy</span>
         <span
           className="motif-cs-chip"
           role="status"
@@ -16645,11 +17475,11 @@ function SequenceToolsPanel({
       ) : null}
       {exportPanelOpen ? (
       <div className="motif-cs-export-body">
-        <p className="motif-cs-form-note">Session data is not durable across reloads. Database JSON restores directly; ZIP contains the same inventory.json plus interchange exports, so extract inventory.json before using Add Entry. Basic GenBank preserves joined, ordered, and origin-spanning locations; ambiguous legacy reverse locations export conservatively as non-materializable order(...). GFF3 emits discontinuous rows with Motif part-order attributes. Use Database JSON for full Motif metadata.</p>
+        <p className="motif-cs-form-note">Session data is not durable across reloads. Database JSON restores directly; ZIP contains the same inventory.json plus interchange exports, so extract inventory.json before using Add entry. Basic GenBank preserves joined, ordered, and origin-spanning locations; ambiguous legacy reverse locations export conservatively as non-materializable order(...). GFF3 emits discontinuous rows with Motif part-order attributes. Use Database JSON for full Motif metadata.</p>
         <div className="motif-cs-export-row">
           <span className="motif-cs-export-label">Copy</span>
           <div className="motif-cs-export-actions">
-            <button className="motif-cs-mini-button motif-cs-mini-button-accent" type="button" onClick={onCopySummary} disabled={!hasActiveRecord} title="Copy a plain-language summary of this record and selection to paste into the conversation">Summary</button>
+            <button className="motif-cs-mini-button motif-cs-mini-button-accent" type="button" onClick={onCopySummary} disabled={!hasActiveRecord} title="Copy a summary of this record and selection">Summary</button>
             <button className="motif-cs-mini-button" type="button" onClick={() => onCopy('Sequence', record.sequence)} disabled={!hasActiveRecord}>Sequence</button>
             <button className="motif-cs-mini-button" type="button" onClick={() => onCopy('FASTA', fasta)} disabled={!hasActiveRecord}>FASTA</button>
             <button
@@ -16688,20 +17518,32 @@ function SequenceToolsPanel({
             </div>
           </div>
         ) : null}
+        {/* "DNA and RNA" named the row's PRECONDITION where "Copy", "Selection"
+            and "Format" name what their row does, and at 11 characters it did
+            not survive the 72px label column: it painted as "DNA AND ..." at
+            1440x1000, which tells a reader neither thing. All three buttons
+            here work on the opposite strand, so the row is Strand — six
+            characters, the same length as "Format", and a true peer of it. The
+            nucleotide-only precondition moves to the titles below, where it can
+            say why a control is off instead of leaving that to be inferred. */}
         <div className="motif-cs-export-row">
-          <span className="motif-cs-export-label">DNA/RNA</span>
+          <span className="motif-cs-export-label">Strand</span>
           <div className="motif-cs-export-actions">
-            <button className="motif-cs-mini-button" type="button" onClick={() => onCopy('Complement', complementSequence)} disabled={!hasActiveRecord || !isNucleotide || selectedFeatureCannotMaterialize}>Complement</button>
+            <button className="motif-cs-mini-button" type="button" onClick={() => onCopy('Complement', complementSequence)} disabled={!hasActiveRecord || !isNucleotide || selectedFeatureCannotMaterialize} title={!isNucleotide ? 'Complementing needs a DNA or RNA record' : 'Copy the complement of the current target'}>Complement</button>
             <button
               className="motif-cs-mini-button"
               type="button"
               onClick={() => onCopy('Reverse complement', reverseComplementSequence)}
               disabled={!hasActiveRecord || !isNucleotide || selectedFeatureCannotMaterialize}
-              title={selectedFeatureIsReverse ? 'Return the opposite orientation of the assembled reverse-feature sequence.' : 'Copy the reverse complement of the current target'}
+              title={!isNucleotide
+                ? 'Reverse complementing needs a DNA or RNA record'
+                : selectedFeatureIsReverse
+                  ? 'Return the opposite orientation of the assembled reverse-feature sequence.'
+                  : 'Copy the reverse complement of the current target'}
             >
               Copy rev comp
             </button>
-            <button className="motif-cs-mini-button" type="button" onClick={onAddReverseComplement} disabled={!hasActiveRecord || !isNucleotide || selectedFeatureCannotMaterialize}>New rev comp</button>
+            <button className="motif-cs-mini-button" type="button" onClick={onAddReverseComplement} disabled={!hasActiveRecord || !isNucleotide || selectedFeatureCannotMaterialize} title={!isNucleotide ? 'Reverse complementing needs a DNA or RNA record' : 'Create a reverse-complement record from the current target'}>New rev comp</button>
           </div>
         </div>
         {selectedFeatureIsReverse ? (
@@ -16725,7 +17567,7 @@ function SequenceToolsPanel({
           <div className="motif-cs-export-picker-actions">
             <button className="motif-cs-mini-button" type="button" onClick={copySelectedExport} disabled={!exportChoice?.content}>Copy</button>
             <button className="motif-cs-mini-button" type="button" onClick={downloadSelectedExport} disabled={Boolean(exportChoice?.blocked) || !(exportChoice?.download || (exportChoice?.content && exportChoice.downloadName))}>Download</button>
-            <button className="motif-cs-mini-button motif-cs-mini-button-accent" type="button" onClick={exportChoice?.print} disabled={!exportChoice?.print}>Print / PDF</button>
+            <button className="motif-cs-mini-button motif-cs-mini-button-accent" type="button" onClick={exportChoice?.print} disabled={!exportChoice?.print}>Print or save PDF</button>
           </div>
         </div>
         {exportChoice?.blocked ? (
@@ -16735,7 +17577,6 @@ function SequenceToolsPanel({
             role="alert"
             aria-live="assertive"
           >
-            <strong>Checkpoint export blocked.</strong>{' '}
             {checkpointExportMessage}
           </div>
         ) : null}
@@ -17287,11 +18128,18 @@ function TranslationPanel({
     );
   }
 
+  const scopeLabel = isWhole ? 'Whole sequence' : 'Selection';
+
   return (
     <div className="motif-cs-translation-body">
       <div className="motif-cs-translate-target">
-        <span className="motif-cs-pane-title">{isWhole ? 'Whole sequence' : 'Selection'}</span>
-        <span className="motif-cs-chip" title={targetLabel}>{targetLabel}</span>
+        {/* On a whole-record target the chip printed "Whole sequence" 6px from
+            the heading that already said it. The chip is there to name a range,
+            so it stays silent when it would only repeat the scope. */}
+        <span className="motif-cs-pane-title">{scopeLabel}</span>
+        {targetLabel === scopeLabel ? null : (
+          <span className="motif-cs-chip" title={targetLabel}>{targetLabel}</span>
+        )}
       </div>
 
       <div className="motif-cs-translation-code-control">
@@ -17339,7 +18187,7 @@ function TranslationPanel({
 
       <div className="motif-cs-translate-actions">
         <button className="motif-cs-mini-button" type="button" disabled={!protein} onClick={handleCopyProtein}>Copy</button>
-        <button className="motif-cs-mini-button" type="button" disabled={!canAddToSequence || !protein} onClick={onAddToSequence} title={isWhole ? 'Select a region to pin its translation to the sequence' : !canAddToSequence ? 'Multipart translations cannot be represented as one contiguous amino-acid track' : 'Pin this translation to the sequence (above if sense, below if antisense)'}>Add AA track</button>
+        <button className="motif-cs-mini-button" type="button" disabled={!canAddToSequence || !protein} onClick={onAddToSequence} title={isWhole ? 'Select a region to pin its translation to the sequence' : !canAddToSequence ? 'Multipart translations cannot be represented as one contiguous amino-acid track' : 'Pin this translation to the sense or antisense track'}>Add AA track</button>
         <button className="motif-cs-mini-button motif-cs-mini-button-accent" type="button" disabled={!protein} onClick={onAddRecord}>New protein</button>
         {onOpenFloating ? <button className="motif-cs-mini-button" type="button" onClick={onOpenFloating}>Pop out</button> : null}
       </div>
@@ -17386,7 +18234,7 @@ function TranslationPanel({
           >
             {protein}
           </div>
-          <p className="motif-cs-form-note">Multipart feature pieces were stitched in biological order before translation. Codon clicks and a contiguous AA track are unavailable across junctions.</p>
+          <p className="motif-cs-form-note">Motif translated multipart feature segments in biological order. Codon selection and a contiguous AA track are unavailable across segment junctions.</p>
         </>
       ) : protein && residues.length > MAX_INTERACTIVE_TRANSLATION_RESIDUES ? (
         <>
@@ -17497,7 +18345,17 @@ function GuideSearchPanel({
   );
   const isNucleotide = isNucleotideType(sequenceType);
   const asGuide = (spacer: string) => (rnaCopy ? spacer.replace(/T/g, 'U') : spacer);
-  const guideChip = isNucleotide ? `${guides.length}${guides.length >= 500 ? '+' : ''}` : 'n/a';
+  // No count until there is one. Guides are computed on first open, so `guides`
+  // is empty before that -- and the chip read that emptiness as an answer:
+  // pUC19 has 250 guide sites and the rail said 0, on first paint, in the
+  // default state, for every record. An absent chip says "not counted yet"; a
+  // zero says "none", and only one of those was ever true. `n/a` stays, because
+  // on a protein record it is the reason the panel is empty.
+  const guideChip = !isNucleotide
+    ? 'n/a'
+    : hasOpened
+      ? `${guides.length}${guides.length >= 500 ? '+' : ''}`
+      : undefined;
   const scopeLabel = activeScopeRange
     ? `${mapRangeLabel(activeScopeRange, sequence.length)} ${sequenceUnitLabel(sequenceType)}`
     : sequenceLengthLabel(sequence.length, sequenceType);
@@ -17525,10 +18383,10 @@ function GuideSearchPanel({
         if ((event.target as HTMLDetailsElement).open) setHasOpened(true);
       }}
     >
-      <summary className="motif-cs-panel-head" data-rail-label="G" title="Guide RNA">
+      <summary className="motif-cs-panel-head" data-rail-label="G" role="button" title="Guide RNA">
         <Crosshair className="motif-cs-panel-icon" size={14} strokeWidth={2.2} aria-hidden="true" />
-        <span>Guide RNA (CRISPR)</span>
-        <span className="motif-cs-chip">{guideChip}</span>
+        <span>Guide RNA<span aria-hidden="true"> (CRISPR)</span></span>
+        {guideChip ? <span className="motif-cs-chip">{guideChip}</span> : null}
       </summary>
       <div className="motif-cs-tool-panel-body">
         <RailPopoverTitle title="Guide RNA" meta={guideChip} />
@@ -17593,7 +18451,7 @@ function GuideSearchPanel({
                           onClick={() => onCopy(`${nuclease.name} spacer`, asGuide(guide.spacer))}
                           title="Copy spacer"
                         >
-                          copy
+                          Copy
                         </button>
                       </div>
                     );
@@ -17646,7 +18504,7 @@ function AddEnzymeForm({
   return (
     <div className="motif-cs-add-enzyme">
       <div className="motif-cs-add-enzyme-head">
-        <span className="motif-cs-add-enzyme-title">Add enzyme / site</span>
+        <span className="motif-cs-add-enzyme-title">Add enzyme</span>
         {status ? <span className="motif-cs-chip" role="status" aria-live="polite" aria-atomic="true" id={statusId}>{status}</span> : null}
       </div>
       <div className="motif-cs-add-enzyme-row">
@@ -17657,7 +18515,7 @@ function AddEnzymeForm({
           maxLength={MAX_CUSTOM_ENZYME_NAME_LENGTH}
           value={name}
           onChange={(event) => { setName(event.target.value); setHasError(false); setStatus(''); }}
-          placeholder="Known enzyme, e.g. EcoRV…"
+          placeholder="Known enzyme (for example, EcoRV)…"
           aria-label="Known or custom enzyme name"
           aria-invalid={hasError || undefined}
           aria-describedby={status ? statusId : undefined}
@@ -17674,7 +18532,7 @@ function AddEnzymeForm({
           value={recognition}
           onChange={(event) => { setRecognition(event.target.value); setHasError(false); setStatus(''); }}
           onKeyDown={(event) => { if (event.key === 'Enter') submit(); }}
-          placeholder="Custom motif, e.g. GGTACC…"
+          placeholder="Custom motif (for example, GGTACC)…"
           aria-label="Custom enzyme recognition sequence"
           aria-invalid={hasError || undefined}
           aria-describedby={status ? statusId : undefined}
@@ -17696,31 +18554,44 @@ function RestrictionSourceControls({
   enzymeCount: number;
   onToggle: (source: RestrictionEnzymeSourceId, enabled: boolean) => void;
 }) {
+  const relationshipNoteId = useId();
+  const sourceGroups = RESTRICTION_SOURCE_OPTIONS.filter((option) => option.id !== 'all');
+  const fullList = RESTRICTION_SOURCE_OPTIONS.find((option) => option.id === 'all');
+  const renderSource = (option: (typeof RESTRICTION_SOURCE_OPTIONS)[number]) => {
+    const active = sources.includes(option.id);
+    return (
+      <button
+        key={option.id}
+        className="motif-cs-restriction-source"
+        type="button"
+        data-active={active || undefined}
+        aria-pressed={active}
+        aria-describedby={relationshipNoteId}
+        onClick={() => onToggle(option.id, !active)}
+        title={option.description}
+      >
+        <span className="motif-cs-source-label">{option.label}</span>
+        <span className="motif-cs-source-state" data-state={active ? 'on' : 'off'}>{active ? 'On' : 'Off'} · {option.enzymeCount} enz</span>
+      </button>
+    );
+  };
   return (
     <div className="motif-cs-restriction-sources">
       <div className="motif-cs-restriction-sources-head">
-        <span>Enzyme Sources</span>
+        <span>Enzyme sources</span>
         <span className="motif-cs-panel-meta">{enzymeCount} enzymes</span>
       </div>
-      <div className="motif-cs-restriction-source-grid" role="group" aria-label="Restriction enzyme source groups">
-        {RESTRICTION_SOURCE_OPTIONS.map((option) => {
-          const active = sources.includes(option.id);
-          return (
-            <button
-              key={option.id}
-              className="motif-cs-restriction-source"
-              type="button"
-              data-active={active || undefined}
-              aria-pressed={active}
-              onClick={() => onToggle(option.id, !active)}
-              title={option.description}
-            >
-              <span className="motif-cs-source-label">{option.label}</span>
-              <span className="motif-cs-source-state" data-state={active ? 'on' : 'off'}>{active ? 'On' : 'Off'} · {option.enzymeCount} enz</span>
-            </button>
-          );
-        })}
+      <div className="motif-cs-restriction-source-grid" role="group" aria-label="Combinable restriction enzyme source groups" aria-describedby={relationshipNoteId}>
+        {sourceGroups.map(renderSource)}
       </div>
+      {fullList ? (
+        <div className="motif-cs-restriction-source-full" role="group" aria-label="Full restriction enzyme catalog" aria-describedby={relationshipNoteId}>
+          {renderSource(fullList)}
+        </div>
+      ) : null}
+      <p id={relationshipNoteId} className="motif-cs-form-note motif-cs-restriction-source-note">
+        Source groups can be combined. Full list replaces them while selected; choosing a source group exits Full list.
+      </p>
     </div>
   );
 }
@@ -17847,7 +18718,7 @@ function RestrictionList({
         </div>
       ) : (
         <p className="motif-cs-muted motif-cs-restriction-empty">
-          {normalizedQuery ? 'No visible sites match this filter.' : 'No visible sites. Enable a source group or add a custom enzyme below.'}
+          {normalizedQuery ? 'No visible sites match this filter.' : 'No visible sites. Enable an enzyme source or add a custom enzyme.'}
         </p>
       )}
       <div className="motif-cs-restriction-enzyme-list" aria-label="Enzyme visibility controls">
@@ -18013,6 +18884,12 @@ type RestrictionCutGeometry = {
   enzyme: RestrictionEnzyme;
   senseCut: number;
   antisenseCut: number;
+  // Bases between the two nicks — the piece that ends up single-stranded. Kept in
+  // raw (pre-modulo) coordinates and ordered low-to-high so a span crossing the
+  // origin of a circular record stays a short span instead of inverting into its
+  // complement. Equal endpoints mean a blunt cut and no span to draw.
+  spanStart: number;
+  spanEnd: number;
 };
 
 type LineRestrictionLabel = {
@@ -18029,7 +18906,7 @@ function normalizeRestrictionCut(cut: number, sequenceLength: number, topology: 
   return cut >= 0 && cut <= sequenceLength ? cut : null;
 }
 
-function restrictionCutGeometry(
+export function restrictionCutGeometry(
   site: RestrictionSite,
   enzyme: RestrictionEnzyme,
   sequenceLength: number,
@@ -18045,7 +18922,14 @@ function restrictionCutGeometry(
   const senseCut = normalizeRestrictionCut(senseRaw, sequenceLength, topology);
   const antisenseCut = normalizeRestrictionCut(antisenseRaw, sequenceLength, topology);
   if (senseCut === null || antisenseCut === null) return null;
-  return { site, enzyme, senseCut, antisenseCut };
+  return {
+    site,
+    enzyme,
+    senseCut,
+    antisenseCut,
+    spanStart: Math.min(senseRaw, antisenseRaw),
+    spanEnd: Math.max(senseRaw, antisenseRaw),
+  };
 }
 
 function restrictionCutBelongsToLine(cut: number, lineStart: number, lineEnd: number, sequenceLength: number): boolean {
@@ -18265,6 +19149,7 @@ const SequenceText = memo(function SequenceText({
   caret,
   editable,
   onFeatureSelect,
+  onFeatureOpen,
   onRestrictionSelect,
   onTranslationTrackSelect,
   onTranslationCodonSelect,
@@ -18291,6 +19176,7 @@ const SequenceText = memo(function SequenceText({
   caret: number | null;
   editable: boolean;
   onFeatureSelect: (featureId: string) => void;
+  onFeatureOpen: (featureId: string) => void;
   onRestrictionSelect: (site: RestrictionSite) => void;
   onTranslationTrackSelect: (track: InlineTranslationTrack) => void;
   onTranslationCodonSelect: (
@@ -18973,18 +19859,39 @@ const SequenceText = memo(function SequenceText({
     if (!container || !node) return;
     window.requestAnimationFrame(() => {
       const scroller = effectiveSequenceScroller(container);
-      const containerRect = scroller.getBoundingClientRect();
-      const nodeRect = node.getBoundingClientRect();
+      const target = node.querySelector<HTMLElement>('[data-line-start]') ?? node;
+      const scrollerRect = scroller.getBoundingClientRect();
+      const targetRect = target.getBoundingClientRect();
       const margin = 32;
-      if (nodeRect.top >= containerRect.top + margin && nodeRect.bottom <= containerRect.bottom - margin) {
-        return;
+      if (targetRect.top < scrollerRect.top + margin || targetRect.bottom > scrollerRect.bottom - margin) {
+        const top = scroller.scrollTop
+          + targetRect.top
+          - scrollerRect.top
+          - scroller.clientHeight / 2
+          + target.clientHeight / 2;
+        scroller.scrollTo({ top: Math.max(0, top), behavior: 'auto' });
       }
-      const top = scroller.scrollTop
-        + nodeRect.top
-        - containerRect.top
-        - scroller.clientHeight / 2
-        + node.clientHeight / 2;
-      scroller.scrollTo({ top: Math.max(0, top), behavior: 'auto' });
+
+      // Compact layouts can have two legitimate scroll owners: the bases move
+      // inside Sequence, while the outer pane still clips part of that viewport
+      // to make room for its header and Export. Once the selected base row is in
+      // the inner viewport, reveal that row through the outer one as well.
+      const pane = container.closest<HTMLElement>('.motif-cs-sequence-column');
+      if (scroller !== container || !pane || pane.scrollHeight <= pane.clientHeight + 1) return;
+      const paneRect = pane.getBoundingClientRect();
+      const revealedTargetRect = target.getBoundingClientRect();
+      const outerMargin = Math.min(16, Math.max(0, (pane.clientHeight - target.clientHeight) / 2));
+      if (revealedTargetRect.top < paneRect.top + outerMargin) {
+        pane.scrollTo({
+          top: Math.max(0, pane.scrollTop + revealedTargetRect.top - paneRect.top - outerMargin),
+          behavior: 'auto',
+        });
+      } else if (revealedTargetRect.bottom > paneRect.bottom - outerMargin) {
+        pane.scrollTo({
+          top: pane.scrollTop + revealedTargetRect.bottom - paneRect.bottom + outerMargin,
+          behavior: 'auto',
+        });
+      }
     });
   }, [basesPerLine, detailMode, focusKey, focusRequest, focusStart, sequence.length, showComplement]);
 
@@ -19127,7 +20034,12 @@ const SequenceText = memo(function SequenceText({
                         suppressNextFocusScrollRef.current = true;
                         onFeatureSelect(feature.id);
                       }}
-                      title={`${feature.name} · ${feature.type} · ${featureRangeLabel(feature)}`}
+                      onDoubleClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        onFeatureOpen(feature.id);
+                      }}
+                      title={`${feature.name} · ${feature.type} · ${featureRangeLabel(feature)} · Double-click to edit`}
                     >
                       <span translate="no">{feature.name}</span>
                     </button>
@@ -19153,9 +20065,30 @@ const SequenceText = memo(function SequenceText({
               {activeRestrictionRects.map((rect, i) => (
                 <div key={`r${i}`} className="motif-cs-seq-hl motif-cs-seq-hl-restriction" style={{ left: `${rect.left}ch`, width: `${rect.width}ch` }} />
               ))}
-              {lineRestrictionCuts.flatMap(({ site, senseCut, antisenseCut }) => {
+              {lineRestrictionCuts.flatMap(({ site, senseCut, antisenseCut, spanStart, spanEnd }) => {
                 const selected = restrictionSelectionHasSite(selectedRestrictionTickSet, site);
                 const markers: ReactNode[] = [];
+                // The tread joining the two stems, drawn on the base-pairing axis over
+                // the bases that lose their partner. A blunt enzyme nicks both strands at
+                // one bond, so its span is empty and the two stems meet as a single
+                // uninterrupted cut line instead. Clipped per line and normalized for
+                // topology by the same helpers the recognition wash uses, so a span that
+                // crosses a line break or the origin still lands on the right bases.
+                for (const range of normalizeSpan(spanStart, spanEnd, sequence.length, topology)) {
+                  const rect = clipRangeToLine(range, lineStart, lineEnd);
+                  if (!rect) continue;
+                  markers.push(
+                    <div
+                      key={`${restrictionSiteTickId(site)}:span:${range.start}`}
+                      className="motif-cs-seq-cut-span"
+                      data-selected={selected || undefined}
+                      data-enzyme={site.enzyme}
+                      data-span-start={range.start}
+                      data-span-end={range.end}
+                      style={{ left: `${rect.left}ch`, width: `${rect.width}ch` }}
+                    />,
+                  );
+                }
                 if (restrictionCutBelongsToLine(senseCut, lineStart, lineEnd, sequence.length)) {
                   markers.push(
                     <div
