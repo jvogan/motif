@@ -1,30 +1,156 @@
-import {
-  buildMsaDifferenceColumnSlots,
-  type MsaColumnViewSlot,
-  type MsaExpandedColumnRange,
+import type {
+  MsaColumnViewSlot,
+  MsaExpandedColumnRange,
 } from './claude-science-msa';
 import type { ClaudeScienceMsaColumnFilter } from './claude-science-msa-view-preferences';
+
+type MsaColumnSegment =
+  | {
+    kind: 'columns';
+    startColumn: number;
+    endColumn: number;
+    startSlot: number;
+  }
+  | {
+    kind: 'elision';
+    startColumn: number;
+    endColumn: number;
+    startSlot: number;
+  };
+
+type MsaElisionSlot = Extract<MsaColumnViewSlot, { kind: 'elision' }>;
 
 /**
  * Column-space adapter for the virtualised matrix.
  *
- * The ordinary, unfiltered view is an identity mapping: visual slot 412 is
- * absolute alignment column 412. Represent that mapping with arithmetic, not
- * one object and one Map entry per alignment column. The difference-focused
- * view alone needs materialised slots because its elisions change visual space.
+ * Both an unfiltered view and an expanded difference range can contain a
+ * million logical columns. They are continuous mappings, so retain them as
+ * scalar segments rather than one slot object (or reverse-Map entry) per
+ * column. `slotsInRange` is the sole materialisation boundary and callers use
+ * it only for the rendered viewport or a bounded export window.
  */
 export type MsaColumnView = {
   readonly slotCount: number;
   readonly isCompressed: boolean;
-  /** Diagnostics that make accidental all-view O(N) allocation testable. */
+  /** Persistent descriptors, not transient viewport slots. */
   readonly materializedSlotCount: number;
+  /** There is deliberately no per-column reverse index. */
   readonly indexedColumnCount: number;
+  readonly shownColumnCount: number;
   slotAt(slotIndex: number): MsaColumnViewSlot | undefined;
   slotsInRange(startSlot: number, endSlot: number): MsaColumnViewSlot[];
   slotIndexForColumn(column: number): number | undefined;
-  elisionForColumn(column: number): Extract<MsaColumnViewSlot, { kind: 'elision' }> | undefined;
-  allSlots(): readonly MsaColumnViewSlot[];
+  slotIndexForElision(slot: MsaElisionSlot): number | undefined;
+  elisionForColumn(column: number): MsaElisionSlot | undefined;
 };
+
+function normalizedVisibleRanges({
+  length,
+  differingColumns,
+  context,
+  expandedRanges,
+}: {
+  length: number;
+  differingColumns: readonly number[];
+  context: number;
+  expandedRanges: readonly MsaExpandedColumnRange[];
+}): MsaExpandedColumnRange[] {
+  const margin = Number.isFinite(context) ? Math.max(0, Math.floor(context)) : 3;
+  const ranges: MsaExpandedColumnRange[] = [];
+  for (const rawColumn of differingColumns) {
+    if (!Number.isFinite(rawColumn)) continue;
+    const column = Math.floor(rawColumn);
+    if (column < 0 || column >= length) continue;
+    ranges.push({
+      startColumn: Math.max(0, column - margin),
+      endColumn: Math.min(length, column + margin + 1),
+    });
+  }
+  for (const range of expandedRanges) {
+    const startColumn = Math.max(0, Math.min(length, Math.floor(range.startColumn)));
+    const endColumn = Math.max(startColumn, Math.min(length, Math.ceil(range.endColumn)));
+    if (endColumn > startColumn) ranges.push({ startColumn, endColumn });
+  }
+  ranges.sort((a, b) => a.startColumn - b.startColumn || a.endColumn - b.endColumn);
+  const merged: MsaExpandedColumnRange[] = [];
+  for (const range of ranges) {
+    const previous = merged[merged.length - 1];
+    if (!previous || range.startColumn > previous.endColumn) merged.push({ ...range });
+    else previous.endColumn = Math.max(previous.endColumn, range.endColumn);
+  }
+  return merged;
+}
+
+function segmentsForDifferenceView(
+  length: number,
+  differingColumns: readonly number[],
+  context: number,
+  expandedRanges: readonly MsaExpandedColumnRange[],
+): MsaColumnSegment[] {
+  if (length === 0) return [];
+  const segments: MsaColumnSegment[] = [];
+  let cursor = 0;
+  let slotCount = 0;
+  const appendElision = (startColumn: number, endColumn: number) => {
+    if (endColumn <= startColumn) return;
+    segments.push({ kind: 'elision', startColumn, endColumn, startSlot: slotCount });
+    slotCount += 1;
+  };
+  const appendColumns = (startColumn: number, endColumn: number) => {
+    if (endColumn <= startColumn) return;
+    segments.push({ kind: 'columns', startColumn, endColumn, startSlot: slotCount });
+    slotCount += endColumn - startColumn;
+  };
+  for (const range of normalizedVisibleRanges({ length, differingColumns, context, expandedRanges })) {
+    appendElision(cursor, range.startColumn);
+    appendColumns(range.startColumn, range.endColumn);
+    cursor = range.endColumn;
+  }
+  appendElision(cursor, length);
+  return segments;
+}
+
+function slotCountFor(segments: readonly MsaColumnSegment[]): number {
+  const last = segments[segments.length - 1];
+  if (!last) return 0;
+  return last.startSlot + (last.kind === 'columns' ? last.endColumn - last.startColumn : 1);
+}
+
+function segmentForSlot(segments: readonly MsaColumnSegment[], slotIndex: number): MsaColumnSegment | undefined {
+  let low = 0;
+  let high = segments.length - 1;
+  while (low <= high) {
+    const middle = low + Math.floor((high - low) / 2);
+    const segment = segments[middle]!;
+    const endSlot = segment.startSlot + (segment.kind === 'columns' ? segment.endColumn - segment.startColumn : 1);
+    if (slotIndex < segment.startSlot) high = middle - 1;
+    else if (slotIndex >= endSlot) low = middle + 1;
+    else return segment;
+  }
+  return undefined;
+}
+
+function segmentForColumn(segments: readonly MsaColumnSegment[], column: number): MsaColumnSegment | undefined {
+  let low = 0;
+  let high = segments.length - 1;
+  while (low <= high) {
+    const middle = low + Math.floor((high - low) / 2);
+    const segment = segments[middle]!;
+    if (column < segment.startColumn) high = middle - 1;
+    else if (column >= segment.endColumn) low = middle + 1;
+    else return segment;
+  }
+  return undefined;
+}
+
+function asElisionSlot(segment: Extract<MsaColumnSegment, { kind: 'elision' }>): MsaElisionSlot {
+  return {
+    kind: 'elision',
+    startColumn: segment.startColumn,
+    endColumn: segment.endColumn,
+    hiddenCount: segment.endColumn - segment.startColumn,
+  };
+}
 
 export function createMsaColumnView({
   alignmentLength,
@@ -40,46 +166,77 @@ export function createMsaColumnView({
   expandedRanges: readonly MsaExpandedColumnRange[];
 }): MsaColumnView {
   const length = Math.max(0, Math.floor(alignmentLength));
-  const slots = columnFilter === 'differences'
-    ? buildMsaDifferenceColumnSlots(length, differingColumns, context, expandedRanges)
+  const segments = columnFilter === 'differences'
+    ? segmentsForDifferenceView(length, differingColumns, context, expandedRanges)
     : null;
-  // A Map has the same allocation problem as the all-view slot objects. Only
-  // compressed visual space needs one because absolute and visual indices vary.
-  const index = slots ? new Map<number, number>() : null;
-  if (slots && index) {
-    slots.forEach((slot, slotIndex) => {
-      if (slot.kind === 'column') index.set(slot.column, slotIndex);
-    });
-  }
+  const count = segments ? slotCountFor(segments) : length;
   const validColumn = (column: number) => Number.isInteger(column) && column >= 0 && column < length;
+  const shownColumnCount = segments
+    ? segments.reduce((count, segment) => count + (segment.kind === 'columns' ? segment.endColumn - segment.startColumn : 0), 0)
+    : length;
+
   const slotAt = (slotIndex: number): MsaColumnViewSlot | undefined => {
-    if (!Number.isInteger(slotIndex) || slotIndex < 0 || slotIndex >= (slots?.length ?? length)) return undefined;
-    return slots?.[slotIndex] ?? { kind: 'column', column: slotIndex };
-  };
-  const slotIndexForColumn = (column: number): number | undefined => {
-    if (!validColumn(column)) return undefined;
-    return index?.get(column) ?? (slots ? undefined : column);
+    if (!Number.isInteger(slotIndex) || slotIndex < 0 || slotIndex >= count) return undefined;
+    if (!segments) return { kind: 'column', column: slotIndex };
+    const segment = segmentForSlot(segments, slotIndex);
+    if (!segment) return undefined;
+    return segment.kind === 'columns'
+      ? { kind: 'column', column: segment.startColumn + slotIndex - segment.startSlot }
+      : asElisionSlot(segment);
   };
 
   return {
-    slotCount: slots?.length ?? length,
-    isCompressed: slots !== null,
-    materializedSlotCount: slots?.length ?? 0,
-    indexedColumnCount: index?.size ?? 0,
+    slotCount: count,
+    isCompressed: segments !== null,
+    materializedSlotCount: segments?.length ?? 0,
+    indexedColumnCount: 0,
+    shownColumnCount,
     slotAt,
     slotsInRange(startSlot, endSlot) {
       const start = Math.max(0, Math.floor(startSlot));
-      const end = Math.max(start, Math.min(slots?.length ?? length, Math.ceil(endSlot)));
-      if (slots) return slots.slice(start, end);
-      return Array.from({ length: end - start }, (_, offset): MsaColumnViewSlot => ({ kind: 'column', column: start + offset }));
+      const end = Math.max(start, Math.min(count, Math.ceil(endSlot)));
+      if (end <= start) return [];
+      if (!segments) return Array.from(
+        { length: end - start },
+        (_, offset): MsaColumnViewSlot => ({ kind: 'column', column: start + offset }),
+      );
+      const result: MsaColumnViewSlot[] = [];
+      let slot = start;
+      while (slot < end) {
+        const segment = segmentForSlot(segments, slot);
+        if (!segment) break;
+        if (segment.kind === 'elision') {
+          result.push(asElisionSlot(segment));
+          slot += 1;
+          continue;
+        }
+        const segmentEndSlot = segment.startSlot + segment.endColumn - segment.startColumn;
+        const stop = Math.min(end, segmentEndSlot);
+        for (; slot < stop; slot += 1) {
+          result.push({ kind: 'column', column: segment.startColumn + slot - segment.startSlot });
+        }
+      }
+      return result;
     },
-    slotIndexForColumn,
+    slotIndexForColumn(column) {
+      if (!validColumn(column)) return undefined;
+      if (!segments) return column;
+      const segment = segmentForColumn(segments, column);
+      return segment?.kind === 'columns' ? segment.startSlot + column - segment.startColumn : undefined;
+    },
+    slotIndexForElision(slot) {
+      if (!segments) return undefined;
+      const segment = segmentForColumn(segments, slot.startColumn);
+      return segment?.kind === 'elision'
+        && segment.startColumn === slot.startColumn
+        && segment.endColumn === slot.endColumn
+        ? segment.startSlot
+        : undefined;
+    },
     elisionForColumn(column) {
-      if (!slots || !validColumn(column)) return undefined;
-      return slots.find((slot): slot is Extract<MsaColumnViewSlot, { kind: 'elision' }> => (
-        slot.kind === 'elision' && column >= slot.startColumn && column < slot.endColumn
-      ));
+      if (!segments || !validColumn(column)) return undefined;
+      const segment = segmentForColumn(segments, column);
+      return segment?.kind === 'elision' ? asElisionSlot(segment) : undefined;
     },
-    allSlots() { return slots ?? []; },
   };
 }

@@ -1727,9 +1727,7 @@ function AlignmentMatrix({
     ?? (firstVisibleSlot?.kind === 'elision' ? firstVisibleSlot.startColumn : 0);
   const visibleEndColumn = (visibleAbsoluteColumns[visibleAbsoluteColumns.length - 1]
     ?? (lastVisibleSlot?.kind === 'elision' ? lastVisibleSlot.endColumn - 1 : visibleStartColumn)) + 1;
-  const shownAlignmentColumnCount = columnView.isCompressed
-    ? columnView.allSlots().reduce((count, slot) => count + Number(slot.kind === 'column'), 0)
-    : alignment.alignmentLength;
+  const shownAlignmentColumnCount = columnView.shownColumnCount;
   const hiddenAlignmentColumnCount = alignment.alignmentLength - shownAlignmentColumnCount;
   const visibleWindowText = columnFilter === 'differences'
     ? `${visibleAbsoluteColumns.length.toLocaleString()} displayed alignment columns in this window · ${hiddenAlignmentColumnCount.toLocaleString()} identical columns hidden overall`
@@ -1761,7 +1759,7 @@ function AlignmentMatrix({
     let slotFraction = columnFraction;
     if (slotIndex === undefined) {
       const elision = columnView.elisionForColumn(column);
-      slotIndex = elision ? columnView.allSlots().indexOf(elision) : undefined;
+      slotIndex = elision ? columnView.slotIndexForElision(elision) : undefined;
       const slot = elision;
       if (slot?.kind === 'elision') {
         slotFraction = (boundedCenter - slot.startColumn) / Math.max(1, slot.endColumn - slot.startColumn);
@@ -3542,15 +3540,15 @@ function AlignmentMatrix({
           {hoverCell ? (
             <div className="motif-cs-msa-hover-column" style={{ left: hoverColumnLeft, width: cellWidth }} aria-hidden="true" />
           ) : null}
-          {columnFilter === 'differences' ? columnView.allSlots().map((slot, slotIndex) => (
-            slot.kind === 'elision' && slotIndex >= startSlot && slotIndex < endSlot ? (
+          {columnFilter === 'differences' ? renderedSlots.map((slot, renderedSlotIndex) => (
+            slot.kind === 'elision' ? (
               <button
                 key={`elision-${slot.startColumn}-${slot.endColumn}`}
                 type="button"
                 className="motif-cs-msa-elision-marker"
                 data-msa-elision-marker="true"
                 data-hidden-columns={slot.hiddenCount}
-                style={{ left: labelWidth + slotIndex * cellWidth, width: cellWidth }}
+                style={{ left: labelWidth + (startSlot + renderedSlotIndex) * cellWidth, width: cellWidth }}
                 title={`${slot.hiddenCount.toLocaleString()} identical columns hidden`}
                 aria-label={`${slot.hiddenCount.toLocaleString()} identical columns hidden. Show these columns.`}
                 onPointerDown={(event) => { event.stopPropagation(); }}

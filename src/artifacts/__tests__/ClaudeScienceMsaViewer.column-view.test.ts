@@ -19,8 +19,6 @@ describe('createMsaColumnView', () => {
     expect(view.isCompressed).toBe(false);
     expect(view.materializedSlotCount).toBe(0);
     expect(view.indexedColumnCount).toBe(0);
-    expect(view.allSlots()).toEqual([]);
-
     expect(view.slotAt(0)).toEqual({ kind: 'column', column: 0 });
     expect(view.slotAt(999_999)).toEqual({ kind: 'column', column: 999_999 });
     expect(view.slotIndexForColumn(712_345)).toBe(712_345);
@@ -41,8 +39,10 @@ describe('createMsaColumnView', () => {
 
     expect(view.isCompressed).toBe(true);
     expect(view.slotCount).toBe(17);
-    expect(view.materializedSlotCount).toBe(17);
-    expect(view.indexedColumnCount).toBe(14);
+    // Five segment descriptors replace the previous 17 slot objects and 14
+    // reverse-index entries. The viewport still observes the same slots.
+    expect(view.materializedSlotCount).toBe(5);
+    expect(view.indexedColumnCount).toBe(0);
     expect(view.slotsInRange(0, 5)).toEqual([
       { kind: 'elision', startColumn: 0, endColumn: 6, hiddenCount: 6 },
       { kind: 'column', column: 6 },
@@ -56,5 +56,40 @@ describe('createMsaColumnView', () => {
       kind: 'elision', startColumn: 13, endColumn: 21, hiddenCount: 8,
     });
     expect(view.slotIndexForColumn(24)).toBe(12);
+  });
+
+  it('keeps a near-million expanded difference range segmented', () => {
+    const view = createMsaColumnView({
+      alignmentLength: 1_000_000,
+      columnFilter: 'differences',
+      differingColumns: [10],
+      context: 0,
+      expandedRanges: [{ startColumn: 100, endColumn: 999_900 }],
+    });
+
+    // The expanded run has 999,800 displayed columns, but it is one segment.
+    // These stable counters protect the click/Go-to expansion path from quietly
+    // regressing to a slot object or a Map entry for every displayed column.
+    expect(view.slotCount).toBe(999_804);
+    expect(view.shownColumnCount).toBe(999_801);
+    expect(view.materializedSlotCount).toBe(5);
+    expect(view.indexedColumnCount).toBe(0);
+
+    expect(view.slotIndexForColumn(10)).toBe(1);
+    expect(view.slotIndexForColumn(100)).toBe(3);
+    expect(view.slotIndexForColumn(500_000)).toBe(499_903);
+    expect(view.slotAt(499_903)).toEqual({ kind: 'column', column: 500_000 });
+    expect(view.slotsInRange(499_902, 499_905)).toEqual([
+      { kind: 'column', column: 499_999 },
+      { kind: 'column', column: 500_000 },
+      { kind: 'column', column: 500_001 },
+    ]);
+
+    const leadingElision = view.elisionForColumn(5);
+    expect(leadingElision).toEqual({ kind: 'elision', startColumn: 0, endColumn: 10, hiddenCount: 10 });
+    expect(leadingElision && view.slotIndexForElision(leadingElision)).toBe(0);
+    expect(view.elisionForColumn(999_950)).toEqual({
+      kind: 'elision', startColumn: 999_900, endColumn: 1_000_000, hiddenCount: 100,
+    });
   });
 });
