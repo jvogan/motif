@@ -1,0 +1,122 @@
+{
+  "schema_version": "motif-openai-skills-submission/v1",
+  "submission_readiness": {
+    "status": "prepared-local-candidate",
+    "recommended_type": "Skills only",
+    "upload_archive": "dist-motif/motif-0.4.0-skills-only-plugin.zip",
+    "hosted_service_required": false,
+    "portal_validation_pending": true,
+    "notes": [
+      "This is a separate skills-only edition. It does not contain or depend on Motif's local MCP connector.",
+      "The bundled helper creates a self-contained HTML workbench on the user's own machine from exact supplied input.",
+      "A successful local validation does not guarantee acceptance by the live OpenAI portal."
+    ]
+  },
+  "archive_preparation": {
+    "build_command": "npm run build:codex-skills-plugin",
+    "verification_commands": [
+      "npm run typecheck",
+      "npm run test:codex-skills-plugin",
+      "npm run check:openai-skills-submission"
+    ],
+    "required_root_entries": [
+      ".codex-plugin/plugin.json",
+      "skills/motif/SKILL.md",
+      "skills/motif/agents/openai.yaml"
+    ],
+    "excluded_surfaces": [
+      "MCP server configuration",
+      "MCP App configuration",
+      "hosted service URLs",
+      "connector installation"
+    ]
+  },
+  "listing": {
+    "plugin_name": "Motif",
+    "subtitle": "Explore biological sequences",
+    "publisher": "Jacob Vogan",
+    "website_url": "https://jvogan.github.io/motif-site/",
+    "support_url": "https://github.com/jvogan/motif/issues",
+    "privacy_url": "https://github.com/jvogan/motif/blob/main/PRIVACY.md",
+    "terms_url": "https://github.com/jvogan/motif/blob/main/TERMS.md",
+    "category": "Education & Research",
+    "type": "Skills only",
+    "description": "Create a local, self-contained Motif HTML workbench from exact DNA, RNA, protein, FASTA, GenBank, or Motif JSON supplied by the user. The resulting file can be opened and edited in a browser and shared intentionally. Motif does not retrieve missing records, run remote analyses, validate experiments, or modify external systems."
+  },
+  "starter_prompts": [
+    "Create a Motif workbench for this FASTA file and open the resulting HTML for me.",
+    "Put these supplied DNA and protein records into one portable Motif workbench.",
+    "Create a Motif HTML workbench from this GenBank file without changing its records."
+  ],
+  "activation_tests": {
+    "positive": [
+      {
+        "id": "skills-positive-direct-fasta",
+        "activation_class": "direct",
+        "user_prompt": "Create a Motif workbench for this FASTA: >example_dna\nATGGTGGTG",
+        "expected_behavior": "Use the Motif skill to create a local self-contained HTML workbench from the exact supplied FASTA.",
+        "expected_result_shape": "A local HTML path plus a receipt reporting one record, nine residues, the runtime build identity, and a SHA-256 digest.",
+        "fixture_requirements": "Use the inline synthetic FASTA. No network access, account, connector, or credential is required."
+      },
+      {
+        "id": "skills-positive-protein-dna",
+        "activation_class": "direct",
+        "user_prompt": "Put these supplied DNA and protein FASTA records into one portable Motif workbench.",
+        "expected_behavior": "Use the Motif skill with the exact attached records and keep both records in one local workbench.",
+        "expected_result_shape": "A local HTML path and receipt whose record and residue counts match the supplied files.",
+        "fixture_requirements": "Attach one small synthetic DNA FASTA and one small synthetic protein FASTA."
+      },
+      {
+        "id": "skills-positive-genbank",
+        "activation_class": "indirect",
+        "user_prompt": "I need a local interactive workbench for this GenBank file, with its supported features preserved.",
+        "expected_behavior": "Use the Motif skill to parse the exact attached GenBank content and create a local HTML workbench.",
+        "expected_result_shape": "A local HTML path and receipt whose sequence counts match the fixture; supported feature data appears in the embedded workspace.",
+        "fixture_requirements": "Attach examples/motif-demo.gb. No network access or credentials are required."
+      },
+      {
+        "id": "skills-positive-raw-rna",
+        "activation_class": "indirect",
+        "user_prompt": "Show this exact RNA in a private local sequence workbench: AUGGCUACGUAA",
+        "expected_behavior": "Use the Motif skill, identify the supplied raw text as RNA, and create a local workbench without changing the sequence.",
+        "expected_result_shape": "A local HTML path and receipt reporting one RNA record and twelve residues.",
+        "fixture_requirements": "Use the inline synthetic RNA sequence."
+      },
+      {
+        "id": "skills-positive-existing-json",
+        "activation_class": "followup",
+        "user_prompt": "Create a Motif HTML workbench from this supplied Motif JSON checkpoint and preserve its records and annotations.",
+        "expected_behavior": "Use the Motif skill's structured-payload path and preserve the supplied workspace data.",
+        "expected_result_shape": "A local HTML path and receipt whose counts and digest can be checked against the generated file.",
+        "fixture_requirements": "Attach a valid, bounded Motif JSON checkpoint containing synthetic records and annotations."
+      }
+    ],
+    "negative": [
+      {
+        "id": "skills-negative-programming-sequence",
+        "user_prompt": "Explain the sequence of async calls in this JavaScript function.",
+        "expected_behavior": "Do not activate Motif. Answer this as a programming question.",
+        "reason": "Sequence refers to program execution rather than a supplied biological record."
+      },
+      {
+        "id": "skills-negative-missing-input",
+        "user_prompt": "Open this sequence for me.",
+        "expected_behavior": "Do not create a workbench yet. Ask the user to supply or identify the exact biological input.",
+        "reason": "The requested record is absent, and Motif must not retrieve or invent it."
+      },
+      {
+        "id": "skills-negative-musical-motif",
+        "user_prompt": "Develop this four-note motif into a string quartet theme.",
+        "expected_behavior": "Do not activate Motif. Treat motif as a musical term.",
+        "reason": "The request concerns music rather than biological records."
+      }
+    ]
+  },
+  "release_notes": "Prepared Motif 0.4.0 as a local skills-only plugin for exact biological records supplied by the user. It creates self-contained HTML workbenches without an account, hosted service, or MCP connector. It does not retrieve missing records, run remote analyses, validate experiments, or modify external systems.",
+  "portal_only_checks": [
+    "Upload only the archive named motif-0.4.0-skills-only-plugin.zip prepared from this candidate.",
+    "Confirm that the live portal accepts the archive without an unsupported-category error or an MCP-removal warning.",
+    "Review the displayed name, prompts, logo, privacy URL, terms URL, and availability before submission.",
+    "Personally complete the publisher identity and policy attestations before submitting for review."
+  ]
+}

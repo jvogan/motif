@@ -1451,7 +1451,7 @@ const MOTIF_HELP: MotifHelp = {
   },
   sharing: {
     html: 'Use dist-motif/motif-artifact.html or a generated custom artifact. The artifact HTML is self-contained after build.',
-    skill: 'Ship dist-motif/motif-for-claude-science-skill/SKILL.md with the HTML so Claude Science/agents know how to drive the runtime APIs.',
+    skill: 'Ship the Motif skill with the HTML so an agent can follow the supported runtime boundaries.',
     customPayload: 'Build a custom preloaded inventory with npm run build:motif -- --payload payload.json --out preview/custom-motif-artifact.html.',
   },
   example: {
@@ -4211,7 +4211,7 @@ function loadArtifactPayload(
     inventory: {
       id: 'motif-built-in-vectors',
       title: 'Motif',
-      description: 'Built-in Motif vector set. Inject a JSON payload to render a Claude Science inventory.',
+      description: 'Built-in Motif vector set. Inject a JSON payload to render a prepared inventory.',
     },
     records: fallbackRecords,
     selectedRecordId: resolveSelectedRecordId(fallbackRecords, {}, fallbackSelectedRecordId),
@@ -4254,7 +4254,7 @@ function loadArtifactPayload(
       title: normalizeOptionalText(inventory?.title) ?? (hasExplicitRecords ? 'Motif sequence inventory' : fallbackPayload.inventory.title),
       description: normalizeOptionalText(inventory?.description) ?? (
         hasExplicitRecords
-          ? `${usableRecords.length.toLocaleString()} active sequence record${usableRecords.length === 1 ? '' : 's'} injected from Claude Science.`
+          ? `${usableRecords.length.toLocaleString()} active sequence record${usableRecords.length === 1 ? '' : 's'} loaded from the supplied workspace.`
           : fallbackPayload.inventory.description
       ),
       updatedAt: normalizeOptionalText(inventory?.updatedAt),

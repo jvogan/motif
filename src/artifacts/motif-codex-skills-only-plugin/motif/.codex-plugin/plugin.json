@@ -1,0 +1,42 @@
+{
+  "name": "motif",
+  "version": "0.4.0",
+  "description": "Create portable Motif workbenches from biological sequence records supplied by the user.",
+  "author": {
+    "name": "Jacob Vogan",
+    "url": "https://jvogan.github.io/motif-site/"
+  },
+  "homepage": "https://jvogan.github.io/motif-site/",
+  "repository": "https://github.com/jvogan/motif",
+  "license": "MIT",
+  "keywords": [
+    "motif",
+    "molecular-biology",
+    "bioinformatics",
+    "sequence-analysis"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Motif",
+    "shortDescription": "Explore biological sequences",
+    "longDescription": "Create a local, self-contained Motif HTML workbench from exact DNA, RNA, protein, FASTA, GenBank, or Motif JSON supplied by the user. The resulting file can be opened and edited in a browser and shared intentionally. Motif does not retrieve missing records, run remote analyses, validate experiments, or modify external systems.",
+    "developerName": "Jacob Vogan",
+    "category": "Education & Research",
+    "capabilities": [
+      "Portable HTML workbenches",
+      "Exact sequence intake",
+      "Local offline generation"
+    ],
+    "websiteURL": "https://jvogan.github.io/motif-site/",
+    "privacyPolicyURL": "https://github.com/jvogan/motif/blob/main/PRIVACY.md",
+    "termsOfServiceURL": "https://github.com/jvogan/motif/blob/main/TERMS.md",
+    "defaultPrompt": [
+      "Create a Motif workbench for this FASTA file and open the resulting HTML for me.",
+      "Put these supplied DNA and protein records into one portable Motif workbench.",
+      "Create a Motif HTML workbench from this GenBank file without changing its records."
+    ],
+    "brandColor": "#1D4ED8",
+    "composerIcon": "./assets/logo.png",
+    "logo": "./assets/logo.png"
+  }
+}

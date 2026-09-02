@@ -1,4 +1,4 @@
-# Use Motif with Codex
+# Use Motif with Codex through the full local plugin
 
 Motif's Codex plugin lets Codex open supplied biological sequences in the
 interactive workbench or return a portable HTML workbench. It runs a bounded
@@ -7,6 +7,9 @@ MCP server on your machine and does not require a hosted Motif service.
 The current distribution is intended for local installation from a trusted
 Motif checkout. Building the package does not install it or change Codex
 configuration.
+
+If you want the connector-free edition that only creates self-contained local
+HTML workbenches, use the separate [Codex skills-only guide](CODEX_SKILLS_ONLY.md).
 
 ## Requirements
 

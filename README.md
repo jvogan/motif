@@ -23,10 +23,11 @@ portable exports.
 | Experience | Best for | Start here |
 | --- | --- | --- |
 | Portable HTML workbench | Local inspection, editing, and sharing without a host integration | [Develop from source](#develop-from-source) |
-| Codex plugin | Asking Codex to open supplied sequences or create a portable Motif artifact | [Codex quickstart](docs/CODEX_QUICKSTART.md) |
+| Codex skills-only plugin | Creating a private local HTML workbench without a connector or hosted service | [Skills-only guide](docs/CODEX_SKILLS_ONLY.md) |
+| Codex local plugin | Asking Codex to open supplied sequences through the local MCP App | [Local plugin quickstart](docs/CODEX_QUICKSTART.md) |
 | Claude Science adapter | Opening Motif from a local Claude Science connector | [Claude Science quickstart](docs/CLAUDE_SCIENCE_QUICKSTART.md) |
 
-Both host adapters expose the same narrow tools:
+The Codex local plugin and Claude Science adapter expose the same narrow tools:
 `motif_open_workbench` requests the interactive MCP App, and
 `motif_create_workbench_artifact` returns a portable HTML workbench when a host
 does not mount the App. A successful tool response confirms that Motif accepted
@@ -95,18 +96,34 @@ aligned CLUSTAL, and complete workspace JSON inputs with expected identities.
 
 ## Use with Codex
 
-Motif's Codex package contains a task-focused skill, the bounded local MCP
-server, the interactive App resource, and the portable artifact fallback. The
-repository can stage a local marketplace without modifying Codex configuration:
+Motif has two deliberately separate Codex packages:
+
+- The **skills-only plugin** bundles a local helper and a self-contained
+  workbench resource. It creates an ordinary HTML file from exact input the
+  user supplied. It needs no hosted Motif service or MCP connector.
+- The **full local plugin** adds Motif's bounded MCP server and interactive App
+  resource. It is installed from a trusted local checkout rather than through
+  the skills-only directory upload.
+
+Build and verify the skills-only package with:
+
+```bash
+npm run test:codex-skills-plugin
+npm run check:openai-skills-submission
+```
+
+See the [skills-only guide](docs/CODEX_SKILLS_ONLY.md) for its exact capability
+boundary. To stage the full local plugin without modifying Codex configuration:
 
 ```bash
 npm run build:codex-marketplace
 npm run codex:doctor:marketplace
 ```
 
-Installation, verification, update, removal, and cache behavior are documented
-in the [Codex quickstart](docs/CODEX_QUICKSTART.md). The current Codex package
-is a local distribution; it does not depend on a hosted Motif service.
+Installation, verification, update, removal, and cache behavior for the full
+local integration are documented in the
+[Codex local plugin quickstart](docs/CODEX_QUICKSTART.md). Neither edition
+depends on a hosted Motif service.
 
 ## Use with Claude Science
 
@@ -140,6 +157,12 @@ npm run build:codex-plugin
 npm run build:codex-marketplace
 ```
 
+Build the separate skills-only Codex upload with:
+
+```bash
+npm run build:codex-skills-plugin
+```
+
 Generated packages are staged under `dist-motif/`; the local Codex marketplace
 is staged under `.motif/codex-marketplace/`. Builds do not install a connector,
 register a marketplace, or modify host configuration.
@@ -169,6 +192,8 @@ Codex packaging and submission metadata have focused checks:
 npm run test:codex-plugin
 npm run codex:doctor
 npm run check:openai-submission
+npm run test:codex-skills-plugin
+npm run check:openai-skills-submission
 ```
 
 `npm run validate:plugin` adds strict Claude plugin validation when the Claude
