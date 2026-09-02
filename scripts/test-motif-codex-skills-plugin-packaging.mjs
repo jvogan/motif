@@ -27,6 +27,7 @@ assert.equal(manifest.skills, './skills/');
 assert.equal(manifest.interface.category, 'Education & Research');
 assert.equal(Object.hasOwn(manifest, 'mcpServers'), false);
 assert.equal(Object.hasOwn(manifest, 'apps'), false);
+assert.deepEqual(manifest.interface.capabilities, ['Interactive', 'Read', 'Write']);
 assert.equal(manifest.interface.defaultPrompt.length, 3);
 for (const prompt of manifest.interface.defaultPrompt) assert.ok(prompt.length <= 128);
 assert.match(manifest.interface.longDescription, /find, prepare, analyze, and transform data/u);
@@ -67,6 +68,10 @@ const checksums = JSON.parse(readFileSync(checksumPath, 'utf8'));
 const zip = readFileSync(zipPath);
 assert.equal(checksums.archive, `motif-${packageVersion}-skills-only-plugin.zip`);
 assert.equal(createHash('sha256').update(zip).digest('hex'), checksums.archiveSha256);
+assert.equal(zip.readUInt16LE(8), 8, 'Skills-only ZIP entries must use DEFLATE compression.');
+const uncompressedBytes = listFilesRecursively(pluginRoot)
+  .reduce((total, file) => total + readFileSync(file.absolutePath).length, 0);
+assert.ok(zip.length < uncompressedBytes, 'Skills-only ZIP must be smaller than its unpacked contents.');
 
 const temporaryRoot = mkdtempSync(join(tmpdir(), 'motif-skills-only-test-'));
 try {

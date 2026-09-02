@@ -113,7 +113,7 @@ export async function buildMotifCodexSkillsPlugin() {
     }
   }
 
-  const zip = createDeterministicZipBuffer(outputDirectory);
+  const zip = createDeterministicZipBuffer(outputDirectory, { compression: 'deflate' });
   mkdirSync(dirname(zipPath), { recursive: true });
   writeFileSync(zipPath, zip);
   const checksums = {

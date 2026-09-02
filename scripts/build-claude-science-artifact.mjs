@@ -14,6 +14,7 @@ import {
 } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { deflateRawSync } from 'node:zlib';
 import { buildSync } from 'esbuild';
 import { validatePayload as validateArtifactPayload } from '../src/artifacts/motif-for-claude-science-plugin/skills/motif-for-claude-science/scripts/create-artifact.mjs';
 import { stampMotifBuildIdentity } from './motif-build-identity.mjs';
@@ -70,6 +71,7 @@ const bundledConnectorLicenses = reviewedConnectorInventory.packages.map(({ pack
 
 const ZIP_UTF8_FLAG = 0x0800;
 const ZIP_STORE_METHOD = 0;
+const ZIP_DEFLATE_METHOD = 8;
 const ZIP_DOS_TIME = 0;
 const ZIP_DOS_DATE = (1 << 5) | 1; // 1980-01-01, the earliest ZIP timestamp.
 
@@ -224,7 +226,10 @@ export function listFilesRecursively(directory, baseDirectory = directory) {
   return files;
 }
 
-export function createDeterministicZipBuffer(directory) {
+export function createDeterministicZipBuffer(directory, { compression = 'store' } = {}) {
+  if (compression !== 'store' && compression !== 'deflate') {
+    throw new Error(`Unsupported ZIP compression method: ${compression}`);
+  }
   const files = listFilesRecursively(directory);
   const localParts = [];
   const centralParts = [];
@@ -233,32 +238,36 @@ export function createDeterministicZipBuffer(directory) {
   for (const file of files) {
     const name = Buffer.from(file.archivePath, 'utf8');
     const data = readFileSync(file.absolutePath);
+    const method = compression === 'deflate' ? ZIP_DEFLATE_METHOD : ZIP_STORE_METHOD;
+    const archiveData = compression === 'deflate'
+      ? deflateRawSync(data, { level: 9 })
+      : data;
     const checksum = crc32(data);
 
     const localHeader = Buffer.alloc(30);
     localHeader.writeUInt32LE(0x04034b50, 0);
     localHeader.writeUInt16LE(20, 4);
     localHeader.writeUInt16LE(ZIP_UTF8_FLAG, 6);
-    localHeader.writeUInt16LE(ZIP_STORE_METHOD, 8);
+    localHeader.writeUInt16LE(method, 8);
     localHeader.writeUInt16LE(ZIP_DOS_TIME, 10);
     localHeader.writeUInt16LE(ZIP_DOS_DATE, 12);
     localHeader.writeUInt32LE(checksum, 14);
-    localHeader.writeUInt32LE(data.length, 18);
+    localHeader.writeUInt32LE(archiveData.length, 18);
     localHeader.writeUInt32LE(data.length, 22);
     localHeader.writeUInt16LE(name.length, 26);
     localHeader.writeUInt16LE(0, 28);
-    localParts.push(localHeader, name, data);
+    localParts.push(localHeader, name, archiveData);
 
     const centralHeader = Buffer.alloc(46);
     centralHeader.writeUInt32LE(0x02014b50, 0);
     centralHeader.writeUInt16LE(20, 4);
     centralHeader.writeUInt16LE(20, 6);
     centralHeader.writeUInt16LE(ZIP_UTF8_FLAG, 8);
-    centralHeader.writeUInt16LE(ZIP_STORE_METHOD, 10);
+    centralHeader.writeUInt16LE(method, 10);
     centralHeader.writeUInt16LE(ZIP_DOS_TIME, 12);
     centralHeader.writeUInt16LE(ZIP_DOS_DATE, 14);
     centralHeader.writeUInt32LE(checksum, 16);
-    centralHeader.writeUInt32LE(data.length, 20);
+    centralHeader.writeUInt32LE(archiveData.length, 20);
     centralHeader.writeUInt32LE(data.length, 24);
     centralHeader.writeUInt16LE(name.length, 28);
     centralHeader.writeUInt16LE(0, 30);
@@ -269,7 +278,7 @@ export function createDeterministicZipBuffer(directory) {
     centralHeader.writeUInt32LE(localOffset, 42);
     centralParts.push(centralHeader, name);
 
-    localOffset += localHeader.length + name.length + data.length;
+    localOffset += localHeader.length + name.length + archiveData.length;
   }
 
   const centralDirectory = Buffer.concat(centralParts);

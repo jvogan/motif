@@ -23,11 +23,9 @@
     "developerName": "Jacob Vogan",
     "category": "Education & Research",
     "capabilities": [
-      "Portable molecular-biology workbenches",
-      "Sequence editing and annotation",
-      "Alignment and construct comparison",
-      "Trace, cloning, and results review",
-      "Portable HTML and data exports"
+      "Interactive",
+      "Read",
+      "Write"
     ],
     "websiteURL": "https://jvogan.github.io/motif-site/",
     "privacyPolicyURL": "https://github.com/jvogan/motif/blob/main/PRIVACY.md",
