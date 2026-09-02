@@ -513,28 +513,29 @@ function coercePayload(value: unknown): MotifWorkbenchPayload {
   return value;
 }
 
-function cloneJsonObject(value: MotifWorkbenchPayload): MotifWorkbenchPayload {
-  return JSON.parse(JSON.stringify(value)) as MotifWorkbenchPayload;
+function applyFeaturePalette(payload: MotifWorkbenchPayload): MotifWorkbenchPayload {
+  // This only receives the JSON clone created at the MCP boundary below, so
+  // mutating it avoids another full copy of a payload that can approach 32 MiB.
+  const colorRecord = (record: unknown): void => {
+    if (!isPlainObject(record)) return;
+    for (const field of ['features', 'annotations'] as const) {
+      if (!Array.isArray(record[field])) continue;
+      for (const feature of record[field]) {
+        if (isPlainObject(feature)) feature.color = resolveFeatureColor(feature);
+      }
+    }
+  };
+  for (const field of ['records', 'entries', 'vectors'] as const) {
+    if (Array.isArray(payload[field])) payload[field].forEach(colorRecord);
+  }
+  if (payload.record !== undefined) colorRecord(payload.record);
+  return payload;
 }
 
-function applyFeaturePalette(payload: MotifWorkbenchPayload): MotifWorkbenchPayload {
-  const colorRecord = (record: unknown): unknown => {
-    if (!isPlainObject(record)) return record;
-    const next = { ...record };
-    for (const field of ['features', 'annotations'] as const) {
-      if (!Array.isArray(next[field])) continue;
-      next[field] = next[field].map((feature) => isPlainObject(feature)
-        ? { ...feature, color: resolveFeatureColor(feature) }
-        : feature);
-    }
-    return next;
-  };
-  const next: MotifWorkbenchPayload = { ...payload };
-  for (const field of ['records', 'entries', 'vectors'] as const) {
-    if (Array.isArray(next[field])) next[field] = next[field].map(colorRecord);
+function validateSerializedPayloadSize(serialized: string): void {
+  if (utf8Bytes(serialized) > MOTIF_MCP_LIMITS.maxPayloadBytes) {
+    throw new Error(`Payload cannot exceed ${Math.floor(MOTIF_MCP_LIMITS.maxPayloadBytes / 1_048_576)} MiB.`);
   }
-  if (next.record !== undefined) next.record = colorRecord(next.record);
-  return next;
 }
 
 function applyProposalPreference(value: unknown, preference: boolean | undefined): unknown {
@@ -602,9 +603,7 @@ export function validateMotifPayload(value: unknown): {
   );
   validatePayloadEnvelope(payload);
   const serialized = JSON.stringify(payload);
-  if (utf8Bytes(serialized) > MOTIF_MCP_LIMITS.maxPayloadBytes) {
-    throw new Error(`Payload cannot exceed ${Math.floor(MOTIF_MCP_LIMITS.maxPayloadBytes / 1_048_576)} MiB.`);
-  }
+  validateSerializedPayloadSize(serialized);
   if (typeof payload.schema === 'string'
     && payload.schema.startsWith('motif.claude-science.inventory.')
     && !SUPPORTED_INVENTORY_SCHEMAS.has(payload.schema)) {
@@ -665,7 +664,12 @@ export function validateMotifPayload(value: unknown): {
   } catch (error) {
     throw new Error(`Payload analysis workspace is invalid: ${error instanceof Error ? error.message : String(error)}`);
   }
-  return { payload: applyFeaturePalette(cloneJsonObject(payload)), recordCount: records.length, residueCount };
+  // Reuse the serialization already required for the input bound as the clone
+  // source. Palette defaults add serialized color strings, so the returned
+  // payload must be checked again after they are applied.
+  const preparedPayload = applyFeaturePalette(JSON.parse(serialized) as MotifWorkbenchPayload);
+  validateSerializedPayloadSize(JSON.stringify(preparedPayload));
+  return { payload: preparedPayload, recordCount: records.length, residueCount };
 }
 
 function safeSourceName(filename: string | undefined): string | undefined {

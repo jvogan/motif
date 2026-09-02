@@ -2,6 +2,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { resolveFeatureColor } from '../../bio/feature-palette.js';
 import { renderMotifArtifact } from '../../../mcp/motif/artifact-export.js';
 import { MOTIF_WORKBENCH_RESOURCE_URI } from '../../../mcp/motif/contracts.js';
 import {
@@ -123,7 +124,10 @@ describe('Motif MCP payload boundary', () => {
           name: 'Palette',
           molecule: 'dna',
           sequence: 'ATGAAATAA',
-          features: [{ name: 'coding region', type: 'cds', start: 0, end: 9 }],
+          features: [
+            { name: 'coding region', type: 'cds', start: 0, end: 9 },
+            { name: 'operator', type: 'regulatory', start: 3, end: 6, color: '#123456' },
+          ],
         }],
       },
       proposeAnnotations: false,
@@ -131,11 +135,36 @@ describe('Motif MCP payload boundary', () => {
     expect(result.payload?.records).toEqual([
       expect.objectContaining({
         proposeAnnotations: false,
-        features: [expect.objectContaining({
-          color: 'var(--accent, #7E9BBF)',
-        })],
+        features: [
+          expect.objectContaining({ color: 'var(--accent, #7E9BBF)' }),
+          expect.objectContaining({ color: '#123456' }),
+        ],
       }),
     ]);
+  });
+
+  it('keeps the serialized payload bound after adding palette defaults', () => {
+    const feature = { type: 'cds', start: 0, end: 1 };
+    const features = Array.from(
+      { length: MOTIF_MCP_LIMITS.maxFeaturesPerRecord },
+      () => ({ ...feature }),
+    );
+    const payload = {
+      records: [{ id: 'palette-boundary', sequence: 'A', features }],
+      padding: '',
+    };
+    const beforePaddingBytes = Buffer.byteLength(JSON.stringify(payload), 'utf8');
+    payload.padding = 'x'.repeat(MOTIF_MCP_LIMITS.maxPayloadBytes - beforePaddingBytes - 1);
+
+    const inputBytes = Buffer.byteLength(JSON.stringify(payload), 'utf8');
+    const paletteBytesPerFeature = Buffer.byteLength(
+      JSON.stringify({ ...feature, color: resolveFeatureColor(feature) }),
+      'utf8',
+    ) - Buffer.byteLength(JSON.stringify(feature), 'utf8');
+    expect(inputBytes).toBe(MOTIF_MCP_LIMITS.maxPayloadBytes - 1);
+    expect(inputBytes + paletteBytesPerFeature * features.length).toBeGreaterThan(MOTIF_MCP_LIMITS.maxPayloadBytes);
+
+    expect(() => validateMotifPayload(payload)).toThrow(/Payload cannot exceed 32 MiB\./);
   });
 
   it('keeps valid unprojectable GenBank locations with feature and record diagnostics', () => {
