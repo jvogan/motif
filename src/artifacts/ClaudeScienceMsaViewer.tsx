@@ -24,7 +24,9 @@ import {
   ARTIFACT_MSA_MAX_LOCAL_SEQUENCES,
   ARTIFACT_MSA_MAX_IMPORT_BYTES,
   ARTIFACT_MSA_LOCAL_WORK_BUDGET,
+  AlignmentImageExportError,
   ArtifactAlignmentError,
+  alignmentImageCanvasScale,
   alignmentComparisonOf,
   MSA_MOTIF_SEARCH_MAX_QUERY_LENGTH,
   clampMsaClientPoint,
@@ -49,6 +51,7 @@ import {
   parseAlignmentText,
   residueColorKey,
   resolveMsaColorScheme,
+  resolveAlignmentImagePalette,
   resolveResidueCellColor,
   safeAlignmentFilename,
   scheduleMsaSearch,
@@ -59,6 +62,7 @@ import {
   summarizeSelectionColumns,
   translateAlignedRow,
   type AlignmentImageLayout,
+  type AlignmentImagePalette,
   type AlignmentImageScope,
   type ArtifactAlignment,
   type ArtifactAlignmentReferenceNumbering,
@@ -422,13 +426,8 @@ const MSA_VIEWPORT_RESTORE_FRAMES = 12;
 // ===== Image export (PNG raster + SVG vector) =====
 //
 // Rendered from the alignment data model (the matrix DOM is column-virtualised).
-// Colours come from resolveResidueCellColor, which mirrors the CSS scheme fills
-// against a fixed, deterministic export background so PNG and SVG match the
-// on-screen palette without depending on live CSS variables.
-const MSA_IMAGE_EXPORT_BACKGROUND = '#ffffff';
-const MSA_IMAGE_LABEL_BG = '#f4f1ea';
-const MSA_IMAGE_TEXT_COLOR = '#16130f';
-const MSA_IMAGE_MUTED_COLOR = '#6b6459';
+// Colours come from the active artifact theme at the export gesture, with
+// deterministic fallbacks supplied by resolveAlignmentImagePalette.
 const MSA_IMAGE_FONT_STACK = "ui-monospace, 'SFMono-Regular', 'Menlo', 'Consolas', monospace";
 
 type ImageExportRow = { name: string; aligned: string; isTemplate: boolean };
@@ -504,36 +503,41 @@ function renderAlignmentImageCanvas(
   scheme: MsaColorScheme | null,
   layout: AlignmentImageLayout,
   title: string,
+  palette: AlignmentImagePalette,
 ): HTMLCanvasElement | null {
   const canvas = document.createElement('canvas');
-  const ratio = Math.max(1, Math.min(2, typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1));
+  const ratio = alignmentImageCanvasScale(
+    layout.width,
+    layout.height,
+    typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1,
+  );
   canvas.width = Math.round(layout.width * ratio);
   canvas.height = Math.round(layout.height * ratio);
   const ctx = canvas.getContext('2d');
   if (!ctx) return null;
   ctx.scale(ratio, ratio);
-  const bg = MSA_IMAGE_EXPORT_BACKGROUND;
+  const bg = palette.background;
 
   // Background + sticky label gutter.
   ctx.fillStyle = bg;
   ctx.fillRect(0, 0, layout.width, layout.height);
-  ctx.fillStyle = MSA_IMAGE_LABEL_BG;
+  ctx.fillStyle = palette.labelBackground;
   ctx.fillRect(0, 0, layout.labelWidth, layout.height);
 
   // Title band.
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'left';
-  ctx.fillStyle = MSA_IMAGE_TEXT_COLOR;
+  ctx.fillStyle = palette.text;
   ctx.font = `600 ${Math.max(10, Math.round(layout.titleHeight * 0.42))}px ${MSA_IMAGE_FONT_STACK}`;
   const titleMaxWidth = Math.max(1, layout.width - 16);
   ctx.fillText(title, 8, layout.titleHeight * 0.4, titleMaxWidth);
-  ctx.fillStyle = MSA_IMAGE_MUTED_COLOR;
+  ctx.fillStyle = palette.muted;
   ctx.font = `${Math.max(9, Math.round(layout.titleHeight * 0.3))}px ${MSA_IMAGE_FONT_STACK}`;
   ctx.fillText(imageSubtitle(layout), 8, layout.titleHeight * 0.76, titleMaxWidth);
 
   // Column axis ticks.
   const tickStep = imageColumnTickStep(layout.cellWidth);
-  ctx.fillStyle = MSA_IMAGE_MUTED_COLOR;
+  ctx.fillStyle = palette.muted;
   ctx.font = `${Math.max(8, Math.round(layout.axisHeight * 0.55))}px ${MSA_IMAGE_FONT_STACK}`;
   ctx.textAlign = 'center';
   for (let index = 0; index < layout.columnCount; index += 1) {
@@ -575,7 +579,7 @@ function renderAlignmentImageCanvas(
     }
     // Residue glyphs.
     if (layout.drawLetters) {
-      ctx.fillStyle = MSA_IMAGE_TEXT_COLOR;
+      ctx.fillStyle = palette.text;
       ctx.font = cellFont;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
@@ -588,9 +592,9 @@ function renderAlignmentImageCanvas(
       }
     }
     // Row label (drawn last so it sits above any coloured cells).
-    ctx.fillStyle = MSA_IMAGE_LABEL_BG;
+    ctx.fillStyle = palette.labelBackground;
     ctx.fillRect(0, y, layout.labelWidth, layout.cellHeight);
-    ctx.fillStyle = row.isTemplate ? MSA_IMAGE_TEXT_COLOR : MSA_IMAGE_MUTED_COLOR;
+    ctx.fillStyle = row.isTemplate ? palette.text : palette.muted;
     ctx.font = `${row.isTemplate ? '600 ' : ''}${labelFontSize}px ${MSA_IMAGE_FONT_STACK}`;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
@@ -616,21 +620,22 @@ function renderAlignmentImageSvg(
   scheme: MsaColorScheme | null,
   layout: AlignmentImageLayout,
   title: string,
+  palette: AlignmentImagePalette,
 ): string {
-  const bg = MSA_IMAGE_EXPORT_BACKGROUND;
+  const bg = palette.background;
   const parts: string[] = [];
   parts.push(
     `<svg xmlns="http://www.w3.org/2000/svg" width="${layout.width}" height="${layout.height}"`
     + ` viewBox="0 0 ${layout.width} ${layout.height}" font-family="${escapeXml(MSA_IMAGE_FONT_STACK)}">`,
   );
   parts.push(`<rect width="${layout.width}" height="${layout.height}" fill="${bg}"/>`);
-  parts.push(`<rect width="${layout.labelWidth}" height="${layout.height}" fill="${MSA_IMAGE_LABEL_BG}"/>`);
+  parts.push(`<rect width="${layout.labelWidth}" height="${layout.height}" fill="${escapeXml(palette.labelBackground)}"/>`);
 
   // Title band.
   const titleSize = Math.max(10, Math.round(layout.titleHeight * 0.42));
   const subSize = Math.max(9, Math.round(layout.titleHeight * 0.3));
-  parts.push(`<text x="8" y="${layout.titleHeight * 0.4}" fill="${MSA_IMAGE_TEXT_COLOR}" font-size="${titleSize}" font-weight="600" dominant-baseline="middle">${escapeXml(title)}</text>`);
-  parts.push(`<text x="8" y="${layout.titleHeight * 0.76}" fill="${MSA_IMAGE_MUTED_COLOR}" font-size="${subSize}" dominant-baseline="middle">${escapeXml(imageSubtitle(layout))}</text>`);
+  parts.push(`<text x="8" y="${layout.titleHeight * 0.4}" fill="${escapeXml(palette.text)}" font-size="${titleSize}" font-weight="600" dominant-baseline="middle">${escapeXml(title)}</text>`);
+  parts.push(`<text x="8" y="${layout.titleHeight * 0.76}" fill="${escapeXml(palette.muted)}" font-size="${subSize}" dominant-baseline="middle">${escapeXml(imageSubtitle(layout))}</text>`);
 
   // Column axis ticks.
   const tickStep = imageColumnTickStep(layout.cellWidth);
@@ -640,12 +645,12 @@ function renderAlignmentImageSvg(
     if (!slot) continue;
     const x = layout.labelWidth + (index + 0.5) * layout.cellWidth;
     if (slot.kind === 'elision') {
-      parts.push(`<text x="${x.toFixed(1)}" y="${layout.titleHeight + layout.axisHeight * 0.5}" fill="${MSA_IMAGE_MUTED_COLOR}" font-size="${axisSize}" text-anchor="middle" dominant-baseline="middle">${escapeXml(`⋯${slot.hiddenCount.toLocaleString()}⋯`)}</text>`);
+      parts.push(`<text x="${x.toFixed(1)}" y="${layout.titleHeight + layout.axisHeight * 0.5}" fill="${escapeXml(palette.muted)}" font-size="${axisSize}" text-anchor="middle" dominant-baseline="middle">${escapeXml(`⋯${slot.hiddenCount.toLocaleString()}⋯`)}</text>`);
       continue;
     }
     const column = slot.column;
     if (index !== 0 && (column + 1) % tickStep !== 0) continue;
-    parts.push(`<text x="${x.toFixed(1)}" y="${layout.titleHeight + layout.axisHeight * 0.5}" fill="${MSA_IMAGE_MUTED_COLOR}" font-size="${axisSize}" text-anchor="middle" dominant-baseline="middle">${column + 1}</text>`);
+    parts.push(`<text x="${x.toFixed(1)}" y="${layout.titleHeight + layout.axisHeight * 0.5}" fill="${escapeXml(palette.muted)}" font-size="${axisSize}" text-anchor="middle" dominant-baseline="middle">${column + 1}</text>`);
   }
 
   const labelFontSize = Math.max(8, Math.min(layout.fontSize || 11, Math.round(layout.cellHeight * 0.62)));
@@ -670,12 +675,12 @@ function renderAlignmentImageSvg(
         const symbol = row.aligned[slot.column] ?? '-';
         if (symbol === '-' || symbol === '.') continue;
         const x = layout.labelWidth + (index + 0.5) * layout.cellWidth;
-        parts.push(`<text x="${x.toFixed(1)}" y="${(y + layout.cellHeight / 2).toFixed(1)}" fill="${MSA_IMAGE_TEXT_COLOR}" font-size="${layout.fontSize}" text-anchor="middle" dominant-baseline="middle">${escapeXml(symbol)}</text>`);
+        parts.push(`<text x="${x.toFixed(1)}" y="${(y + layout.cellHeight / 2).toFixed(1)}" fill="${escapeXml(palette.text)}" font-size="${layout.fontSize}" text-anchor="middle" dominant-baseline="middle">${escapeXml(symbol)}</text>`);
       }
     }
     // Row label.
-    parts.push(`<rect x="0" y="${y.toFixed(2)}" width="${layout.labelWidth}" height="${layout.cellHeight.toFixed(2)}" fill="${MSA_IMAGE_LABEL_BG}"/>`);
-    parts.push(`<text x="8" y="${(y + layout.cellHeight / 2).toFixed(1)}" fill="${row.isTemplate ? MSA_IMAGE_TEXT_COLOR : MSA_IMAGE_MUTED_COLOR}" font-size="${labelFontSize}"${row.isTemplate ? ' font-weight="600"' : ''} dominant-baseline="middle">${escapeXml(fitImageLabel(row.name, layout.labelWidth, labelFontSize))}</text>`);
+    parts.push(`<rect x="0" y="${y.toFixed(2)}" width="${layout.labelWidth}" height="${layout.cellHeight.toFixed(2)}" fill="${escapeXml(palette.labelBackground)}"/>`);
+    parts.push(`<text x="8" y="${(y + layout.cellHeight / 2).toFixed(1)}" fill="${escapeXml(row.isTemplate ? palette.text : palette.muted)}" font-size="${labelFontSize}"${row.isTemplate ? ' font-weight="600"' : ''} dominant-baseline="middle">${escapeXml(fitImageLabel(row.name, layout.labelWidth, labelFontSize))}</text>`);
   }
 
   parts.push('</svg>');
@@ -4622,38 +4627,44 @@ export function ClaudeScienceMsaViewer({
     // A fixed, legible export density derived from the font-size preference;
     // the layout scales this down when a whole wide alignment must fit the budget.
     const imageFontSize = Math.max(9, Math.min(16, fontSize));
-    const layout = computeAlignmentImageLayout(activeAlignment, {
-      scope: imageScope,
-      startColumn: viewWindow ? viewWindow.start : 0,
-      endColumn: viewWindow ? viewWindow.end : activeAlignment.alignmentLength,
-      columns: viewWindow?.slots,
-      cellWidth: Math.max(11, Math.round(imageFontSize * 0.95)),
-      cellHeight: Math.round(imageFontSize * 1.55) + 4,
-      fontSize: imageFontSize,
-    });
-    const rows = imageExportRows(activeAlignment, referenceRowId);
-    const title = activeAlignment.name;
-    // Mirror what the matrix paints rather than the scheme alone. The export used
-    // to read only `colorScheme`, so turning "Residue colors" off changed nothing
-    // about the image — and because the scheme select is disabled while colours
-    // are off, the saved file was coloured by a setting the UI was preventing the
-    // user from inspecting. The exception is the same one the matrix makes: when
-    // cells are too narrow to carry glyphs, colour is the only thing left holding
-    // the sequence, so a monochrome birdseye would export a blank rectangle. In
-    // that case the matrix falls back to the automatic tone scheme, not to the
-    // user's stored one, so this does too.
-    const exportScheme: MsaColorScheme | null = colorMode === 'residue'
-      ? colorScheme
-      : layout.drawLetters ? null : 'auto';
     try {
+      const layout = computeAlignmentImageLayout(activeAlignment, {
+        scope: imageScope,
+        startColumn: viewWindow ? viewWindow.start : 0,
+        endColumn: viewWindow ? viewWindow.end : activeAlignment.alignmentLength,
+        columns: viewWindow?.slots,
+        cellWidth: Math.max(11, Math.round(imageFontSize * 0.95)),
+        cellHeight: Math.round(imageFontSize * 1.55) + 4,
+        fontSize: imageFontSize,
+      });
+      const rows = imageExportRows(activeAlignment, referenceRowId);
+      const title = activeAlignment.name;
+      const palette = resolveAlignmentImagePalette((name) => {
+        const element = exportMenuRef.current ?? document.documentElement;
+        return typeof getComputedStyle === 'function'
+          ? getComputedStyle(element).getPropertyValue(name)
+          : '';
+      });
+      // Mirror what the matrix paints rather than the scheme alone. The export used
+      // to read only `colorScheme`, so turning "Residue colors" off changed nothing
+      // about the image — and because the scheme select is disabled while colours
+      // are off, the saved file was coloured by a setting the UI was preventing the
+      // user from inspecting. The exception is the same one the matrix makes: when
+      // cells are too narrow to carry glyphs, colour is the only thing left holding
+      // the sequence, so a monochrome birdseye would export a blank rectangle. In
+      // that case the matrix falls back to the automatic tone scheme, not to the
+      // user's stored one, so this does too.
+      const exportScheme: MsaColorScheme | null = colorMode === 'residue'
+        ? colorScheme
+        : layout.drawLetters ? null : 'auto';
       if (format === 'svg') {
-        const svg = renderAlignmentImageSvg(rows, activeAlignment.molecule, exportScheme, layout, title);
+        const svg = renderAlignmentImageSvg(rows, activeAlignment.molecule, exportScheme, layout, title, palette);
         const filename = safeAlignmentFilename(activeAlignment, 'svg');
         downloadBlobFile(filename, new Blob([svg], { type: 'image/svg+xml' }));
         flashStatus('Image export', layout.clamped ? `Saved ${filename} (scaled to fit)` : `Saved ${filename}`, 'status');
         return;
       }
-      const canvas = renderAlignmentImageCanvas(rows, activeAlignment.molecule, exportScheme, layout, title);
+      const canvas = renderAlignmentImageCanvas(rows, activeAlignment.molecule, exportScheme, layout, title, palette);
       const blob = canvas ? await canvasToPngBlob(canvas) : null;
       if (!blob) {
         flashStatus('Image export', 'PNG export is unavailable here. Try Save SVG.', 'error');
@@ -4662,7 +4673,20 @@ export function ClaudeScienceMsaViewer({
       const filename = safeAlignmentFilename(activeAlignment, 'png');
       downloadBlobFile(filename, blob);
       flashStatus('Image export', layout.clamped ? `Saved ${filename} (scaled; Save SVG for full vector)` : `Saved ${filename}`, 'status');
-    } catch {
+    } catch (caught) {
+      if (caught instanceof AlignmentImageExportError) {
+        const scopeLabel = caught.scope === 'all' ? 'Whole-alignment image' : 'Visible-view image';
+        const recovery = caught.scope === 'all'
+          ? 'Choose Visible view, or download Alignment JSON, Aligned FASTA, or CLUSTAL for the complete alignment.'
+          : 'Reopen Viewer to capture a smaller visible window, or download Alignment JSON, Aligned FASTA, or CLUSTAL.';
+        flashStatus(
+          'Image export',
+          `${scopeLabel} needs ${caught.requiredCells.toLocaleString()} row-cells; `
+          + `the image limit is ${caught.maxCells.toLocaleString()}. No file was saved. ${recovery}`,
+          'error',
+        );
+        return;
+      }
       flashStatus('Image export', 'Image export failed. Try Save SVG or the Visible view scope.', 'error');
     }
   }, [activeAlignment, colorMode, colorScheme, fontSize, imageScope, referenceRowId, flashStatus]);

@@ -1692,7 +1692,7 @@ export function buildMsaDifferenceColumnSlots(
 // computeAlignmentImageLayout derives the pixel geometry, and
 // resolveResidueCellColor mirrors the residue-scheme fills in
 // claude-science-msa.css as concrete sRGB hex against an explicit export
-// background (live CSS variables never resolve in pure code).
+// background supplied by the browser-side theme resolver.
 
 export type AlignmentImageScope = 'view' | 'all';
 
@@ -1740,17 +1740,44 @@ export type AlignmentImageLayout = {
   /** Unclamped ideal dimensions (before the pixel budget was applied). */
   contentWidth: number;
   contentHeight: number;
-  /** True when the cell/column budget forced a shrink (offer SVG as vector). */
+  /** True when the complete image was scaled to fit the pixel bounds. */
   clamped: boolean;
 };
+
+export class AlignmentImageExportError extends Error {
+  readonly code = 'cell_limit' as const;
+  readonly scope: AlignmentImageScope;
+  readonly requiredCells: number;
+  readonly maxCells: number;
+  readonly rowCount: number;
+  readonly columnCount: number;
+
+  constructor(
+    scope: AlignmentImageScope,
+    requiredCells: number,
+    maxCells: number,
+    rowCount: number,
+    columnCount: number,
+  ) {
+    super(`Alignment image needs ${requiredCells} row-cells; the limit is ${maxCells}.`);
+    this.name = 'AlignmentImageExportError';
+    this.scope = scope;
+    this.requiredCells = requiredCells;
+    this.maxCells = maxCells;
+    this.rowCount = rowCount;
+    this.columnCount = columnCount;
+  }
+}
 
 // Legibility floor shared with the viewer's birdseye threshold (MSA_LETTER_MIN).
 export const MSA_IMAGE_LETTER_MIN = 6.5;
 export const MSA_IMAGE_MAX_WIDTH = 12_000;
 export const MSA_IMAGE_MAX_HEIGHT = 8_000;
-// Cap on drawn cells so a huge alignment cannot produce an unbounded canvas or
-// SVG string; past this the whole-alignment scope draws a leading window.
+// Hard cap on drawn cells so a huge alignment cannot produce an unbounded
+// canvas or SVG string. Exceeding it rejects the image export atomically; no
+// partial scientific image is returned.
 export const MSA_IMAGE_MAX_CELLS = 400_000;
+export const MSA_IMAGE_MAX_CANVAS_PIXELS = 32_000_000;
 const MSA_IMAGE_DEFAULT_CELL_WIDTH = 12;
 const MSA_IMAGE_DEFAULT_CELL_HEIGHT = 16;
 const MSA_IMAGE_DEFAULT_FONT_SIZE = 11;
@@ -1768,11 +1795,11 @@ function imageLabelWidth(rows: AlignmentImageSource['rows'], fontSize: number): 
 /**
  * Pixel geometry for an exported alignment image. Resolves the column window
  * from `scope` (the visible [start, end) range for 'view', the whole alignment
- * for 'all'), caps the drawn cell count, then scales the cell size down to fit
- * within the pixel budget rather than clipping — so a wide alignment renders as
- * a birdseye mosaic with every column visible. `drawLetters` follows the final
- * (possibly scaled) cell width, matching the viewer's blocks threshold, and
- * `clamped` reports whether any budget forced a shrink.
+ * for 'all'), rejects requests above the hard row-cell budget, then scales the
+ * cell size down to fit within the pixel budget rather than clipping. A
+ * successful layout is therefore complete: a wide alignment renders as a
+ * birdseye mosaic with every requested column visible. `drawLetters` follows
+ * the final cell width, and `clamped` reports pixel scaling only.
  */
 export function computeAlignmentImageLayout(
   alignment: AlignmentImageSource,
@@ -1782,7 +1809,20 @@ export function computeAlignmentImageLayout(
   const alignmentLength = Math.max(0, Math.floor(alignment.alignmentLength));
   const maxWidth = Math.max(200, options.maxWidth ?? MSA_IMAGE_MAX_WIDTH);
   const maxHeight = Math.max(200, options.maxHeight ?? MSA_IMAGE_MAX_HEIGHT);
-  const maxCells = Math.max(1, Math.floor(options.maxCells ?? MSA_IMAGE_MAX_CELLS));
+  const requestedMaxCells = options.maxCells ?? MSA_IMAGE_MAX_CELLS;
+  const maxCells = Number.isFinite(requestedMaxCells)
+    ? Math.max(1, Math.min(MSA_IMAGE_MAX_CELLS, Math.floor(requestedMaxCells)))
+    : MSA_IMAGE_MAX_CELLS;
+
+  if (options.scope === 'all' && rowCount * alignmentLength > maxCells) {
+    throw new AlignmentImageExportError(
+      options.scope,
+      rowCount * alignmentLength,
+      maxCells,
+      rowCount,
+      alignmentLength,
+    );
+  }
 
   // Resolve the column window.
   let columns: MsaColumnViewSlot[] = Array.from(
@@ -1818,20 +1858,24 @@ export function computeAlignmentImageLayout(
       );
     }
   }
-  let columnCount = columns.length;
+  const columnCount = columns.length;
   const firstColumnSlot = columns.find((slot): slot is Extract<MsaColumnViewSlot, { kind: 'column' }> => slot.kind === 'column');
   const firstSlot = columns[0];
   const startColumn = firstColumnSlot?.column
     ?? (firstSlot?.kind === 'elision' ? firstSlot.startColumn : 0);
 
-  let clamped = false;
-
-  // Cell-count cap: draw a leading window rather than an unbounded image.
-  if (rowCount > 0 && columnCount * rowCount > maxCells) {
-    columnCount = Math.max(1, Math.floor(maxCells / rowCount));
-    columns = columns.slice(0, columnCount);
-    clamped = true;
+  const requiredCells = rowCount * columnCount;
+  if (requiredCells > maxCells) {
+    throw new AlignmentImageExportError(
+      options.scope,
+      requiredCells,
+      maxCells,
+      rowCount,
+      columnCount,
+    );
   }
+
+  let clamped = false;
 
   let cellWidth = Math.max(0.5, options.cellWidth ?? MSA_IMAGE_DEFAULT_CELL_WIDTH);
   let cellHeight = Math.max(1, options.cellHeight ?? MSA_IMAGE_DEFAULT_CELL_HEIGHT);
@@ -1889,6 +1933,60 @@ export function computeAlignmentImageLayout(
 
 type ImageFill = { hex: string; pct: number };
 
+export type AlignmentImagePalette = {
+  background: string;
+  labelBackground: string;
+  text: string;
+  muted: string;
+};
+
+export const DEFAULT_ALIGNMENT_IMAGE_PALETTE: Readonly<AlignmentImagePalette> = {
+  background: '#ffffff',
+  labelBackground: '#f4f1ea',
+  text: '#16130f',
+  muted: '#6b6459',
+};
+
+function canonicalOpaqueSrgb(value: string, fallback: string): string {
+  const trimmed = value.trim().toLowerCase();
+  const hex = trimmed.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i)?.[1];
+  if (hex) {
+    return hex.length === 3
+      ? `#${hex.split('').map((channel) => channel + channel).join('')}`
+      : `#${hex}`;
+  }
+  const rgb = trimmed.match(/^rgb\(\s*(\d+(?:\.\d+)?)\s*[, ]\s*(\d+(?:\.\d+)?)\s*[, ]\s*(\d+(?:\.\d+)?)\s*\)$/i);
+  if (!rgb) return fallback;
+  const channels = rgb.slice(1).map(Number);
+  if (channels.some((channel) => !Number.isFinite(channel) || channel < 0 || channel > 255)) return fallback;
+  return `#${channels.map(toHexChannel).join('')}`;
+}
+
+/** Resolve active artifact theme tokens to safe, opaque sRGB export colors. */
+export function resolveAlignmentImagePalette(
+  readToken: (name: string) => string = () => '',
+): AlignmentImagePalette {
+  return {
+    background: canonicalOpaqueSrgb(readToken('--bg-primary'), DEFAULT_ALIGNMENT_IMAGE_PALETTE.background),
+    labelBackground: canonicalOpaqueSrgb(readToken('--bg-secondary'), DEFAULT_ALIGNMENT_IMAGE_PALETTE.labelBackground),
+    text: canonicalOpaqueSrgb(readToken('--text-primary'), DEFAULT_ALIGNMENT_IMAGE_PALETTE.text),
+    muted: canonicalOpaqueSrgb(readToken('--text-muted'), DEFAULT_ALIGNMENT_IMAGE_PALETTE.muted),
+  };
+}
+
+/** Bound physical PNG backing pixels while retaining the complete logical image. */
+export function alignmentImageCanvasScale(
+  width: number,
+  height: number,
+  devicePixelRatio = 1,
+): number {
+  const ratio = Number.isFinite(devicePixelRatio)
+    ? Math.max(1, Math.min(2, devicePixelRatio))
+    : 1;
+  const logicalPixels = Math.max(1, width * height);
+  return Math.min(ratio, Math.sqrt(MSA_IMAGE_MAX_CANVAS_PIXELS / logicalPixels));
+}
+
 // Base hex + mix percent for each residue colour-key token, mirroring the fills
 // in claude-science-msa.css: color-mix(in srgb, HEX P%, var(--bg-primary)).
 const MSA_IMAGE_COLOR_KEY_FILL: Record<string, ImageFill> = {
@@ -1926,10 +2024,9 @@ const MSA_IMAGE_TAYLOR_FILL: Record<string, ImageFill> = {
 };
 
 function parseHexColor(hex: string): { r: number; g: number; b: number } {
-  let value = hex.trim().replace(/^#/, '');
-  if (value.length === 3) value = value.split('').map((channel) => channel + channel).join('');
+  const value = canonicalOpaqueSrgb(hex, '#000000').replace(/^#/, '');
   const int = Number.parseInt(value, 16);
-  if (value.length !== 6 || Number.isNaN(int)) return { r: 0, g: 0, b: 0 };
+  if (Number.isNaN(int)) return { r: 0, g: 0, b: 0 };
   return { r: (int >> 16) & 0xff, g: (int >> 8) & 0xff, b: int & 0xff };
 }
 
