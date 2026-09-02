@@ -144,7 +144,7 @@ export function exportMapLayoutSvg(layout: MapLayout, options: ExportMapLayoutSv
   }
 
   for (const feature of layout.features) {
-    const featureColor = escapeAttr(materializeFeatureColor(feature.color));
+    const featureColor = escapeAttr(materializeFeatureColor(feature.color, theme.background));
     for (const d of feature.segmentPaths) {
       chunks.push(`<path d="${escapeAttr(d)}" fill="${featureColor}" stroke="${theme.featureStroke}" stroke-width="0.8" stroke-linejoin="round" opacity="0.92"/>`);
     }

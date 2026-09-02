@@ -92,6 +92,36 @@ describe('exportMapLayoutSvg', () => {
     expect(svg).not.toContain('color-mix(');
   });
 
+  it('materializes the complete approved semantic mix against the export background', () => {
+    const mixedFeature = {
+      ...feature('mixed-feature', 100, 260, 'Mixed feature'),
+      color: 'color-mix(in srgb, var(--green, #7FA98F) 80%, var(--bg-primary))',
+    };
+    const layout = computeMapLayout({
+      mode: 'circular',
+      name: 'Portable mixed colors',
+      length: 1200,
+      topology: 'circular',
+      sequenceType: 'dna',
+      features: [mixedFeature],
+      restrictionSites: [],
+      width: 420,
+      height: 420,
+    });
+
+    const lightSvg = exportMapLayoutSvg(layout);
+    const darkSvg = exportMapLayoutSvg(layout, { theme: { background: '#101820' } });
+
+    expect(lightSvg).toContain('fill="#99baa5"');
+    expect(darkSvg).toContain('fill="#698c79"');
+    expect(lightSvg).not.toContain('fill="#7FA98F"');
+    expect(darkSvg).not.toContain('fill="#7FA98F"');
+    expect(lightSvg).not.toContain('var(--');
+    expect(lightSvg).not.toContain('color-mix(');
+    expect(darkSvg).not.toContain('var(--');
+    expect(darkSvg).not.toContain('color-mix(');
+  });
+
   it('serializes linear protein maps without restriction clutter', () => {
     const layout = computeMapLayout({
       mode: 'linear',

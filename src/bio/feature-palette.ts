@@ -157,15 +157,25 @@ export function resolveFeatureColor(feature: FeatureColorInput): string {
 /**
  * Materialize a semantic feature color for exports that cannot rely on Motif's
  * CSS variables. Literal caller colors pass through unchanged; exact theme
- * tokens and approved color mixes use their portable palette fallback.
+ * tokens use their portable palette fallback, while approved color mixes are
+ * resolved against the export background as one deterministic opaque sRGB
+ * color.
  */
-export function materializeFeatureColor(featureColor: string): string {
+export function materializeFeatureColor(featureColor: string, backgroundColor = '#ffffff'): string {
   const trimmed = featureColor.trim();
   if (!THEME_COLOR_TOKEN.test(trimmed) && !THEME_COLOR_MIX.test(trimmed)) return trimmed;
   const reference = THEME_COLOR_REFERENCE.exec(trimmed);
   if (!reference) return THEME_COLOR_FALLBACKS['feature-neutral'];
   const token = reference[1] as keyof typeof THEME_COLOR_FALLBACKS;
-  return reference[2] ?? THEME_COLOR_FALLBACKS[token];
+  const foreground = reference[2] ?? THEME_COLOR_FALLBACKS[token];
+  const mix = THEME_COLOR_PICKER_MIX.exec(trimmed);
+  if (!mix) return foreground;
+
+  return mixOpaqueHex(
+    opaqueHex(foreground) ?? THEME_COLOR_FALLBACKS[token].toLowerCase(),
+    Number(mix[3]) / 100,
+    opaqueHex(backgroundColor) ?? '#ffffff',
+  );
 }
 
 /**
