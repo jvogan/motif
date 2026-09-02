@@ -864,7 +864,15 @@ for (let index = 0; index < RESTRICTION_ENZYMES.length; index += 1) {
  */
 const RESTRICTION_CACHE_LIMIT = 32;
 const RESTRICTION_CACHE_MAX_CHARS = 4_000_000;
-const restrictionSiteCache = new Map<string, RestrictionSite[]>();
+const RESTRICTION_CACHE_MAX_RESULTS = 50_000;
+const RESTRICTION_CACHE_MAX_RESULTS_PER_ENTRY = 25_000;
+
+type RestrictionSiteCacheEntry = {
+  sites: RestrictionSite[];
+  keyChars: number;
+};
+
+const restrictionSiteCache = new Map<string, RestrictionSiteCacheEntry>();
 
 function restrictionMethylationKey(options: FindRestrictionSitesOptions | undefined): string {
   const assumptions = options?.methylationAssumptions ?? options?.methylation ?? options?.methylationState;
@@ -916,7 +924,7 @@ export function findRestrictionSites(
   // annotated a site in place, would otherwise rewrite the stored answer for
   // everyone after it.
   const cached = restrictionSiteCache.get(cacheKey);
-  if (cached) return cached.map((site) => ({ ...site }));
+  if (cached) return cached.sites.map((site) => ({ ...site }));
 
   const result = scanRestrictionSites(seq, enzymes, options);
   // A truncated result is not stored. It only arises when a work or result
@@ -924,18 +932,36 @@ export function findRestrictionSites(
   // least useful thing in the map - and this call throws rather than returns.
   if (!result.complete) throw new RestrictionScanResultLimitError(result);
 
-  restrictionSiteCache.set(cacheKey, result.sites);
-  // Bounded on both counts, because sequences are not. The entry just inserted
-  // is never the one evicted.
+  // A short record scanned with a short recognition sequence can produce one
+  // retained object per base. Return the complete answer, but do not keep an
+  // oversized array alive in the compatibility cache.
+  if (
+    cacheKey.length > RESTRICTION_CACHE_MAX_CHARS
+    || result.sites.length > RESTRICTION_CACHE_MAX_RESULTS_PER_ENTRY
+  ) return result.sites;
+
+  restrictionSiteCache.set(cacheKey, { sites: result.sites, keyChars: cacheKey.length });
+  // Bound entry count, serialized inputs, and retained result objects. The
+  // per-entry ceiling ensures the newly inserted entry can fit by itself.
   let cachedChars = 0;
-  for (const key of restrictionSiteCache.keys()) cachedChars += key.length;
+  let cachedResults = 0;
+  for (const entry of restrictionSiteCache.values()) {
+    cachedChars += entry.keyChars;
+    cachedResults += entry.sites.length;
+  }
   while (
-    restrictionSiteCache.size > 1
-    && (restrictionSiteCache.size > RESTRICTION_CACHE_LIMIT || cachedChars > RESTRICTION_CACHE_MAX_CHARS)
+    restrictionSiteCache.size > 0
+    && (
+      restrictionSiteCache.size > RESTRICTION_CACHE_LIMIT
+      || cachedChars > RESTRICTION_CACHE_MAX_CHARS
+      || cachedResults > RESTRICTION_CACHE_MAX_RESULTS
+    )
   ) {
     const oldest = restrictionSiteCache.keys().next();
     if (oldest.done) break;
-    cachedChars -= oldest.value.length;
+    const evicted = restrictionSiteCache.get(oldest.value);
+    cachedChars -= evicted?.keyChars ?? 0;
+    cachedResults -= evicted?.sites.length ?? 0;
     restrictionSiteCache.delete(oldest.value);
   }
   return result.sites.map((site) => ({ ...site }));
