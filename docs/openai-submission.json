@@ -100,7 +100,7 @@
     "support_url": "https://github.com/jvogan/motif/issues",
     "privacy_url": "https://github.com/jvogan/motif/blob/main/PRIVACY.md",
     "terms_url": "https://github.com/jvogan/motif/blob/main/TERMS.md",
-    "category": "Scientific Research",
+    "category": "Education & Research",
     "type": "With MCP",
     "availability": "All portal-supported countries and regions",
     "description": "Open supplied FASTA, GenBank, raw DNA, RNA, protein, or Motif JSON in an interactive molecular-biology workbench. Inspect exact records and supported annotations together, or return a self-contained HTML workbench when embedded UI is unavailable. Motif does not retrieve missing records, compute alignments, validate experiments, write files, or modify remote systems."

@@ -96,6 +96,12 @@ assert.ok(listing.description.length > 0 && listing.description.length <= 4_000,
 assert.ok(listing.publisher.length <= 80, 'publisher must fit the 80-character directory field');
 assert.equal(listing.subtitle, manifest.interface.shortDescription, 'portal subtitle must match the plugin manifest');
 assert.equal(listing.description, manifest.interface.longDescription, 'portal description must match the plugin manifest');
+assert.equal(listing.category, manifest.interface.category, 'portal category must match the plugin manifest');
+assert.equal(
+  listing.category,
+  'Education & Research',
+  'portal category must use the current supported directory value',
+);
 
 assert.equal(submission.starter_prompts.length, 3, 'the portal draft must contain three starter prompts');
 assert.deepEqual(

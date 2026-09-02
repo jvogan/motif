@@ -206,6 +206,7 @@ try {
   assert.doesNotMatch(manifest.interface.longDescription, /FASTA alignment|GenBank summary|sequence inspection/u);
   assert.equal(manifest.interface.displayName, 'Motif');
   assert.equal(manifest.interface.shortDescription, 'Explore biological sequences');
+  assert.equal(manifest.interface.category, 'Education & Research');
   assert.ok(manifest.interface.shortDescription.length <= 30);
   assert.equal(manifest.interface.privacyPolicyURL, 'https://github.com/jvogan/motif/blob/main/PRIVACY.md');
   assert.equal(manifest.interface.termsOfServiceURL, 'https://github.com/jvogan/motif/blob/main/TERMS.md');

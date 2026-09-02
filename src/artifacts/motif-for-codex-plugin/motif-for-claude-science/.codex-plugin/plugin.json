@@ -22,7 +22,7 @@
     "shortDescription": "Explore biological sequences",
     "longDescription": "Open supplied FASTA, GenBank, raw DNA, RNA, protein, or Motif JSON in an interactive molecular-biology workbench. Inspect exact records and supported annotations together, or return a self-contained HTML workbench when embedded UI is unavailable. Motif does not retrieve missing records, compute alignments, validate experiments, write files, or modify remote systems.",
     "developerName": "Jacob Vogan",
-    "category": "Science",
+    "category": "Education & Research",
     "capabilities": [
       "Interactive sequence workbench",
       "Portable HTML sharing",

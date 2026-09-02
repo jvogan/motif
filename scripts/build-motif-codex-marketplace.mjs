@@ -31,7 +31,7 @@ export function motifCodexMarketplaceManifest() {
           installation: 'AVAILABLE',
           authentication: 'ON_INSTALL',
         },
-        category: 'Science',
+        category: 'Education & Research',
       },
     ],
   };
