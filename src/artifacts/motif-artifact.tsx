@@ -4496,6 +4496,8 @@ function collectMalformedRecordIssues(
               `${stringField} cannot exceed ${limit.toLocaleString()} characters`,
               'resource_limit',
             );
+          } else if (stringField === 'color' && resolveFeatureColor(feature) !== feature[stringField].trim()) {
+            add(`${featurePath}.color`, 'color must be a simple or approved semantic CSS color value');
           }
         }
       }

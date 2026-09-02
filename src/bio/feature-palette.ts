@@ -59,6 +59,17 @@ const UNKNOWN_TYPE_RAMP = [
   'var(--feature-neutral, #8B8F99)',
 ] as const;
 
+const THEME_COLOR_FALLBACKS = {
+  accent: '#7E9BBF',
+  green: '#7FA98F',
+  purple: '#9E96B4',
+  amber: '#C6A86B',
+  red: '#C28C88',
+  'feature-neutral': '#8B8F99',
+} as const;
+
+const THEME_COLOR_REFERENCE = /var\(--(accent|green|purple|amber|red|feature-neutral)(?:,\s*(#[0-9a-f]{6}))?\)/iu;
+
 function stableHash(value: string): number {
   // FNV-1a over UTF-16 code units. Math.imul keeps the result identical in
   // browsers, Node, reloads, and serialized workspace round-trips.
@@ -117,4 +128,18 @@ export function resolveFeatureColor(feature: FeatureColorInput): string {
     ? feature.name.trim().toLowerCase()
     : 'unnamed feature';
   return typeAndToken(feature.type, name).token;
+}
+
+/**
+ * Materialize a semantic feature color for exports that cannot rely on Motif's
+ * CSS variables. Literal caller colors pass through unchanged; exact theme
+ * tokens and approved color mixes use their portable palette fallback.
+ */
+export function materializeFeatureColor(featureColor: string): string {
+  const trimmed = featureColor.trim();
+  if (!THEME_COLOR_TOKEN.test(trimmed) && !THEME_COLOR_MIX.test(trimmed)) return trimmed;
+  const reference = THEME_COLOR_REFERENCE.exec(trimmed);
+  if (!reference) return THEME_COLOR_FALLBACKS['feature-neutral'];
+  const token = reference[1] as keyof typeof THEME_COLOR_FALLBACKS;
+  return reference[2] ?? THEME_COLOR_FALLBACKS[token];
 }

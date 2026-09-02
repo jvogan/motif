@@ -68,6 +68,30 @@ describe('exportMapLayoutSvg', () => {
     expect(first).not.toContain('[object Object]');
   });
 
+  it('materializes semantic feature colors for standalone SVG consumers', () => {
+    const themedFeature = {
+      ...feature('themed-feature', 100, 260, 'Themed feature'),
+      color: 'var(--accent, #7E9BBF)',
+    };
+    const layout = computeMapLayout({
+      mode: 'circular',
+      name: 'Portable colors',
+      length: 1200,
+      topology: 'circular',
+      sequenceType: 'dna',
+      features: [themedFeature],
+      restrictionSites: [],
+      width: 420,
+      height: 420,
+    });
+
+    const svg = exportMapLayoutSvg(layout);
+
+    expect(svg).toContain('fill="#7E9BBF"');
+    expect(svg).not.toContain('var(--');
+    expect(svg).not.toContain('color-mix(');
+  });
+
   it('serializes linear protein maps without restriction clutter', () => {
     const layout = computeMapLayout({
       mode: 'linear',
