@@ -188,6 +188,13 @@ describe('ORF scan memoisation', () => {
 
     second.reverse();
     expect(findORFs(fresh, 30, table, { topology: 'linear' })).toEqual(expected);
+
+    const ambiguous = 'ATGGCNTAA';
+    const withWarning = findORFs(ambiguous, 1, table, { topology: 'linear' });
+    expect(withWarning[0].warnings?.length).toBeGreaterThan(0);
+    const expectedWarnings = [...(withWarning[0].warnings ?? [])];
+    withWarning[0].warnings?.push('caller mutation');
+    expect(findORFs(ambiguous, 1, table, { topology: 'linear' })[0].warnings).toEqual(expectedWarnings);
   });
 
   it('holds a whole shipped inventory without evicting the record you came from', () => {
