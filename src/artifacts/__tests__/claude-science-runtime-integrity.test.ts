@@ -723,7 +723,7 @@ describe('Claude Science runtime data-integrity behavior', () => {
     const [feature] = record.features;
 
     expect(feature.type).toBe('custom');
-    expect(feature.color).toMatch(/^#[0-9a-f]{6}$/i);
+    expect(feature.color).toMatch(/^var\(--(?:accent|green|purple|amber|red|feature-neutral), #[0-9a-f]{6}\)$/i);
     expect(feature.metadata).toEqual({ source: '<script>metadata stays data</script>' });
     const html = inventoryReportHtml(payload.records);
     expect(html).not.toContain('<script>window.__motifReportPwned=true</script>');

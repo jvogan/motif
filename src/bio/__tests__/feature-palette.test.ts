@@ -14,26 +14,24 @@ describe('shared feature palette', () => {
     expect(resolveFeatureColor({ ...feature, color: first })).toBe(first);
   });
 
-  it('varies names within one semantic type without leaving its hue family', () => {
+  it('keeps one semantic type on one theme-adaptive token', () => {
     const first = resolveFeatureColor({ name: 'alpha coding region', type: 'cds' });
     const second = resolveFeatureColor({ name: 'omega coding region', type: 'cds' });
-    expect(first).not.toBe(second);
-    expect(first).toMatch(/^#[0-9a-f]{6}$/i);
-    expect(second).toMatch(/^#[0-9a-f]{6}$/i);
+    expect(first).toBe('var(--accent, #7E9BBF)');
+    expect(second).toBe(first);
   });
 
-  it('hashes custom and unknown types into the curated portable ramp', () => {
+  it('hashes custom and unknown types into the curated theme-token ramp', () => {
     const custom = resolveFeatureColor({ name: 'unclassified island', type: 'custom' });
     const unknown = resolveFeatureColor({ name: 'unclassified island', type: 'future_feature' });
-    expect(custom).toMatch(/^#[0-9a-f]{6}$/i);
-    expect(unknown).toMatch(/^#[0-9a-f]{6}$/i);
+    expect(custom).toMatch(/^var\(--(?:accent|green|purple|amber|red|feature-neutral), #[0-9a-f]{6}\)$/i);
+    expect(unknown).toMatch(/^var\(--(?:accent|green|purple|amber|red|feature-neutral), #[0-9a-f]{6}\)$/i);
     expect(resolveFeatureColor({ name: 'unclassified island', type: 'future_feature' })).toBe(unknown);
-    expect(unknown).not.toBe('#9AA3B5');
   });
 
   it('replaces unsafe explicit values with a deterministic safe default', () => {
     const feature = { name: 'unsafe', type: 'gene' as const, color: 'url(javascript:alert(1))' };
     expect(resolveFeatureColor(feature)).toBe(resolveFeatureColor(feature));
-    expect(resolveFeatureColor(feature)).toMatch(/^#[0-9a-f]{6}$/i);
+    expect(resolveFeatureColor(feature)).toBe('var(--accent, #7E9BBF)');
   });
 });

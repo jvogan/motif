@@ -132,7 +132,7 @@ describe('Motif MCP payload boundary', () => {
       expect.objectContaining({
         proposeAnnotations: false,
         features: [expect.objectContaining({
-          color: expect.stringMatching(/^#[0-9a-f]{6}$/i),
+          color: 'var(--accent, #7E9BBF)',
         })],
       }),
     ]);

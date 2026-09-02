@@ -15281,8 +15281,11 @@ function RailPopoverTitle({ title, meta }: { title: string; meta?: string }) {
   );
 }
 
-function defaultFeatureColor(type: FeatureType): string {
-  return resolveFeatureColor({ name: `${type} annotation`, type });
+function defaultFeatureEditorColor(type: FeatureType): string {
+  const themed = resolveFeatureColor({ name: `${type} annotation`, type });
+  const portableFallback = /#[0-9a-f]{6}/iu.exec(themed)?.[0];
+  if (!portableFallback) throw new Error(`Feature palette token for ${type} has no portable fallback.`);
+  return portableFallback;
 }
 
 function EntryDetailsPanel({
@@ -15634,7 +15637,7 @@ function QuickFeatureEditor({
   const [strand, setStrand] = useState<FeatureStrand>(sequenceType === 'protein' ? 0 : 1);
   const [codonStart, setCodonStart] = useState<1 | 2 | 3>(1);
   const [translationTableValue, setTranslationTableValue] = useState('');
-  const [color, setColor] = useState(defaultFeatureColor('misc_feature'));
+  const [color, setColor] = useState(defaultFeatureEditorColor('misc_feature'));
   const [formError, setFormError] = useState<string | null>(null);
   const translationTableMessageId = useId();
   const selectedFeatureHasSegments = !!selectedFeature && isMultipartFeature(selectedFeature);
@@ -15657,7 +15660,7 @@ function QuickFeatureEditor({
     setStrand(sequenceType === 'protein' ? 0 : 1);
     setCodonStart(1);
     setTranslationTableValue('');
-    setColor(defaultFeatureColor('misc_feature'));
+    setColor(defaultFeatureEditorColor('misc_feature'));
     setFormError(null);
   }, [featureCount, selectedFeature, sequenceLength, sequenceType]);
 
@@ -15712,7 +15715,7 @@ function QuickFeatureEditor({
 
   const handleTypeChange = useCallback((nextType: FeatureType) => {
     setType(nextType);
-    setColor(defaultFeatureColor(nextType));
+    setColor(defaultFeatureEditorColor(nextType));
     if (name.startsWith('misc_feature_') || featureTypeOptions.some((option) => name.startsWith(`${option}_`))) {
       setName(`${nextType}_${featureCount + 1}`);
     }
@@ -16414,7 +16417,7 @@ function AnalysisPanel({
                         ? (orf.strand === -1 ? [...spans].reverse() : spans)
                           .map((span) => ({ ...span, strand: orf.strand }))
                         : undefined,
-                      color: defaultFeatureColor('orf'),
+                      color: resolveFeatureColor({ name: `ORF ${index + 1}`, type: 'orf' }),
                       metadata: {
                         source: 'motif_orf_detection',
                         frame: orf.frame,

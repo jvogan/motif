@@ -7,38 +7,39 @@ type FeatureColorInput = {
 };
 
 type FeaturePaletteEntry = {
-  /** The former GenBank-import default, retained as the palette's visual seed. */
-  seed: string;
+  /** Theme token with a portable fallback for non-browser consumers. */
+  token: string;
 };
 
-// This is the former GenBank-only FEATURE_COLORS table. Its seed values keep
-// the same semantic grouping while producing portable record data.
+// Generated colors are semantic theme references rather than fixed paint.
+// Explicit caller colors remain literal because that is a user-authored choice;
+// missing colors follow the active Motif appearance without rewriting records.
 const FEATURE_COLORS: Readonly<Record<FeatureType, FeaturePaletteEntry>> = {
-  gene: { seed: '#7E9BBF' },
-  cds: { seed: '#7E9BBF' },
-  promoter: { seed: '#C6A86B' },
-  terminator: { seed: '#C28C88' },
-  misc_feature: { seed: '#8B8F99' },
-  origin: { seed: '#9E96B4' },
-  primer_bind: { seed: '#C49374' },
-  orf: { seed: '#7FA98F' },
-  rbs: { seed: '#C6A86B' },
-  resistance: { seed: '#C49374' },
-  restriction_site: { seed: '#8B8F99' },
-  mRNA: { seed: '#6FB0A4' },
-  rRNA: { seed: '#6FB0A4' },
-  tRNA: { seed: '#6FB0A4' },
-  ncRNA: { seed: '#9E96B4' },
-  regulatory: { seed: '#C6A86B' },
-  repeat_region: { seed: '#9E96B4' },
-  sig_peptide: { seed: '#9DB585' },
-  mat_peptide: { seed: '#9DB585' },
-  transit_peptide: { seed: '#9DB585' },
-  intron: { seed: '#8B8F99' },
-  exon: { seed: '#6FB0A4' },
-  polyA_signal: { seed: '#C28C88' },
-  enhancer: { seed: '#C6A86B' },
-  custom: { seed: '#8B8F99' },
+  gene: { token: 'var(--accent, #7E9BBF)' },
+  cds: { token: 'var(--accent, #7E9BBF)' },
+  promoter: { token: 'var(--amber, #C6A86B)' },
+  terminator: { token: 'var(--red, #C28C88)' },
+  misc_feature: { token: 'var(--feature-neutral, #8B8F99)' },
+  origin: { token: 'var(--purple, #9E96B4)' },
+  primer_bind: { token: 'var(--red, #C49374)' },
+  orf: { token: 'var(--green, #7FA98F)' },
+  rbs: { token: 'var(--amber, #C6A86B)' },
+  resistance: { token: 'var(--red, #C49374)' },
+  restriction_site: { token: 'var(--feature-neutral, #8B8F99)' },
+  mRNA: { token: 'var(--green, #6FB0A4)' },
+  rRNA: { token: 'var(--green, #6FB0A4)' },
+  tRNA: { token: 'var(--green, #6FB0A4)' },
+  ncRNA: { token: 'var(--purple, #9E96B4)' },
+  regulatory: { token: 'var(--amber, #C6A86B)' },
+  repeat_region: { token: 'var(--purple, #9E96B4)' },
+  sig_peptide: { token: 'var(--green, #9DB585)' },
+  mat_peptide: { token: 'var(--green, #9DB585)' },
+  transit_peptide: { token: 'var(--green, #9DB585)' },
+  intron: { token: 'var(--feature-neutral, #8B8F99)' },
+  exon: { token: 'var(--green, #6FB0A4)' },
+  polyA_signal: { token: 'var(--red, #C28C88)' },
+  enhancer: { token: 'var(--amber, #C6A86B)' },
+  custom: { token: 'var(--feature-neutral, #8B8F99)' },
 };
 
 const KNOWN_FEATURE_TYPES = new Set<FeatureType>(Object.keys(FEATURE_COLORS) as FeatureType[]);
@@ -50,12 +51,12 @@ const THEME_COLOR_TOKEN = /^var\(--(?:accent|green|purple|amber|red|feature-neut
 const THEME_COLOR_MIX = /^color-mix\(in srgb, var\(--(?:accent|green|purple|amber|red|feature-neutral)(?:, #[0-9a-f]{6})?\) (?:7[2-9]|8\d|9[0-2])%, var\(--bg-primary\)\)$/iu;
 const MAX_FEATURE_COLOR_LENGTH = 80;
 const UNKNOWN_TYPE_RAMP = [
-  '#7E9BBF',
-  '#7FA98F',
-  '#9E96B4',
-  '#C6A86B',
-  '#C28C88',
-  '#8B8F99',
+  'var(--accent, #7E9BBF)',
+  'var(--green, #7FA98F)',
+  'var(--purple, #9E96B4)',
+  'var(--amber, #C6A86B)',
+  'var(--red, #C28C88)',
+  'var(--feature-neutral, #8B8F99)',
 ] as const;
 
 function stableHash(value: string): number {
@@ -78,7 +79,7 @@ function validExplicitColor(value: unknown): string | null {
     : null;
 }
 
-function typeAndSeed(type: unknown, name: string): { typeKey: string; seed: string } {
+function typeAndToken(type: unknown, name: string): { typeKey: string; token: string } {
   const normalizedType = typeof type === 'string'
     ? FEATURE_TYPE_BY_LOWER.get(type.trim().toLowerCase() as Lowercase<FeatureType>)
     : undefined;
@@ -87,7 +88,7 @@ function typeAndSeed(type: unknown, name: string): { typeKey: string; seed: stri
     const entry = FEATURE_COLORS[featureType];
     return {
       typeKey: featureType,
-      seed: entry.seed,
+      token: entry.token,
     };
   }
   // Every unrecognized label crosses the artifact boundary as `custom`.
@@ -95,29 +96,18 @@ function typeAndSeed(type: unknown, name: string): { typeKey: string; seed: stri
   // when one route sees the raw unknown label before type normalization.
   const typeKey = 'custom';
   const rampIndex = stableHash(`${typeKey}:${name}`) % UNKNOWN_TYPE_RAMP.length;
-  return { typeKey, seed: UNKNOWN_TYPE_RAMP[rampIndex] };
-}
-
-function tintSeed(seed: string, hash: number): string {
-  const factor = 0.82 + (hash % 21) * 0.018;
-  const channel = (offset: number): string => Math.max(0, Math.min(255,
-    Math.round(Number.parseInt(seed.slice(offset, offset + 2), 16) * factor),
-  )).toString(16).padStart(2, '0');
-  return `#${channel(1)}${channel(3)}${channel(5)}`;
+  return { typeKey, token: UNKNOWN_TYPE_RAMP[rampIndex] };
 }
 
 /**
  * Resolve a feature color at every ingestion boundary.
  *
  * Safe explicit caller colors are returned byte-for-byte after trimming.
- * Missing or unsafe colors receive a deterministic portable hex color. Known
- * feature types stay in the hue family seeded by the former GenBank palette;
- * the feature name selects a stable tint so adjacent same-type annotations do
- * not collapse into one visual block. Custom/unknown types hash into a curated
- * categorical ramp instead of the historical flat grey. Generated defaults
- * stay out of CSS-expression space so native color inputs, exports, and
- * non-browser hosts all receive the same valid value; renderers remain free to
- * derive theme surfaces.
+ * Missing or unsafe colors receive a deterministic semantic theme token with a
+ * literal fallback. Known feature types follow the active appearance; custom
+ * and unknown types hash into a curated token ramp. The fallback keeps the
+ * value usable in exported SVG and other consumers that do not define Motif's
+ * CSS variables.
  */
 export function resolveFeatureColor(feature: FeatureColorInput): string {
   const explicit = validExplicitColor(feature.color);
@@ -126,7 +116,5 @@ export function resolveFeatureColor(feature: FeatureColorInput): string {
   const name = typeof feature.name === 'string' && feature.name.trim()
     ? feature.name.trim().toLowerCase()
     : 'unnamed feature';
-  const { typeKey, seed } = typeAndSeed(feature.type, name);
-  const hash = stableHash(`${typeKey}:${name}`);
-  return tintSeed(seed, hash);
+  return typeAndToken(feature.type, name).token;
 }

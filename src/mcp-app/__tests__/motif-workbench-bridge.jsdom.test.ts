@@ -82,7 +82,7 @@ describe('Motif MCP App bridge hydration', () => {
     expect(replaceWorkspace).toHaveBeenCalledWith(expect.objectContaining({
       records: [expect.objectContaining({
         features: [expect.objectContaining({
-          color: expect.stringMatching(/^#[0-9a-f]{6}$/i),
+          color: 'var(--accent, #7E9BBF)',
         })],
       })],
     }));
