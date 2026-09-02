@@ -6,8 +6,9 @@
   "directDependenciesMustBeExact": true,
   "allowedLifecycleScripts": {
     "@axe-core/playwright@4.12.1": ["prepare"],
-    "@humanfs/core@0.19.1": ["prepare"],
-    "@humanfs/node@0.16.7": ["prepare"],
+    "@humanfs/core@0.19.2": ["prepare"],
+    "@humanfs/node@0.16.8": ["prepare"],
+    "@humanfs/types@0.15.0": ["prepare"],
     "@humanwhocodes/module-importer@1.0.1": ["prepare"],
     "@humanwhocodes/retry@0.4.3": ["prepare"],
     "@modelcontextprotocol/ext-apps@1.7.5": ["prepare"],
