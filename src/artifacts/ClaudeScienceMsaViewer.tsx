@@ -28,7 +28,6 @@ import {
   alignmentComparisonOf,
   MSA_MOTIF_SEARCH_MAX_QUERY_LENGTH,
   clampMsaClientPoint,
-  classifyResidueDifference,
   computeAlignmentImageLayout,
   computeMsaColumnStats,
   computeSequenceLogoColumns,
@@ -78,6 +77,12 @@ import {
   ClaudeScienceSangerTraceViewer,
   hasLinkedSangerTrace,
 } from './ClaudeScienceSangerTraceViewer';
+import {
+  alignmentCoverage,
+  classifyMsaCell,
+  coversColumn,
+  isMsaCellDifference,
+} from './claude-science-msa-cell-semantics';
 import { preferredTraceOrientation } from './claude-science-sanger';
 import {
   DEFAULT_CLAUDE_SCIENCE_MSA_VIEW_PREFERENCES,
@@ -163,43 +168,6 @@ export type PairwiseRowStats = {
 };
 
 type ArtifactAlignmentRow = ArtifactAlignment['rows'][number];
-
-type AlignmentCoverage = { first: number; last: number } | null;
-
-export type MsaCellOutcome = 'match' | 'substitution' | 'deletion' | 'insertion' | 'uncovered' | 'gap' | 'ambiguous';
-
-function alignmentCoverage(aligned: string): AlignmentCoverage {
-  const first = aligned.search(/[^-]/);
-  if (first < 0) return null;
-  for (let last = aligned.length - 1; last >= first; last -= 1) {
-    if (aligned[last] !== '-') return { first, last };
-  }
-  return null;
-}
-
-function coversColumn(coverage: AlignmentCoverage, column: number): boolean {
-  return Boolean(coverage && column >= coverage.first && column <= coverage.last);
-}
-
-// eslint-disable-next-line react-refresh/only-export-components -- pure MSA helper exported for unit tests
-export function classifyMsaCell(
-  referenceResidue: string,
-  rowResidue: string,
-  isColumnCoveredByRow: boolean,
-  molecule: SequenceType = 'dna',
-  strictDifferences = false,
-): MsaCellOutcome {
-  if (referenceResidue === '-' && rowResidue === '-') return 'gap';
-  if (rowResidue === '-' && !isColumnCoveredByRow) return 'uncovered';
-  if (referenceResidue === '-') return 'insertion';
-  if (rowResidue === '-') return 'deletion';
-  if (strictDifferences) return referenceResidue === rowResidue ? 'match' : 'substitution';
-  return classifyResidueDifference(referenceResidue, rowResidue, molecule);
-}
-
-function isMsaCellDifference(outcome: MsaCellOutcome): boolean {
-  return outcome === 'substitution' || outcome === 'deletion' || outcome === 'insertion';
-}
 
 function templatePositionCoordinates(aligned: string): Array<number | null> {
   const coordinates = new Array<number | null>(aligned.length);
@@ -4227,7 +4195,11 @@ export function ClaudeScienceMsaViewer({
   const [referenceRowId, setReferenceRowId] = useState(activeAlignment?.referenceRowId ?? '');
   const [differenceIndex, setDifferenceIndex] = useState(-1);
   const [differencesOpen, setDifferencesOpen] = useState(false);
-  const differenceLandingScopeRef = useRef<{ alignmentId: string; referenceRowId: string } | null>(null);
+  const differenceLandingScopeRef = useRef<{
+    alignmentId: string;
+    referenceRowId: string;
+    strictDifferences: boolean;
+  } | null>(null);
   const [jumpColumn, setJumpColumn] = useState<number | null>(null);
   const [jumpToken, setJumpToken] = useState(0);
   const [jumpRowId, setJumpRowId] = useState<string | null>(null);
@@ -4428,9 +4400,9 @@ export function ClaudeScienceMsaViewer({
   }, [activeAlignment, referenceRowId]);
   const variantResult = useMemo(
     () => variantAlignment
-      ? computeMsaVariants(variantAlignment, { maxVariants: MSA_VARIANT_LIST_LIMIT })
+      ? computeMsaVariants(variantAlignment, { maxVariants: MSA_VARIANT_LIST_LIMIT, strictDifferences })
       : { variants: [], truncated: false },
-    [variantAlignment],
+    [strictDifferences, variantAlignment],
   );
   const variantSummary = useMemo(
     () => summarizeMsaVariants(variantResult.variants),
@@ -4445,9 +4417,13 @@ export function ClaudeScienceMsaViewer({
       differenceLandingScopeRef.current = null;
       return;
     }
-    const scope = { alignmentId: activeAlignment.id, referenceRowId };
+    const scope = { alignmentId: activeAlignment.id, referenceRowId, strictDifferences };
     const previous = differenceLandingScopeRef.current;
-    if (previous?.alignmentId === scope.alignmentId && previous.referenceRowId === scope.referenceRowId) return;
+    if (
+      previous?.alignmentId === scope.alignmentId
+      && previous.referenceRowId === scope.referenceRowId
+      && previous.strictDifferences === scope.strictDifferences
+    ) return;
     differenceLandingScopeRef.current = scope;
     if (differences.length === 0) {
       setDifferenceIndex(-1);
@@ -4459,7 +4435,7 @@ export function ClaudeScienceMsaViewer({
     setJumpColumn(differences[0]);
     setJumpRowId(null);
     setJumpToken((token) => token + 1);
-  }, [activeAlignment, differences, referenceRowId]);
+  }, [activeAlignment, differences, referenceRowId, strictDifferences]);
   const ambiguities = useMemo(
     () => activeAlignment ? ambiguousColumns(activeAlignment, referenceRowId, strictDifferences) : [],
     [activeAlignment, referenceRowId, strictDifferences],

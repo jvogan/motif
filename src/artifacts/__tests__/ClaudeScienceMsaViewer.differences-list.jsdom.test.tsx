@@ -82,7 +82,7 @@ afterEach(() => {
 
 describe('ClaudeScienceMsaViewer differences list', () => {
   it('opens over the matrix and presents the biological variant table', () => {
-    render(<StatefulViewer sourceAlignment={alignment('variant-table', 'AC-GT', 'ATAG-')} />);
+    render(<StatefulViewer sourceAlignment={alignment('variant-table', 'AC-GTA', 'ATAG-A')} />);
 
     const toggle = screen.getByTestId('msa-differences-toggle');
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
@@ -132,7 +132,7 @@ describe('ClaudeScienceMsaViewer differences list', () => {
   });
 
   it('uses click, Enter, and Space to focus the grid at the stored absolute matrix cell', async () => {
-    render(<StatefulViewer sourceAlignment={alignment('variant-keyboard', 'AC-GT', 'ATAG-')} />);
+    render(<StatefulViewer sourceAlignment={alignment('variant-keyboard', 'AC-GTA', 'ATAG-A')} />);
 
     fireEvent.click(screen.getByTestId('msa-differences-toggle'));
     fireEvent.click(screen.getByRole('row', { name: /Jump to -3A .* alignment column 3/ }));
@@ -181,5 +181,19 @@ describe('ClaudeScienceMsaViewer differences list', () => {
     render(<StatefulViewer sourceAlignment={alignment('variant-empty', 'ACGT', 'ACGT', 'ref')} />);
     fireEvent.click(screen.getByTestId('msa-differences-toggle'));
     expect(screen.getByText('No differences from ref')).toBeTruthy();
+  });
+
+  it('updates the variant pane and navigator when strict differences changes ambiguity semantics', async () => {
+    render(<StatefulViewer sourceAlignment={alignment('variant-strict', 'CATG', 'CRTG', 'ref')} />);
+    fireEvent.click(screen.getByTestId('msa-differences-toggle'));
+    expect(screen.getByText('No differences from ref')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Strict differences' }));
+
+    const pane = screen.getByTestId('msa-differences-pane');
+    expect(within(pane).getAllByTestId('msa-difference-row')).toHaveLength(1);
+    expect(within(pane).getByText('A2R')).toBeTruthy();
+    await waitFor(() => expect(absoluteCell(1).getAttribute('data-jump')).toBe('true'));
+    expect(screen.getByText('Difference 1 of 1')).toBeTruthy();
   });
 });

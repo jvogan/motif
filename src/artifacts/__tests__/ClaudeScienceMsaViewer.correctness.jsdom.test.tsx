@@ -6,7 +6,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ClaudeScienceMsaViewer,
   ambiguousColumns,
-  classifyMsaCell,
   differenceColumns,
   mismatchOverviewBins,
   parseReferenceCoordinateColumn,
@@ -15,6 +14,7 @@ import {
   type ClaudeScienceMsaViewerProps,
 } from '../ClaudeScienceMsaViewer';
 import { normalizeArtifactAlignment, type ArtifactAlignment } from '../claude-science-msa';
+import { classifyMsaCell } from '../claude-science-msa-cell-semantics';
 import { DEFAULT_CLAUDE_SCIENCE_MSA_VIEW_PREFERENCES } from '../claude-science-msa-view-preferences';
 
 type AlignmentRowInput = { id: string; name: string; aligned: string };

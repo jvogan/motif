@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 const here = dirname(fileURLToPath(import.meta.url));
 const artifactSource = readFileSync(resolve(here, '..', 'motif-artifact.tsx'), 'utf8');
 const viewerSource = readFileSync(resolve(here, '..', 'ClaudeScienceMsaViewer.tsx'), 'utf8');
+const cellSemanticsSource = readFileSync(resolve(here, '..', 'claude-science-msa-cell-semantics.ts'), 'utf8');
 const viewPreferencesSource = readFileSync(resolve(here, '..', 'claude-science-msa-view-preferences.ts'), 'utf8');
 const artifactCss = readFileSync(resolve(here, '..', 'motif-artifact.css'), 'utf8');
 const msaCss = readFileSync(resolve(here, '..', 'claude-science-msa.css'), 'utf8');
@@ -215,16 +216,16 @@ describe('Claude Science MSA interaction and rendering guards', () => {
   });
 
   it('treats terminal gaps as uncovered flanks while retaining covered indels and substitutions', () => {
-    const coverageHelpers = sliceBetween(viewerSource, 'type AlignmentCoverage =', 'function useObservedWidth');
-    expect(coverageHelpers).toContain("const first = aligned.search(/[^-]/);");
+    const coverageHelpers = cellSemanticsSource;
+    expect(coverageHelpers).toContain("const first = aligned.search(/[^-.]/);");
     expect(coverageHelpers).toContain('column >= coverage.first && column <= coverage.last');
     expect(coverageHelpers).toContain('export function classifyMsaCell(');
-    expect(coverageHelpers).toContain("if (rowResidue === '-' && !isColumnCoveredByRow) return 'uncovered';");
-    expect(coverageHelpers).toContain('!coversColumn(referenceCoverage, column)');
-    expect(coverageHelpers).toContain('coversColumn(rowCoverage.get(row.id) ?? null, column)');
-    expect(coverageHelpers).toContain('const outcome = classifyMsaCell(');
-    expect(coverageHelpers).toContain('coversColumn(rowCoverage[rowIndex], column),');
-    expect(coverageHelpers).toContain('alignment.molecule,');
+    expect(coverageHelpers).toContain("(rowResidue === '-' || rowResidue === '.') && !isColumnCoveredByRow");
+    expect(viewerSource).toContain('!coversColumn(referenceCoverage, column)');
+    expect(viewerSource).toContain('coversColumn(rowCoverage.get(row.id) ?? null, column)');
+    expect(viewerSource).toContain('const outcome = classifyMsaCell(');
+    expect(viewerSource).toContain('coversColumn(rowCoverage[rowIndex], column),');
+    expect(viewerSource).toContain('alignment.molecule,');
   });
 
   it('runs browser alignment only from an explicit bounded action', () => {

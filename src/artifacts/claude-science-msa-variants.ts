@@ -1,4 +1,10 @@
 import type { ArtifactAlignment } from './claude-science-msa';
+import {
+  alignmentCoverage,
+  classifyMsaCell,
+  coversColumn,
+  isMsaCellDifference,
+} from './claude-science-msa-cell-semantics';
 
 /** Maximum retained variants when the caller does not provide a tighter cap. */
 export const MSA_VARIANT_DEFAULT_LIMIT = 10_000;
@@ -27,6 +33,8 @@ export type MsaVariant = {
 export type ComputeMsaVariantsOptions = {
   /** Maximum number of variants to retain before returning an explicitly truncated result. */
   maxVariants?: number;
+  /** Treat every covered unequal residue as a substitution instead of applying ambiguity compatibility. */
+  strictDifferences?: boolean;
 };
 
 export type ComputeMsaVariantsResult = {
@@ -130,7 +138,10 @@ export function computeMsaVariants(
   if (!template) return { variants: [], truncated: false };
 
   const maxVariants = normalizedVariantLimit(options.maxVariants);
+  const strictDifferences = options.strictDifferences ?? false;
   const variants: MsaVariant[] = [];
+  const templateCoverage = alignmentCoverage(template.aligned);
+  const rowCoverage = new Map(alignment.rows.map((row) => [row.id, alignmentCoverage(row.aligned)]));
   const referenceNumbering = alignment.referenceNumbering;
   const numberingRow = referenceNumbering
     ? alignment.rows.find((row) => row.id === referenceNumbering.rowId)
@@ -159,21 +170,26 @@ export function computeMsaVariants(
       }
     }
 
+    if (alignment.gapOnly[column] || !coversColumn(templateCoverage, column)) continue;
+
     for (let rowIndex = 0; rowIndex < alignment.rows.length; rowIndex += 1) {
       const row = alignment.rows[rowIndex];
+      if (row.id === template.id) continue;
       const residueCode = canonicalResidueCodeAt(row.aligned, column);
-      const residueIsGap = residueCode === GAP_CODE;
-      if ((templateIsGap && residueIsGap) || templateCode === residueCode) continue;
+      const normalizedTemplateResidue = String.fromCharCode(templateCode);
+      const normalizedResidue = String.fromCharCode(residueCode);
+      const outcome = classifyMsaCell(
+        normalizedTemplateResidue,
+        normalizedResidue,
+        coversColumn(rowCoverage.get(row.id) ?? null, column),
+        alignment.molecule,
+        strictDifferences,
+      );
+      if (!isMsaCellDifference(outcome)) continue;
 
       if (variants.length >= maxVariants) return { variants, truncated: true };
 
-      const kind: MsaVariantKind = templateIsGap
-        ? 'insertion'
-        : residueIsGap
-          ? 'deletion'
-          : 'substitution';
-      const normalizedTemplateResidue = String.fromCharCode(templateCode);
-      const normalizedResidue = String.fromCharCode(residueCode);
+      const kind: MsaVariantKind = outcome;
       const biologicalPosition = templateIsGap
         ? null
         : usesReferenceNumbering

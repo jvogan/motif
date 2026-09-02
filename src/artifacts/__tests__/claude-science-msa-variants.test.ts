@@ -19,6 +19,16 @@ function proteinAlignment(
   });
 }
 
+function dnaAlignment(rows: Array<{ id: string; name: string; aligned: string }>): ArtifactAlignment {
+  return normalizeArtifactAlignment({
+    id: 'dna-variants',
+    name: 'DNA variant examples',
+    molecule: 'dna',
+    referenceRowId: 'template',
+    rows,
+  });
+}
+
 describe('computeMsaVariants', () => {
   it('reports a known substitution with an absolute alignment column', () => {
     const alignment = proteinAlignment([
@@ -61,8 +71,8 @@ describe('computeMsaVariants', () => {
 
   it('classifies a row gap opposite a template residue as a deletion', () => {
     const alignment = proteinAlignment([
-      { id: 'template', name: 'Template', aligned: 'ACK' },
-      { id: 'deletion', name: 'Deletion', aligned: 'AC.' },
+      { id: 'template', name: 'Template', aligned: 'ACKT' },
+      { id: 'deletion', name: 'Deletion', aligned: 'AC.T' },
     ]);
 
     expect(computeMsaVariants(alignment).variants).toEqual([{
@@ -93,6 +103,57 @@ describe('computeMsaVariants', () => {
     ]);
 
     expect(computeMsaVariants(alignment)).toEqual({ variants: [], truncated: false });
+  });
+
+  it('excludes uncovered padding gaps and ambiguity-compatible DNA calls by default', () => {
+    const alignment = dnaAlignment([
+      { id: 'template', name: 'Template', aligned: 'CATG' },
+      { id: 'partial', name: 'Partial read', aligned: '--TG' },
+      { id: 'compatible', name: 'Compatible ambiguity', aligned: 'CRTG' },
+    ]);
+
+    expect(computeMsaVariants(alignment)).toEqual({ variants: [], truncated: false });
+    expect(computeMsaVariants(alignment, { maxVariants: 0 })).toEqual({ variants: [], truncated: false });
+    expect(computeMsaVariants(alignment, { strictDifferences: true }).variants).toEqual([
+      expect.objectContaining({
+        rowId: 'compatible',
+        column: 1,
+        templateResidue: 'A',
+        residue: 'R',
+        kind: 'substitution',
+        label: 'A2R',
+      }),
+    ]);
+  });
+
+  it('excludes residues outside the template coverage window', () => {
+    const alignment = dnaAlignment([
+      { id: 'template', name: 'Template', aligned: '-AC-' },
+      { id: 'extended', name: 'Extended row', aligned: 'TACG' },
+    ]);
+
+    expect(computeMsaVariants(alignment)).toEqual({ variants: [], truncated: false });
+  });
+
+  it('uses protein ambiguity compatibility unless strict differences are enabled', () => {
+    const alignment = proteinAlignment([
+      { id: 'template', name: 'Template', aligned: 'ABD' },
+      { id: 'compatible', name: 'Compatible ambiguity', aligned: 'ADD' },
+      { id: 'mismatch', name: 'Mismatch', aligned: 'AQD' },
+    ]);
+
+    expect(computeMsaVariants(alignment).variants.map((variant) => variant.label)).toEqual(['B2Q']);
+    expect(computeMsaVariants(alignment, { strictDifferences: true }).variants.map((variant) => variant.label))
+      .toEqual(['B2D', 'B2Q']);
+  });
+
+  it('keeps a covered internal row gap as a deletion', () => {
+    const alignment = dnaAlignment([
+      { id: 'template', name: 'Template', aligned: 'CATG' },
+      { id: 'deletion', name: 'Deletion', aligned: 'C--G' },
+    ]);
+
+    expect(computeMsaVariants(alignment).variants.map((variant) => variant.label)).toEqual(['A2-', 'T3-']);
   });
 
   it('uses plain ungapped template positions without configured reference numbering', () => {
