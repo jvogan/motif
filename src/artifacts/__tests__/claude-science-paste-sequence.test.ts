@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { parsePastedSequence, sequenceLinesFromPaste } from '../claude-science-paste-sequence';
 
 const DNA = 'ACGTRYSWKMBDHVN';
-const PROTEIN = 'ACDEFGHIKLMNPQRSTVWY';
+const PROTEIN = 'ACDEFGHIKLMNPQRSTVWYOUJBXZ*';
 
 describe('parsePastedSequence', () => {
   it('keeps a bare sequence exactly as pasted', () => {
@@ -113,6 +113,35 @@ describe('parsePastedSequence', () => {
     expect(parsed.droppedCharacters).toBe(0);
   });
 
+  it('recognises real protein GenBank when ORIGIN is also valid protein', () => {
+    const genbank = [
+      'LOCUS       PEPTIDE       7 aa     linear',
+      'DEFINITION  Demonstrates alphabet-aware format detection.',
+      'ORIGIN',
+      '        1 peptide',
+      '//',
+    ].join('\n');
+    const parsed = parsePastedSequence(genbank, PROTEIN);
+    expect(parsed).toMatchObject({
+      ok: true,
+      sequence: 'PEPTIDE',
+      format: 'genbank',
+      fastaRecordCount: 0,
+      genbankRecordCount: 1,
+      droppedCharacters: 0,
+    });
+  });
+
+  it('keeps an ambiguous headerless numbered protein ORIGIN block as sequence', () => {
+    const parsed = parsePastedSequence('MKW\nORIGIN\n        1 peptide', PROTEIN);
+    expect(parsed).toMatchObject({
+      ok: true,
+      sequence: 'MKWORIGINPEPTIDE',
+      format: 'plain',
+      genbankRecordCount: 0,
+    });
+  });
+
   it('rejects concatenated GenBank records atomically', () => {
     const parsed = parsePastedSequence([
       'LOCUS       FIRST       4 bp    DNA',
@@ -155,39 +184,35 @@ describe('parsePastedSequence', () => {
     });
   });
 
-  it('rejects a LOCUS-only record followed by a headerless ORIGIN record', () => {
+  it('does not pair LOCUS and ORIGIN across a record terminator', () => {
     const parsed = parsePastedSequence([
-      'LOCUS       TRUNCATED',
-      'DEFINITION  first record has no sequence block',
+      'LOCUS       PEPTIDE       7 aa',
       '//',
       'ORIGIN',
-      '        1 atgc',
-      '//',
-    ].join('\n'), DNA);
+      'PEPTIDE',
+    ].join('\n'), PROTEIN);
 
     expect(parsed).toMatchObject({
-      ok: false,
-      sequence: '',
-      error: 'multiple-genbank-records',
-      genbankRecordCount: 2,
+      ok: true,
+      sequence: 'LOCUSPEPTIDEAAORIGINPEPTIDE',
+      format: 'plain',
+      genbankRecordCount: 0,
     });
   });
 
-  it('rejects two headerless ORIGIN blocks even without LOCUS markers', () => {
+  it('keeps repeated bare protein ORIGIN lines as sequence', () => {
     const parsed = parsePastedSequence([
       'ORIGIN',
-      '        1 atgc',
-      '//',
+      'PEPTIDE',
       'ORIGIN',
-      '        1 gggg',
-      '//',
-    ].join('\n'), DNA);
+      'MKW',
+    ].join('\n'), PROTEIN);
 
     expect(parsed).toMatchObject({
-      ok: false,
-      sequence: '',
-      error: 'multiple-genbank-records',
-      genbankRecordCount: 2,
+      ok: true,
+      sequence: 'ORIGINPEPTIDEORIGINMKW',
+      format: 'plain',
+      genbankRecordCount: 0,
     });
   });
 
@@ -212,11 +237,11 @@ describe('parsePastedSequence', () => {
 
   it('recognises indented lowercase record markers in CRLF text', () => {
     const parsed = parsePastedSequence([
-      '  locus       first',
+      '  locus       first       4 bp    dna',
       '  origin',
       '        1 atgc',
       '  //  ',
-      '\tlocus       second',
+      '\tlocus       second      4 bp    dna',
       '\torigin',
       '        1 gggg',
       '\t//',
@@ -287,16 +312,72 @@ describe('parsePastedSequence', () => {
   });
 
   it('does not treat GenBank keywords as structure in an ordinary peptide paste', () => {
-    // TITLE, SOURCE and ORGANISM are all spellable in protein. A per-line keyword
-    // rule would eat these residues; the document-level ORIGIN test does not.
-    const parsed = parsePastedSequence('TITLESAT\nSTRAINS', PROTEIN);
-    expect(parsed.sequence).toBe('TITLESATSTRAINS');
-    expect(parsed.droppedLines).toBe(0);
+    // TITLE, SOURCE, ORGANISM and ORIGIN are all spellable in the supported
+    // protein alphabet. A keyword-only rule would silently lose the first two
+    // peptide lines after seeing ORIGIN.
+    const parsed = parsePastedSequence('MKW\nORIGIN\nPEPTIDE', PROTEIN);
+    expect(parsed).toMatchObject({
+      ok: true,
+      sequence: 'MKWORIGINPEPTIDE',
+      format: 'plain',
+      genbankRecordCount: 0,
+      droppedLines: 0,
+      droppedCharacters: 0,
+    });
+  });
+
+  it('keeps an indented lowercase ORIGIN line when it is valid protein', () => {
+    const parsed = parsePastedSequence('MKW\n  origin  \nPEPTIDE', PROTEIN);
+    expect(parsed).toMatchObject({
+      ok: true,
+      sequence: 'MKWORIGINPEPTIDE',
+      format: 'plain',
+      genbankRecordCount: 0,
+      droppedLines: 0,
+    });
+  });
+
+  it('does not treat a longer protein line beginning with ORIGIN as a marker', () => {
+    const parsed = parsePastedSequence('MKW\nORIGINPEPTIDE\nORIGIN PEPTIDE', PROTEIN);
+    expect(parsed).toMatchObject({
+      ok: true,
+      sequence: 'MKWORIGINPEPTIDEORIGINPEPTIDE',
+      format: 'plain',
+      genbankRecordCount: 0,
+    });
+  });
+
+  it('does not use a bare protein LOCUS line to corroborate protein ORIGIN', () => {
+    const parsed = parsePastedSequence('LOCUS\nORIGIN\nPEPTIDE', PROTEIN);
+    expect(parsed).toMatchObject({
+      ok: true,
+      sequence: 'LOCUSORIGINPEPTIDE',
+      format: 'plain',
+      genbankRecordCount: 0,
+      droppedLines: 0,
+    });
+  });
+
+  it('gives an explicit FASTA header precedence over GenBank-like protein lines', () => {
+    const parsed = parsePastedSequence([
+      '>protein',
+      'LOCUS PEPTIDE 7 aa',
+      'ORIGIN',
+      'PEPTIDE',
+    ].join('\n'), PROTEIN);
+    expect(parsed).toMatchObject({
+      ok: true,
+      sequence: 'LOCUSPEPTIDEAAORIGINPEPTIDE',
+      format: 'fasta',
+      fastaRecordCount: 1,
+      genbankRecordCount: 0,
+      droppedLines: 1,
+    });
   });
 
   it('does not count angle-bracketed GenBank metadata as a FASTA header', () => {
     const parsed = parsePastedSequence(
-      'LOCUS       DEMO\nDEFINITION  >not a FASTA record\nORIGIN\n        1 atgc\n//',
+      'LOCUS       DEMO        4 bp    DNA\nDEFINITION  >not a FASTA record\nORIGIN\n        1 atgc\n//',
       DNA,
     );
     expect(parsed).toMatchObject({
@@ -347,7 +428,12 @@ describe('sequenceLinesFromPaste', () => {
   });
 
   it('runs an unterminated GenBank block to the end of the text', () => {
-    const { lines } = sequenceLinesFromPaste('ORIGIN\n        1 atgc\n       5 gggg');
+    const { lines } = sequenceLinesFromPaste([
+      'LOCUS       DEMO        8 bp    DNA',
+      'ORIGIN',
+      '        1 atgc',
+      '       5 gggg',
+    ].join('\n'));
     expect(lines).toEqual(['        1 atgc', '       5 gggg']);
   });
 });

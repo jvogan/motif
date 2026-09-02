@@ -16,12 +16,12 @@
  *   is a comment. Neither character is a residue in any alphabet, so stripping
  *   those lines is unambiguous. Only `>` increments the record count: comments do
  *   not turn a single record into a multi-record paste.
- * - GenBank. The sequence of a GenBank record is exactly the ORIGIN block, so when
- *   the text contains an `ORIGIN` line the block between it and the closing `//` is
- *   the sequence and everything else is metadata. This is deliberately a
- *   DOCUMENT-level test rather than a keyword-per-line one: `TITLE`, `SOURCE` and
- *   `ORGANISM` are all spellable in protein, so a per-line keyword rule would eat
- *   real residues out of a pasted peptide.
+ * - GenBank. The sequence of a GenBank record is exactly the ORIGIN block, so a
+ *   credible LOCUS line followed by an exact `ORIGIN` line in the same record
+ *   identifies the block between it and the closing `//` as sequence. This is
+ *   deliberately a DOCUMENT-level test rather than a keyword-per-line one:
+ *   `TITLE`, `SOURCE`, `ORGANISM`, and even `ORIGIN` are spellable in protein, so a
+ *   keyword-only rule would eat real residues out of a pasted peptide.
  *
  * Nothing else is guessed at. A line that is neither is treated as sequence, and
  * whatever the alphabet rejects is counted and reported rather than dropped in
@@ -78,11 +78,26 @@ const FASTA_COMMENT = /^\s*;/;
 // document indent, but not the 12-space continuation column used by fields such
 // as DEFINITION and COMMENT; continuation prose can legitimately begin with
 // words such as "LOCUS" or "ORIGIN" without starting another record.
-const GENBANK_LOCUS = /^[ \t]{0,4}LOCUS\b/i;
-const GENBANK_ORIGIN = /^[ \t]{0,4}ORIGIN\b/i;
+const GENBANK_LOCUS = /^[ \t]{0,4}LOCUS[ \t]+\S+[ \t]+\d+[ \t]+(?:bp|aa)\b/i;
+const GENBANK_ORIGIN = /^[ \t]{0,4}ORIGIN[ \t]*$/i;
 const GENBANK_TERMINATOR = /^\s*\/\/\s*$/;
 /** The position counter that starts each ORIGIN line, and that many viewers emit. */
 const LEADING_POSITION = /^\s*\d+\s*/;
+
+function firstGenBankOrigin(lines: readonly string[]): number {
+  let locusSeen = false;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (GENBANK_TERMINATOR.test(line)) {
+      locusSeen = false;
+    } else if (GENBANK_LOCUS.test(line)) {
+      locusSeen = true;
+    } else if (locusSeen && GENBANK_ORIGIN.test(line)) {
+      return index;
+    }
+  }
+  return -1;
+}
 
 function genbankRecordCount(lines: readonly string[]): number {
   let records = 0;
@@ -111,16 +126,17 @@ function genbankRecordCount(lines: readonly string[]): number {
  */
 export function sequenceLinesFromPaste(value: string): PastedSequenceLines {
   const all = value.split(/\r\n|\r|\n/);
-  const originAt = all.findIndex((line) => GENBANK_ORIGIN.test(line));
+  const detectedFastaRecordCount = all.filter((line) => FASTA_HEADER.test(line)).length;
+  // An explicit FASTA header owns the document. In particular, a protein FASTA
+  // sequence may legitimately contain standalone LOCUS and ORIGIN residue lines.
+  const originAt = detectedFastaRecordCount === 0 ? firstGenBankOrigin(all) : -1;
   const isGenBank = originAt >= 0;
   const inferredGenBankRecordCount = isGenBank
     ? Math.max(1, genbankRecordCount(all))
     : 0;
   // Once an ORIGIN block identifies a GenBank document, angle brackets in its
   // metadata are not FASTA headers. Only non-GenBank documents are counted.
-  const fastaRecordCount = isGenBank
-    ? 0
-    : all.filter((line) => FASTA_HEADER.test(line)).length;
+  const fastaRecordCount = isGenBank ? 0 : detectedFastaRecordCount;
 
   // A GenBank record: keep the ORIGIN block and nothing else.
   const scoped = isGenBank
