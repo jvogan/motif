@@ -106,7 +106,55 @@ const ORF_CACHE_LIMIT = 32;
 const ORF_CACHE_MAX_CHARS = 4_000_000;
 const ORF_CACHE_MAX_RESULTS = 50_000;
 const ORF_CACHE_MAX_RESULTS_PER_ENTRY = 25_000;
-const orfCache = new WeakMap<CodonTable, Map<string, ORF[]>>();
+
+type ORFCacheEntry = {
+  orfs: ORF[];
+  sequenceChars: number;
+};
+
+const orfCache = new WeakMap<CodonTable, Map<string, ORFCacheEntry>>();
+
+type CodonTableSnapshot = {
+  starts: string[];
+  stops: string[];
+  codonKeys: string[];
+  codonValues: string[];
+  version: number;
+};
+
+const codonTableSnapshots = new WeakMap<CodonTable, CodonTableSnapshot>();
+
+function sameStrings(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function codonTableVersion(table: CodonTable): number {
+  const previous = codonTableSnapshots.get(table);
+  const codonKeys = Object.keys(table.codons);
+  const unchanged = previous
+    && sameStrings(previous.starts, table.starts)
+    && sameStrings(previous.stops, table.stops)
+    && sameStrings(previous.codonKeys, codonKeys)
+    && previous.codonValues.every((value, index) => value === table.codons[codonKeys[index]]);
+  if (unchanged) return previous.version;
+
+  const next: CodonTableSnapshot = {
+    starts: [...table.starts],
+    stops: [...table.stops],
+    codonKeys,
+    codonValues: codonKeys.map((key) => table.codons[key]),
+    version: (previous?.version ?? 0) + 1,
+  };
+  codonTableSnapshots.set(table, next);
+  return next.version;
+}
+
+function cloneORFs(orfs: readonly ORF[]): ORF[] {
+  return orfs.map((orf) => ({
+    ...orf,
+    ...(orf.warnings ? { warnings: [...orf.warnings] } : {}),
+  }));
+}
 
 export function findORFs(
   seq: string,
@@ -129,10 +177,11 @@ export function findORFs(
   const seqLen = upper.length;
   if (seqLen < 3) return [];
 
-  const cacheKey = `${topology}|${effectiveMinAa}|${upper}`;
+  const cacheKey = `${codonTableVersion(effectiveTable)}|${topology}|${effectiveMinAa}|${upper}`;
+  const cacheableSequence = upper.length <= ORF_CACHE_MAX_CHARS;
   let tableCache = orfCache.get(effectiveTable);
-  const cached = tableCache?.get(cacheKey);
-  if (cached) return cached.slice();
+  const cached = cacheableSequence ? tableCache?.get(cacheKey) : undefined;
+  if (cached) return cloneORFs(cached.orfs);
 
   const circular = topology === 'circular';
   const forwardScanBuffer = circular ? upper + upper : upper;
@@ -192,31 +241,32 @@ export function findORFs(
   // A short, start-dense record can produce far more retained objects than its
   // sequence key suggests. Return the complete answer, but do not make that
   // transient result a long-lived cache entry.
-  if (orfs.length > ORF_CACHE_MAX_RESULTS_PER_ENTRY) return orfs.slice();
+  if (!cacheableSequence || orfs.length > ORF_CACHE_MAX_RESULTS_PER_ENTRY) return orfs;
 
   if (!tableCache) {
-    tableCache = new Map<string, ORF[]>();
+    tableCache = new Map<string, ORFCacheEntry>();
     orfCache.set(effectiveTable, tableCache);
   }
-  tableCache.set(cacheKey, orfs);
+  tableCache.set(cacheKey, { orfs, sequenceChars: upper.length });
   let cachedChars = 0;
   let cachedResults = 0;
-  for (const [key, value] of tableCache) {
-    cachedChars += key.length;
-    cachedResults += value.length;
+  for (const value of tableCache.values()) {
+    cachedChars += value.sequenceChars;
+    cachedResults += value.orfs.length;
   }
-  while (tableCache.size > 1 && (
+  while (tableCache.size > 0 && (
     tableCache.size > ORF_CACHE_LIMIT
     || cachedChars > ORF_CACHE_MAX_CHARS
     || cachedResults > ORF_CACHE_MAX_RESULTS
   )) {
     const oldest = tableCache.keys().next();
     if (oldest.done) break;
-    cachedChars -= oldest.value.length;
-    cachedResults -= tableCache.get(oldest.value)?.length ?? 0;
+    const evicted = tableCache.get(oldest.value);
+    cachedChars -= evicted?.sequenceChars ?? 0;
+    cachedResults -= evicted?.orfs.length ?? 0;
     tableCache.delete(oldest.value);
   }
-  return orfs.slice();
+  return cloneORFs(orfs);
 }
 
 function findORFsInFrame(

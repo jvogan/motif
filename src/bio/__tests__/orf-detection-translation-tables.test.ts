@@ -103,6 +103,28 @@ describe('translation-table-aware ORF detection', () => {
 });
 
 describe('ORF scan memoisation', () => {
+  function cacheProbeTable(id: number, name: string) {
+    const starts = ['ATG'];
+    const nativeIncludes = starts.includes.bind(starts);
+    let includesCalls = 0;
+    starts.includes = ((searchElement: string, fromIndex?: number) => {
+      includesCalls += 1;
+      return nativeIncludes(searchElement, fromIndex);
+    }) as typeof starts.includes;
+    return {
+      table: {
+        ...STANDARD_CODE,
+        id,
+        name,
+        codons: { ...STANDARD_CODE.codons },
+        starts,
+        stops: ['TAA'],
+      } satisfies CodonTable,
+      reset: () => { includesCalls = 0; },
+      calls: () => includesCalls,
+    };
+  }
+
   // A 2,578-base circular record, the size the workspace actually opens. The
   // scan doubles both strands for a circular topology and tests every codon in
   // six frames, so it is the most expensive pure function the artifact calls.
@@ -152,9 +174,14 @@ describe('ORF scan memoisation', () => {
     const fresh = `${sequence}ATGAAATTTGGGCCCTAA`;
     const first = findORFs(fresh, 30, table, { topology: 'linear' });
     expect(first.length).toBeGreaterThan(1);
-    const expected = first.map((orf) => ({ ...orf }));
+    const expected = first.map((orf) => ({
+      ...orf,
+      ...(orf.warnings ? { warnings: [...orf.warnings] } : {}),
+    }));
 
     first.sort((a, b) => a.start - b.start);
+    first[0].start = -1;
+    first[0].warnings = ['caller mutation'];
     first.length = 1;
     const second = findORFs(fresh, 30, table, { topology: 'linear' });
     expect(second).toEqual(expected);
@@ -198,45 +225,32 @@ describe('ORF scan memoisation', () => {
   });
 
   it('returns but does not cache an oversized ORF result set', () => {
-    const table: CodonTable = {
-      ...STANDARD_CODE,
-      id: 10_002,
-      name: 'Oversized result cache fixture',
-      codons: { ...STANDARD_CODE.codons },
-      starts: ['ATG'],
-      stops: ['TAA'],
-    };
+    const probe = cacheProbeTable(10_002, 'Oversized result cache fixture');
     const dense = 'ATGTAA'.repeat(26_000);
-    const first = findORFs(dense, 1, table, { topology: 'linear' });
+    const first = findORFs(dense, 1, probe.table, { topology: 'linear' });
     expect(first.length).toBeGreaterThan(25_000);
 
-    // A cached answer would survive this mutation. Recomputing to an empty
-    // result proves the oversized array was not retained.
-    table.starts = [];
-    expect(findORFs(dense, 1, table, { topology: 'linear' })).toEqual([]);
+    probe.reset();
+    expect(findORFs(dense, 1, probe.table, { topology: 'linear' })).toEqual(first);
+    expect(probe.calls()).toBeGreaterThan(0);
   });
 
   it('bounds total cached ORF objects independently of sequence characters', () => {
-    const table: CodonTable = {
-      ...STANDARD_CODE,
-      id: 10_003,
-      name: 'Total result cache fixture',
-      codons: { ...STANDARD_CODE.codons },
-      starts: ['ATG'],
-      stops: ['TAA'],
-    };
+    const probe = cacheProbeTable(10_003, 'Total result cache fixture');
     const records = Array.from({ length: 3 }, (_, index) => (
       `${'ATGTAA'.repeat(20_000)}${'TAA'.repeat(index)}`
     ));
-    const answers = records.map((record) => findORFs(record, 1, table, { topology: 'linear' }));
+    const answers = records.map((record) => findORFs(record, 1, probe.table, { topology: 'linear' }));
     expect(answers.map((answer) => answer.length)).toEqual([20_000, 20_000, 20_000]);
 
     // Three entries fit under the character budget but exceed the 50k result
     // budget. The two newest remain cached; the oldest must be recomputed.
-    table.starts = [];
-    expect(findORFs(records[2], 1, table, { topology: 'linear' })).toEqual(answers[2]);
-    expect(findORFs(records[1], 1, table, { topology: 'linear' })).toEqual(answers[1]);
-    expect(findORFs(records[0], 1, table, { topology: 'linear' })).toEqual([]);
+    probe.reset();
+    expect(findORFs(records[2], 1, probe.table, { topology: 'linear' })).toEqual(answers[2]);
+    expect(findORFs(records[1], 1, probe.table, { topology: 'linear' })).toEqual(answers[1]);
+    expect(probe.calls()).toBe(0);
+    expect(findORFs(records[0], 1, probe.table, { topology: 'linear' })).toEqual(answers[0]);
+    expect(probe.calls()).toBeGreaterThan(0);
   });
 
   it('drops old scans rather than holding an unbounded amount of sequence', () => {
@@ -249,28 +263,21 @@ describe('ORF scan memoisation', () => {
     // eviction arithmetic, not result construction. Use asymmetric entries so
     // their keys still cross the four-million-character bound without scanning
     // two multi-megabase records twice on slower compatibility runners.
-    const evictionTable: CodonTable = {
-      ...STANDARD_CODE,
-      id: 10_001,
-      name: 'Cache eviction fixture',
-      codons: { ...STANDARD_CODE.codons },
-      starts: [...STANDARD_CODE.starts],
-      stops: [...STANDARD_CODE.stops],
-    };
+    const probe = cacheProbeTable(10_001, 'Cache eviction fixture');
     const oldest = `ATGAAATAA${'TAA'.repeat(99_997)}`; // 300,000 characters
     const newest = 'TAA'.repeat(1_233_334); // 3,700,002 characters
-    const first = findORFs(oldest, 1, evictionTable, { topology: 'linear' });
-    const second = findORFs(newest, 1, evictionTable, { topology: 'linear' });
+    const first = findORFs(oldest, 1, probe.table, { topology: 'linear' });
+    const second = findORFs(newest, 1, probe.table, { topology: 'linear' });
     expect(first.length).toBeGreaterThan(0);
 
     // Together these exceed the bound, so the first is evicted and the second
-    // — the one just inserted — is kept. Changing the table's initiator set
-    // makes a rescan observable without exposing cache internals: the retained
-    // newest entry still answers exactly as cached, while the evicted oldest
-    // entry is recomputed and no longer contains its original ORF.
-    evictionTable.starts = [];
-    expect(findORFs(newest, 1, evictionTable, { topology: 'linear' })).toEqual(second);
-    expect(findORFs(oldest, 1, evictionTable, { topology: 'linear' })).toEqual([]);
+    // — the one just inserted — is kept. The includes probe distinguishes a
+    // cache hit from a rescan without changing the biological inputs.
+    probe.reset();
+    expect(findORFs(newest, 1, probe.table, { topology: 'linear' })).toEqual(second);
+    expect(probe.calls()).toBe(0);
+    expect(findORFs(oldest, 1, probe.table, { topology: 'linear' })).toEqual(first);
+    expect(probe.calls()).toBeGreaterThan(0);
 
     // And the cache still works for ordinary records afterwards.
     const small = findORFs(sequence, 30, STANDARD_CODE, { topology: 'linear' });
@@ -293,5 +300,20 @@ describe('ORF scan memoisation', () => {
     expect(findORFs(sequence, 30, STANDARD_CODE, { topology: 'circular' })).toEqual(circular);
     expect(findORFs(sequence, 1, STANDARD_CODE, { topology: 'linear' })).toEqual(permissive);
     expect(findORFs(sequence, 30, getTranslationTable(2), { topology: 'linear' })).toEqual(otherTable);
+  });
+
+  it('invalidates a cached answer when a mutable codon table changes', () => {
+    const table: CodonTable = {
+      ...STANDARD_CODE,
+      id: 10_004,
+      name: 'Mutable table fixture',
+      codons: { ...STANDARD_CODE.codons },
+      starts: ['ATG'],
+      stops: ['TAA'],
+    };
+    const input = 'ATGAAATAA';
+    expect(findORFs(input, 1, table, { topology: 'linear' })).toHaveLength(1);
+    table.starts = [];
+    expect(findORFs(input, 1, table, { topology: 'linear' })).toEqual([]);
   });
 });
