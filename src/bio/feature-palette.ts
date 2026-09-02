@@ -75,11 +75,28 @@ const THEME_COLOR_PICKER_MIX = /^color-mix\(in srgb,\s*var\(--(accent|green|purp
 function opaqueHex(value: string | undefined): string | null {
   if (!value) return null;
   const trimmed = value.trim();
-  const long = /^#([0-9a-f]{6})(?:[0-9a-f]{2})?$/iu.exec(trimmed);
+  const long = /^#([0-9a-f]{6})$/iu.exec(trimmed);
   if (long) return `#${long[1].toLowerCase()}`;
-  const short = /^#([0-9a-f]{3})(?:[0-9a-f])?$/iu.exec(trimmed);
+  const short = /^#([0-9a-f]{3})$/iu.exec(trimmed);
   if (!short) return null;
   return `#${[...short[1]].map((digit) => `${digit}${digit}`).join('').toLowerCase()}`;
+}
+
+function translucentHex(value: string): { foreground: string; alpha: number } | null {
+  const trimmed = value.trim();
+  const long = /^#([0-9a-f]{6})([0-9a-f]{2})$/iu.exec(trimmed);
+  if (long) {
+    return {
+      foreground: `#${long[1].toLowerCase()}`,
+      alpha: Number.parseInt(long[2], 16) / 255,
+    };
+  }
+  const short = /^#([0-9a-f]{3})([0-9a-f])$/iu.exec(trimmed);
+  if (!short) return null;
+  return {
+    foreground: `#${[...short[1]].map((digit) => `${digit}${digit}`).join('').toLowerCase()}`,
+    alpha: Number.parseInt(short[2], 16) / 15,
+  };
 }
 
 function mixOpaqueHex(foreground: string, foregroundWeight: number, background: string): string {
@@ -92,6 +109,73 @@ function mixOpaqueHex(foreground: string, foregroundWeight: number, background: 
       .padStart(2, '0');
   });
   return `#${channels.join('')}`;
+}
+
+function computedRgbToOpaqueHex(value: string, background: string): string | null {
+  const match = /^rgba?\((.*)\)$/iu.exec(value.trim());
+  if (!match) return null;
+
+  // Browsers normally serialize computed colors with commas, while newer
+  // engines are also allowed to use the space-and-slash form. Normalize both
+  // without accepting any additional author-controlled CSS syntax here.
+  const components = match[1].replaceAll(',', ' ').replace('/', ' / ').trim().split(/\s+/u);
+  const slashIndex = components.indexOf('/');
+  const channels = components.slice(0, slashIndex >= 0 ? slashIndex : 3);
+  const alphaText = slashIndex >= 0 ? components[slashIndex + 1] : components[3];
+  if (channels.length !== 3) return null;
+
+  const channelHex = channels.map((component) => {
+    const percentage = component.endsWith('%');
+    const numeric = Number.parseFloat(component);
+    if (!Number.isFinite(numeric)) return null;
+    const channel = percentage ? numeric * 2.55 : numeric;
+    return Math.round(Math.max(0, Math.min(255, channel))).toString(16).padStart(2, '0');
+  });
+  if (channelHex.some((channel) => channel === null)) return null;
+
+  const foreground = `#${channelHex.join('')}`;
+  if (!alphaText) return foreground;
+  const alphaNumeric = Number.parseFloat(alphaText);
+  if (!Number.isFinite(alphaNumeric)) return null;
+  const alpha = alphaText.endsWith('%') ? alphaNumeric / 100 : alphaNumeric;
+  return mixOpaqueHex(foreground, alpha, background);
+}
+
+function resolveBrowserCssLiteral(value: string, background: string): string | null {
+  type CssLiteralProbe = {
+    setAttribute(name: string, value: string): void;
+    style: {
+      position: string;
+      visibility: string;
+      pointerEvents: string;
+      color: string;
+    };
+    remove(): void;
+  };
+  type CssLiteralDocument = {
+    documentElement: { append(node: CssLiteralProbe): void };
+    defaultView: { getComputedStyle(node: CssLiteralProbe): { color: string } } | null;
+    createElement(name: string): CssLiteralProbe;
+  };
+  const browserDocument = (globalThis as unknown as { document?: CssLiteralDocument }).document;
+  if (!browserDocument?.documentElement) return null;
+  const view = browserDocument.defaultView;
+  if (!view) return null;
+
+  const probe = browserDocument.createElement('span');
+  probe.setAttribute('aria-hidden', 'true');
+  probe.style.position = 'fixed';
+  probe.style.visibility = 'hidden';
+  probe.style.pointerEvents = 'none';
+  probe.style.color = value;
+  if (!probe.style.color) return null;
+
+  browserDocument.documentElement.append(probe);
+  try {
+    return computedRgbToOpaqueHex(view.getComputedStyle(probe).color, background);
+  } finally {
+    probe.remove();
+  }
 }
 
 function stableHash(value: string): number {
@@ -182,9 +266,12 @@ export function materializeFeatureColor(featureColor: string, backgroundColor = 
  * Present a stored feature color in a native color input without rewriting it.
  *
  * Native `input[type=color]` controls accept opaque sRGB values, not the
- * semantic CSS variables used by Motif records. The optional resolver reads
- * the active theme's inherited custom properties in a browser. Missing theme
- * values fall back to the portable color embedded in the semantic token.
+ * broader CSS colors used by Motif records. The optional resolver reads the
+ * active theme's inherited custom properties in a browser. Semantic colors
+ * use their portable fallback when a theme value is missing; safe named,
+ * rgb(), and hsl() literals use the browser's CSS parser, with translucency
+ * composited over the active workspace background. Non-browser consumers use
+ * the same deterministic hex and semantic fallbacks as before.
  * Callers should keep the original feature color as their source of truth and
  * replace it only after the user chooses a new picker color.
  */
@@ -194,6 +281,14 @@ export function resolveFeatureColorPickerValue(
 ): string {
   const literal = opaqueHex(featureColor);
   if (literal) return literal;
+  const translucentLiteral = translucentHex(featureColor);
+  if (translucentLiteral) {
+    return mixOpaqueHex(
+      translucentLiteral.foreground,
+      translucentLiteral.alpha,
+      opaqueHex(resolveThemeVariable('--bg-primary')) ?? '#ffffff',
+    );
+  }
 
   const tokenMatch = THEME_COLOR_PICKER_TOKEN.exec(featureColor.trim());
   if (tokenMatch) {
@@ -215,8 +310,15 @@ export function resolveFeatureColorPickerValue(
       : foreground;
   }
 
-  // Explicit non-hex CSS colors are preserved in the record, but cannot be
-  // represented portably by the opaque native control. Use the neutral swatch
-  // until a user intentionally replaces the stored value through the picker.
+  const trimmed = featureColor.trim();
+  if (SIMPLE_CSS_COLOR.test(trimmed)) {
+    const background = opaqueHex(resolveThemeVariable('--bg-primary')) ?? '#ffffff';
+    const resolvedLiteral = resolveBrowserCssLiteral(trimmed, background);
+    if (resolvedLiteral) return resolvedLiteral;
+  }
+
+  // Non-browser consumers and invalid CSS values cannot resolve a literal to
+  // the picker's required opaque sRGB form. Use the neutral swatch there until
+  // a user intentionally replaces the stored value through the picker.
   return THEME_COLOR_FALLBACKS['feature-neutral'].toLowerCase();
 }

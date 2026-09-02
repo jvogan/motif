@@ -34,4 +34,34 @@ describe('FeatureColorPicker', () => {
     expect(onChange).toHaveBeenCalledOnce();
     expect(onChange).toHaveBeenCalledWith('#abcdef');
   });
+
+  it('shows a stored CSS literal without rewriting it until the user chooses a color', async () => {
+    const onChange = vi.fn();
+    const storedColor = 'red';
+    render(<FeatureColorPicker storedColor={storedColor} onChange={onChange} />);
+
+    const picker = screen.getByLabelText('Feature color') as HTMLInputElement;
+    await waitFor(() => expect(picker.value).toBe('#ff0000'));
+    expect(onChange).not.toHaveBeenCalled();
+    expect(storedColor).toBe('red');
+
+    fireEvent.change(picker, { target: { value: '#abcdef' } });
+    expect(onChange).toHaveBeenCalledOnce();
+    expect(onChange).toHaveBeenCalledWith('#abcdef');
+  });
+
+  it('shows an alpha-hex literal over the active background without rewriting it', async () => {
+    const onChange = vi.fn();
+    const storedColor = '#ff000080';
+    render(
+      <div style={{ '--bg-primary': '#232323' } as CSSProperties}>
+        <FeatureColorPicker storedColor={storedColor} onChange={onChange} />
+      </div>,
+    );
+
+    const picker = screen.getByLabelText('Feature color') as HTMLInputElement;
+    await waitFor(() => expect(picker.value).toBe('#911111'));
+    expect(onChange).not.toHaveBeenCalled();
+    expect(storedColor).toBe('#ff000080');
+  });
 });
