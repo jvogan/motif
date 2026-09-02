@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.4.0 — 2026-09-01
+
 - Added a local Codex plugin and private-marketplace package around the same
   bounded two-tool connector used by the portable Motif workbench. Added
   deterministic archives, installation and removal guidance, packaged and

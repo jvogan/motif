@@ -1,6 +1,6 @@
 {
   "name": "motif-for-claude-science",
-  "version": "0.3.6",
+  "version": "0.4.0",
   "description": "Open exact DNA, RNA, and protein records in an interactive molecular-biology workbench or portable HTML artifact.",
   "author": {
     "name": "Jacob Vogan",

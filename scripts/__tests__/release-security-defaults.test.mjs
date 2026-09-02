@@ -32,7 +32,7 @@ describe('release security defaults', () => {
   });
 
   it('includes the MCP stdio fallback in release-version alignment', () => {
-    expect(checkReleaseAlignment()).toMatchObject({ version: '0.3.6', surfaces: 10 });
+    expect(checkReleaseAlignment()).toMatchObject({ version: '0.4.0', surfaces: 10 });
   });
 
   it('allows a post-tag development commit in alignment but blocks it for publishing', () => {

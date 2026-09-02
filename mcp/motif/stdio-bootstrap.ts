@@ -80,7 +80,7 @@ export async function loadMotifRuntimeAssets(
 
 export async function readMotifVersion(
   candidates: MotifVersionManifestCandidate[],
-  fallbackVersion = '0.3.6',
+  fallbackVersion = '0.4.0',
 ): Promise<string> {
   for (const candidate of candidates) {
     let text: string;

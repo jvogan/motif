@@ -1,6 +1,6 @@
 {
   "name": "motif-for-claude-science",
-  "version": "0.3.6",
+  "version": "0.4.0",
   "private": true,
   "description": "Motif is a portable molecular-biology workbench with local Codex and Claude Science adapters for sequence review, alignment, cloning design, traces, and analysis results.",
   "license": "MIT",

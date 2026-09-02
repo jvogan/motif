@@ -108,7 +108,7 @@ export async function applyMotifToolResult(result: CallToolResult): Promise<void
 export async function startMotifMcpBridge(): Promise<App> {
   setBridgeState('connecting');
   const app = new App(
-    { name: 'Motif', version: '0.3.6' },
+    { name: 'Motif', version: '0.4.0' },
     { availableDisplayModes: ['inline', 'fullscreen'] },
     { autoResize: false },
   );

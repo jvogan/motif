@@ -174,7 +174,7 @@
       }
     ]
   },
-  "release_notes": "Prepared draft for Motif 0.3.6, an interactive workbench for exact DNA, RNA, and protein records supplied by the user. The reviewed connector opens supported biological content in a live workbench or returns a self-contained HTML fallback. It does not retrieve missing sequences, compute alignments, write files, modify remote systems, or provide medical or experimental validation.",
+  "release_notes": "Prepared draft for Motif 0.4.0, a local-first workbench for exact DNA, RNA, and protein records supplied by the user. The reviewed connector opens supported biological content in a live workbench or returns a self-contained HTML fallback. It does not retrieve missing sequences, compute alignments, write files, modify remote systems, or provide medical or experimental validation.",
   "portal_only_checks": [
     "Do not begin a portal upload until submission_readiness.status is ready and a matching approved archive exists.",
     "Select the verified Jacob Vogan developer identity in the publishing organization.",
