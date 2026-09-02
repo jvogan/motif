@@ -56,16 +56,13 @@ function normalizedVisibleRanges({
   expandedRanges: readonly MsaExpandedColumnRange[];
 }): MsaExpandedColumnRange[] {
   const margin = Number.isFinite(context) ? Math.max(0, Math.floor(context)) : 3;
-  const ranges: MsaExpandedColumnRange[] = [];
-  for (const rawColumn of differingColumns) {
-    if (!Number.isFinite(rawColumn)) continue;
-    const column = Math.floor(rawColumn);
-    if (column < 0 || column >= length) continue;
-    ranges.push({
-      startColumn: Math.max(0, column - margin),
-      endColumn: Math.min(length, column + margin + 1),
-    });
-  }
+  // `differenceColumns` scans the alignment from left to right, so its output
+  // is already ordered. Coalesce that ordered stream before creating range
+  // descriptors. A dense million-column difference run is consequently one
+  // range here, rather than a million short-lived objects to sort and merge.
+  const ranges = normalizedDifferenceRanges(length, differingColumns, margin);
+  // User-expanded ranges are few, independent interactions. Keep their
+  // existing normalization and final merge with the difference-derived ranges.
   for (const range of expandedRanges) {
     const startColumn = Math.max(0, Math.min(length, Math.floor(range.startColumn)));
     const endColumn = Math.max(startColumn, Math.min(length, Math.ceil(range.endColumn)));
@@ -79,6 +76,36 @@ function normalizedVisibleRanges({
     else previous.endColumn = Math.max(previous.endColumn, range.endColumn);
   }
   return merged;
+}
+
+function normalizedDifferenceRanges(
+  length: number,
+  differingColumns: readonly number[],
+  margin: number,
+): MsaExpandedColumnRange[] {
+  const ranges: MsaExpandedColumnRange[] = [];
+  let activeStart = -1;
+  let activeEnd = -1;
+
+  for (const rawColumn of differingColumns) {
+    if (!Number.isFinite(rawColumn)) continue;
+    const column = Math.floor(rawColumn);
+    if (column < 0 || column >= length) continue;
+    const startColumn = Math.max(0, column - margin);
+    const endColumn = Math.min(length, column + margin + 1);
+    if (activeStart < 0) {
+      activeStart = startColumn;
+      activeEnd = endColumn;
+    } else if (startColumn <= activeEnd) {
+      activeEnd = Math.max(activeEnd, endColumn);
+    } else {
+      ranges.push({ startColumn: activeStart, endColumn: activeEnd });
+      activeStart = startColumn;
+      activeEnd = endColumn;
+    }
+  }
+  if (activeStart >= 0) ranges.push({ startColumn: activeStart, endColumn: activeEnd });
+  return ranges;
 }
 
 function segmentsForDifferenceView(

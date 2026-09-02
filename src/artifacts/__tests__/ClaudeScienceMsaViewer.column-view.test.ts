@@ -92,4 +92,50 @@ describe('createMsaColumnView', () => {
       kind: 'elision', startColumn: 999_900, endColumn: 1_000_000, hiddenCount: 100,
     });
   });
+
+  it('coalesces a near-million dense difference run before making descriptors', () => {
+    const alignmentLength = 1_000_000;
+    const originalSort = Array.prototype.sort;
+    let largestSortedArray = 0;
+    const observedSort = (function observedSort(
+      this: unknown[],
+      ...args: Parameters<typeof originalSort>
+    ) {
+      largestSortedArray = Math.max(largestSortedArray, this.length);
+      return Reflect.apply(originalSort, this, args);
+    }) as typeof Array.prototype.sort;
+    let view: ReturnType<typeof createMsaColumnView>;
+    Array.prototype.sort = observedSort;
+    try {
+      view = createMsaColumnView({
+        alignmentLength,
+        columnFilter: 'differences',
+        // differenceColumns scans left to right. This is its ordered output
+        // shape for a dense two-row alignment; the adapter must not make one
+        // range descriptor per named column.
+        differingColumns: Array.from({ length: alignmentLength }, (_, column) => column),
+        context: 0,
+        expandedRanges: [],
+      });
+    } finally {
+      Array.prototype.sort = originalSort;
+    }
+
+    expect(view.slotCount).toBe(alignmentLength);
+    expect(view.shownColumnCount).toBe(alignmentLength);
+    expect(view.materializedSlotCount).toBe(1);
+    expect(view.indexedColumnCount).toBe(0);
+    expect(view.slotIndexForColumn(500_000)).toBe(500_000);
+    expect(view.slotAt(999_999)).toEqual({ kind: 'column', column: 999_999 });
+    expect(view.elisionForColumn(500_000)).toBeUndefined();
+    expect(view.slotsInRange(499_999, 500_002)).toEqual([
+      { kind: 'column', column: 499_999 },
+      { kind: 'column', column: 500_000 },
+      { kind: 'column', column: 500_001 },
+    ]);
+    // The pre-coalescing implementation sorted one tiny range per differing
+    // column. The final descriptor count alone would not catch that transient
+    // million-object allocation, so observe the sort input directly.
+    expect(largestSortedArray).toBeLessThanOrEqual(1);
+  });
 });
