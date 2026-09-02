@@ -122,7 +122,7 @@ export async function startMotifMcpBridge(): Promise<App> {
 
 if (typeof window !== 'undefined' && window.parent !== window) {
   void startMotifMcpBridge().catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : 'Claude Science could not connect to the Motif workbench.';
+    const message = error instanceof Error ? error.message : 'The host could not connect to the Motif workbench.';
     setBridgeState('error', message);
   });
 }

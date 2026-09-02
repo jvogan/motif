@@ -21,7 +21,7 @@ async function firstExistingPath(candidates: string[], label: string): Promise<s
       // Try the next supported development or packaged layout.
     }
   }
-  throw new Error(`${label} is missing. Rebuild or reinstall the Motif for Claude Science plugin.`);
+  throw new Error(`${label} is missing. Rebuild or reinstall the Motif plugin.`);
 }
 
 async function main(): Promise<void> {
@@ -53,10 +53,10 @@ async function main(): Promise<void> {
     } : {}),
   });
   await server.connect(createMotifStdioServerTransport());
-  console.error(`[motif-claude-science] v${version} ready on stdio`);
+  console.error(`[motif] v${version} ready on stdio`);
 }
 
 main().catch((error: unknown) => {
-  console.error('[motif-claude-science] Fatal error:', error instanceof Error ? error.message : error);
+  console.error('[motif] Fatal error:', error instanceof Error ? error.message : error);
   process.exitCode = 1;
 });
