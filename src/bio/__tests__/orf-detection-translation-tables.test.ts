@@ -203,16 +203,32 @@ describe('ORF scan memoisation', () => {
     // inventory of thirteen plasmids, so this is the only exercise the branch
     // gets. What it has to guarantee is that eviction terminates and never
     // throws away the answer it was just asked for.
-    // All stop codons, so the scan finds nothing and the test stays fast; the
-    // point here is the eviction arithmetic, not the scan.
-    const huge = 'TAA'.repeat(800_000); // 2.4 M characters
-    const first = findORFs(huge, 30, STANDARD_CODE, { topology: 'linear' });
-    const second = findORFs(`${huge}TTT`, 30, STANDARD_CODE, { topology: 'linear' });
+    // All stop codons, so the scan finds nothing; the point here is the
+    // eviction arithmetic, not result construction. Use asymmetric entries so
+    // their keys still cross the four-million-character bound without scanning
+    // two multi-megabase records twice on slower compatibility runners.
+    const evictionTable: CodonTable = {
+      ...STANDARD_CODE,
+      id: 10_001,
+      name: 'Cache eviction fixture',
+      codons: { ...STANDARD_CODE.codons },
+      starts: [...STANDARD_CODE.starts],
+      stops: [...STANDARD_CODE.stops],
+    };
+    const oldest = `ATGAAATAA${'TAA'.repeat(99_997)}`; // 300,000 characters
+    const newest = 'TAA'.repeat(1_233_334); // 3,700,002 characters
+    const first = findORFs(oldest, 1, evictionTable, { topology: 'linear' });
+    const second = findORFs(newest, 1, evictionTable, { topology: 'linear' });
+    expect(first.length).toBeGreaterThan(0);
 
-    // Two of these together exceed the four-million-character bound, so the
-    // first is evicted and the second — the one just inserted — is kept.
-    expect(findORFs(`${huge}TTT`, 30, STANDARD_CODE, { topology: 'linear' })).toEqual(second);
-    expect(findORFs(huge, 30, STANDARD_CODE, { topology: 'linear' })).toEqual(first);
+    // Together these exceed the bound, so the first is evicted and the second
+    // — the one just inserted — is kept. Changing the table's initiator set
+    // makes a rescan observable without exposing cache internals: the retained
+    // newest entry still answers exactly as cached, while the evicted oldest
+    // entry is recomputed and no longer contains its original ORF.
+    evictionTable.starts = [];
+    expect(findORFs(newest, 1, evictionTable, { topology: 'linear' })).toEqual(second);
+    expect(findORFs(oldest, 1, evictionTable, { topology: 'linear' })).toEqual([]);
 
     // And the cache still works for ordinary records afterwards.
     const small = findORFs(sequence, 30, STANDARD_CODE, { topology: 'linear' });
