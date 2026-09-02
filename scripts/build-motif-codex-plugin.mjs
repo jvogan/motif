@@ -114,7 +114,7 @@ function validatePluginSource({ rootDirectory = root, sourcePath = sourceDirecto
   }
 
   const mcpManifest = JSON.parse(readFileSync(join(sourcePath, '.mcp.json'), 'utf8'));
-  const args = mcpManifest?.motif?.args;
+  const args = mcpManifest?.mcpServers?.motif?.args;
   if (!Array.isArray(args) || args[0] !== '${PLUGIN_ROOT}/server/motif-mcp-server.mjs') {
     throw new Error('Codex MCP manifest must launch the bundled server from PLUGIN_ROOT.');
   }
