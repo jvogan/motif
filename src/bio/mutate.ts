@@ -213,6 +213,12 @@ function transformReplacedRange(
     } else if (editStart < end) {
       end += insertedLength;
     }
+  } else if (editStart < range.start && range.end < deleteEnd) {
+    // A non-empty replacement destroys an annotation that is wholly within
+    // the deleted ground. Do not turn it into a feature over the inserted
+    // sequence: only a range sharing a replacement boundary has an affine
+    // relationship to that inserted ground.
+    return null;
   } else if (deleteEnd <= range.start) {
     const delta = insertedLength - deletedLength;
     start = range.start + delta;

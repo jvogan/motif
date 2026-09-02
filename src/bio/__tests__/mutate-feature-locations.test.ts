@@ -3,6 +3,7 @@ import { extractFeatureSequence, isMultipartFeature } from '../feature-location'
 import {
   applyDeletion,
   applyInsertion,
+  applyReplacement,
   applySubstitution,
   MAX_MUTATION_INSERTION_LENGTH,
   MAX_MUTATION_OPERATION_UNITS,
@@ -195,5 +196,97 @@ describe('mutation feature-location integrity', () => {
     const result = applyDeletion('ATGCCCGGGCCA', [], [joinedFeature()], 0, 12);
 
     expect(result.features).toEqual([]);
+  });
+
+  it('drops an annotation wholly destroyed by a non-empty replacement', () => {
+    const enclosed: Feature = {
+      id: 'enclosed',
+      name: 'enclosed',
+      type: 'misc_feature',
+      start: 40,
+      end: 50,
+      strand: 1,
+      color: '#888888',
+      metadata: {},
+    };
+
+    const result = applyReplacement('A'.repeat(120), [], [enclosed], 10, 90, 'C');
+
+    expect(result.raw).toBe(`${'A'.repeat(10)}C${'A'.repeat(20)}`);
+    expect(result.features).toEqual([]);
+  });
+
+  it('drops every wholly replaced multipart piece, including duplicates', () => {
+    const enclosedPieces: Feature = {
+      id: 'enclosed-pieces',
+      name: 'enclosed pieces',
+      type: 'cds',
+      start: 40,
+      end: 70,
+      strand: 1,
+      subRanges: [
+        { start: 40, end: 50, strand: 1 },
+        { start: 40, end: 50, strand: 1 },
+        { start: 60, end: 70, strand: 1 },
+      ],
+      color: '#888888',
+      metadata: {},
+    };
+
+    const result = applyReplacement('A'.repeat(120), [], [enclosedPieces], 10, 90, 'C');
+
+    expect(result.features).toEqual([]);
+  });
+
+  it('retains replacement-boundary and overlapping annotations with their established affinity', () => {
+    const feature = (id: string, start: number, end: number): Feature => ({
+      id,
+      name: id,
+      type: 'misc_feature',
+      start,
+      end,
+      strand: 1,
+      color: '#888888',
+      metadata: {},
+    });
+    const boundaryPieces: Feature = {
+      id: 'boundary-pieces',
+      name: 'boundary pieces',
+      type: 'cds',
+      start: 10,
+      end: 100,
+      strand: 1,
+      subRanges: [
+        { start: 10, end: 50, strand: 1 },
+        { start: 40, end: 50, strand: 1 },
+        { start: 40, end: 100, strand: 1 },
+      ],
+      color: '#888888',
+      metadata: {},
+    };
+
+    const result = applyReplacement('A'.repeat(120), [], [
+      feature('left-boundary', 10, 50),
+      feature('right-boundary', 40, 100),
+      feature('left-overlap', 5, 50),
+      feature('right-overlap', 40, 105),
+      boundaryPieces,
+    ], 10, 90, 'C');
+
+    expect(result.features).toMatchObject([
+      { id: 'left-boundary', start: 10, end: 11 },
+      { id: 'right-boundary', start: 10, end: 11 },
+      { id: 'left-overlap', start: 5, end: 11 },
+      { id: 'right-overlap', start: 10, end: 16 },
+      {
+        id: 'boundary-pieces',
+        start: 10,
+        end: 11,
+        subRanges: [
+          { start: 10, end: 11, strand: 1 },
+          { start: 10, end: 11, strand: 1 },
+        ],
+      },
+    ]);
   });
 });
