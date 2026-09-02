@@ -2318,6 +2318,28 @@ function annotationReviewProvenance(
   };
 }
 
+/**
+ * Remove one annotation without losing the durable review decision that its
+ * metadata represents. The feature editor has a generic Delete control as
+ * well as an explicit Dismiss action, so every deletion flows through this
+ * helper rather than relying on callers to recognize a proposed annotation.
+ *
+ * The returned record is immutable, so callers can retain an earlier record
+ * snapshot for a checkpoint or later restoration.
+ */
+export function deleteArtifactFeature(record: ArtifactVector, featureId: string): ArtifactVector {
+  const deleted = record.features.find((feature) => feature.id === featureId);
+  if (!deleted) return record;
+  const features = record.features.filter((feature) => feature.id !== featureId);
+  return {
+    ...record,
+    features,
+    // Recompute for every delete: an accepted proposal can also be removed
+    // through the generic control, while a pending proposal is a dismissal.
+    provenance: annotationReviewProvenance(record, features, isProposedAnnotation(deleted) ? 1 : 0),
+  };
+}
+
 export function createDefensiveRuntimeSnapshot(records: readonly ArtifactVector[]): ArtifactRecordInput[] {
   return records.map(serializeRecord);
 }
@@ -9187,7 +9209,7 @@ function App() {
     setPayload((current) => {
       const currentRecord = current.records.find((record) => record.id === recordId);
       if (!currentRecord || !currentRecord.features.some((feature) => feature.id === featureId)) return current;
-      const nextFeatures = currentRecord.features.filter((feature) => feature.id !== featureId);
+      const nextRecord = deleteArtifactFeature(currentRecord, featureId);
       setSelection((currentSelection) => (
         currentSelection?.kind === 'feature' && currentSelection.id === featureId
           ? null
@@ -9196,7 +9218,7 @@ function App() {
       return {
         ...current,
         records: current.records.map((record) => (
-          record.id === recordId ? { ...record, features: nextFeatures } : record
+          record.id === recordId ? nextRecord : record
         )),
       };
     });
@@ -15639,7 +15661,7 @@ export function FeatureColorPicker({
   );
 }
 
-function QuickFeatureEditor({
+export function QuickFeatureEditor({
   sequenceLength,
   sequenceType,
   recordTranslationTableId,
