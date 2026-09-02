@@ -388,6 +388,35 @@ describe('parsePastedSequence', () => {
     });
   });
 
+  it('gives a credible GenBank envelope precedence over an angle-prefixed continuation', () => {
+    const parsed = parsePastedSequence([
+      'LOCUS       DEMO        4 bp    DNA',
+      'COMMENT     copied annotation',
+      '            >this continuation is not a FASTA header',
+      'ORIGIN',
+      '        1 atgc',
+      '//',
+    ].join('\n'), DNA);
+
+    expect(parsed).toMatchObject({
+      ok: true,
+      sequence: 'ATGC',
+      format: 'genbank',
+      fastaRecordCount: 0,
+      genbankRecordCount: 1,
+      droppedCharacters: 0,
+    });
+  });
+
+  it('only treats an angle-prefixed line as FASTA when it opens the document', () => {
+    const parsed = sequenceLinesFromPaste('ATGC\n>not a document header\nGGGG');
+    expect(parsed).toMatchObject({
+      format: 'plain',
+      fastaRecordCount: 0,
+      genbankRecordCount: 0,
+    });
+  });
+
   it('counts letters the alphabet rejects, and ignores whitespace and line numbers', () => {
     const parsed = parsePastedSequence('  1 ATGC ATGC\n  9 ATGZZ\n', DNA);
     expect(parsed.sequence).toBe('ATGCATGCATG');

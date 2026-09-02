@@ -84,6 +84,15 @@ const GENBANK_TERMINATOR = /^\s*\/\/\s*$/;
 /** The position counter that starts each ORIGIN line, and that many viewers emit. */
 const LEADING_POSITION = /^\s*\d+\s*/;
 
+function isFastaDocument(lines: readonly string[]): boolean {
+  // A genuine FASTA document begins with a header, apart from blank lines and
+  // the semicolon comments accepted by this parser. Restricting detection to
+  // that envelope prevents an angle-prefixed GenBank continuation from taking
+  // ownership of the whole paste.
+  const firstContent = lines.find((line) => line.trim().length > 0 && !FASTA_COMMENT.test(line));
+  return firstContent !== undefined && FASTA_HEADER.test(firstContent);
+}
+
 function firstGenBankOrigin(lines: readonly string[]): number {
   let locusSeen = false;
   for (let index = 0; index < lines.length; index += 1) {
@@ -126,7 +135,9 @@ function genbankRecordCount(lines: readonly string[]): number {
  */
 export function sequenceLinesFromPaste(value: string): PastedSequenceLines {
   const all = value.split(/\r\n|\r|\n/);
-  const detectedFastaRecordCount = all.filter((line) => FASTA_HEADER.test(line)).length;
+  const detectedFastaRecordCount = isFastaDocument(all)
+    ? all.filter((line) => FASTA_HEADER.test(line)).length
+    : 0;
   // An explicit FASTA header owns the document. In particular, a protein FASTA
   // sequence may legitimately contain standalone LOCUS and ORIGIN residue lines.
   const originAt = detectedFastaRecordCount === 0 ? firstGenBankOrigin(all) : -1;
