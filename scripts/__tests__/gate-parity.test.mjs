@@ -32,9 +32,9 @@ describe('npm run gate matches CI', () => {
       label: 'Codex plugin checks',
       command: ['npm', 'run', 'test:codex-plugin'],
     });
-    expect(ids.indexOf('plugin-checks')).toBeLessThan(ids.indexOf('codex-plugin-checks'));
-    expect(ids.indexOf('codex-plugin-checks')).toBeLessThan(ids.indexOf('connector-checks'));
     expect(ids.indexOf('build')).toBeLessThan(ids.indexOf('post-build-release-verification'));
+    expect(ids.indexOf('build')).toBeLessThan(ids.indexOf('codex-plugin-checks'));
+    expect(ids.indexOf('codex-plugin-checks')).toBeLessThan(ids.indexOf('post-build-release-verification'));
     expect(ids.indexOf('post-build-release-verification')).toBeLessThan(ids.indexOf('reproducibility'));
   });
 
