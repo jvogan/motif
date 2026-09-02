@@ -47,6 +47,12 @@ test.describe('control boundary and focus contrast', () => {
   });
 
   test('the record title receives a visible 3:1 shell focus outline', async ({ page }) => {
+    // Five real keyboard traversals plus before/after raster captures take just
+    // over the 30-second default on the hosted runner. Keep every appearance
+    // and pixel assertion, but give this measurement-heavy audit a bounded
+    // budget that reflects the work it deliberately performs.
+    test.setTimeout(60_000);
+
     for (const theme of themes) {
       const measurement = await measureTitleFocus(page, theme);
       process.stdout.write(`${theme} title focus ${JSON.stringify(measurement)}\n`);
