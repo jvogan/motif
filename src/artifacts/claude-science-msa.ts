@@ -1822,15 +1822,20 @@ export function computeAlignmentImageLayout(
     ? Math.max(1, Math.min(MSA_IMAGE_MAX_CELLS, Math.floor(requestedMaxCells)))
     : MSA_IMAGE_MAX_CELLS;
 
-  if (options.scope === 'all' && rowCount * alignmentLength > maxCells) {
-    throw new AlignmentImageExportError(
-      options.scope,
-      rowCount * alignmentLength,
-      maxCells,
-      rowCount,
-      alignmentLength,
-    );
-  }
+  const assertImageCellBudget = (columnCount: number) => {
+    const requiredCells = rowCount * columnCount;
+    if (requiredCells > maxCells) {
+      throw new AlignmentImageExportError(
+        options.scope,
+        requiredCells,
+        maxCells,
+        rowCount,
+        columnCount,
+      );
+    }
+  };
+
+  if (options.scope === 'all') assertImageCellBudget(alignmentLength);
 
   // Resolve only the requested column window. Visible exports can target a
   // small window inside a very long alignment, so building the whole column
@@ -1859,17 +1864,14 @@ export function computeAlignmentImageLayout(
     const rawEnd = Math.ceil(options.endColumn ?? alignmentLength);
     const start = Math.max(0, Math.min(alignmentLength, rawStart));
     const end = Math.max(start, Math.min(alignmentLength, rawEnd));
+    // A missing/empty visible range falls back to the complete alignment. Check
+    // that request before constructing its one-slot-per-column array.
+    const requestedColumnCount = end > start ? end - start : alignmentLength;
+    assertImageCellBudget(requestedColumnCount);
     columns = Array.from(
-      { length: end - start },
-      (_, offset): MsaColumnViewSlot => ({ kind: 'column', column: start + offset }),
+      { length: requestedColumnCount },
+      (_, offset): MsaColumnViewSlot => ({ kind: 'column', column: end > start ? start + offset : offset }),
     );
-    // A degenerate/empty window falls back to the whole alignment.
-    if (columns.length <= 0) {
-      columns = Array.from(
-        { length: alignmentLength },
-        (_, column): MsaColumnViewSlot => ({ kind: 'column', column }),
-      );
-    }
   }
   const columnCount = columns.length;
   const firstColumnSlot = columns.find((slot): slot is Extract<MsaColumnViewSlot, { kind: 'column' }> => slot.kind === 'column');
@@ -1877,16 +1879,7 @@ export function computeAlignmentImageLayout(
   const startColumn = firstColumnSlot?.column
     ?? (firstSlot?.kind === 'elision' ? firstSlot.startColumn : 0);
 
-  const requiredCells = rowCount * columnCount;
-  if (requiredCells > maxCells) {
-    throw new AlignmentImageExportError(
-      options.scope,
-      requiredCells,
-      maxCells,
-      rowCount,
-      columnCount,
-    );
-  }
+  assertImageCellBudget(columnCount);
 
   let clamped = false;
 

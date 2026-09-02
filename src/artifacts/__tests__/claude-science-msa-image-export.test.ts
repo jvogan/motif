@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   AlignmentImageExportError,
   alignmentImageCanvasPlan,
@@ -167,6 +167,41 @@ describe('computeAlignmentImageLayout', () => {
     expect(visible.columnCount).toBe(20);
     expect(visible.columns[0]).toEqual({ kind: 'column', column: 49_980 });
     expect(visible.columns.at(-1)).toEqual({ kind: 'column', column: 49_999 });
+  });
+
+  it('preflights a missing visible window before materializing its whole fallback', () => {
+    const huge = source(9, 50_000);
+    const originalArrayFrom = Array.from;
+    const materialization = vi.spyOn(Array, 'from').mockImplementation((...args) => {
+      const candidate = args[0] as { length?: unknown } | null | undefined;
+      if (typeof candidate === 'object' && candidate !== null && !Array.isArray(candidate) && candidate.length === 50_000) {
+        throw new Error('Attempted to materialize every image column before preflight.');
+      }
+      return Reflect.apply(originalArrayFrom, Array, args);
+    });
+
+    try {
+      expect(() => computeAlignmentImageLayout(huge, { scope: 'view' })).toThrow(AlignmentImageExportError);
+      try {
+        computeAlignmentImageLayout(huge, { scope: 'view' });
+        throw new Error('expected the image layout to reject');
+      } catch (caught) {
+        expect(caught).toMatchObject({
+          code: 'cell_limit',
+          scope: 'view',
+          requiredCells: 450_000,
+          maxCells: 400_000,
+          rowCount: 9,
+          columnCount: 50_000,
+        });
+      }
+      expect(materialization).not.toHaveBeenCalledWith(
+        expect.objectContaining({ length: 50_000 }),
+        expect.any(Function),
+      );
+    } finally {
+      materialization.mockRestore();
+    }
   });
 
   it('builds only a bounded visible window inside an alignment too long to materialize', () => {

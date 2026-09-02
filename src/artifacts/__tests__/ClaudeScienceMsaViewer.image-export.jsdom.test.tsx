@@ -16,6 +16,7 @@ import {
 
 const originalCreateObjectUrl = URL.createObjectURL;
 const originalRevokeObjectUrl = URL.revokeObjectURL;
+const originalElementScrollTo = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollTo');
 
 function alignment(rowCount: number, length: number): ArtifactAlignment {
   const sequence = 'ACGT'.repeat(Math.ceil(length / 4)).slice(0, length);
@@ -32,16 +33,24 @@ function alignment(rowCount: number, length: number): ArtifactAlignment {
   });
 }
 
+function overImageCellLimitAlignment(): ArtifactAlignment {
+  // This is an accepted Motif alignment (9 × 50,000 = 450,000 cells), but it
+  // exceeds the image-specific 400,000-cell budget.
+  return alignment(9, 50_000);
+}
+
 function StatefulViewer({
   sourceAlignment,
   initialPreferences = DEFAULT_CLAUDE_SCIENCE_MSA_VIEW_PREFERENCES,
+  records = [],
 }: {
   sourceAlignment: ArtifactAlignment;
   initialPreferences?: ClaudeScienceMsaViewPreferences;
+  records?: ClaudeScienceMsaViewerProps['records'];
 }) {
   const [viewPreferences, setViewPreferences] = useState(initialPreferences);
   const props: ClaudeScienceMsaViewerProps = {
-    records: [],
+    records,
     alignments: [sourceAlignment],
     activeAlignmentId: sourceAlignment.id,
     viewPreferences,
@@ -55,6 +64,48 @@ function StatefulViewer({
     onDownload: vi.fn(),
   };
   return <ClaudeScienceMsaViewer {...props} />;
+}
+
+function linkedTraceRecord(id: string, sequence: string): ClaudeScienceMsaViewerProps['records'][number] {
+  return {
+    id,
+    name: 'Row 1',
+    type: 'dna',
+    sequence,
+    sangerTrace: {
+      schema: 'motif.sanger-trace.v1',
+      version: 1,
+      baseCalls: sequence,
+      sequence,
+      qualityScores: [],
+      peakPositions: [],
+      channels: { A: [], C: [], G: [], T: [] },
+      sampleCount: 0,
+      dyeOrder: null,
+      storedReverseComplement: false,
+      warnings: [],
+      metadata: {
+        format: 'ABIF',
+        abifVersion: 101,
+        baseCallsTag: 'PBAS2',
+        qualityScoresTag: null,
+        peakPositionsTag: null,
+        channelTags: {},
+        sampleName: id,
+      },
+    },
+  };
+}
+
+function rejectFullWidthArrayMaterialization(): ReturnType<typeof vi.spyOn> {
+  const originalArrayFrom = Array.from;
+  return vi.spyOn(Array, 'from').mockImplementation((...args) => {
+    const source = args[0] as { length?: unknown } | null | undefined;
+    if (typeof source === 'object' && source !== null && !Array.isArray(source) && source.length === 50_000) {
+      throw new Error('Attempted to materialize every image column before preflight.');
+    }
+    return Reflect.apply(originalArrayFrom, Array, args);
+  });
 }
 
 function readBlob(blob: Blob): Promise<string> {
@@ -71,6 +122,8 @@ afterEach(() => {
   vi.restoreAllMocks();
   Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: originalCreateObjectUrl });
   Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: originalRevokeObjectUrl });
+  if (originalElementScrollTo) Object.defineProperty(HTMLElement.prototype, 'scrollTo', originalElementScrollTo);
+  else delete (HTMLElement.prototype as { scrollTo?: unknown }).scrollTo;
 });
 
 describe('ClaudeScienceMsaViewer image export', () => {
@@ -128,6 +181,43 @@ describe('ClaudeScienceMsaViewer image export', () => {
     ));
     expect(screen.getByTestId('msa-copy-status').textContent).toContain(
       'Choose Visible view, or download Alignment JSON, Aligned FASTA, or CLUSTAL for the complete alignment.',
+    );
+    expect(createObjectUrl).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['Text', 'text' as const, undefined],
+    ['Traces', 'trace' as const, 'trace-row-0'],
+  ])('preflights the missing visible window before materializing columns from %s', async (presentation, displayMode, traceRecordId) => {
+    const createObjectUrl = vi.fn(() => 'blob:should-not-exist');
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectUrl });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() });
+
+    const huge = overImageCellLimitAlignment();
+    const records = traceRecordId ? [linkedTraceRecord(traceRecordId, huge.rows[0].aligned)] : [];
+    if (traceRecordId) huge.rows[0].sourceRecordId = traceRecordId;
+    if (traceRecordId) {
+      Object.defineProperty(HTMLElement.prototype, 'scrollTo', { configurable: true, value: vi.fn() });
+      vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
+    }
+    render(<StatefulViewer
+      sourceAlignment={huge}
+      records={records}
+      initialPreferences={{ ...DEFAULT_CLAUDE_SCIENCE_MSA_VIEW_PREFERENCES, displayMode }}
+    />);
+
+    expect(screen.getByRole('button', { name: presentation }).getAttribute('aria-pressed')).toBe('true');
+    expect((screen.getByTestId('msa-export-image-scope') as HTMLSelectElement).value).toBe('view');
+
+    const materialization = rejectFullWidthArrayMaterialization();
+    fireEvent.click(screen.getByTestId('msa-export-svg'));
+
+    await waitFor(() => expect(screen.getByTestId('msa-copy-status').textContent).toContain(
+      'Visible-view image needs 450,000 row-cells; the image limit is 400,000. No file was saved.',
+    ));
+    expect(materialization).not.toHaveBeenCalledWith(
+      expect.objectContaining({ length: 50_000 }),
+      expect.any(Function),
     );
     expect(createObjectUrl).not.toHaveBeenCalled();
   });
