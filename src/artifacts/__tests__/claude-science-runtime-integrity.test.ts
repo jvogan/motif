@@ -702,8 +702,8 @@ describe('Claude Science runtime data-integrity behavior', () => {
     }));
   });
 
-  it('normalizes allowlisted feature fields and escapes all report markup', () => {
-    const payload = prepareInventoryReplacement([{
+  it('rejects unsafe feature colors and escapes all report markup', () => {
+    const recordInput = {
       id: 'security-fixture',
       name: '<img src=x onerror="window.__motifReportPwned=true">',
       description: '</p><script>window.__motifReportPwned=true</script>',
@@ -713,12 +713,21 @@ describe('Claude Science runtime data-integrity behavior', () => {
         id: 'unsafe-feature',
         name: '</li><script>window.__motifReportPwned=true</script>',
         type: '</li><script>window.__motifReportPwned=true</script>' as never,
-        color: 'url(javascript:alert(1))',
+        color: 'var(--accent, #7E9BBF)',
         start: 0,
         end: 6,
         metadata: { source: '<script>metadata stays data</script>' },
       }],
-    }]);
+    };
+    expect(() => prepareInventoryReplacement([{
+      ...recordInput,
+      features: [{ ...recordInput.features[0], color: 'url(javascript:alert(1))' }],
+    }])).toThrowError(expect.objectContaining({
+      code: 'MOTIF_INVALID_INVENTORY_REPLACEMENT',
+      details: expect.objectContaining({ mutated: false }),
+    }));
+
+    const payload = prepareInventoryReplacement([recordInput]);
     const [record] = payload.records;
     const [feature] = record.features;
 
