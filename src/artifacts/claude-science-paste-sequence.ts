@@ -35,6 +35,8 @@ interface PastedSequenceDetails {
   format: PastedSequenceFormat;
   /** Actual `>` FASTA headers. Comments and GenBank metadata do not count. */
   fastaRecordCount: number;
+  /** GenBank records inferred from document-level LOCUS and ORIGIN markers. */
+  genbankRecordCount: number;
   /** Whole lines recognised as structure and removed: FASTA and GenBank metadata. */
   droppedLines: number;
   /**
@@ -57,7 +59,7 @@ export interface RejectedPastedSequence extends PastedSequenceDetails {
   ok: false;
   /** No partial sequence is exposed: rejecting a multi-record paste is atomic. */
   sequence: '';
-  error: 'multiple-fasta-records';
+  error: 'multiple-fasta-records' | 'multiple-genbank-records';
 }
 
 export type PastedSequence = AcceptedPastedSequence | RejectedPastedSequence;
@@ -67,14 +69,41 @@ export interface PastedSequenceLines {
   droppedLines: number;
   format: PastedSequenceFormat;
   fastaRecordCount: number;
+  genbankRecordCount: number;
 }
 
 const FASTA_HEADER = /^\s*>/;
 const FASTA_COMMENT = /^\s*;/;
-const GENBANK_ORIGIN = /^\s*ORIGIN\b/i;
+// GenBank structural keywords normally begin in column 1. Allow a small common
+// document indent, but not the 12-space continuation column used by fields such
+// as DEFINITION and COMMENT; continuation prose can legitimately begin with
+// words such as "LOCUS" or "ORIGIN" without starting another record.
+const GENBANK_LOCUS = /^[ \t]{0,4}LOCUS\b/i;
+const GENBANK_ORIGIN = /^[ \t]{0,4}ORIGIN\b/i;
 const GENBANK_TERMINATOR = /^\s*\/\/\s*$/;
 /** The position counter that starts each ORIGIN line, and that many viewers emit. */
 const LEADING_POSITION = /^\s*\d+\s*/;
+
+function genbankRecordCount(lines: readonly string[]): number {
+  let records = 0;
+  let locusMarkers = 0;
+  let originMarkers = 0;
+  const finishBlock = () => {
+    records += Math.max(locusMarkers, originMarkers);
+    locusMarkers = 0;
+    originMarkers = 0;
+  };
+  for (const line of lines) {
+    if (GENBANK_TERMINATOR.test(line)) {
+      finishBlock();
+      continue;
+    }
+    if (GENBANK_LOCUS.test(line)) locusMarkers += 1;
+    if (GENBANK_ORIGIN.test(line)) originMarkers += 1;
+  }
+  finishBlock();
+  return records;
+}
 
 /**
  * The lines of `value` that carry sequence, with FASTA and GenBank structure
@@ -84,6 +113,9 @@ export function sequenceLinesFromPaste(value: string): PastedSequenceLines {
   const all = value.split(/\r\n|\r|\n/);
   const originAt = all.findIndex((line) => GENBANK_ORIGIN.test(line));
   const isGenBank = originAt >= 0;
+  const inferredGenBankRecordCount = isGenBank
+    ? Math.max(1, genbankRecordCount(all))
+    : 0;
   // Once an ORIGIN block identifies a GenBank document, angle brackets in its
   // metadata are not FASTA headers. Only non-GenBank documents are counted.
   const fastaRecordCount = isGenBank
@@ -108,6 +140,7 @@ export function sequenceLinesFromPaste(value: string): PastedSequenceLines {
     droppedLines,
     format: isGenBank ? 'genbank' : fastaRecordCount > 0 ? 'fasta' : 'plain',
     fastaRecordCount,
+    genbankRecordCount: inferredGenBankRecordCount,
   };
 }
 
@@ -118,7 +151,13 @@ export function sequenceLinesFromPaste(value: string): PastedSequenceLines {
  */
 export function parsePastedSequence(value: string, alphabet: string): PastedSequence {
   const allowed = new Set(alphabet.toUpperCase().split(''));
-  const { lines, droppedLines, format, fastaRecordCount } = sequenceLinesFromPaste(value);
+  const {
+    lines,
+    droppedLines,
+    format,
+    fastaRecordCount,
+    genbankRecordCount,
+  } = sequenceLinesFromPaste(value);
 
   if (fastaRecordCount > 1) {
     return {
@@ -127,6 +166,20 @@ export function parsePastedSequence(value: string, alphabet: string): PastedSequ
       error: 'multiple-fasta-records',
       format,
       fastaRecordCount,
+      genbankRecordCount,
+      droppedLines,
+      droppedCharacters: 0,
+    };
+  }
+
+  if (genbankRecordCount > 1) {
+    return {
+      ok: false,
+      sequence: '',
+      error: 'multiple-genbank-records',
+      format,
+      fastaRecordCount,
+      genbankRecordCount,
       droppedLines,
       droppedCharacters: 0,
     };
@@ -146,6 +199,7 @@ export function parsePastedSequence(value: string, alphabet: string): PastedSequ
     error: null,
     format,
     fastaRecordCount,
+    genbankRecordCount,
     droppedLines,
     droppedCharacters,
   };

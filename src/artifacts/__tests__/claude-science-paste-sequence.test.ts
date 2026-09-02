@@ -13,6 +13,7 @@ describe('parsePastedSequence', () => {
       error: null,
       format: 'plain',
       fastaRecordCount: 0,
+      genbankRecordCount: 0,
       droppedLines: 0,
       droppedCharacters: 0,
     });
@@ -106,9 +107,183 @@ describe('parsePastedSequence', () => {
     expect(parsed.sequence).toBe('TCGCGCGTTTCGGTGATGACGGTGAAAACC');
     expect(parsed.format).toBe('genbank');
     expect(parsed.fastaRecordCount).toBe(0);
+    expect(parsed.genbankRecordCount).toBe(1);
     // Nothing outside ORIGIN reaches the alphabet filter, so nothing is reported
     // as a rejected character — the metadata was recognised, not discarded.
     expect(parsed.droppedCharacters).toBe(0);
+  });
+
+  it('rejects concatenated GenBank records atomically', () => {
+    const parsed = parsePastedSequence([
+      'LOCUS       FIRST       4 bp    DNA',
+      'ORIGIN',
+      '        1 atgc',
+      '//',
+      'LOCUS       SECOND      4 bp    DNA',
+      'ORIGIN',
+      '        1 gggg',
+      '//',
+    ].join('\n'), DNA);
+
+    expect(parsed).toMatchObject({
+      ok: false,
+      sequence: '',
+      error: 'multiple-genbank-records',
+      format: 'genbank',
+      fastaRecordCount: 0,
+      genbankRecordCount: 2,
+      droppedCharacters: 0,
+    });
+  });
+
+  it('rejects a second GenBank record even when its ORIGIN block is missing', () => {
+    const parsed = parsePastedSequence([
+      'LOCUS       FIRST       4 bp    DNA',
+      'ORIGIN',
+      '        1 atgc',
+      '//',
+      'LOCUS       TRUNCATED   4 bp    DNA',
+      'DEFINITION  second record was copied without its sequence block',
+      '//',
+    ].join('\n'), DNA);
+
+    expect(parsed).toMatchObject({
+      ok: false,
+      sequence: '',
+      error: 'multiple-genbank-records',
+      genbankRecordCount: 2,
+    });
+  });
+
+  it('rejects a LOCUS-only record followed by a headerless ORIGIN record', () => {
+    const parsed = parsePastedSequence([
+      'LOCUS       TRUNCATED',
+      'DEFINITION  first record has no sequence block',
+      '//',
+      'ORIGIN',
+      '        1 atgc',
+      '//',
+    ].join('\n'), DNA);
+
+    expect(parsed).toMatchObject({
+      ok: false,
+      sequence: '',
+      error: 'multiple-genbank-records',
+      genbankRecordCount: 2,
+    });
+  });
+
+  it('rejects two headerless ORIGIN blocks even without LOCUS markers', () => {
+    const parsed = parsePastedSequence([
+      'ORIGIN',
+      '        1 atgc',
+      '//',
+      'ORIGIN',
+      '        1 gggg',
+      '//',
+    ].join('\n'), DNA);
+
+    expect(parsed).toMatchObject({
+      ok: false,
+      sequence: '',
+      error: 'multiple-genbank-records',
+      genbankRecordCount: 2,
+    });
+  });
+
+  it('rejects concatenated GenBank records when the first terminator is missing', () => {
+    const parsed = parsePastedSequence([
+      'LOCUS       FIRST       4 bp    DNA',
+      'ORIGIN',
+      '        1 atgc',
+      'LOCUS       SECOND      4 bp    DNA',
+      'ORIGIN',
+      '        1 gggg',
+      '//',
+    ].join('\n'), DNA);
+
+    expect(parsed).toMatchObject({
+      ok: false,
+      sequence: '',
+      error: 'multiple-genbank-records',
+      genbankRecordCount: 2,
+    });
+  });
+
+  it('recognises indented lowercase record markers in CRLF text', () => {
+    const parsed = parsePastedSequence([
+      '  locus       first',
+      '  origin',
+      '        1 atgc',
+      '  //  ',
+      '\tlocus       second',
+      '\torigin',
+      '        1 gggg',
+      '\t//',
+    ].join('\r\n'), DNA);
+
+    expect(parsed).toMatchObject({
+      ok: false,
+      sequence: '',
+      error: 'multiple-genbank-records',
+      genbankRecordCount: 2,
+    });
+  });
+
+  it('does not invent another record from duplicate terminators or trailing prose', () => {
+    const parsed = parsePastedSequence([
+      'LOCUS       ONLY        4 bp    DNA',
+      'ORIGIN',
+      '        1 atgc',
+      '//',
+      '//',
+      'Copied from a sequence report.',
+    ].join('\n'), DNA);
+
+    expect(parsed).toMatchObject({
+      ok: true,
+      sequence: 'ATGC',
+      format: 'genbank',
+      genbankRecordCount: 1,
+    });
+  });
+
+  it('does not treat continuation-column prose as structural markers', () => {
+    const parsed = parsePastedSequence([
+      'LOCUS       ONLY        4 bp    DNA',
+      'DEFINITION  Demonstrates continuation text.',
+      '            LOCUS-specific wording remains metadata.',
+      'COMMENT     Another continuation follows.',
+      '            ORIGIN tracking was recorded separately.',
+      'ORIGIN',
+      '        1 atgc',
+      '//',
+    ].join('\n'), DNA);
+
+    expect(parsed).toMatchObject({
+      ok: true,
+      sequence: 'ATGC',
+      format: 'genbank',
+      genbankRecordCount: 1,
+    });
+  });
+
+  it('does not mistake an origin feature key for the ORIGIN sequence section', () => {
+    const parsed = parsePastedSequence([
+      'LOCUS       ONLY        4 bp    DNA',
+      'FEATURES             Location/Qualifiers',
+      '     origin          1..4',
+      'ORIGIN',
+      '        1 atgc',
+      '//',
+    ].join('\n'), DNA);
+
+    expect(parsed).toMatchObject({
+      ok: true,
+      sequence: 'ATGC',
+      format: 'genbank',
+      genbankRecordCount: 1,
+    });
   });
 
   it('does not treat GenBank keywords as structure in an ordinary peptide paste', () => {
@@ -157,6 +332,7 @@ describe('parsePastedSequence', () => {
       error: null,
       format: 'plain',
       fastaRecordCount: 0,
+      genbankRecordCount: 0,
       droppedLines: 0,
       droppedCharacters: 0,
     });

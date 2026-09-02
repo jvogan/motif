@@ -8599,9 +8599,12 @@ function App() {
     // ordinary sequence. See claude-science-paste-sequence.
     const parsed = parsePastedSequence(clipboard, alphabet);
     const unit = sequenceType === 'rna' ? 'RNA' : 'DNA';
-    if (!parsed.ok && parsed.error === 'multiple-fasta-records') {
+    if (!parsed.ok) {
+      const isFasta = parsed.error === 'multiple-fasta-records';
+      const recordCount = isFasta ? parsed.fastaRecordCount : parsed.genbankRecordCount;
+      const formatName = isFasta ? 'FASTA' : 'GenBank';
       showWorkbenchNotice(
-        `This paste contains ${parsed.fastaRecordCount.toLocaleString()} FASTA records. ` +
+        `This paste contains ${recordCount.toLocaleString()} ${formatName} records. ` +
         'The sequence editor changes one active record, so nothing was pasted. ' +
         'Use Add entry to import multiple records.',
         'error',
