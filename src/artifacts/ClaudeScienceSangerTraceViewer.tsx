@@ -678,10 +678,14 @@ export function ClaudeScienceSangerTraceViewer({
     if (scrollFrameRef.current !== null) return;
     scrollFrameRef.current = window.requestAnimationFrame(() => {
       scrollFrameRef.current = null;
-      setScrollLeft(pendingScrollLeftRef.current);
+      const nextScrollLeft = pendingScrollLeftRef.current;
+      const currentViewportWidth = scrollerRef.current?.clientWidth || viewportWidth;
+      const centerColumn = Math.floor((nextScrollLeft + (currentViewportWidth / 2)) / cellWidth);
+      setScrollLeft(nextScrollLeft);
+      setPositionColumn(Math.max(0, Math.min(alignment.alignmentLength - 1, centerColumn)));
       setStackScrollTop(pendingScrollTopRef.current);
     });
-  }, []);
+  }, [alignment.alignmentLength, cellWidth, viewportWidth]);
 
   const chainStackWheel = useCallback((event: WheelEvent) => {
     if (!event.deltaY || event.shiftKey || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;

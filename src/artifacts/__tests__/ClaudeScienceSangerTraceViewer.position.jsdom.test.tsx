@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ClaudeScienceSangerTraceViewer,
@@ -172,5 +172,38 @@ describe('ClaudeScienceSangerTraceViewer alignment position', () => {
     expect(positionSlider().value).toBe('80');
     expect((scroller.scrollLeft + (scroller.clientWidth / 2)) / 12).toBeCloseTo(centeredBeforeZoom);
     expect(screen.getByText(/Alignment position 21 · read/)).toBeTruthy();
+  });
+
+  it('updates the position control when the reader scrolls manually', () => {
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
+    const frames: FrameRequestCallback[] = [];
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => undefined);
+
+    renderViewer();
+    const scroller = stubScroller();
+    while (frames.length > 0) frames.shift()?.(0);
+    fireEvent.change(positionSlider(), { target: { value: '70' } });
+    expect(positionSlider().value).toBe('70');
+    fireEvent.scroll(scroller);
+    act(() => {
+      while (frames.length > 0) frames.shift()?.(0);
+    });
+    // Explicit navigation centers column 70 at coordinate 70.5. Synchronizing
+    // that programmatic scroll must not advance the control to column 71.
+    expect(positionSlider().value).toBe('70');
+
+    scroller.scrollLeft = 600;
+    fireEvent.scroll(scroller);
+    act(() => {
+      while (frames.length > 0) frames.shift()?.(0);
+    });
+
+    // (600px scroll + 120px viewport midpoint) / 12px per column = column 60.
+    expect(positionSlider().value).toBe('60');
+    expect(positionSlider().closest('label')?.textContent).toContain('61');
   });
 });
