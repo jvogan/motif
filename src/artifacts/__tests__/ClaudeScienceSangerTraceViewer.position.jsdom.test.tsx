@@ -188,15 +188,27 @@ describe('ClaudeScienceSangerTraceViewer alignment position', () => {
     while (frames.length > 0) frames.shift()?.(0);
     fireEvent.change(positionSlider(), { target: { value: '70' } });
     expect(positionSlider().value).toBe('70');
+    // A browser may deliver an older programmatic scroll after the next range
+    // key press. It must not pull the controlled slider back toward the center
+    // of that stale viewport.
+    scroller.scrollLeft = 300;
     fireEvent.scroll(scroller);
     act(() => {
       while (frames.length > 0) frames.shift()?.(0);
     });
-    // Explicit navigation centers column 70 at coordinate 70.5. Synchronizing
-    // that programmatic scroll must not advance the control to column 71.
+    expect(positionSlider().value).toBe('70');
+
+    // Reaching the latest programmed destination releases the guard so the
+    // next user-driven horizontal scroll can synchronize the position.
+    scroller.scrollLeft = (70.5 * 12) - 120;
+    fireEvent.scroll(scroller);
+    act(() => {
+      while (frames.length > 0) frames.shift()?.(0);
+    });
     expect(positionSlider().value).toBe('70');
 
     scroller.scrollLeft = 600;
+    fireEvent.wheel(scroller, { deltaX: 120 });
     fireEvent.scroll(scroller);
     act(() => {
       while (frames.length > 0) frames.shift()?.(0);

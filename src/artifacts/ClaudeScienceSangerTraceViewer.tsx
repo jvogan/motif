@@ -511,6 +511,8 @@ export function ClaudeScienceSangerTraceViewer({
   const scrollFrameRef = useRef<number | null>(null);
   const pendingScrollLeftRef = useRef(initialSession?.scrollLeft ?? 0);
   const pendingScrollTopRef = useRef(initialSession?.scrollTop ?? 0);
+  const lastPositionScrollLeftRef = useRef(initialSession?.scrollLeft ?? 0);
+  const programmaticScrollLeftRef = useRef<number | null>(null);
 
   const effectiveViewMode: SangerViewMode = linked.length > 1 ? viewMode : 'single';
 
@@ -602,6 +604,13 @@ export function ClaudeScienceSangerTraceViewer({
     const resolvedBehavior = behavior === 'smooth' && (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false)
       ? 'auto'
       : behavior;
+    // A range-key press updates the controlled position and scrolls the trace.
+    // Chromium can deliver an older scroll event after the next key press. Do
+    // not reinterpret that programmatic movement as a new manual position or
+    // rapid keyboard input loses roughly half a viewport of progress.
+    programmaticScrollLeftRef.current = Math.abs(scroller.scrollLeft - target) > 0.5
+      ? target
+      : null;
     scroller.scrollTo({ left: target, behavior: resolvedBehavior });
   }, [cellWidth]);
 
@@ -679,13 +688,26 @@ export function ClaudeScienceSangerTraceViewer({
     scrollFrameRef.current = window.requestAnimationFrame(() => {
       scrollFrameRef.current = null;
       const nextScrollLeft = pendingScrollLeftRef.current;
-      const currentViewportWidth = scrollerRef.current?.clientWidth || viewportWidth;
-      const centerColumn = Math.floor((nextScrollLeft + (currentViewportWidth / 2)) / cellWidth);
+      const horizontalPositionChanged = Math.abs(nextScrollLeft - lastPositionScrollLeftRef.current) > 0.5;
+      lastPositionScrollLeftRef.current = nextScrollLeft;
+      const programmaticTarget = programmaticScrollLeftRef.current;
       setScrollLeft(nextScrollLeft);
-      setPositionColumn(Math.max(0, Math.min(alignment.alignmentLength - 1, centerColumn)));
+      if (programmaticTarget !== null) {
+        if (Math.abs(nextScrollLeft - programmaticTarget) <= 0.5) {
+          programmaticScrollLeftRef.current = null;
+        }
+      } else if (horizontalPositionChanged) {
+        const currentViewportWidth = scrollerRef.current?.clientWidth || viewportWidth;
+        const centerColumn = Math.floor((nextScrollLeft + (currentViewportWidth / 2)) / cellWidth);
+        setPositionColumn(Math.max(0, Math.min(alignment.alignmentLength - 1, centerColumn)));
+      }
       setStackScrollTop(pendingScrollTopRef.current);
     });
   }, [alignment.alignmentLength, cellWidth, viewportWidth]);
+
+  const beginManualScroll = useCallback(() => {
+    programmaticScrollLeftRef.current = null;
+  }, []);
 
   const chainStackWheel = useCallback((event: WheelEvent) => {
     if (!event.deltaY || event.shiftKey || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
@@ -976,6 +998,8 @@ export function ClaudeScienceSangerTraceViewer({
         <div
           ref={scrollerRef}
           className="motif-cs-sanger-scroll motif-cs-sanger-stack-scroll"
+          onPointerDown={beginManualScroll}
+          onWheel={beginManualScroll}
           onScroll={(event) => handleScroll(event.currentTarget.scrollLeft, event.currentTarget.scrollTop)}
           data-testid="sanger-trace-stack-scroll"
           role="region"
@@ -1033,6 +1057,8 @@ export function ClaudeScienceSangerTraceViewer({
         <div
           ref={scrollerRef}
           className="motif-cs-sanger-scroll"
+          onPointerDown={beginManualScroll}
+          onWheel={beginManualScroll}
           onScroll={(event) => handleScroll(event.currentTarget.scrollLeft)}
           data-testid="sanger-trace-scroll"
         >
