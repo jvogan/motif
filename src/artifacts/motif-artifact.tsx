@@ -5,7 +5,7 @@ import { createRoot } from 'react-dom/client';
 import { Activity, AlignCenter, Beaker, ChevronDown, ChevronLeft, ChevronRight, Circle, Crosshair, Dna, FileText, History, Info, Languages, LayoutGrid, List, Map as MapIcon, Maximize2, Minimize2, MoveHorizontal, NotebookPen, Plus, Redo2, Scissors, Search, Settings, ShieldCheck, Tag, Trash2, Undo2, Workflow, Wrench, X, type LucideIcon } from 'lucide-react';
 import vectorsRaw from '../../public/data/vectors.json?raw';
 import type { Feature, FeatureStrand, FeatureType, ORF, RestrictionEnzyme, RestrictionMethylationState, RestrictionMethylationTarget, RestrictionSite, SequenceType, Topology } from '../bio/types';
-import { resolveFeatureColor } from '../bio/feature-palette';
+import { resolveFeatureColor, resolveFeatureColorPickerValue } from '../bio/feature-palette';
 import {
   acceptProposedAnnotation,
   isProposedAnnotation,
@@ -15598,6 +15598,47 @@ function ConfirmDeleteButton({
   );
 }
 
+export function FeatureColorPicker({
+  storedColor,
+  onChange,
+}: {
+  storedColor: string;
+  onChange: (color: string) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [pickerColor, setPickerColor] = useState(() => resolveFeatureColorPickerValue(storedColor));
+
+  useLayoutEffect(() => {
+    const input = inputRef.current;
+    const synchronizePicker = () => {
+      const next = resolveFeatureColorPickerValue(
+        storedColor,
+        (name) => input ? window.getComputedStyle(input).getPropertyValue(name) : undefined,
+      );
+      setPickerColor((current) => current === next ? current : next);
+    };
+    synchronizePicker();
+
+    const themeRoot = input?.closest<HTMLElement>('[data-theme]');
+    if (!themeRoot || typeof MutationObserver === 'undefined') return undefined;
+    const observer = new MutationObserver(synchronizePicker);
+    observer.observe(themeRoot, { attributes: true, attributeFilter: ['class', 'data-theme', 'style'] });
+    return () => observer.disconnect();
+  }, [storedColor]);
+
+  return (
+    <input
+      ref={inputRef}
+      className="motif-cs-color-field"
+      name="feature-color"
+      type="color"
+      value={pickerColor}
+      onChange={(event) => onChange(event.target.value)}
+      aria-label="Feature color"
+    />
+  );
+}
+
 function QuickFeatureEditor({
   sequenceLength,
   sequenceType,
@@ -15983,7 +16024,7 @@ function QuickFeatureEditor({
           </label>
           <label>
             <span>Color</span>
-            <input className="motif-cs-color-field" name="feature-color" type="color" value={color} onChange={(event) => setColor(event.target.value)} aria-label="Feature color" />
+            <FeatureColorPicker storedColor={color} onChange={setColor} />
           </label>
         </div>
         <div className="motif-cs-layer-actions motif-cs-layer-actions-flush">

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { resolveFeatureColor } from '../feature-palette';
+import { resolveFeatureColor, resolveFeatureColorPickerValue } from '../feature-palette';
 
 describe('shared feature palette', () => {
   it('preserves a valid explicit caller color', () => {
@@ -33,5 +33,35 @@ describe('shared feature palette', () => {
     const feature = { name: 'unsafe', type: 'gene' as const, color: 'url(javascript:alert(1))' };
     expect(resolveFeatureColor(feature)).toBe(resolveFeatureColor(feature));
     expect(resolveFeatureColor(feature)).toBe('var(--accent, #7E9BBF)');
+  });
+
+  it('materializes a semantic token to the active opaque theme color for a native picker', () => {
+    const stored = 'var(--accent, #7E9BBF)';
+    const picker = resolveFeatureColorPickerValue(stored, (name) => (
+      name === '--accent' ? '#0169cc' : undefined
+    ));
+
+    expect(picker).toBe('#0169cc');
+    expect(stored).toBe('var(--accent, #7E9BBF)');
+  });
+
+  it('uses the portable token fallback when the active theme is unavailable', () => {
+    expect(resolveFeatureColorPickerValue('var(--purple, #9E96B4)')).toBe('#9e96b4');
+  });
+
+  it('resolves approved theme mixes against the active workspace background', () => {
+    const values: Record<string, string> = {
+      '--green': '#40c977',
+      '--bg-primary': '#1f1f1f',
+    };
+    expect(resolveFeatureColorPickerValue(
+      'color-mix(in srgb, var(--green, #7FA98F) 80%, var(--bg-primary))',
+      (name) => values[name],
+    )).toBe('#39a765');
+  });
+
+  it('always returns an opaque six-digit sRGB value to the picker', () => {
+    expect(resolveFeatureColorPickerValue('#AbC')).toBe('#aabbcc');
+    expect(resolveFeatureColorPickerValue('hsl(120 50% 50%)')).toBe('#8b8f99');
   });
 });

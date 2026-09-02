@@ -69,6 +69,30 @@ const THEME_COLOR_FALLBACKS = {
 } as const;
 
 const THEME_COLOR_REFERENCE = /var\(--(accent|green|purple|amber|red|feature-neutral)(?:,\s*(#[0-9a-f]{6}))?\)/iu;
+const THEME_COLOR_PICKER_TOKEN = /^var\(--(accent|green|purple|amber|red|feature-neutral)(?:,\s*(#[0-9a-f]{6}))?\)$/iu;
+const THEME_COLOR_PICKER_MIX = /^color-mix\(in srgb,\s*var\(--(accent|green|purple|amber|red|feature-neutral)(?:,\s*(#[0-9a-f]{6}))?\)\s+((?:7[2-9]|8\d|9[0-2]))%,\s*var\(--bg-primary\)\)$/iu;
+
+function opaqueHex(value: string | undefined): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  const long = /^#([0-9a-f]{6})(?:[0-9a-f]{2})?$/iu.exec(trimmed);
+  if (long) return `#${long[1].toLowerCase()}`;
+  const short = /^#([0-9a-f]{3})(?:[0-9a-f])?$/iu.exec(trimmed);
+  if (!short) return null;
+  return `#${[...short[1]].map((digit) => `${digit}${digit}`).join('').toLowerCase()}`;
+}
+
+function mixOpaqueHex(foreground: string, foregroundWeight: number, background: string): string {
+  const weight = Math.max(0, Math.min(1, foregroundWeight));
+  const channels = [1, 3, 5].map((offset) => {
+    const foregroundChannel = Number.parseInt(foreground.slice(offset, offset + 2), 16);
+    const backgroundChannel = Number.parseInt(background.slice(offset, offset + 2), 16);
+    return Math.round(foregroundChannel * weight + backgroundChannel * (1 - weight))
+      .toString(16)
+      .padStart(2, '0');
+  });
+  return `#${channels.join('')}`;
+}
 
 function stableHash(value: string): number {
   // FNV-1a over UTF-16 code units. Math.imul keeps the result identical in
@@ -142,4 +166,47 @@ export function materializeFeatureColor(featureColor: string): string {
   if (!reference) return THEME_COLOR_FALLBACKS['feature-neutral'];
   const token = reference[1] as keyof typeof THEME_COLOR_FALLBACKS;
   return reference[2] ?? THEME_COLOR_FALLBACKS[token];
+}
+
+/**
+ * Present a stored feature color in a native color input without rewriting it.
+ *
+ * Native `input[type=color]` controls accept opaque sRGB values, not the
+ * semantic CSS variables used by Motif records. The optional resolver reads
+ * the active theme's inherited custom properties in a browser. Missing theme
+ * values fall back to the portable color embedded in the semantic token.
+ * Callers should keep the original feature color as their source of truth and
+ * replace it only after the user chooses a new picker color.
+ */
+export function resolveFeatureColorPickerValue(
+  featureColor: string,
+  resolveThemeVariable: (name: `--${string}`) => string | undefined = () => undefined,
+): string {
+  const literal = opaqueHex(featureColor);
+  if (literal) return literal;
+
+  const tokenMatch = THEME_COLOR_PICKER_TOKEN.exec(featureColor.trim());
+  if (tokenMatch) {
+    const token = tokenMatch[1] as keyof typeof THEME_COLOR_FALLBACKS;
+    return opaqueHex(resolveThemeVariable(`--${token}`))
+      ?? opaqueHex(tokenMatch[2])
+      ?? THEME_COLOR_FALLBACKS[token].toLowerCase();
+  }
+
+  const mixMatch = THEME_COLOR_PICKER_MIX.exec(featureColor.trim());
+  if (mixMatch) {
+    const token = mixMatch[1] as keyof typeof THEME_COLOR_FALLBACKS;
+    const foreground = opaqueHex(resolveThemeVariable(`--${token}`))
+      ?? opaqueHex(mixMatch[2])
+      ?? THEME_COLOR_FALLBACKS[token].toLowerCase();
+    const background = opaqueHex(resolveThemeVariable('--bg-primary'));
+    return background
+      ? mixOpaqueHex(foreground, Number(mixMatch[3]) / 100, background)
+      : foreground;
+  }
+
+  // Explicit non-hex CSS colors are preserved in the record, but cannot be
+  // represented portably by the opaque native control. Use the neutral swatch
+  // until a user intentionally replaces the stored value through the picker.
+  return THEME_COLOR_FALLBACKS['feature-neutral'].toLowerCase();
 }
