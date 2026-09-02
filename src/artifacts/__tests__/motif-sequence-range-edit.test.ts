@@ -2,12 +2,125 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { applySequenceRangeReplacement } from '../motif-artifact';
+import {
+  applySequenceRangeReplacement,
+  captureArtifactRecordEditSnapshot,
+  createArtifactDatabaseSnapshot,
+  normalizeRecord,
+  prepareArtifactDatabaseRestore,
+  prepareInventoryReplacement,
+  restoreArtifactRecordEditSnapshot,
+  sequenceEditAnnotationReviewProvenance,
+} from '../motif-artifact';
 import type { Feature } from '../../bio/types';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const artifactSource = readFileSync(resolve(here, '..', 'motif-artifact.tsx'), 'utf8');
 const artifactCss = readFileSync(resolve(here, '..', 'motif-artifact.css'), 'utf8');
+
+const artifactState: Parameters<typeof createArtifactDatabaseSnapshot>[1] = {
+  customEnzymes: [],
+  translationLayersByRecord: {},
+  enzymeSourcesByRecord: {},
+  hiddenEnzymesByRecord: {},
+  hiddenFeatureTranslationsByRecord: {},
+  restrictionLabelsByRecord: {},
+  motifsByRecord: {},
+};
+
+function proposalMetadata() {
+  return {
+    status: 'proposed',
+    proposedBy: 'motif-auto-annotation',
+    detector: 'motif-orf-detection',
+    detectorVersion: 1,
+    reason: 'A complete local ORF was found.',
+    evidence: {
+      frame: 1,
+      strand: 1,
+      aminoAcids: 1,
+      startCodon: 'ATG',
+      stopCodon: 'TAA',
+      translationTableId: 1,
+    },
+  };
+}
+
+function rangeProposalRecord(includeSecondProposal = false) {
+  const record = normalizeRecord({
+    id: 'range-proposal',
+    name: 'Range proposal fixture',
+    type: 'dna',
+    sequence: 'AACCGGTTAACC',
+    features: [
+      {
+        id: 'proposal-in-range',
+        name: 'Proposal in range',
+        type: 'cds',
+        start: 2,
+        end: 5,
+        strand: 1,
+        metadata: { motifProposal: proposalMetadata() },
+      },
+      ...(includeSecondProposal ? [{
+        id: 'proposal-outside-range',
+        name: 'Proposal outside range',
+        type: 'cds' as const,
+        start: 8,
+        end: 11,
+        strand: 1 as const,
+        metadata: { motifProposal: proposalMetadata() },
+      }] : []),
+    ],
+    provenance: {
+      source: 'fixture',
+      motifAutoAnnotation: {
+        status: 'review_required',
+        proposedBy: 'motif-auto-annotation',
+        proposedCount: includeSecondProposal ? 2 : 1,
+        pendingCount: includeSecondProposal ? 2 : 1,
+        acceptedCount: 0,
+        dismissedCount: 0,
+      },
+    },
+  }, 0, false);
+  if (!record) throw new Error('range proposal fixture did not normalize');
+  return record;
+}
+
+function replaceRecordRange(
+  record: ReturnType<typeof rangeProposalRecord>,
+  start: number,
+  end: number,
+  replacement: string,
+) {
+  const result = applySequenceRangeReplacement(
+    record.sequence,
+    record.features,
+    start,
+    end,
+    replacement,
+    record.type,
+  );
+  return {
+    ...record,
+    sequence: result.raw,
+    features: result.features,
+    sites: [],
+    sangerTrace: undefined,
+    provenance: sequenceEditAnnotationReviewProvenance(record, result.features),
+  };
+}
+
+function checkpointRecord(record: ReturnType<typeof rangeProposalRecord>) {
+  const payload = prepareInventoryReplacement([{
+    id: record.id,
+    type: record.type,
+    sequence: record.sequence,
+  }], record.id, false);
+  const checkpoint = createArtifactDatabaseSnapshot({ ...payload, records: [record] }, artifactState);
+  return prepareArtifactDatabaseRestore(JSON.parse(JSON.stringify(checkpoint))).payload.records[0];
+}
 
 function sliceBetween(startNeedle: string, endNeedle: string): string {
   const start = artifactSource.indexOf(startNeedle);
@@ -60,6 +173,9 @@ describe('editable sequence range transactions', () => {
     expect(keyboardHandler).toMatch(/case 'Backspace':[\s\S]*commitSelectedRangeEdit\(selectedRange, ''\)/);
     expect(keyboardHandler).toMatch(/case 'Delete':[\s\S]*commitSelectedRangeEdit\(selectedRange, ''\)/);
     expect(commitEdit).toContain('undo: [...store.undo, { before, after }]');
+    expect(commitEdit).toContain(
+      'provenance: sequenceEditAnnotationReviewProvenance(currentRecord, result.features)',
+    );
     expect(commitEdit).toContain('setMapRangesByRecord');
     expect(commitEdit).toContain('[recordId]: null');
     expect(commitEdit).toContain('setCaret(clamp(caretAfter, 0, result.raw.length));');
@@ -159,6 +275,56 @@ describe('editable sequence range transactions', () => {
       expect.objectContaining({ id: 'feature-reverse', start: 2, end: 4, strand: -1 }),
       expect.objectContaining({ id: 'feature-reverse-exact', start: 2, end: 3, strand: -1 }),
     ]));
+  });
+
+  it('reconciles and checkpoints review provenance when a range delete removes one pending proposal', () => {
+    const before = rangeProposalRecord(true);
+    const after = replaceRecordRange(before, 1, 6, '');
+
+    expect(after.features.map((feature) => feature.id)).toEqual(['proposal-outside-range']);
+    expect(after.provenance).toMatchObject({
+      source: 'fixture',
+      motifAutoAnnotation: {
+        status: 'review_required',
+        proposedCount: 2,
+        pendingCount: 1,
+        acceptedCount: 0,
+        dismissedCount: 0,
+      },
+    });
+    expect(checkpointRecord(after).provenance).toEqual(after.provenance);
+    expect(before.features.map((feature) => feature.id)).toEqual([
+      'proposal-in-range',
+      'proposal-outside-range',
+    ]);
+  });
+
+  it('round-trips completed review provenance through range replacement undo and redo snapshots', () => {
+    const before = rangeProposalRecord();
+    const beforeSnapshot = captureArtifactRecordEditSnapshot(before);
+    const after = replaceRecordRange(before, 1, 6, 'TT');
+    const afterSnapshot = captureArtifactRecordEditSnapshot(after);
+
+    expect(after.features).toEqual([]);
+    expect(after.provenance).toMatchObject({
+      motifAutoAnnotation: {
+        status: 'review_complete',
+        pendingCount: 0,
+        acceptedCount: 0,
+        dismissedCount: 0,
+      },
+    });
+    expect(checkpointRecord(after).provenance).toEqual(after.provenance);
+
+    const undone = restoreArtifactRecordEditSnapshot(after, beforeSnapshot);
+    const redone = restoreArtifactRecordEditSnapshot(undone, afterSnapshot);
+    expect(undone.features.map((feature) => feature.id)).toEqual(['proposal-in-range']);
+    expect(undone.provenance).toEqual(before.provenance);
+    expect(redone.features).toEqual([]);
+    expect(redone.provenance).toEqual(after.provenance);
+    expect(artifactSource).toContain(
+      'records[recordIndex] = restoreArtifactRecordEditSnapshot(records[recordIndex], snap);',
+    );
   });
 
   it('keeps range replacement unavailable to read-only sequence classes', () => {

@@ -34,7 +34,10 @@ describe('Claude Science Sanger workflow guards', () => {
     expect(artifactSource).toContain('sangerTrace?: SangerTraceData;');
     expect(artifactSource).toContain('normalizeArtifactSangerTrace(record.sangerTrace, sequence)');
     expect(artifactSource).toContain('sangerTrace: record.sangerTrace');
-    expect(artifactSource).toContain('sangerTrace: snap.sangerTrace');
+    expect(artifactSource).toContain('sangerTrace: snapshot.sangerTrace');
+    expect(artifactSource).toContain(
+      'records[recordIndex] = restoreArtifactRecordEditSnapshot(records[recordIndex], snap);',
+    );
     expect(artifactSource).toContain('sangerTrace: undefined');
     expect(artifactSource).toContain('Undo restores the trace.');
   });

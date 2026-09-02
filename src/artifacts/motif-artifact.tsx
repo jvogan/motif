@@ -2319,6 +2319,19 @@ function annotationReviewProvenance(
 }
 
 /**
+ * Keep durable proposal-review provenance aligned with features transformed
+ * as a side effect of a sequence edit. Losing an annotation to a coordinate
+ * edit is not an explicit review decision, so the existing dismissal count is
+ * preserved while live pending and accepted counts are recomputed.
+ */
+export function sequenceEditAnnotationReviewProvenance(
+  record: ArtifactVector,
+  features: readonly Feature[],
+): Record<string, unknown> | undefined {
+  return annotationReviewProvenance(record, features);
+}
+
+/**
  * Remove one annotation without losing the durable review decision that its
  * metadata represents. The feature editor has a generic Delete control as
  * well as an explicit Dismiss action, so every deletion flows through this
@@ -5492,11 +5505,39 @@ function useElementSize() {
   return { ref, size };
 }
 
-type EditSnapshot = {
+type ArtifactRecordEditSnapshot = {
   sequence: string;
   features: readonly Feature[];
   sites: readonly RestrictionSite[];
   sangerTrace?: SangerTraceData;
+  provenance?: Record<string, unknown>;
+};
+
+export function captureArtifactRecordEditSnapshot(record: ArtifactVector): ArtifactRecordEditSnapshot {
+  return {
+    sequence: record.sequence,
+    features: record.features.map((feature) => ({ ...feature })),
+    sites: record.sites.map((site) => ({ ...site })),
+    sangerTrace: record.sangerTrace,
+    provenance: record.provenance ? normalizeJsonObject(record.provenance) : undefined,
+  };
+}
+
+export function restoreArtifactRecordEditSnapshot(
+  record: ArtifactVector,
+  snapshot: ArtifactRecordEditSnapshot,
+): ArtifactVector {
+  return {
+    ...record,
+    sequence: snapshot.sequence,
+    features: snapshot.features.map((feature) => ({ ...feature })),
+    sites: snapshot.sites.map((site) => ({ ...site })),
+    sangerTrace: snapshot.sangerTrace,
+    provenance: snapshot.provenance ? normalizeJsonObject(snapshot.provenance) : undefined,
+  };
+}
+
+type EditSnapshot = ArtifactRecordEditSnapshot & {
   noteAnchors: NoteAnchorSnapshot[];
   hadTranslationLayerEntry: boolean;
   translationLayers: PortableTranslationTrack[];
@@ -8217,10 +8258,7 @@ function App() {
     const currentRecord = current.records.find((record) => record.id === recordId);
     if (!currentRecord) return null;
     return {
-      sequence: currentRecord.sequence,
-      features: currentRecord.features.map((feature) => ({ ...feature })),
-      sites: currentRecord.sites.map((site) => ({ ...site })),
-      sangerTrace: currentRecord.sangerTrace,
+      ...captureArtifactRecordEditSnapshot(currentRecord),
       noteAnchors: snapshotNoteAnchors(current.notes, recordId),
       hadTranslationLayerEntry: Object.prototype.hasOwnProperty.call(
         artifactStateRef.current.translationLayersByRecord,
@@ -8265,13 +8303,15 @@ function App() {
       editedAt,
     });
     const records = [...current.records];
-    records[recordIndex] = {
+    const nextRecord: ArtifactVector = {
       ...currentRecord,
       sequence: result.raw,
       features: result.features,
       sites: [],
       sangerTrace: undefined,
+      provenance: sequenceEditAnnotationReviewProvenance(currentRecord, result.features),
     };
+    records[recordIndex] = nextRecord;
     const recordLengths = new Map(records.map((record) => [record.id, record.sequence.length]));
     const collections = normalizeArtifactWorkspaceCollections({
       notes: anchors.notes,
@@ -8302,10 +8342,7 @@ function App() {
     // against a sequence length they no longer satisfy.
     createArtifactDatabaseSnapshot(nextPayload, nextArtifactState);
     const after: EditSnapshot = {
-      sequence: result.raw,
-      features: result.features.map((feature) => ({ ...feature })),
-      sites: [],
-      sangerTrace: undefined,
+      ...captureArtifactRecordEditSnapshot(nextRecord),
       noteAnchors: snapshotNoteAnchors(nextPayload.notes, recordId),
       hadTranslationLayerEntry: Object.prototype.hasOwnProperty.call(
         nextArtifactState.translationLayersByRecord,
@@ -8384,13 +8421,7 @@ function App() {
     const recordIndex = current.records.findIndex((record) => record.id === recordId);
     if (recordIndex < 0) return;
     const records = [...current.records];
-    records[recordIndex] = {
-      ...records[recordIndex],
-      sequence: snap.sequence,
-      features: snap.features as Feature[],
-      sites: snap.sites as RestrictionSite[],
-      sangerTrace: snap.sangerTrace,
-    };
+    records[recordIndex] = restoreArtifactRecordEditSnapshot(records[recordIndex], snap);
     const recordLengths = new Map(records.map((record) => [record.id, record.sequence.length]));
     const restoredNotes = restoreNoteAnchors(
       current.notes,
