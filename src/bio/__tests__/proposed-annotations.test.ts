@@ -58,6 +58,21 @@ describe('proactive default annotations', () => {
     expect(accepted.metadata.motifProposal).toMatchObject({ status: 'accepted' });
   });
 
+  it('preserves RNA codon spelling in proposal evidence', () => {
+    const result = proposeDefaultAnnotations(emptyDna({
+      sequence: completeOrf.replaceAll('T', 'U'),
+      type: 'rna',
+    }));
+
+    expect(result.features).toHaveLength(1);
+    expect(result.features[0].metadata.motifProposal).toMatchObject({
+      evidence: {
+        startCodon: 'AUG',
+        stopCodon: 'UAA',
+      },
+    });
+  });
+
   it('enforces annotation-count and work caps', () => {
     const result = proposeDefaultAnnotations(emptyDna({
       sequence: completeOrf.repeat(PROPOSED_ANNOTATION_CAPS.maxAnnotations + 4),

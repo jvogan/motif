@@ -73,6 +73,10 @@ export function acceptProposedAnnotation(feature: Feature): Feature {
   };
 }
 
+function sourceCodonSpelling(codon: string, type: SequenceType): string {
+  return type === 'rna' ? codon.replaceAll('T', 'U') : codon;
+}
+
 /**
  * Reuse the bounded ORF detector to suggest only complete, non-wrapping ORFs.
  * The caller schedules this pure pass after paint and owns durable accept /
@@ -139,8 +143,11 @@ export function proposeDefaultAnnotations(record: ProposedAnnotationRecord): Pro
             frame: orf.frame,
             strand: orf.strand,
             aminoAcids: orf.aminoAcids,
-            startCodon: orf.startCodon,
-            stopCodon: orf.stopCodon,
+            // ORF detection normalizes RNA to the DNA alphabet internally.
+            // Evidence describes the supplied molecule, so restore RNA
+            // spelling at this persistence boundary.
+            startCodon: sourceCodonSpelling(orf.startCodon, record.type),
+            stopCodon: sourceCodonSpelling(orf.stopCodon, record.type),
             translationTableId: table.id,
           },
         } satisfies ProposalMetadata,
