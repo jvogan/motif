@@ -22,6 +22,21 @@ const artifactTemplate = `<!doctype html><html><head><meta name="motif-build-id"
 const openedClients: Client[] = [];
 const openedServers: ReturnType<typeof createMotifClaudeScienceServer>[] = [];
 
+function countJsonNodes(value: unknown): number {
+  const pending: unknown[] = [value];
+  let nodes = 0;
+  while (pending.length > 0) {
+    const current = pending.pop();
+    nodes += 1;
+    if (Array.isArray(current)) {
+      for (const entry of current) pending.push(entry);
+    } else if (current !== null && typeof current === 'object') {
+      for (const entry of Object.values(current)) pending.push(entry);
+    }
+  }
+  return nodes;
+}
+
 afterEach(async () => {
   await Promise.allSettled(openedClients.splice(0).map(client => client.close()));
   await Promise.allSettled(openedServers.splice(0).map(server => server.close()));
@@ -194,6 +209,73 @@ describe('Motif MCP payload boundary', () => {
     expect(inputBytes + paletteBytesPerFeature * features.length).toBeGreaterThan(MOTIF_MCP_LIMITS.maxPayloadBytes);
 
     expect(() => validateMotifPayload(payload)).toThrow(/Payload cannot exceed 32 MiB\./);
+  });
+
+  it('keeps the JSON-node budget transactional after adding palette defaults', () => {
+    const featureCount = MOTIF_MCP_LIMITS.maxFeaturesPerRecord;
+    const makePayloadAtInputNodes = (targetNodes: number) => {
+      const features = Array.from(
+        { length: featureCount },
+        () => ({ type: 'cds', start: 0, end: 1 }),
+      );
+      const payload = {
+        records: [{ id: 'palette-node-boundary', sequence: 'A', features }],
+        padding: [] as null[],
+      };
+      const paddingNodes = targetNodes - countJsonNodes(payload);
+      expect(paddingNodes).toBeGreaterThanOrEqual(0);
+      payload.padding = Array.from({ length: paddingNodes }, () => null);
+      expect(countJsonNodes(payload)).toBe(targetNodes);
+      return { features, payload };
+    };
+
+    const valid = makePayloadAtInputNodes(MOTIF_MCP_LIMITS.maxJsonNodes - featureCount);
+    const prepared = validateMotifPayload(valid.payload).payload;
+    expect(countJsonNodes(prepared)).toBe(MOTIF_MCP_LIMITS.maxJsonNodes);
+    const preparedFeatures = (prepared.records as Array<{ features?: unknown[] }> | undefined)?.[0]?.features;
+    expect(preparedFeatures?.[0]).toMatchObject({ color: resolveFeatureColor(valid.features[0]) });
+
+    const oversized = makePayloadAtInputNodes(MOTIF_MCP_LIMITS.maxJsonNodes);
+    expect(() => validateMotifPayload(oversized.payload))
+      .toThrow(/cannot contain more than 250,000 JSON nodes/i);
+    expect(oversized.features.every(feature => !Object.hasOwn(feature, 'color'))).toBe(true);
+    expect(countJsonNodes(oversized.payload)).toBe(MOTIF_MCP_LIMITS.maxJsonNodes);
+  });
+
+  it('revalidates a direct payload after applying its title override', () => {
+    const payload = {
+      inventory: { title: 'Original' },
+      records: [{ id: 'title-override', sequence: 'A' }],
+    };
+    const prepared = prepareMotifWorkbench({ payload, title: 'Delivered title' });
+    expect(prepared.payload?.inventory).toMatchObject({ title: 'Delivered title' });
+    expect(payload.inventory.title).toBe('Original');
+
+    const title = 't'.repeat(MOTIF_MCP_LIMITS.maxShortTextLength);
+    const boundary = {
+      inventory: { title: 'Original' },
+      records: [{ id: 'title-boundary', sequence: 'A' }],
+      padding: '',
+    };
+    const withEmptyPadding = {
+      ...boundary,
+      inventory: { ...boundary.inventory, title },
+    };
+    boundary.padding = 'x'.repeat(
+      MOTIF_MCP_LIMITS.maxPayloadBytes
+        - Buffer.byteLength(JSON.stringify(withEmptyPadding), 'utf8')
+        + 1,
+    );
+    expect(Buffer.byteLength(JSON.stringify(boundary), 'utf8'))
+      .toBeLessThan(MOTIF_MCP_LIMITS.maxPayloadBytes);
+    expect(Buffer.byteLength(JSON.stringify({
+      ...boundary,
+      inventory: { ...boundary.inventory, title },
+    }), 'utf8')).toBe(MOTIF_MCP_LIMITS.maxPayloadBytes + 1);
+
+    expect(() => prepareMotifWorkbench({ payload: boundary, title }))
+      .toThrow(/Payload cannot exceed 32 MiB\./);
+    expect(boundary.inventory.title).toBe('Original');
   });
 
   it('keeps valid unprojectable GenBank locations with feature and record diagnostics', () => {

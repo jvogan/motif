@@ -669,9 +669,17 @@ export function validateMotifPayload(value: unknown): {
     throw new Error(`Payload analysis workspace is invalid: ${error instanceof Error ? error.message : String(error)}`);
   }
   // Reuse the serialization already required for the input bound as the clone
-  // source. Palette defaults add serialized color strings, so the returned
-  // payload must be checked again after they are applied.
+  // source. Palette defaults add color-string nodes and serialized bytes, so
+  // the returned payload must be checked again after they are applied. Keep
+  // the same trace projection as the input pass because chromatogram arrays
+  // have their own workspace-wide sample-entry bound.
   const preparedPayload = applyFeaturePalette(JSON.parse(serialized) as MotifWorkbenchPayload);
+  validateJsonValue(
+    omitTraceArraysForGenericJsonValidation(preparedPayload, isBareRecord),
+    'payload',
+    { nodes: 0 },
+    new WeakSet(),
+  );
   validateSerializedPayloadSize(JSON.stringify(preparedPayload));
   return { payload: preparedPayload, recordCount: records.length, residueCount };
 }
@@ -856,7 +864,7 @@ export function prepareMotifWorkbench(input: MotifWorkbenchInput): PreparedMotif
   const validated = input.proposeAnnotations === undefined
     ? sourceValidated
     : validateMotifPayload(applyProposalPreference(source, input.proposeAnnotations));
-  const payload = input.title && input.content === undefined
+  const payloadWithTitle = input.title && input.content === undefined
     ? {
       ...validated.payload,
       inventory: {
@@ -865,12 +873,18 @@ export function prepareMotifWorkbench(input: MotifWorkbenchInput): PreparedMotif
       },
     }
     : validated.payload;
+  // A direct payload title is a post-validation transform. Revalidate the
+  // delivered object so the override cannot cross its text, node, depth, or
+  // serialized-byte boundary after the caller-owned payload was accepted.
+  const delivered = payloadWithTitle === validated.payload
+    ? validated
+    : validateMotifPayload(payloadWithTitle);
   return preparedMotifWorkbenchSchema.parse({
     schema: MOTIF_WORKBENCH_RESULT_SCHEMA,
     mode: input.content === undefined ? 'payload' : 'artifact',
     ...(sourceName ? { sourceName } : {}),
-    payload,
-    recordCount: validated.recordCount,
-    residueCount: validated.residueCount,
+    payload: delivered.payload,
+    recordCount: delivered.recordCount,
+    residueCount: delivered.residueCount,
   });
 }
