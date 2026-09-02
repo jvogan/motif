@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   AlignmentImageExportError,
+  alignmentImageCanvasPlan,
   alignmentImageCanvasScale,
+  alignmentImageCellGeometry,
   computeAlignmentImageLayout,
   mixSrgb,
   resolveAlignmentImagePalette,
@@ -13,6 +15,7 @@ import {
   MSA_IMAGE_MAX_WIDTH,
   type AlignmentImageSource,
 } from '../claude-science-msa';
+import { renderAlignmentImageSvg } from '../claude-science-msa-image';
 
 const WHITE = '#ffffff';
 
@@ -96,6 +99,36 @@ describe('computeAlignmentImageLayout', () => {
     expect(layout.drawLetters).toBe(false);
   });
 
+  it('fits every column of a 2 by 100,000 whole export without a subpixel floor', () => {
+    const layout = computeAlignmentImageLayout(source(2, 100_000), {
+      scope: 'all', cellWidth: 12, cellHeight: 16,
+    });
+    const last = alignmentImageCellGeometry(layout, 99_999);
+    const canvas = alignmentImageCanvasPlan(layout.width, layout.height, 2);
+
+    expect(layout.columns).toHaveLength(100_000);
+    expect(layout.columns.at(-1)).toEqual({ kind: 'column', column: 99_999 });
+    expect(layout.cellWidth).toBeGreaterThan(0);
+    expect(layout.cellWidth).toBeLessThan(0.2);
+    expect(layout.contentWidth).toBe(layout.width);
+    expect(last.width).toBeGreaterThan(0);
+    expect(last.x + last.width).toBeCloseTo(layout.contentWidth, 9);
+    expect(last.x + last.width).toBeLessThanOrEqual(layout.width);
+    expect((last.x + last.width) * canvas.scaleX).toBeCloseTo(canvas.width, 9);
+    expect(canvas.width).toBeLessThanOrEqual(MSA_IMAGE_MAX_WIDTH);
+    expect(canvas.width * canvas.height).toBeLessThanOrEqual(MSA_IMAGE_MAX_CANVAS_PIXELS);
+  });
+
+  it('keeps fitted row geometry positive and complete for tall accepted exports', () => {
+    const layout = computeAlignmentImageLayout(source(10_000, 2), {
+      scope: 'all', maxHeight: 200, fontSize: 100_000,
+    });
+    expect(layout.cellHeight).toBeGreaterThan(0);
+    expect(layout.cellHeight).toBeLessThan(1);
+    expect(layout.contentHeight).toBe(layout.height);
+    expect(layout.contentHeight).toBeLessThanOrEqual(200);
+  });
+
   it('preserves every column exactly at the row-cell limit', () => {
     const layout = computeAlignmentImageLayout(source(100, 4_000), {
       scope: 'all', cellWidth: 12, cellHeight: 16, maxCells: MSA_IMAGE_MAX_CELLS,
@@ -173,6 +206,38 @@ describe('computeAlignmentImageLayout', () => {
   });
 });
 
+describe('whole-alignment SVG geometry', () => {
+  it('paints the exact trailing column and spaces subpixel axis ticks legibly', () => {
+    const alignmentLength = 100_000;
+    const aligned = `${'-'.repeat(alignmentLength - 1)}A`;
+    const wide: AlignmentImageSource = {
+      rows: [{ name: 'Template', aligned }, { name: 'Read', aligned }],
+      alignmentLength,
+    };
+    const layout = computeAlignmentImageLayout(wide, { scope: 'all' });
+    const svg = renderAlignmentImageSvg(
+      wide.rows.map((row, index) => ({ ...row, isTemplate: index === 0 })),
+      'dna',
+      'nucleotide',
+      layout,
+      'Wide alignment',
+      DEFAULT_ALIGNMENT_IMAGE_PALETTE,
+    );
+
+    const fill = resolveResidueCellColor('A', 'dna', 'nucleotide', WHITE);
+    const painted = [...svg.matchAll(new RegExp(`<rect x="([0-9.]+)"[^>]+width="([0-9.]+)"[^>]+fill="${fill}"`, 'g'))];
+    expect(painted).toHaveLength(2);
+    const lastX = Number(painted.at(-1)?.[1]);
+    const lastWidth = Number(painted.at(-1)?.[2]);
+    expect(lastWidth).toBeGreaterThan(0);
+    expect(lastX + lastWidth).toBeCloseTo(layout.contentWidth, 4);
+    expect(svg).toContain('>100000</text>');
+    const centeredTextCount = svg.match(/text-anchor="middle"/g)?.length ?? 0;
+    expect(centeredTextCount).toBeGreaterThan(50);
+    expect(centeredTextCount).toBeLessThan(200);
+  });
+});
+
 describe('alignment image palette', () => {
   it('uses deterministic fallbacks when no theme tokens are available', () => {
     expect(resolveAlignmentImagePalette()).toEqual(DEFAULT_ALIGNMENT_IMAGE_PALETTE);
@@ -216,6 +281,18 @@ describe('alignment image canvas scale', () => {
     expect(Math.ceil(12_000 * ratio) * Math.ceil(8_000 * ratio))
       .toBeLessThanOrEqual(MSA_IMAGE_MAX_CANVAS_PIXELS + 20_000);
     expect(alignmentImageCanvasScale(1_000, 500, 2)).toBe(2);
+  });
+
+  it('caps physical backing dimensions as well as total pixels', () => {
+    expect(alignmentImageCanvasPlan(12_000, 80, 2)).toMatchObject({
+      width: 12_000,
+      height: 80,
+      scaleX: 1,
+      scaleY: 1,
+    });
+    const tall = alignmentImageCanvasPlan(200, 8_000, 2);
+    expect(tall.width).toBe(200);
+    expect(tall.height).toBe(8_000);
   });
 });
 

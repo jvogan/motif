@@ -1742,10 +1742,10 @@ export type AlignmentImageLayout = {
   titleHeight: number;
   axisHeight: number;
   headerHeight: number;
-  /** Final canvas/SVG dimensions, clamped to the pixel budget. */
+  /** Final canvas/SVG dimensions, fitted to the pixel budget. */
   width: number;
   height: number;
-  /** Unclamped ideal dimensions (before the pixel budget was applied). */
+  /** Complete fitted content dimensions; never exceed width/height. */
   contentWidth: number;
   contentHeight: number;
   /** True when the complete image was scaled to fit the pixel bounds. */
@@ -1892,7 +1892,11 @@ export function computeAlignmentImageLayout(
 
   let cellWidth = Math.max(0.5, options.cellWidth ?? MSA_IMAGE_DEFAULT_CELL_WIDTH);
   let cellHeight = Math.max(1, options.cellHeight ?? MSA_IMAGE_DEFAULT_CELL_HEIGHT);
-  const baseFont = Math.max(6, Math.floor(options.fontSize ?? MSA_IMAGE_DEFAULT_FONT_SIZE));
+  const requestedBaseFont = Math.max(6, Math.floor(options.fontSize ?? MSA_IMAGE_DEFAULT_FONT_SIZE));
+  // Leave positive vertical space for rows even when a caller supplies an
+  // extreme font size alongside the minimum 200px image height.
+  const maximumBaseFont = Math.max(6, Math.floor((maxHeight - 20) / 3));
+  const baseFont = Math.min(requestedBaseFont, maximumBaseFont);
   let labelWidth = Math.round(options.labelWidth ?? imageLabelWidth(alignment.rows, baseFont));
   labelWidth = Math.max(1, Math.min(labelWidth, Math.floor(maxWidth * 0.5)));
 
@@ -1901,14 +1905,22 @@ export function computeAlignmentImageLayout(
   const headerHeight = titleHeight + axisHeight;
 
   // Scale cells down to fit the pixel budget (never clip; birdseye when tiny).
-  const idealSequenceWidth = columnCount * cellWidth;
+  // Do not put a readability floor on the fitted size: a successful image is
+  // an atomic scientific export, so every requested row and column must fit.
+  // Readability is represented separately by drawLetters and the birdseye
+  // colour mosaic. The row-cell limit remains the resource bound.
+  let sequenceWidth = columnCount * cellWidth;
+  const idealSequenceWidth = sequenceWidth;
   if (idealSequenceWidth > 0 && labelWidth + idealSequenceWidth > maxWidth) {
-    cellWidth = Math.max(0.2, (maxWidth - labelWidth) / columnCount);
+    sequenceWidth = maxWidth - labelWidth;
+    cellWidth = sequenceWidth / columnCount;
     clamped = true;
   }
-  const idealRowsHeight = rowCount * cellHeight;
+  let rowsHeight = rowCount * cellHeight;
+  const idealRowsHeight = rowsHeight;
   if (idealRowsHeight > 0 && headerHeight + idealRowsHeight > maxHeight) {
-    cellHeight = Math.max(1, (maxHeight - headerHeight) / rowCount);
+    rowsHeight = maxHeight - headerHeight;
+    cellHeight = rowsHeight / rowCount;
     clamped = true;
   }
 
@@ -1917,8 +1929,8 @@ export function computeAlignmentImageLayout(
     ? Math.max(6, Math.min(baseFont, Math.floor(cellWidth * 1.35), Math.max(6, Math.floor(cellHeight * 0.78))))
     : 0;
 
-  const contentWidth = labelWidth + columnCount * cellWidth;
-  const contentHeight = headerHeight + rowCount * cellHeight;
+  const contentWidth = labelWidth + sequenceWidth;
+  const contentHeight = headerHeight + rowsHeight;
   const width = Math.max(1, Math.min(maxWidth, Math.ceil(contentWidth)));
   const height = Math.max(1, Math.min(maxHeight, Math.ceil(contentHeight)));
 
@@ -1941,6 +1953,63 @@ export function computeAlignmentImageLayout(
     contentWidth,
     contentHeight,
     clamped,
+  };
+}
+
+export type AlignmentImageCellGeometry = {
+  x: number;
+  width: number;
+  centerX: number;
+};
+
+/**
+ * Exact horizontal bounds for a visual column in an image layout.
+ *
+ * Deriving both edges from the column index avoids accumulated floating-point
+ * drift. The final column is explicitly closed on contentWidth, so SVG and
+ * canvas renderers cannot disagree about or clip the trailing column when the
+ * fitted cell width is subpixel.
+ */
+export function alignmentImageCellGeometry(
+  layout: AlignmentImageLayout,
+  index: number,
+): AlignmentImageCellGeometry {
+  const safeIndex = Math.max(0, Math.min(layout.columnCount - 1, Math.floor(index)));
+  const x = layout.labelWidth + safeIndex * layout.cellWidth;
+  const right = safeIndex === layout.columnCount - 1
+    ? layout.contentWidth
+    : layout.labelWidth + (safeIndex + 1) * layout.cellWidth;
+  const width = Math.max(0, right - x);
+  return { x, width, centerX: x + width / 2 };
+}
+
+export type AlignmentImageCanvasPlan = {
+  width: number;
+  height: number;
+  scaleX: number;
+  scaleY: number;
+};
+
+/** Plan a bounded backing store whose logical right/bottom edges map exactly. */
+export function alignmentImageCanvasPlan(
+  width: number,
+  height: number,
+  devicePixelRatio = 1,
+): AlignmentImageCanvasPlan {
+  const logicalWidth = Math.max(1, width);
+  const logicalHeight = Math.max(1, height);
+  const ratio = Math.min(
+    alignmentImageCanvasScale(logicalWidth, logicalHeight, devicePixelRatio),
+    MSA_IMAGE_MAX_WIDTH / logicalWidth,
+    MSA_IMAGE_MAX_HEIGHT / logicalHeight,
+  );
+  const physicalWidth = Math.max(1, Math.floor(logicalWidth * ratio));
+  const physicalHeight = Math.max(1, Math.floor(logicalHeight * ratio));
+  return {
+    width: physicalWidth,
+    height: physicalHeight,
+    scaleX: physicalWidth / logicalWidth,
+    scaleY: physicalHeight / logicalHeight,
   };
 }
 

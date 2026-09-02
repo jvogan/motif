@@ -26,7 +26,8 @@ import {
   ARTIFACT_MSA_LOCAL_WORK_BUDGET,
   AlignmentImageExportError,
   ArtifactAlignmentError,
-  alignmentImageCanvasScale,
+  alignmentImageCanvasPlan,
+  alignmentImageCellGeometry,
   alignmentComparisonOf,
   MSA_MOTIF_SEARCH_MAX_QUERY_LENGTH,
   clampMsaClientPoint,
@@ -36,7 +37,6 @@ import {
   createLocalArtifactAlignment,
   detectAlphabetAnomalies,
   estimateLocalAlignmentWork,
-  buildMsaDifferenceColumnSlots,
   findMsaMatches,
   formatAlignedFasta,
   formatClustal,
@@ -78,6 +78,14 @@ import {
   type MsaWheelGestureState,
 } from './claude-science-msa';
 import {
+  fitImageLabel,
+  imageColumnTickStep,
+  imageSubtitle,
+  MSA_IMAGE_FONT_STACK,
+  renderAlignmentImageSvg,
+  type ImageExportRow,
+} from './claude-science-msa-image';
+import {
   ClaudeScienceSangerTraceViewer,
   hasLinkedSangerTrace,
 } from './ClaudeScienceSangerTraceViewer';
@@ -107,6 +115,7 @@ import {
   type MsaVariant,
   type MsaVariantSummary,
 } from './claude-science-msa-variants';
+import { createMsaColumnView } from './claude-science-msa-column-view';
 
 type ViewerRecord = ArtifactMsaRecord & {
   group?: string;
@@ -428,10 +437,6 @@ const MSA_VIEWPORT_RESTORE_FRAMES = 12;
 // Rendered from the alignment data model (the matrix DOM is column-virtualised).
 // Colours come from the active artifact theme at the export gesture, with
 // deterministic fallbacks supplied by resolveAlignmentImagePalette.
-const MSA_IMAGE_FONT_STACK = "ui-monospace, 'SFMono-Regular', 'Menlo', 'Consolas', monospace";
-
-type ImageExportRow = { name: string; aligned: string; isTemplate: boolean };
-
 /** Rows in export order: the reference/template row pinned first, then the rest
  * in stored order (a deterministic, drag/sort-independent ordering). */
 function imageExportRows(alignment: ArtifactAlignment, referenceRowId: string): ImageExportRow[] {
@@ -440,41 +445,6 @@ function imageExportRows(alignment: ArtifactAlignment, referenceRowId: string): 
     ? [template, ...alignment.rows.filter((row) => row.id !== template.id)]
     : [...alignment.rows];
   return ordered.map((row) => ({ name: row.name, aligned: row.aligned, isTemplate: row.id === template?.id }));
-}
-
-/** Truncate a row label to fit the label gutter, appending an ellipsis. */
-function fitImageLabel(name: string, labelWidth: number, fontSize: number): string {
-  const maxChars = Math.max(1, Math.floor((labelWidth - 12) / Math.max(1, fontSize * 0.6)));
-  if (name.length <= maxChars) return name;
-  return maxChars <= 1 ? '…' : `${name.slice(0, maxChars - 1)}…`;
-}
-
-/** Column-tick spacing (in columns) aimed at roughly one label per ~64px. */
-function imageColumnTickStep(cellWidth: number): number {
-  const target = Math.max(1, Math.round(64 / Math.max(1, cellWidth)));
-  const candidates = [1, 2, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1_000, 2_000, 5_000];
-  return candidates.find((step) => step >= target) ?? 10_000;
-}
-
-function imageSubtitle(layout: AlignmentImageLayout): string {
-  const absoluteColumns = layout.columns.flatMap((slot) => slot.kind === 'column' ? [slot.column] : []);
-  const hiddenCount = layout.columns.reduce((sum, slot) => sum + (slot.kind === 'elision' ? slot.hiddenCount : 0), 0);
-  const first = absoluteColumns[0] ?? layout.startColumn;
-  const last = absoluteColumns[absoluteColumns.length - 1] ?? first;
-  return hiddenCount > 0
-    ? `columns ${(first + 1).toLocaleString()}–${(last + 1).toLocaleString()} · ${hiddenCount.toLocaleString()} hidden · ${layout.rowCount} rows`
-    : `columns ${(first + 1).toLocaleString()}–${(last + 1).toLocaleString()} · ${layout.rowCount} rows`;
-}
-
-/** Escape text for inclusion in the SVG document. */
-function escapeXml(value: string): string {
-  return value.replace(/[&<>"']/g, (char) => (
-    char === '&' ? '&amp;'
-      : char === '<' ? '&lt;'
-        : char === '>' ? '&gt;'
-          : char === '"' ? '&quot;'
-            : '&#39;'
-  ));
 }
 
 /** Binary download via an object URL + temporary anchor (onDownload is text-only). */
@@ -506,16 +476,16 @@ function renderAlignmentImageCanvas(
   palette: AlignmentImagePalette,
 ): HTMLCanvasElement | null {
   const canvas = document.createElement('canvas');
-  const ratio = alignmentImageCanvasScale(
+  const plan = alignmentImageCanvasPlan(
     layout.width,
     layout.height,
     typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1,
   );
-  canvas.width = Math.round(layout.width * ratio);
-  canvas.height = Math.round(layout.height * ratio);
+  canvas.width = plan.width;
+  canvas.height = plan.height;
   const ctx = canvas.getContext('2d');
   if (!ctx) return null;
-  ctx.scale(ratio, ratio);
+  ctx.scale(plan.scaleX, plan.scaleY);
   const bg = palette.background;
 
   // Background + sticky label gutter.
@@ -546,7 +516,7 @@ function renderAlignmentImageCanvas(
     if (slot.kind === 'elision') {
       ctx.fillText(
         `⋯${slot.hiddenCount.toLocaleString()}⋯`,
-        layout.labelWidth + (index + 0.5) * layout.cellWidth,
+        alignmentImageCellGeometry(layout, index).centerX,
         layout.titleHeight + layout.axisHeight * 0.5,
         layout.cellWidth,
       );
@@ -556,7 +526,7 @@ function renderAlignmentImageCanvas(
     if (index !== 0 && (column + 1) % tickStep !== 0) continue;
     ctx.fillText(
       (column + 1).toString(),
-      layout.labelWidth + (index + 0.5) * layout.cellWidth,
+      alignmentImageCellGeometry(layout, index).centerX,
       layout.titleHeight + layout.axisHeight * 0.5,
       layout.cellWidth * 6,
     );
@@ -575,7 +545,14 @@ function renderAlignmentImageCanvas(
       const fill = resolveResidueCellColor(symbol, molecule, scheme, bg);
       if (!fill) continue;
       ctx.fillStyle = fill;
-      ctx.fillRect(layout.labelWidth + index * layout.cellWidth, y, layout.cellWidth + 0.5, layout.cellHeight + 0.5);
+      const geometry = alignmentImageCellGeometry(layout, index);
+      const overdraw = Math.min(0.5, geometry.width * 0.05);
+      ctx.fillRect(
+        geometry.x,
+        y,
+        Math.min(layout.contentWidth - geometry.x, geometry.width + overdraw),
+        layout.cellHeight + Math.min(0.5, layout.cellHeight * 0.05),
+      );
     }
     // Residue glyphs.
     if (layout.drawLetters) {
@@ -588,7 +565,7 @@ function renderAlignmentImageCanvas(
         if (!slot || slot.kind === 'elision') continue;
         const symbol = row.aligned[slot.column] ?? '-';
         if (symbol === '-' || symbol === '.') continue;
-        ctx.fillText(symbol, layout.labelWidth + (index + 0.5) * layout.cellWidth, y + layout.cellHeight / 2);
+        ctx.fillText(symbol, alignmentImageCellGeometry(layout, index).centerX, y + layout.cellHeight / 2);
       }
     }
     // Row label (drawn last so it sits above any coloured cells).
@@ -608,83 +585,6 @@ function canvasToPngBlob(canvas: HTMLCanvasElement): Promise<Blob | null> {
     if (typeof canvas.toBlob === 'function') canvas.toBlob((blob) => resolve(blob), 'image/png');
     else resolve(null);
   });
-}
-
-/**
- * Build a self-contained SVG document for the alignment (vector alternative).
- * A null scheme means no residue colouring, as in the canvas renderer above.
- */
-function renderAlignmentImageSvg(
-  rows: readonly ImageExportRow[],
-  molecule: SequenceType,
-  scheme: MsaColorScheme | null,
-  layout: AlignmentImageLayout,
-  title: string,
-  palette: AlignmentImagePalette,
-): string {
-  const bg = palette.background;
-  const parts: string[] = [];
-  parts.push(
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${layout.width}" height="${layout.height}"`
-    + ` viewBox="0 0 ${layout.width} ${layout.height}" font-family="${escapeXml(MSA_IMAGE_FONT_STACK)}">`,
-  );
-  parts.push(`<rect width="${layout.width}" height="${layout.height}" fill="${bg}"/>`);
-  parts.push(`<rect width="${layout.labelWidth}" height="${layout.height}" fill="${escapeXml(palette.labelBackground)}"/>`);
-
-  // Title band.
-  const titleSize = Math.max(10, Math.round(layout.titleHeight * 0.42));
-  const subSize = Math.max(9, Math.round(layout.titleHeight * 0.3));
-  parts.push(`<text x="8" y="${layout.titleHeight * 0.4}" fill="${escapeXml(palette.text)}" font-size="${titleSize}" font-weight="600" dominant-baseline="middle">${escapeXml(title)}</text>`);
-  parts.push(`<text x="8" y="${layout.titleHeight * 0.76}" fill="${escapeXml(palette.muted)}" font-size="${subSize}" dominant-baseline="middle">${escapeXml(imageSubtitle(layout))}</text>`);
-
-  // Column axis ticks.
-  const tickStep = imageColumnTickStep(layout.cellWidth);
-  const axisSize = Math.max(8, Math.round(layout.axisHeight * 0.55));
-  for (let index = 0; index < layout.columnCount; index += 1) {
-    const slot = layout.columns[index];
-    if (!slot) continue;
-    const x = layout.labelWidth + (index + 0.5) * layout.cellWidth;
-    if (slot.kind === 'elision') {
-      parts.push(`<text x="${x.toFixed(1)}" y="${layout.titleHeight + layout.axisHeight * 0.5}" fill="${escapeXml(palette.muted)}" font-size="${axisSize}" text-anchor="middle" dominant-baseline="middle">${escapeXml(`⋯${slot.hiddenCount.toLocaleString()}⋯`)}</text>`);
-      continue;
-    }
-    const column = slot.column;
-    if (index !== 0 && (column + 1) % tickStep !== 0) continue;
-    parts.push(`<text x="${x.toFixed(1)}" y="${layout.titleHeight + layout.axisHeight * 0.5}" fill="${escapeXml(palette.muted)}" font-size="${axisSize}" text-anchor="middle" dominant-baseline="middle">${column + 1}</text>`);
-  }
-
-  const labelFontSize = Math.max(8, Math.min(layout.fontSize || 11, Math.round(layout.cellHeight * 0.62)));
-  for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
-    const row = rows[rowIndex];
-    const y = layout.headerHeight + rowIndex * layout.cellHeight;
-    // Cell backgrounds.
-    for (let index = 0; scheme && index < layout.columnCount; index += 1) {
-      const slot = layout.columns[index];
-      if (!slot || slot.kind === 'elision') continue;
-      const symbol = row.aligned[slot.column] ?? '-';
-      const fill = resolveResidueCellColor(symbol, molecule, scheme, bg);
-      if (!fill) continue;
-      const x = layout.labelWidth + index * layout.cellWidth;
-      parts.push(`<rect x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${(layout.cellWidth + 0.5).toFixed(2)}" height="${(layout.cellHeight + 0.5).toFixed(2)}" fill="${fill}"/>`);
-    }
-    // Residue glyphs.
-    if (layout.drawLetters) {
-      for (let index = 0; index < layout.columnCount; index += 1) {
-        const slot = layout.columns[index];
-        if (!slot || slot.kind === 'elision') continue;
-        const symbol = row.aligned[slot.column] ?? '-';
-        if (symbol === '-' || symbol === '.') continue;
-        const x = layout.labelWidth + (index + 0.5) * layout.cellWidth;
-        parts.push(`<text x="${x.toFixed(1)}" y="${(y + layout.cellHeight / 2).toFixed(1)}" fill="${escapeXml(palette.text)}" font-size="${layout.fontSize}" text-anchor="middle" dominant-baseline="middle">${escapeXml(symbol)}</text>`);
-      }
-    }
-    // Row label.
-    parts.push(`<rect x="0" y="${y.toFixed(2)}" width="${layout.labelWidth}" height="${layout.cellHeight.toFixed(2)}" fill="${escapeXml(palette.labelBackground)}"/>`);
-    parts.push(`<text x="8" y="${(y + layout.cellHeight / 2).toFixed(1)}" fill="${escapeXml(row.isTemplate ? palette.text : palette.muted)}" font-size="${labelFontSize}"${row.isTemplate ? ' font-weight="600"' : ''} dominant-baseline="middle">${escapeXml(fitImageLabel(row.name, layout.labelWidth, labelFontSize))}</text>`);
-  }
-
-  parts.push('</svg>');
-  return parts.join('');
 }
 
 function alignmentPickerLabels(alignments: readonly ArtifactAlignment[]): Map<string, string> {
@@ -1799,37 +1699,27 @@ function AlignmentMatrix({
   const renderFontSize = blocks ? fontSize : Math.min(fontSize, Math.max(7, Math.round(cellWidth * 1.32)));
   const [expandedColumnRanges, setExpandedColumnRanges] = useState<MsaExpandedColumnRange[]>([]);
   useEffect(() => { setExpandedColumnRanges([]); }, [alignment.id, columnFilter, columnFilterContext, referenceRowId]);
-  const columnSlots = useMemo<MsaColumnViewSlot[]>(() => (
-    columnFilter === 'differences'
-      ? buildMsaDifferenceColumnSlots(
-          alignment.alignmentLength,
-          differingColumns,
-          columnFilterContext,
-          expandedColumnRanges,
-        )
-      : Array.from(
-          { length: alignment.alignmentLength },
-          (_, column): MsaColumnViewSlot => ({ kind: 'column', column }),
-        )
-  ), [alignment.alignmentLength, columnFilter, columnFilterContext, differingColumns, expandedColumnRanges]);
-  const columnSlotIndex = useMemo(() => {
-    const map = new Map<number, number>();
-    columnSlots.forEach((slot, index) => { if (slot.kind === 'column') map.set(slot.column, index); });
-    return map;
-  }, [columnSlots]);
+  const columnView = useMemo(() => createMsaColumnView({
+    alignmentLength: alignment.alignmentLength,
+    columnFilter,
+    differingColumns,
+    context: columnFilterContext,
+    expandedRanges: expandedColumnRanges,
+  }), [alignment.alignmentLength, columnFilter, columnFilterContext, differingColumns, expandedColumnRanges]);
+  const columnSlotCount = columnView.slotCount;
   const labelWidth = msaRowLabelWidth(viewportWidth);
   const sequenceViewportWidth = Math.max(120, viewportWidth - labelWidth);
   const overscan = 24;
   const visibleStartSlot = Math.max(0, Math.min(
-    Math.max(0, columnSlots.length - 1),
+    Math.max(0, columnSlotCount - 1),
     Math.floor(scrollLeft / cellWidth),
   ));
   const visibleColumnCount = Math.max(1, Math.ceil(sequenceViewportWidth / cellWidth));
-  const visibleEndSlot = Math.min(columnSlots.length, visibleStartSlot + visibleColumnCount);
+  const visibleEndSlot = Math.min(columnSlotCount, visibleStartSlot + visibleColumnCount);
   const startSlot = Math.max(0, visibleStartSlot - overscan);
-  const endSlot = Math.min(columnSlots.length, visibleEndSlot + overscan);
-  const renderedSlots = columnSlots.slice(startSlot, endSlot);
-  const visibleSlots = columnSlots.slice(visibleStartSlot, visibleEndSlot);
+  const endSlot = Math.min(columnSlotCount, visibleEndSlot + overscan);
+  const renderedSlots = columnView.slotsInRange(startSlot, endSlot);
+  const visibleSlots = columnView.slotsInRange(visibleStartSlot, visibleEndSlot);
   const visibleAbsoluteColumns = visibleSlots.flatMap((slot) => slot.kind === 'column' ? [slot.column] : []);
   const firstVisibleSlot = visibleSlots[0];
   const lastVisibleSlot = visibleSlots[visibleSlots.length - 1];
@@ -1837,56 +1727,57 @@ function AlignmentMatrix({
     ?? (firstVisibleSlot?.kind === 'elision' ? firstVisibleSlot.startColumn : 0);
   const visibleEndColumn = (visibleAbsoluteColumns[visibleAbsoluteColumns.length - 1]
     ?? (lastVisibleSlot?.kind === 'elision' ? lastVisibleSlot.endColumn - 1 : visibleStartColumn)) + 1;
-  const shownAlignmentColumnCount = columnSlots.reduce((count, slot) => count + Number(slot.kind === 'column'), 0);
+  const shownAlignmentColumnCount = columnView.isCompressed
+    ? columnView.allSlots().reduce((count, slot) => count + Number(slot.kind === 'column'), 0)
+    : alignment.alignmentLength;
   const hiddenAlignmentColumnCount = alignment.alignmentLength - shownAlignmentColumnCount;
   const visibleWindowText = columnFilter === 'differences'
     ? `${visibleAbsoluteColumns.length.toLocaleString()} displayed alignment columns in this window · ${hiddenAlignmentColumnCount.toLocaleString()} identical columns hidden overall`
     : `Alignment columns ${visibleStartColumn + 1}–${Math.max(visibleStartColumn + 1, visibleEndColumn)} of ${alignment.alignmentLength.toLocaleString()}`;
-  const sequenceWidth = columnSlots.length * cellWidth;
+  const sequenceWidth = columnSlotCount * cellWidth;
   const totalWidth = labelWidth + sequenceWidth;
   const maxHorizontalScroll = Math.max(0, sequenceWidth - sequenceViewportWidth);
   const previousViewportGeometryRef = useRef({ cellWidth, sequenceViewportWidth });
   const absoluteCenterColumnForScrollLeft = useCallback((left: number) => {
-    if (columnSlots.length === 0 || cellWidth <= 0) return 0;
+    if (columnSlotCount === 0 || cellWidth <= 0) return 0;
     const slotPosition = Math.max(
       0,
-      Math.min(columnSlots.length, (left + sequenceViewportWidth / 2) / cellWidth),
+      Math.min(columnSlotCount, (left + sequenceViewportWidth / 2) / cellWidth),
     );
-    const slotIndex = Math.min(columnSlots.length - 1, Math.floor(slotPosition));
+    const slotIndex = Math.min(columnSlotCount - 1, Math.floor(slotPosition));
     const slotFraction = Math.max(0, Math.min(1, slotPosition - slotIndex));
-    const slot = columnSlots[slotIndex];
+    const slot = columnView.slotAt(slotIndex);
     if (!slot) return 0;
     return slot.kind === 'column'
       ? slot.column + slotFraction
       : slot.startColumn + slotFraction * (slot.endColumn - slot.startColumn);
-  }, [cellWidth, columnSlots, sequenceViewportWidth]);
+  }, [cellWidth, columnSlotCount, columnView, sequenceViewportWidth]);
   const scrollLeftForAbsoluteCenterColumn = useCallback((centerColumn: number) => {
-    if (columnSlots.length === 0 || cellWidth <= 0) return 0;
+    if (columnSlotCount === 0 || cellWidth <= 0) return 0;
     const boundedCenter = Math.max(0, Math.min(alignment.alignmentLength, centerColumn));
     const column = Math.min(Math.max(0, alignment.alignmentLength - 1), Math.floor(boundedCenter));
     const columnFraction = Math.max(0, Math.min(1, boundedCenter - column));
-    let slotIndex = columnSlotIndex.get(column);
+    let slotIndex = columnView.slotIndexForColumn(column);
     let slotFraction = columnFraction;
     if (slotIndex === undefined) {
-      slotIndex = columnSlots.findIndex((slot) => (
-        slot.kind === 'elision' && column >= slot.startColumn && column < slot.endColumn
-      ));
-      const slot = columnSlots[slotIndex];
+      const elision = columnView.elisionForColumn(column);
+      slotIndex = elision ? columnView.allSlots().indexOf(elision) : undefined;
+      const slot = elision;
       if (slot?.kind === 'elision') {
         slotFraction = (boundedCenter - slot.startColumn) / Math.max(1, slot.endColumn - slot.startColumn);
       }
     }
-    if (slotIndex < 0 || slotIndex === undefined) return 0;
+    if (slotIndex === undefined || slotIndex < 0) return 0;
     const centerPixel = (slotIndex + Math.max(0, Math.min(1, slotFraction))) * cellWidth;
     return Math.max(0, Math.min(maxHorizontalScroll, centerPixel - sequenceViewportWidth / 2));
-  }, [alignment.alignmentLength, cellWidth, columnSlotIndex, columnSlots, maxHorizontalScroll, sequenceViewportWidth]);
+  }, [alignment.alignmentLength, cellWidth, columnSlotCount, columnView, maxHorizontalScroll, sequenceViewportWidth]);
   const fitResolution = useMemo(() => resolveMsaFitZoom({
     baseCellWidth,
-    columnCount: columnSlots.length,
+    columnCount: columnSlotCount,
     viewportWidth: sequenceViewportWidth,
     minimumCellWidth: MSA_CELL_MIN,
     maximumCellWidth: MSA_CELL_MAX,
-  }), [baseCellWidth, columnSlots.length, sequenceViewportWidth]);
+  }), [baseCellWidth, columnSlotCount, sequenceViewportWidth]);
   const canFitAlignment = fitResolution.fits;
   const panThumbWidth = Math.max(
     36,
@@ -1995,7 +1886,7 @@ function AlignmentMatrix({
     activeCellIsValid
     && activeCell
     && (() => {
-      const slot = columnSlotIndex.get(activeCell.column);
+      const slot = columnView.slotIndexForColumn(activeCell.column);
       return slot !== undefined && slot >= startSlot && slot < endSlot;
     })(),
   );
@@ -2117,11 +2008,9 @@ function AlignmentMatrix({
     const viewport = viewportRef.current;
     if (!viewport) return;
     const boundedColumn = Math.max(0, Math.min(Math.max(0, alignment.alignmentLength - 1), column));
-    const slotIndex = columnSlotIndex.get(boundedColumn);
+    const slotIndex = columnView.slotIndexForColumn(boundedColumn);
     if (slotIndex === undefined) {
-      const elision = columnSlots.find((slot): slot is Extract<MsaColumnViewSlot, { kind: 'elision' }> => (
-        slot.kind === 'elision' && boundedColumn >= slot.startColumn && boundedColumn < slot.endColumn
-      ));
+      const elision = columnView.elisionForColumn(boundedColumn);
       if (elision) {
         pendingColumnScrollRef.current = { column: boundedColumn, behavior };
         expandElision(elision);
@@ -2133,20 +2022,20 @@ function AlignmentMatrix({
     desiredCenterColumnRef.current = boundedColumn + 0.5;
     if (typeof viewport.scrollTo === 'function') viewport.scrollTo({ left: target, behavior });
     else { viewport.scrollLeft = target; setScrollLeft(target); }
-  }, [alignment.alignmentLength, cellWidth, columnSlotIndex, columnSlots, expandElision, maxHorizontalScroll, sequenceViewportWidth, viewportRef]);
+  }, [alignment.alignmentLength, cellWidth, columnView, expandElision, maxHorizontalScroll, sequenceViewportWidth, viewportRef]);
 
   useLayoutEffect(() => {
     const pending = pendingColumnScrollRef.current;
     const viewport = viewportRef.current;
     if (!pending || !viewport) return;
-    const slotIndex = columnSlotIndex.get(pending.column);
+    const slotIndex = columnView.slotIndexForColumn(pending.column);
     if (slotIndex === undefined) return;
     pendingColumnScrollRef.current = null;
     const target = Math.max(0, Math.min(maxHorizontalScroll, ((slotIndex + 0.5) * cellWidth) - (sequenceViewportWidth / 2)));
     desiredCenterColumnRef.current = pending.column + 0.5;
     if (typeof viewport.scrollTo === 'function') viewport.scrollTo({ left: target, behavior: pending.behavior });
     else { viewport.scrollLeft = target; setScrollLeft(target); }
-  }, [cellWidth, columnSlotIndex, maxHorizontalScroll, sequenceViewportWidth, viewportRef]);
+  }, [cellWidth, columnView, maxHorizontalScroll, sequenceViewportWidth, viewportRef]);
 
   const setZoom = useCallback((next: number) => {
     onZoomChange(Math.max(MSA_ZOOM_MIN, Math.min(MSA_ZOOM_MAX, Math.round(next * 100) / 100)));
@@ -2560,17 +2449,17 @@ function AlignmentMatrix({
       labelWidth,
       scrollLeft: viewport.scrollLeft,
       cellWidth,
-      columnCount: columnSlots.length,
+      columnCount: columnSlotCount,
     }, clampToViewport);
     if (slotIndex === null) return null;
-    const slot = columnSlots[slotIndex];
+    const slot = columnView.slotAt(slotIndex);
     if (!slot) return null;
     if (slot.kind === 'column') return slot.column;
     if (!clampToViewport) return null;
     const sequenceX = clientX - rect.left - labelWidth + viewport.scrollLeft;
     const withinSlot = sequenceX - slotIndex * cellWidth;
     return withinSlot < cellWidth / 2 ? slot.startColumn : slot.endColumn - 1;
-  }, [cellWidth, columnSlots, labelWidth, viewportRef]);
+  }, [cellWidth, columnSlotCount, columnView, labelWidth, viewportRef]);
 
   const rowElementFromPoint = useCallback((clientX: number, clientY: number, nearest = false): HTMLElement | null => {
     const target = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
@@ -2662,11 +2551,9 @@ function AlignmentMatrix({
     gridRef.current?.focus({ preventScroll: true });
     focusGridRef.current = false;
 
-    const activeSlotIndex = columnSlotIndex.get(activeCell.column);
+    const activeSlotIndex = columnView.slotIndexForColumn(activeCell.column);
     if (activeSlotIndex === undefined) {
-      const elision = columnSlots.find((slot): slot is Extract<MsaColumnViewSlot, { kind: 'elision' }> => (
-        slot.kind === 'elision' && activeCell.column >= slot.startColumn && activeCell.column < slot.endColumn
-      ));
+      const elision = columnView.elisionForColumn(activeCell.column);
       if (elision) expandElision(elision);
       return undefined;
     }
@@ -2688,7 +2575,7 @@ function AlignmentMatrix({
     }
 
     return undefined;
-  }, [activeCell, axisRows, cellWidth, columnSlotIndex, columnSlots, expandElision, sequenceViewportWidth, setHorizontalScroll, viewportRef]);
+  }, [activeCell, axisRows, cellWidth, columnView, expandElision, sequenceViewportWidth, setHorizontalScroll, viewportRef]);
 
   // Reported through a callback the parent stores in a ref rather than state:
   // the cursor moves on every arrow key, and re-rendering the whole viewer that
@@ -3360,7 +3247,7 @@ function AlignmentMatrix({
         .flatMap((codon) => {
           const slotIndices: number[] = [];
           for (let column = codon.startColumn; column <= codon.endColumn; column += 1) {
-            const slotIndex = columnSlotIndex.get(column);
+            const slotIndex = columnView.slotIndexForColumn(column);
             if (slotIndex !== undefined && slotIndex >= startSlot && slotIndex < endSlot) slotIndices.push(slotIndex);
           }
           if (slotIndices.length === 0) return [];
@@ -3449,8 +3336,8 @@ function AlignmentMatrix({
     </div>
   );
 
-  const selectionStartSlot = selection ? columnSlotIndex.get(selection.colStart) : undefined;
-  const selectionEndSlot = selection ? columnSlotIndex.get(selection.colEnd) : undefined;
+  const selectionStartSlot = selection ? columnView.slotIndexForColumn(selection.colStart) : undefined;
+  const selectionEndSlot = selection ? columnView.slotIndexForColumn(selection.colEnd) : undefined;
   const selectionColumnLeft = selectionStartSlot === undefined ? 0 : labelWidth + (selectionStartSlot * cellWidth);
   const selectionColumnWidth = selectionStartSlot === undefined || selectionEndSlot === undefined
     ? 0
@@ -3461,7 +3348,7 @@ function AlignmentMatrix({
   const selectionRowHeight = selection
     ? (selection.rowEnd - selection.rowStart + 1) * MSA_MATRIX_ROW_HEIGHT
     : 0;
-  const hoverSlot = hoverCell ? columnSlotIndex.get(hoverCell.column) : undefined;
+  const hoverSlot = hoverCell ? columnView.slotIndexForColumn(hoverCell.column) : undefined;
   const hoverColumnLeft = hoverSlot === undefined ? 0 : labelWidth + (hoverSlot * cellWidth);
 
   return (
@@ -3655,7 +3542,7 @@ function AlignmentMatrix({
           {hoverCell ? (
             <div className="motif-cs-msa-hover-column" style={{ left: hoverColumnLeft, width: cellWidth }} aria-hidden="true" />
           ) : null}
-          {columnFilter === 'differences' ? columnSlots.map((slot, slotIndex) => (
+          {columnFilter === 'differences' ? columnView.allSlots().map((slot, slotIndex) => (
             slot.kind === 'elision' && slotIndex >= startSlot && slotIndex < endSlot ? (
               <button
                 key={`elision-${slot.startColumn}-${slot.endColumn}`}
