@@ -143,6 +143,35 @@ describe('Motif MCP payload boundary', () => {
     ]);
   });
 
+  it('bounds record collections before applying a proposal preference', () => {
+    const records = Array.from(
+      { length: MOTIF_MCP_LIMITS.maxRecords + 1 },
+      (_, index) => ({ id: `tiny-${index}`, sequence: 'A' }),
+    );
+    // A proposal preference used to call Array#map before validation. This
+    // non-enumerable tripwire is invisible to JSON sizing, but proves an
+    // oversized collection is rejected before any preference-wide mapping.
+    Object.defineProperty(records, 'map', {
+      configurable: true,
+      get: () => {
+        throw new Error('proposal preference mapped an oversized collection');
+      },
+    });
+    const payload = { records };
+
+    expect(Buffer.byteLength(JSON.stringify(payload), 'utf8')).toBeLessThan(MOTIF_MCP_LIMITS.maxPayloadBytes);
+    expect(() => prepareMotifWorkbench({ payload, proposeAnnotations: true }))
+      .toThrow(/cannot contain more than 100 records/i);
+
+    const bounded = prepareMotifWorkbench({
+      payload: { records: [{ id: 'bounded', sequence: 'A' }] },
+      proposeAnnotations: true,
+    });
+    expect(bounded.payload?.records).toEqual([
+      expect.objectContaining({ id: 'bounded', proposeAnnotations: true }),
+    ]);
+  });
+
   it('keeps the serialized payload bound after adding palette defaults', () => {
     const feature = { type: 'cds', start: 0, end: 1 };
     const features = Array.from(

@@ -595,23 +595,27 @@ export function validateMotifPayload(value: unknown): {
     ))
     && (typeof value.seq === 'string' || typeof value.sequence === 'string');
   const payload = coercePayload(value);
+  // Reject an oversized record collection before creating any projected copy
+  // for generic JSON validation. Callers may set a proposal preference, which
+  // maps every record; this cardinality check is deliberately earlier than
+  // that preference application as well.
+  validatePayloadEnvelope(payload);
+  const records = recordArray(payload);
+  if (records.length > MOTIF_MCP_LIMITS.maxRecords) {
+    throw new Error(`Payload cannot contain more than ${MOTIF_MCP_LIMITS.maxRecords} records.`);
+  }
   validateJsonValue(
     omitTraceArraysForGenericJsonValidation(payload, isBareRecord),
     'payload',
     { nodes: 0 },
     new WeakSet(),
   );
-  validatePayloadEnvelope(payload);
   const serialized = JSON.stringify(payload);
   validateSerializedPayloadSize(serialized);
   if (typeof payload.schema === 'string'
     && payload.schema.startsWith('motif.claude-science.inventory.')
     && !SUPPORTED_INVENTORY_SCHEMAS.has(payload.schema)) {
     throw new Error(`Unsupported Motif inventory schema: ${payload.schema}.`);
-  }
-  const records = recordArray(payload);
-  if (records.length > MOTIF_MCP_LIMITS.maxRecords) {
-    throw new Error(`Payload cannot contain more than ${MOTIF_MCP_LIMITS.maxRecords} records.`);
   }
   const explicitIds = new Set<string>();
   const usedIds = new Set<string>();
@@ -843,11 +847,15 @@ export function prepareMotifWorkbench(input: MotifWorkbenchInput): PreparedMotif
       residueCount: 0,
     });
   }
-  const candidate = applyProposalPreference(
-    input.content !== undefined ? payloadFromContent(input.content, input) : input.payload,
-    input.proposeAnnotations,
-  );
-  const validated = validateMotifPayload(candidate);
+  const source = input.content !== undefined ? payloadFromContent(input.content, input) : input.payload;
+  // Validate the caller-owned input before mapping every record to apply an
+  // optional proposal preference. The transformed payload is validated again
+  // below because the preference changes the delivered JSON. This preserves
+  // the post-palette size bound for both forms.
+  const sourceValidated = validateMotifPayload(source);
+  const validated = input.proposeAnnotations === undefined
+    ? sourceValidated
+    : validateMotifPayload(applyProposalPreference(source, input.proposeAnnotations));
   const payload = input.title && input.content === undefined
     ? {
       ...validated.payload,
