@@ -433,10 +433,13 @@ describe('Claude Science MSA interaction and rendering guards', () => {
   it('renders only a scroll-windowed symbol slice while retaining full logical dimensions', () => {
     const matrix = sliceBetween(viewerSource, 'function AlignmentMatrix({', 'export function ClaudeScienceMsaViewer({');
     expect(matrix).toContain('const overscan = 24;');
+    expect(matrix).toContain('const columnView = useMemo(() => createMsaColumnView({');
+    expect(matrix).toContain('const columnSlotCount = columnView.slotCount;');
     expect(matrix).toContain('Math.floor(scrollLeft / cellWidth),');
     expect(matrix).toContain('const startSlot = Math.max(0, visibleStartSlot - overscan);');
-    expect(matrix).toContain('const endSlot = Math.min(columnSlots.length, visibleEndSlot + overscan);');
-    expect(matrix).toContain('const renderedSlots = columnSlots.slice(startSlot, endSlot);');
+    expect(matrix).toContain('const endSlot = Math.min(columnSlotCount, visibleEndSlot + overscan);');
+    expect(matrix).toContain('const renderedSlots = columnView.slotsInRange(startSlot, endSlot);');
+    expect(matrix).not.toContain('Array.from({ length: alignment.alignmentLength }');
     expect(matrix).toContain('const symbol = sequence[column] ??');
     expect(matrix).toContain('alignment.conserved[slot.column]');
     expect(matrix).toContain('aria-colcount={alignment.alignmentLength}');
