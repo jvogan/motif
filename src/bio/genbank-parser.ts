@@ -1,4 +1,5 @@
 import type { Feature, FeatureStrand, FeatureType, Topology } from './types';
+import { resolveFeatureColor } from './feature-palette';
 import { featureLocationCoordinateSignature } from './feature-location';
 
 // Individual qualifier values larger than 1 MB are
@@ -282,44 +283,12 @@ const FEATURE_TYPE_MAP: Record<string, FeatureType> = {
   restriction_site: 'restriction_site',
 };
 
-// Imported features use the muted palette by type unless the record supplies a
-// safe explicit feature color. The renderer adapts the palette defaults across
-// themes while preserving an explicit annotation color.
-const FEATURE_COLORS: Record<FeatureType, string> = {
-  gene: '#7E9BBF',
-  cds: '#7E9BBF',
-  promoter: '#C6A86B',
-  terminator: '#C28C88',
-  misc_feature: '#8B8F99',
-  origin: '#9E96B4',
-  primer_bind: '#C49374',
-  orf: '#7FA98F',
-  rbs: '#C6A86B',
-  resistance: '#C49374',
-  restriction_site: '#8B8F99',
-  mRNA: '#6FB0A4',
-  rRNA: '#6FB0A4',
-  tRNA: '#6FB0A4',
-  ncRNA: '#9E96B4',
-  regulatory: '#C6A86B',
-  repeat_region: '#9E96B4',
-  sig_peptide: '#9DB585',
-  mat_peptide: '#9DB585',
-  transit_peptide: '#9DB585',
-  intron: '#8B8F99',
-  exon: '#6FB0A4',
-  polyA_signal: '#C28C88',
-  enhancer: '#C6A86B',
-  custom: '#8B8F99',
-};
-
 const SAFE_IMPORTED_FEATURE_COLOR = /^(?:#[0-9a-f]{3,8}|(?:rgb|hsl)a?\([\d\s.,%+\-/]+\)|[a-z]+)$/i;
 
 function importedFeatureColor(
   qualifiers: Readonly<Record<string, string | true>>,
   strand: FeatureStrand,
-  fallback: string,
-): string {
+): string | undefined {
   const values = new Map(Object.entries(qualifiers).map(([key, value]) => [key.toLowerCase(), value]));
   const preferredKeys = strand === -1
     ? ['apeinfo_revcolor', 'apeinfo_fwdcolor']
@@ -330,7 +299,7 @@ function importedFeatureColor(
     const color = value.trim();
     if (color.length <= 80 && SAFE_IMPORTED_FEATURE_COLOR.test(color)) return color;
   }
-  return fallback;
+  return undefined;
 }
 
 /**
@@ -803,7 +772,11 @@ export function parseFeatures(featuresText: string): Feature[] {
       end,
       strand,
       subRanges,
-      color: importedFeatureColor(qualifiers, strand, FEATURE_COLORS[mappedType]),
+      color: resolveFeatureColor({
+        name: name.replace(/^"|"$/g, ''),
+        type: mappedType,
+        color: importedFeatureColor(qualifiers, strand),
+      }),
       metadata: {
         ...qualifiers,
         ...(qualifierEntries.length > 0 ? { motifQualifiers: qualifierEntries } : {}),

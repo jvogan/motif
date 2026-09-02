@@ -1,6 +1,6 @@
 # Motif + Claude Science integration
 
-Last reviewed: August 12, 2026. Connector version: `0.3.6`.
+Last reviewed: September 1, 2026. Connector version: `0.4.0`.
 
 This is the maintainer and technical reference for the Motif-owned local
 connector. End users should start with the
@@ -31,7 +31,7 @@ The local connector identity is visible end to end:
 | Open tool | `motif_open_workbench` |
 | Saveable fallback | `motif_create_workbench_artifact` |
 | MCP App resource | `ui://motif/workbench.html` |
-| In-window product name | `Motif for Claude Science` |
+| In-window product name | `Motif` |
 
 The App is the full Motif workbench rather than a reduced sequence preview. A
 small MCP Apps bridge receives the exact tool result and calls only Motif's

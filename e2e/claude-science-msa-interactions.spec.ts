@@ -86,6 +86,145 @@ test.describe('Motif MSA viewer interactions', () => {
     return page.locator('[data-msa-grid-cell="true"][data-active-cell="true"]');
   }
 
+  function matrixGrid(page: Page) {
+    return page.getByRole('grid', { name: /^Alignment matrix,/ });
+  }
+
+  async function expectActiveDescendant(page: Page) {
+    const grid = matrixGrid(page);
+    const activeId = await grid.getAttribute('aria-activedescendant');
+    if (!activeId) throw new Error('alignment grid has no active descendant');
+    await expect(page.locator(`[id="${activeId}"]`)).toHaveCount(1);
+    return activeId;
+  }
+
+  test('alignment header stays on two bands at wide and compact sizes', async ({ page }) => {
+    for (const viewport of [{ width: 1440, height: 900 }, { width: 900, height: 680 }]) {
+      await setup(page, viewport.width, viewport.height, 120, 8);
+      const geometry = await page.getByTestId('msa-workspace').evaluate((workspace) => {
+        const rect = (selector: string) => {
+          const element = workspace.querySelector<HTMLElement>(selector);
+          if (!element) throw new Error(`${selector} missing`);
+          const box = element.getBoundingClientRect();
+          return { top: box.top, bottom: box.bottom, height: box.height };
+        };
+        const lineTops = (selector: string) => Array.from(
+          workspace.querySelectorAll<HTMLElement>(`${selector} > *`),
+        ).flatMap((element) => {
+          const style = getComputedStyle(element);
+          const box = element.getBoundingClientRect();
+          return style.display === 'none' || box.width === 0 || box.height === 0 ? [] : [box.top];
+        });
+        return {
+          toolbar: rect('.motif-cs-msa-toolbar'),
+          controls: rect('.motif-cs-msa-view-controls'),
+          matrixFrame: rect('.motif-cs-msa-matrix-frame'),
+          toolbarLineTops: lineTops('.motif-cs-msa-toolbar'),
+          controlLineTops: lineTops('.motif-cs-msa-view-controls'),
+          metadataBands: workspace.querySelectorAll('.motif-cs-msa-meta-row').length,
+          footerNavigation: workspace.querySelectorAll('.motif-cs-msa-statusbar > .motif-cs-msa-difference-nav').length,
+        };
+      });
+
+      const spread = (values: number[]) => Math.max(...values) - Math.min(...values);
+      expect(spread(geometry.toolbarLineTops)).toBeLessThan(2);
+      expect(spread(geometry.controlLineTops)).toBeLessThan(2);
+      expect(geometry.toolbar.height).toBeLessThanOrEqual(44);
+      expect(geometry.controls.height).toBeLessThanOrEqual(32);
+      expect(geometry.metadataBands).toBe(0);
+      expect(geometry.footerNavigation).toBe(1);
+      expect(geometry.matrixFrame.top - geometry.toolbar.top).toBeLessThanOrEqual(90);
+    }
+  });
+
+  test('column summary tracks stay visible with sequence rows and remain horizontally aligned', async ({ page }) => {
+    await setup(page, 1280, 800, 120, 30);
+    const scroll = page.locator('.motif-cs-msa-matrix-scroll');
+    const tracks = page.getByTestId('msa-pinned-tracks');
+    await expect(tracks).toBeVisible();
+
+    const visibility = await page.getByTestId('msa-workspace').evaluate((workspace) => {
+      const scroller = workspace.querySelector<HTMLElement>('.motif-cs-msa-matrix-scroll');
+      const pinned = workspace.querySelector<HTMLElement>('[data-testid="msa-pinned-tracks"]');
+      if (!scroller || !pinned) throw new Error('matrix track geometry missing');
+      const viewport = scroller.getBoundingClientRect();
+      const pinnedBox = pinned.getBoundingClientRect();
+      const trackBoxes = [
+        '.motif-cs-msa-conservation-row',
+        '.motif-cs-msa-consensus-row',
+        '.motif-cs-msa-hist-row',
+      ].map((selector) => {
+        const element = pinned.querySelector<HTMLElement>(selector);
+        if (!element) throw new Error(`${selector} missing`);
+        const box = element.getBoundingClientRect();
+        return { top: box.top, bottom: box.bottom };
+      });
+      const visibleSequenceRows = Array.from(workspace.querySelectorAll<HTMLElement>('.motif-cs-msa-matrix-row')).filter((row) => {
+        const box = row.getBoundingClientRect();
+        return box.top >= viewport.top && box.bottom <= pinnedBox.top;
+      }).length;
+      return {
+        viewport: { top: viewport.top, bottom: viewport.bottom },
+        pinned: { top: pinnedBox.top, bottom: pinnedBox.bottom },
+        trackBoxes,
+        visibleSequenceRows,
+        scrollTop: scroller.scrollTop,
+      };
+    });
+
+    expect(visibility.scrollTop).toBe(0);
+    expect(visibility.visibleSequenceRows).toBeGreaterThan(0);
+    expect(visibility.pinned.top).toBeGreaterThanOrEqual(visibility.viewport.top);
+    expect(visibility.pinned.bottom).toBeLessThanOrEqual(visibility.viewport.bottom + 1);
+    for (const track of visibility.trackBoxes) {
+      expect(track.top).toBeGreaterThanOrEqual(visibility.viewport.top);
+      expect(track.bottom).toBeLessThanOrEqual(visibility.viewport.bottom + 1);
+    }
+
+    await page.getByTestId('msa-horizontal-scroll').focus();
+    await page.keyboard.press('End');
+    await expect.poll(() => scroll.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);
+    const alignment = await page.getByTestId('msa-workspace').evaluate((workspace) => {
+      const sequence = workspace.querySelector<HTMLElement>('.motif-cs-msa-matrix-row .motif-cs-msa-symbol[data-alignment-column]');
+      if (!sequence?.dataset.alignmentColumn) throw new Error('rendered sequence column missing');
+      const column = sequence.dataset.alignmentColumn;
+      const selectors = [
+        `.motif-cs-msa-conservation-row [data-alignment-column="${column}"]`,
+        `.motif-cs-msa-consensus-row [data-alignment-column="${column}"]`,
+        `.motif-cs-msa-hist-row [data-alignment-column="${column}"]`,
+      ];
+      return {
+        sequenceX: sequence.getBoundingClientRect().x,
+        trackXs: selectors.map((selector) => {
+          const element = workspace.querySelector<HTMLElement>(selector);
+          if (!element) throw new Error(`${selector} missing`);
+          return element.getBoundingClientRect().x;
+        }),
+      };
+    });
+    for (const x of alignment.trackXs) expect(Math.abs(x - alignment.sequenceX)).toBeLessThan(0.25);
+  });
+
+  test('search step buttons keep their position while the active match count changes', async ({ page }) => {
+    await setup(page, 1280, 800);
+    const input = page.getByTestId('msa-search-input');
+    const count = page.getByTestId('msa-search-count');
+    const previous = page.getByTestId('msa-search-prev');
+    const next = page.getByTestId('msa-search-next');
+
+    await input.fill('A');
+    await expect(count).not.toHaveText('Searching…');
+    await expect(next).toBeEnabled();
+    const initialX = (await previous.boundingBox())?.x;
+    if (initialX === undefined) throw new Error('search stepper missing');
+
+    await next.click();
+    expect((await previous.boundingBox())?.x).toBeCloseTo(initialX, 1);
+    for (let index = 1; index < 10; index += 1) await next.click();
+    await expect(count).toContainText(/^10 of /);
+    expect((await previous.boundingBox())?.x).toBeCloseTo(initialX, 1);
+  });
+
   test('reference coordinates and strict ambiguity mode work through the saved-result UI', async ({ page }) => {
     await page.setViewportSize({ width: 1180, height: 820 });
     await page.addInitScript(() => { window.localStorage.clear(); window.sessionStorage.clear(); });
@@ -138,13 +277,70 @@ test.describe('Motif MSA viewer interactions', () => {
     await setup(page);
     const initial = activeGridCell(page);
     await expect(initial).toHaveAttribute('data-alignment-column', '1');
-    await initial.focus();
+    await matrixGrid(page).focus();
     await page.keyboard.press('ArrowRight');
 
     const moved = activeGridCell(page);
-    await expect(moved).toBeFocused();
+    await expect(matrixGrid(page)).toBeFocused();
+    await expectActiveDescendant(page);
     await expect(moved).toHaveAttribute('data-alignment-column', '2');
     await expect(moved).toHaveAttribute('aria-label', 'Residue I, alignment column 2, row ref');
+    await expect(page.getByTestId('msa-selection-readout')).toContainText('cols 2–2');
+  });
+
+  test('horizontal wheel virtualization keeps grid focus and the next Arrow working', async ({ page }) => {
+    await setup(page, 1000, 760, 400);
+    const grid = matrixGrid(page);
+    const scroll = page.locator('.motif-cs-msa-matrix-scroll');
+    const scrollBox = await scroll.boundingBox();
+    if (!scrollBox) throw new Error('matrix scroll geometry missing');
+
+    await grid.focus();
+    await page.mouse.move(scrollBox.x + scrollBox.width / 2, scrollBox.y + scrollBox.height / 2);
+    for (let index = 0; index < 8; index += 1) await page.mouse.wheel(500, 0);
+
+    await expect.poll(() => scroll.evaluate((element) => element.scrollLeft)).toBeGreaterThan(600);
+    await expect(activeGridCell(page)).toHaveCount(0);
+    await expect(grid).toBeFocused();
+    const proxyId = await expectActiveDescendant(page);
+    await expect(page.locator(`[id="${proxyId}"]`)).toHaveClass(/motif-cs-visually-hidden/);
+
+    await page.keyboard.press('ArrowRight');
+    await expect(activeGridCell(page)).toHaveAttribute('data-alignment-column', '2');
+    await expect(grid).toBeFocused();
+    const renderedId = await expectActiveDescendant(page);
+    await expect(page.locator(`[id="${renderedId}"]`)).toHaveAttribute('data-active-cell', 'true');
+  });
+
+  test('far Go to updates the active descendant without taking focus from the form', async ({ page }) => {
+    await setup(page, 1000, 760, 400);
+    const grid = matrixGrid(page);
+    await page.getByTestId('msa-goto-menu-button').click();
+    await page.getByTestId('msa-coordinate-input').fill('398');
+    const go = page.getByRole('button', { name: 'Go', exact: true });
+    await go.click();
+
+    await expect(go).toBeFocused();
+    await expect.poll(async () => {
+      const activeId = await grid.getAttribute('aria-activedescendant');
+      return activeId ? page.locator(`[id="${activeId}"]`).getAttribute('aria-colindex') : null;
+    }).toBe('398');
+    await expect(activeGridCell(page)).toHaveAttribute('data-alignment-column', '398');
+  });
+
+  test('n moves the active descendant across a virtualized far jump', async ({ page }) => {
+    await setup(page, 1000, 760, 400);
+    const grid = matrixGrid(page);
+    await grid.focus();
+    await page.keyboard.press('End');
+    await expect(activeGridCell(page)).toHaveAttribute('data-alignment-column', '400');
+    await expect(grid).toBeFocused();
+
+    await page.keyboard.press('n');
+    await expect(activeGridCell(page)).toHaveAttribute('data-jump', 'true');
+    expect(await activeGridCell(page).getAttribute('data-alignment-column')).not.toBe('400');
+    await expect(grid).toBeFocused();
+    await expectActiveDescendant(page);
   });
 
   test('clicking a residue leaves the keyboard able to move from it', async ({ page }) => {
@@ -159,7 +355,8 @@ test.describe('Motif MSA viewer interactions', () => {
     await target.click();
 
     const clicked = activeGridCell(page);
-    await expect(clicked).toBeFocused();
+    await expect(matrixGrid(page)).toBeFocused();
+    await expectActiveDescendant(page);
     await expect(clicked).toHaveAttribute('data-alignment-column', column!);
 
     await page.keyboard.press('ArrowRight');
@@ -171,7 +368,7 @@ test.describe('Motif MSA viewer interactions', () => {
 
   test('Shift plus Arrow extends the keyboard selection from its anchor', async ({ page }) => {
     await setup(page);
-    await activeGridCell(page).focus();
+    await matrixGrid(page).focus();
     await page.keyboard.press('Shift+ArrowRight');
 
     await expect(activeGridCell(page)).toHaveAttribute('data-alignment-column', '2');
@@ -182,7 +379,7 @@ test.describe('Motif MSA viewer interactions', () => {
 
   test('Home End and Control Home navigate row and grid boundaries', async ({ page }) => {
     await setup(page);
-    await activeGridCell(page).focus();
+    await matrixGrid(page).focus();
     await page.keyboard.press('ArrowDown');
     await page.keyboard.press('End');
     await expect(activeGridCell(page)).toHaveAttribute('data-alignment-column', '120');
@@ -193,20 +390,19 @@ test.describe('Motif MSA viewer interactions', () => {
     await expect(activeGridCell(page).locator('xpath=..').locator('xpath=..')).toHaveAttribute('data-msa-row-index', '1');
 
     await page.keyboard.press('End');
-    // The End navigation virtualizes a new cell at the far edge before focus
-    // follows it. Wait for that handoff so the next chord cannot land on the
-    // temporarily unfocused document under slower CI runners.
-    await expect(activeGridCell(page)).toBeFocused();
+    // The persistent grid owns focus while its active descendant moves through
+    // the virtualized window, so the next chord has no cell-focus handoff to race.
+    await expect(matrixGrid(page)).toBeFocused();
     await expect(activeGridCell(page)).toHaveAttribute('data-alignment-column', '120');
     await page.keyboard.press('Control+Home');
-    await expect(activeGridCell(page)).toBeFocused();
+    await expect(matrixGrid(page)).toBeFocused();
     await expect(activeGridCell(page)).toHaveAttribute('data-alignment-column', '1');
     await expect(activeGridCell(page).locator('xpath=..').locator('xpath=..')).toHaveAttribute('data-msa-row-index', '0');
   });
 
   test('Shift F10 opens selection actions at the active gridcell', async ({ page }) => {
     await setup(page);
-    await activeGridCell(page).focus();
+    await matrixGrid(page).focus();
     await page.keyboard.press('Shift+F10');
 
     const menu = page.getByRole('menu', { name: 'Alignment selection actions' });
@@ -222,7 +418,8 @@ test.describe('Motif MSA viewer interactions', () => {
     await input.press('Enter');
 
     const active = activeGridCell(page);
-    await expect(active).toBeFocused();
+    await expect(matrixGrid(page)).toBeFocused();
+    await expectActiveDescendant(page);
     await expect(active).toHaveAttribute('data-search-active', 'true');
     await expect(active).toHaveAttribute('aria-label', /Residue R, alignment column 3, row ref/);
   });
@@ -324,6 +521,7 @@ test.describe('Motif MSA viewer interactions', () => {
   });
 
   test('grid drag past the right edge auto-scrolls into far columns', async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: 'no-preference' });
     await setup(page, 1000, 720);
     const scroll = page.locator('.motif-cs-msa-matrix-scroll');
     const scrollBox = await scroll.boundingBox();
@@ -340,6 +538,197 @@ test.describe('Motif MSA viewer interactions', () => {
     await page.mouse.up();
 
     expect((await selectedColumnRange(page)).end).toBeGreaterThan(initialVisibleEnd);
+    const settledLeft = await scroll.evaluate((element) => element.scrollLeft);
+    await page.waitForTimeout(180);
+    expect(await scroll.evaluate((element) => element.scrollLeft)).toBe(settledLeft);
+  });
+
+  test('grid drag held past the bottom edge auto-scrolls into lower rows', async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: 'no-preference' });
+    await setup(page, 1000, 720, 188, 30);
+    const scroll = page.locator('.motif-cs-msa-matrix-scroll');
+    const scrollBox = await scroll.boundingBox();
+    const start = await center(page, 1, 5);
+    if (!scrollBox) throw new Error('matrix scroll geometry missing');
+    const initiallyVisibleRows = await page.locator('.motif-cs-msa-matrix-row').evaluateAll((rows, box) => (
+      rows.filter((row) => {
+        const rect = row.getBoundingClientRect();
+        return rect.bottom > box.y && rect.top < box.y + box.height;
+      }).length
+    ), scrollBox);
+
+    await page.mouse.move(start.x, start.y);
+    await page.mouse.down();
+    await page.mouse.move(start.x, scrollBox.y + scrollBox.height + 28);
+    await page.waitForTimeout(450);
+    expect(await scroll.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+    await page.mouse.up();
+
+    const readout = await page.getByTestId('msa-selection-readout').textContent();
+    const selectedRows = Number(readout?.match(/· (\d+) rows/)?.[1] ?? 0);
+    expect(selectedRows).toBeGreaterThan(initiallyVisibleRows);
+  });
+
+  test('reduced motion disables held-edge auto-scroll without disabling edge selection', async ({ page }) => {
+    await setup(page, 1000, 720);
+    const scroll = page.locator('.motif-cs-msa-matrix-scroll');
+    const scrollBox = await scroll.boundingBox();
+    const start = await center(page, 1, 2);
+    const initialVisibleText = await page.getByTestId('msa-horizontal-scroll').getAttribute('aria-valuetext');
+    const initialVisibleEnd = Number(initialVisibleText?.match(/–(\d+) of/)?.[1] ?? 0);
+    if (!scrollBox || initialVisibleEnd === 0) throw new Error('matrix scroll geometry missing');
+
+    await page.mouse.move(start.x, start.y);
+    await page.mouse.down();
+    await page.mouse.move(scrollBox.x + scrollBox.width + 28, start.y);
+    await page.waitForTimeout(450);
+    expect(await scroll.evaluate((element) => element.scrollLeft)).toBe(0);
+    await page.mouse.up();
+
+    // The selection stops at the visible edge instead of running away to the end
+    // of the alignment, which is what auto-scroll would have done. It is allowed
+    // to reach one column PAST the reported window: the readout counts only
+    // columns drawn in full, while a column straddling the right edge is still
+    // under the pointer and still selected. Measured at this size, column 66 ends
+    // 9px inside the frame and column 67 straddles it with 82% of its width drawn.
+    const range = await selectedColumnRange(page);
+    expect(range.end).toBeGreaterThanOrEqual(initialVisibleEnd);
+    expect(range.end).toBeLessThanOrEqual(initialVisibleEnd + 1);
+  });
+
+  test('visible MSA pointer targets meet the 24px floor, including compact host chrome', async ({ page }) => {
+    await setup(page, 1600, 980, 188, 7);
+
+    const mapCollapse = page.locator('.motif-cs-map-column > .motif-cs-pane-title .motif-cs-pane-collapse');
+    const mapBox = await mapCollapse.boundingBox();
+    if (!mapBox) throw new Error('map collapse target missing');
+    expect(mapBox.width).toBeGreaterThanOrEqual(24);
+    expect(mapBox.height).toBeGreaterThanOrEqual(24);
+    expect(await page.evaluate(({ x, y }) => {
+      const hit = document.elementFromPoint(x, y);
+      return hit?.closest('.motif-cs-pane-collapse')?.getAttribute('aria-label') ?? null;
+    }, { x: mapBox.x + mapBox.width / 2, y: mapBox.y + mapBox.height / 2 })).toMatch(/map pane/i);
+
+    const measurements = await page.locator('.motif-cs-msa-workspace').evaluate((workspace) => {
+      const elements = Array.from(workspace.querySelectorAll<HTMLElement>(
+        'button, input:not([type="hidden"]):not([type="file"]), select, summary, [role="slider"]',
+      ));
+      const hits = (target: HTMLElement, axis: 'x' | 'y', rect: DOMRect) => {
+        const fixed = axis === 'x' ? rect.top + rect.height / 2 : rect.left + rect.width / 2;
+        const center = axis === 'x' ? rect.left + rect.width / 2 : rect.top + rect.height / 2;
+        const points: number[] = [];
+        for (let offset = -32; offset <= 32; offset += 1) {
+          const point = center + offset;
+          const hit = document.elementFromPoint(axis === 'x' ? point : fixed, axis === 'y' ? point : fixed);
+          if (hit === target || target.contains(hit)) points.push(point);
+        }
+        return points.length ? Math.max(...points) - Math.min(...points) + 1 : 0;
+      };
+      return elements.flatMap((element) => {
+        const style = getComputedStyle(element);
+        const raw = element.getBoundingClientRect();
+        if (style.display === 'none' || style.visibility === 'hidden' || raw.width <= 0 || raw.height <= 0) return [];
+        if (raw.right <= 0 || raw.bottom <= 0 || raw.left >= innerWidth || raw.top >= innerHeight) return [];
+        const labelledTarget = element.matches('input[type="checkbox"], input[type="radio"]')
+          ? element.closest<HTMLElement>('label') ?? element
+          : element;
+        const rect = labelledTarget.getBoundingClientRect();
+        const hasExtendedTarget = element.matches('.motif-cs-msa-row-select, .motif-cs-msa-elision-marker');
+        return [{
+          label: element.getAttribute('aria-label') || element.getAttribute('title') || element.textContent?.trim().slice(0, 60) || element.tagName,
+          width: hasExtendedTarget ? hits(element, 'x', raw) : rect.width,
+          height: hasExtendedTarget ? hits(element, 'y', raw) : rect.height,
+        }];
+      });
+    });
+    expect(measurements.length).toBeGreaterThan(15);
+    expect(measurements.filter(({ width, height }) => width < 24 || height < 24)).toEqual([]);
+
+    const overview = await page.getByTestId('msa-overview').boundingBox();
+    const zoom = await page.getByTestId('msa-zoom-range').boundingBox();
+    if (!overview || !zoom) throw new Error('matrix pointer targets missing');
+    expect(overview.height).toBeGreaterThanOrEqual(24);
+    expect(zoom.height).toBeGreaterThanOrEqual(24);
+  });
+
+  test('a one-column elision band keeps its column width and still takes a near-miss click', async ({ page }) => {
+    // Needs an alignment that actually elides. The shared setup varies roughly one
+    // column in five in every row, so the differing-column view hides nothing and
+    // no marker is ever drawn. Long identical runs with a handful of scattered
+    // substitutions is the shape this view exists for.
+    await page.setViewportSize({ width: 1000, height: 760 });
+    await page.addInitScript(() => { window.localStorage.clear(); window.sessionStorage.clear(); });
+    await page.goto('/motif.html');
+    await expect(page.locator('.motif-cs-shell')).toBeVisible();
+    await page.evaluate(() => {
+      const AA = 'ACDEFGHIKLMNPQRSTVWY';
+      const length = 188;
+      const base = Array.from({ length }, (_, i) => AA[(i * 7) % 20]);
+      const differing = [10, 50, 90, 130, 170];
+      const rows = Array.from({ length: 7 }, (_, row) => {
+        const seq = base.slice();
+        // Offset from the reference residue so the substitution is always a real
+        // difference, and skip some so the rows are not identical to each other.
+        if (row > 0) differing.forEach((column, index) => {
+          if ((row + index) % 2 === 0) seq[column] = AA[(column * 7 + row + 1) % 20];
+        });
+        return { id: row === 0 ? 'ref' : `v${row}`, name: row === 0 ? 'ref' : `v${row}`, aligned: seq.join('') };
+      });
+      const api = (window as unknown as { motifAddAlignments?: (a: unknown) => number }).motifAddAlignments;
+      if (!api) throw new Error('motifAddAlignments unavailable');
+      api({ id: 'elision-band-e2e', name: 'Elision band E2E', molecule: 'protein', referenceRowId: 'ref', rows });
+    });
+    await page.getByTestId('msa-open-button').dispatchEvent('click');
+    await expect(page.getByTestId('msa-alignment-view')).toBeVisible();
+    const filter = page.getByTestId('msa-column-filter-toggle');
+    const filterBox = await filter.boundingBox();
+    if (!filterBox) throw new Error('column filter target missing');
+    await page.mouse.move(filterBox.x + filterBox.width / 2, filterBox.y + filterBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.up();
+
+    const marker = page.locator('[data-msa-elision-marker]').first();
+    await expect(marker).toBeVisible();
+    const box = await marker.boundingBox();
+    if (!box) throw new Error('elision marker missing');
+    expect(box.width).toBeLessThan(24);
+    const effectiveWidth = await marker.evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      const y = rect.top + rect.height / 2;
+      const points: number[] = [];
+      for (let x = rect.left - 16; x <= rect.right + 16; x += 0.5) {
+        const hit = document.elementFromPoint(x, y);
+        if (hit === element || element.contains(hit)) points.push(x);
+      }
+      return points.length ? Math.max(...points) - Math.min(...points) : 0;
+    });
+    // The band cannot be 24px WIDE, and should not be. Every slot in this grid is
+    // exactly one cellWidth and the column hit-test divides by that constant, so a
+    // wider band would misresolve every column after it. Widening only its hit area
+    // to 24px is no better: at a 10.6px column that swallows roughly two thirds of
+    // the differing residue on each side — the very columns this view exists to
+    // show. It meets the target-size intent on the axis that has room instead, and
+    // overhangs its own visual edges so a near-miss still lands.
+    expect(effectiveWidth).toBeGreaterThan(box.width);
+    expect(box.height).toBeGreaterThanOrEqual(24);
+
+    const markerCount = await page.locator('[data-msa-elision-marker]').count();
+    // Probe to the RIGHT of the visual band. The overhang is one-sided on this
+    // marker: it is the first one, so its left edge meets the sticky row-name
+    // label, which sits above the matrix and correctly keeps the band's target
+    // off the row names. Measured 10.6px of band with the hit reaching 6.4px past
+    // its right edge. Derived from the measurement rather than a fixed guess, so
+    // this asserts the overhang that exists instead of one it does not.
+    const outsideVisualX = box.x + box.width + Math.min(1.5, effectiveWidth - box.width);
+    expect(outsideVisualX).toBeGreaterThan(box.x + box.width);
+    expect(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest('[data-msa-elision-marker]') !== null, {
+      x: outsideVisualX,
+      y: box.y + box.height / 2,
+    })).toBe(true);
+    await page.mouse.move(outsideVisualX, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.up();
+    await expect(page.locator('[data-msa-elision-marker]')).toHaveCount(markerCount - 1);
   });
 
   test('grid pointerup past the edge resolves the final clamped cell', async ({ page }) => {
@@ -395,14 +784,60 @@ test.describe('Motif MSA viewer interactions', () => {
   });
 
   test('hover shows a crosshair column and floating residue readout', async ({ page }) => {
-    await setup(page);
+    await setup(page, 1000, 760, 188, 7);
+    await page.evaluate(() => {
+      const scroller = document.querySelector('.motif-cs-msa-matrix-scroll');
+      const shell = document.querySelector('.motif-cs-msa-matrix-shell');
+      const probe = { pointerTime: 0, latency: -1 };
+      (window as unknown as { __msaHoverProbe: typeof probe }).__msaHoverProbe = probe;
+      scroller?.addEventListener('pointermove', () => {
+        if (probe.pointerTime === 0) probe.pointerTime = performance.now();
+      });
+      const observer = new MutationObserver(() => {
+        if (probe.pointerTime > 0 && shell?.querySelector('.motif-cs-msa-hover-readout')) {
+          probe.latency = performance.now() - probe.pointerTime;
+          observer.disconnect();
+        }
+      });
+      if (shell) observer.observe(shell, { childList: true, subtree: true });
+    });
     const spot = await center(page, 1, 18);
     await page.mouse.move(spot.x, spot.y);
     await expect(page.locator('.motif-cs-msa-hover-column')).toBeVisible();
     const readout = page.locator('.motif-cs-msa-hover-readout');
     await expect(readout).toBeVisible();
     await expect(readout).toContainText('col 19');
+    await expect(readout).toContainText('v1');
+    await expect(readout.locator('b')).not.toHaveText('');
     await expect(page.locator('.motif-cs-msa-matrix-row[data-hover="true"]')).toHaveCount(1);
+    const latency = await page.evaluate(() => (
+      window as unknown as { __msaHoverProbe: { latency: number } }
+    ).__msaHoverProbe.latency);
+    expect(latency).toBeGreaterThanOrEqual(0);
+    expect(latency).toBeLessThan(150);
+
+    const crosshair = await page.locator('.motif-cs-msa-hover-column').boundingBox();
+    if (!crosshair) throw new Error('hover crosshair missing');
+    expect(spot.x).toBeGreaterThanOrEqual(crosshair.x);
+    expect(spot.x).toBeLessThanOrEqual(crosshair.x + crosshair.width);
+
+    await page.mouse.wheel(180, 6);
+    await expect(readout).toHaveCount(0);
+    await page.mouse.move(spot.x + 1, spot.y);
+    await page.mouse.move(spot.x, spot.y);
+    await expect(readout).toBeVisible();
+    const afterScrollText = await readout.textContent();
+    const afterScrollColumn = Number(afterScrollText?.match(/col (\d+)/)?.[1] ?? 0);
+    expect(afterScrollColumn).toBeGreaterThan(19);
+    const scrolledCrosshair = await page.locator('.motif-cs-msa-hover-column').boundingBox();
+    if (!scrolledCrosshair) throw new Error('scrolled hover crosshair missing');
+    expect(spot.x).toBeGreaterThanOrEqual(scrolledCrosshair.x);
+    expect(spot.x).toBeLessThanOrEqual(scrolledCrosshair.x + scrolledCrosshair.width);
+
+    const overview = await page.getByTestId('msa-overview').boundingBox();
+    if (!overview) throw new Error('overview missing');
+    await page.mouse.move(overview.x + overview.width / 2, overview.y + overview.height / 2);
+    await expect(readout).toHaveCount(0);
   });
 
   test('right-click opens the selection context menu', async ({ page }) => {
@@ -416,6 +851,56 @@ test.describe('Motif MSA viewer interactions', () => {
     // Escape closes it.
     await page.keyboard.press('Escape');
     await expect(menu).toHaveCount(0);
+  });
+
+  test('double-click keeps residue and overview actions stable and retains the first row-name target', async ({ page }) => {
+    await setup(page, 1000, 760, 188, 7);
+
+    const residue = await center(page, 1, 18);
+    await page.mouse.move(residue.x, residue.y);
+    await page.mouse.down();
+    await page.mouse.up();
+    await page.mouse.down();
+    await page.mouse.up();
+    await expect(page.getByTestId('msa-selection-readout')).toContainText('cols 19–19');
+    await expect(page.getByTestId('msa-selection-readout')).toContainText('1 row');
+    await expect(page.getByRole('menu', { name: 'Alignment selection actions' })).toHaveCount(0);
+
+    const intendedRow = page.locator('.motif-cs-msa-matrix-row[data-msa-row-index="2"]');
+    const intendedId = await intendedRow.getAttribute('data-msa-row-id');
+    const rowName = intendedRow.locator('.motif-cs-msa-row-select');
+    const rowNameBox = await rowName.boundingBox();
+    if (!intendedId || !rowNameBox) throw new Error('row name target missing');
+    expect(rowNameBox.height).toBeLessThan(24);
+    const extendedY = rowNameBox.y + rowNameBox.height + Math.min(4, (24 - rowNameBox.height) / 2 - 1);
+    expect(extendedY).toBeGreaterThan(rowNameBox.y + rowNameBox.height);
+    expect(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest('.motif-cs-msa-row-select') !== null, {
+      x: rowNameBox.x + rowNameBox.width / 2,
+      y: extendedY,
+    })).toBe(true);
+    await page.mouse.move(rowNameBox.x + rowNameBox.width / 2, extendedY);
+    await page.mouse.down();
+    await page.mouse.up();
+    await page.mouse.down();
+    await page.mouse.up();
+    await expect(page.locator('.motif-cs-msa-matrix-row').first()).toHaveAttribute('data-msa-row-id', intendedId);
+    await expect(page.locator('.motif-cs-msa-matrix-row').first().locator('.motif-cs-msa-row-select')).toHaveAttribute('aria-pressed', 'true');
+
+    const overview = page.getByTestId('msa-overview');
+    const overviewBox = await overview.boundingBox();
+    if (!overviewBox) throw new Error('overview target missing');
+    const overviewPoint = {
+      x: overviewBox.x + overviewBox.width * 0.8,
+      y: overviewBox.y + overviewBox.height / 2,
+    };
+    const scroll = page.locator('.motif-cs-msa-matrix-scroll');
+    await page.mouse.move(overviewPoint.x, overviewPoint.y);
+    await page.mouse.down();
+    await page.mouse.up();
+    await page.mouse.down();
+    await page.mouse.up();
+    await expect.poll(() => scroll.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);
+    await expect(page.getByRole('menu', { name: 'Alignment selection actions' })).toHaveCount(0);
   });
 
   test('context menu stays within the viewport when opened near the edge', async ({ page }) => {
@@ -447,6 +932,42 @@ test.describe('Motif MSA viewer interactions', () => {
     // listener may dismiss anchored menus for outside scrolls, but not this one.
     await menu.evaluate((element) => element.dispatchEvent(new Event('scroll')));
     await expect(menu).toBeVisible();
+  });
+
+  test('context menu stays on-screen at every matrix corner at 820px and 1600px', async ({ page }) => {
+    for (const width of [820, 1600]) {
+      await setup(page, width, 820, 188, 30);
+      const viewport = page.viewportSize()!;
+      const scroller = page.locator('.motif-cs-msa-matrix-scroll');
+      const scrollBox = await scroller.boundingBox();
+      const gutter = await page.locator('.motif-cs-msa-sticky-label').first().boundingBox();
+      const firstRow = await page.locator('.motif-cs-msa-matrix-row').first().boundingBox();
+      if (!scrollBox || !gutter || !firstRow) throw new Error('top matrix corner geometry missing');
+      const xs = [gutter.x + gutter.width + 3, scrollBox.x + scrollBox.width - 20];
+
+      const assertMenuAt = async (x: number, y: number) => {
+        await page.mouse.move(x, y);
+        await page.mouse.down({ button: 'right' });
+        await page.mouse.up({ button: 'right' });
+        const menu = page.getByRole('menu', { name: 'Alignment selection actions' });
+        await expect(menu).toBeVisible();
+        const box = await menu.boundingBox();
+        if (!box) throw new Error('context menu geometry missing');
+        expect(box.x).toBeGreaterThanOrEqual(8);
+        expect(box.y).toBeGreaterThanOrEqual(8);
+        expect(box.x + box.width).toBeLessThanOrEqual(viewport.width - 8 + 1);
+        expect(box.y + box.height).toBeLessThanOrEqual(viewport.height - 8 + 1);
+        await page.keyboard.press('Escape');
+        await expect(menu).toHaveCount(0);
+      };
+
+      for (const x of xs) await assertMenuAt(x, firstRow.y + firstRow.height / 2);
+
+      await scroller.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+      const lastRow = await page.locator('.motif-cs-msa-matrix-row').last().boundingBox();
+      if (!lastRow) throw new Error('bottom matrix corner geometry missing');
+      for (const x of xs) await assertMenuAt(x, lastRow.y + lastRow.height / 2);
+    }
   });
 
   test('context menu remains scrollable when constrained below its content height', async ({ page }) => {
@@ -507,11 +1028,57 @@ test.describe('Motif MSA viewer interactions', () => {
     await expect.poll(() => scroll.evaluate((el) => el.scrollLeft)).toBeGreaterThan(0);
     const afterHorizontal = await scroll.evaluate((el) => el.scrollLeft);
     const verticalBefore = await scroll.evaluate((el) => el.scrollTop);
+    await page.waitForTimeout(180);
     // A near-vertical gesture (tiny deltaX) must not change horizontal scroll —
-    // its vertical delta is honoured instead of being swallowed as horizontal.
+    // after the gesture idle boundary, its vertical delta is honoured instead
+    // of being swallowed as horizontal.
     await page.mouse.wheel(6, 160);
     await expect.poll(() => scroll.evaluate((el) => el.scrollTop)).toBeGreaterThan(verticalBefore);
     expect(await scroll.evaluate((el) => el.scrollLeft)).toBe(afterHorizontal);
+  });
+
+  test('a tall alignment renders every row it shows and none of the rows it does not', async ({ page }) => {
+    // Rows keep their element, their sticky label and their aria-rowindex at every
+    // scroll position; only the residue cells outside the visible band are skipped.
+    // Measured at 4,000 columns, one scroll step per animation frame: horizontal
+    // p50 76.3ms -> 32.0ms and frames over 50ms 98% -> 11%, for a vertical p50 that
+    // does not move (8.4ms both ways). This asserts both halves of that trade — no
+    // visible row may be blank, and the window must actually narrow, or the cost
+    // silently comes back.
+    await setup(page, 1440, 980, 188, 100);
+    const scroll = page.locator('.motif-cs-msa-matrix-scroll');
+    await expect(scroll).toBeVisible();
+
+    const rowCount = await page.locator('.motif-cs-msa-matrix-row').count();
+    expect(rowCount).toBe(100);
+    const windowed = await page.evaluate(() => {
+      const rows = [...document.querySelectorAll('.motif-cs-msa-matrix-row')];
+      // From a row that IS drawn, so a window too small to reach row 0 fails on
+      // the blank-visible-row loop below rather than here.
+      const counts = rows.map((row) => row.querySelectorAll('.motif-cs-msa-symbol').length);
+      return { perRow: Math.max(...counts), drawn: counts.filter((n) => n > 0).length, total: rows.length };
+    });
+    expect(windowed.perRow).toBeGreaterThan(0);
+    expect(windowed.drawn).toBeLessThan(windowed.total);
+
+    const maxTop = await scroll.evaluate((el) => el.scrollHeight - el.clientHeight);
+    expect(maxTop).toBeGreaterThan(0);
+    for (let step = 0; step <= 12; step += 1) {
+      const top = Math.round((maxTop * step) / 12);
+      await scroll.evaluate((el, value) => { el.scrollTop = value; }, top);
+      const blanks = await page.evaluate(() => {
+        const el = document.querySelector('.motif-cs-msa-matrix-scroll')!;
+        const viewport = el.getBoundingClientRect();
+        return [...document.querySelectorAll('.motif-cs-msa-matrix-row')]
+          .filter((row) => {
+            const rect = row.getBoundingClientRect();
+            const overlap = Math.min(rect.bottom, viewport.bottom) - Math.max(rect.top, viewport.top);
+            return overlap > 1 && row.querySelectorAll('.motif-cs-msa-symbol').length === 0;
+          })
+          .map((row) => (row as HTMLElement).dataset.msaRowIndex);
+      });
+      expect(blanks, `blank visible rows at scrollTop ${top}`).toEqual([]);
+    }
   });
 
   test('vertical wheel input scrolls a tall matrix without shifting its columns', async ({ page }) => {
@@ -524,6 +1091,43 @@ test.describe('Motif MSA viewer interactions', () => {
     await page.mouse.wheel(4, 180);
     await expect.poll(() => scroll.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
     expect(await scroll.evaluate((el) => el.scrollLeft)).toBe(leftBefore);
+  });
+
+  // Covers the wiring only: a diagonal wheel commits to its dominant axis and the
+  // off-axis component is suppressed. The rule that a gesture HOLDS that axis for
+  // 140ms of follow-up events cannot be asserted here — a single Playwright round
+  // trip between two wheels measured 192ms, so the harness outlasts the very idle
+  // window it is trying to stay inside and the second event legitimately starts a
+  // fresh gesture. That rule is tested against resolveMsaWheelGesture directly,
+  // with exact timestamps, in claude-science-msa.test.ts.
+  test('a diagonal wheel commits to its dominant axis instead of drifting on both', async ({ page }) => {
+    await setup(page, 1000, 760, 188, 30);
+    const scroll = page.locator('.motif-cs-msa-matrix-scroll');
+    const spot = await center(page, 1, 10);
+    await page.mouse.move(spot.x, spot.y);
+
+    await page.mouse.wheel(90, 24);
+    await expect.poll(() => scroll.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);
+    expect(await scroll.evaluate((element) => element.scrollTop)).toBe(0);
+
+    // Let the gesture lapse, then prove the other axis is still reachable.
+    await page.waitForTimeout(220);
+    const leftAfterHorizontal = await scroll.evaluate((element) => element.scrollLeft);
+    await page.mouse.wheel(6, 90);
+    await expect.poll(() => scroll.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+    expect(await scroll.evaluate((element) => element.scrollLeft)).toBe(leftAfterHorizontal);
+  });
+
+  test('Shift plus vertical wheel pans columns without moving rows', async ({ page }) => {
+    await setup(page, 1000, 760, 188, 30);
+    const scroll = page.locator('.motif-cs-msa-matrix-scroll');
+    const spot = await center(page, 1, 10);
+    await page.mouse.move(spot.x, spot.y);
+    await page.keyboard.down('Shift');
+    await page.mouse.wheel(0, 140);
+    await page.keyboard.up('Shift');
+    await expect.poll(() => scroll.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);
+    expect(await scroll.evaluate((element) => element.scrollTop)).toBe(0);
   });
 
   test('the hover readout clears when the matrix scrolls', async ({ page }) => {
@@ -549,7 +1153,7 @@ test.describe('Motif MSA viewer interactions', () => {
     await setup(page);
     await page.getByTestId('msa-view-menu-button').click();
     await page.getByRole('checkbox', { name: 'Residue colors' }).check();
-    await page.getByLabel('Colour scheme').selectOption('clustal');
+    await page.getByLabel('Color scheme').selectOption('clustal');
     await page.getByLabel('Shade columns').selectOption('mismatch');
     const matrix = page.locator('.motif-cs-msa-matrix');
     await expect(matrix).toHaveAttribute('data-color-scheme', 'clustal');
@@ -668,7 +1272,7 @@ test.describe('Motif MSA viewer interactions', () => {
   });
 
   test('the overview navigates only on a primary-button press', async ({ page }) => {
-    await setup(page);
+    await setup(page, 1000, 760, 188, 7);
     const box = await page.getByTestId('msa-overview').boundingBox();
     if (!box) throw new Error('overview not found');
     const scroll = page.locator('.motif-cs-msa-matrix-scroll');
@@ -677,11 +1281,77 @@ test.describe('Motif MSA viewer interactions', () => {
     // A secondary-button press must not move the alignment. (The overview has no
     // app context menu, so nothing to dismiss — and a stray Escape would close
     // the host window.)
-    await page.mouse.click(target.x, target.y, { button: 'right' });
+    await page.mouse.move(target.x, target.y);
+    await page.mouse.down({ button: 'right' });
+    await page.mouse.up({ button: 'right' });
     await expect.poll(() => scroll.evaluate((el) => el.scrollLeft)).toBe(0);
     // A primary-button press does navigate.
-    await page.mouse.click(target.x, target.y, { button: 'left' });
+    await page.mouse.down({ button: 'left' });
+    await page.mouse.up({ button: 'left' });
     await expect.poll(() => scroll.evaluate((el) => el.scrollLeft)).toBeGreaterThan(0);
+  });
+
+  test('overview drag scrubs continuously and stops panning on pointerup', async ({ page }) => {
+    await setup(page, 1000, 760, 188, 7);
+    const overview = page.getByTestId('msa-overview');
+    const box = await overview.boundingBox();
+    if (!box) throw new Error('overview not found');
+    const scroll = page.locator('.motif-cs-msa-matrix-scroll');
+    const y = box.y + box.height / 2;
+
+    await page.mouse.move(box.x + box.width * 0.25, y);
+    await page.mouse.down();
+    const afterPress = await scroll.evaluate((element) => element.scrollLeft);
+    await page.mouse.move(box.x + box.width * 0.78, y, { steps: 12 });
+    await expect.poll(() => scroll.evaluate((element) => element.scrollLeft)).toBeGreaterThan(afterPress);
+    const afterRightScrub = await scroll.evaluate((element) => element.scrollLeft);
+    await page.mouse.move(box.x + box.width * 0.55, y, { steps: 8 });
+    await expect.poll(() => scroll.evaluate((element) => element.scrollLeft)).toBeLessThan(afterRightScrub);
+    await page.mouse.up();
+
+    const releasedLeft = await scroll.evaluate((element) => element.scrollLeft);
+    await page.mouse.move(box.x + box.width * 0.12, y, { steps: 6 });
+    await page.waitForTimeout(100);
+    expect(await scroll.evaluate((element) => element.scrollLeft)).toBe(releasedLeft);
+  });
+
+  test('overview difference ticks render at least 2px wide at narrow and wide viewports', async ({ page }) => {
+    for (const width of [820, 1600]) {
+      await setup(page, width, 820, 188, 7);
+      const ticks = page.locator('[data-msa-overview-difference]');
+      await expect(ticks.first()).toBeVisible();
+      const widths = await ticks.evaluateAll((elements) => elements.map((element) => element.getBoundingClientRect().width));
+      expect(widths.length).toBeGreaterThan(0);
+      expect(Math.min(...widths)).toBeGreaterThanOrEqual(2);
+    }
+  });
+
+  test('direct-manipulation surfaces expose truthful computed cursors', async ({ page }) => {
+    await setup(page, 1000, 760, 188, 7);
+    const cursors = async () => ({
+      grid: await page.locator('.motif-cs-msa-matrix-scroll').evaluate((element) => getComputedStyle(element).cursor),
+      rowName: await page.locator('.motif-cs-msa-row-select').nth(1).evaluate((element) => getComputedStyle(element).cursor),
+      rowGrip: await page.getByTestId('msa-row-grip').first().evaluate((element) => getComputedStyle(element).cursor),
+      overview: await page.getByTestId('msa-overview').evaluate((element) => getComputedStyle(element).cursor),
+      columns: await page.getByTestId('msa-horizontal-scroll').evaluate((element) => getComputedStyle(element).cursor),
+      zoom: await page.getByTestId('msa-zoom-range').evaluate((element) => getComputedStyle(element).cursor),
+    });
+    expect(await cursors()).toEqual({
+      grid: 'crosshair',
+      rowName: 'pointer',
+      rowGrip: 'grab',
+      overview: 'grab',
+      columns: 'grab',
+      zoom: 'ew-resize',
+    });
+
+    const overviewBox = await page.getByTestId('msa-overview').boundingBox();
+    if (!overviewBox) throw new Error('overview not found');
+    await page.mouse.move(overviewBox.x + overviewBox.width / 2, overviewBox.y + overviewBox.height / 2);
+    await page.mouse.down();
+    await expect(page.getByTestId('msa-overview')).toHaveCSS('cursor', 'grabbing');
+    await page.mouse.up();
+    await expect(page.getByTestId('msa-overview')).toHaveCSS('cursor', 'grab');
   });
 
   test('arrow keys on a focused row grip reorder and announce the move', async ({ page }) => {
@@ -689,6 +1359,7 @@ test.describe('Motif MSA viewer interactions', () => {
     const movingId = await rowIdAt(page, 1); // a non-template row
     if (!movingId) throw new Error('no row id');
 
+    await page.locator(`[data-msa-row-id="${movingId}"] [data-msa-grid-cell="true"]`).first().click();
     await gripForId(page, movingId).focus();
     await page.keyboard.press('ArrowDown');
     await gripForId(page, movingId).focus();
@@ -696,6 +1367,8 @@ test.describe('Motif MSA viewer interactions', () => {
 
     // The row that began at index 1 has stepped down to index 3.
     expect(await rowIdAt(page, 3)).toBe(movingId);
+    const activeId = await expectActiveDescendant(page);
+    await expect(page.locator(`[id="${activeId}"]`).locator('xpath=ancestor::*[@data-msa-row-id][1]')).toHaveAttribute('data-msa-row-id', movingId);
     await expect(page.getByTestId('msa-order-note')).toBeVisible();
     await expect(page.getByTestId('msa-reorder-status')).toContainText('position 4 of 5');
   });
@@ -716,11 +1389,14 @@ test.describe('Motif MSA viewer interactions', () => {
 
   test('changing the template after a manual reorder re-pins the new template to the top', async ({ page }) => {
     await setup(page);
+    // Wait for the floating window's initial-focus frame before moving focus to
+    // its row grip. This test owns template pinning; the adjacent keyboard test
+    // separately verifies that an explicitly focused grip handles Arrow keys.
+    await expect(page.getByRole('dialog', { name: 'Multiple Sequence Alignment' })).toBeFocused();
     // Establish a manual order: step the first movable row down one slot.
     const movedId = await rowIdAt(page, 1);
     if (!movedId) throw new Error('no row id');
-    await gripForId(page, movedId).focus();
-    await page.keyboard.press('ArrowDown');
+    await gripForId(page, movedId).press('ArrowDown');
     await expect(page.getByTestId('msa-order-note')).toBeVisible();
     expect(await rowIdAt(page, 2)).toBe(movedId); // manual order is in effect
     const manualIds = await rowIds(page);
@@ -930,7 +1606,7 @@ test.describe('Motif MSA viewer interactions', () => {
     await page.getByTestId('msa-view-menu-button').click();
     await page.getByRole('checkbox', { name: 'Sequence logo' }).check();
     await page.getByRole('checkbox', { name: 'Residue colors' }).check();
-    await page.getByLabel('Colour scheme').selectOption('taylor');
+    await page.getByLabel('Color scheme').selectOption('taylor');
     await setZoomPercent(page, 25);
 
     const block = page.locator('.motif-cs-msa-logo-block[data-residue="X"]').first();
@@ -985,6 +1661,64 @@ test.describe('Motif MSA viewer interactions', () => {
     await input.press('Escape');
     await expect(count).not.toContainText('of');
     await expect(page.locator('.motif-cs-msa-symbol[data-search-match]')).toHaveCount(0);
+  });
+
+  test('differing-column view keeps absolute coordinates and row-name search reveals its row', async ({ page }) => {
+    await page.setViewportSize({ width: 1180, height: 820 });
+    await page.addInitScript(() => { window.localStorage.clear(); window.sessionStorage.clear(); });
+    await page.goto('/motif.html');
+    await expect(page.locator('.motif-cs-shell')).toBeVisible();
+    await page.evaluate(() => {
+      const reference = 'A'.repeat(60);
+      const variant = reference.split('');
+      variant[9] = 'T';
+      variant[49] = 'T';
+      const api = (window as unknown as { motifAddAlignments?: (a: unknown) => number }).motifAddAlignments;
+      if (!api) throw new Error('motifAddAlignments unavailable');
+      api({
+        id: 'sparse-differences-e2e',
+        name: 'Sparse differences E2E',
+        molecule: 'dna',
+        referenceRowId: 'reference',
+        rows: [
+          { id: 'reference', name: 'KRAS reference', aligned: reference },
+          { id: 'variant', name: 'KRAS G12D', aligned: variant.join('') },
+        ],
+      });
+    });
+    await page.getByTestId('msa-open-button').dispatchEvent('click');
+    await expect(page.getByTestId('msa-alignment-view')).toBeVisible();
+    await expect(page.locator('.motif-cs-msa-difference-nav span').first()).toHaveText('Difference 1 of 2');
+
+    await page.getByTestId('msa-column-filter-toggle').click();
+    const matrix = page.getByRole('grid', { name: /Alignment matrix/ });
+    await expect(matrix).toHaveAttribute('data-column-filter', 'differences');
+    const variantCells = page.locator('[data-msa-row-id="variant"] [data-msa-grid-cell="true"]');
+    await expect(variantCells).toHaveCount(14);
+    await expect(variantCells.first()).toHaveAttribute('data-alignment-column', '7');
+    await expect(variantCells.first()).toHaveAttribute('aria-colindex', '7');
+    await expect(page.getByRole('button', { name: '33 identical columns hidden. Show these columns.' })).toBeVisible();
+
+    const finder = page.getByTestId('msa-search-input');
+    await finder.fill('G12D');
+    await expect(page.getByTestId('msa-search-count')).toHaveText('1 row-name match');
+    await finder.press('Enter');
+    await expect(page.getByTestId('msa-search-count')).toHaveText('1 of 1 · row name');
+    await expect(page.locator('[data-msa-row-id="variant"]')).toHaveAttribute('data-search-name-active', 'true');
+
+    // Escape has to leave the text field, or every single-key shortcut below is
+    // swallowed by the finder the reader believes they just dismissed.
+    await finder.press('Escape');
+    await expect(matrixGrid(page)).toBeFocused();
+    await expect(finder).toHaveValue('');
+    // The persistent matrix owns focus again; verify each step from the neutral
+    // difference state created by the row-name jump.
+    await page.keyboard.press('n');
+    await expect(page.locator('.motif-cs-msa-difference-nav span').first()).toHaveText('Difference 1 of 2');
+    await page.keyboard.press('n');
+    await expect(page.locator('.motif-cs-msa-difference-nav span').first()).toHaveText('Difference 2 of 2');
+    await page.keyboard.press('/');
+    await expect(finder).toBeFocused();
   });
 
   test('Escape clears the search from outside the input and in Text mode without closing the window', async ({ page }) => {
@@ -1113,6 +1847,8 @@ test.describe('Motif MSA viewer interactions', () => {
     if (!total) throw new Error('no difference total on the counter — nothing below was measured');
     expect(Number(total.replaceAll(',', ''))).toBeGreaterThan(3);
 
+    await expect(counter).toHaveText(`Difference 1 of ${total}`);
+    await previous.click();
     await expect(counter).toHaveText(`Difference — of ${total}`);
     await previous.click();
     await expect(counter).toHaveText(`Difference — of ${total}`);
@@ -1134,9 +1870,9 @@ test.describe('Motif MSA viewer interactions', () => {
     await setup(page);
     const readout = page.getByTestId('msa-search-count');
     await page.getByTestId('msa-search-input').fill('AIR');
-    await expect(readout).toHaveText(/^\d+ matches$/);
+    await expect(readout).toHaveText(/^\d+ motif matches$/);
     await page.getByTestId('msa-search-input').press('Enter');
-    await expect(readout).toHaveText(/^1 of \d+$/);
+    await expect(readout).toHaveText(/^1 of \d+ · motif$/);
   });
 
   test('the exported image follows the residue-colour toggle, and stays legible without it', async ({ page }) => {
@@ -1146,7 +1882,7 @@ test.describe('Motif MSA viewer interactions', () => {
     // was preventing the user from inspecting.
     await setup(page);
     await page.getByTestId('msa-view-menu-button').click();
-    await page.getByLabel('Colour scheme').isDisabled();
+    await page.getByLabel('Color scheme').isDisabled();
     await page.keyboard.press('Escape');
 
     await page.getByTestId('msa-export-menu-button').click();
@@ -1156,7 +1892,7 @@ test.describe('Motif MSA viewer interactions', () => {
 
     await page.getByTestId('msa-view-menu-button').click();
     await page.getByRole('checkbox', { name: 'Residue colors' }).check();
-    await page.getByLabel('Colour scheme').selectOption('taylor');
+    await page.getByLabel('Color scheme').selectOption('taylor');
     await page.keyboard.press('Escape');
     await page.getByTestId('msa-export-menu-button').click();
     const coloured = svgCellFills(await savedSvg(page));
@@ -1399,9 +2135,10 @@ test.describe('Motif MSA viewer interactions', () => {
       await expect(page.getByTestId('msa-alignment-view')).toBeVisible();
     };
 
-    // min(940, 1440 - 40) x min(820, 900 - 150). Pinned, so a change to either
-    // cap has to come past this test rather than through it.
-    const defaultSize = { w: 940, h: 750 };
+    // max(940, round((1440 - 40) * 0.78)) x min(820, 900 - 150). Pinned,
+    // so a change to either responsive default has to come past this test rather
+    // than through it.
+    const defaultSize = { w: 1092, h: 750 };
     expect(await size()).toEqual(defaultSize);
 
     const grip = await page.evaluate(() => {
@@ -1410,7 +2147,7 @@ test.describe('Motif MSA viewer interactions', () => {
     });
     await page.mouse.move(grip.x, grip.y);
     await page.mouse.down();
-    for (let step = 1; step <= 20; step += 1) {
+    for (let step = 1; step <= 24; step += 1) {
       await page.mouse.move(grip.x - step * 40, grip.y - step * 32, { steps: 2 });
     }
     await page.mouse.up();

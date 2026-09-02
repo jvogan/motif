@@ -1,13 +1,21 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
+  AlignmentImageExportError,
+  alignmentImageCanvasPlan,
+  alignmentImageCanvasScale,
+  alignmentImageCellGeometry,
   computeAlignmentImageLayout,
   mixSrgb,
+  resolveAlignmentImagePalette,
   resolveResidueCellColor,
+  DEFAULT_ALIGNMENT_IMAGE_PALETTE,
   MSA_IMAGE_LETTER_MIN,
+  MSA_IMAGE_MAX_CANVAS_PIXELS,
+  MSA_IMAGE_MAX_CELLS,
   MSA_IMAGE_MAX_WIDTH,
-  MSA_IMAGE_MAX_HEIGHT,
   type AlignmentImageSource,
 } from '../claude-science-msa';
+import { renderAlignmentImageSvg } from '../claude-science-msa-image';
 
 const WHITE = '#ffffff';
 
@@ -35,6 +43,21 @@ describe('computeAlignmentImageLayout', () => {
     // Not clamped, so total width is the ideal content width.
     expect(layout.width).toBe(Math.ceil(layout.labelWidth + layout.columnCount * layout.cellWidth));
     expect(layout.height).toBe(Math.ceil(layout.headerHeight + layout.rowCount * layout.cellHeight));
+  });
+
+  it('preserves absolute filtered columns and elisions in visible-view geometry', () => {
+    const columns = [
+      { kind: 'column' as const, column: 9 },
+      { kind: 'column' as const, column: 10 },
+      { kind: 'elision' as const, startColumn: 11, endColumn: 40, hiddenCount: 29 },
+      { kind: 'column' as const, column: 40 },
+    ];
+    const layout = computeAlignmentImageLayout(source(3, 100), {
+      scope: 'view', columns, cellWidth: 12, cellHeight: 16,
+    });
+    expect(layout.startColumn).toBe(9);
+    expect(layout.columnCount).toBe(4);
+    expect(layout.columns).toEqual(columns);
   });
 
   it('spans the whole alignment for the "all" scope', () => {
@@ -76,16 +99,135 @@ describe('computeAlignmentImageLayout', () => {
     expect(layout.drawLetters).toBe(false);
   });
 
-  it('caps the drawn cell count for an oversized whole-alignment export', () => {
+  it('fits every column of a 2 by 100,000 whole export without a subpixel floor', () => {
+    const layout = computeAlignmentImageLayout(source(2, 100_000), {
+      scope: 'all', cellWidth: 12, cellHeight: 16,
+    });
+    const last = alignmentImageCellGeometry(layout, 99_999);
+    const canvas = alignmentImageCanvasPlan(layout.width, layout.height, 2);
+
+    expect(layout.columns).toHaveLength(100_000);
+    expect(layout.columns.at(-1)).toEqual({ kind: 'column', column: 99_999 });
+    expect(layout.cellWidth).toBeGreaterThan(0);
+    expect(layout.cellWidth).toBeLessThan(0.2);
+    expect(layout.contentWidth).toBe(layout.width);
+    expect(last.width).toBeGreaterThan(0);
+    expect(last.x + last.width).toBeCloseTo(layout.contentWidth, 9);
+    expect(last.x + last.width).toBeLessThanOrEqual(layout.width);
+    expect((last.x + last.width) * canvas.scaleX).toBeCloseTo(canvas.width, 9);
+    expect(canvas.width).toBeLessThanOrEqual(MSA_IMAGE_MAX_WIDTH);
+    expect(canvas.width * canvas.height).toBeLessThanOrEqual(MSA_IMAGE_MAX_CANVAS_PIXELS);
+  });
+
+  it('keeps fitted row geometry positive and complete for tall accepted exports', () => {
+    const layout = computeAlignmentImageLayout(source(10_000, 2), {
+      scope: 'all', maxHeight: 200, fontSize: 100_000,
+    });
+    expect(layout.cellHeight).toBeGreaterThan(0);
+    expect(layout.cellHeight).toBeLessThan(1);
+    expect(layout.contentHeight).toBe(layout.height);
+    expect(layout.contentHeight).toBeLessThanOrEqual(200);
+  });
+
+  it('preserves every column exactly at the row-cell limit', () => {
+    const layout = computeAlignmentImageLayout(source(100, 4_000), {
+      scope: 'all', cellWidth: 12, cellHeight: 16, maxCells: MSA_IMAGE_MAX_CELLS,
+    });
+    expect(layout.columnCount).toBe(4_000);
+    expect(layout.columns).toHaveLength(4_000);
+    expect(layout.columns[0]).toEqual({ kind: 'column', column: 0 });
+    expect(layout.columns.at(-1)).toEqual({ kind: 'column', column: 3_999 });
+  });
+
+  it('rejects an oversized whole-alignment image instead of returning a leading slice', () => {
+    expect(() => computeAlignmentImageLayout(source(100, 4_001), {
+      scope: 'all', cellWidth: 12, cellHeight: 16, maxCells: MSA_IMAGE_MAX_CELLS,
+    })).toThrow(AlignmentImageExportError);
+    try {
+      computeAlignmentImageLayout(source(100, 4_001), { scope: 'all' });
+      throw new Error('expected the image layout to reject');
+    } catch (caught) {
+      expect(caught).toMatchObject({
+        code: 'cell_limit',
+        scope: 'all',
+        requiredCells: 400_100,
+        maxCells: 400_000,
+        rowCount: 100,
+        columnCount: 4_001,
+      });
+    }
+  });
+
+  it('rejects a high-column whole image while allowing a late visible window', () => {
+    const huge = source(9, 50_000);
+    expect(() => computeAlignmentImageLayout(huge, { scope: 'all' })).toThrow(AlignmentImageExportError);
+    const visible = computeAlignmentImageLayout(huge, {
+      scope: 'view', startColumn: 49_980, endColumn: 50_000,
+    });
+    expect(visible.columnCount).toBe(20);
+    expect(visible.columns[0]).toEqual({ kind: 'column', column: 49_980 });
+    expect(visible.columns.at(-1)).toEqual({ kind: 'column', column: 49_999 });
+  });
+
+  it('preflights a missing visible window before materializing its whole fallback', () => {
+    const huge = source(9, 50_000);
+    const originalArrayFrom = Array.from;
+    const materialization = vi.spyOn(Array, 'from').mockImplementation((...args) => {
+      const candidate = args[0] as { length?: unknown } | null | undefined;
+      if (typeof candidate === 'object' && candidate !== null && !Array.isArray(candidate) && candidate.length === 50_000) {
+        throw new Error('Attempted to materialize every image column before preflight.');
+      }
+      return Reflect.apply(originalArrayFrom, Array, args);
+    });
+
+    try {
+      expect(() => computeAlignmentImageLayout(huge, { scope: 'view' })).toThrow(AlignmentImageExportError);
+      try {
+        computeAlignmentImageLayout(huge, { scope: 'view' });
+        throw new Error('expected the image layout to reject');
+      } catch (caught) {
+        expect(caught).toMatchObject({
+          code: 'cell_limit',
+          scope: 'view',
+          requiredCells: 450_000,
+          maxCells: 400_000,
+          rowCount: 9,
+          columnCount: 50_000,
+        });
+      }
+      expect(materialization).not.toHaveBeenCalledWith(
+        expect.objectContaining({ length: 50_000 }),
+        expect.any(Function),
+      );
+    } finally {
+      materialization.mockRestore();
+    }
+  });
+
+  it('builds only a bounded visible window inside an alignment too long to materialize', () => {
+    const alignmentLength = 5_000_000_000;
     const huge: AlignmentImageSource = {
-      rows: Array.from({ length: 100 }, (_, index) => ({ name: `R${index}`, aligned: '' })),
-      alignmentLength: 50_000,
+      rows: [{ name: 'Template', aligned: '' }, { name: 'Read', aligned: '' }],
+      alignmentLength,
     };
-    const layout = computeAlignmentImageLayout(huge, { scope: 'all', cellWidth: 12, cellHeight: 16, maxCells: 400_000 });
-    expect(layout.clamped).toBe(true);
-    expect(layout.columnCount).toBe(4_000); // floor(400000 / 100 rows)
-    expect(layout.width).toBeLessThanOrEqual(MSA_IMAGE_MAX_WIDTH);
-    expect(layout.height).toBeLessThanOrEqual(MSA_IMAGE_MAX_HEIGHT);
+    const visible = computeAlignmentImageLayout(huge, {
+      scope: 'view', startColumn: alignmentLength - 8, endColumn: alignmentLength,
+    });
+    expect(visible.startColumn).toBe(alignmentLength - 8);
+    expect(visible.columnCount).toBe(8);
+    expect(visible.columns).toEqual(Array.from(
+      { length: 8 },
+      (_, offset) => ({ kind: 'column', column: alignmentLength - 8 + offset }),
+    ));
+  });
+
+  it('does not let non-finite or oversized maxCells values bypass the hard cap', () => {
+    const huge = source(100, 4_001);
+    for (const maxCells of [Number.NaN, Number.POSITIVE_INFINITY, MSA_IMAGE_MAX_CELLS + 1]) {
+      expect(() => computeAlignmentImageLayout(huge, { scope: 'all', maxCells })).toThrow(AlignmentImageExportError);
+    }
+    expect(() => computeAlignmentImageLayout(source(2, 51), { scope: 'all', maxCells: 100 }))
+      .toThrow(AlignmentImageExportError);
   });
 
   it('keeps the label column within sane bounds regardless of name length', () => {
@@ -96,6 +238,96 @@ describe('computeAlignmentImageLayout', () => {
     const layout = computeAlignmentImageLayout(longNames, { scope: 'all', fontSize: 11 });
     expect(layout.labelWidth).toBeLessThanOrEqual(320);
     expect(layout.labelWidth).toBeGreaterThanOrEqual(96);
+  });
+});
+
+describe('whole-alignment SVG geometry', () => {
+  it('paints the exact trailing column and spaces subpixel axis ticks legibly', () => {
+    const alignmentLength = 100_000;
+    const aligned = `${'-'.repeat(alignmentLength - 1)}A`;
+    const wide: AlignmentImageSource = {
+      rows: [{ name: 'Template', aligned }, { name: 'Read', aligned }],
+      alignmentLength,
+    };
+    const layout = computeAlignmentImageLayout(wide, { scope: 'all' });
+    const svg = renderAlignmentImageSvg(
+      wide.rows.map((row, index) => ({ ...row, isTemplate: index === 0 })),
+      'dna',
+      'nucleotide',
+      layout,
+      'Wide alignment',
+      DEFAULT_ALIGNMENT_IMAGE_PALETTE,
+    );
+
+    const fill = resolveResidueCellColor('A', 'dna', 'nucleotide', WHITE);
+    const painted = [...svg.matchAll(new RegExp(`<rect x="([0-9.]+)"[^>]+width="([0-9.]+)"[^>]+fill="${fill}"`, 'g'))];
+    expect(painted).toHaveLength(2);
+    const lastX = Number(painted.at(-1)?.[1]);
+    const lastWidth = Number(painted.at(-1)?.[2]);
+    expect(lastWidth).toBeGreaterThan(0);
+    expect(lastX + lastWidth).toBeCloseTo(layout.contentWidth, 4);
+    expect(svg).toContain('>100000</text>');
+    const centeredTextCount = svg.match(/text-anchor="middle"/g)?.length ?? 0;
+    expect(centeredTextCount).toBeGreaterThan(50);
+    expect(centeredTextCount).toBeLessThan(200);
+  });
+});
+
+describe('alignment image palette', () => {
+  it('uses deterministic fallbacks when no theme tokens are available', () => {
+    expect(resolveAlignmentImagePalette()).toEqual(DEFAULT_ALIGNMENT_IMAGE_PALETTE);
+  });
+
+  it('maps and canonicalizes active light or dark theme tokens', () => {
+    const tokens: Record<string, string> = {
+      '--bg-primary': '#232323',
+      '--bg-secondary': 'rgb(43, 43, 43)',
+      '--text-primary': '#f5f5f4',
+      '--text-muted': '#a7a3a0',
+    };
+    expect(resolveAlignmentImagePalette((name) => tokens[name] ?? '')).toEqual({
+      background: '#232323',
+      labelBackground: '#2b2b2b',
+      text: '#f5f5f4',
+      muted: '#a7a3a0',
+    });
+  });
+
+  it('falls back per field for malformed or transparent values', () => {
+    const palette = resolveAlignmentImagePalette((name) => ({
+      '--bg-primary': 'transparent',
+      '--bg-secondary': '#abc',
+      '--text-primary': 'rgb(999, 0, 0)',
+      '--text-muted': '#70665f',
+    })[name] ?? '');
+    expect(palette).toEqual({
+      background: DEFAULT_ALIGNMENT_IMAGE_PALETTE.background,
+      labelBackground: '#aabbcc',
+      text: DEFAULT_ALIGNMENT_IMAGE_PALETTE.text,
+      muted: '#70665f',
+    });
+  });
+});
+
+describe('alignment image canvas scale', () => {
+  it('keeps the physical backing store within its pixel budget', () => {
+    const ratio = alignmentImageCanvasScale(12_000, 8_000, 2);
+    expect(ratio).toBeLessThan(1);
+    expect(Math.ceil(12_000 * ratio) * Math.ceil(8_000 * ratio))
+      .toBeLessThanOrEqual(MSA_IMAGE_MAX_CANVAS_PIXELS + 20_000);
+    expect(alignmentImageCanvasScale(1_000, 500, 2)).toBe(2);
+  });
+
+  it('caps physical backing dimensions as well as total pixels', () => {
+    expect(alignmentImageCanvasPlan(12_000, 80, 2)).toMatchObject({
+      width: 12_000,
+      height: 80,
+      scaleX: 1,
+      scaleY: 1,
+    });
+    const tall = alignmentImageCanvasPlan(200, 8_000, 2);
+    expect(tall.width).toBe(200);
+    expect(tall.height).toBe(8_000);
   });
 });
 
@@ -163,5 +395,10 @@ describe('resolveResidueCellColor', () => {
   it('honours a non-white export background', () => {
     const black = '#000000';
     expect(resolveResidueCellColor('A', 'dna', 'nucleotide', black)).toBe(mixSrgb('#2ea043', 34, black));
+  });
+
+  it('accepts rgb() backgrounds resolved from theme tokens', () => {
+    expect(resolveResidueCellColor('A', 'dna', 'nucleotide', 'rgb(255, 255, 255)'))
+      .toBe(mixSrgb('#2ea043', 34, '#ffffff'));
   });
 });

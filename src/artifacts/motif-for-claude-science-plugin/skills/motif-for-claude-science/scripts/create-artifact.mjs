@@ -72,6 +72,7 @@ const FEATURE_TYPES = new Set([
   'intron', 'exon', 'polya_signal', 'enhancer', 'custom',
 ]);
 const SAFE_FEATURE_COLOR = /^(?:#[0-9a-f]{3,8}|(?:rgb|hsl)a?\([\d\s.,%+\-/]+\)|[a-z]+)$/i;
+const SAFE_FEATURE_THEME_COLOR = /^(?:var\(--(?:accent|green|purple|amber|red|feature-neutral)(?:, #[0-9a-f]{6})?\)|color-mix\(in srgb, var\(--(?:accent|green|purple|amber|red|feature-neutral)(?:, #[0-9a-f]{6})?\) (?:7[2-9]|8\d|9[0-2])%, var\(--bg-primary\)\))$/i;
 const UNSAFE_OBJECT_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 const ALIGNMENT_MODES = new Set(['browser', 'local-command', 'imported']);
 const SUPPORTED_INVENTORY_SCHEMAS = new Set([
@@ -250,7 +251,10 @@ function validateFeature(feature, path, sequenceLength) {
   if (feature.type !== undefined && !FEATURE_TYPES.has(feature.type.trim().toLowerCase())) {
     throw new Error(`${path}.type is not a supported feature type`);
   }
-  if (feature.color !== undefined && (feature.color.length > 80 || !SAFE_FEATURE_COLOR.test(feature.color.trim()))) {
+  if (feature.color !== undefined && (
+    feature.color.length > 80
+    || (!SAFE_FEATURE_COLOR.test(feature.color.trim()) && !SAFE_FEATURE_THEME_COLOR.test(feature.color.trim()))
+  )) {
     throw new Error(`${path}.color must be a simple CSS color value`);
   }
   if (!Number.isSafeInteger(feature.start) || !Number.isSafeInteger(feature.end)) {

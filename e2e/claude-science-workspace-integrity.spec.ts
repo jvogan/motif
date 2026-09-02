@@ -238,7 +238,8 @@ test.describe('Claude Science workspace integrity', () => {
       return workspace;
     });
     expect(afterSameBase).toEqual(before);
-    await expect(page.getByRole('button', { name: 'Undo' })).toHaveCount(0);
+    // Present but disabled: the affordance is permanent, the history is empty.
+    await expect(page.getByRole('button', { name: 'Undo' })).toBeDisabled();
     await expect(page.getByTestId('session-durability-status')).toHaveText('session only');
     await editor.press('ArrowLeft');
     await editor.press('g');

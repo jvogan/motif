@@ -115,6 +115,44 @@ describe('Claude Science map workspace regression guards', () => {
     expect(linear).not.toMatch(/top:\s*12px/);
   });
 
+  it('sizes the linear map frame to its drawing instead of the drawing to its frame', () => {
+    // A linear viewBox is as wide as its pane, so `meet` pins the scale at 1 and
+    // every pixel of frame past the drawing is padding. Measured on pUC19, the
+    // frame stood 67.3% empty at 1600x1100 and 75.2% at 2000x1400, which left
+    // the map's own visibility and digest controls 633.5 and 933.7px below the
+    // map they belong to. The three declarations below are what closed that to
+    // 49px, and they only work together.
+    const linearFrame = sliceBetween(
+      artifactCss,
+      '.motif-cs-map-frame[data-map-mode="linear"] {',
+      '}',
+    );
+    expect(linearFrame).toMatch(/flex:\s*none;/);
+    expect(linearFrame).toMatch(/height:\s*auto;/);
+    // `flex: none` is the load-bearing half. As a `flex: 1 1 0` item the frame is
+    // grown from a zero basis and any height declared on it is inert — which is
+    // how the clamp this rule replaced came to have no effect above 640px.
+    expect(linearFrame).not.toMatch(/flex:\s*1\s/);
+
+    const linearSvg = sliceBetween(
+      artifactCss,
+      '.motif-cs-map-frame[data-map-mode="linear"] .motif-pm-container,',
+      '}',
+    );
+    expect(linearSvg).toContain('.motif-cs-map-frame[data-map-mode="linear"] .motif-plasmid-map');
+    expect(linearSvg).toMatch(/height:\s*auto;/);
+
+    // And the layout must not read back the height the frame now takes from it.
+    // Simulated over the ResizeObserver's own update rule at a 560px pane with 22
+    // features and 65 sites, the pair collapsed 435.6 -> 338.3 -> 262.9 -> 200.7px
+    // across four passes, hiding a lane on each one, because a scaled-down
+    // drawing always measures shorter than the layout that produced it.
+    expect(artifactSource).toContain(
+      "height: mapRenderMode === 'linear' ? LINEAR_MAP_DEPTH_BUDGET : mapSize.height,",
+    );
+    expect(artifactSource).not.toMatch(/^ {6}height: mapSize\.height,$/m);
+  });
+
   it('pins the map dock heads as a column footer only while they are collapsed', () => {
     // These two heads are the end of the map workflow and sat below the column's visible
     // edge at every desktop size under 1536 — 138px at 900x700 down to 85px at 1440x1200.

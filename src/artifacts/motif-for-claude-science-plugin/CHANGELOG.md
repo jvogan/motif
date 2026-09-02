@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.0 — 2026-09-01
+
+- Added a Codex adapter and deterministic local-marketplace package around the
+  same bounded Motif workbench and two-tool connector.
+- Presented the product as Motif across visible copy, with neutral appearance
+  labels and host-specific setup kept in separate adapters.
+- Expanded alignment review with virtualized rows, stable keyboard focus,
+  difference navigation, sequence search, synchronized tracks, and clearer
+  responsive exports.
+- Improved structured sequence paste, range edits, map gestures, annotation
+  colors, restriction labels, and compact Sanger, cloning, gel, and selection
+  controls.
+- Hardened local MCP startup, bounded transport and asset reads, runtime
+  identity checks, error reporting, packaging doctors, and release validation.
+
 ## 0.3.6 — 2026-08-12
 
 - Bounded restriction result cardinality, feature propagation, assembly-chain

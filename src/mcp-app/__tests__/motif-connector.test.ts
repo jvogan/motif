@@ -2,6 +2,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { resolveFeatureColor } from '../../bio/feature-palette.js';
 import { renderMotifArtifact } from '../../../mcp/motif/artifact-export.js';
 import { MOTIF_WORKBENCH_RESOURCE_URI } from '../../../mcp/motif/contracts.js';
 import {
@@ -16,10 +17,25 @@ import {
 import { isMotifWorkbenchResult } from '../motif-workbench-bridge.js';
 
 const runtimeBuildId = 'a'.repeat(64);
-const artifactTemplate = `<!doctype html><html><head><meta name="motif-build-id" content="${runtimeBuildId}"><title>Motif for Claude Science</title></head><body><script type="application/json" id="motif-artifact-data">__SEQUENCE_INVENTORY__</script></body></html>`;
+const artifactTemplate = `<!doctype html><html><head><meta name="motif-build-id" content="${runtimeBuildId}"><title>Motif</title></head><body><script type="application/json" id="motif-artifact-data">__SEQUENCE_INVENTORY__</script></body></html>`;
 
 const openedClients: Client[] = [];
 const openedServers: ReturnType<typeof createMotifClaudeScienceServer>[] = [];
+
+function countJsonNodes(value: unknown): number {
+  const pending: unknown[] = [value];
+  let nodes = 0;
+  while (pending.length > 0) {
+    const current = pending.pop();
+    nodes += 1;
+    if (Array.isArray(current)) {
+      for (const entry of current) pending.push(entry);
+    } else if (current !== null && typeof current === 'object') {
+      for (const entry of Object.values(current)) pending.push(entry);
+    }
+  }
+  return nodes;
+}
 
 afterEach(async () => {
   await Promise.allSettled(openedClients.splice(0).map(client => client.close()));
@@ -113,6 +129,153 @@ describe('Motif MCP payload boundary', () => {
         }],
       },
     });
+  });
+
+  it('applies the shared palette and carries an explicit proposal opt-out', () => {
+    const result = prepareMotifWorkbench({
+      payload: {
+        records: [{
+          id: 'palette',
+          name: 'Palette',
+          molecule: 'dna',
+          sequence: 'ATGAAATAA',
+          features: [
+            { name: 'coding region', type: 'cds', start: 0, end: 9 },
+            { name: 'operator', type: 'regulatory', start: 3, end: 6, color: '#123456' },
+          ],
+        }],
+      },
+      proposeAnnotations: false,
+    });
+    expect(result.payload?.records).toEqual([
+      expect.objectContaining({
+        proposeAnnotations: false,
+        features: [
+          expect.objectContaining({ color: 'var(--accent, #7E9BBF)' }),
+          expect.objectContaining({ color: '#123456' }),
+        ],
+      }),
+    ]);
+  });
+
+  it('bounds record collections before applying a proposal preference', () => {
+    const records = Array.from(
+      { length: MOTIF_MCP_LIMITS.maxRecords + 1 },
+      (_, index) => ({ id: `tiny-${index}`, sequence: 'A' }),
+    );
+    // A proposal preference used to call Array#map before validation. This
+    // non-enumerable tripwire is invisible to JSON sizing, but proves an
+    // oversized collection is rejected before any preference-wide mapping.
+    Object.defineProperty(records, 'map', {
+      configurable: true,
+      get: () => {
+        throw new Error('proposal preference mapped an oversized collection');
+      },
+    });
+    const payload = { records };
+
+    expect(Buffer.byteLength(JSON.stringify(payload), 'utf8')).toBeLessThan(MOTIF_MCP_LIMITS.maxPayloadBytes);
+    expect(() => prepareMotifWorkbench({ payload, proposeAnnotations: true }))
+      .toThrow(/cannot contain more than 100 records/i);
+
+    const bounded = prepareMotifWorkbench({
+      payload: { records: [{ id: 'bounded', sequence: 'A' }] },
+      proposeAnnotations: true,
+    });
+    expect(bounded.payload?.records).toEqual([
+      expect.objectContaining({ id: 'bounded', proposeAnnotations: true }),
+    ]);
+  });
+
+  it('keeps the serialized payload bound after adding palette defaults', () => {
+    const feature = { type: 'cds', start: 0, end: 1 };
+    const features = Array.from(
+      { length: MOTIF_MCP_LIMITS.maxFeaturesPerRecord },
+      () => ({ ...feature }),
+    );
+    const payload = {
+      records: [{ id: 'palette-boundary', sequence: 'A', features }],
+      padding: '',
+    };
+    const beforePaddingBytes = Buffer.byteLength(JSON.stringify(payload), 'utf8');
+    payload.padding = 'x'.repeat(MOTIF_MCP_LIMITS.maxPayloadBytes - beforePaddingBytes - 1);
+
+    const inputBytes = Buffer.byteLength(JSON.stringify(payload), 'utf8');
+    const paletteBytesPerFeature = Buffer.byteLength(
+      JSON.stringify({ ...feature, color: resolveFeatureColor(feature) }),
+      'utf8',
+    ) - Buffer.byteLength(JSON.stringify(feature), 'utf8');
+    expect(inputBytes).toBe(MOTIF_MCP_LIMITS.maxPayloadBytes - 1);
+    expect(inputBytes + paletteBytesPerFeature * features.length).toBeGreaterThan(MOTIF_MCP_LIMITS.maxPayloadBytes);
+
+    expect(() => validateMotifPayload(payload)).toThrow(/Payload cannot exceed 32 MiB\./);
+  });
+
+  it('keeps the JSON-node budget transactional after adding palette defaults', () => {
+    const featureCount = MOTIF_MCP_LIMITS.maxFeaturesPerRecord;
+    const makePayloadAtInputNodes = (targetNodes: number) => {
+      const features = Array.from(
+        { length: featureCount },
+        () => ({ type: 'cds', start: 0, end: 1 }),
+      );
+      const payload = {
+        records: [{ id: 'palette-node-boundary', sequence: 'A', features }],
+        padding: [] as null[],
+      };
+      const paddingNodes = targetNodes - countJsonNodes(payload);
+      expect(paddingNodes).toBeGreaterThanOrEqual(0);
+      payload.padding = Array.from({ length: paddingNodes }, () => null);
+      expect(countJsonNodes(payload)).toBe(targetNodes);
+      return { features, payload };
+    };
+
+    const valid = makePayloadAtInputNodes(MOTIF_MCP_LIMITS.maxJsonNodes - featureCount);
+    const prepared = validateMotifPayload(valid.payload).payload;
+    expect(countJsonNodes(prepared)).toBe(MOTIF_MCP_LIMITS.maxJsonNodes);
+    const preparedFeatures = (prepared.records as Array<{ features?: unknown[] }> | undefined)?.[0]?.features;
+    expect(preparedFeatures?.[0]).toMatchObject({ color: resolveFeatureColor(valid.features[0]) });
+
+    const oversized = makePayloadAtInputNodes(MOTIF_MCP_LIMITS.maxJsonNodes);
+    expect(() => validateMotifPayload(oversized.payload))
+      .toThrow(/cannot contain more than 250,000 JSON nodes/i);
+    expect(oversized.features.every(feature => !Object.hasOwn(feature, 'color'))).toBe(true);
+    expect(countJsonNodes(oversized.payload)).toBe(MOTIF_MCP_LIMITS.maxJsonNodes);
+  });
+
+  it('revalidates a direct payload after applying its title override', () => {
+    const payload = {
+      inventory: { title: 'Original' },
+      records: [{ id: 'title-override', sequence: 'A' }],
+    };
+    const prepared = prepareMotifWorkbench({ payload, title: 'Delivered title' });
+    expect(prepared.payload?.inventory).toMatchObject({ title: 'Delivered title' });
+    expect(payload.inventory.title).toBe('Original');
+
+    const title = 't'.repeat(MOTIF_MCP_LIMITS.maxShortTextLength);
+    const boundary = {
+      inventory: { title: 'Original' },
+      records: [{ id: 'title-boundary', sequence: 'A' }],
+      padding: '',
+    };
+    const withEmptyPadding = {
+      ...boundary,
+      inventory: { ...boundary.inventory, title },
+    };
+    boundary.padding = 'x'.repeat(
+      MOTIF_MCP_LIMITS.maxPayloadBytes
+        - Buffer.byteLength(JSON.stringify(withEmptyPadding), 'utf8')
+        + 1,
+    );
+    expect(Buffer.byteLength(JSON.stringify(boundary), 'utf8'))
+      .toBeLessThan(MOTIF_MCP_LIMITS.maxPayloadBytes);
+    expect(Buffer.byteLength(JSON.stringify({
+      ...boundary,
+      inventory: { ...boundary.inventory, title },
+    }), 'utf8')).toBe(MOTIF_MCP_LIMITS.maxPayloadBytes + 1);
+
+    expect(() => prepareMotifWorkbench({ payload: boundary, title }))
+      .toThrow(/Payload cannot exceed 32 MiB\./);
+    expect(boundary.inventory.title).toBe('Original');
   });
 
   it('keeps valid unprojectable GenBank locations with feature and record diagnostics', () => {
@@ -445,13 +608,13 @@ describe('Motif embedded artifact export', () => {
   });
 });
 
-describe('Motif for Claude Science MCP server', () => {
+describe('Motif MCP server', () => {
   it('exposes a fully branded app resource, viewer binding, and embedded fallback', async () => {
     const traceEvents: MotifMcpTraceEvent[] = [];
     const server = createMotifClaudeScienceServer({
       version: '0.2.1-test',
       runtimeBuildId,
-      readWorkbenchHtml: async () => '<!doctype html><title>Motif for Claude Science</title><div class="motif-cs-brand">Motif</div>',
+      readWorkbenchHtml: async () => '<!doctype html><title>Motif</title><div class="motif-cs-brand">Motif</div>',
       readArtifactTemplate: async () => artifactTemplate,
       trace: event => traceEvents.push(event),
     });
@@ -507,7 +670,7 @@ describe('Motif for Claude Science MCP server', () => {
       type: 'resource_link',
       uri: MOTIF_WORKBENCH_RESOURCE_URI,
       mimeType: 'text/html;profile=mcp-app',
-      name: 'Motif for Claude Science workbench',
+      name: 'Motif Workbench',
     }));
     expect(openResult.content).toContainEqual(expect.objectContaining({
       type: 'text',
@@ -525,7 +688,7 @@ describe('Motif for Claude Science MCP server', () => {
       },
     });
     const resourceContent = resource.contents[0];
-    expect(resourceContent && 'text' in resourceContent ? resourceContent.text : '').toContain('Motif for Claude Science');
+    expect(resourceContent && 'text' in resourceContent ? resourceContent.text : '').toContain('<title>Motif</title>');
 
     const artifactResult = await client.callTool({
       name: 'motif_create_workbench_artifact',
@@ -550,7 +713,7 @@ describe('Motif for Claude Science MCP server', () => {
       resource: expect.objectContaining({
         uri: 'motif://artifact/motif-review.html',
         mimeType: 'text/html',
-        text: expect.stringContaining('Motif for Claude Science'),
+        text: expect.stringContaining('<title>Motif</title>'),
       }),
     }));
     expect(artifactResult.content).toContainEqual(expect.objectContaining({
@@ -572,7 +735,7 @@ describe('Motif for Claude Science MCP server', () => {
     const server = createMotifClaudeScienceServer({
       version: '0.2.1-test',
       runtimeBuildId,
-      readWorkbenchHtml: async () => '<title>Motif for Claude Science</title>',
+      readWorkbenchHtml: async () => '<title>Motif</title>',
       readArtifactTemplate: async () => artifactTemplate,
     });
     openedServers.push(server);
@@ -616,7 +779,7 @@ describe('Motif for Claude Science MCP server', () => {
     const server = createMotifClaudeScienceServer({
       version: '0.2.1-test',
       runtimeBuildId,
-      readWorkbenchHtml: async () => '<title>Motif for Claude Science</title>',
+      readWorkbenchHtml: async () => '<title>Motif</title>',
       readArtifactTemplate: async () => artifactTemplate,
     });
     openedServers.push(server);

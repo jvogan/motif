@@ -211,10 +211,17 @@ export interface MapOverflowRender {
   hiddenBodies: number;
   /**
    * Items the map DOES draw but does not name: features whose label was culled, or
-   * restriction SITES under a cluster whose label was culled.
+   * restriction SITES whose enzyme no drawn label states.
+   *
+   * "No drawn label states" is not "sits under an unlabelled cluster", and that
+   * distinction is the field's whole content on the restriction side. A cluster label
+   * names its first few enzymes and folds the rest into a "+N" tail, so a cluster
+   * labelled "XhoI, TaqI +10" names 2 of its 12 — the ten behind the tail belong here.
+   * Counting only unlabelled clusters put 63 on the pET-28a(+) chip in a 780x890 pane
+   * where 98 of 149 sites had no name on the map, and 0 on pUC19 where 38 of 77 did.
    *
    * Counts unnamed ITEMS, not label glyphs. One dropped cluster label can leave a
-   * dozen sites unlabelled, and "N sites" is the wording the chip, the cluster tooltip
+   * dozen sites unnamed, and "N sites" is the wording the chip, the cluster tooltip
    * and the Map Visibility dock already share for it — naming this `hiddenLabels`
    * would invite the next reader to print "12 labels hidden" over a map that dropped
    * one.
@@ -306,6 +313,15 @@ export interface MapLayout {
   height: number;
   viewBox: string;
   /**
+   * The same box WITHOUT the squaring a low-density circular layout applies, so a
+   * renderer can draw the map at the size its content actually needs. Squaring
+   * centers the ring by padding whichever side has the shortest label out to match
+   * the longest, which on a wide short frame costs about a quarter of the ring's
+   * diameter and shrinks every label with it. `viewBox` stays square so exports
+   * and their digests do not move. Circular layouts only.
+   */
+  contentViewBox?: string;
+  /**
    * The viewBox as numbers (x, y, w, h). Equals the content bounding box after
    * label extents are folded in, so it can start negative / exceed width/height.
    * Renderers use this for the background rect + click target so both cover the
@@ -324,6 +340,17 @@ export interface MapLayout {
   length: number;
   /** circular-only fitted center title; linear layouts do not set it. */
   centerTitle?: MapCenterTitle;
+  /**
+   * circular-only: radius of the disc at the center that map-owned center content
+   * actually occupies — the fitted title, the length line, and the overflow chips.
+   *
+   * Overlays that sweep a sector of the whole disc (selection, range overlays) start
+   * outside it. A sector drawn from r=0 paints over the molecule's own name, which is
+   * the one label on the map a reader needs while dragging a selection across it.
+   * Published rather than re-derived so every overlay clears the same disc, and so
+   * the clearance tracks a long name instead of a constant that only fits short ones.
+   */
+  centerLabelRadius?: number;
   topology: Topology;
   sequenceType: SequenceType;
   features: readonly MapFeatureRender[];

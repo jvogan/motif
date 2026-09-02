@@ -7,17 +7,20 @@ export const MAX_MOTIF_ARTIFACT_HTML_BYTES = 40 * 1024 * 1024;
 
 export const motifWorkbenchPayloadSchema = z.record(z.string(), z.unknown());
 
-export const motifWorkbenchResultSchema = z.object({
+export const preparedMotifWorkbenchSchema = z.object({
   schema: z.literal(MOTIF_WORKBENCH_RESULT_SCHEMA),
   mode: z.enum(['sample', 'payload', 'artifact']),
-  delivery: z.literal('live-app-request').optional(),
-  visibleMountConfirmed: z.literal(false).optional(),
-  fallbackTool: z.literal('motif_create_workbench_artifact').optional(),
-  runtimeBuildId: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
   sourceName: z.string().min(1).max(512).optional(),
   payload: motifWorkbenchPayloadSchema.optional(),
   recordCount: z.number().int().nonnegative().max(100),
   residueCount: z.number().int().nonnegative().max(25_000_000),
+}).strict();
+
+export const motifWorkbenchResultSchema = preparedMotifWorkbenchSchema.extend({
+  delivery: z.literal('live-app-request'),
+  visibleMountConfirmed: z.literal(false),
+  fallbackTool: z.literal('motif_create_workbench_artifact'),
+  runtimeBuildId: z.string().regex(/^[a-f0-9]{64}$/u),
 }).strict();
 
 export const motifArtifactExportSummarySchema = z.object({
@@ -34,5 +37,6 @@ export const motifArtifactExportSummarySchema = z.object({
 }).strict();
 
 export type MotifWorkbenchPayload = z.infer<typeof motifWorkbenchPayloadSchema>;
+export type PreparedMotifWorkbench = z.infer<typeof preparedMotifWorkbenchSchema>;
 export type MotifWorkbenchResult = z.infer<typeof motifWorkbenchResultSchema>;
 export type MotifArtifactExportSummary = z.infer<typeof motifArtifactExportSummarySchema>;

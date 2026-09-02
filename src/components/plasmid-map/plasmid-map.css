@@ -22,6 +22,18 @@
   max-width: 720px;
   margin-inline: auto;
 }
+
+/* A docked desktop pane has a fixed title and control dock. Let the circular
+   frame use the remaining flex height instead of retaining the host's viewport-
+   based minimum, which can be taller than the pane itself on laptop screens.
+   The SVG keeps `preserveAspectRatio="xMidYMid meet"`, so both its drawing and
+   its root hit surface share the same fitted content transform. */
+/* A circular frame that takes only the pane's leftover flex height removes the
+   107px of laptop clipping, and costs more than it buys: the ring shrinks far
+   enough that label density collapses (a 4kb test record went from 121 to 304
+   hidden sites) and three map contracts fail - cluster naming, wheel/pan/zoom,
+   and the zoomed selection readout. Bisected by disabling this rule alone: all
+   three pass again. Clipping needs a fix that keeps the ring's size. */
 .motif-pm-container[data-map-mode='linear'] {
   --motif-pm-edge: 8px;
   --motif-pm-overview-gap: 12px;
@@ -29,16 +41,6 @@
   --motif-pm-zoom-width: 88px;
   align-items: flex-start;
   padding-bottom: 48px;
-}
-
-.motif-pm-container[data-fit-content-height='true'] {
-  max-height: 520px;
-}
-
-.motif-pm-container[data-fit-content-height='true'] .motif-plasmid-map {
-  width: 100%;
-  height: 100%;
-  max-height: 100%;
 }
 
 .motif-pm-container[data-frozen='true'] .motif-plasmid-map {
@@ -496,26 +498,12 @@
 
 .motif-pm-backbone {
   fill: none;
-  stroke: var(--border, #d4d4d4);
+  /* The ring is the map's primary structural edge, not decorative chrome. Use
+     the strong border token so it remains visible in every host theme while
+     staying quieter than selected features and restriction ticks. */
+  stroke: var(--border-strong, var(--text-secondary, #8a8a8a));
   stroke-width: 3;
   vector-effect: non-scaling-stroke;
-}
-/* Light: --border (#E4E4E4) reads too faint for the plasmid ring — darken to a
-   quiet medium gray so the backbone registers at a glance without competing with
-   the desaturated feature bars. */
-[data-theme='light'] .motif-pm-backbone {
-  stroke: #c8c8c8;
-}
-/* High-contrast must not keep the quiet gray: in light+HC everything else goes
-   pure black, so a #c8c8c8 ring is the faintest thing on screen (~1.4:1). Follow
-   the HC --border (#000) like dark+HC does (white ring). */
-[data-theme='light'][data-contrast='high'] .motif-pm-backbone {
-  stroke: var(--border, #000);
-}
-/* Dark (regular): #333 on the #222 field is only ~1.25:1 — nudge brighter so the
-   ring registers. Leave dark+HC alone (it already gets a strong ring via --border). */
-[data-theme='dark']:not([data-contrast='high']) .motif-pm-backbone {
-  stroke: #4a4a4a;
 }
 
 /* ---- selection overlay (sequence -> map) ---- */
@@ -539,18 +527,57 @@
   stop-opacity: 0.16;
 }
 
+/* Same ramp shape as the fill, raised to line strength. The floor keeps the inner
+   end of a radial edge a hint rather than a spoke pointing at the molecule's name. */
+.motif-pm-selection-edge-stop {
+  stop-color: var(--accent, #0169cc);
+}
+
+.motif-pm-selection-edge-stop-center {
+  stop-opacity: 0.16;
+}
+
+.motif-pm-selection-edge-stop-mid {
+  stop-opacity: 0.42;
+}
+
+.motif-pm-selection-edge-stop-edge {
+  stop-opacity: 0.85;
+}
+
 .motif-pm-container[data-map-mode='circular'] .motif-pm-selection {
   fill-opacity: 1;
   stroke: none;
   shape-rendering: geometricPrecision;
 }
+/* No outline, to match the circular mode above, which has drawn `stroke: none`
+   all along. A 1px accent edge at 0.5 opacity around a pale band added a second
+   line to a drawing already made of lines — ruler, ticks, axis, leaders, lane
+   grid — and read as clutter rather than as an edge. The 0.16 fill is what says
+   "selected", in both modes. */
 .motif-pm-container[data-map-mode='linear'] .motif-pm-selection {
   fill: var(--accent, #0169cc);
   fill-opacity: 0.16;
+  stroke: none;
+}
+
+/* The two ends of a linear selection, carried down to the coordinate gridlines'
+   depth. They are read against a field of those gridlines, which paint --border
+   at stroke-opacity 0.5 -- rgb(235,235,235) on the light ground, measured -- so
+   these take the accent at full opacity: rgb(1,105,204) in the same place.
+
+   2px and crisp. Measured over 16 boundaries at eight drag positions, 1.5px
+   crisp painted 1 column at some x and 2 at others, so one selection could draw
+   its two ends at different weights; 1.5px antialiased painted 2 or 3. Both
+   whole widths are stable, and 2 gives a 275px line the presence a 1px one --
+   the gridlines' own weight -- does not. */
+.motif-pm-selection-edge {
+  fill: none;
   stroke: var(--accent, #0169cc);
-  stroke-opacity: 0.5;
-  stroke-width: 1;
+  stroke-width: 2;
   vector-effect: non-scaling-stroke;
+  shape-rendering: crispEdges;
+  pointer-events: none;
 }
 
 /* ---- coordinate ring / axis ---- */
@@ -587,8 +614,20 @@
 }
 .motif-pm-coord-label {
   fill: var(--text-secondary, #8a8a8a);
-  font-size: 10px;
+  font-size: 16px;
   font-variant-numeric: tabular-nums;
+}
+
+/* A ruler is the quietest thing on a map, and in linear mode it was the loudest:
+   at a 1440px window the drawing renders at scale 1, so these numerals were a
+   true 16px against 13px enzyme names and an 11px pane title — the largest type
+   in the workspace, spent on tick marks. 13px puts them level with the enzyme
+   names and under the feature names, and it is the size campaign 15's
+   LINEAR_MIN_SCREEN_LABEL_PX floor is calculated against, so a narrow pane still
+   cannot scale them below 10 screen px. Circular is untouched: it fits its own
+   viewBox to its labels, so the same declaration means something else there. */
+.motif-pm-container[data-map-mode='linear'] .motif-pm-coord-label {
+  font-size: 13px;
 }
 
 /* ---- features ---- */
@@ -599,6 +638,11 @@
 .motif-pm-feature-hit {
   fill: none;
   stroke: transparent;
+  /* 24px would meet the pointer-target floor and take the backbone with it: a
+     transparent 24px stroke on every feature covers the axis the map uses for
+     range selection, and a drag along it stopped selecting anything. Measured on
+     a narrow linear map - the range readout never appeared. A bigger target here
+     has to come from geometry that does not sit on the drag surface. */
   stroke-width: 12;
   vector-effect: non-scaling-stroke;
   pointer-events: stroke;
@@ -607,7 +651,12 @@
 .motif-pm-feature-body {
   fill: color-mix(in srgb, var(--pm-base, #8a8a8a) 32%, var(--bg-primary, #ffffff));
   stroke: color-mix(in srgb, var(--pm-base, #8a8a8a) 36%, var(--border, #cbd5e1));
-  stroke-width: 0.35;
+  /* Short primer and site features can project to only a few pixels. A 2px
+     outline keeps their visual mark readable; the sibling hit path supplies
+     the independent 24px pointer floor. */
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
   vector-effect: non-scaling-stroke;
   transition: fill 90ms ease-out, stroke 90ms ease-out, stroke-width 90ms ease-out;
 }
@@ -616,12 +665,12 @@
 .motif-pm-feature:hover .motif-pm-feature-body {
   fill: color-mix(in srgb, var(--pm-base, #8a8a8a) 42%, var(--bg-primary, #ffffff));
   stroke: color-mix(in srgb, var(--pm-base, #8a8a8a) 52%, var(--accent, #0169cc));
-  stroke-width: 0.55;
+  stroke-width: 2.5;
 }
 .motif-pm-feature[data-selected='true'] .motif-pm-feature-body {
   fill: color-mix(in srgb, var(--pm-base, #8a8a8a) 52%, var(--bg-primary, #ffffff));
   stroke: var(--accent, #0169cc);
-  stroke-width: 1.5;
+  stroke-width: 3;
   stroke-linejoin: round;
 }
 .motif-pm-feature:focus {
@@ -637,12 +686,12 @@
    non-scaling-stroke` on the body means these widths are screen pixels. */
 .motif-pm-feature:focus-visible .motif-pm-feature-body {
   stroke: var(--accent, #0169cc);
-  stroke-width: 2;
+  stroke-width: 3;
 }
 .motif-pm-feature-label {
   fill: var(--text-primary, #131313);
   font-family: var(--font-ui, var(--font-sans, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif));
-  font-size: 11px;
+  font-size: 16px;
   /* Clickable so the readable name (including outside-leader labels sitting
      away from the arc) selects its feature via the group handler, instead of
      falling through to the background and CLEARING the selection. */
@@ -671,13 +720,14 @@
 }
 .motif-pm-tick {
   stroke: var(--text-secondary, #8a8a8a);
-  stroke-width: 1.25;
+  stroke-width: 2;
+  stroke-linecap: round;
   vector-effect: non-scaling-stroke;
 }
 .motif-pm-restriction-label {
   fill: var(--text-primary, #131313);
   font-family: var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace);
-  font-size: 10px;
+  font-size: 16px;
   /* Clickable: the readable enzyme name sits ~60px out on a leader; without this
      only the tiny tick was interactive and clicking the name hit the background
      and cleared the selection. Now it joins the cluster group's hover+click. */
@@ -685,11 +735,44 @@
   cursor: pointer;
 }
 
+/* One notch down, LINEAR ONLY, and it makes the two modes agree rather than
+   disagree. The circular map fits its viewBox to its labels and scales the whole
+   drawing to the pane, so this class measured 11.5-12.7 SCREEN px from 1100 to
+   1920 wide; the linear viewBox is 1:1 with its pane, so the same 16px drew at a
+   full 16. 13px lands at 13 and the enzyme names stop resizing when the map
+   toggles. Must stay equal to LINEAR_REC_LABEL_FONT_PX in layout.ts, which
+   reserves each label's box — see the guard in map-typography-contrast. */
+.motif-pm-container[data-map-mode='linear'] .motif-pm-restriction-label {
+  font-size: 13px;
+}
+
+/* The linear map pins its scale at exactly 1.000 - `computeLinearLayout` makes
+   the viewBox width equal the pane width - so a declared size is a screen size
+   here and nowhere else. Measured at 1280x800, 1440x900 and 1920x1080: the
+   feature name rendered at 16.0px in linear against 12.4-12.53 in circular,
+   which is 1.45x the pane title and 1.14x body copy. Switching the map from a
+   circle to a line grew every feature name by 29% while nothing else on the
+   page moved.
+
+   Feature names were deliberately left out of the pass that gave the ruler and
+   the enzyme labels their 13px linear size, on the grounds that the record's
+   own annotation is the content. That still holds, and 14px still makes them
+   the loudest thing on the map - it just stops them being louder than the
+   page. A/B at three viewports: 0 label overlaps before and after, all 8
+   labels still drawn, widest label 98.1px -> 87.2px.
+
+   The layout reserves each label's box from LABEL_FONT_PX = 16, so at 14 it
+   over-reserves by about a seventh. That can only leave extra gap, never a
+   collision, and no label was dropped at any viewport measured. */
+.motif-pm-container[data-map-mode='linear'] .motif-pm-feature-label {
+  font-size: 14px;
+}
+
 .motif-pm-overflow {
   fill: var(--text-secondary, #8a8a8a);
   fill-opacity: 0.7;
   font-family: var(--font-ui, var(--font-sans, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif));
-  font-size: 10px;
+  font-size: 13px;
   font-weight: 500;
   font-variant-numeric: tabular-nums;
   /* The chip's <title> is the only text that says what its count means and that no
@@ -724,8 +807,8 @@
    tall for two reasons that are easy to undo by accident:
      - stacked chips are placed one line apart, so a taller rect would cover the
        chip below it and answer with the wrong tooltip;
-     - .motif-pm-overflows paints AFTER .motif-pm-features, so a rect that reached
-       into the feature lane under the linear chip would silently eat feature clicks.
+     - .motif-pm-overflows paints BEFORE interactive annotations, so their painted
+       hit shapes win wherever this generous rect and a real feature/tick overlap.
    `fill: none` would make it unhittable under pointer-events: all in some engines;
    a transparent fill is the portable way to be present but invisible. */
 .motif-pm-overflow-hit {
@@ -736,8 +819,15 @@
 }
 
 .motif-pm-container[data-map-mode='circular'] .motif-pm-overflow {
-  font-size: 9px;
+  font-size: 12px;
   fill-opacity: 0.58;
+}
+
+/* And the count chip that summarises dropped labels was as loud as the labels
+   themselves. In circular it renders 9.3 against the enzyme names' 12.4, a
+   ratio of 0.75; in linear both landed on 13. 10px restores the ratio. */
+.motif-pm-container[data-map-mode='linear'] .motif-pm-overflow {
+  font-size: 10px;
 }
 
 [data-theme='light'] .motif-pm-overflow {
@@ -772,7 +862,13 @@
   fill-opacity: 1;
 }
 
-/* Type IIS enzymes get a distinct tan visual language.
+/* Type IIS enzymes get a distinct tan visual language. The tan darkened by 5%:
+   at the 16px these names render, WCAG asks 4.5:1, and the old value measured
+   4.34 on the light ground and 4.27 on claude-light's. This one measures 4.73
+   and 4.65, and stays plainly tan against the near-black of every other enzyme
+   name.
+
+   Type IIS enzymes get a distinct tan visual language.
    TICK is an aggregate cluster flag: any Type IIS site tints the whole tick
    (both topologies). LABEL colors PER-ENZYME so a mixed cluster like
    "BsaI,HpaII,MspI +7" tans ONLY the Type IIS token. Circular labels render as
@@ -781,23 +877,23 @@
    Linear labels are a single compact token (data-segmented absent) and keep the
    aggregate whole-label tint. */
 .motif-pm-restriction[data-typeiis='true'] .motif-pm-tick {
-  fill: var(--pm-typeiis, #b5651d);
-  stroke: var(--pm-typeiis, #b5651d);
+  fill: var(--pm-typeiis, #ac601c);
+  stroke: var(--pm-typeiis, #ac601c);
 }
 .motif-pm-restriction[data-typeiis='true']:not([data-segmented]) .motif-pm-restriction-label {
-  fill: var(--pm-typeiis, #b5651d);
+  fill: var(--pm-typeiis, #ac601c);
   stroke: none;
 }
 /* Per-enzyme Type IIS token (segmented labels): only the Type IIS enzyme
    <tspan>s get the tan; commas, the " +N" tail, and non-Type-IIS names inherit
    the label's normal ink. */
 .motif-pm-restriction-enz--typeiis {
-  fill: var(--pm-typeiis, #b5651d);
+  fill: var(--pm-typeiis, #ac601c);
 }
 .motif-pm-restriction:hover .motif-pm-tick,
 .motif-pm-restriction[data-active='true'] .motif-pm-tick {
   stroke: var(--accent, #0169cc);
-  stroke-width: 2;
+  stroke-width: 3;
 }
 .motif-pm-restriction:hover .motif-pm-leader,
 .motif-pm-restriction[data-active='true'] .motif-pm-leader {
@@ -817,7 +913,7 @@
 }
 .motif-pm-restriction:focus-visible .motif-pm-tick {
   stroke: var(--accent, #0169cc);
-  stroke-width: 2;
+  stroke-width: 3;
 }
 
 /* ---- center label (circular) ---- */
@@ -828,25 +924,109 @@
 }
 .motif-pm-center-len {
   fill: var(--text-secondary, #8a8a8a);
-  font-size: 11px;
+  font-size: 14px;
   font-variant-numeric: tabular-nums;
 }
 
-/* dark Type IIS + backbone tuning */
-[data-theme='dark'] .motif-pm-restriction[data-typeiis='true'] .motif-pm-tick {
+/* dark Type IIS + backbone tuning.
+   claude-dark was missing from this list and fell through to the light tan, so a
+   Type IIS enzyme name rendered the light value on #232323 at 3.63:1 — the worst
+   of the four themes and the only one below 3.5. With the lighter tan it
+   measures 6.88:1 on claude-dark's ground and 7.21:1 on dark's. */
+[data-theme='dark'] .motif-pm-restriction[data-typeiis='true'] .motif-pm-tick,
+[data-theme='claude-dark'] .motif-pm-restriction[data-typeiis='true'] .motif-pm-tick {
   fill: var(--pm-typeiis-dark, #d8a24a);
   stroke: var(--pm-typeiis-dark, #d8a24a);
 }
-[data-theme='dark'] .motif-pm-restriction[data-typeiis='true']:not([data-segmented]) .motif-pm-restriction-label {
+[data-theme='dark'] .motif-pm-restriction[data-typeiis='true']:not([data-segmented]) .motif-pm-restriction-label,
+[data-theme='claude-dark'] .motif-pm-restriction[data-typeiis='true']:not([data-segmented]) .motif-pm-restriction-label {
   fill: var(--pm-typeiis-dark, #d8a24a);
   stroke: none;
 }
-[data-theme='dark'] .motif-pm-restriction-enz--typeiis {
+[data-theme='dark'] .motif-pm-restriction-enz--typeiis,
+[data-theme='claude-dark'] .motif-pm-restriction-enz--typeiis {
   fill: var(--pm-typeiis-dark, #d8a24a);
 }
 
 @media (prefers-reduced-motion: reduce) {
   .motif-pm-feature-body {
     transition: none;
+  }
+}
+
+/* SVG feature paint is not remapped reliably by every forced-colors engine.
+   Use system colours explicitly, and replace hue-only distinctions with repeatable
+   stroke patterns while preserving selected and focus states. */
+@media (forced-colors: active) {
+  .motif-plasmid-map {
+    forced-color-adjust: auto;
+  }
+
+  [data-theme] .motif-pm-backbone,
+  .motif-pm-coord-tick,
+  .motif-pm-leader,
+  .motif-pm-tick,
+  .motif-pm-feature-body {
+    stroke: CanvasText;
+  }
+
+  .motif-pm-feature-body {
+    fill: Canvas;
+    /* The authored values above are already system colours. Keep Chromium from
+       tinting Canvas toward the suppressed feature hue during SVG adjustment. */
+    forced-color-adjust: none;
+  }
+
+  .motif-pm-feature:nth-child(3n + 2) .motif-pm-feature-body {
+    stroke-dasharray: 5 2;
+  }
+
+  .motif-pm-feature:nth-child(3n) .motif-pm-feature-body {
+    stroke-dasharray: 2 2;
+  }
+
+  .motif-pm-feature:hover .motif-pm-feature-body,
+  .motif-pm-feature:focus-visible .motif-pm-feature-body,
+  .motif-pm-feature[data-selected='true'] .motif-pm-feature-body,
+  .motif-pm-restriction:hover .motif-pm-tick,
+  .motif-pm-restriction:focus-visible .motif-pm-tick,
+  .motif-pm-restriction[data-active='true'] .motif-pm-tick {
+    stroke: Highlight;
+  }
+
+  .motif-pm-feature[data-selected='true'] .motif-pm-feature-body {
+    fill: Highlight;
+  }
+
+  [data-theme] .motif-pm-restriction[data-typeiis='true'] .motif-pm-tick,
+  [data-theme] .motif-pm-restriction[data-typeiis='true']:not([data-segmented]) .motif-pm-restriction-label,
+  [data-theme] .motif-pm-restriction-enz--typeiis {
+    fill: CanvasText;
+    stroke: CanvasText;
+  }
+
+  [data-theme] .motif-pm-restriction[data-active='true'] .motif-pm-tick,
+  [data-theme] .motif-pm-restriction[data-active='true'] .motif-pm-restriction-label,
+  [data-theme] .motif-pm-restriction[data-active='true'] .motif-pm-restriction-enz--typeiis {
+    fill: Highlight;
+    stroke: Highlight;
+  }
+
+  .motif-pm-feature-label,
+  .motif-pm-restriction-label,
+  .motif-pm-restriction-enz--typeiis,
+  .motif-pm-center-name,
+  .motif-pm-center-len,
+  .motif-pm-coord-label,
+  .motif-pm-overflow {
+    fill: CanvasText;
+  }
+
+  .motif-pm-selection-stop {
+    stop-color: Highlight;
+  }
+
+  .motif-pm-selection-edge {
+    stroke: Highlight;
   }
 }

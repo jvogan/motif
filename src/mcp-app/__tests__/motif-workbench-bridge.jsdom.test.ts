@@ -60,6 +60,34 @@ describe('Motif MCP App bridge hydration', () => {
     expect(document.documentElement.dataset.motifMcpState).toBe('ready');
   });
 
+  it('colors an uncolored feature before handing the payload to the runtime', async () => {
+    const payload: MotifWorkbenchPayload = {
+      records: [{
+        id: 'feature-fixture',
+        sequence: 'ATGCGT',
+        features: [{ name: 'bridge CDS', type: 'cds', start: 0, end: 6 }],
+      }],
+    };
+    const replaceWorkspace = vi.fn((_payload: MotifWorkbenchPayload): number => 1);
+    (window as TestRuntimeWindow).motifReplaceWorkspace = replaceWorkspace;
+
+    await applyMotifToolResult(result({
+      schema: 'motif.mcp.workbench.v1',
+      mode: 'payload',
+      payload,
+      recordCount: 1,
+      residueCount: 6,
+    }));
+
+    expect(replaceWorkspace).toHaveBeenCalledWith(expect.objectContaining({
+      records: [expect.objectContaining({
+        features: [expect.objectContaining({
+          color: 'var(--accent, #7E9BBF)',
+        })],
+      })],
+    }));
+  });
+
   it('ignores unrelated tool results without mutating the runtime', async () => {
     const replaceWorkspace = vi.fn((_payload: MotifWorkbenchPayload): number => 0);
     (window as TestRuntimeWindow).motifReplaceWorkspace = replaceWorkspace;

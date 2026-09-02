@@ -6,7 +6,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ClaudeScienceMsaViewer,
   ambiguousColumns,
-  classifyMsaCell,
   differenceColumns,
   mismatchOverviewBins,
   parseReferenceCoordinateColumn,
@@ -15,6 +14,7 @@ import {
   type ClaudeScienceMsaViewerProps,
 } from '../ClaudeScienceMsaViewer';
 import { normalizeArtifactAlignment, type ArtifactAlignment } from '../claude-science-msa';
+import { classifyMsaCell } from '../claude-science-msa-cell-semantics';
 import { DEFAULT_CLAUDE_SCIENCE_MSA_VIEW_PREFERENCES } from '../claude-science-msa-view-preferences';
 
 type AlignmentRowInput = { id: string; name: string; aligned: string };
@@ -205,7 +205,7 @@ describe('ClaudeScienceMsaViewer comparison correctness', () => {
     expect(screen.getByText('Difference — of 0')).toBeTruthy();
     expect((screen.getByLabelText('Next variable column') as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByTestId('msa-overview')
-      .querySelector('.motif-cs-msa-overview-mismatches')?.getAttribute('d')).toBe('');
+      .querySelectorAll('[data-msa-overview-difference]')).toHaveLength(0);
   });
 
   it('names the population the stats bar counts, which is not the overlap', () => {
@@ -255,10 +255,14 @@ describe('ClaudeScienceMsaViewer comparison correctness', () => {
     expect(deletionCell?.dataset.cellOutcome).toBe('deletion');
     expect(deletionCell?.hasAttribute('data-difference')).toBe(true);
     expect(screen.getByTestId('msa-stats-bar').textContent).toContain('1 columns differ from template');
-    expect(screen.getByText('Difference — of 1')).toBeTruthy();
+    expect(screen.getByText('Difference 1 of 1')).toBeTruthy();
     expect((screen.getByLabelText('Next variable column') as HTMLButtonElement).disabled).toBe(false);
-    expect(screen.getByTestId('msa-overview')
-      .querySelector('.motif-cs-msa-overview-mismatches')?.getAttribute('d')).toContain('M1 22V2H2V22Z');
+    const overviewDifference = screen.getByTestId('msa-overview')
+      .querySelector<SVGRectElement>('[data-msa-overview-difference]');
+    expect(overviewDifference?.getAttribute('x')).toBe('1');
+    expect(overviewDifference?.getAttribute('y')).toBe('2');
+    expect(overviewDifference?.getAttribute('width')).toBe('1');
+    expect(overviewDifference?.getAttribute('height')).toBe('20');
   });
 
   it('shows comparison statistics as unavailable for a single row', () => {
@@ -280,9 +284,37 @@ describe('ClaudeScienceMsaViewer comparison correctness', () => {
       { id: 'mismatch', name: 'Mismatch', aligned: 'TAAA' },
       { id: 'match', name: 'Match', aligned: 'AAAA' },
     ]));
-    const mismatchPath = screen.getByTestId('msa-overview')
-      .querySelector<SVGPathElement>('.motif-cs-msa-overview-mismatches');
-    expect(mismatchPath?.getAttribute('d')).toContain('M0 22V12H1V22Z');
+    const mismatchTick = screen.getByTestId('msa-overview')
+      .querySelector<SVGRectElement>('[data-msa-overview-difference]');
+    expect(mismatchTick?.getAttribute('x')).toBe('0');
+    expect(mismatchTick?.getAttribute('y')).toBe('12');
+    expect(mismatchTick?.getAttribute('width')).toBe('1');
+    expect(mismatchTick?.getAttribute('height')).toBe('10');
+  });
+
+  it('keeps the first row-name target selected across a same-position multi-click', async () => {
+    renderViewer(alignmentWithRows('row-multi-click', [
+      { id: 'reference', name: 'Reference', aligned: 'AAAA' },
+      { id: 'variant', name: 'Variant', aligned: 'TAAA' },
+      { id: 'other', name: 'Other', aligned: 'AATA' },
+    ]));
+
+    fireEvent.click(screen.getByLabelText('Use Variant as template'), {
+      detail: 1,
+      clientX: 120,
+      clientY: 240,
+    });
+    await waitFor(() => expect(document.querySelector('.motif-cs-msa-matrix-row')?.getAttribute('data-msa-row-id')).toBe('variant'));
+
+    // The original reference row has moved into Variant's former screen slot.
+    // A second click at that same point belongs to the same multi-click and must
+    // not silently switch the template back.
+    fireEvent.click(screen.getByLabelText('Use Reference as template'), {
+      detail: 2,
+      clientX: 120,
+      clientY: 240,
+    });
+    await waitFor(() => expect(document.querySelector('.motif-cs-msa-matrix-row')?.getAttribute('data-msa-row-id')).toBe('variant'));
   });
 });
 

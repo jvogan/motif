@@ -32,7 +32,7 @@ describe('release security defaults', () => {
   });
 
   it('includes the MCP stdio fallback in release-version alignment', () => {
-    expect(checkReleaseAlignment()).toMatchObject({ version: '0.3.6', surfaces: 10 });
+    expect(checkReleaseAlignment()).toMatchObject({ version: '0.4.0', surfaces: 10 });
   });
 
   it('allows a post-tag development commit in alignment but blocks it for publishing', () => {
@@ -44,8 +44,8 @@ describe('release security defaults', () => {
         'package-lock.json': JSON.stringify({ version, packages: { '': { version } } }) + '\n',
         'src/artifacts/motif-for-claude-science-plugin/.claude-plugin/plugin.json': JSON.stringify({ version }) + '\n',
         'src/artifacts/motif-artifact.tsx': `const MOTIF_ARTIFACT_VERSION = '${version}';\n`,
-        'src/mcp-app/motif-workbench-bridge.ts': `name: 'Motif for Claude Science', version: '${version}'\n`,
-        'mcp/motif/stdio-server.ts': `async function readVersion(path: string): Promise<string> { return '${version}'; }\nasync function readRuntimeBuildId() { return ''; }\n`,
+        'src/mcp-app/motif-workbench-bridge.ts': `name: 'Motif', version: '${version}'\n`,
+        'mcp/motif/stdio-bootstrap.ts': `export async function readMotifVersion(candidates = [], fallbackVersion = '${version}') { return fallbackVersion; }\n`,
         'CHANGELOG.md': `## ${version}\n`,
         'src/artifacts/motif-for-claude-science-plugin/CHANGELOG.md': `## ${version}\n`,
         'AGENTS.md': `Current release version is \`${version}\`\n`,

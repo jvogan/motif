@@ -14,6 +14,7 @@ export const GATE_STEPS = Object.freeze([
   { id: 'css-token-checks', label: 'CSS token checks', command: ['npm', 'run', 'check:css-tokens'] },
   { id: 'aria-controls', label: 'ARIA control checks', command: ['npm', 'run', 'check:aria-controls'] },
   { id: 'build', label: 'Build distributables', command: ['npm', 'run', 'build:motif'] },
+  { id: 'codex-plugin-checks', label: 'Codex plugin checks', command: ['npm', 'run', 'test:codex-plugin'] },
   { id: 'post-build-release-verification', label: 'Post-build release verification', command: ['npm', 'run', 'security:verify-release'] },
   { id: 'reproducibility', label: 'Reproducible release build', command: ['npm', 'run', 'security:reproducibility'] },
   { id: 'release-budgets', label: 'Release budgets', command: ['npm', 'run', 'security:budgets'] },

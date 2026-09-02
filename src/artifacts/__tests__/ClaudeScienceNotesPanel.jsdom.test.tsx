@@ -71,6 +71,28 @@ afterEach(() => {
 });
 
 describe('ClaudeScienceNotesPanel', () => {
+  it('counts notes only when there are notes to count', async () => {
+    const user = userEvent.setup();
+    // Nothing saved at all: the panel's own sentence says so, and says what to
+    // do about it. A "0 shown" beside the filter buttons would only repeat it.
+    render(<ClaudeScienceNotesPanel {...props({ notes: [] })} />);
+    expect(screen.queryByText(/shown$/)).toBeNull();
+    expect(screen.getByText(/No notes yet/)).toBeTruthy();
+    cleanup();
+
+    // Notes exist but the filter hides all of them: still no zero, because the
+    // empty sentence names the filter and so explains itself.
+    render(<ClaudeScienceNotesPanel {...props({ activeRecordId: 'pGEX', activeRecordName: 'pGEX' })} />);
+    await user.click(screen.getByRole('button', { name: 'Record' }));
+    expect(screen.queryByText(/shown$/)).toBeNull();
+    expect(screen.getByText('No notes for pGEX yet.')).toBeTruthy();
+    cleanup();
+
+    // Something to count, so the count appears.
+    render(<ClaudeScienceNotesPanel {...props()} />);
+    expect(screen.getByText(/^\d+ shown$/)).toBeTruthy();
+  });
+
   it('filters workspace and active-record notes and renders HTML-looking content as inert text', async () => {
     const user = userEvent.setup();
     const onReveal = vi.fn();

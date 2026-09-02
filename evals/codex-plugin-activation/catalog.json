@@ -1,0 +1,130 @@
+{
+  "schema": "motif.codex-plugin-activation.v1",
+  "pluginSurface": "local-skill-plus-mcp-app",
+  "reviewedToolSurface": [
+    "motif_open_workbench",
+    "motif_create_workbench_artifact"
+  ],
+  "cases": [
+    {
+      "id": "positive-direct-fasta-open",
+      "class": "positive",
+      "activation": "direct",
+      "prompt": "Open this in Motif: >KRAS_fragment\nATGGTGGTG",
+      "expected": {
+        "tool": "motif_open_workbench",
+        "behavior": "Open the exact supplied FASTA in the live Motif workbench.",
+        "result": "A motif.mcp.workbench.v1 receipt with counts, live-app-request delivery, and visibleMountConfirmed false."
+      },
+      "fixture": "Inline synthetic FASTA; no network or credentials."
+    },
+    {
+      "id": "positive-direct-portable-artifact",
+      "class": "positive",
+      "activation": "direct",
+      "prompt": "Create a portable Motif HTML workbench for: >protein_1\nMTEYKLVVVG",
+      "expected": {
+        "tool": "motif_create_workbench_artifact",
+        "behavior": "Return the self-contained workbench resource without claiming that a file was written.",
+        "result": "A motif.mcp.artifact-export.v1 receipt with filename, byte count, SHA-256, record count, and embedded HTML resource."
+      },
+      "fixture": "Inline synthetic protein FASTA; no network or credentials."
+    },
+    {
+      "id": "positive-indirect-genbank",
+      "class": "positive",
+      "activation": "indirect",
+      "prompt": "I want an interactive molecular-biology workbench to inspect the exact GenBank record attached to this message.",
+      "expected": {
+        "tool": "motif_open_workbench",
+        "behavior": "Use the attached exact GenBank content and preserve its supported features.",
+        "result": "A live workbench request whose record and residue counts match the fixture."
+      },
+      "fixture": "examples/motif-demo.gb"
+    },
+    {
+      "id": "positive-indirect-raw-rna",
+      "class": "positive",
+      "activation": "indirect",
+      "prompt": "Show this exact RNA sequence in an interactive molecular-biology workbench: AUGGCUACGUAA",
+      "expected": {
+        "tool": "motif_open_workbench",
+        "behavior": "Pass the exact sequence with molecule set to RNA rather than guessing DNA.",
+        "result": "One RNA record and twelve residues in a live workbench request."
+      },
+      "fixture": "Inline synthetic RNA; no network or credentials."
+    },
+    {
+      "id": "positive-followup-html-fallback",
+      "class": "positive",
+      "activation": "followup",
+      "prompt": "The interactive view did not appear. Return the self-contained HTML fallback using the same exact input.",
+      "expected": {
+        "tool": "motif_create_workbench_artifact",
+        "behavior": "Reuse the prior exact bytes and return the portable resource.",
+        "result": "An embedded HTML resource with matching record and residue counts and no file-save claim."
+      },
+      "fixture": "Prior positive case input remains in conversation context."
+    },
+    {
+      "id": "negative-programming-sequence",
+      "class": "negative",
+      "activation": "ambiguous-domain",
+      "prompt": "Explain the sequence of async calls in this JavaScript function.",
+      "expected": {
+        "tool": null,
+        "behavior": "Answer as a programming question without invoking Motif.",
+        "result": "No Motif tool call."
+      },
+      "reason": "The word sequence does not refer to supplied biological records."
+    },
+    {
+      "id": "negative-network-retrieval",
+      "class": "negative",
+      "activation": "missing-capability",
+      "prompt": "Find the current human BRCA1 reference sequence online and open it in Motif.",
+      "expected": {
+        "tool": null,
+        "behavior": "Do not imply that Motif searches databases. Use a separately authorized source or ask for exact content before calling Motif.",
+        "result": "No Motif call until exact supported biological content is available."
+      },
+      "reason": "The reviewed Motif connector is local and does not retrieve remote sequences."
+    },
+    {
+      "id": "negative-missing-input",
+      "class": "negative",
+      "activation": "clarification",
+      "prompt": "Open this sequence for me.",
+      "expected": {
+        "tool": null,
+        "behavior": "Ask which exact DNA, RNA, protein, FASTA, GenBank, or Motif JSON content to use.",
+        "result": "A clarification, not the bundled sample workbench."
+      },
+      "reason": "An empty motif_open_workbench call intentionally opens a sample and would not satisfy the request."
+    },
+    {
+      "id": "negative-musical-motif",
+      "class": "negative",
+      "activation": "brand-ambiguity",
+      "prompt": "Develop this four-note motif into a string quartet theme.",
+      "expected": {
+        "tool": null,
+        "behavior": "Treat motif as a musical term and do not invoke the molecular-biology plugin.",
+        "result": "No Motif tool call."
+      },
+      "reason": "The request is about music, not biological records."
+    },
+    {
+      "id": "negative-alignment-computation",
+      "class": "negative",
+      "activation": "missing-capability",
+      "prompt": "Run MAFFT on these proteins and show the conserved sites.",
+      "expected": {
+        "tool": null,
+        "behavior": "Do not claim that the reviewed two-tool connector computes alignments. Use a separately authorized aligner or ask for an existing supported result.",
+        "result": "No Motif tool call presented as alignment computation."
+      },
+      "reason": "The currently packaged connector opens and exports workbenches; the private agent kernel is not installed."
+    }
+  ]
+}

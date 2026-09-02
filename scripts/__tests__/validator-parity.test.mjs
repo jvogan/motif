@@ -33,6 +33,24 @@ function workspaceValidatorOutcomes(payload) {
 describe('public payload validator parity', () => {
   it.each([
     ['valid record', { records: [baseRecord] }, [true, true, true]],
+    ['semantic feature color', {
+      records: [{
+        ...baseRecord,
+        features: [{
+          id: 'f1', name: 'CDS', type: 'cds', start: 0, end: 3,
+          color: 'var(--accent, #7E9BBF)',
+        }],
+      }],
+    }, [true, true, true]],
+    ['unapproved CSS variable color', {
+      records: [{
+        ...baseRecord,
+        features: [{
+          id: 'f1', name: 'CDS', type: 'cds', start: 0, end: 3,
+          color: 'var(--untrusted, #000000)',
+        }],
+      }],
+    }, [false, false, false]],
     ['sparse records array', { records: new Array(1) }, [false, false, false]],
     ['sparse feature array', {
       records: [{ ...baseRecord, features: new Array(1) }],

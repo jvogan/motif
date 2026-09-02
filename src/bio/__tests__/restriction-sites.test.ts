@@ -428,3 +428,230 @@ describe('restriction-site scanning', () => {
     expect(() => normalizeRestrictionEnzymes([accessor])).toThrow(/direct data|accessor/i);
   });
 });
+
+describe('restriction site caching', () => {
+  const cacheProbeEnzyme = (overrides: Partial<RestrictionEnzyme> = {}) => {
+    let recognitionReads = 0;
+    const enzyme = new Proxy<RestrictionEnzyme>({
+      name: 'CacheProbeI',
+      recognitionSequence: 'A',
+      cutOffset: 0,
+      complementCutOffset: 1,
+      overhang: 'blunt',
+      ...overrides,
+    }, {
+      getOwnPropertyDescriptor(target, property) {
+        if (property === 'recognitionSequence') recognitionReads += 1;
+        return Reflect.getOwnPropertyDescriptor(target, property);
+      },
+    });
+    return {
+      enzyme,
+      reset: () => { recognitionReads = 0; },
+      reads: () => recognitionReads,
+    };
+  };
+
+  const randomSequence = (length: number, seed: number): string => {
+    const bases = 'ACGT';
+    let state = seed >>> 0;
+    let out = '';
+    for (let i = 0; i < length; i += 1) {
+      state = (state * 1664525 + 1013904223) >>> 0;
+      out += bases[(state >>> 16) & 3];
+    }
+    return out;
+  };
+
+  const timeScan = (
+    seq: string,
+    enzymes: RestrictionEnzyme[],
+    options?: Parameters<typeof findRestrictionSites>[2],
+  ): number => {
+    const started = performance.now();
+    findRestrictionSites(seq, enzymes, options);
+    return performance.now() - started;
+  };
+
+  it('answers a repeat scan from the cache', () => {
+    // Five independent pairs, comparing the fastest of each: a minimum is far
+    // steadier than a mean when a garbage collection can land inside any one
+    // sample. The real gap is two orders of magnitude, so the 3x floor is only
+    // here to keep this from failing on a loaded machine.
+    const misses: number[] = [];
+    const hits: number[] = [];
+    for (let i = 0; i < 5; i += 1) {
+      const seq = randomSequence(20_000, 0x51ed + i);
+      misses.push(timeScan(seq, RESTRICTION_ENZYMES, { topology: 'circular' }));
+      hits.push(timeScan(seq, RESTRICTION_ENZYMES, { topology: 'circular' }));
+    }
+    expect(Math.min(...hits) * 3).toBeLessThan(Math.min(...misses));
+  });
+
+  it('bounds what it keeps, so a long session cannot leak', () => {
+    const first = randomSequence(4_000, 0xb0d1);
+    findRestrictionSites(first, RESTRICTION_ENZYMES);
+    const whileWarm = timeScan(first, RESTRICTION_ENZYMES);
+    // More distinct sequences than the cache holds, so the first is evicted.
+    for (let i = 0; i < 40; i += 1) {
+      findRestrictionSites(randomSequence(4_000, 0xe1c7 + i), RESTRICTION_ENZYMES);
+    }
+    expect(whileWarm * 3).toBeLessThan(timeScan(first, RESTRICTION_ENZYMES));
+  });
+
+  it('returns but does not cache an oversized restriction-site result', () => {
+    const probe = cacheProbeEnzyme();
+    const dense = 'A'.repeat(26_000);
+    const first = findRestrictionSites(dense, [probe.enzyme]);
+    expect(first).toHaveLength(26_000);
+
+    const firstMissReads = probe.reads();
+    probe.reset();
+    expect(findRestrictionSites(dense, [probe.enzyme])).toEqual(first);
+    expect(probe.reads()).toBe(firstMissReads);
+  });
+
+  it('bounds total cached restriction-site objects independently of key characters', () => {
+    const probe = cacheProbeEnzyme();
+    const records = Array.from({ length: 3 }, (_, index) => `${'A'.repeat(20_000)}${'C'.repeat(index)}`);
+    const answers = records.map((record) => findRestrictionSites(record, [probe.enzyme]));
+    expect(answers.map((answer) => answer.length)).toEqual([20_000, 20_000, 20_000]);
+
+    probe.reset();
+    expect(findRestrictionSites(records[2], [probe.enzyme])).toEqual(answers[2]);
+    const hitReads = probe.reads();
+    probe.reset();
+    expect(findRestrictionSites(records[1], [probe.enzyme])).toEqual(answers[1]);
+    expect(probe.reads()).toBe(hitReads);
+    probe.reset();
+    expect(findRestrictionSites(records[0], [probe.enzyme])).toEqual(answers[0]);
+    expect(probe.reads()).toBeGreaterThan(hitReads);
+  });
+
+  it('does not cache a single oversized serialized restriction request', () => {
+    const longText = 'x'.repeat(4_096);
+    const evidence = {
+      source: longText,
+      sourceLabel: longText,
+      conditions: longText,
+      limitation: longText,
+    };
+    const probe = cacheProbeEnzyme({
+      name: 'LargeProbeI',
+      recognitionSequence: 'AA',
+      methylationEvidence: evidence,
+    });
+    const enzymes: RestrictionEnzyme[] = [
+      probe.enzyme,
+      ...Array.from({ length: 255 }, (_, index) => ({
+        name: `Large${index}I`,
+        recognitionSequence: 'AA',
+        cutOffset: 0,
+        complementCutOffset: 1,
+        overhang: 'blunt' as const,
+        methylationEvidence: evidence,
+      })),
+    ];
+    expect(JSON.stringify(normalizeRestrictionEnzymes(enzymes)).length).toBeGreaterThan(4_000_000);
+    probe.reset();
+    const first = findRestrictionSites('C', enzymes);
+    const firstMissReads = probe.reads();
+
+    probe.reset();
+    expect(findRestrictionSites('C', enzymes)).toEqual(first);
+    expect(probe.reads()).toBe(firstMissReads);
+  });
+
+  it('hands every caller its own sites', () => {
+    const seq = randomSequence(3_000, 0xa11a5);
+    const onMiss = findRestrictionSites(seq, RESTRICTION_ENZYMES);
+    const firstHit = findRestrictionSites(seq, RESTRICTION_ENZYMES);
+    const secondHit = findRestrictionSites(seq, RESTRICTION_ENZYMES);
+    const expected = onMiss.map((site) => ({ ...site }));
+    expect(onMiss.length).toBeGreaterThan(0);
+    expect(firstHit).toEqual(onMiss);
+    // Not one shared array, and not one shared set of site objects, between
+    // the caller that filled the cache and the two that read it.
+    expect(firstHit).not.toBe(onMiss);
+    expect(secondHit).not.toBe(firstHit);
+    expect(secondHit[0]).not.toBe(firstHit[0]);
+    expect(firstHit[0]).not.toBe(onMiss[0]);
+
+    // Reorder and edit what a hit handed back; the next caller must still get
+    // the answer the scan produced.
+    firstHit.sort((a, b) => b.position - a.position);
+    firstHit[0].cutPosition = -999;
+    firstHit.length = 1;
+    // And do the same to what the miss handed back. It is also a clone rather
+    // than the array the cache retains.
+    onMiss.sort((a, b) => a.cutPosition - b.cutPosition);
+    onMiss[0].enzyme = 'clobbered';
+    onMiss.length = 2;
+    expect(findRestrictionSites(seq, RESTRICTION_ENZYMES)).toEqual(expected);
+  });
+
+  it('separates two enzymes that share a name but not a cut', () => {
+    // The enzyme list is user-editable, so a name is not an identity. A key
+    // built from names alone would answer the second scan with the first
+    // scan's cut positions, which in a cloning tool is a wrong answer rather
+    // than a slow one.
+    const seq = 'TTTTGAATTCTTTTGAATTCTTTT';
+    const near: RestrictionEnzyme[] = [
+      { name: 'FakeI', recognitionSequence: 'GAATTC', cutOffset: 1, complementCutOffset: 5, overhang: '5prime' },
+    ];
+    const far: RestrictionEnzyme[] = [
+      { name: 'FakeI', recognitionSequence: 'GAATTC', cutOffset: 3, complementCutOffset: 3, overhang: 'blunt' },
+    ];
+    expect(findRestrictionSites(seq, near).map((site) => site.cutPosition)).toEqual([5, 15]);
+    expect(findRestrictionSites(seq, far).map((site) => site.cutPosition)).toEqual([7, 17]);
+  });
+
+  it('invalidates a cached answer when the same enzyme object changes', () => {
+    const seq = 'TTTTGAATTCTTTT';
+    const mutable: RestrictionEnzyme = {
+      name: 'MutableI',
+      recognitionSequence: 'GAATTC',
+      cutOffset: 1,
+      complementCutOffset: 5,
+      overhang: '5prime',
+    };
+    expect(findRestrictionSites(seq, [mutable]).map((site) => site.cutPosition)).toEqual([5]);
+    mutable.cutOffset = 3;
+    mutable.complementCutOffset = 3;
+    mutable.overhang = 'blunt';
+    expect(findRestrictionSites(seq, [mutable]).map((site) => site.cutPosition)).toEqual([7]);
+  });
+
+  it('separates two scans that differ only in methylation state', () => {
+    const seq = 'TTTTGATCTTTTGATCTTTT';
+    const enzymes: RestrictionEnzyme[] = [
+      {
+        name: 'FakeDamI',
+        recognitionSequence: 'GATC',
+        cutOffset: 2,
+        complementCutOffset: 2,
+        overhang: 'blunt',
+        methylationRequirement: { target: 'dam', state: 'unmethylated' },
+      },
+    ];
+    const statuses = (options?: Parameters<typeof findRestrictionSites>[2]): (string | undefined)[] =>
+      findRestrictionSites(seq, enzymes, options).map((site) => site.cleavageStatus);
+    expect(statuses({ methylation: { dam: 'unmethylated' } })).toEqual(['ok', 'ok']);
+    expect(statuses({ methylation: { dam: 'methylated' } })).toEqual([
+      'methylation_unmethylated',
+      'methylation_unmethylated',
+    ]);
+    expect(statuses()).toEqual(['methylation_unknown', 'methylation_unknown']);
+  });
+
+  it('separates two scans that differ only in topology', () => {
+    // The site straddles the origin, so it exists on the circle and not on the
+    // line. One cache entry shared between the two would invent or lose a cut.
+    const seq = 'ATTCTTTTTTTTTTTTTTGA';
+    const enzymes: RestrictionEnzyme[] = [
+      { name: 'FakeI', recognitionSequence: 'GAATTC', cutOffset: 1, complementCutOffset: 5, overhang: '5prime' },
+    ];
+    expect(findRestrictionSites(seq, enzymes, { topology: 'circular' }).map((site) => site.position)).toEqual([18]);
+    expect(findRestrictionSites(seq, enzymes, { topology: 'linear' })).toEqual([]);
+  });
+});

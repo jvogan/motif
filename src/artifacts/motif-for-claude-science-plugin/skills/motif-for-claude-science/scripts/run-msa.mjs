@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   accessSync,
   closeSync,
   constants,
   existsSync,
+  fstatSync,
   linkSync,
   lstatSync,
   mkdirSync,
@@ -23,6 +24,7 @@ import {
 import { homedir, tmpdir } from 'node:os';
 import { basename, delimiter, dirname, extname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isMainThread, Worker, workerData } from 'node:worker_threads';
 import { MAX_ALIGNMENT_COLUMNS, validatePayload } from './create-artifact.mjs';
 
 export const MAX_MSA_SEQUENCES = 100;
@@ -34,6 +36,9 @@ export const DEFAULT_MSA_TIMEOUT_MS = 120_000;
 export const MAX_MSA_TIMEOUT_MS = 600_000;
 const MAX_CAPTURE_BYTES = 1_048_576;
 const MAX_HEADER_LENGTH = 1_024;
+const PROCESS_TERMINATION_GRACE_MS = 500;
+const PROCESS_GUARD_OVERHEAD_MS = 5_000;
+const PROCESS_GUARD_WORKER = 'motif-msa-process-guard-v1';
 
 const ENGINE_CONFIG = Object.freeze({
   mafft: Object.freeze({
@@ -384,6 +389,9 @@ export function discoverMsaExecutable(engineValue, options = {}) {
 
 function processFailure(result, label, timeoutMs) {
   if (result.error?.code === 'ETIMEDOUT') return `${label} timed out after ${timeoutMs} ms`;
+  if (result.error?.code === 'ENOBUFS') {
+    return `${label} exceeded its bounded ${result.error.stream ?? 'output'} capture`;
+  }
   if (result.error) return `${label} could not start: ${result.error.message}`;
   if (result.status !== 0) {
     const stderr = String(result.stderr ?? '').trim().slice(0, 4_096);
@@ -392,15 +400,212 @@ function processFailure(result, label, timeoutMs) {
   return null;
 }
 
+function appendBoundedCapture(capture, chunk, maximum) {
+  capture.bytes += chunk.length;
+  const remaining = Math.max(0, maximum - capture.retainedBytes);
+  if (remaining > 0) {
+    const retained = chunk.subarray(0, remaining);
+    capture.chunks.push(retained);
+    capture.retainedBytes += retained.length;
+  }
+  return capture.bytes > maximum;
+}
+
+function terminateProcessTree(child, signal) {
+  if (!child.pid) return;
+  if (process.platform !== 'win32') {
+    try {
+      process.kill(-child.pid, signal);
+      return;
+    } catch (error) {
+      if (error?.code === 'ESRCH') return;
+    }
+  }
+  try {
+    child.kill(signal);
+  } catch (error) {
+    if (error?.code !== 'ESRCH') throw error;
+  }
+}
+
+function superviseProcess(request) {
+  return new Promise((resolvePromise) => {
+    const stdout = { chunks: [], bytes: 0, retainedBytes: 0 };
+    const stderr = { chunks: [], bytes: 0, retainedBytes: 0 };
+    let terminationReason = null;
+    let spawnError = null;
+    let finished = false;
+    let killTimer = null;
+    let forceFinishTimer = null;
+    let closedResult = null;
+
+    const child = spawn(request.executable, request.args, {
+      cwd: request.cwd,
+      env: request.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+      // A new process group lets POSIX hosts terminate descendants as well as
+      // the selected engine. Windows receives the same TERM/KILL escalation
+      // for the direct child, but Node does not expose a portable job-object
+      // primitive for descendant cleanup.
+      detached: process.platform !== 'win32',
+    });
+
+    const finish = (status, signal) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timeoutTimer);
+      if (killTimer) clearTimeout(killTimer);
+      if (forceFinishTimer) clearTimeout(forceFinishTimer);
+      resolvePromise({
+        status,
+        signal,
+        terminationReason,
+        errorCode: spawnError?.code,
+        errorMessage: spawnError?.message,
+        stdoutBase64: Buffer.concat(stdout.chunks).toString('base64'),
+        stderrBase64: Buffer.concat(stderr.chunks).toString('base64'),
+      });
+    };
+
+    const beginTermination = (reason) => {
+      if (terminationReason) return;
+      terminationReason = reason;
+      try {
+        terminateProcessTree(child, 'SIGTERM');
+      } catch (error) {
+        spawnError = error;
+      }
+      killTimer = setTimeout(() => {
+        try {
+          terminateProcessTree(child, 'SIGKILL');
+        } catch (error) {
+          spawnError = spawnError ?? error;
+        }
+        if (closedResult) {
+          finish(closedResult.status, closedResult.signal);
+          return;
+        }
+        // SIGKILL normally produces `close` immediately. Do not let a broken
+        // or uninterruptible child keep the synchronous caller blocked forever.
+        forceFinishTimer = setTimeout(() => {
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          child.unref();
+          finish(closedResult?.status ?? null, closedResult?.signal ?? 'SIGKILL');
+        }, PROCESS_TERMINATION_GRACE_MS);
+      }, PROCESS_TERMINATION_GRACE_MS);
+    };
+
+    child.stdout?.on('data', (chunk) => {
+      if (appendBoundedCapture(stdout, chunk, request.stdoutLimit)) beginTermination('stdout-limit');
+    });
+    child.stderr?.on('data', (chunk) => {
+      if (appendBoundedCapture(stderr, chunk, request.stderrLimit)) beginTermination('stderr-limit');
+    });
+    child.once('error', (error) => {
+      spawnError = error;
+      finish(null, null);
+    });
+    child.once('close', (status, signal) => {
+      // On POSIX the group can outlive its leader. Keep the escalation timer
+      // armed after a timed-out leader exits so SIGKILL still reaches any
+      // descendant that ignored SIGTERM.
+      if (terminationReason && process.platform !== 'win32') {
+        closedResult = { status, signal };
+        return;
+      }
+      finish(status, signal);
+    });
+
+    const timeoutTimer = setTimeout(() => beginTermination('timeout'), request.timeoutMs);
+    timeoutTimer.unref();
+  });
+}
+
+function decodeGuardedProcessResult(response) {
+  const errorCode = response.terminationReason === 'timeout'
+    ? 'ETIMEDOUT'
+    : response.terminationReason === 'stdout-limit' || response.terminationReason === 'stderr-limit'
+      ? 'ENOBUFS'
+      : response.errorCode;
+  const error = errorCode
+    ? Object.assign(new Error(response.errorMessage || errorCode), {
+      code: errorCode,
+      ...(response.terminationReason?.endsWith('-limit')
+        ? { stream: response.terminationReason.replace('-limit', '') }
+        : {}),
+    })
+    : undefined;
+  return {
+    status: response.status,
+    signal: response.signal,
+    stdout: Buffer.from(response.stdoutBase64 ?? '', 'base64').toString('utf8'),
+    stderr: Buffer.from(response.stderrBase64 ?? '', 'base64').toString('utf8'),
+    ...(error ? { error } : {}),
+  };
+}
+
+function writeWorkerResponse(sharedResponse, value) {
+  const header = new Int32Array(sharedResponse, 0, 2);
+  const body = new Uint8Array(sharedResponse, 8);
+  let encoded = Buffer.from(JSON.stringify(value), 'utf8');
+  if (encoded.length > body.length) {
+    encoded = Buffer.from(JSON.stringify({
+      status: null,
+      signal: null,
+      errorCode: 'ENOBUFS',
+      errorMessage: 'MSA process guard response exceeded its bounded shared buffer',
+      stdoutBase64: '',
+      stderrBase64: '',
+    }), 'utf8');
+  }
+  body.set(encoded);
+  Atomics.store(header, 1, encoded.length);
+  Atomics.store(header, 0, 1);
+  Atomics.notify(header, 0);
+}
+
 function spawnChecked(executable, args, options) {
-  const result = spawnSync(executable, args, {
+  const stdoutLimit = options.maxBuffer ?? MAX_CAPTURE_BYTES;
+  const request = {
+    executable,
+    args,
     cwd: options.cwd,
     env: options.env,
-    encoding: 'utf8',
-    timeout: options.timeoutMs,
-    maxBuffer: options.maxBuffer ?? MAX_CAPTURE_BYTES,
-    windowsHide: true,
+    timeoutMs: options.timeoutMs,
+    stdoutLimit,
+    stderrLimit: MAX_CAPTURE_BYTES,
+  };
+  const guardedMaxBuffer = Math.ceil((stdoutLimit + MAX_CAPTURE_BYTES) * 4 / 3) + 1_048_576;
+  const sharedResponse = new SharedArrayBuffer(8 + guardedMaxBuffer);
+  const header = new Int32Array(sharedResponse, 0, 2);
+  const worker = new Worker(new URL(import.meta.url), {
+    workerData: { type: PROCESS_GUARD_WORKER, request, sharedResponse },
   });
+  const waitResult = Atomics.wait(
+    header,
+    0,
+    0,
+    options.timeoutMs + (2 * PROCESS_TERMINATION_GRACE_MS) + PROCESS_GUARD_OVERHEAD_MS,
+  );
+  void worker.terminate();
+  if (waitResult === 'timed-out') {
+    const result = { error: Object.assign(new Error('MSA process guard deadline expired'), { code: 'ETIMEDOUT' }) };
+    const failure = processFailure(result, options.label, options.timeoutMs);
+    throw new Error(failure ?? `${options.label} process guard timed out`);
+  }
+  const responseLength = Atomics.load(header, 1);
+  if (responseLength < 1 || responseLength > guardedMaxBuffer) {
+    throw new Error(`${options.label} process guard returned an invalid response`);
+  }
+  let response;
+  try {
+    response = JSON.parse(Buffer.from(new Uint8Array(sharedResponse, 8, responseLength)).toString('utf8'));
+  } catch {
+    throw new Error(`${options.label} process guard returned an invalid response`);
+  }
+  const result = decodeGuardedProcessResult(response);
   const failure = processFailure(result, options.label, options.timeoutMs);
   if (failure) throw new Error(failure);
   return result;
@@ -675,16 +880,53 @@ function readBoundedStdin() {
   return Buffer.concat(chunks).toString('utf8');
 }
 
-function readBoundedInput(inputPath) {
+export function readBoundedInput(inputPath, hooks = {}) {
   if (inputPath === '-') {
     return readBoundedStdin();
   }
   const resolved = resolve(inputPath);
   if (!existsSync(resolved)) throw new Error(`Input FASTA does not exist: ${resolved}`);
-  if (statSync(resolved).size > MAX_MSA_INPUT_BYTES) {
-    throw new Error(`Input FASTA cannot exceed ${MAX_MSA_INPUT_BYTES.toLocaleString()} bytes`);
+  const pathStat = lstatSync(resolved);
+  if (pathStat.isSymbolicLink()) throw new Error('Input FASTA must not be a symbolic link');
+  if (!pathStat.isFile()) throw new Error('Input FASTA must be a regular file');
+  const openFlags = constants.O_RDONLY
+    | (constants.O_NOFOLLOW ?? 0)
+    | (constants.O_NONBLOCK ?? 0);
+  let descriptor;
+  try {
+    descriptor = openSync(resolved, openFlags);
+  } catch (error) {
+    if (error?.code === 'ELOOP') throw new Error('Input FASTA must not be a symbolic link');
+    throw error;
   }
-  return readFileSync(resolved, 'utf8');
+  try {
+    const openedStat = fstatSync(descriptor);
+    if (!openedStat.isFile()) throw new Error('Input FASTA must be a regular file');
+    if (openedStat.dev !== pathStat.dev || openedStat.ino !== pathStat.ino) {
+      throw new Error('Input FASTA changed while it was being opened');
+    }
+    if (openedStat.size > MAX_MSA_INPUT_BYTES) {
+      throw new Error(`Input FASTA cannot exceed ${MAX_MSA_INPUT_BYTES.toLocaleString()} bytes`);
+    }
+    // Test-only observation point for proving that subsequent path replacement
+    // cannot redirect the descriptor. The CLI never supplies hooks.
+    hooks.afterOpen?.();
+    const chunks = [];
+    let total = 0;
+    while (true) {
+      const chunk = Buffer.allocUnsafe(Math.min(65_536, MAX_MSA_INPUT_BYTES + 1 - total));
+      const bytesRead = readSync(descriptor, chunk, 0, chunk.length, null);
+      if (bytesRead === 0) break;
+      total += bytesRead;
+      if (total > MAX_MSA_INPUT_BYTES) {
+        throw new Error(`Input FASTA cannot exceed ${MAX_MSA_INPUT_BYTES.toLocaleString()} bytes`);
+      }
+      chunks.push(chunk.subarray(0, bytesRead));
+    }
+    return Buffer.concat(chunks).toString('utf8');
+  } finally {
+    closeSync(descriptor);
+  }
 }
 
 export function writeMsaPayload(outputPath, payload, force = false) {
@@ -775,7 +1017,20 @@ function moduleIsMain() {
 
 const isMain = moduleIsMain();
 
-if (isMain) {
+if (!isMainThread && workerData?.type === PROCESS_GUARD_WORKER) {
+  try {
+    writeWorkerResponse(workerData.sharedResponse, await superviseProcess(workerData.request));
+  } catch (error) {
+    writeWorkerResponse(workerData.sharedResponse, {
+      status: null,
+      signal: null,
+      errorCode: error?.code ?? 'PROCESS_GUARD_ERROR',
+      errorMessage: error instanceof Error ? error.message : String(error),
+      stdoutBase64: '',
+      stderrBase64: '',
+    });
+  }
+} else if (isMain) {
   try {
     const options = parseRunMsaArgs(process.argv.slice(2));
     if (options.help) {

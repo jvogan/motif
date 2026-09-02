@@ -1,0 +1,43 @@
+{
+  "name": "motif-for-claude-science",
+  "version": "0.4.0",
+  "description": "Open exact DNA, RNA, and protein records in an interactive molecular-biology workbench or portable HTML artifact.",
+  "author": {
+    "name": "Jacob Vogan",
+    "url": "https://jvogan.github.io/motif-site/"
+  },
+  "homepage": "https://jvogan.github.io/motif-site/",
+  "repository": "https://github.com/jvogan/motif",
+  "license": "MIT",
+  "keywords": [
+    "motif",
+    "molecular-biology",
+    "bioinformatics",
+    "sequence-analysis"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Motif",
+    "shortDescription": "Explore biological sequences",
+    "longDescription": "Open supplied FASTA, GenBank, raw DNA, RNA, protein, or Motif JSON in an interactive molecular-biology workbench. Inspect exact records and supported annotations together, or return a self-contained HTML workbench when embedded UI is unavailable. Motif does not retrieve missing records, compute alignments, validate experiments, write files, or modify remote systems.",
+    "developerName": "Jacob Vogan",
+    "category": "Science",
+    "capabilities": [
+      "Interactive sequence workbench",
+      "Portable HTML sharing",
+      "Local read-only processing"
+    ],
+    "websiteURL": "https://jvogan.github.io/motif-site/",
+    "privacyPolicyURL": "https://github.com/jvogan/motif/blob/main/PRIVACY.md",
+    "termsOfServiceURL": "https://github.com/jvogan/motif/blob/main/TERMS.md",
+    "defaultPrompt": [
+      "Open this FASTA record in Motif so I can inspect its sequence, annotations, and translations.",
+      "Open these supplied DNA and protein records together in Motif so I can review them in one workbench.",
+      "Create a portable Motif HTML workbench for these records so I can share the exact sequences and annotations."
+    ],
+    "brandColor": "#1D4ED8",
+    "composerIcon": "./assets/logo.png",
+    "logo": "./assets/logo.png"
+  }
+}

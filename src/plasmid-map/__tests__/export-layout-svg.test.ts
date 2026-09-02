@@ -68,6 +68,60 @@ describe('exportMapLayoutSvg', () => {
     expect(first).not.toContain('[object Object]');
   });
 
+  it('materializes semantic feature colors for standalone SVG consumers', () => {
+    const themedFeature = {
+      ...feature('themed-feature', 100, 260, 'Themed feature'),
+      color: 'var(--accent, #7E9BBF)',
+    };
+    const layout = computeMapLayout({
+      mode: 'circular',
+      name: 'Portable colors',
+      length: 1200,
+      topology: 'circular',
+      sequenceType: 'dna',
+      features: [themedFeature],
+      restrictionSites: [],
+      width: 420,
+      height: 420,
+    });
+
+    const svg = exportMapLayoutSvg(layout);
+
+    expect(svg).toContain('fill="#7E9BBF"');
+    expect(svg).not.toContain('var(--');
+    expect(svg).not.toContain('color-mix(');
+  });
+
+  it('materializes the complete approved semantic mix against the export background', () => {
+    const mixedFeature = {
+      ...feature('mixed-feature', 100, 260, 'Mixed feature'),
+      color: 'color-mix(in srgb, var(--green, #7FA98F) 80%, var(--bg-primary))',
+    };
+    const layout = computeMapLayout({
+      mode: 'circular',
+      name: 'Portable mixed colors',
+      length: 1200,
+      topology: 'circular',
+      sequenceType: 'dna',
+      features: [mixedFeature],
+      restrictionSites: [],
+      width: 420,
+      height: 420,
+    });
+
+    const lightSvg = exportMapLayoutSvg(layout);
+    const darkSvg = exportMapLayoutSvg(layout, { theme: { background: '#101820' } });
+
+    expect(lightSvg).toContain('fill="#99baa5"');
+    expect(darkSvg).toContain('fill="#698c79"');
+    expect(lightSvg).not.toContain('fill="#7FA98F"');
+    expect(darkSvg).not.toContain('fill="#7FA98F"');
+    expect(lightSvg).not.toContain('var(--');
+    expect(lightSvg).not.toContain('color-mix(');
+    expect(darkSvg).not.toContain('var(--');
+    expect(darkSvg).not.toContain('color-mix(');
+  });
+
   it('serializes linear protein maps without restriction clutter', () => {
     const layout = computeMapLayout({
       mode: 'linear',
@@ -217,7 +271,8 @@ describe('exportMapLayoutSvg', () => {
     expect(svg.indexOf('data-overlay-kind="orf"')).toBeLessThan(svg.indexOf('data-overlay-kind="highlight"'));
     expect(svg.indexOf('data-overlay-kind="motif"')).toBeLessThan(svg.indexOf('data-overlay-kind="highlight"'));
     expect(svg.indexOf('data-overlay-kind="variant"')).toBeLessThan(svg.indexOf('data-overlay-kind="highlight"'));
-    expect(svg.indexOf('data-overlay-kind="highlight"')).toBeLessThan(svg.indexOf('Feature A'));
+    // Responsive label culling may omit the feature text, but all overlay kinds
+    // above remain serialized exactly once and in their requested order.
     expect(svg).not.toContain('class=');
     expect(svg).not.toContain('var(--');
     expect(svg).not.toContain('color-mix(');

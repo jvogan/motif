@@ -8,7 +8,7 @@
  * layout leader geometry so the tangle can't regress.
  */
 import { describe, it, expect } from 'vitest';
-import { computeMapLayout, placeRestrictionRow } from '../layout';
+import { computeMapLayout, LINEAR_REC_LABEL_FONT_PX, placeRestrictionRow } from '../layout';
 import type { MapInput, MapLabelRender, MapLayout, Pt } from '../types';
 import type { RestrictionSite } from '../../bio/types';
 import { approxTextWidth, LABEL_LINE_HEIGHT_PX } from '../geometry/labels';
@@ -46,8 +46,13 @@ function labelVerticalOffsets(baseline: MapLabelRender['baseline'] | undefined):
   return { ay0: -LABEL_LINE_HEIGHT_PX * 0.8, ay1: LABEL_LINE_HEIGHT_PX * 0.3 };
 }
 
+/**
+ * Measure at the size the LINEAR band actually draws and reserves. Using the
+ * nominal 16px here reported a 7.2px overlap inside a row that the renderer does
+ * not draw — the instrument, not the layout. See LINEAR_REC_LABEL_FONT_PX.
+ */
 function labelBox(label: MapLabelRender): LabelBox {
-  const w = approxTextWidth(label.text);
+  const w = approxTextWidth(label.text, LINEAR_REC_LABEL_FONT_PX, 'monospace');
   const ax0 = label.anchor === 'start' ? 0 : label.anchor === 'end' ? -w : -w / 2;
   const ax1 = label.anchor === 'start' ? w : label.anchor === 'end' ? 0 : w / 2;
   const { ay0, ay1 } = labelVerticalOffsets(label.baseline);
@@ -218,7 +223,7 @@ describe('linear restriction leaders (non-crossing, near-vertical)', () => {
     const layout = computeMapLayout(egfpLikeInput());
     const visible = layout.restrictions.filter((r) => r.label);
 
-    expect(visible.length).toBeGreaterThan(10);
+    expect(visible.length).toBeGreaterThanOrEqual(9);
     for (const restriction of visible) {
       expect(restriction.label!.leader.length).toBeGreaterThanOrEqual(2);
       expect(restriction.label!.leader[0]).toEqual({ x: restriction.tick.x2, y: restriction.tick.y2 });
@@ -236,11 +241,19 @@ describe('linear restriction leaders (non-crossing, near-vertical)', () => {
       byRow.set(r.label.y, row);
     }
 
-    expect([...byRow.values()].reduce((sum, row) => sum + row.length, 0)).toBe(10);
+    // At a 420px pane the layout stops stretching to a flat 720 once a 13px
+    // enzyme name would scale below LINEAR_MIN_SCREEN_LABEL_PX, so the axis
+    // carries fewer pixels and names fewer sites: 10 placed at 7.6 screen px
+    // became 5 placed at 10.0. Assert the SUM as well, because the trade is
+    // only acceptable while the sites that lost their name are still counted —
+    // a future change must not drop one silently.
+    const placed = [...byRow.values()].reduce((sum, row) => sum + row.length, 0);
+    expect(placed).toBe(5);
+    expect(placed + layout.budgets.hiddenLabelCount).toBe(10);
     for (const row of byRow.values()) {
       row.sort((a, b) => a.x0 - b.x0 || a.x1 - b.x1);
       for (let i = 1; i < row.length; i += 1) {
-        expect(row[i].x0 - row[i - 1].x1).toBeGreaterThanOrEqual(READABLE_REC_LABEL_MIN_GAP);
+        expect(row[i].x0 - row[i - 1].x1).toBeGreaterThanOrEqual(READABLE_REC_LABEL_MIN_GAP - 1e-6);
       }
     }
   });
@@ -273,7 +286,7 @@ describe('linear restriction leaders (non-crossing, near-vertical)', () => {
   it('never lets two restriction leaders cross in the dense eGFP band', () => {
     const layout = computeMapLayout(egfpLikeInput());
     const leaders = restrictionLeaders(layout);
-    expect(layout.restrictions.filter((r) => r.label).length).toBeGreaterThan(10); // dense enough to matter
+    expect(layout.restrictions.filter((r) => r.label).length).toBeGreaterThanOrEqual(9); // dense enough to matter
     expect(leaders.length).toBeGreaterThan(0);
 
     for (let i = 0; i < leaders.length; i += 1)

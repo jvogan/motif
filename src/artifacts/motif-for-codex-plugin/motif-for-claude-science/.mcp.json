@@ -1,0 +1,8 @@
+{
+  "motif": {
+    "command": "node",
+    "args": [
+      "${PLUGIN_ROOT}/server/motif-mcp-server.mjs"
+    ]
+  }
+}

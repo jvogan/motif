@@ -6,6 +6,7 @@ import {
   type AlignmentMolecule,
 } from '../bio/alignment-semantics';
 import { STANDARD_CODE } from '../bio/codon-tables';
+import { mixOpaqueHex } from '../bio/color-mix';
 import type { SequenceType } from '../bio/types';
 
 export const ARTIFACT_MSA_MAX_ALIGNMENTS = 50;
@@ -32,6 +33,13 @@ export type MsaColumnHitTestMetrics = {
 
 export type MsaGridCellPosition = { rowIndex: number; column: number };
 
+export type MsaWheelAxis = 'horizontal' | 'vertical';
+
+export type MsaWheelGestureState = {
+  axis: MsaWheelAxis;
+  lastEventTime: number;
+};
+
 export type MsaGridNavigationOptions = {
   rowCount: number;
   columnCount: number;
@@ -42,6 +50,7 @@ export type MsaGridNavigationOptions = {
 const MSA_DRAG_EDGE_MIN_SPEED = 2;
 const MSA_DRAG_EDGE_MAX_SPEED = 32;
 const MSA_DRAG_EDGE_SPEED_SCALE = 0.35;
+export const MSA_WHEEL_GESTURE_IDLE_MS = 140;
 
 /** Clamp a drag pointer just inside a client-coordinate rectangle. */
 export function clampMsaClientPoint(
@@ -66,6 +75,33 @@ export function msaEdgeAutoScrollDelta(pointer: number, start: number, end: numb
     Math.max(MSA_DRAG_EDGE_MIN_SPEED, Math.ceil(Math.abs(overshoot) * MSA_DRAG_EDGE_SPEED_SCALE)),
   );
   return overshoot < 0 ? -speed : speed;
+}
+
+/**
+ * Keep one axis for the short burst of wheel events that makes up a trackpad
+ * gesture. Without the idle boundary, tiny alternating diagonal deltas can pan
+ * columns on one frame and rows on the next, even though the hand motion never
+ * changed direction.
+ */
+export function resolveMsaWheelGesture(
+  deltaX: number,
+  deltaY: number,
+  shiftKey: boolean,
+  eventTime: number,
+  previous: MsaWheelGestureState | null,
+): MsaWheelGestureState {
+  const requestedAxis: MsaWheelAxis = shiftKey
+    || (deltaX !== 0 && Math.abs(deltaX) >= Math.abs(deltaY))
+    ? 'horizontal'
+    : 'vertical';
+  const continuesGesture = !shiftKey
+    && previous !== null
+    && eventTime >= previous.lastEventTime
+    && eventTime - previous.lastEventTime <= MSA_WHEEL_GESTURE_IDLE_MS;
+  return {
+    axis: continuesGesture ? previous.axis : requestedAxis,
+    lastEventTime: eventTime,
+  };
 }
 
 /** Map a client X coordinate to an alignment column, optionally clamping drag overflow. */
@@ -1328,14 +1364,50 @@ export type MsaMotifMatch = {
 
 export type MsaMotifSearchResult = { matches: MsaMotifMatch[]; truncated: boolean };
 
+export type MsaSearchMatch = MsaMotifMatch & {
+  kind: 'motif' | 'row-name';
+};
+
+export type MsaSearchResult = { matches: MsaSearchMatch[]; truncated: boolean };
+
 export const MSA_MOTIF_SEARCH_MAX_MATCHES = 5_000;
 export const MSA_MOTIF_SEARCH_MAX_QUERY_LENGTH = 256;
 export const MSA_MOTIF_SEARCH_MAX_RETAINED_COLUMNS = 200_000;
+export const MSA_SEARCH_DEBOUNCE_MIN_CELLS = 100_000;
+export const MSA_SEARCH_DEBOUNCE_MS = 200;
 
 // Upper bound on residue comparisons per search so a long, rare, or absent query
 // on a large alignment cannot block the render thread: once exceeded the scan
 // stops and reports `truncated` instead of running to completion.
 export const MSA_MOTIF_SEARCH_MAX_COMPARISONS = 2_000_000;
+
+/**
+ * Small alignments settle immediately, while expensive scans wait for a short
+ * pause so a reader composing a query does not pay the full scan cost for every
+ * intermediate value.
+ */
+export function resolveMsaSearchDebounceMs(
+  rows: readonly { aligned: string }[],
+): number {
+  let cells = 0;
+  for (const row of rows) {
+    cells += row.aligned.length;
+    if (cells >= MSA_SEARCH_DEBOUNCE_MIN_CELLS) return MSA_SEARCH_DEBOUNCE_MS;
+  }
+  return 0;
+}
+
+/** Schedule one bounded search scan and return the cancellation used when the
+ * query changes before the reader pauses. Immediate scans share this path so
+ * callers keep identical cleanup semantics at either alignment size. */
+export function scheduleMsaSearch(run: () => void, delayMs: number): () => void {
+  if (delayMs <= 0) {
+    run();
+    return () => undefined;
+  }
+  const timer = globalThis.setTimeout(run, delayMs);
+  return () => globalThis.clearTimeout(timer);
+}
 
 /** Compare two present residues for difference highlighting without conflating
  * compatible ambiguity codes with literal identity or hard substitutions. */
@@ -1505,6 +1577,122 @@ export function findMsaMotifMatches(
   return { matches: collector.toSortedArray(), truncated };
 }
 
+/**
+ * Search the two user-visible alignment targets: residue motifs and row names.
+ * Motif matching keeps the bounded, ambiguity-aware behaviour above. A row-name
+ * hit is one result per matching row and points at that row's first covered
+ * alignment column so navigation can reveal it without inventing a new
+ * coordinate system.
+ */
+export function findMsaMatches(
+  rows: readonly { id: string; name: string; aligned: string }[],
+  query: string,
+  options: {
+    molecule: SequenceType;
+    maxMatches?: number;
+    maxComparisons?: number;
+    maxQueryLength?: number;
+    maxRetainedColumns?: number;
+  },
+): MsaSearchResult {
+  const trimmed = query.trim();
+  if (!trimmed) return { matches: [], truncated: false };
+  const maxMatches = Math.max(0, Math.floor(options.maxMatches ?? MSA_MOTIF_SEARCH_MAX_MATCHES));
+  const normalizedNameQuery = trimmed.toLocaleLowerCase();
+  const nameMatches: MsaSearchMatch[] = [];
+  let namesTruncated = false;
+  // Row names are a distinct finder target, so reserve their bounded capacity
+  // before scanning motifs. Otherwise a low-complexity residue query can fill
+  // the shared result budget and make an explicitly matching row unreachable.
+  // Alignment order is stable and user-visible, making it the deterministic
+  // priority when an unusually small caller-provided cap cannot retain every
+  // matching row name.
+  for (const row of rows) {
+    if (!row.name.toLocaleLowerCase().includes(normalizedNameQuery)) continue;
+    if (nameMatches.length >= maxMatches) { namesTruncated = true; break; }
+    const firstCovered = row.aligned.search(/[^-.]/);
+    const column = firstCovered >= 0 ? firstCovered : 0;
+    nameMatches.push({
+      kind: 'row-name',
+      rowId: row.id,
+      rowName: row.name,
+      startColumn: column,
+      endColumn: column,
+      columns: [],
+    });
+  }
+  const motifCapacity = Math.max(0, maxMatches - nameMatches.length);
+  const motifResult = findMsaMotifMatches(rows, trimmed, { ...options, maxMatches: motifCapacity });
+  const motifMatches = motifResult.matches.map((match): MsaSearchMatch => ({ ...match, kind: 'motif' }));
+
+  return {
+    // Put the reserved name hits first as well: submitting a query that names a
+    // row should navigate to that row without stepping through common motifs.
+    matches: [...nameMatches, ...motifMatches],
+    truncated: namesTruncated || motifResult.truncated,
+  };
+}
+
+export type MsaColumnViewSlot =
+  | { kind: 'column'; column: number }
+  | { kind: 'elision'; startColumn: number; endColumn: number; hiddenCount: number };
+
+export type MsaExpandedColumnRange = { startColumn: number; endColumn: number };
+
+/**
+ * Build the visible-space slots for a difference-focused alignment view.
+ * Ranges and slot columns are zero-based absolute alignment coordinates;
+ * elisions consume one visual slot but never become biological coordinates.
+ */
+export function buildMsaDifferenceColumnSlots(
+  alignmentLength: number,
+  differingColumns: readonly number[],
+  context = 3,
+  expandedRanges: readonly MsaExpandedColumnRange[] = [],
+): MsaColumnViewSlot[] {
+  const length = Math.max(0, Math.floor(alignmentLength));
+  if (length === 0) return [];
+  const margin = Number.isFinite(context) ? Math.max(0, Math.floor(context)) : 3;
+  const ranges: MsaExpandedColumnRange[] = [];
+  for (const rawColumn of differingColumns) {
+    if (!Number.isFinite(rawColumn)) continue;
+    const column = Math.floor(rawColumn);
+    if (column < 0 || column >= length) continue;
+    ranges.push({
+      startColumn: Math.max(0, column - margin),
+      endColumn: Math.min(length, column + margin + 1),
+    });
+  }
+  for (const range of expandedRanges) {
+    const startColumn = Math.max(0, Math.min(length, Math.floor(range.startColumn)));
+    const endColumn = Math.max(startColumn, Math.min(length, Math.ceil(range.endColumn)));
+    if (endColumn > startColumn) ranges.push({ startColumn, endColumn });
+  }
+  ranges.sort((a, b) => a.startColumn - b.startColumn || a.endColumn - b.endColumn);
+  const merged: MsaExpandedColumnRange[] = [];
+  for (const range of ranges) {
+    const previous = merged[merged.length - 1];
+    if (!previous || range.startColumn > previous.endColumn) merged.push({ ...range });
+    else previous.endColumn = Math.max(previous.endColumn, range.endColumn);
+  }
+
+  const slots: MsaColumnViewSlot[] = [];
+  let cursor = 0;
+  const pushElision = (startColumn: number, endColumn: number) => {
+    if (endColumn <= startColumn) return;
+    slots.push({ kind: 'elision', startColumn, endColumn, hiddenCount: endColumn - startColumn });
+  };
+  for (const range of merged) {
+    pushElision(cursor, range.startColumn);
+    for (let column = range.startColumn; column < range.endColumn; column += 1) {
+      slots.push({ kind: 'column', column });
+    }
+    cursor = range.endColumn;
+  }
+  pushElision(cursor, length);
+  return slots;
+}
+
 // ===== Alignment image export (pure geometry + palette) =====
 //
 // PNG/SVG export must render from the data model, not the DOM: the matrix is
@@ -1513,7 +1701,7 @@ export function findMsaMotifMatches(
 // computeAlignmentImageLayout derives the pixel geometry, and
 // resolveResidueCellColor mirrors the residue-scheme fills in
 // claude-science-msa.css as concrete sRGB hex against an explicit export
-// background (live CSS variables never resolve in pure code).
+// background supplied by the browser-side theme resolver.
 
 export type AlignmentImageScope = 'view' | 'all';
 
@@ -1528,6 +1716,8 @@ export type AlignmentImageLayoutOptions = {
   /** Half-open [startColumn, endColumn) window used when scope === 'view'. */
   startColumn?: number;
   endColumn?: number;
+  /** Optional visible-space slots for a filtered view export. */
+  columns?: readonly MsaColumnViewSlot[];
   cellWidth?: number;
   cellHeight?: number;
   fontSize?: number;
@@ -1541,6 +1731,8 @@ export type AlignmentImageLayout = {
   scope: AlignmentImageScope;
   startColumn: number;
   columnCount: number;
+  /** Visual slots in export order; column entries retain absolute coordinates. */
+  columns: MsaColumnViewSlot[];
   rowCount: number;
   cellWidth: number;
   cellHeight: number;
@@ -1551,23 +1743,50 @@ export type AlignmentImageLayout = {
   titleHeight: number;
   axisHeight: number;
   headerHeight: number;
-  /** Final canvas/SVG dimensions, clamped to the pixel budget. */
+  /** Final canvas/SVG dimensions, fitted to the pixel budget. */
   width: number;
   height: number;
-  /** Unclamped ideal dimensions (before the pixel budget was applied). */
+  /** Complete fitted content dimensions; never exceed width/height. */
   contentWidth: number;
   contentHeight: number;
-  /** True when the cell/column budget forced a shrink (offer SVG as vector). */
+  /** True when the complete image was scaled to fit the pixel bounds. */
   clamped: boolean;
 };
+
+export class AlignmentImageExportError extends Error {
+  readonly code = 'cell_limit' as const;
+  readonly scope: AlignmentImageScope;
+  readonly requiredCells: number;
+  readonly maxCells: number;
+  readonly rowCount: number;
+  readonly columnCount: number;
+
+  constructor(
+    scope: AlignmentImageScope,
+    requiredCells: number,
+    maxCells: number,
+    rowCount: number,
+    columnCount: number,
+  ) {
+    super(`Alignment image needs ${requiredCells} row-cells; the limit is ${maxCells}.`);
+    this.name = 'AlignmentImageExportError';
+    this.scope = scope;
+    this.requiredCells = requiredCells;
+    this.maxCells = maxCells;
+    this.rowCount = rowCount;
+    this.columnCount = columnCount;
+  }
+}
 
 // Legibility floor shared with the viewer's birdseye threshold (MSA_LETTER_MIN).
 export const MSA_IMAGE_LETTER_MIN = 6.5;
 export const MSA_IMAGE_MAX_WIDTH = 12_000;
 export const MSA_IMAGE_MAX_HEIGHT = 8_000;
-// Cap on drawn cells so a huge alignment cannot produce an unbounded canvas or
-// SVG string; past this the whole-alignment scope draws a leading window.
+// Hard cap on drawn cells so a huge alignment cannot produce an unbounded
+// canvas or SVG string. Exceeding it rejects the image export atomically; no
+// partial scientific image is returned.
 export const MSA_IMAGE_MAX_CELLS = 400_000;
+export const MSA_IMAGE_MAX_CANVAS_PIXELS = 32_000_000;
 const MSA_IMAGE_DEFAULT_CELL_WIDTH = 12;
 const MSA_IMAGE_DEFAULT_CELL_HEIGHT = 16;
 const MSA_IMAGE_DEFAULT_FONT_SIZE = 11;
@@ -1585,11 +1804,11 @@ function imageLabelWidth(rows: AlignmentImageSource['rows'], fontSize: number): 
 /**
  * Pixel geometry for an exported alignment image. Resolves the column window
  * from `scope` (the visible [start, end) range for 'view', the whole alignment
- * for 'all'), caps the drawn cell count, then scales the cell size down to fit
- * within the pixel budget rather than clipping — so a wide alignment renders as
- * a birdseye mosaic with every column visible. `drawLetters` follows the final
- * (possibly scaled) cell width, matching the viewer's blocks threshold, and
- * `clamped` reports whether any budget forced a shrink.
+ * for 'all'), rejects requests above the hard row-cell budget, then scales the
+ * cell size down to fit within the pixel budget rather than clipping. A
+ * successful layout is therefore complete: a wide alignment renders as a
+ * birdseye mosaic with every requested column visible. `drawLetters` follows
+ * the final cell width, and `clamped` reports pixel scaling only.
  */
 export function computeAlignmentImageLayout(
   alignment: AlignmentImageSource,
@@ -1599,34 +1818,79 @@ export function computeAlignmentImageLayout(
   const alignmentLength = Math.max(0, Math.floor(alignment.alignmentLength));
   const maxWidth = Math.max(200, options.maxWidth ?? MSA_IMAGE_MAX_WIDTH);
   const maxHeight = Math.max(200, options.maxHeight ?? MSA_IMAGE_MAX_HEIGHT);
-  const maxCells = Math.max(1, Math.floor(options.maxCells ?? MSA_IMAGE_MAX_CELLS));
+  const requestedMaxCells = options.maxCells ?? MSA_IMAGE_MAX_CELLS;
+  const maxCells = Number.isFinite(requestedMaxCells)
+    ? Math.max(1, Math.min(MSA_IMAGE_MAX_CELLS, Math.floor(requestedMaxCells)))
+    : MSA_IMAGE_MAX_CELLS;
 
-  // Resolve the column window.
-  let startColumn = 0;
-  let columnCount = alignmentLength;
-  if (options.scope === 'view') {
+  const assertImageCellBudget = (columnCount: number) => {
+    const requiredCells = rowCount * columnCount;
+    if (requiredCells > maxCells) {
+      throw new AlignmentImageExportError(
+        options.scope,
+        requiredCells,
+        maxCells,
+        rowCount,
+        columnCount,
+      );
+    }
+  };
+
+  if (options.scope === 'all') assertImageCellBudget(alignmentLength);
+
+  // Resolve only the requested column window. Visible exports can target a
+  // small window inside a very long alignment, so building the whole column
+  // list first would make their transient allocation depend on data they do
+  // not render.
+  let columns: MsaColumnViewSlot[];
+  if (options.scope === 'all') {
+    columns = Array.from(
+      { length: alignmentLength },
+      (_, column): MsaColumnViewSlot => ({ kind: 'column', column }),
+    );
+  } else if (options.columns && options.columns.length > 0) {
+    columns = options.columns.flatMap((slot): MsaColumnViewSlot[] => {
+      if (slot.kind === 'column') {
+        const column = Math.floor(slot.column);
+        return column >= 0 && column < alignmentLength ? [{ kind: 'column', column }] : [];
+      }
+      const startColumn = Math.max(0, Math.min(alignmentLength, Math.floor(slot.startColumn)));
+      const endColumn = Math.max(startColumn, Math.min(alignmentLength, Math.ceil(slot.endColumn)));
+      return endColumn > startColumn
+        ? [{ kind: 'elision', startColumn, endColumn, hiddenCount: endColumn - startColumn }]
+        : [];
+    });
+  } else {
     const rawStart = Math.floor(options.startColumn ?? 0);
     const rawEnd = Math.ceil(options.endColumn ?? alignmentLength);
     const start = Math.max(0, Math.min(alignmentLength, rawStart));
     const end = Math.max(start, Math.min(alignmentLength, rawEnd));
-    startColumn = start;
-    columnCount = end - start;
-    // A degenerate/empty window falls back to the whole alignment.
-    if (columnCount <= 0) { startColumn = 0; columnCount = alignmentLength; }
+    // A missing/empty visible range falls back to the complete alignment. Check
+    // that request before constructing its one-slot-per-column array.
+    const requestedColumnCount = end > start ? end - start : alignmentLength;
+    assertImageCellBudget(requestedColumnCount);
+    columns = Array.from(
+      { length: requestedColumnCount },
+      (_, offset): MsaColumnViewSlot => ({ kind: 'column', column: end > start ? start + offset : offset }),
+    );
   }
-  columnCount = Math.max(0, columnCount);
+  const columnCount = columns.length;
+  const firstColumnSlot = columns.find((slot): slot is Extract<MsaColumnViewSlot, { kind: 'column' }> => slot.kind === 'column');
+  const firstSlot = columns[0];
+  const startColumn = firstColumnSlot?.column
+    ?? (firstSlot?.kind === 'elision' ? firstSlot.startColumn : 0);
+
+  assertImageCellBudget(columnCount);
 
   let clamped = false;
 
-  // Cell-count cap: draw a leading window rather than an unbounded image.
-  if (rowCount > 0 && columnCount * rowCount > maxCells) {
-    columnCount = Math.max(1, Math.floor(maxCells / rowCount));
-    clamped = true;
-  }
-
   let cellWidth = Math.max(0.5, options.cellWidth ?? MSA_IMAGE_DEFAULT_CELL_WIDTH);
   let cellHeight = Math.max(1, options.cellHeight ?? MSA_IMAGE_DEFAULT_CELL_HEIGHT);
-  const baseFont = Math.max(6, Math.floor(options.fontSize ?? MSA_IMAGE_DEFAULT_FONT_SIZE));
+  const requestedBaseFont = Math.max(6, Math.floor(options.fontSize ?? MSA_IMAGE_DEFAULT_FONT_SIZE));
+  // Leave positive vertical space for rows even when a caller supplies an
+  // extreme font size alongside the minimum 200px image height.
+  const maximumBaseFont = Math.max(6, Math.floor((maxHeight - 20) / 3));
+  const baseFont = Math.min(requestedBaseFont, maximumBaseFont);
   let labelWidth = Math.round(options.labelWidth ?? imageLabelWidth(alignment.rows, baseFont));
   labelWidth = Math.max(1, Math.min(labelWidth, Math.floor(maxWidth * 0.5)));
 
@@ -1635,14 +1899,22 @@ export function computeAlignmentImageLayout(
   const headerHeight = titleHeight + axisHeight;
 
   // Scale cells down to fit the pixel budget (never clip; birdseye when tiny).
-  const idealSequenceWidth = columnCount * cellWidth;
+  // Do not put a readability floor on the fitted size: a successful image is
+  // an atomic scientific export, so every requested row and column must fit.
+  // Readability is represented separately by drawLetters and the birdseye
+  // colour mosaic. The row-cell limit remains the resource bound.
+  let sequenceWidth = columnCount * cellWidth;
+  const idealSequenceWidth = sequenceWidth;
   if (idealSequenceWidth > 0 && labelWidth + idealSequenceWidth > maxWidth) {
-    cellWidth = Math.max(0.2, (maxWidth - labelWidth) / columnCount);
+    sequenceWidth = maxWidth - labelWidth;
+    cellWidth = sequenceWidth / columnCount;
     clamped = true;
   }
-  const idealRowsHeight = rowCount * cellHeight;
+  let rowsHeight = rowCount * cellHeight;
+  const idealRowsHeight = rowsHeight;
   if (idealRowsHeight > 0 && headerHeight + idealRowsHeight > maxHeight) {
-    cellHeight = Math.max(1, (maxHeight - headerHeight) / rowCount);
+    rowsHeight = maxHeight - headerHeight;
+    cellHeight = rowsHeight / rowCount;
     clamped = true;
   }
 
@@ -1651,8 +1923,8 @@ export function computeAlignmentImageLayout(
     ? Math.max(6, Math.min(baseFont, Math.floor(cellWidth * 1.35), Math.max(6, Math.floor(cellHeight * 0.78))))
     : 0;
 
-  const contentWidth = labelWidth + columnCount * cellWidth;
-  const contentHeight = headerHeight + rowCount * cellHeight;
+  const contentWidth = labelWidth + sequenceWidth;
+  const contentHeight = headerHeight + rowsHeight;
   const width = Math.max(1, Math.min(maxWidth, Math.ceil(contentWidth)));
   const height = Math.max(1, Math.min(maxHeight, Math.ceil(contentHeight)));
 
@@ -1660,6 +1932,7 @@ export function computeAlignmentImageLayout(
     scope: options.scope,
     startColumn,
     columnCount,
+    columns,
     rowCount,
     cellWidth,
     cellHeight,
@@ -1677,7 +1950,118 @@ export function computeAlignmentImageLayout(
   };
 }
 
+export type AlignmentImageCellGeometry = {
+  x: number;
+  width: number;
+  centerX: number;
+};
+
+/**
+ * Exact horizontal bounds for a visual column in an image layout.
+ *
+ * Deriving both edges from the column index avoids accumulated floating-point
+ * drift. The final column is explicitly closed on contentWidth, so SVG and
+ * canvas renderers cannot disagree about or clip the trailing column when the
+ * fitted cell width is subpixel.
+ */
+export function alignmentImageCellGeometry(
+  layout: AlignmentImageLayout,
+  index: number,
+): AlignmentImageCellGeometry {
+  const safeIndex = Math.max(0, Math.min(layout.columnCount - 1, Math.floor(index)));
+  const x = layout.labelWidth + safeIndex * layout.cellWidth;
+  const right = safeIndex === layout.columnCount - 1
+    ? layout.contentWidth
+    : layout.labelWidth + (safeIndex + 1) * layout.cellWidth;
+  const width = Math.max(0, right - x);
+  return { x, width, centerX: x + width / 2 };
+}
+
+export type AlignmentImageCanvasPlan = {
+  width: number;
+  height: number;
+  scaleX: number;
+  scaleY: number;
+};
+
+/** Plan a bounded backing store whose logical right/bottom edges map exactly. */
+export function alignmentImageCanvasPlan(
+  width: number,
+  height: number,
+  devicePixelRatio = 1,
+): AlignmentImageCanvasPlan {
+  const logicalWidth = Math.max(1, width);
+  const logicalHeight = Math.max(1, height);
+  const ratio = Math.min(
+    alignmentImageCanvasScale(logicalWidth, logicalHeight, devicePixelRatio),
+    MSA_IMAGE_MAX_WIDTH / logicalWidth,
+    MSA_IMAGE_MAX_HEIGHT / logicalHeight,
+  );
+  const physicalWidth = Math.max(1, Math.floor(logicalWidth * ratio));
+  const physicalHeight = Math.max(1, Math.floor(logicalHeight * ratio));
+  return {
+    width: physicalWidth,
+    height: physicalHeight,
+    scaleX: physicalWidth / logicalWidth,
+    scaleY: physicalHeight / logicalHeight,
+  };
+}
+
 type ImageFill = { hex: string; pct: number };
+
+export type AlignmentImagePalette = {
+  background: string;
+  labelBackground: string;
+  text: string;
+  muted: string;
+};
+
+export const DEFAULT_ALIGNMENT_IMAGE_PALETTE: Readonly<AlignmentImagePalette> = {
+  background: '#ffffff',
+  labelBackground: '#f4f1ea',
+  text: '#16130f',
+  muted: '#6b6459',
+};
+
+function canonicalOpaqueSrgb(value: string, fallback: string): string {
+  const trimmed = value.trim().toLowerCase();
+  const hex = trimmed.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i)?.[1];
+  if (hex) {
+    return hex.length === 3
+      ? `#${hex.split('').map((channel) => channel + channel).join('')}`
+      : `#${hex}`;
+  }
+  const rgb = trimmed.match(/^rgb\(\s*(\d+(?:\.\d+)?)\s*[, ]\s*(\d+(?:\.\d+)?)\s*[, ]\s*(\d+(?:\.\d+)?)\s*\)$/i);
+  if (!rgb) return fallback;
+  const channels = rgb.slice(1).map(Number);
+  if (channels.some((channel) => !Number.isFinite(channel) || channel < 0 || channel > 255)) return fallback;
+  return `#${channels.map(toHexChannel).join('')}`;
+}
+
+/** Resolve active artifact theme tokens to safe, opaque sRGB export colors. */
+export function resolveAlignmentImagePalette(
+  readToken: (name: string) => string = () => '',
+): AlignmentImagePalette {
+  return {
+    background: canonicalOpaqueSrgb(readToken('--bg-primary'), DEFAULT_ALIGNMENT_IMAGE_PALETTE.background),
+    labelBackground: canonicalOpaqueSrgb(readToken('--bg-secondary'), DEFAULT_ALIGNMENT_IMAGE_PALETTE.labelBackground),
+    text: canonicalOpaqueSrgb(readToken('--text-primary'), DEFAULT_ALIGNMENT_IMAGE_PALETTE.text),
+    muted: canonicalOpaqueSrgb(readToken('--text-muted'), DEFAULT_ALIGNMENT_IMAGE_PALETTE.muted),
+  };
+}
+
+/** Bound physical PNG backing pixels while retaining the complete logical image. */
+export function alignmentImageCanvasScale(
+  width: number,
+  height: number,
+  devicePixelRatio = 1,
+): number {
+  const ratio = Number.isFinite(devicePixelRatio)
+    ? Math.max(1, Math.min(2, devicePixelRatio))
+    : 1;
+  const logicalPixels = Math.max(1, width * height);
+  return Math.min(ratio, Math.sqrt(MSA_IMAGE_MAX_CANVAS_PIXELS / logicalPixels));
+}
 
 // Base hex + mix percent for each residue colour-key token, mirroring the fills
 // in claude-science-msa.css: color-mix(in srgb, HEX P%, var(--bg-primary)).
@@ -1715,14 +2099,6 @@ const MSA_IMAGE_TAYLOR_FILL: Record<string, ImageFill> = {
   Y: { hex: '#00ffcc', pct: 40 }, V: { hex: '#99ff00', pct: 40 },
 };
 
-function parseHexColor(hex: string): { r: number; g: number; b: number } {
-  let value = hex.trim().replace(/^#/, '');
-  if (value.length === 3) value = value.split('').map((channel) => channel + channel).join('');
-  const int = Number.parseInt(value, 16);
-  if (value.length !== 6 || Number.isNaN(int)) return { r: 0, g: 0, b: 0 };
-  return { r: (int >> 16) & 0xff, g: (int >> 8) & 0xff, b: int & 0xff };
-}
-
 function toHexChannel(value: number): string {
   return Math.max(0, Math.min(255, Math.round(value))).toString(16).padStart(2, '0');
 }
@@ -1733,12 +2109,11 @@ function toHexChannel(value: number): string {
  * residue fills mix a base colour toward --bg-primary. Returns `#rrggbb`.
  */
 export function mixSrgb(hex: string, pct: number, backgroundHex: string): string {
-  const weight = Math.max(0, Math.min(1, pct / 100));
-  const color = parseHexColor(hex);
-  const bg = parseHexColor(backgroundHex);
-  return `#${toHexChannel(color.r * weight + bg.r * (1 - weight))}`
-    + `${toHexChannel(color.g * weight + bg.g * (1 - weight))}`
-    + `${toHexChannel(color.b * weight + bg.b * (1 - weight))}`;
+  return mixOpaqueHex(
+    canonicalOpaqueSrgb(hex, '#000000'),
+    pct / 100,
+    canonicalOpaqueSrgb(backgroundHex, '#000000'),
+  );
 }
 
 /**

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildMsaDifferenceColumnSlots,
   computeMsaColumnStats,
   computeSequenceLogoColumns,
   detectAlphabetAnomalies,
@@ -13,9 +14,36 @@ import {
   moveRowId,
   translateAlignedRow,
   findMsaMotifMatches,
+  findMsaMatches,
   normalizeArtifactAlignment,
   type ArtifactAlignment,
 } from '../claude-science-msa';
+
+describe('buildMsaDifferenceColumnSlots', () => {
+  it('keeps absolute differing columns with context and one slot per hidden run', () => {
+    const slots = buildMsaDifferenceColumnSlots(100, [10, 50], 3);
+    expect(slots).toEqual([
+      { kind: 'elision', startColumn: 0, endColumn: 7, hiddenCount: 7 },
+      ...Array.from({ length: 7 }, (_, offset) => ({ kind: 'column' as const, column: 7 + offset })),
+      { kind: 'elision', startColumn: 14, endColumn: 47, hiddenCount: 33 },
+      ...Array.from({ length: 7 }, (_, offset) => ({ kind: 'column' as const, column: 47 + offset })),
+      { kind: 'elision', startColumn: 54, endColumn: 100, hiddenCount: 46 },
+    ]);
+  });
+
+  it('merges overlapping context and expands only the requested hidden gap', () => {
+    const merged = buildMsaDifferenceColumnSlots(20, [5, 8], 3);
+    expect(merged.filter((slot) => slot.kind === 'column').map((slot) => slot.column)).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    const expanded = buildMsaDifferenceColumnSlots(20, [5, 15], 1, [{ startColumn: 7, endColumn: 14 }]);
+    expect(expanded.filter((slot) => slot.kind === 'column').map((slot) => slot.column)).toEqual([
+      4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+    ]);
+    expect(expanded.filter((slot) => slot.kind === 'elision')).toEqual([
+      { kind: 'elision', startColumn: 0, endColumn: 4, hiddenCount: 4 },
+      { kind: 'elision', startColumn: 17, endColumn: 20, hiddenCount: 3 },
+    ]);
+  });
+});
 
 describe('detectAlphabetAnomalies', () => {
   it('flags meaningful protein-declared rows containing only nucleotide letters', () => {
@@ -459,5 +487,68 @@ describe('findMsaMotifMatches', () => {
     expect(truncated).toBe(true);
     expect(matches).toHaveLength(1);
     expect(matches[0]).toMatchObject({ rowId: 'early', columns: [0, 1, 2, 3, 4] });
+  });
+});
+
+describe('findMsaMatches', () => {
+  const rows = [
+    { id: 'g12d', name: 'KRAS G12D', aligned: 'ACGTACGT' },
+    { id: 'g13c', name: 'KRAS G13C', aligned: 'ACGTTCGT' },
+  ];
+
+  it('adds row-name hits without changing motif-hit coordinates or priority', () => {
+    const motif = findMsaMatches(rows, 'ACG', { molecule: 'dna' });
+    expect(motif.matches[0]).toMatchObject({ kind: 'motif', rowId: 'g12d', startColumn: 0, columns: [0, 1, 2] });
+    expect(motif.matches.filter((match) => match.kind === 'motif')).toHaveLength(3);
+
+    const names = findMsaMatches(rows, 'g13c', { molecule: 'dna' });
+    expect(names).toEqual({
+      matches: [{
+        kind: 'row-name',
+        rowId: 'g13c',
+        rowName: 'KRAS G13C',
+        startColumn: 0,
+        endColumn: 0,
+        columns: [],
+      }],
+      truncated: false,
+    });
+  });
+
+  it('labels a row-only hit without inventing residue coordinates', () => {
+    const result = findMsaMatches(rows, 'G12', { molecule: 'dna' });
+    expect(result.matches.map((match) => match.kind)).toEqual(['row-name']);
+  });
+
+  it('reserves bounded capacity for row names before common motif matches', () => {
+    const common = [
+      { id: 'first', name: 'Control', aligned: 'AAAA' },
+      { id: 'named', name: 'A', aligned: 'AAAA' },
+    ];
+    const result = findMsaMatches(common, 'A', { molecule: 'dna', maxMatches: 2 });
+
+    expect(result.truncated).toBe(true);
+    expect(result.matches).toHaveLength(2);
+    expect(result.matches.map((match) => match.kind)).toEqual(['row-name', 'motif']);
+    expect(result.matches[0]).toMatchObject({
+      kind: 'row-name',
+      rowId: 'named',
+      rowName: 'A',
+    });
+  });
+
+  it('keeps matching row names in alignment order when a small cap cannot retain all of them', () => {
+    const matchingRows = [
+      { id: 'z', name: 'Zeta A', aligned: 'AAAA' },
+      { id: 'a', name: 'Alpha A', aligned: 'AAAA' },
+      { id: 'm', name: 'Middle A', aligned: 'AAAA' },
+    ];
+    const result = findMsaMatches(matchingRows, 'A', { molecule: 'dna', maxMatches: 2 });
+
+    expect(result.truncated).toBe(true);
+    expect(result.matches.map((match) => [match.kind, match.rowId])).toEqual([
+      ['row-name', 'z'],
+      ['row-name', 'a'],
+    ]);
   });
 });

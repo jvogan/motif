@@ -274,8 +274,8 @@ describe('Claude Science rail popover regression guards', () => {
   it('keeps Settings and About as the last inward-opening rail tool', () => {
     expect(artifactSource).toContain('data-rail-tool="settings"');
     expect(artifactSource).toContain('<Settings className="motif-cs-panel-icon"');
-    expect(artifactSource).toContain('<strong>Motif for Claude Science</strong>');
-    expect(artifactSource).toContain("const MOTIF_ARTIFACT_VERSION = '0.3.6';");
+    expect(artifactSource).toContain('<strong>Motif</strong>');
+    expect(artifactSource).toContain("const MOTIF_ARTIFACT_VERSION = '0.4.0';");
     expect(artifactSource).toContain('Version {MOTIF_ARTIFACT_VERSION} · Build {MOTIF_ARTIFACT_BUILD_LABEL}');
     expect(artifactSource).not.toContain('__APP_VERSION__');
     expect(artifactSource).toContain('Motif is an open-source, AI-native molecular biology suite for researchers.');
@@ -314,6 +314,27 @@ describe('Claude Science rail popover regression guards', () => {
     // the computed max-height, so a flat 600px was what stopped the pointer.
     expect(railBody).not.toMatch(/max-height:\s*min\(/);
     expect(artifactCss).toMatch(/@media \(max-width: 1280px\)[\s\S]*?--rail-popover-fixed-top:\s*132px/);
+  });
+
+  it('does not restate a control that the open panel already shows', () => {
+    // A rail popover title carries a meta only when it says something the panel
+    // body does not. Translation and Settings both said what a control a few
+    // dozen pixels below already showed - the pressed reading frame, the
+    // checked theme - so the title said it a second time and the summary chip
+    // a third. Measured at 1280x720 and 1440x900: the control and the title are
+    // on screen together in both, 169px apart for the frame group and 46px for
+    // the theme grid. The chip is the only one of the three that earns its
+    // place, because it is what a shut panel shows.
+    expect(artifactSource).toContain('<RailPopoverTitle title="Translation" />');
+    expect(artifactSource).toContain('<RailPopoverTitle title="Settings" />');
+    expect(artifactSource).not.toContain('title="Translation" meta=');
+    expect(artifactSource).not.toContain('title="Settings" meta=');
+    // The chips stay.
+    expect(artifactSource).toContain('<span className="motif-cs-chip">+{translateFrame + 1}</span>');
+    expect(artifactSource).toContain('<span className="motif-cs-chip">{activeThemeLabel}</span>');
+    // And the controls that carry the state stay where they are.
+    expect(artifactSource).toContain('<div className="motif-cs-segmented" role="group" aria-label="Reading frame">');
+    expect(artifactSource).toContain('data-active={theme === option.id || undefined}');
   });
 
   it('cleans up floating-window pointer listeners when a drag is interrupted', () => {

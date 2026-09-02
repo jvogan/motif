@@ -5,7 +5,7 @@ import {
   MOTIF_ARTIFACT_EXPORT_SCHEMA,
   motifArtifactExportSummarySchema,
   type MotifArtifactExportSummary,
-  type MotifWorkbenchResult,
+  type PreparedMotifWorkbench,
 } from './contracts.js';
 
 const DATA_TAG_PATTERN = /(<script type="application\/json" id="motif-artifact-data">)([\s\S]*?)(<\/script>)/u;
@@ -42,7 +42,7 @@ function safeArtifactBase(value: string): string {
 
 export type RenderMotifArtifactRequest = {
   template: string;
-  workbench: MotifWorkbenchResult;
+  workbench: PreparedMotifWorkbench;
   runtimeBuildId: string;
   title?: string;
   filename?: string;

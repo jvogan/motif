@@ -37,9 +37,12 @@ type SangerViewPreferences = {
 type SangerTraceSessionState = {
   selectedRowId: string;
   selectedColumn: number | null;
+  positionColumn: number | null;
   cellWidth: number;
   scrollLeft: number;
   scrollTop: number;
+  /** The last jump this alignment has already navigated to. See handledJumpRef. */
+  handledJump: { column: number; token: number } | null;
 };
 
 const sangerTraceSessionByAlignment = new Map<string, SangerTraceSessionState>();
@@ -201,6 +204,47 @@ function formatTraceIdentity(identity: number): string {
   return identity < 100 && identity >= 99.9 ? identity.toFixed(2) : identity.toFixed(1);
 }
 
+/** Above this Phred score nothing is washed: a 1-in-10,000 chance of being wrong. */
+const CLEAN_CALL_SCORE = 40;
+
+/** A second, colourless channel for the two dye traces that hue alone cannot
+ *  separate. Simulated over the shipped tokens (Viénot-Brettel-Mollon, then
+ *  CIELAB ΔE76), two of the six pairs collapse for red-green colour vision, and
+ *  both collapses are in the dark themes: C against G is ΔE 2.5 under
+ *  protanopia in `dark` and 4.5 under deuteranopia, and A against T is 10.5 in
+ *  `claude-dark`. A normal-vision reader never has to separate a pair below
+ *  ΔE 42 in the same theme. Zoom does not rescue it either — the base letters
+ *  that would name each curve only draw above 10px per column, and Fit puts an
+ *  800-base read at 1.116px.
+ *
+ *  Dashing C and T leaves the two heaviest curves solid, and every collapsing
+ *  pair is then separated by pattern rather than hue. The pairs still sharing a
+ *  pattern are A/G, which stays at ΔE 29.9 or better in every simulation. The
+ *  legend swatches carry the same two patterns so the mapping is readable. */
+export const CHANNEL_DASH: Record<SangerBase, number[]> = {
+  A: [],
+  C: [2.5, 2.5],
+  G: [],
+  T: [6, 3],
+};
+
+/**
+ * How much warning wash to paint over one base call. The scale runs DOWNWARD — a
+ * call you can trust gets no ink, and the wash darkens as the call gets worse.
+ *
+ * It used to run the other way. `Math.max(0.035, Math.min(0.18, score / 260))`
+ * put the most amber on the bases needing the least attention, and flattened both
+ * ends: the floor was reached at Q9 and the ceiling at Q47, so every call below
+ * Q10 painted byte-identically to every other one. Sampled at the 30px column cap
+ * on a white ground, the whole scale spanned 1.24:1, and Q19 against Q20 — the
+ * threshold every Sanger workflow is built on — was 1.007:1.
+ */
+export function lowQualityShadeAlpha(score: number, ceiling: number): number {
+  if (!Number.isFinite(score)) return 0;
+  const doubt = (CLEAN_CALL_SCORE - score) / CLEAN_CALL_SCORE;
+  return Math.max(0, Math.min(ceiling, doubt * ceiling));
+}
+
 export function traceFitCellWidth(viewportWidth: number, alignmentLength: number): number {
   const safeViewportWidth = Number.isFinite(viewportWidth) ? Math.max(1, viewportWidth) : 1;
   const safeAlignmentLength = Number.isFinite(alignmentLength) ? Math.max(1, alignmentLength) : 1;
@@ -320,7 +364,7 @@ function SangerStackedTraceCanvas({
       const templateSymbol = template.aligned[column] ?? '-';
       const score = rawIndex >= 0 ? item.trace.qualityScores[rawIndex] : undefined;
       if (showQuality && score !== undefined) {
-        context.globalAlpha = Math.max(0.035, Math.min(0.16, score / 280));
+        context.globalAlpha = lowQualityShadeAlpha(score, 0.20);
         context.fillStyle = qualityColor;
         context.fillRect(localX - (cellWidth / 2), 28, cellWidth, baseline - 28);
         context.globalAlpha = 1;
@@ -374,6 +418,7 @@ function SangerStackedTraceCanvas({
       const channel = item.trace.channels[rawBase];
       context.beginPath();
       context.strokeStyle = channelColors[displayBase];
+      context.setLineDash(CHANNEL_DASH[displayBase]);
       context.lineWidth = 1.2;
       let moved = false;
       const first = item.orientation === 'forward' ? sampleStart : sampleEnd;
@@ -391,6 +436,7 @@ function SangerStackedTraceCanvas({
       }
       context.stroke();
     }
+    context.setLineDash([]);
   }, [alignmentLength, cellWidth, item, rawByColumn, scrollLeft, selectedColumn, showQuality, template.aligned, themeRevision, traceAnchors, viewportWidth]);
 
   const chooseColumn = (event: ReactPointerEvent<HTMLCanvasElement>) => {
@@ -446,13 +492,27 @@ export function ClaudeScienceSangerTraceViewer({
   const [viewportWidth, setViewportWidth] = useState(720);
   const [viewportHeight, setViewportHeight] = useState(420);
   const [selectedColumn, setSelectedColumn] = useState<number | null>(initialSession?.selectedColumn ?? null);
+  const [positionColumn, setPositionColumn] = useState<number | null>(initialSession?.positionColumn ?? null);
   const [themeRevision, setThemeRevision] = useState(0);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const autoPositionKeyRef = useRef(initialSession ? '__restored__' : '');
+  // Seeded from the session, not from null. Zooming remounts this component, and a
+  // ref that starts empty forgets that the incoming jump was already navigated to,
+  // so the effect below replayed it and threw the reader back to wherever they had
+  // last jumped from. Measured: after moving the slider to column 80, one click on
+  // "Zoom chromatogram in" remounted the viewer, which correctly restored position
+  // 80 and then immediately replayed jump column 20 over it.
+  const handledJumpRef = useRef<{ alignmentId: string; column: number; token: number } | null>(
+    initialSession?.handledJump
+      ? { alignmentId: alignment.id, ...initialSession.handledJump }
+      : null,
+  );
   const scrollFrameRef = useRef<number | null>(null);
   const pendingScrollLeftRef = useRef(initialSession?.scrollLeft ?? 0);
   const pendingScrollTopRef = useRef(initialSession?.scrollTop ?? 0);
+  const lastPositionScrollLeftRef = useRef(initialSession?.scrollLeft ?? 0);
+  const programmaticScrollLeftRef = useRef<number | null>(null);
 
   const effectiveViewMode: SangerViewMode = linked.length > 1 ? viewMode : 'single';
 
@@ -468,11 +528,15 @@ export function ClaudeScienceSangerTraceViewer({
     sangerTraceSessionByAlignment.set(alignment.id, {
       selectedRowId,
       selectedColumn,
+      positionColumn,
       cellWidth,
       scrollLeft,
       scrollTop: stackScrollTop,
+      handledJump: handledJumpRef.current && handledJumpRef.current.alignmentId === alignment.id
+        ? { column: handledJumpRef.current.column, token: handledJumpRef.current.token }
+        : null,
     });
-  }, [alignment.id, cellWidth, scrollLeft, selectedColumn, selectedRowId, stackScrollTop]);
+  }, [alignment.id, cellWidth, positionColumn, scrollLeft, selectedColumn, selectedRowId, stackScrollTop]);
 
   useLayoutEffect(() => {
     const scroller = scrollerRef.current;
@@ -540,14 +604,35 @@ export function ClaudeScienceSangerTraceViewer({
     const resolvedBehavior = behavior === 'smooth' && (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false)
       ? 'auto'
       : behavior;
+    // A range-key press updates the controlled position and scrolls the trace.
+    // Chromium can deliver an older scroll event after the next key press. Do
+    // not reinterpret that programmatic movement as a new manual position or
+    // rapid keyboard input loses roughly half a viewport of progress.
+    programmaticScrollLeftRef.current = Math.abs(scroller.scrollLeft - target) > 0.5
+      ? target
+      : null;
     scroller.scrollTo({ left: target, behavior: resolvedBehavior });
-    setSelectedColumn(Math.max(0, Math.min(alignment.alignmentLength - 1, column)));
-  }, [alignment.alignmentLength, cellWidth]);
+  }, [cellWidth]);
+
+  const movePositionToColumn = useCallback((column: number, behavior: ScrollBehavior = 'smooth') => {
+    const next = Math.max(0, Math.min(alignment.alignmentLength - 1, column));
+    // View navigation must survive independently of whichever call is being inspected.
+    setPositionColumn(next);
+    scrollColumnIntoView(next, behavior);
+  }, [alignment.alignmentLength, scrollColumnIntoView]);
 
   useEffect(() => {
     if (jumpColumn === null) return;
-    scrollColumnIntoView(jumpColumn);
-  }, [jumpColumn, jumpToken, scrollColumnIntoView]);
+    const handledJump = handledJumpRef.current;
+    if (
+      handledJump?.alignmentId === alignment.id
+      && handledJump.column === jumpColumn
+      && handledJump.token === jumpToken
+    ) return;
+    // A jump is an explicit navigation event; zoom-driven callback changes must not replay it.
+    handledJumpRef.current = { alignmentId: alignment.id, column: jumpColumn, token: jumpToken };
+    movePositionToColumn(jumpColumn);
+  }, [alignment.id, jumpColumn, jumpToken, movePositionToColumn]);
 
   useEffect(() => {
     if (!selected) return;
@@ -563,9 +648,9 @@ export function ClaudeScienceSangerTraceViewer({
       return start < 0 ? earliest : Math.min(earliest, start);
     }, alignment.alignmentLength);
     if (firstCoveredColumn >= alignment.alignmentLength) return;
-    const frame = window.requestAnimationFrame(() => scrollColumnIntoView(firstCoveredColumn, 'auto'));
+    const frame = window.requestAnimationFrame(() => movePositionToColumn(firstCoveredColumn, 'auto'));
     return () => window.cancelAnimationFrame(frame);
-  }, [alignment.alignmentLength, alignment.id, linked, scrollColumnIntoView, selected]);
+  }, [alignment.alignmentLength, alignment.id, linked, movePositionToColumn, selected]);
 
   const zoom = useCallback((nextWidth: number) => {
     const scroller = scrollerRef.current;
@@ -602,9 +687,26 @@ export function ClaudeScienceSangerTraceViewer({
     if (scrollFrameRef.current !== null) return;
     scrollFrameRef.current = window.requestAnimationFrame(() => {
       scrollFrameRef.current = null;
-      setScrollLeft(pendingScrollLeftRef.current);
+      const nextScrollLeft = pendingScrollLeftRef.current;
+      const horizontalPositionChanged = Math.abs(nextScrollLeft - lastPositionScrollLeftRef.current) > 0.5;
+      lastPositionScrollLeftRef.current = nextScrollLeft;
+      const programmaticTarget = programmaticScrollLeftRef.current;
+      setScrollLeft(nextScrollLeft);
+      if (programmaticTarget !== null) {
+        if (Math.abs(nextScrollLeft - programmaticTarget) <= 0.5) {
+          programmaticScrollLeftRef.current = null;
+        }
+      } else if (horizontalPositionChanged) {
+        const currentViewportWidth = scrollerRef.current?.clientWidth || viewportWidth;
+        const centerColumn = Math.floor((nextScrollLeft + (currentViewportWidth / 2)) / cellWidth);
+        setPositionColumn(Math.max(0, Math.min(alignment.alignmentLength - 1, centerColumn)));
+      }
       setStackScrollTop(pendingScrollTopRef.current);
     });
+  }, [alignment.alignmentLength, cellWidth, viewportWidth]);
+
+  const beginManualScroll = useCallback(() => {
+    programmaticScrollLeftRef.current = null;
   }, []);
 
   const chainStackWheel = useCallback((event: WheelEvent) => {
@@ -700,7 +802,7 @@ export function ClaudeScienceSangerTraceViewer({
       const templateSymbol = template.aligned[column] ?? '-';
       const score = rawIndex >= 0 ? selected.trace.qualityScores[rawIndex] : undefined;
       if (showQuality && score !== undefined) {
-        context.globalAlpha = Math.max(0.035, Math.min(0.18, score / 260));
+        context.globalAlpha = lowQualityShadeAlpha(score, 0.22);
         context.fillStyle = qualityColor;
         context.fillRect(localX - (cellWidth / 2), 29, cellWidth, 57);
         context.globalAlpha = 1;
@@ -762,6 +864,7 @@ export function ClaudeScienceSangerTraceViewer({
       const channel = selected.trace.channels[rawBase];
       context.beginPath();
       context.strokeStyle = channelColors[displayBase];
+      context.setLineDash(CHANNEL_DASH[displayBase]);
       context.lineWidth = 1.35;
       let moved = false;
       const first = selected.orientation === 'forward' ? sampleStart : sampleEnd;
@@ -780,6 +883,7 @@ export function ClaudeScienceSangerTraceViewer({
       }
       context.stroke();
     }
+    context.setLineDash([]);
   }, [alignment, cellWidth, effectiveViewMode, scrollLeft, selected, selectedColumn, selectedRawByColumn, showQuality, template, themeRevision, traceAnchors, viewportWidth]);
 
   if (!selected || !template) {
@@ -798,7 +902,7 @@ export function ClaudeScienceSangerTraceViewer({
   const viewportCenterColumn = Math.round((scrollLeft + (viewportWidth / 2)) / cellWidth);
   const positionValue = Math.max(0, Math.min(
     alignment.alignmentLength - 1,
-    selectedColumn ?? viewportCenterColumn,
+    positionColumn ?? viewportCenterColumn,
   ));
   const firstVisibleLane = Math.max(0, Math.floor(stackScrollTop / STACKED_LANE_HEIGHT) - 1);
   const lastVisibleLane = Math.min(linked.length, Math.ceil((stackScrollTop + viewportHeight) / STACKED_LANE_HEIGHT) + 1);
@@ -813,7 +917,7 @@ export function ClaudeScienceSangerTraceViewer({
   const navigateColumn = (delta: number) => {
     const next = Math.max(0, Math.min(alignment.alignmentLength - 1, (selectedColumn ?? positionValue) + delta));
     setSelectedColumn(next);
-    scrollColumnIntoView(next);
+    movePositionToColumn(next);
   };
 
   const focusTraceRow = (rowId: string) => {
@@ -869,9 +973,11 @@ export function ClaudeScienceSangerTraceViewer({
             {linked.map((item) => <option key={item.row.id} value={item.row.id}>{item.row.name}</option>)}
           </select>
         </label>
-        <label className="motif-cs-sanger-quality-toggle" title="Show imported AB1 quality scores as restrained background shading">
+        {/* The label says which end of the scale is painted. "Quality" alone left
+            the direction to be guessed, and the wash used to run the other way. */}
+        <label className="motif-cs-sanger-quality-toggle" title="Shade calls below Q40 from the imported AB1 scores. The darker the shading, the less reliable the call.">
           <input type="checkbox" checked={showQuality} onChange={(event) => setShowQuality(event.target.checked)} />
-          <span>Quality</span>
+          <span>Low quality</span>
         </label>
         <span className="motif-cs-chip">{selected.orientation}</span>
         <span><strong>{selected.trace.baseCalls.length.toLocaleString()}</strong> calls</span>
@@ -892,6 +998,8 @@ export function ClaudeScienceSangerTraceViewer({
         <div
           ref={scrollerRef}
           className="motif-cs-sanger-scroll motif-cs-sanger-stack-scroll"
+          onPointerDown={beginManualScroll}
+          onWheel={beginManualScroll}
           onScroll={(event) => handleScroll(event.currentTarget.scrollLeft, event.currentTarget.scrollTop)}
           data-testid="sanger-trace-stack-scroll"
           role="region"
@@ -949,6 +1057,8 @@ export function ClaudeScienceSangerTraceViewer({
         <div
           ref={scrollerRef}
           className="motif-cs-sanger-scroll"
+          onPointerDown={beginManualScroll}
+          onWheel={beginManualScroll}
           onScroll={(event) => handleScroll(event.currentTarget.scrollLeft)}
           data-testid="sanger-trace-scroll"
         >
@@ -978,11 +1088,11 @@ export function ClaudeScienceSangerTraceViewer({
             min={0}
             max={Math.max(0, alignment.alignmentLength - 1)}
             value={positionValue}
-            onChange={(event) => scrollColumnIntoView(Number(event.target.value), 'auto')}
+            onChange={(event) => movePositionToColumn(Number(event.target.value), 'auto')}
           />
           <output>{positionValue + 1}</output>
         </label>
-        <div className="motif-cs-sanger-legend" aria-label="Chromatogram channel colors">
+        <div className="motif-cs-sanger-legend" aria-label="Chromatogram channel key">
           {BASES.map((base) => <span key={base} data-base={base}><i aria-hidden="true" />{base}</span>)}
         </div>
       </div>

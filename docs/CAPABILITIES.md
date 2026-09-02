@@ -79,12 +79,16 @@ backs it, so the list stays honest.
   durable checkpoint.
 - Source: `src/artifacts/claude-science-analysis-results.ts`, `src/artifacts/claude-science-session.ts`.
 
-## Claude Science connector
+## Host connectors
 - A bounded full-workbench MCP App (`motif_open_workbench`) plus a fallback that
   returns a self-contained HTML artifact (`motif_create_workbench_artifact`).
 - Accepts Motif payloads, FASTA, GenBank, or raw sequence. It does not write a
   database, run external executables, or expose a generic DOM/shell/filesystem
   bridge.
+- The Codex plugin and Claude Science adapter package the same narrow connector
+  with host-specific installation and task guidance. Tool success confirms
+  server delivery, not that a host mounted a visible frame or saved a returned
+  resource to disk.
 - Source: `mcp/motif/server.ts`, `mcp/motif/payload.ts`, `src/mcp-app/`.
 
 ## Boundaries

@@ -24,6 +24,7 @@ import {
   msaEdgeAutoScrollDelta,
   parseAlignmentText,
   parseAlignedFasta,
+  resolveMsaWheelGesture,
   safeAlignmentFilename,
   serializeArtifactAlignment,
   type ArtifactAlignmentInput,
@@ -77,6 +78,16 @@ describe('Claude Science alignment drag geometry', () => {
     expect(msaColumnFromClientX(700, metrics)).toBeNull();
     expect(msaColumnFromClientX(700, metrics, true)).toBe(53);
     expect(msaColumnFromClientX(0, metrics, true)).toBe(30);
+  });
+
+  it('keeps one wheel axis through a diagonal trackpad gesture and unlocks after idle', () => {
+    const horizontal = resolveMsaWheelGesture(48, 18, false, 100, null);
+    expect(horizontal.axis).toBe('horizontal');
+    expect(resolveMsaWheelGesture(7, 54, false, 116, horizontal).axis).toBe('horizontal');
+
+    const afterIdle = resolveMsaWheelGesture(7, 54, false, 300, horizontal);
+    expect(afterIdle.axis).toBe('vertical');
+    expect(resolveMsaWheelGesture(0, 30, true, 316, afterIdle).axis).toBe('horizontal');
   });
 });
 

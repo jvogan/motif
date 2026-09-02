@@ -262,13 +262,14 @@ export default function ClaudeScienceDataSettings({
               type="button"
               disabled={isBusy}
               aria-expanded="false"
+              aria-label="Clear workspace"
               onClick={() => {
                 setStatus('');
                 setConfirmingClear(true);
               }}
               data-testid="clear-workspace"
             >
-              Clear workspace
+              Clear…
             </button>
           </div>
         ) : (

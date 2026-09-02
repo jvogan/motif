@@ -783,6 +783,19 @@
   line-height: 1.35;
 }
 
+/* Sits directly above the add row so the blocking requirement is read where the
+   reader resolves it. Matches the muted note weight used elsewhere in the rail. */
+.motif-cs-cloning-design-add-hint {
+  margin: 9px 0 0;
+  color: var(--text-muted);
+  font-size: 9.5px;
+  line-height: 1.35;
+}
+
+.motif-cs-cloning-design-add-hint + .motif-cs-cloning-design-add {
+  margin-top: 5px;
+}
+
 .motif-cs-cloning-design-primary-button,
 .motif-cs-cloning-design-secondary-button,
 .motif-cs-cloning-design-quiet-button,
@@ -801,7 +814,11 @@
 .motif-cs-cloning-design-primary-button {
   border-color: color-mix(in srgb, var(--accent) 62%, var(--border-strong));
   background: var(--accent);
-  color: var(--accent-contrast, var(--bg-primary));
+  /* The fallback in the old `var(--accent-contrast, var(--bg-primary))` named
+     the right colour and never got to supply it, because --accent-contrast is
+     defined in every theme. On this --accent fill the near-white it does supply
+     read 2.86 in dark and 2.33 in claude-dark on Add Part. */
+  color: var(--accent-fill-contrast);
 }
 
 .motif-cs-cloning-design-primary-button:hover:not(:disabled) {

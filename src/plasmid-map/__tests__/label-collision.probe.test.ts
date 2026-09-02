@@ -57,7 +57,7 @@ interface Tagged { fam: string; key: string; box: Box; text: string; label: MapL
 function visibleLabels(layout: MapLayout, fontMode: LabelFontMode = 'proportional'): Tagged[] {
   const out: Tagged[] = [];
   for (const f of layout.features) if (f.label) out.push({ fam: 'feat', key: f.id, box: labelBox(f.label, fontMode), text: f.label.text, label: f.label });
-  for (const r of layout.restrictions) if (r.label) out.push({ fam: 'rest', key: r.clusterId, box: labelBox(r.label, fontMode), text: r.label.text, label: r.label });
+  for (const r of layout.restrictions) if (r.label) out.push({ fam: 'rest', key: r.clusterId, box: labelBox(r.label, 'monospace'), text: r.label.text, label: r.label });
   for (const c of layout.coordinates) if (c.label) {
     const label = { ...c.label, leader: [], inside: true } as MapLabelRender;
     out.push({ fam: 'coord', key: `c${c.bp}`, box: labelBox(label, fontMode), text: c.label.text, label });

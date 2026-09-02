@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+## 0.4.0 — 2026-09-01
+
+- Added a local Codex plugin and private-marketplace package around the same
+  bounded two-tool connector used by the portable Motif workbench. Added
+  deterministic archives, installation and removal guidance, packaged and
+  installed doctors, activation evaluations, and host-neutral privacy and
+  terms documents.
+- Presented the product as **Motif** across human-facing copy while retaining
+  `motif-for-claude-science` as a compatibility identifier for existing
+  installs and release tooling. Renamed the appearance presets to neutral
+  Light, Dark, Warm Light, and Warm Dark labels.
+- Expanded multiple-sequence-alignment review with virtualized rows, stable
+  keyboard focus, difference filtering and navigation, sequence search,
+  synchronized tracks, safer resizing, clearer exports, and responsive
+  controls from phone-sized panels through wide workspaces.
+- Improved sequence and map interaction with structured FASTA and GenBank
+  paste handling, transaction-safe range edits, more legible feature and
+  restriction labels, reliable narrow selections, accessible map gestures,
+  and consistent annotation colors.
+- Kept editing, export, Tools, Sanger, cloning, gel, and selection controls
+  visible and reachable across compact and resized layouts. Added focused
+  browser, contrast, pointer, keyboard, and geometry regression coverage for
+  the corrected behavior.
+- Hardened local MCP startup and failure reporting with bounded runtime-asset
+  reads, explicit stdio limits, stable public error codes, host-neutral tool
+  guidance, runtime identity checks, and clean-checkout packaging fixtures.
+
 ## 0.3.6 — 2026-08-12
 
 - Accepted one-base primer targets, derived versioned Tm evidence during PCR

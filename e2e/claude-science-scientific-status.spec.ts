@@ -87,7 +87,7 @@ test.describe('Claude Science scientific status UX', () => {
     await expect(digest.locator('.motif-cs-digest-outcome')).toContainText('No double-strand cuts predicted.');
     await expect(digest.locator('.motif-cs-digest-outcome')).toContainText('DNA molecule continuous');
 
-    await page.getByRole('combobox', { name: 'Theme' }).selectOption({ label: 'Claude Dark' });
+    await page.getByRole('combobox', { name: 'Theme' }).selectOption({ label: 'Warm Dark' });
     await page.setViewportSize({ width: 390, height: 760 });
     await digest.scrollIntoViewIfNeeded();
     const statusBox = await digest.locator('.motif-cs-digest-outcome').boundingBox();
@@ -258,7 +258,7 @@ test.describe('Claude Science scientific status UX', () => {
     await expect(provenance).toBeVisible();
     await expect(provenance).toContainText('fallback: bounded comparison route');
 
-    await page.getByRole('combobox', { name: 'Theme' }).selectOption({ label: 'Claude Dark' });
+    await page.getByRole('combobox', { name: 'Theme' }).selectOption({ label: 'Warm Dark' });
     await page.setViewportSize({ width: 390, height: 760 });
     const summary = provenance.locator('summary');
     await summary.focus();

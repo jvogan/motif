@@ -84,7 +84,7 @@ console.log(`Standalone artifact audit URL: ${artifactUrl}`);
 
 const test = spawn(
   npxCommand,
-  ['playwright', 'test', '--config', 'scripts/playwright.claude-science.config.ts'],
+  ['playwright', 'test', '--config', 'scripts/playwright.claude-science.config.ts', ...process.argv.slice(2)],
   {
     cwd: root,
     stdio: 'inherit',

@@ -277,6 +277,23 @@ describe('Claude Science runtime data-integrity behavior', () => {
     expect(prepareArtifactDatabaseRestore({ name: 'Workspace label', notes: [] }).payload.records).toEqual([]);
   });
 
+  it('keeps durable featureless checkpoints clean unless proposals were explicit', () => {
+    const implicit = prepareArtifactDatabaseRestore({
+      records: [{ id: 'implicit', type: 'dna', sequence: 'ATGGAATTCTAA' }],
+    }, undefined, false);
+    const explicit = prepareArtifactDatabaseRestore({
+      records: [{
+        id: 'explicit',
+        type: 'dna',
+        sequence: 'ATGGAATTCTAA',
+        proposeAnnotations: true,
+      }],
+    }, undefined, false);
+
+    expect(implicit.payload.records[0].proposeAnnotations).toBe(false);
+    expect(explicit.payload.records[0].proposeAnnotations).toBe(true);
+  });
+
   it('preserves compatible workspace state and rejects orphaning records-only replacements atomically', () => {
     const current = prepareArtifactDatabaseRestore({
       inventory: { id: 'preserved-inventory', title: 'Preserved inventory', description: 'Keep metadata' },
@@ -685,8 +702,8 @@ describe('Claude Science runtime data-integrity behavior', () => {
     }));
   });
 
-  it('normalizes allowlisted feature fields and escapes all report markup', () => {
-    const payload = prepareInventoryReplacement([{
+  it('rejects unsafe feature colors and escapes all report markup', () => {
+    const recordInput = {
       id: 'security-fixture',
       name: '<img src=x onerror="window.__motifReportPwned=true">',
       description: '</p><script>window.__motifReportPwned=true</script>',
@@ -696,17 +713,26 @@ describe('Claude Science runtime data-integrity behavior', () => {
         id: 'unsafe-feature',
         name: '</li><script>window.__motifReportPwned=true</script>',
         type: '</li><script>window.__motifReportPwned=true</script>' as never,
-        color: 'url(javascript:alert(1))',
+        color: 'var(--accent, #7E9BBF)',
         start: 0,
         end: 6,
         metadata: { source: '<script>metadata stays data</script>' },
       }],
-    }]);
+    };
+    expect(() => prepareInventoryReplacement([{
+      ...recordInput,
+      features: [{ ...recordInput.features[0], color: 'url(javascript:alert(1))' }],
+    }])).toThrowError(expect.objectContaining({
+      code: 'MOTIF_INVALID_INVENTORY_REPLACEMENT',
+      details: expect.objectContaining({ mutated: false }),
+    }));
+
+    const payload = prepareInventoryReplacement([recordInput]);
     const [record] = payload.records;
     const [feature] = record.features;
 
     expect(feature.type).toBe('custom');
-    expect(feature.color).toBe('#9AA3B5');
+    expect(feature.color).toMatch(/^var\(--(?:accent|green|purple|amber|red|feature-neutral), #[0-9a-f]{6}\)$/i);
     expect(feature.metadata).toEqual({ source: '<script>metadata stays data</script>' });
     const html = inventoryReportHtml(payload.records);
     expect(html).not.toContain('<script>window.__motifReportPwned=true</script>');

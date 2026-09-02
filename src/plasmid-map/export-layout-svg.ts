@@ -7,6 +7,7 @@
  */
 import type { MapLabelRender, MapLayout, Pt } from './types';
 import type { MapRangeOverlayRender } from './range-overlays';
+import { materializeFeatureColor } from '../bio/feature-palette';
 
 export interface MapLayoutSvgTheme {
   background: string;
@@ -143,8 +144,9 @@ export function exportMapLayoutSvg(layout: MapLayout, options: ExportMapLayoutSv
   }
 
   for (const feature of layout.features) {
+    const featureColor = escapeAttr(materializeFeatureColor(feature.color, theme.background));
     for (const d of feature.segmentPaths) {
-      chunks.push(`<path d="${escapeAttr(d)}" fill="${escapeAttr(feature.color)}" stroke="${theme.featureStroke}" stroke-width="0.8" stroke-linejoin="round" opacity="0.92"/>`);
+      chunks.push(`<path d="${escapeAttr(d)}" fill="${featureColor}" stroke="${theme.featureStroke}" stroke-width="0.8" stroke-linejoin="round" opacity="0.92"/>`);
     }
     if (feature.label) chunks.push(labelSvg(feature.label, theme));
   }

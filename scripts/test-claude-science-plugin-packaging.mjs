@@ -187,7 +187,7 @@ check('release versions stay aligned across package, runtime, bridge, and plugin
   const sources = [
     readFileSync(join(root, 'src/artifacts/motif-artifact.tsx'), 'utf8'),
     readFileSync(join(root, 'src/mcp-app/motif-workbench-bridge.ts'), 'utf8'),
-    readFileSync(join(root, 'mcp/motif/stdio-server.ts'), 'utf8'),
+    readFileSync(join(root, 'mcp/motif/stdio-bootstrap.ts'), 'utf8'),
   ];
   assert.equal(packageManifest.version, pluginManifest.version);
   for (const source of sources) assert.ok(source.includes(packageManifest.version));
@@ -529,7 +529,7 @@ check('MCP App bridge is injected only at the terminal body without replacement 
     const entryPath = join(fixture, 'bridge.ts');
     const outputPath = join(fixture, 'app.html');
     const template = [
-      '<!doctype html><html><head><title>Motif for Claude Science</title></head><body>',
+      '<!doctype html><html><head><meta name="application-name" content="Motif"><title>Motif</title></head><body>',
       '<script type="application/json" id="motif-artifact-data">{}</script>',
       '<script>const embeddedReport = "</body>";</script>',
       '</body></html>',

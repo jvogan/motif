@@ -194,6 +194,79 @@ function transformDeletedCoordinate(
   return coordinate;
 }
 
+function transformReplacedRange(
+  range: { start: number; end: number },
+  editStart: number,
+  deletedLength: number,
+  insertedLength: number,
+): { start: number; end: number } | null {
+  const deleteEnd = editStart + deletedLength;
+  let start: number;
+  let end: number;
+
+  if (deletedLength === 0) {
+    start = range.start;
+    end = range.end;
+    if (editStart <= start) {
+      start += insertedLength;
+      end += insertedLength;
+    } else if (editStart < end) {
+      end += insertedLength;
+    }
+  } else if (editStart < range.start && range.end < deleteEnd) {
+    // A non-empty replacement destroys an annotation that is wholly within
+    // the deleted ground. Do not turn it into a feature over the inserted
+    // sequence: only a range sharing a replacement boundary has an affine
+    // relationship to that inserted ground.
+    return null;
+  } else if (deleteEnd <= range.start) {
+    const delta = insertedLength - deletedLength;
+    start = range.start + delta;
+    end = range.end + delta;
+  } else if (editStart >= range.end) {
+    start = range.start;
+    end = range.end;
+  } else {
+    // Replacement boundaries have one shared affinity: surviving feature
+    // edges retain their side, while deleted edges clamp around the inserted
+    // interval. Treating the insertion separately loses that relationship.
+    start = range.start < editStart
+      ? range.start
+      : range.start >= deleteEnd
+        ? range.start + insertedLength - deletedLength
+        : editStart;
+    end = range.end <= editStart
+      ? range.end
+      : range.end >= deleteEnd
+        ? range.end + insertedLength - deletedLength
+        : editStart + insertedLength;
+  }
+
+  return end > start ? { start, end } : null;
+}
+
+function transformReplacedFeatures(
+  features: Feature[],
+  editStart: number,
+  deletedLength: number,
+  insertedLength: number,
+): Feature[] {
+  return features.flatMap((feature) => {
+    if (feature.subRanges) {
+      const subRanges = feature.subRanges.flatMap((range) => {
+        const transformed = transformReplacedRange(range, editStart, deletedLength, insertedLength);
+        return transformed ? [{ ...range, ...transformed }] : [];
+      });
+      if (subRanges.length === 0) return [];
+      const extrema = featureExtrema(subRanges)!;
+      return [{ ...feature, ...extrema, subRanges }];
+    }
+
+    const transformed = transformReplacedRange(feature, editStart, deletedLength, insertedLength);
+    return transformed ? [{ ...feature, ...transformed }] : [];
+  });
+}
+
 // ---------------------------------------------------------------------------
 // applySubstitution
 // ---------------------------------------------------------------------------
@@ -485,5 +558,91 @@ export function applyDeletion(
     raw: newRaw,
     scars: [...updatedScars, deletionScar],
     features: updatedFeatures,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// applyReplacement
+// ---------------------------------------------------------------------------
+
+/**
+ * Replace one half-open sequence interval as a single coordinate edit.
+ * Feature boundaries are transformed against the complete replacement so an
+ * inserted interval can retain the biological ground deleted at that boundary.
+ */
+export function applyReplacement(
+  raw: string,
+  scars: MutationScar[],
+  features: Feature[],
+  pos: number,
+  count: number,
+  bases: string,
+  molecule: MutationMolecule = 'dna',
+): MutationResult {
+  if (typeof bases !== 'string') {
+    throw new TypeError('Replacement bases must be a string.');
+  }
+  requireSafeInteger(pos, 'pos', 0);
+  requireSafeInteger(count, 'count', 0);
+  if (count === 0 && bases.length === 0) {
+    return { raw, scars: [...scars], features: [...features] };
+  }
+  if (pos > raw.length || (pos === raw.length && count > 0)) {
+    return { raw, scars: [...scars], features: [...features] };
+  }
+  if (bases.length > MAX_MUTATION_INSERTION_LENGTH) {
+    throw new RangeError(`Replacement cannot insert more than ${MAX_MUTATION_INSERTION_LENGTH.toLocaleString()} residues.`);
+  }
+  const validAlphabet = molecule === 'dna'
+    ? VALID_DNA_INSERTION
+    : molecule === 'rna'
+      ? VALID_RNA_INSERTION
+      : molecule === 'protein'
+        ? VALID_PROTEIN_INSERTION
+        : null;
+  if (bases.length > 0 && (validAlphabet === null || !validAlphabet.test(bases))) {
+    throw new Error(`Replacement residues must match the declared ${String(molecule)} alphabet.`);
+  }
+
+  const effectiveCount = Math.min(count, raw.length - pos);
+  const nextLength = raw.length - effectiveCount + bases.length;
+  if (nextLength > MAX_MUTATION_RESULT_LENGTH) {
+    throw new RangeError(`Replacement would exceed the ${MAX_MUTATION_RESULT_LENGTH.toLocaleString()}-residue result limit.`);
+  }
+  validateMutationFeatures(features, raw.length);
+  mutationOperationUnits(effectiveCount + bases.length, scars, features);
+
+  const normalizedBases = bases.toUpperCase();
+  const deleteEnd = pos + effectiveCount;
+  const delta = normalizedBases.length - effectiveCount;
+  const deletedBases = raw.slice(pos, deleteEnd);
+  const newRaw = raw.slice(0, pos) + normalizedBases + raw.slice(deleteEnd);
+  const shiftedScars = scars
+    .filter((scar) => scar.position < pos || scar.position >= deleteEnd)
+    .map((scar) => scar.position >= deleteEnd
+      ? { ...scar, position: scar.position + delta }
+      : { ...scar });
+  const now = Date.now();
+  const replacementScars: MutationScar[] = [
+    ...(effectiveCount > 0 ? [{
+      id: crypto.randomUUID(),
+      position: pos,
+      type: 'deletion' as const,
+      original: deletedBases,
+      createdAt: now,
+    }] : []),
+    ...Array.from(normalizedBases, (base, index) => ({
+      id: crypto.randomUUID(),
+      position: pos + index,
+      type: 'insertion' as const,
+      inserted: base,
+      createdAt: now,
+    })),
+  ];
+
+  return {
+    raw: newRaw,
+    scars: [...shiftedScars, ...replacementScars],
+    features: transformReplacedFeatures(features, pos, effectiveCount, normalizedBases.length),
   };
 }

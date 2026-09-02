@@ -3,6 +3,7 @@ import { basename } from 'node:path';
 import { VALID_NCBI_TABLE_IDS } from '../../src/bio/codon-tables.js';
 import { parseFasta } from '../../src/bio/fasta-parser.js';
 import { parseGenBank } from '../../src/bio/genbank-parser.js';
+import { resolveFeatureColor } from '../../src/bio/feature-palette.js';
 import { normalizeSequenceStrict } from '../../src/bio/sequence-normalization.js';
 import type { Feature, SequenceType, Topology } from '../../src/bio/types.js';
 import { normalizeArtifactAnalysisWorkspace } from '../../src/artifacts/claude-science-analysis-results.js';
@@ -16,9 +17,9 @@ import { normalizeArtifactWorkspaceEnvelope } from '../../src/artifacts/claude-s
 
 import {
   MOTIF_WORKBENCH_RESULT_SCHEMA,
-  motifWorkbenchResultSchema,
+  preparedMotifWorkbenchSchema,
   type MotifWorkbenchPayload,
-  type MotifWorkbenchResult,
+  type PreparedMotifWorkbench,
 } from './contracts.js';
 
 export const MOTIF_MCP_LIMITS = Object.freeze({
@@ -53,8 +54,6 @@ const NUCLEOTIDE_ALPHABET = /^[ACGTUNRYSWKMBDHV]+$/u;
 const DNA_ALPHABET = /^[ACGTNRYSWKMBDHV]+$/u;
 const RNA_ALPHABET = /^[ACGUNRYSWKMBDHV]+$/u;
 const PROTEIN_ALPHABET = /^[ACDEFGHIKLMNPQRSTVWYOUJBXZ*]+$/u;
-const SAFE_FEATURE_COLOR = /^(?:#[0-9a-f]{3,8}|(?:rgb|hsl)a?\([\d\s.,%+\-/]+\)|[a-z]+)$/iu;
-
 type JsonBudget = { nodes: number };
 type RecordLike = Record<string, unknown>;
 
@@ -65,6 +64,7 @@ export type MotifWorkbenchInput = {
   title?: string;
   molecule?: 'dna' | 'rna' | 'protein';
   topology?: Topology;
+  proposeAnnotations?: boolean;
 };
 
 function isPlainObject(value: unknown): value is RecordLike {
@@ -324,7 +324,7 @@ function validateFeature(feature: unknown, path: string, sequenceLength: number)
     boundedOptionalText(feature[field], `${path}.${field}`, MOTIF_MCP_LIMITS.maxShortTextLength);
   }
   if (typeof feature.color === 'string'
-    && (feature.color.length > 80 || !SAFE_FEATURE_COLOR.test(feature.color.trim()))) {
+    && (feature.color.length > 80 || resolveFeatureColor(feature) !== feature.color.trim())) {
     throw new Error(`${path}.color must be a simple CSS color value no longer than 80 characters.`);
   }
   if (!Number.isInteger(feature.start) || !Number.isInteger(feature.end)) {
@@ -435,6 +435,9 @@ function validateRecord(record: unknown, index: number): { length: number; sange
       throw new Error(`${path}.${field} must be a boolean when provided.`);
     }
   }
+  if (record.proposeAnnotations !== undefined && typeof record.proposeAnnotations !== 'boolean') {
+    throw new Error(`${path}.proposeAnnotations must be a boolean when provided.`);
+  }
   if (record.truncated === true) {
     throw new Error(`${path} is marked as truncated; provide the complete record.`);
   }
@@ -510,8 +513,49 @@ function coercePayload(value: unknown): MotifWorkbenchPayload {
   return value;
 }
 
-function cloneJsonObject(value: MotifWorkbenchPayload): MotifWorkbenchPayload {
-  return JSON.parse(JSON.stringify(value)) as MotifWorkbenchPayload;
+function applyFeaturePalette(payload: MotifWorkbenchPayload): MotifWorkbenchPayload {
+  // This only receives the JSON clone created at the MCP boundary below, so
+  // mutating it avoids another full copy of a payload that can approach 32 MiB.
+  const colorRecord = (record: unknown): void => {
+    if (!isPlainObject(record)) return;
+    for (const field of ['features', 'annotations'] as const) {
+      if (!Array.isArray(record[field])) continue;
+      for (const feature of record[field]) {
+        if (isPlainObject(feature)) feature.color = resolveFeatureColor(feature);
+      }
+    }
+  };
+  for (const field of ['records', 'entries', 'vectors'] as const) {
+    if (Array.isArray(payload[field])) payload[field].forEach(colorRecord);
+  }
+  if (payload.record !== undefined) colorRecord(payload.record);
+  return payload;
+}
+
+function validateSerializedPayloadSize(serialized: string): void {
+  if (utf8Bytes(serialized) > MOTIF_MCP_LIMITS.maxPayloadBytes) {
+    throw new Error(`Payload cannot exceed ${Math.floor(MOTIF_MCP_LIMITS.maxPayloadBytes / 1_048_576)} MiB.`);
+  }
+}
+
+function applyProposalPreference(value: unknown, preference: boolean | undefined): unknown {
+  if (preference === undefined) return value;
+  const applyRecord = (record: unknown): unknown => isPlainObject(record)
+    ? { ...record, proposeAnnotations: preference }
+    : record;
+  if (Array.isArray(value)) return value.map(applyRecord);
+  if (!isPlainObject(value)) return value;
+  if (!['records', 'entries', 'vectors', 'record'].some((field) => Object.prototype.hasOwnProperty.call(value, field))) {
+    return typeof value.sequence === 'string' || typeof value.seq === 'string'
+      ? applyRecord(value)
+      : value;
+  }
+  const next: RecordLike = { ...value };
+  for (const field of ['records', 'entries', 'vectors'] as const) {
+    if (Array.isArray(next[field])) next[field] = next[field].map(applyRecord);
+  }
+  if (next.record !== undefined) next.record = applyRecord(next.record);
+  return next;
 }
 
 function omitTraceArraysForGenericJsonValidation(
@@ -551,25 +595,27 @@ export function validateMotifPayload(value: unknown): {
     ))
     && (typeof value.seq === 'string' || typeof value.sequence === 'string');
   const payload = coercePayload(value);
+  // Reject an oversized record collection before creating any projected copy
+  // for generic JSON validation. Callers may set a proposal preference, which
+  // maps every record; this cardinality check is deliberately earlier than
+  // that preference application as well.
+  validatePayloadEnvelope(payload);
+  const records = recordArray(payload);
+  if (records.length > MOTIF_MCP_LIMITS.maxRecords) {
+    throw new Error(`Payload cannot contain more than ${MOTIF_MCP_LIMITS.maxRecords} records.`);
+  }
   validateJsonValue(
     omitTraceArraysForGenericJsonValidation(payload, isBareRecord),
     'payload',
     { nodes: 0 },
     new WeakSet(),
   );
-  validatePayloadEnvelope(payload);
   const serialized = JSON.stringify(payload);
-  if (utf8Bytes(serialized) > MOTIF_MCP_LIMITS.maxPayloadBytes) {
-    throw new Error(`Payload cannot exceed ${Math.floor(MOTIF_MCP_LIMITS.maxPayloadBytes / 1_048_576)} MiB.`);
-  }
+  validateSerializedPayloadSize(serialized);
   if (typeof payload.schema === 'string'
     && payload.schema.startsWith('motif.claude-science.inventory.')
     && !SUPPORTED_INVENTORY_SCHEMAS.has(payload.schema)) {
     throw new Error(`Unsupported Motif inventory schema: ${payload.schema}.`);
-  }
-  const records = recordArray(payload);
-  if (records.length > MOTIF_MCP_LIMITS.maxRecords) {
-    throw new Error(`Payload cannot contain more than ${MOTIF_MCP_LIMITS.maxRecords} records.`);
   }
   const explicitIds = new Set<string>();
   const usedIds = new Set<string>();
@@ -622,7 +668,20 @@ export function validateMotifPayload(value: unknown): {
   } catch (error) {
     throw new Error(`Payload analysis workspace is invalid: ${error instanceof Error ? error.message : String(error)}`);
   }
-  return { payload: cloneJsonObject(payload), recordCount: records.length, residueCount };
+  // Reuse the serialization already required for the input bound as the clone
+  // source. Palette defaults add color-string nodes and serialized bytes, so
+  // the returned payload must be checked again after they are applied. Keep
+  // the same trace projection as the input pass because chromatogram arrays
+  // have their own workspace-wide sample-entry bound.
+  const preparedPayload = applyFeaturePalette(JSON.parse(serialized) as MotifWorkbenchPayload);
+  validateJsonValue(
+    omitTraceArraysForGenericJsonValidation(preparedPayload, isBareRecord),
+    'payload',
+    { nodes: 0 },
+    new WeakSet(),
+  );
+  validateSerializedPayloadSize(JSON.stringify(preparedPayload));
+  return { payload: preparedPayload, recordCount: records.length, residueCount };
 }
 
 function safeSourceName(filename: string | undefined): string | undefined {
@@ -677,8 +736,9 @@ function recordsFromFasta(content: string, input: MotifWorkbenchInput): RecordLi
       sequence: record.sequence.toUpperCase(),
       molecule,
       topology: input.topology ?? 'linear',
+      proposeAnnotations: input.proposeAnnotations !== false,
       ...(record.description ? { description: record.description.slice(0, MOTIF_MCP_LIMITS.maxTextLength) } : {}),
-      source: 'FASTA opened in Motif for Claude Science',
+      source: 'FASTA opened in Motif',
       ...(record.gapsRemoved ? { provenance: { gapsRemoved: record.gapsRemoved } } : {}),
       active: true,
     };
@@ -699,7 +759,7 @@ function serializableFeatures(features: Feature[]): Array<Record<string, unknown
   }));
 }
 
-function recordsFromGenBank(content: string): RecordLike[] {
+function recordsFromGenBank(content: string, input: MotifWorkbenchInput): RecordLike[] {
   const parsed = parseGenBank(content);
   if (parsed.length === 0) throw new Error('No complete GenBank records were found.');
   const proteinRecordHints = content
@@ -724,9 +784,10 @@ function recordsFromGenBank(content: string): RecordLike[] {
       molecule,
       topology: record.topology,
       features: serializableFeatures(record.features),
+      proposeAnnotations: input.proposeAnnotations !== false,
       ...(record.definition ? { description: record.definition.slice(0, MOTIF_MCP_LIMITS.maxTextLength) } : {}),
       ...(record.organism ? { organism: record.organism.slice(0, 1_024) } : {}),
-      source: record.source?.slice(0, 1_024) || 'GenBank opened in Motif for Claude Science',
+      source: record.source?.slice(0, 1_024) || 'GenBank opened in Motif',
       ...(record.importDiagnostics ? { provenance: { genbankImportDiagnostics: record.importDiagnostics } } : {}),
       active: true,
     };
@@ -743,8 +804,8 @@ function payloadFromContent(content: string, input: MotifWorkbenchInput): MotifW
   const inventory = {
     title: input.title?.trim() || sourceName || 'Motif sequence inventory',
     description: sourceName
-      ? `Opened from ${sourceName} in Motif for Claude Science.`
-      : 'Opened in Motif for Claude Science.',
+      ? `Opened from ${sourceName} in Motif.`
+      : 'Opened in Motif.',
   };
 
   if (text.startsWith('{') || text.startsWith('[')) {
@@ -760,7 +821,7 @@ function payloadFromContent(content: string, input: MotifWorkbenchInput): MotifW
       : validated.payload;
   }
   const records = /^\s*LOCUS\s/mu.test(text)
-    ? recordsFromGenBank(text)
+    ? recordsFromGenBank(text, input)
     : text.includes('>')
       ? recordsFromFasta(text, input)
       : [{
@@ -769,7 +830,8 @@ function payloadFromContent(content: string, input: MotifWorkbenchInput): MotifW
         sequence: text,
         molecule: moleculeHintFromInput(input),
         topology: input.topology ?? 'linear',
-        source: sourceName ? `Raw sequence from ${sourceName}` : 'Raw sequence opened in Motif for Claude Science',
+        proposeAnnotations: input.proposeAnnotations !== false,
+        source: sourceName ? `Raw sequence from ${sourceName}` : 'Raw sequence opened in Motif',
         active: true,
       }];
   return {
@@ -779,13 +841,13 @@ function payloadFromContent(content: string, input: MotifWorkbenchInput): MotifW
   };
 }
 
-export function prepareMotifWorkbench(input: MotifWorkbenchInput): MotifWorkbenchResult {
+export function prepareMotifWorkbench(input: MotifWorkbenchInput): PreparedMotifWorkbench {
   if (input.payload !== undefined && input.content !== undefined) {
     throw new Error('Provide either payload or content, not both.');
   }
   const sourceName = safeSourceName(input.filename);
   if (input.payload === undefined && input.content === undefined) {
-    return motifWorkbenchResultSchema.parse({
+    return preparedMotifWorkbenchSchema.parse({
       schema: MOTIF_WORKBENCH_RESULT_SCHEMA,
       mode: 'sample',
       ...(sourceName ? { sourceName } : {}),
@@ -793,9 +855,16 @@ export function prepareMotifWorkbench(input: MotifWorkbenchInput): MotifWorkbenc
       residueCount: 0,
     });
   }
-  const candidate = input.content !== undefined ? payloadFromContent(input.content, input) : input.payload;
-  const validated = validateMotifPayload(candidate);
-  const payload = input.title && input.content === undefined
+  const source = input.content !== undefined ? payloadFromContent(input.content, input) : input.payload;
+  // Validate the caller-owned input before mapping every record to apply an
+  // optional proposal preference. The transformed payload is validated again
+  // below because the preference changes the delivered JSON. This preserves
+  // the post-palette size bound for both forms.
+  const sourceValidated = validateMotifPayload(source);
+  const validated = input.proposeAnnotations === undefined
+    ? sourceValidated
+    : validateMotifPayload(applyProposalPreference(source, input.proposeAnnotations));
+  const payloadWithTitle = input.title && input.content === undefined
     ? {
       ...validated.payload,
       inventory: {
@@ -804,12 +873,18 @@ export function prepareMotifWorkbench(input: MotifWorkbenchInput): MotifWorkbenc
       },
     }
     : validated.payload;
-  return motifWorkbenchResultSchema.parse({
+  // A direct payload title is a post-validation transform. Revalidate the
+  // delivered object so the override cannot cross its text, node, depth, or
+  // serialized-byte boundary after the caller-owned payload was accepted.
+  const delivered = payloadWithTitle === validated.payload
+    ? validated
+    : validateMotifPayload(payloadWithTitle);
+  return preparedMotifWorkbenchSchema.parse({
     schema: MOTIF_WORKBENCH_RESULT_SCHEMA,
     mode: input.content === undefined ? 'payload' : 'artifact',
     ...(sourceName ? { sourceName } : {}),
-    payload,
-    recordCount: validated.recordCount,
-    residueCount: validated.residueCount,
+    payload: delivered.payload,
+    recordCount: delivered.recordCount,
+    residueCount: delivered.residueCount,
   });
 }

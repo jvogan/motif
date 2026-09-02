@@ -136,7 +136,7 @@ describe('restrictions: clustering', () => {
       circular: false,
     });
     // The two BsmBI cuts collapse to ONE display name (was the "BsmBI,BsmBI" bug);
-    // ticks[] still holds all four real cut sites so density + "+N more sites" stay put.
+    // ticks[] still holds all four real cut sites so density + the unnamed-site chip stay put.
     expect(cluster.ticks).toHaveLength(4);
     expect(cluster.enzymes).toEqual(['BsmBI', 'BbsI', 'AfeI']); // 3 distinct, display order
     expect(cluster.shownEnzymes).toEqual(['BsmBI', 'BbsI']); // Type IIS first, distinct, capped at 2

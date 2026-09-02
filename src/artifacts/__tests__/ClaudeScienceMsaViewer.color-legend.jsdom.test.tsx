@@ -74,13 +74,13 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('ClaudeScienceMsaViewer residue colour key', () => {
+describe('ClaudeScienceMsaViewer residue color key', () => {
   it('renders nucleotide swatches, RNA U, and ambiguity for a nucleotide alignment', () => {
     renderViewer('rna', 'nucleotide');
 
     const legend = screen.getByTestId('msa-color-legend');
     expect(legend.getAttribute('role')).toBe('group');
-    expect(legend.getAttribute('aria-label')).toBe('Nucleotide residue colour key');
+    expect(legend.getAttribute('aria-label')).toBe('Nucleotide residue color key');
     expect(legendEntries(legend)).toEqual([
       ['nt-a', 'A'],
       ['nt-c', 'C'],
@@ -95,7 +95,7 @@ describe('ClaudeScienceMsaViewer residue colour key', () => {
     renderViewer('dna', 'auto');
 
     const legend = screen.getByTestId('msa-color-legend');
-    expect(legend.getAttribute('aria-label')).toBe('Automatic nucleotide residue colour key');
+    expect(legend.getAttribute('aria-label')).toBe('Automatic nucleotide residue color key');
     expect(legendEntries(legend)).toEqual([
       ['a', 'A'],
       ['c', 'C'],
@@ -109,7 +109,7 @@ describe('ClaudeScienceMsaViewer residue colour key', () => {
     renderViewer('protein', 'clustal');
 
     const legend = screen.getByTestId('msa-color-legend');
-    expect(legend.getAttribute('aria-label')).toBe('Clustal protein residue colour key');
+    expect(legend.getAttribute('aria-label')).toBe('Clustal protein residue color key');
     expect(legendEntries(legend)).toEqual([
       ['cl-hydrophobic', 'Hydrophobic'],
       ['cl-positive', 'Positive'],

@@ -11,7 +11,7 @@
  * label that grows takes room from a neighbour and can push it off the map entirely.
  */
 import { describe, it, expect } from 'vitest';
-import { computeMapLayout } from '../layout';
+import { computeMapLayout, LINEAR_REC_LABEL_FONT_PX } from '../layout';
 import { approxTextWidth } from '../geometry/labels';
 import type { MapInput, MapRestrictionRender } from '../types';
 import type { RestrictionSite } from '../../bio/types';
@@ -67,7 +67,7 @@ describe('a linear cluster label never drops the count that says it is a summary
     // ...and the count still reconciles against the tooltip, as on the circular ring.
     expect(cluster.title).toContain(' · 14 enzymes · 14 sites');
     // The name may be shortened; it may not be the whole label.
-    expect(text.startsWith('Nt.B')).toBe(true);
+    expect(text.startsWith('Nt.')).toBe(true);
     expect(text).not.toBe(LEAD);
   });
 
@@ -80,9 +80,9 @@ describe('a linear cluster label never drops the count that says it is a summary
       const text = cluster.label?.text ?? '';
       expect(text, `+${extra} lost its count`).toMatch(new RegExp(` \\+${extra}$`));
       expect(
-        approxTextWidth(text),
+        approxTextWidth(text, undefined, 'monospace'),
         `+${extra} label is wider than the bare name it replaces`,
-      ).toBeLessThanOrEqual(approxTextWidth(LEAD));
+      ).toBeLessThanOrEqual(approxTextWidth(LEAD, undefined, 'monospace'));
     }
   });
 
@@ -126,8 +126,11 @@ describe('a linear cluster label never drops the count that says it is a summary
     );
     const text = cluster.label?.text ?? '';
 
+    // Was 'MyV… +40' while the band measured at 16px. The linear band now draws and
+    // budgets enzyme names at LINEAR_REC_LABEL_FONT_PX, so the same 88px of row buys
+    // two more characters of the name — the count is still what survives the trade.
     expect(text).toBe('MyVer… +40');
-    expect(approxTextWidth(text)).toBeLessThanOrEqual(64); // LINEAR_REC_LABEL_MAX_WIDTH_PX
+    expect(approxTextWidth(text, LINEAR_REC_LABEL_FONT_PX, 'monospace')).toBeLessThanOrEqual(88);
   });
 
   it('documents what the stem floor does when it finally binds', () => {
@@ -145,18 +148,18 @@ describe('a linear cluster label never drops the count that says it is a summary
           .label?.text ?? ''
       );
     };
-    const nameWidth = approxTextWidth(LEAD);
+    const nameWidth = approxTextWidth(LEAD, undefined, 'monospace');
 
     // 3 digits: floor exactly met, and still no wider than the name it replaces.
     expect(build(999)).toBe('Nt.… +999');
-    expect(approxTextWidth('Nt.… +999')).toBeLessThanOrEqual(nameWidth);
+    expect(approxTextWidth('Nt.… +999', undefined, 'monospace')).toBeLessThanOrEqual(nameWidth);
 
     // 4 digits: the floor wins over the width budget — wider than the name, inside the cap.
     expect(build(1200)).toBe('Nt.… +1200');
-    expect(approxTextWidth('Nt.… +1200')).toBeGreaterThan(nameWidth);
-    expect(approxTextWidth('Nt.… +1200')).toBeLessThanOrEqual(64);
+    expect(approxTextWidth('Nt.… +1200', undefined, 'monospace')).toBeGreaterThan(nameWidth);
+    expect(approxTextWidth('Nt.… +1200', undefined, 'monospace')).toBeGreaterThan(88);
 
-    // 5 digits: overruns the cap by 4.2px. Nothing clips — placement uses actual widths.
-    expect(approxTextWidth(build(12000))).toBeCloseTo(68.2, 1);
+    // 5 digits: the stem floor wins again. Nothing clips — placement uses actual widths.
+    expect(approxTextWidth(build(12000), undefined, 'monospace')).toBeCloseTo(112.64, 2);
   });
 });

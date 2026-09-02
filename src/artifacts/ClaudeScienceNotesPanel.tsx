@@ -317,7 +317,13 @@ export function ClaudeScienceNotesPanel({
             </button>
           ))}
         </div>
-        <span className="motif-cs-muted">{visibleNotes.length} shown</span>
+        {/* Nothing to count is not a count. When the filter shows no notes the
+            panel already says why, in a sentence that names the filter - "No
+            workspace notes yet." - so "0 shown" beside the filter buttons is
+            the same fact, worse put. */}
+        {visibleNotes.length ? (
+          <span className="motif-cs-muted">{visibleNotes.length} shown</span>
+        ) : null}
       </div>
 
       <details
@@ -404,7 +410,6 @@ export function ClaudeScienceNotesPanel({
             <button className="motif-cs-mini-button motif-cs-mini-button-accent" type="submit">Add note</button>
             <button className="motif-cs-mini-button" type="button" onClick={closeAddNote}>Cancel</button>
           </div>
-          <p className="motif-cs-form-note">Markdown is stored as text and is never interpreted as HTML.</p>
           {createError ? <p id={`${bodyId}-error`} className="motif-cs-inline-error" role="alert">{createError}</p> : null}
         </form>
       </details>

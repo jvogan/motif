@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 /**
- * The "+N more sites" chip carries the only sentence on the map that says what its
+ * The "N unnamed sites" chip carries the only sentence on the map that says what its
  * count means and that no site was actually dropped from the drawing. That sentence
  * lives in a native <title>, which a mouse can only reach if the chip is a hit target
  * — and .motif-pm-overflows sets pointer-events:none, so it was not one: the browser
@@ -77,7 +77,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('the "+N more sites" chip can be reached without stealing the background', () => {
+describe('the "N unnamed sites" chip can be reached without stealing the background', () => {
   it('puts the explanation in a <title> the browser can serve to a pointer', () => {
     const { group, chip } = render();
 
@@ -86,9 +86,9 @@ describe('the "+N more sites" chip can be reached without stealing the backgroun
     // the hit rect inherits it too — a rect that enlarges the target but resolves to
     // no tooltip would be a bigger nothing.
     expect(group.firstElementChild?.tagName.toLowerCase()).toBe('title');
-    expect(group.firstElementChild?.textContent).toContain('hidden labels');
-    expect(group.firstElementChild?.textContent).toContain('All density ticks remain visible.');
-    expect(chip.textContent).toContain('more sites');
+    expect(group.firstElementChild?.textContent).toContain('without an enzyme name');
+    expect(group.firstElementChild?.textContent).toContain('Every site keeps its density tick.');
+    expect(chip.textContent).toContain('unnamed sites');
     expect(chip.querySelector('title')).toBeNull();
   });
 
@@ -104,7 +104,7 @@ describe('the "+N more sites" chip can be reached without stealing the backgroun
     expect(Number(rect!.getAttribute('height'))).toBe(expected.height);
     // Fixture geometry, absolute — a rect that quietly collapsed to zero would still
     // satisfy the equality above.
-    expect(expected).toEqual({ x: 885.091, y: 60.8, width: 94.909, height: 14 });
+    expect(expected).toEqual({ x: 847.26, y: 64.34, width: 132.74, height: 18 });
   });
 
   it('paints the rect under the glyphs so it never hides the count it explains', () => {
@@ -113,10 +113,14 @@ describe('the "+N more sites" chip can be reached without stealing the backgroun
     expect(kids).toEqual(['title', 'rect', 'text']);
   });
 
-  it('hands press and click on to the surfaces that own the map drag and clear', () => {
-    // The map's drag (range selection) is listened for on the host's wrapper and its
-    // background-clear on the <svg> root, so BOTH reach the chip only by bubbling.
-    // This is the whole reason a hit-testable chip costs the map nothing.
+  it('hands click on to the surface that clears, without starting a drag', () => {
+    // Handing BOTH on was the original contract, and measurement retired half of it.
+    // Control on a 4kb record: a click on bare .motif-pm-bg leaves "No range
+    // selected", while the same click on the chip left "1598-1598 (1)". Press and
+    // release at one point still opens and closes the host's range drag, so the one
+    // control that says data is hidden was replacing the reader's selection with a
+    // 1 bp range. pointerdown stops at the chip; click still goes through, because
+    // the background owns clear-the-selection and the chip must not suppress it.
     const { chip } = render();
     const surface = document.createElement('div');
     const seen: string[] = [];
@@ -131,28 +135,37 @@ describe('the "+N more sites" chip can be reached without stealing the backgroun
       chip.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }));
     });
 
-    expect(seen).toEqual(['pointerdown', 'click']);
+    expect(seen).toEqual(['click']);
   });
 
-  it('declares no pointer handler of its own that could swallow either', () => {
-    // Cheapest way to keep the bubbling above true: the chip carries no pointer props
-    // at all — on the group, the rect or the text. A handler added to any of them
-    // would not fail to render, it would just quietly start competing with the host
-    // for the gesture.
+  it('contains the press and nothing else', () => {
+    // The chip may stop pointerdown, and that is the only gesture it may touch.
+    // A click or mouseup handler here would take the background's clear with it.
     const chipStart = viewSource.indexOf('className="motif-pm-overflow-chip"');
     const chipEnd = viewSource.indexOf('</g>', chipStart);
     const chipJsx = viewSource.slice(chipStart, chipEnd);
 
     expect(chipStart).toBeGreaterThan(-1);
     expect(chipJsx).toContain('motif-pm-overflow-hit');
-    expect(chipJsx).not.toMatch(/onPointer|onMouseDown|stopPropagation/);
+    expect(chipJsx).toContain('onPointerDown={(e) => e.stopPropagation()}');
+    expect(chipJsx).not.toMatch(/onClick|onMouseDown|onMouseUp|onPointerUp/);
+  });
+
+  it('paints below interactive annotations so their real hit shapes win overlaps', () => {
+    const overflowAt = viewSource.indexOf('<g className="motif-pm-overflows">');
+    const featuresAt = viewSource.indexOf('<g className="motif-pm-features">');
+    const restrictionsAt = viewSource.indexOf('<g className="motif-pm-restrictions">');
+
+    expect(overflowAt).toBeGreaterThan(-1);
+    expect(overflowAt).toBeLessThan(featuresAt);
+    expect(overflowAt).toBeLessThan(restrictionsAt);
   });
 });
 
 describe('plasmid-map.css keeps the chip hit-testable and visibly hoverable', () => {
   const chipRule = mapCss.slice(
-    mapCss.indexOf('.motif-pm-overflow {'),
-    mapCss.indexOf('}', mapCss.indexOf('.motif-pm-overflow {')),
+    mapCss.indexOf('\n.motif-pm-overflow {'),
+    mapCss.indexOf('}', mapCss.indexOf('\n.motif-pm-overflow {')),
   );
   // The rule's own comment explains at length what was tried and dropped, so the
   // negative assertions below have to look at declarations, not prose.

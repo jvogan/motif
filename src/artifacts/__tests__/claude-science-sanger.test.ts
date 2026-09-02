@@ -10,6 +10,7 @@ import {
 } from '../motif-artifact';
 import {
   hasLinkedSangerTrace,
+  lowQualityShadeAlpha,
   traceCenteredScrollLeft,
   traceFitCellWidth,
 } from '../ClaudeScienceSangerTraceViewer';
@@ -58,6 +59,41 @@ describe('Claude Science Sanger trace contract', () => {
     expect(traceFitCellWidth(720, 20)).toBe(12);
     expect(traceCenteredScrollLeft(40, 20, 200, 100)).toBe(700);
     expect(traceCenteredScrollLeft(99, 20, 200, 100)).toBe(1_800);
+  });
+
+  it('washes the calls a reviewer cannot trust, and leaves the clean ones alone', () => {
+    const single = (score: number) => lowQualityShadeAlpha(score, 0.22);
+
+    // The direction. This ran the other way before: `clamp(score / 260, 0.035,
+    // 0.18)` put the most amber on the calls needing the least attention.
+    expect(single(0)).toBeGreaterThan(single(20));
+    expect(single(20)).toBeGreaterThan(single(39));
+    expect(single(0)).toBeCloseTo(0.22, 5);
+
+    // A call at Q40 or better is a 1-in-10,000 error rate. Nothing is painted, so
+    // a clean read shows a clean canvas rather than a uniform tint.
+    expect(single(40)).toBe(0);
+    expect(single(60)).toBe(0);
+
+    // Neither end may flatten. The old floor was reached at Q9 and the old ceiling
+    // at Q47, so every call below Q10 painted byte-identically to every other.
+    expect(single(0)).not.toBe(single(9));
+    expect(single(41)).toBe(single(60));
+
+    // Q20 is the threshold every Sanger workflow is built on, and it used to differ
+    // from Q19 by a contrast ratio of 1.007.
+    expect(single(19) - single(20)).toBeCloseTo(0.0055, 6);
+
+    // Strictly monotonic across the washed range, in both modes.
+    for (const ceiling of [0.22, 0.2]) {
+      for (let score = 1; score < 40; score += 1) {
+        expect(lowQualityShadeAlpha(score, ceiling)).toBeLessThan(lowQualityShadeAlpha(score - 1, ceiling));
+      }
+    }
+
+    // A trace with no reported scores must not paint a full-strength warning.
+    expect(lowQualityShadeAlpha(Number.NaN, 0.22)).toBe(0);
+    expect(lowQualityShadeAlpha(120, 0.22)).toBe(0);
   });
 
   it('does not attach a chromatogram through an ambiguous record-name fallback', () => {
