@@ -1824,12 +1824,17 @@ export function computeAlignmentImageLayout(
     );
   }
 
-  // Resolve the column window.
-  let columns: MsaColumnViewSlot[] = Array.from(
-    { length: alignmentLength },
-    (_, column): MsaColumnViewSlot => ({ kind: 'column', column }),
-  );
-  if (options.scope === 'view' && options.columns && options.columns.length > 0) {
+  // Resolve only the requested column window. Visible exports can target a
+  // small window inside a very long alignment, so building the whole column
+  // list first would make their transient allocation depend on data they do
+  // not render.
+  let columns: MsaColumnViewSlot[];
+  if (options.scope === 'all') {
+    columns = Array.from(
+      { length: alignmentLength },
+      (_, column): MsaColumnViewSlot => ({ kind: 'column', column }),
+    );
+  } else if (options.columns && options.columns.length > 0) {
     columns = options.columns.flatMap((slot): MsaColumnViewSlot[] => {
       if (slot.kind === 'column') {
         const column = Math.floor(slot.column);
@@ -1841,7 +1846,7 @@ export function computeAlignmentImageLayout(
         ? [{ kind: 'elision', startColumn, endColumn, hiddenCount: endColumn - startColumn }]
         : [];
     });
-  } else if (options.scope === 'view') {
+  } else {
     const rawStart = Math.floor(options.startColumn ?? 0);
     const rawEnd = Math.ceil(options.endColumn ?? alignmentLength);
     const start = Math.max(0, Math.min(alignmentLength, rawStart));

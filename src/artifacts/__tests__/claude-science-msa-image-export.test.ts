@@ -136,6 +136,23 @@ describe('computeAlignmentImageLayout', () => {
     expect(visible.columns.at(-1)).toEqual({ kind: 'column', column: 49_999 });
   });
 
+  it('builds only a bounded visible window inside an alignment too long to materialize', () => {
+    const alignmentLength = 5_000_000_000;
+    const huge: AlignmentImageSource = {
+      rows: [{ name: 'Template', aligned: '' }, { name: 'Read', aligned: '' }],
+      alignmentLength,
+    };
+    const visible = computeAlignmentImageLayout(huge, {
+      scope: 'view', startColumn: alignmentLength - 8, endColumn: alignmentLength,
+    });
+    expect(visible.startColumn).toBe(alignmentLength - 8);
+    expect(visible.columnCount).toBe(8);
+    expect(visible.columns).toEqual(Array.from(
+      { length: 8 },
+      (_, offset) => ({ kind: 'column', column: alignmentLength - 8 + offset }),
+    ));
+  });
+
   it('does not let non-finite or oversized maxCells values bypass the hard cap', () => {
     const huge = source(100, 4_001);
     for (const maxCells of [Number.NaN, Number.POSITIVE_INFINITY, MSA_IMAGE_MAX_CELLS + 1]) {
