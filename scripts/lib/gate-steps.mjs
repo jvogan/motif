@@ -10,6 +10,7 @@ export const GATE_STEPS = Object.freeze([
   { id: 'reviewed-lifecycle', label: 'Motif-owned dependency preparation', command: ['npm', 'run', 'security:lifecycle'] },
   { id: 'dependency-cooling-off', label: 'Dependency cooling-off policy', command: ['npm', 'run', 'security:cooling-off'] },
   { id: 'plugin-checks', label: 'Plugin checks', command: ['npm', 'run', 'test:plugin'] },
+  { id: 'codex-plugin-checks', label: 'Codex plugin checks', command: ['npm', 'run', 'test:codex-plugin'] },
   { id: 'connector-checks', label: 'Connector checks', command: ['npm', 'run', 'test:connector'] },
   { id: 'css-token-checks', label: 'CSS token checks', command: ['npm', 'run', 'check:css-tokens'] },
   { id: 'aria-controls', label: 'ARIA control checks', command: ['npm', 'run', 'check:aria-controls'] },

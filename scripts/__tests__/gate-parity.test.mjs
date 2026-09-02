@@ -27,6 +27,13 @@ describe('npm run gate matches CI', () => {
     expect(ids).not.toContain('release-publish');
     expect(pkg.scripts['check:release-publish']).toBe('node scripts/check-release-publish.mjs');
     expect(ids.indexOf('supply-chain-policy')).toBeLessThan(ids.indexOf('reviewed-lifecycle'));
+    expect(GATE_STEPS).toContainEqual({
+      id: 'codex-plugin-checks',
+      label: 'Codex plugin checks',
+      command: ['npm', 'run', 'test:codex-plugin'],
+    });
+    expect(ids.indexOf('plugin-checks')).toBeLessThan(ids.indexOf('codex-plugin-checks'));
+    expect(ids.indexOf('codex-plugin-checks')).toBeLessThan(ids.indexOf('connector-checks'));
     expect(ids.indexOf('build')).toBeLessThan(ids.indexOf('post-build-release-verification'));
     expect(ids.indexOf('post-build-release-verification')).toBeLessThan(ids.indexOf('reproducibility'));
   });
