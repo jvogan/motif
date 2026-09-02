@@ -6,6 +6,7 @@ import {
   type AlignmentMolecule,
 } from '../bio/alignment-semantics';
 import { STANDARD_CODE } from '../bio/codon-tables';
+import { mixOpaqueHex } from '../bio/color-mix';
 import type { SequenceType } from '../bio/types';
 
 export const ARTIFACT_MSA_MAX_ALIGNMENTS = 50;
@@ -2098,13 +2099,6 @@ const MSA_IMAGE_TAYLOR_FILL: Record<string, ImageFill> = {
   Y: { hex: '#00ffcc', pct: 40 }, V: { hex: '#99ff00', pct: 40 },
 };
 
-function parseHexColor(hex: string): { r: number; g: number; b: number } {
-  const value = canonicalOpaqueSrgb(hex, '#000000').replace(/^#/, '');
-  const int = Number.parseInt(value, 16);
-  if (Number.isNaN(int)) return { r: 0, g: 0, b: 0 };
-  return { r: (int >> 16) & 0xff, g: (int >> 8) & 0xff, b: int & 0xff };
-}
-
 function toHexChannel(value: number): string {
   return Math.max(0, Math.min(255, Math.round(value))).toString(16).padStart(2, '0');
 }
@@ -2115,12 +2109,11 @@ function toHexChannel(value: number): string {
  * residue fills mix a base colour toward --bg-primary. Returns `#rrggbb`.
  */
 export function mixSrgb(hex: string, pct: number, backgroundHex: string): string {
-  const weight = Math.max(0, Math.min(1, pct / 100));
-  const color = parseHexColor(hex);
-  const bg = parseHexColor(backgroundHex);
-  return `#${toHexChannel(color.r * weight + bg.r * (1 - weight))}`
-    + `${toHexChannel(color.g * weight + bg.g * (1 - weight))}`
-    + `${toHexChannel(color.b * weight + bg.b * (1 - weight))}`;
+  return mixOpaqueHex(
+    canonicalOpaqueSrgb(hex, '#000000'),
+    pct / 100,
+    canonicalOpaqueSrgb(backgroundHex, '#000000'),
+  );
 }
 
 /**

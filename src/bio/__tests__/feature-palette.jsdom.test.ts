@@ -1,8 +1,10 @@
 /** @vitest-environment jsdom */
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { resolveFeatureColorPickerValue } from '../feature-palette';
+
+afterEach(() => vi.restoreAllMocks());
 
 describe('feature palette browser color resolution', () => {
   it.each([
@@ -22,6 +24,17 @@ describe('feature palette browser color resolution', () => {
       'transparent',
       (name) => name === '--bg-primary' ? '#112233' : undefined,
     )).toBe('#112233');
+  });
+
+  it('rounds decimal CSSOM channels and preserves percentage alpha', () => {
+    vi.spyOn(window, 'getComputedStyle').mockReturnValue({
+      color: 'rgba(10.5, 20.5, 30.5, 50%)',
+    } as CSSStyleDeclaration);
+
+    expect(resolveFeatureColorPickerValue(
+      'red',
+      (name) => name === '--bg-primary' ? '#f0f0f0' : undefined,
+    )).toBe('#7e8388');
   });
 
   it.each([

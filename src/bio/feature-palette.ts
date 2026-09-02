@@ -1,4 +1,5 @@
 import type { FeatureType } from './types';
+import { mixOpaqueHex } from './color-mix';
 
 type FeatureColorInput = {
   name?: unknown;
@@ -6,43 +7,46 @@ type FeatureColorInput = {
   color?: unknown;
 };
 
-type FeaturePaletteEntry = {
-  /** Theme token with a portable fallback for non-browser consumers. */
-  token: string;
-};
-
 // Generated colors are semantic theme references rather than fixed paint.
 // Explicit caller colors remain literal because that is a user-authored choice;
 // missing colors follow the active Motif appearance without rewriting records.
-const FEATURE_COLORS: Readonly<Record<FeatureType, FeaturePaletteEntry>> = {
-  gene: { token: 'var(--accent, #7E9BBF)' },
-  cds: { token: 'var(--accent, #7E9BBF)' },
-  promoter: { token: 'var(--amber, #C6A86B)' },
-  terminator: { token: 'var(--red, #C28C88)' },
-  misc_feature: { token: 'var(--feature-neutral, #8B8F99)' },
-  origin: { token: 'var(--purple, #9E96B4)' },
-  primer_bind: { token: 'var(--red, #C49374)' },
-  orf: { token: 'var(--green, #7FA98F)' },
-  rbs: { token: 'var(--amber, #C6A86B)' },
-  resistance: { token: 'var(--red, #C49374)' },
-  restriction_site: { token: 'var(--feature-neutral, #8B8F99)' },
-  mRNA: { token: 'var(--green, #6FB0A4)' },
-  rRNA: { token: 'var(--green, #6FB0A4)' },
-  tRNA: { token: 'var(--green, #6FB0A4)' },
-  ncRNA: { token: 'var(--purple, #9E96B4)' },
-  regulatory: { token: 'var(--amber, #C6A86B)' },
-  repeat_region: { token: 'var(--purple, #9E96B4)' },
-  sig_peptide: { token: 'var(--green, #9DB585)' },
-  mat_peptide: { token: 'var(--green, #9DB585)' },
-  transit_peptide: { token: 'var(--green, #9DB585)' },
-  intron: { token: 'var(--feature-neutral, #8B8F99)' },
-  exon: { token: 'var(--green, #6FB0A4)' },
-  polyA_signal: { token: 'var(--red, #C28C88)' },
-  enhancer: { token: 'var(--amber, #C6A86B)' },
-  custom: { token: 'var(--feature-neutral, #8B8F99)' },
+const ACCENT = 'var(--accent, #7E9BBF)';
+const AMBER = 'var(--amber, #C6A86B)';
+const RED = 'var(--red, #C28C88)';
+const RED_ALT = 'var(--red, #C49374)';
+const NEUTRAL = 'var(--feature-neutral, #8B8F99)';
+const PURPLE = 'var(--purple, #9E96B4)';
+const GREEN = 'var(--green, #7FA98F)';
+const GREEN_RNA = 'var(--green, #6FB0A4)';
+const GREEN_PEPTIDE = 'var(--green, #9DB585)';
+const FEATURE_COLORS: Readonly<Record<FeatureType, string>> = {
+  gene: ACCENT,
+  cds: ACCENT,
+  promoter: AMBER,
+  terminator: RED,
+  misc_feature: NEUTRAL,
+  origin: PURPLE,
+  primer_bind: RED_ALT,
+  orf: GREEN,
+  rbs: AMBER,
+  resistance: RED_ALT,
+  restriction_site: NEUTRAL,
+  mRNA: GREEN_RNA,
+  rRNA: GREEN_RNA,
+  tRNA: GREEN_RNA,
+  ncRNA: PURPLE,
+  regulatory: AMBER,
+  repeat_region: PURPLE,
+  sig_peptide: GREEN_PEPTIDE,
+  mat_peptide: GREEN_PEPTIDE,
+  transit_peptide: GREEN_PEPTIDE,
+  intron: NEUTRAL,
+  exon: GREEN_RNA,
+  polyA_signal: RED,
+  enhancer: AMBER,
+  custom: NEUTRAL,
 };
 
-const KNOWN_FEATURE_TYPES = new Set<FeatureType>(Object.keys(FEATURE_COLORS) as FeatureType[]);
 const FEATURE_TYPE_BY_LOWER = new Map<Lowercase<FeatureType>, FeatureType>(
   (Object.keys(FEATURE_COLORS) as FeatureType[]).map((type) => [type.toLowerCase() as Lowercase<FeatureType>, type]),
 );
@@ -51,12 +55,12 @@ const THEME_COLOR_TOKEN = /^var\(--(?:accent|green|purple|amber|red|feature-neut
 const THEME_COLOR_MIX = /^color-mix\(in srgb, var\(--(?:accent|green|purple|amber|red|feature-neutral)(?:, #[0-9a-f]{6})?\) (?:7[2-9]|8\d|9[0-2])%, var\(--bg-primary\)\)$/iu;
 const MAX_FEATURE_COLOR_LENGTH = 80;
 const UNKNOWN_TYPE_RAMP = [
-  'var(--accent, #7E9BBF)',
-  'var(--green, #7FA98F)',
-  'var(--purple, #9E96B4)',
-  'var(--amber, #C6A86B)',
-  'var(--red, #C28C88)',
-  'var(--feature-neutral, #8B8F99)',
+  ACCENT,
+  GREEN,
+  PURPLE,
+  AMBER,
+  RED,
+  NEUTRAL,
 ] as const;
 
 const THEME_COLOR_FALLBACKS = {
@@ -74,80 +78,42 @@ const THEME_COLOR_PICKER_MIX = /^color-mix\(in srgb,\s*var\(--(accent|green|purp
 
 function opaqueHex(value: string | undefined): string | null {
   if (!value) return null;
-  const trimmed = value.trim();
-  const long = /^#([0-9a-f]{6})$/iu.exec(trimmed);
-  if (long) return `#${long[1].toLowerCase()}`;
-  const short = /^#([0-9a-f]{3})$/iu.exec(trimmed);
-  if (!short) return null;
-  return `#${[...short[1]].map((digit) => `${digit}${digit}`).join('').toLowerCase()}`;
+  const hex = /^#([0-9a-f]{3}(?:[0-9a-f]{3})?)$/iu.exec(value.trim())?.[1];
+  if (!hex) return null;
+  return `#${(hex.length === 3 ? hex.replace(/./gu, '$&$&') : hex).toLowerCase()}`;
 }
 
 function translucentHex(value: string): { foreground: string; alpha: number } | null {
-  const trimmed = value.trim();
-  const long = /^#([0-9a-f]{6})([0-9a-f]{2})$/iu.exec(trimmed);
-  if (long) {
-    return {
-      foreground: `#${long[1].toLowerCase()}`,
-      alpha: Number.parseInt(long[2], 16) / 255,
-    };
-  }
-  const short = /^#([0-9a-f]{3})([0-9a-f])$/iu.exec(trimmed);
-  if (!short) return null;
+  const hex = /^#([0-9a-f]{4}|[0-9a-f]{8})$/iu.exec(value.trim())?.[1];
+  if (!hex) return null;
+  const short = hex.length === 4;
+  const alpha = short ? hex[3] + hex[3] : hex.slice(6);
+  const foreground = short ? hex.slice(0, 3).replace(/./gu, '$&$&') : hex.slice(0, 6);
   return {
-    foreground: `#${[...short[1]].map((digit) => `${digit}${digit}`).join('').toLowerCase()}`,
-    alpha: Number.parseInt(short[2], 16) / 15,
+    foreground: `#${foreground.toLowerCase()}`,
+    alpha: Number.parseInt(alpha, 16) / 255,
   };
 }
 
-function mixOpaqueHex(foreground: string, foregroundWeight: number, background: string): string {
-  const weight = Math.max(0, Math.min(1, foregroundWeight));
-  const channels = [1, 3, 5].map((offset) => {
-    const foregroundChannel = Number.parseInt(foreground.slice(offset, offset + 2), 16);
-    const backgroundChannel = Number.parseInt(background.slice(offset, offset + 2), 16);
-    return Math.round(foregroundChannel * weight + backgroundChannel * (1 - weight))
-      .toString(16)
-      .padStart(2, '0');
-  });
-  return `#${channels.join('')}`;
-}
-
 function computedRgbToOpaqueHex(value: string, background: string): string | null {
-  const match = /^rgba?\((.*)\)$/iu.exec(value.trim());
-  if (!match) return null;
-
-  // Browsers normally serialize computed colors with commas, while newer
-  // engines are also allowed to use the space-and-slash form. Normalize both
-  // without accepting any additional author-controlled CSS syntax here.
-  const components = match[1].replaceAll(',', ' ').replace('/', ' / ').trim().split(/\s+/u);
-  const slashIndex = components.indexOf('/');
-  const channels = components.slice(0, slashIndex >= 0 ? slashIndex : 3);
-  const alphaText = slashIndex >= 0 ? components[slashIndex + 1] : components[3];
-  if (channels.length !== 3) return null;
-
-  const channelHex = channels.map((component) => {
-    const percentage = component.endsWith('%');
-    const numeric = Number.parseFloat(component);
-    if (!Number.isFinite(numeric)) return null;
-    const channel = percentage ? numeric * 2.55 : numeric;
-    return Math.round(Math.max(0, Math.min(255, channel))).toString(16).padStart(2, '0');
-  });
-  if (channelHex.some((channel) => channel === null)) return null;
-
-  const foreground = `#${channelHex.join('')}`;
-  if (!alphaText) return foreground;
-  const alphaNumeric = Number.parseFloat(alphaText);
-  if (!Number.isFinite(alphaNumeric)) return null;
-  const alpha = alphaText.endsWith('%') ? alphaNumeric / 100 : alphaNumeric;
-  return mixOpaqueHex(foreground, alpha, background);
+  // CSSOM serializes a computed color as rgb()/rgba(), using either comma or
+  // space/slash syntax. This extracts that already-validated browser output;
+  // it is not used to accept arbitrary author CSS.
+  const components = /^rgba?\((.*)\)$/iu.exec(value.trim())?.[1].match(/[\d.]+%?/gu);
+  if (!components || components.length < 3) return null;
+  const foreground = `#${components.slice(0, 3)
+    .map((component) => Math.round(Math.max(0, Math.min(255,
+      Number.parseFloat(component) * (component.endsWith('%') ? 2.55 : 1),
+    ))).toString(16).padStart(2, '0')).join('')}`;
+  const alpha = components[3];
+  return alpha
+    ? mixOpaqueHex(foreground, Number.parseFloat(alpha) / (alpha.endsWith('%') ? 100 : 1), background)
+    : foreground;
 }
 
 function resolveBrowserCssLiteral(value: string, background: string): string | null {
   type CssLiteralProbe = {
-    setAttribute(name: string, value: string): void;
     style: {
-      position: string;
-      visibility: string;
-      pointerEvents: string;
       color: string;
     };
     remove(): void;
@@ -163,10 +129,8 @@ function resolveBrowserCssLiteral(value: string, background: string): string | n
   if (!view) return null;
 
   const probe = browserDocument.createElement('span');
-  probe.setAttribute('aria-hidden', 'true');
-  probe.style.position = 'fixed';
-  probe.style.visibility = 'hidden';
-  probe.style.pointerEvents = 'none';
+  // The probe has no content, so assigning its color cannot paint or alter
+  // layout; its computed color is all that is observed.
   probe.style.color = value;
   if (!probe.style.color) return null;
 
@@ -198,24 +162,15 @@ function validExplicitColor(value: unknown): string | null {
     : null;
 }
 
-function typeAndToken(type: unknown, name: string): { typeKey: string; token: string } {
+function typeToken(type: unknown, name: string): string {
   const normalizedType = typeof type === 'string'
     ? FEATURE_TYPE_BY_LOWER.get(type.trim().toLowerCase() as Lowercase<FeatureType>)
     : undefined;
-  if (normalizedType && KNOWN_FEATURE_TYPES.has(normalizedType) && normalizedType !== 'custom') {
-    const featureType = normalizedType;
-    const entry = FEATURE_COLORS[featureType];
-    return {
-      typeKey: featureType,
-      token: entry.token,
-    };
-  }
+  if (normalizedType && normalizedType !== 'custom') return FEATURE_COLORS[normalizedType];
   // Every unrecognized label crosses the artifact boundary as `custom`.
   // Hash the canonical type key so MCP, file, and page API routes agree even
   // when one route sees the raw unknown label before type normalization.
-  const typeKey = 'custom';
-  const rampIndex = stableHash(`${typeKey}:${name}`) % UNKNOWN_TYPE_RAMP.length;
-  return { typeKey, token: UNKNOWN_TYPE_RAMP[rampIndex] };
+  return UNKNOWN_TYPE_RAMP[stableHash(`custom:${name}`) % UNKNOWN_TYPE_RAMP.length];
 }
 
 /**
@@ -235,7 +190,7 @@ export function resolveFeatureColor(feature: FeatureColorInput): string {
   const name = typeof feature.name === 'string' && feature.name.trim()
     ? feature.name.trim().toLowerCase()
     : 'unnamed feature';
-  return typeAndToken(feature.type, name).token;
+  return typeToken(feature.type, name);
 }
 
 /**
@@ -279,9 +234,10 @@ export function resolveFeatureColorPickerValue(
   featureColor: string,
   resolveThemeVariable: (name: `--${string}`) => string | undefined = () => undefined,
 ): string {
-  const literal = opaqueHex(featureColor);
+  const trimmed = featureColor.trim();
+  const literal = opaqueHex(trimmed);
   if (literal) return literal;
-  const translucentLiteral = translucentHex(featureColor);
+  const translucentLiteral = translucentHex(trimmed);
   if (translucentLiteral) {
     return mixOpaqueHex(
       translucentLiteral.foreground,
@@ -290,27 +246,21 @@ export function resolveFeatureColorPickerValue(
     );
   }
 
-  const tokenMatch = THEME_COLOR_PICKER_TOKEN.exec(featureColor.trim());
-  if (tokenMatch) {
-    const token = tokenMatch[1] as keyof typeof THEME_COLOR_FALLBACKS;
-    return opaqueHex(resolveThemeVariable(`--${token}`))
-      ?? opaqueHex(tokenMatch[2])
-      ?? THEME_COLOR_FALLBACKS[token].toLowerCase();
-  }
-
-  const mixMatch = THEME_COLOR_PICKER_MIX.exec(featureColor.trim());
-  if (mixMatch) {
-    const token = mixMatch[1] as keyof typeof THEME_COLOR_FALLBACKS;
+  const semanticMatch = THEME_COLOR_PICKER_MIX.exec(trimmed)
+    ?? THEME_COLOR_PICKER_TOKEN.exec(trimmed);
+  if (semanticMatch) {
+    const token = semanticMatch[1] as keyof typeof THEME_COLOR_FALLBACKS;
     const foreground = opaqueHex(resolveThemeVariable(`--${token}`))
-      ?? opaqueHex(mixMatch[2])
+      ?? opaqueHex(semanticMatch[2])
       ?? THEME_COLOR_FALLBACKS[token].toLowerCase();
+    const percentage = semanticMatch[3];
+    if (!percentage) return foreground;
     const background = opaqueHex(resolveThemeVariable('--bg-primary'));
     return background
-      ? mixOpaqueHex(foreground, Number(mixMatch[3]) / 100, background)
+      ? mixOpaqueHex(foreground, Number(percentage) / 100, background)
       : foreground;
   }
 
-  const trimmed = featureColor.trim();
   if (SIMPLE_CSS_COLOR.test(trimmed)) {
     const background = opaqueHex(resolveThemeVariable('--bg-primary')) ?? '#ffffff';
     const resolvedLiteral = resolveBrowserCssLiteral(trimmed, background);
