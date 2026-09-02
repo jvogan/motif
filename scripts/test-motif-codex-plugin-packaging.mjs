@@ -185,7 +185,6 @@ try {
     readFileSync(join(outputDirectory, '.codex-plugin', 'plugin.json'), 'utf8'),
   );
   const packageJson = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
-  const submission = JSON.parse(readFileSync(join(root, 'docs', 'openai-submission.json'), 'utf8'));
   const mcpManifest = JSON.parse(readFileSync(join(outputDirectory, '.mcp.json'), 'utf8'));
   const checksums = JSON.parse(firstChecksums);
   const skill = readFileSync(join(outputDirectory, 'skills', 'motif-for-codex', 'SKILL.md'), 'utf8');
@@ -200,8 +199,8 @@ try {
     'npm run build:motif && node scripts/build-motif-codex-plugin.mjs',
   );
   assert.match(manifest.interface.longDescription, /interactive molecular-biology workbench/u);
-  assert.match(manifest.interface.longDescription, /self-contained HTML workbench/u);
-  assert.match(manifest.interface.longDescription, /does not retrieve missing records/u);
+  assert.match(manifest.interface.longDescription, /portable HTML workbenches/u);
+  assert.match(manifest.interface.longDescription, /find, prepare, and analyze data/u);
   assert.doesNotMatch(manifest.interface.longDescription, /motif_[a-z_]+/u);
   assert.doesNotMatch(manifest.interface.longDescription, /FASTA alignment|GenBank summary|sequence inspection/u);
   assert.equal(manifest.interface.displayName, 'Motif');
@@ -213,16 +212,21 @@ try {
   assert.equal(manifest.interface.logo, './assets/logo.png');
   assert.equal(manifest.interface.composerIcon, './assets/logo.png');
   assert.equal(manifest.interface.defaultPrompt.length, 3);
-  assert.deepEqual(manifest.interface.defaultPrompt, submission.starter_prompts);
+  assert.deepEqual(manifest.interface.defaultPrompt, [
+    'Find the reference sequence for this gene, open it in Motif, and annotate the regions relevant to my project.',
+    'Compare these DNA and protein constructs in Motif, align them, and summarize their sequence and feature differences.',
+    'Review this sequencing trace against its reference in Motif and create a workbench with the mismatches and notes.',
+  ]);
   for (const prompt of manifest.interface.defaultPrompt) assert.ok(prompt.length <= 128);
   assert.match(skill, /motif_open_workbench/u);
   assert.match(skill, /motif_create_workbench_artifact/u);
-  assert.match(skill, /Do not invoke Motif merely because/u);
+  assert.match(skill, /Codex can find, prepare, analyze, and transform records/u);
+  assert.match(skill, /Use Codex's other tools for\s+retrieval, file operations, analysis programs, and browser interaction/u);
   assert.doesNotMatch(skill, /Motif for Claude Science/u);
   assert.doesNotMatch(skill, /sequence-review|relevant validation or summary/u);
   assert.match(skillInterface, /^interface:\n/u);
   assert.match(skillInterface, /display_name: "Motif"/u);
-  assert.match(skillInterface, /short_description: "Inspect supplied biological sequences"/u);
+  assert.match(skillInterface, /short_description: "Build molecular-biology workbenches"/u);
   assert.match(skillInterface, /icon_small: "\.\/assets\/logo\.png"/u);
   assert.match(skillInterface, /icon_large: "\.\/assets\/logo\.png"/u);
   assert.match(skillInterface, /default_prompt: "Use \$motif-for-codex /u);

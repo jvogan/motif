@@ -1,12 +1,12 @@
 # Use Motif with Codex through the full local plugin
 
-Motif's Codex plugin lets Codex open supplied biological sequences in the
-interactive workbench or return a portable HTML workbench. It runs a bounded
-MCP server on your machine and does not require a hosted Motif service.
+Motif's full local Codex plugin opens DNA, RNA, protein, annotations,
+alignments, traces, cloning designs, and results in the interactive workbench.
+It includes the Motif skill, local MCP server, and App resource, and it can
+also return a portable HTML workbench.
 
-The current distribution is intended for local installation from a trusted
-Motif checkout. Building the package does not install it or change Codex
-configuration.
+Build the package from a trusted Motif checkout. The build stages files for
+installation; installation remains a separate command.
 
 If you want the connector-free edition that only creates self-contained local
 HTML workbenches, use the separate [Codex skills-only guide](CODEX_SKILLS_ONLY.md).
@@ -34,8 +34,7 @@ npm run codex:doctor:marketplace
 
 The build stages a self-contained plugin and marketplace under
 `.motif/codex-marketplace/`. The doctor verifies package integrity, performs a
-real MCP handshake, and sends a tiny synthetic FASTA request. It does not open
-a browser or modify Codex configuration.
+real MCP handshake, and sends a small synthetic FASTA request.
 
 ## 2. Install the plugin
 
@@ -60,8 +59,7 @@ npm run codex:doctor:installed
 ```
 
 It verifies the active profile, installed snapshot, MCP registration, package
-integrity, App resource, and a small tool call. It does not install, enable,
-remove, or restart the plugin.
+integrity, App resource, and a small tool call.
 
 In a new Codex thread, try:
 
@@ -77,10 +75,9 @@ Create a portable Motif HTML workbench for: >example
 ATGAAATTTGGGCCCTAA
 ```
 
-A successful `motif_open_workbench` response proves that the local server
-accepted the request, not that Codex mounted a visible frame. The
-`motif_create_workbench_artifact` response is the supported fallback. It
-returns a resource; save it through the host if you need a durable file.
+After `motif_open_workbench` succeeds, confirm that the interactive frame and
+expected record are visible. `motif_create_workbench_artifact` returns the same
+workbench as a portable HTML resource that the host can save.
 
 ## Update
 
@@ -118,8 +115,8 @@ CSV files that you exported.
 - **Tools are missing after installation:** start a new thread; if needed,
   restart Codex and run `codex plugin list --json`.
 - **A tool succeeds but no workbench appears:** request
-  `motif_create_workbench_artifact`; this is a host-mount issue, not evidence
-  that Motif rejected the input.
+  `motif_create_workbench_artifact`, save the returned HTML resource, and open
+  it in the browser.
 - **Input is rejected:** use supported Motif JSON, FASTA, GenBank, or raw
   sequence and keep the request within the limits reported by the connector.
 

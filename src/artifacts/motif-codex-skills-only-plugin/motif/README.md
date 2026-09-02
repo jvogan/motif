@@ -1,9 +1,10 @@
 # Motif skills-only plugin
 
-This package lets Codex create a self-contained Motif HTML workbench from exact
-biological sequence data supplied by the user. It runs the bundled helper on
-the user's machine and does not include an MCP server, App configuration,
-account integration, or hosted Motif service.
+This package lets Codex create a self-contained Motif workbench for DNA, RNA,
+protein, annotations, alignments, traces, cloning designs, and results. Codex
+can use the data and analysis tools available in the session, then organize the
+records and results in portable HTML.
 
-The generated HTML contains the supplied records and is not encrypted. Review
-its destination before creating it and share it only intentionally.
+The bundled helper creates the workbench on the user's machine. The generated
+HTML contains its records and can be opened, edited, exported, and shared as a
+portable file.

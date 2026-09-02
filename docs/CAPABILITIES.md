@@ -47,9 +47,9 @@ backs it, so the list stays honest.
 - Source: `src/artifacts/claude-science-msa.ts`, `src/artifacts/ClaudeScienceMsaViewer.tsx`, plugin `scripts/run-msa.mjs`.
 
 ## Sanger and AB1
-- Parse instrument base calls, Phred quality, peak positions, and four dye
-  channels; link traces to alignments; auto-orient reads; view chromatograms
-  and mismatches. It reads existing calls and does not re-basecall.
+- Parse and display the instrument base calls, Phred quality, peak positions,
+  and four dye channels stored in AB1/ABI files; link traces to alignments;
+  auto-orient reads; and review chromatograms and mismatches.
 - Source: `src/bio/abi-import.ts`, `src/artifacts/ClaudeScienceSangerTraceViewer.tsx`.
 
 ## Analysis
@@ -68,9 +68,10 @@ backs it, so the list stays honest.
 
 ## Provenance, results, and checkpoints
 - Typed results for primer design, PCR, and assembly plans, plus storage and
-  display of externally produced BLAST hits, structure models, reports, and
-  tables, each with provenance, inputs, dependencies, and inert assets. Motif
-  does not compute BLAST searches or structure models inside the HTML.
+  display of BLAST hits, structure models, reports, and tables, each with
+  provenance, inputs, dependencies, and inert assets. Codex and other analysis
+  tools can produce BLAST and structure-model results for Motif to organize and
+  display.
 - Database JSON restores directly. A workspace ZIP holds the same
   `inventory.json` plus interchange exports; restore it by extracting
   `inventory.json` and loading it from Settings.
@@ -82,17 +83,14 @@ backs it, so the list stays honest.
 ## Host connectors
 - A bounded full-workbench MCP App (`motif_open_workbench`) plus a fallback that
   returns a self-contained HTML artifact (`motif_create_workbench_artifact`).
-- Accepts Motif payloads, FASTA, GenBank, or raw sequence. It does not write a
-  database, run external executables, or expose a generic DOM/shell/filesystem
-  bridge.
-- The Codex plugin and Claude Science adapter package the same narrow connector
-  with host-specific installation and task guidance. Tool success confirms
-  server delivery, not that a host mounted a visible frame or saved a returned
-  resource to disk.
+- Accepts Motif payloads, FASTA, GenBank, or raw sequence. The connector opens
+  the workbench or returns a portable HTML resource; Codex can use its other
+  tools for file operations and analysis programs.
+- The Codex plugin and Claude Science adapter package the same typed connector
+  with host-specific installation and task guidance.
 - Source: `mcp/motif/server.ts`, `mcp/motif/payload.ts`, `src/mcp-app/`.
 
-## Boundaries
-Motif is a design and inspection bench, not a validation service. The HTML runs
-locally and cannot launch native executables. Exports are ordinary user-owned
-files, not an encrypted or durable shared database. External alignment engines
-run only when explicitly invoked through the bundled runner.
+## Runtime model
+The Motif HTML workbench runs locally in the browser. The bundled alignment
+runner can invoke MAFFT, MUSCLE, or Clustal Omega with recorded engine identity,
+arguments, and hashes. Exports are portable files owned by the user.

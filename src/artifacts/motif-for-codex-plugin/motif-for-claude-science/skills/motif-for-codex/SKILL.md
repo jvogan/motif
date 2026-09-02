@@ -1,32 +1,27 @@
 ---
 name: motif-for-codex
-description: Use this when the user explicitly asks for Motif, asks to open or inspect provided exact DNA, RNA, protein, FASTA, GenBank, or Motif JSON in an interactive molecular-biology workbench, or asks for a portable Motif HTML workbench. Do not use for code, music, or mathematical sequences; database search or sequence retrieval; alignment computation; experimental or medical validation; file writing; or prompts without exact biological input.
+description: Use Motif for molecular-biology work with DNA, RNA, and protein records, including sequence exploration, editing, annotation, alignment, construct comparison, trace analysis, cloning design, results, and portable workbench creation.
 ---
 
 # Motif workbench
 
-The connected Motif MCP server exposes exactly two read-only tools:
+The connected Motif MCP server provides two workbench tools:
 
-- `motif_open_workbench` accepts bounded Motif payloads or supported exact
-  sequence content and requests the live MCP App workbench. Its successful
-  response does not prove the host mounted a visible frame.
+- `motif_open_workbench` accepts Motif payloads or supported sequence content
+  and opens the interactive MCP App workbench.
 - `motif_create_workbench_artifact` returns a self-contained HTML resource for
-  the same bounded inputs. Use it when the user asks for an artifact or the
-  host does not mount the app. It does not write a file.
+  the same inputs. Use it when the user asks for a portable artifact or when a
+  host needs an HTML resource.
 
-Prefer `motif_open_workbench` when the user asks to open, inspect, or work with
-sequences interactively. After the tool succeeds, distinguish server delivery
-from host presentation: treat the live workbench as available only when a
-visible interactive frame is mounted. If it is not visible, call
-`motif_create_workbench_artifact` with the same exact input and explain that
-the returned resource must be saved explicitly if the user wants a durable
-file.
+Prefer `motif_open_workbench` for interactive sequence work. Confirm that the
+workbench is visible after the tool succeeds. If the host cannot display it,
+call `motif_create_workbench_artifact` with the same input and offer the
+portable HTML resource.
 
-Do not invoke Motif merely because a prompt contains the words "motif" or
-"sequence." The request must concern exact biological records supplied by the
-user or already present in the conversation. If the user refers to an absent
-attachment or unspecified sequence, ask for the exact input rather than opening
-the bundled sample.
+Codex can find, prepare, analyze, and transform records with its available
+tools, then open the records and results in Motif. When a task refers to a
+record that is not available, find the requested record with the tools
+available in the session or ask which source to use.
 
 Minimal requests users can copy are:
 
@@ -40,9 +35,9 @@ Create a portable Motif HTML workbench artifact for: >example
 ATGAAATTTGGGCCCTAA
 ```
 
-Report the returned record/residue counts, delivery mode, and any input error
-without claiming persistence, a verified file save, a visible frame based only
-on tool success, or capabilities outside those two tool contracts.
+After opening Motif, confirm the record names, sequence lengths, annotations,
+alignments, and active view. Report any import error with the field or record
+that needs correction.
 
-The bundled server is local and typed. Do not use it as a generic shell,
-filesystem, browser, validation, analysis, or remote-mutation bridge.
+Use Motif tools for workbench creation and display. Use Codex's other tools for
+retrieval, file operations, analysis programs, and browser interaction.

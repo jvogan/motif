@@ -29,6 +29,11 @@ assert.equal(Object.hasOwn(manifest, 'mcpServers'), false);
 assert.equal(Object.hasOwn(manifest, 'apps'), false);
 assert.equal(manifest.interface.defaultPrompt.length, 3);
 for (const prompt of manifest.interface.defaultPrompt) assert.ok(prompt.length <= 128);
+assert.match(manifest.interface.longDescription, /find, prepare, analyze, and transform data/u);
+assert.match(manifest.interface.longDescription, /annotations, alignments, traces, cloning designs, and results/u);
+assert.match(skill, /Use the analysis tools available in the session/u);
+assert.match(skill, /Preserve record IDs, annotations, provenance, and result dependencies/u);
+assert.match(skillInterface, /short_description: "Build molecular-biology workbenches"/u);
 
 for (const required of [
   '.codex-plugin/plugin.json',

@@ -1,7 +1,7 @@
 {
   "name": "motif",
   "version": "0.4.0",
-  "description": "Create portable Motif workbenches from biological sequence records supplied by the user.",
+  "description": "Create portable Motif workbenches for DNA, RNA, protein, annotations, alignments, traces, and results.",
   "author": {
     "name": "Jacob Vogan",
     "url": "https://jvogan.github.io/motif-site/"
@@ -19,21 +19,23 @@
   "interface": {
     "displayName": "Motif",
     "shortDescription": "Explore biological sequences",
-    "longDescription": "Create a local, self-contained Motif HTML workbench from exact DNA, RNA, protein, FASTA, GenBank, or Motif JSON supplied by the user. The resulting file can be opened and edited in a browser and shared intentionally. Motif does not retrieve missing records, run remote analyses, validate experiments, or modify external systems.",
+    "longDescription": "Create a self-contained Motif workbench for DNA, RNA, and protein records. Codex can find, prepare, analyze, and transform data with its available tools, then organize records, annotations, alignments, traces, cloning designs, and results in a portable HTML workbench.",
     "developerName": "Jacob Vogan",
     "category": "Education & Research",
     "capabilities": [
-      "Portable HTML workbenches",
-      "Exact sequence intake",
-      "Local offline generation"
+      "Portable molecular-biology workbenches",
+      "Sequence editing and annotation",
+      "Alignment and construct comparison",
+      "Trace, cloning, and results review",
+      "Portable HTML and data exports"
     ],
     "websiteURL": "https://jvogan.github.io/motif-site/",
     "privacyPolicyURL": "https://github.com/jvogan/motif/blob/main/PRIVACY.md",
     "termsOfServiceURL": "https://github.com/jvogan/motif/blob/main/TERMS.md",
     "defaultPrompt": [
-      "Create a Motif workbench for this FASTA file and open the resulting HTML for me.",
-      "Put these supplied DNA and protein records into one portable Motif workbench.",
-      "Create a Motif HTML workbench from this GenBank file without changing its records."
+      "Find the reference sequence for this gene, annotate the regions relevant to my project, and create a Motif workbench.",
+      "Compare these DNA and protein constructs, align them, and organize their differences in a Motif workbench.",
+      "Review this sequencing trace against its reference and create a Motif workbench with the mismatches and notes."
     ],
     "brandColor": "#1D4ED8",
     "composerIcon": "./assets/logo.png",

@@ -1,15 +1,16 @@
 # Use Motif as a Codex skills-only plugin
 
-This Motif edition creates a self-contained HTML workbench on the user's own
-machine from exact DNA, RNA, protein, FASTA, GenBank, or Motif JSON supplied in
-the task. It does not contain an MCP server or App, and it does not require an
-account, hosted Motif endpoint, or shared service URL.
+This Motif edition creates a self-contained HTML workbench for DNA, RNA,
+protein, annotations, alignments, traces, cloning designs, and results. Codex
+can find, prepare, analyze, and transform data with its available tools before
+adding it to the workbench.
 
-## What it can do
+## Create a workbench
 
-The bundled skill can ask Codex to run a narrow local helper that:
+The bundled skill runs a local helper that:
 
-- accepts one bounded local input file or standard input;
+- accepts a local input file or standard input within Motif's documented
+  resource limits;
 - parses supported biological records with Motif's existing validation rules;
 - embeds the prepared records in a self-contained Motif HTML workbench;
 - refuses to overwrite an existing file unless the user explicitly requests
@@ -20,12 +21,12 @@ The bundled skill can ask Codex to run a narrow local helper that:
 The generated HTML is an ordinary unencrypted file containing the supplied
 records. Share it only when you intend to share that data.
 
-## What it cannot do
+## Combine Motif with Codex
 
-The skills-only edition cannot mount Motif as an inline MCP App, call Motif MCP
-tools, retrieve missing accessions, or run a hosted analysis. Codex may open the
-resulting HTML in its browser when that capability is available, but creating a
-file does not prove that a visible browser view appeared.
+Codex can combine Motif with database connectors, local files, analysis
+programs, and browser tools available in the current session. The skills-only
+package creates a portable HTML workbench. The full local plugin also opens
+Motif through its MCP App.
 
 For the interactive MCP App and local connector, use the
 [full local Codex plugin](CODEX_QUICKSTART.md).
@@ -38,7 +39,6 @@ From a trusted Motif checkout:
 npm ci --ignore-scripts
 npm run typecheck
 npm run test:codex-skills-plugin
-npm run check:openai-skills-submission
 ```
 
 The deterministic archive is written to:
@@ -47,8 +47,5 @@ The deterministic archive is written to:
 dist-motif/motif-0.4.0-skills-only-plugin.zip
 ```
 
-The build does not install a plugin, change Codex configuration, upload a file,
-or contact a Motif service. The submission record in
-`docs/openai-skills-only-submission.json` remains marked as awaiting live portal
-validation until a publisher uploads the exact prepared archive and reviews the
-portal result.
+The archive contains the skill, local workbench helper, Motif runtime, logo,
+license, privacy policy, terms, and third-party notices.

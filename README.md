@@ -11,27 +11,26 @@
 [Examples](examples/README.md) ·
 [Security](SECURITY.md)
 
-Motif is a local-first molecular biology workbench for inspecting, editing,
-and sharing biological sequences and analysis results. Its core is a
-self-contained HTML workspace that can run on its own or be opened through an
-AI host. The same Motif runtime supports sequence records, maps, annotations,
-alignments, cloning workflows, Sanger traces, provenance, checkpoints, and
-portable exports.
+Motif is an AI-native molecular-biology workbench for exploring, editing,
+annotating, aligning, comparing, and sharing DNA, RNA, and protein records and
+analysis results. Its core is a self-contained HTML workspace that can run on
+its own or open through an AI host. The same Motif runtime supports sequence
+records, maps, annotations, alignments, cloning workflows, Sanger traces,
+provenance, checkpoints, and portable exports.
 
 ## Ways to use Motif
 
 | Experience | Best for | Start here |
 | --- | --- | --- |
 | Portable HTML workbench | Local inspection, editing, and sharing without a host integration | [Develop from source](#develop-from-source) |
-| Codex skills-only plugin | Creating a private local HTML workbench without a connector or hosted service | [Skills-only guide](docs/CODEX_SKILLS_ONLY.md) |
-| Codex local plugin | Asking Codex to open supplied sequences through the local MCP App | [Local plugin quickstart](docs/CODEX_QUICKSTART.md) |
+| Codex skills-only plugin | Creating portable workbenches directly from Codex | [Skills-only guide](docs/CODEX_SKILLS_ONLY.md) |
+| Codex local plugin | Opening interactive workbenches through the local MCP App | [Local plugin quickstart](docs/CODEX_QUICKSTART.md) |
 | Claude Science adapter | Opening Motif from a local Claude Science connector | [Claude Science quickstart](docs/CLAUDE_SCIENCE_QUICKSTART.md) |
 
-The Codex local plugin and Claude Science adapter expose the same narrow tools:
-`motif_open_workbench` requests the interactive MCP App, and
-`motif_create_workbench_artifact` returns a portable HTML workbench when a host
-does not mount the App. A successful tool response confirms that Motif accepted
-the input; only a visible frame confirms that the host mounted the App.
+The Codex local plugin and Claude Science adapter expose the same workbench
+tools. `motif_open_workbench` opens the interactive MCP App, and
+`motif_create_workbench_artifact` returns a portable HTML workbench. After
+opening Motif, confirm that the expected records and active view are visible.
 
 <p align="center">
   <img src="docs/assets/claude-science-motif-viewer.webp" alt="Motif opened through the Claude Science adapter with two sequence records, annotated sequence detail, a linear map, and restriction-digest results." width="100%" />
@@ -41,8 +40,7 @@ the input; only a visible frame confirms that the host mounted the App.
 
 This repository contains the host-neutral workbench, the Codex plugin, the
 Claude Science adapter and plugin bundle, a standalone skill, and the local MCP
-connector. Motif has no hosted backend. It is an independent project and is not
-an OpenAI or Anthropic product or official integration.
+connector.
 
 ## What is included
 
@@ -96,24 +94,22 @@ aligned CLUSTAL, and complete workspace JSON inputs with expected identities.
 
 ## Use with Codex
 
-Motif has two deliberately separate Codex packages:
+Motif has two Codex packages:
 
 - The **skills-only plugin** bundles a local helper and a self-contained
-  workbench resource. It creates an ordinary HTML file from exact input the
-  user supplied. It needs no hosted Motif service or MCP connector.
-- The **full local plugin** adds Motif's bounded MCP server and interactive App
-  resource. It is installed from a trusted local checkout rather than through
-  the skills-only directory upload.
+  workbench resource. Codex can find, prepare, analyze, and transform data with
+  its available tools, then create a portable Motif HTML workbench.
+- The **full local plugin** adds Motif's typed MCP server and interactive App
+  resource for opening the workbench inside Codex.
 
 Build and verify the skills-only package with:
 
 ```bash
 npm run test:codex-skills-plugin
-npm run check:openai-skills-submission
 ```
 
-See the [skills-only guide](docs/CODEX_SKILLS_ONLY.md) for its exact capability
-boundary. To stage the full local plugin without modifying Codex configuration:
+See the [skills-only guide](docs/CODEX_SKILLS_ONLY.md) for installation and
+verification. To stage the full local plugin:
 
 ```bash
 npm run build:codex-marketplace
@@ -122,8 +118,7 @@ npm run codex:doctor:marketplace
 
 Installation, verification, update, removal, and cache behavior for the full
 local integration are documented in the
-[Codex local plugin quickstart](docs/CODEX_QUICKSTART.md). Neither edition
-depends on a hosted Motif service.
+[Codex local plugin quickstart](docs/CODEX_QUICKSTART.md).
 
 ## Use with Claude Science
 
@@ -164,8 +159,7 @@ npm run build:codex-skills-plugin
 ```
 
 Generated packages are staged under `dist-motif/`; the local Codex marketplace
-is staged under `.motif/codex-marketplace/`. Builds do not install a connector,
-register a marketplace, or modify host configuration.
+is staged under `.motif/codex-marketplace/`.
 
 To generate a repo-local artifact with preloaded data:
 
@@ -186,14 +180,12 @@ The canonical repository check is:
 npm run gate
 ```
 
-Codex packaging and submission metadata have focused checks:
+Codex packaging has focused checks:
 
 ```bash
 npm run test:codex-plugin
 npm run codex:doctor
-npm run check:openai-submission
 npm run test:codex-skills-plugin
-npm run check:openai-skills-submission
 ```
 
 `npm run validate:plugin` adds strict Claude plugin validation when the Claude

@@ -1,19 +1,18 @@
 # Motif — Codex plugin source
 
-This source package creates the native Codex distribution for Motif. It is
-deliberately separate from the Claude Science adapter so neither host's
-manifest, skill, or installation behavior changes the other.
+This source package creates the native Codex distribution for Motif. It gives
+Codex the Motif skill, typed local MCP server, interactive MCP App, portable
+HTML resource, examples, capability notes, and license notices.
 
 `npm run build:codex-plugin` first regenerates the canonical Motif runtime,
-then stages a self-contained local MCP server, portable artifact template,
-examples, capability notes, and license notices under
+then stages the package under
 `dist-motif/codex/motif-for-claude-science/`. The server starts through
 `${PLUGIN_ROOT}`, not through a project working directory.
 
-The package is tool-first: `motif_open_workbench` requests the optional MCP App
-and `motif_create_workbench_artifact` returns a portable HTML resource when an
-app is not mounted. It does not add workspace persistence or model-directed
-mutation.
+`motif_open_workbench` opens the interactive MCP App, and
+`motif_create_workbench_artifact` returns a portable HTML resource. Codex can
+find, prepare, analyze, and transform data with its available tools before
+adding records and results to Motif.
 
 ## Requirements
 
@@ -125,12 +124,9 @@ Create a portable Motif HTML workbench artifact for: >example
 ATGAAATTTGGGCCCTAA
 ```
 
-For the first prompt, a successful `motif_open_workbench` tool result means the
-server accepted the request; it does not by itself prove that Codex mounted a
-visible workbench. Verify that an interactive Motif frame is actually visible.
-If no frame appears, use the second prompt. Its
-`motif_create_workbench_artifact` result is the intentional host fallback and
-does not write a file automatically.
+For the first prompt, confirm that Codex displays the interactive Motif frame
+with the expected record. If no frame appears, use the second prompt and save
+the returned portable HTML resource through the host.
 
 ## Upgrade and cache behavior
 
@@ -147,13 +143,9 @@ Then start a new thread. Never edit an installed copy under the Codex plugin
 cache; Codex installs a snapshot rather than running this source directory in
 place.
 
-The canonical Motif build requires the plugin version to match the repository
-release version. A temporary `+codex.<cachebuster>` suffix therefore is not a
-supported source-tree update mechanism in this repository. If a reinstall
+The plugin version matches the repository release version. If a reinstall
 still resolves an older snapshot, remove the installed plugin, confirm that
-the marketplace points at the newly staged directory, and add it again. Do not
-claim that a cachebuster was applied unless the release/build policy is changed
-and the resulting package is rebuilt and rechecksummed.
+the marketplace points at the newly staged directory, and add it again.
 
 ## Remove
 

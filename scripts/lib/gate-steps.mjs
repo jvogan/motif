@@ -2,6 +2,7 @@ export const GATE_STEPS = Object.freeze([
   { id: 'typecheck', label: 'Typecheck', command: ['npm', 'run', 'typecheck'] },
   { id: 'lint', label: 'Lint', command: ['npm', 'run', 'lint'] },
   { id: 'repository-language', label: 'Repository language policy', command: ['npm', 'run', 'check:repository-language'] },
+  { id: 'product-language', label: 'Product language policy', command: ['npm', 'run', 'check:product-language'] },
   { id: 'unit-tests', label: 'Unit tests', command: ['npm', 'test'] },
   { id: 'release-alignment', label: 'Release alignment', command: ['npm', 'run', 'check:release-alignment'] },
   { id: 'runtime-compatibility', label: 'Runtime compatibility', command: ['npm', 'run', 'check:runtime-compatibility'] },

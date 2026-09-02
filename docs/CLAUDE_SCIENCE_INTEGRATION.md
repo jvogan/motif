@@ -219,10 +219,9 @@ See [Motif + Claude Science troubleshooting](CLAUDE_SCIENCE_TROUBLESHOOTING.md)
 for the `Operation not permitted` signature, reconnect matrix, immutable saved
 artifact behavior, and final visual acceptance checklist.
 
-## Next integration boundary
+## Durable sequence libraries
 
-A durable growing sequence library is a separate campaign. It should add
-transactional local storage, opaque record IDs, expected revisions,
-idempotency receipts, rotating checksummed backups, explicit review before
-inferred mutations, and restore drills. Do not extend this ephemeral viewer by
-adding an unreviewed full-workspace mutation or generic host bridge.
+A durable growing sequence library needs transactional local storage, opaque
+record IDs, expected revisions, idempotency receipts, rotating checksummed
+backups, review of inferred mutations, and tested restoration. The current
+viewer keeps workspace mutation within its typed, revision-aware contracts.
