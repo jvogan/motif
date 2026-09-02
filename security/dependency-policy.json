@@ -2,7 +2,15 @@
   "schema": "motif.dependency-policy.v1",
   "registry": "https://registry.npmjs.org/",
   "coolingOffDays": 7,
-  "coolingOffExceptions": [],
+  "coolingOffExceptions": [
+    {
+      "name": "qs",
+      "version": "6.16.0",
+      "rationale": "Security release fixes GHSA-x5fp-wj9c-mxmx and GHSA-4mjr-xmp4-gh2g, which fail the release audit.",
+      "reviewer": "Jacob Vogan",
+      "expiresAt": "2026-09-10T00:00:00Z"
+    }
+  ],
   "directDependenciesMustBeExact": true,
   "allowedLifecycleScripts": {
     "@axe-core/playwright@4.12.1": ["prepare"],
