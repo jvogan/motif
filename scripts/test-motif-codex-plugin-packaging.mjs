@@ -95,7 +95,7 @@ function expandPluginRoot(value) {
 }
 
 async function verifyStagedMcp(mcpManifest) {
-  const server = mcpManifest.motif;
+  const server = mcpManifest.mcpServers?.motif;
   assert.equal(typeof server?.command, 'string', 'staged MCP server command is missing');
   assert.equal(Array.isArray(server?.args), true, 'staged MCP server args are missing');
   const command = expandPluginRoot(server.command);
@@ -206,6 +206,7 @@ try {
   assert.doesNotMatch(manifest.interface.longDescription, /FASTA alignment|GenBank summary|sequence inspection/u);
   assert.equal(manifest.interface.displayName, 'Motif');
   assert.equal(manifest.interface.shortDescription, 'Explore biological sequences');
+  assert.equal(manifest.interface.category, 'Education & Research');
   assert.ok(manifest.interface.shortDescription.length <= 30);
   assert.equal(manifest.interface.privacyPolicyURL, 'https://github.com/jvogan/motif/blob/main/PRIVACY.md');
   assert.equal(manifest.interface.termsOfServiceURL, 'https://github.com/jvogan/motif/blob/main/TERMS.md');
@@ -229,12 +230,13 @@ try {
   assert.equal(basename(outputDirectory), manifest.name);
   assert.equal(
     Object.hasOwn(mcpManifest, 'mcpServers'),
-    false,
-    'Codex .mcp.json must use its documented direct server map, not the legacy camelCase wrapper.',
+    true,
+    'Codex .mcp.json must expose its server map under mcpServers.',
   );
-  assert.equal(mcpManifest.motif.command, 'node');
+  assert.deepEqual(Object.keys(mcpManifest), ['mcpServers']);
+  assert.equal(mcpManifest.mcpServers.motif.command, 'node');
   assert.equal(
-    mcpManifest.motif.args[0],
+    mcpManifest.mcpServers.motif.args[0],
     '${PLUGIN_ROOT}/server/motif-mcp-server.mjs',
   );
   assert.equal(checksums.schema, 'motif.codex-plugin-checksums.v1');

@@ -271,7 +271,8 @@ export async function inspectStagedPlugin(pluginRootInput) {
     }
   }
 
-  const server = mcpManifest.motif;
+  assertPlainObject(mcpManifest.mcpServers, 'Codex MCP server map');
+  const server = mcpManifest.mcpServers.motif;
   assertPlainObject(server, 'Codex MCP server entry');
   if (server.command !== 'node') {
     throw new Error('Codex MCP server command must be "node"; reinstall or rebuild the plugin.');

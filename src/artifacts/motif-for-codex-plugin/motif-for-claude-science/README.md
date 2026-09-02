@@ -194,7 +194,6 @@ JSON, ZIP, FASTA, GenBank, CLUSTAL, or CSV files.
   and use exact supported Motif JSON, FASTA, GenBank, or raw sequence. The
   server intentionally does not guess at arbitrary file formats.
 
-The bundled `.mcp.json` uses Codex's documented direct server map. The
-plugin-creator helper validator currently recognizes only a legacy camelCase
-`mcpServers` wrapper for that file, so it will reject this runtime-valid MCP
-shape; the focused packaging test verifies the direct map instead.
+The bundled `.mcp.json` declares its local stdio server under the current
+`mcpServers` envelope. The build, external plugin validator, staged doctor, and
+packaging test all verify that same installation contract.

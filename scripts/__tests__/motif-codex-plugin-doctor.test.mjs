@@ -35,7 +35,9 @@ function createFixture(options = {}) {
     skills: './skills/',
   }));
   writeFileSync(join(root, '.mcp.json'), JSON.stringify({
-    motif: { command: 'node', args: ['${PLUGIN_ROOT}/server/motif-mcp-server.mjs'] },
+    mcpServers: {
+      motif: { command: 'node', args: ['${PLUGIN_ROOT}/server/motif-mcp-server.mjs'] },
+    },
   }));
   writeFileSync(join(root, 'package.json'), JSON.stringify({
     name: 'motif-for-claude-science',
