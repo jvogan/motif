@@ -519,4 +519,36 @@ describe('findMsaMatches', () => {
     const result = findMsaMatches(rows, 'G12', { molecule: 'dna' });
     expect(result.matches.map((match) => match.kind)).toEqual(['row-name']);
   });
+
+  it('reserves bounded capacity for row names before common motif matches', () => {
+    const common = [
+      { id: 'first', name: 'Control', aligned: 'AAAA' },
+      { id: 'named', name: 'A', aligned: 'AAAA' },
+    ];
+    const result = findMsaMatches(common, 'A', { molecule: 'dna', maxMatches: 2 });
+
+    expect(result.truncated).toBe(true);
+    expect(result.matches).toHaveLength(2);
+    expect(result.matches.map((match) => match.kind)).toEqual(['row-name', 'motif']);
+    expect(result.matches[0]).toMatchObject({
+      kind: 'row-name',
+      rowId: 'named',
+      rowName: 'A',
+    });
+  });
+
+  it('keeps matching row names in alignment order when a small cap cannot retain all of them', () => {
+    const matchingRows = [
+      { id: 'z', name: 'Zeta A', aligned: 'AAAA' },
+      { id: 'a', name: 'Alpha A', aligned: 'AAAA' },
+      { id: 'm', name: 'Middle A', aligned: 'AAAA' },
+    ];
+    const result = findMsaMatches(matchingRows, 'A', { molecule: 'dna', maxMatches: 2 });
+
+    expect(result.truncated).toBe(true);
+    expect(result.matches.map((match) => [match.kind, match.rowId])).toEqual([
+      ['row-name', 'z'],
+      ['row-name', 'a'],
+    ]);
+  });
 });

@@ -60,7 +60,7 @@ describe('ClaudeScienceMsaViewer finder debounce', () => {
 
     act(() => vi.advanceTimersByTime(1));
     expect(form.getAttribute('aria-busy')).toBe('false');
-    expect(count.textContent).toBe('5,000+ motif matches');
+    expect(count.textContent).toBe('100 row name · 4,900 motif+');
     expect((screen.getByTestId('msa-search-next') as HTMLButtonElement).disabled).toBe(false);
   });
 

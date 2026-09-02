@@ -1597,15 +1597,18 @@ export function findMsaMatches(
   const trimmed = query.trim();
   if (!trimmed) return { matches: [], truncated: false };
   const maxMatches = Math.max(0, Math.floor(options.maxMatches ?? MSA_MOTIF_SEARCH_MAX_MATCHES));
-  const motifResult = findMsaMotifMatches(rows, trimmed, { ...options, maxMatches });
-  const motifMatches = motifResult.matches.map((match): MsaSearchMatch => ({ ...match, kind: 'motif' }));
-  const remaining = Math.max(0, maxMatches - motifMatches.length);
   const normalizedNameQuery = trimmed.toLocaleLowerCase();
   const nameMatches: MsaSearchMatch[] = [];
-  let truncated = motifResult.truncated;
+  let namesTruncated = false;
+  // Row names are a distinct finder target, so reserve their bounded capacity
+  // before scanning motifs. Otherwise a low-complexity residue query can fill
+  // the shared result budget and make an explicitly matching row unreachable.
+  // Alignment order is stable and user-visible, making it the deterministic
+  // priority when an unusually small caller-provided cap cannot retain every
+  // matching row name.
   for (const row of rows) {
     if (!row.name.toLocaleLowerCase().includes(normalizedNameQuery)) continue;
-    if (nameMatches.length >= remaining) { truncated = true; break; }
+    if (nameMatches.length >= maxMatches) { namesTruncated = true; break; }
     const firstCovered = row.aligned.search(/[^-.]/);
     const column = firstCovered >= 0 ? firstCovered : 0;
     nameMatches.push({
@@ -1617,10 +1620,15 @@ export function findMsaMatches(
       columns: [],
     });
   }
+  const motifCapacity = Math.max(0, maxMatches - nameMatches.length);
+  const motifResult = findMsaMotifMatches(rows, trimmed, { ...options, maxMatches: motifCapacity });
+  const motifMatches = motifResult.matches.map((match): MsaSearchMatch => ({ ...match, kind: 'motif' }));
 
   return {
-    matches: [...motifMatches, ...nameMatches],
-    truncated,
+    // Put the reserved name hits first as well: submitting a query that names a
+    // row should navigate to that row without stepping through common motifs.
+    matches: [...nameMatches, ...motifMatches],
+    truncated: namesTruncated || motifResult.truncated,
   };
 }
 

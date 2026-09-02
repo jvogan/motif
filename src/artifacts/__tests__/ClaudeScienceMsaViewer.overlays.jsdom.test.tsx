@@ -36,8 +36,8 @@ function renderViewer() {
     referenceRowId: 'reference',
     rows: [
       { id: 'reference', name: 'Reference', aligned: 'AAAA' },
-      { id: 'search-hit', name: 'Search hit', aligned: 'ATAA' },
-      { id: 'other', name: 'Other', aligned: 'AGAA' },
+      { id: 'search-hit', name: 'Needle', aligned: 'ATAA' },
+      { id: 'other', name: 'Sample', aligned: 'AGAA' },
     ],
   });
   const props: ClaudeScienceMsaViewerProps = {
