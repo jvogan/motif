@@ -93,9 +93,10 @@ function boundaryWarning(topology: Topology): string {
  * worst possible pairing: walking the tab strip evicts the entry you are about
  * to ask for, so a lap missed every single time and the round-robin switch only
  * improved from 48.5ms to 42.5ms while a two-record alternation went to 27.0ms
- * with no long tasks at all. The count is 32 now, and a second bound caps the
- * total sequence held, so a handful of very long records cannot turn a cache
- * into a leak. The entry just inserted is never the one evicted.
+ * with no long tasks at all. The count is 32 now, and additional bounds cap the
+ * total sequence and ORF objects held, so long or ORF-dense records cannot turn
+ * a cache into a leak. Oversized result sets are returned but not cached. The
+ * entry just inserted is never the one evicted.
  *
  * Hits return a copy. The scan mutates its own ORF objects while unwinding the
  * reverse strand, and a caller that sorted or spliced the array it was handed
@@ -103,6 +104,8 @@ function boundaryWarning(topology: Topology): string {
  */
 const ORF_CACHE_LIMIT = 32;
 const ORF_CACHE_MAX_CHARS = 4_000_000;
+const ORF_CACHE_MAX_RESULTS = 50_000;
+const ORF_CACHE_MAX_RESULTS_PER_ENTRY = 25_000;
 const orfCache = new WeakMap<CodonTable, Map<string, ORF[]>>();
 
 export function findORFs(
@@ -186,17 +189,31 @@ export function findORFs(
 
   orfs.sort((a, b) => b.length - a.length);
 
+  // A short, start-dense record can produce far more retained objects than its
+  // sequence key suggests. Return the complete answer, but do not make that
+  // transient result a long-lived cache entry.
+  if (orfs.length > ORF_CACHE_MAX_RESULTS_PER_ENTRY) return orfs.slice();
+
   if (!tableCache) {
     tableCache = new Map<string, ORF[]>();
     orfCache.set(effectiveTable, tableCache);
   }
   tableCache.set(cacheKey, orfs);
   let cachedChars = 0;
-  for (const key of tableCache.keys()) cachedChars += key.length;
-  while (tableCache.size > 1 && (tableCache.size > ORF_CACHE_LIMIT || cachedChars > ORF_CACHE_MAX_CHARS)) {
+  let cachedResults = 0;
+  for (const [key, value] of tableCache) {
+    cachedChars += key.length;
+    cachedResults += value.length;
+  }
+  while (tableCache.size > 1 && (
+    tableCache.size > ORF_CACHE_LIMIT
+    || cachedChars > ORF_CACHE_MAX_CHARS
+    || cachedResults > ORF_CACHE_MAX_RESULTS
+  )) {
     const oldest = tableCache.keys().next();
     if (oldest.done) break;
     cachedChars -= oldest.value.length;
+    cachedResults -= tableCache.get(oldest.value)?.length ?? 0;
     tableCache.delete(oldest.value);
   }
   return orfs.slice();

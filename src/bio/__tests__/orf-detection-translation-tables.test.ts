@@ -197,6 +197,48 @@ describe('ORF scan memoisation', () => {
     expect(found.length).toBeGreaterThan(130_000);
   });
 
+  it('returns but does not cache an oversized ORF result set', () => {
+    const table: CodonTable = {
+      ...STANDARD_CODE,
+      id: 10_002,
+      name: 'Oversized result cache fixture',
+      codons: { ...STANDARD_CODE.codons },
+      starts: ['ATG'],
+      stops: ['TAA'],
+    };
+    const dense = 'ATGTAA'.repeat(26_000);
+    const first = findORFs(dense, 1, table, { topology: 'linear' });
+    expect(first.length).toBeGreaterThan(25_000);
+
+    // A cached answer would survive this mutation. Recomputing to an empty
+    // result proves the oversized array was not retained.
+    table.starts = [];
+    expect(findORFs(dense, 1, table, { topology: 'linear' })).toEqual([]);
+  });
+
+  it('bounds total cached ORF objects independently of sequence characters', () => {
+    const table: CodonTable = {
+      ...STANDARD_CODE,
+      id: 10_003,
+      name: 'Total result cache fixture',
+      codons: { ...STANDARD_CODE.codons },
+      starts: ['ATG'],
+      stops: ['TAA'],
+    };
+    const records = Array.from({ length: 3 }, (_, index) => (
+      `${'ATGTAA'.repeat(20_000)}${'TAA'.repeat(index)}`
+    ));
+    const answers = records.map((record) => findORFs(record, 1, table, { topology: 'linear' }));
+    expect(answers.map((answer) => answer.length)).toEqual([20_000, 20_000, 20_000]);
+
+    // Three entries fit under the character budget but exceed the 50k result
+    // budget. The two newest remain cached; the oldest must be recomputed.
+    table.starts = [];
+    expect(findORFs(records[2], 1, table, { topology: 'linear' })).toEqual(answers[2]);
+    expect(findORFs(records[1], 1, table, { topology: 'linear' })).toEqual(answers[1]);
+    expect(findORFs(records[0], 1, table, { topology: 'linear' })).toEqual([]);
+  });
+
   it('drops old scans rather than holding an unbounded amount of sequence', () => {
     // The count cap alone cannot bound memory: one 5 Mb record is a 5 Mb key.
     // A verification run confirmed the character bound never binds on a normal
