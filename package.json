@@ -99,7 +99,7 @@
     "lucide-react": "0.563.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",
-    "zod": "4.4.3"
+    "zod": "4.5.4"
   },
   "devDependencies": {
     "@axe-core/playwright": "4.12.1",
