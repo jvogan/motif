@@ -97,9 +97,9 @@
     "@modelcontextprotocol/ext-apps": "1.7.5",
     "@modelcontextprotocol/sdk": "1.30.0",
     "lucide-react": "0.563.0",
-    "react": "19.2.8",
-    "react-dom": "19.2.8",
-    "zod": "4.4.3"
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "zod": "4.6.4"
   },
   "devDependencies": {
     "@axe-core/playwright": "4.12.1",
@@ -109,8 +109,8 @@
     "@testing-library/react": "16.3.2",
     "@testing-library/user-event": "14.6.1",
     "@types/node": "22.13.0",
-    "@types/react": "19.2.18",
-    "@types/react-dom": "19.2.4",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "6.0.5",
     "@vitest/coverage-v8": "4.1.10",
     "esbuild": "0.28.1",
