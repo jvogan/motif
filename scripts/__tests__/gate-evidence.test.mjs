@@ -24,7 +24,7 @@ function workspace() {
   git(root, 'config', 'user.name', 'Test');
   git(root, 'config', 'user.email', 'test@example.invalid');
   git(root, 'config', 'commit.gpgsign', 'false');
-  put(root, '.gitignore', 'dist-motif/\ntest-results/\n');
+  put(root, '.gitignore', readFileSync(new URL('../../.gitignore', import.meta.url), 'utf8'));
   put(root, 'source.txt', 'committed source\n');
   git(root, 'add', '.');
   git(root, 'commit', '-qm', 'Test fixture');
@@ -68,6 +68,14 @@ describe('committed gate source boundary', () => {
     expect(assertCleanGateSource(root, head)).toBe(head);
     git(root, 'commit', '--allow-empty', '-qm', 'Next fixture');
     expect(() => assertCleanGateSource(root, head)).toThrow(/commit changed/);
+  });
+  it('allows the generated scanner report without ignoring other untracked files', () => {
+    const root = workspace();
+    const head = assertCleanGateSource(root);
+    put(root, 'results.sarif', '{}');
+    expect(assertCleanGateSource(root, head)).toBe(head);
+    put(root, 'unexpected-source.txt', 'uncommitted');
+    expect(() => assertCleanGateSource(root, head)).toThrow(/clean committed source/);
   });
   it('rejects mutation by a successful gate step before recording success', () => {
     const root = workspace();

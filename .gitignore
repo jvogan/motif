@@ -2,6 +2,7 @@
 node_modules
 
 # Generated artifacts and reports
+/results.sarif
 dist-motif/
 preview/
 coverage/
