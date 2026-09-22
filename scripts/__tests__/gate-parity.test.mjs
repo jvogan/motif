@@ -15,6 +15,19 @@ const releaseReviewWorkflow = readFileSync(resolve(root, '.github/workflows/rele
 const pkg = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'));
 
 describe('npm run gate matches CI', () => {
+  it('keeps the required CI job distinct from metadata validation', () => {
+    const metadata = readFileSync(resolve(root, '.github/workflows/metadata-policy.yml'), 'utf8');
+    expect(workflow).toMatch(/^  validate:$/m);
+    expect(metadata).toMatch(/^  validate-metadata:$/m);
+    expect(metadata).not.toMatch(/^  validate:$/m);
+  });
+
+  it('collects fixture results during the canonical browser invocation', () => {
+    const config = readFileSync(resolve(root, 'scripts/playwright.claude-science.config.ts'), 'utf8');
+    expect(config).toContain('scripts/gate-fixture-reporter.mjs');
+  });
+
+
   it('uses the same receipt-producing runner locally and in hosted CI', () => {
     expect(pkg.scripts.gate).toBe('node scripts/run-gate.mjs');
     expect(workflow.match(/run: npm run gate/g)).toHaveLength(1);
@@ -35,6 +48,13 @@ describe('npm run gate matches CI', () => {
     expect(ids.indexOf('build')).toBeLessThan(ids.indexOf('post-build-release-verification'));
     expect(ids.indexOf('build')).toBeLessThan(ids.indexOf('codex-plugin-checks'));
     expect(ids.indexOf('codex-plugin-checks')).toBeLessThan(ids.indexOf('post-build-release-verification'));
+    expect(GATE_STEPS).toContainEqual({
+      id: 'codex-skills-plugin-checks',
+      label: 'Codex skills-only plugin checks',
+      command: ['npm', 'run', 'test:codex-skills-plugin'],
+    });
+    expect(ids.indexOf('build')).toBeLessThan(ids.indexOf('codex-skills-plugin-checks'));
+    expect(ids.indexOf('codex-skills-plugin-checks')).toBeLessThan(ids.indexOf('post-build-release-verification'));
     expect(ids.indexOf('post-build-release-verification')).toBeLessThan(ids.indexOf('reproducibility'));
   });
 

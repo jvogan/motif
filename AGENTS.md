@@ -74,6 +74,10 @@ A passing DOM assertion is not proof that a control is legible or reachable.
 npm run gate
 ```
 
+Commit the intended source changes before running the gate. It requires a clean
+worktree, including non-ignored untracked files, and rechecks source after every
+step. Ignored build and test outputs are allowed.
+
 That runs the same checks as CI, in the same order. Keeping the sequence in one
 command avoids drift between contributor guidance and the workflow.
 `scripts/__tests__/gate-parity.test.mjs` fails if `gate` and the workflow stop
@@ -87,5 +91,5 @@ of 0 can mean nothing ran.
 Also run `npm run validate:plugin` when the Claude CLI is available. Report any
 skips, external-tool assumptions, and generated output hashes explicitly. The
 canonical gate ends with `npm run report:gate-coverage`, which distinguishes
-executed checks from checks gated on non-vendored demo, sequencing, or alignment
+executed checks from skipped checks requiring non-vendored sequencing or alignment
 fixtures.

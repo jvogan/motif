@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 
-import { spawnSync } from 'node:child_process';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { assertCleanGateSource } from './lib/gate-source.mjs';
+import { GATE_FIXTURES, GATE_FIXTURE_SCHEMA } from './lib/gate-fixtures.mjs';
 import { GATE_RECEIPT_SCHEMA, GATE_RUN_SCHEMA, GATE_STEPS } from './lib/gate-steps.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const receiptDirectory = join(root, 'test-results', 'gate-receipts');
 
 function readJson(path, label) {
   try {
@@ -17,22 +17,18 @@ function readJson(path, label) {
   }
 }
 
-function currentCommit() {
-  const result = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' });
-  if (result.status !== 0 || !/^[0-9a-f]{40}\n?$/.test(result.stdout ?? '')) throw new Error('Cannot resolve current Git commit');
-  return result.stdout.trim();
-}
-
-export function reportGateCoverage(env = process.env) {
+export function reportGateCoverage(env = process.env, rootDirectory = root, steps = GATE_STEPS) {
+  const receiptDirectory = join(rootDirectory, 'test-results', 'gate-receipts');
+  rmSync(join(rootDirectory, 'dist-motif', 'gate-coverage.json'), { force: true });
   const run = readJson(join(receiptDirectory, 'run.json'), 'Gate run receipt');
-  const commit = currentCommit();
+  const commit = assertCleanGateSource(rootDirectory);
   if (run.schema !== GATE_RUN_SCHEMA || run.commit !== commit || run.runId !== env.MOTIF_GATE_RUN_ID) {
     throw new Error('Gate run receipt is stale or does not match this exact commit and invocation');
   }
-  const expectedSteps = GATE_STEPS.map(({ id }) => id);
+  const expectedSteps = steps.map(({ id }) => id);
   if (JSON.stringify(run.expectedSteps) !== JSON.stringify(expectedSteps)) throw new Error('Gate run step declaration is stale');
 
-  const receipts = GATE_STEPS.map((step) => {
+  const receipts = steps.map((step) => {
     const receipt = readJson(join(receiptDirectory, `${step.id}.json`), `Gate receipt for ${step.id}`);
     if (
       receipt.schema !== GATE_RECEIPT_SCHEMA
@@ -47,26 +43,41 @@ export function reportGateCoverage(env = process.env) {
     return receipt;
   });
 
-  const fixtureChecks = [
-    ['synthetic demo preflight', env.MOTIF_DEMO_ARTIFACT_URL, 'MOTIF_DEMO_ARTIFACT_URL'],
-    ['pathway demo preflight', env.MOTIF_PATHWAY_ARTIFACT_URL, 'MOTIF_PATHWAY_ARTIFACT_URL'],
-    ['real Sanger fixture audit', env.MOTIF_REAL_AB1_DIR, 'MOTIF_REAL_AB1_DIR'],
-    ['external MSA payload audit', env.MOTIF_REAL_MSA_PAYLOADS, 'MOTIF_REAL_MSA_PAYLOADS'],
-  ].map(([name, value, requirement]) => ({ name, status: value ? 'executed' : 'fixture-gated', requirement }));
+  const evidence = readJson(join(receiptDirectory, 'fixtures.json'), 'Browser fixture evidence');
+  if (evidence.schema !== GATE_FIXTURE_SCHEMA || evidence.runId !== run.runId
+    || evidence.commit !== commit || evidence.step !== 'core-browser-workflows' || evidence.status !== 'passed') {
+    throw new Error('Browser fixture evidence is stale or unsuccessful');
+  }
+  if (JSON.stringify(evidence.checks?.map(({ id }) => id)) !== JSON.stringify(GATE_FIXTURES.map(({ id }) => id))) {
+    throw new Error('Browser fixture evidence does not match the declared checks');
+  }
+  const fixtureChecks = evidence.checks;
+  for (const check of fixtureChecks) {
+    const { passed, skipped, failed, missing } = check.counts ?? {};
+    if (![passed, skipped, failed, missing].every(value => Number.isSafeInteger(value) && value >= 0)
+      || failed || missing
+      || !['executed', 'skipped', 'not-applicable'].includes(check.status)
+      || (check.status === 'executed' && (!passed || skipped))
+      || (check.status === 'skipped' && !skipped)
+      || (check.status === 'not-applicable' && (passed || skipped))) {
+      throw new Error('Browser fixture evidence is incomplete or unsuccessful');
+    }
+  }
+  assertCleanGateSource(rootDirectory, commit);
   const report = {
-    schema: 'motif.gate-coverage.v2',
+    schema: 'motif.gate-coverage.v3',
     runId: run.runId,
     commit,
     executed: receipts.map(({ step, label, command, startedAt, finishedAt, durationMs }) => ({
       step, label, command, startedAt, finishedAt, durationMs,
     })),
     fixtureChecks,
-    note: 'Executed checks are supported by successful, exact-commit receipts. Fixture-gated checks remain explicitly separate.',
+    note: 'Executed checks are supported by successful, exact-commit receipts. Fixture statuses come from browser test results for this invocation.',
   };
-  mkdirSync(join(root, 'dist-motif'), { recursive: true });
-  writeFileSync(join(root, 'dist-motif', 'gate-coverage.json'), `${JSON.stringify(report, null, 2)}\n`);
+  mkdirSync(join(rootDirectory, 'dist-motif'), { recursive: true });
+  writeFileSync(join(rootDirectory, 'dist-motif', 'gate-coverage.json'), `${JSON.stringify(report, null, 2)}\n`);
   console.log(`Gate coverage recorded ${receipts.length} successful exact-commit steps for ${commit}.`);
-  for (const check of fixtureChecks) console.log(`  ${check.status}: ${check.name} (${check.requirement})`);
+  for (const check of fixtureChecks) console.log(`  ${check.status}: ${check.name}`);
   return report;
 }
 

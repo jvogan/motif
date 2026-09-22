@@ -12,7 +12,11 @@ export default defineConfig({
   failOnFlakyTests: Boolean(process.env.CI),
   retries: process.env.CI ? 1 : 0,
   workers: 1,
-  reporter: process.env.CI ? 'line' : 'list',
+  reporter: [
+    [process.env.CI ? 'line' : 'list'],
+    ...(process.env.MOTIF_GATE_RUN_ID
+      ? [[resolve(root, 'scripts/gate-fixture-reporter.mjs')] as [string]] : []),
+  ],
   outputDir: resolve(root, 'test-results/motif-artifact'),
   use: {
     browserName: 'chromium',

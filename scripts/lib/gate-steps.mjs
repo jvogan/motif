@@ -16,6 +16,7 @@ export const GATE_STEPS = Object.freeze([
   { id: 'aria-controls', label: 'ARIA control checks', command: ['npm', 'run', 'check:aria-controls'] },
   { id: 'build', label: 'Build distributables', command: ['npm', 'run', 'build:motif'] },
   { id: 'codex-plugin-checks', label: 'Codex plugin checks', command: ['npm', 'run', 'test:codex-plugin'] },
+  { id: 'codex-skills-plugin-checks', label: 'Codex skills-only plugin checks', command: ['npm', 'run', 'test:codex-skills-plugin'] },
   { id: 'post-build-release-verification', label: 'Post-build release verification', command: ['npm', 'run', 'security:verify-release'] },
   { id: 'reproducibility', label: 'Reproducible release build', command: ['npm', 'run', 'security:reproducibility'] },
   { id: 'release-budgets', label: 'Release budgets', command: ['npm', 'run', 'security:budgets'] },
@@ -23,5 +24,5 @@ export const GATE_STEPS = Object.freeze([
   { id: 'msa-browser-workflows', label: 'MSA interaction workflows', command: ['npm', 'run', 'test:e2e:msa'] },
 ]);
 
-export const GATE_RECEIPT_SCHEMA = 'motif.gate-step.v1';
-export const GATE_RUN_SCHEMA = 'motif.gate-run.v1';
+export const GATE_RECEIPT_SCHEMA = 'motif.gate-step.v2';
+export const GATE_RUN_SCHEMA = 'motif.gate-run.v2';
