@@ -23,7 +23,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { computeMapLayout } from '../layout';
-import type { MapLayout, MapOverflowRender } from '../types';
+import type { MapLayout, MapOverflowRender, MapOverflowSummary } from '../types';
 import type { Feature, RestrictionSite } from '../../bio/types';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -178,43 +178,29 @@ function recount(layout: MapLayout, kind: string): { hiddenBodies: number; unlab
   };
 }
 
-function printedNumber(chip: MapOverflowRender): number {
+function printedNumber(chip: MapOverflowSummary): number {
   const printed = Number((chip.text.match(/[\d,]+/) ?? ['NaN'])[0].replace(/,/g, ''));
   expect(printed, `chip "${chip.text}" prints a number`).not.toBeNaN();
   return printed;
 }
 
 describe('overflow chip hit rect', () => {
-  it('gives the circular chips a target sized from their own text', () => {
-    const chips = circularLayout().overflows ?? [];
-    const feature = chips.find((c) => c.kind === 'feature-labels');
-    const restriction = chips.find((c) => c.kind === 'restriction-labels');
+  it('reports the circular counts without a target, because the ring draws no chip', () => {
+    // The ring's centre carries the record's name and length only. The two chips that
+    // used to sit there, each with a text-sized rect, are summaries now: the same
+    // numbers and sentences, stated by the host beside the drawing as buttons, so
+    // there is no SVG target to size and nothing in the ring to hit.
+    const layout = circularLayout();
+    expect(layout.overflows).toBeUndefined();
+    const feature = layout.overflowSummaries?.find((c) => c.kind === 'feature-labels');
+    const restriction = layout.overflowSummaries?.find((c) => c.kind === 'restriction-labels');
 
-    expect(feature?.text).toBe('+25 more');
-    // 34, not 35: the radial repack (placeCircularRadialLabels) puts one more enzyme
-    // cluster back on the map, so one fewer site is summarized here. This fixture's
-    // enzyme names are all distinct and its clusters are mostly single-site, so the
-    // count is unchanged by the recount — only the wording is. The multi-name case
-    // where the two differ is pinned in "counts a site its cluster's label does not
-    // name" below.
+    // "+25 features", not "+25 more": under "4,000 bp" the old wording read as 25
+    // more base pairs.
+    expect(feature?.text).toBe('+25 features');
     expect(restriction?.text).toBe('34 unnamed sites');
-    // 2 characters wider than "+34 more sites" was, so the rect is 13.47 wider.
-    expect(restriction?.hit).toEqual({ x: 360.12, y: 324.16, width: 123.76, height: 18 });
-
-    // The longer string gets the wider rect — i.e. the size tracks the text and is
-    // not one constant handed to both.
-    expect(restriction!.hit.width).toBeGreaterThan(feature!.hit.width);
-  });
-
-  it('keeps the two circular targets separated above and below the title', () => {
-    // This is the whole reason the rect is one label line tall. Overlapping targets
-    // would hand the upper chip's tooltip to a pointer aimed at the lower one, which
-    // looks like it works and is wrong.
-    const chips = circularLayout().overflows ?? [];
-    expect(chips).toHaveLength(2);
-    const [upper, lower] = [...chips].sort((a, b) => a.hit.y - b.hit.y);
-
-    expect(lower.hit.y).toBeGreaterThanOrEqual(upper.hit.y + upper.hit.height);
+    expect(feature).not.toHaveProperty('hit');
+    expect(restriction).not.toHaveProperty('hit');
   });
 
   it('keeps the linear target clear of the feature lane below it', () => {
@@ -237,12 +223,6 @@ describe('overflow chip hit rect', () => {
     // Right edge overhangs the text end by the horizontal pad only.
     expect(chip.hit.x + chip.hit.width).toBeCloseTo(980, 2);
     expect(chip.hit.x).toBeLessThan(chip.x);
-
-    const circular = (circularLayout().overflows ?? []).find((c) => c.kind === 'feature-labels')!;
-    expect(circular.anchor).toBe('middle');
-    expect(circular.x).toBe(422);
-    // Centred: the anchor sits at the rect's midpoint.
-    expect(circular.hit.x + circular.hit.width / 2).toBeCloseTo(422, 3);
   });
 
   it('covers the text baseline it was derived from', () => {
@@ -262,7 +242,7 @@ describe('overflow chip hit rect', () => {
     const seen = new Set<string>();
 
     for (const layout of layouts) {
-      for (const chip of layout.overflows ?? []) {
+      for (const chip of [...(layout.overflows ?? []), ...(layout.overflowSummaries ?? [])]) {
         const expected = recount(layout, chip.kind);
         expect(chip.hiddenBodies, `${chip.id} hiddenBodies`).toBe(expected.hiddenBodies);
         expect(chip.unlabelled, `${chip.id} unlabelled`).toBe(expected.unlabelled);
@@ -307,7 +287,7 @@ describe('overflow chip hit rect', () => {
 
   it('prints the sum in `text` and nowhere else offers it as one number', () => {
     const chips = [
-      ...(circularLayout().overflows ?? []),
+      ...(circularLayout().overflowSummaries ?? []),
       ...(linearLayout().overflows ?? []),
       ...(denseFeatureLinearLayout().overflows ?? []),
     ];
@@ -324,9 +304,9 @@ describe('overflow chip hit rect', () => {
       }
       // No third field quietly re-offering the total: the type is the guard, and this
       // fails loudly if one is added back.
-      expect(Object.keys(chip).sort()).toEqual(
-        ['anchor', 'hiddenBodies', 'hit', 'id', 'kind', 'text', 'title', 'unlabelled', 'x', 'y'],
-      );
+      expect(Object.keys(chip).sort()).toEqual('hit' in chip
+        ? ['anchor', 'hiddenBodies', 'hit', 'id', 'kind', 'text', 'title', 'unlabelled', 'x', 'y']
+        : ['hiddenBodies', 'id', 'kind', 'text', 'title', 'unlabelled']);
     }
   });
 
@@ -355,8 +335,9 @@ describe('overflow chip hit rect', () => {
     const base = mapCss.slice(mapCss.indexOf('\n.motif-pm-overflow {'));
     expect(base.slice(0, base.indexOf('}'))).toMatch(/font-size:\s*13px;/);
 
-    const circular = mapCss.slice(mapCss.indexOf(".motif-pm-container[data-map-mode='circular'] .motif-pm-overflow {"));
-    expect(circular.slice(0, circular.indexOf('}'))).toMatch(/font-size:\s*12px;/);
+    // Only a linear map draws chips now, so the circular override is gone rather
+    // than left to drift from a constant nothing reads.
+    expect(mapCss).not.toContain(".motif-pm-container[data-map-mode='circular'] .motif-pm-overflow {");
   });
 
   it('stays centred on the ink box its vertical offset was measured from', () => {
@@ -372,8 +353,8 @@ describe('overflow chip hit rect', () => {
     // the two slacks, at twice the offset's own size, which holds it to ~±0.008em
     // without this test ever naming 0.32.
     const cases: { chip: MapOverflowRender; fontPx: number }[] = [
-      { chip: (circularLayout().overflows ?? []).find((c) => c.kind === 'feature-labels')!, fontPx: 12 },
       { chip: (linearLayout().overflows ?? []).find((c) => c.kind === 'restriction-labels')!, fontPx: 13 },
+      { chip: (denseFeatureLinearLayout().overflows ?? []).find((c) => c.kind === 'feature-labels')!, fontPx: 13 },
     ];
 
     for (const { chip, fontPx } of cases) {

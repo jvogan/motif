@@ -78,8 +78,9 @@ function boundaryWarning(topology: Topology): string {
  * Two callers asked the same question over and over. Dragging a range selection
  * re-ran the whole scan on every pointermove, because the effect that keeps the
  * artifact's snapshot current lists the selection in its dependencies and the
- * snapshot names the longest ORF — measured at 4.9ms of scan per move on
- * pUC19 and 10.6ms on a 6,788 bp record, where one move already costs more than
+ * snapshot names the longest ORF — measured at 4.9ms of scan per move on the
+ * synthetic pUC19 once bundled and 10.6ms on a 6,788 bp record, where one move
+ * already costs more than
  * a whole frame. A selection cannot change a record's ORFs, so all of it was
  * waste. Switching back to a record you have already opened paid the same scan
  * again, 17.7ms of a 53ms switch.

@@ -151,7 +151,7 @@ describe('workspace layout guards', () => {
   });
 
   it('makes every ORF count name the population it counted', () => {
-    // Measured on the app's own pUC19 (2,578 bp, circular) with the real
+    // Measured on the synthetic pUC19 the app once bundled (2,578 bp, circular) with the real
     // detector. "221 ORFs" is true and points the wrong way: it is 221
     // start-to-stop intervals at a 10 aa floor over six frames, counting the
     // standard table's ATG/TTG/CTG starts — only 76 of the 221 begin ATG — and
@@ -176,7 +176,7 @@ describe('workspace layout guards', () => {
 
     // Chip and rail-popover meta both carry the floor.
     expect(
-      artifactSource.match(/\$\{allOrfs\.length\} ORFs ≥\$\{ANALYSIS_ORF_MIN_AA\} aa/g),
+      artifactSource.match(/\$\{stopOrfs\.length\} ORFs ≥\$\{ANALYSIS_ORF_MIN_AA\} aa/g),
       'both the summary chip and the popover meta must name the floor',
     ).toHaveLength(2);
 
@@ -187,18 +187,17 @@ describe('workspace layout guards', () => {
     // ...and the machine-readable copy carries it as data.
     expect(artifactSource).toContain('minAminoAcids: SUMMARY_ORF_MIN_AA,');
 
-    // The panel states the definition next to the count, including the
-    // denominator that explains the inflation. Derived from the SAME array the
-    // rows render from so the two cannot disagree about one quantity.
-    expect(artifactSource).toContain('new Set(allOrfs.map((orf) => `${orf.strand}:${orf.end}`)).size');
-    expect(artifactSource).toContain('start-to-stop intervals ≥{ANALYSIS_ORF_MIN_AA} aa');
-    expect(artifactSource).toContain('across {orfReadingFrameCount} distinct reading frames');
+    // The panel now lists and counts one ORF per strand and stop (80 on pUC19),
+    // not one per start (216), so the rows no longer repeat a frame and the
+    // note is one line. Chip, note and rows read the SAME per-stop array.
+    expect(artifactSource).toContain('const stopOrfs = useMemo(() => longestOrfPerStop(allOrfs, record.sequence.length)');
+    expect(artifactSource).toContain('{visibleOrfs.length} longest of {stopOrfs.length}, one per stop, from its farthest start.');
     // The start set comes from the table the scan used, because the panel has a
     // "Record genetic code" select and the tables disagree — standard initiates
     // at ATG/TTG/CTG, vertebrate mitochondrial at ATT/ATC/ATA/ATG/GTG. A fixed
     // list here would be one more readout true of some other configuration.
     expect(artifactSource).toContain('translationCode.table.starts');
-    expect(artifactSource).toContain('starting at {orfStartCodons}');
+    expect(artifactSource).toContain('from the farthest in-frame start (${orfStartCodons})');
     // The bare noun is what misled; it must not come back.
     expect(artifactSource).not.toContain('detected ORFs.');
   });
@@ -274,7 +273,7 @@ describe('workspace layout guards', () => {
     // The native title needed a ~1s hover and never fired on keyboard focus.
     const flyout = sliceBetween(
       artifactCss,
-      '.motif-cs-inspector[data-tools-pinned="false"]\n  .motif-cs-panel:not([open])\n  > .motif-cs-panel-head:is(:hover, :focus-visible)::before {',
+      '.motif-cs-inspector[data-tools-pinned="false"]\n  :is(.motif-cs-panel:not([open]) > .motif-cs-panel-head, .motif-cs-pane-title > .motif-cs-pane-collapse):is(:hover, :focus-visible)::before {',
       '\n}',
     );
     expect(flyout).toContain('content: attr(title) / "";');
@@ -294,16 +293,20 @@ describe('workspace layout guards', () => {
     expect(artifactCss).toContain('.motif-cs-inspector[data-tools-pinned="false"] .motif-cs-panel-head {\n  position: relative;');
     // The base rule that this one overrides must still switch the marker off.
     expect(artifactCss).toContain('.motif-cs-inspector[data-tools-pinned="false"] .motif-cs-panel-head::before {\n  content: none;\n}');
-    // A scrolling rail clips, so the flyout stands down rather than mislabel an
-    // icon. That rule has to live inside the query that starts the scrolling.
-    // Same specificity as the rule above, so only source order separates them:
-    // the stand-down must come after the flyout or it never applies.
-    const flyoutAt = artifactCss.indexOf('> .motif-cs-panel-head:is(:hover, :focus-visible)::before {\n  content: attr(title)');
+    // A scrolling rail clips the absolute box, so inside the query that starts
+    // the scrolling the flyout is fixed at the point placeRailFlyout measured,
+    // and a head it has not measured (or a scroll has invalidated) shows none
+    // rather than a name beside the wrong icon. Both must follow the flyout.
+    const flyoutAt = artifactCss.indexOf('.motif-cs-pane-collapse):is(:hover, :focus-visible)::before {\n  content: attr(title)');
     expect(flyoutAt).toBeGreaterThan(-1);
-    const standDownAt = artifactCss.indexOf('@media (max-height: 731px) {', flyoutAt);
-    expect(standDownAt).toBeGreaterThan(flyoutAt);
-    expect(artifactCss.slice(standDownAt, standDownAt + 400))
-      .toContain('> .motif-cs-panel-head:is(:hover, :focus-visible)::before {\n    content: none;');
+    const scrollingAt = artifactCss.indexOf('@media (max-height: 709px) {', flyoutAt);
+    expect(scrollingAt).toBeGreaterThan(flyoutAt);
+    const scrolling = artifactCss.slice(scrollingAt, artifactCss.indexOf('\n}\n', scrollingAt));
+    expect(scrolling).toMatch(/\[data-rail-flyout\]:is\(:hover, :focus-visible\)::before \{\s*position: fixed;\s*top: var\(--motif-cs-rail-flyout-top\);\s*right: var\(--motif-cs-rail-flyout-right\);/);
+    expect(scrolling).toMatch(/:not\(\[data-rail-flyout\]\):is\(:hover, :focus-visible\)::before \{\s*content: none;/);
+    expect(artifactSource).toContain('onPointerOver={placeRailFlyout}');
+    expect(artifactSource).toContain('onFocus={placeRailFlyout}');
+    expect(artifactSource).toContain('onScroll={clearRailFlyouts}');
   });
 
   it('paints the sequence edit toolbar as a scroll strip instead of hiding its bar', () => {
@@ -490,7 +493,10 @@ describe('workspace layout guards', () => {
     expect(artifactSource).toContain('const TWO_ROW_VERY_SHORT_MIN_HEIGHT = 120;');
     expect(artifactSource).toContain('if (total <= mainWidth) return widths;');
     expect(artifactSource).not.toContain('let spare = mainWidth - total;');
-    expect(artifactSource).toContain("const compactRowMaxWidth = compactPinnedLayout && pane === 'inventory'");
+    // Side by side, Inventory and a pinned Tools panel are capped by their own
+    // limits; Sequence and Map below them split by share and have no width to give.
+    expect(artifactSource).toContain("const compactRowMaxWidth = compactSideBySide && (pane === 'inventory' || pane === 'tools')");
+    expect(artifactSource).toContain(": compactPinnedLayout && pane === 'inventory'");
     expect(artifactSource).toContain('mainWidth - resizeHandleWidth - PANE_WIDTH_LIMITS.sequence.min');
     expect(artifactSource).toContain('mainWidth - resizeHandleWidth - PANE_WIDTH_LIMITS.map.min');
   });
@@ -538,7 +544,6 @@ describe('workspace layout guards', () => {
     expect(artifactCss).toMatch(/@media \(min-width: 640px\) and \(max-width: 1535px\) and \(max-height: 620px\)[\s\S]*?minmax\(var\(--motif-cs-compact-bottom-row-min, 120px\), 1fr\)/);
     expect(artifactCss).toMatch(/@media \(min-width: 640px\) and \(max-width: 1535px\) and \(max-height: 330px\)[\s\S]*?data-content-pane-count="3"[\s\S]*?overflow-y:\s*auto/);
     expect(artifactCss).toMatch(/data-inventory-hidden="true"\][\s\S]*?motif-cs-stacked-resize-handle\[data-pane="sequence"\][\s\S]*?grid-column:\s*1 \/ 4/);
-    expect(artifactCss).toMatch(/\.motif-cs-sequence-tools-panel\[open\]\[data-resized="true"\] \.motif-cs-export-row,[\s\S]*?flex:\s*0 0 auto/);
   });
 
   it('supports vertical inventory and sequence resizing in the stacked Claude Science layout', () => {
@@ -581,21 +586,15 @@ describe('workspace layout guards', () => {
     expect(artifactSource).toContain('className="motif-cs-segmented motif-cs-edit-mode-toggle"');
     expect(artifactSource).toContain('aria-label="Typing mode"');
     expect(artifactSource).toContain('className="motif-cs-mini-button motif-cs-display-switch motif-cs-ds-toggle"');
-    expect(artifactSource).toContain('<span className="motif-cs-label-full">Complement</span>');
-    // One action, one name: the bar and the Translation panel both call
-    // addTranslationLayer, so both say "Add AA track". The short pair survives
-    // only as the narrow-width spelling, and aria-label keeps the accessible
-    // name on the full form at every width.
+    expect(artifactSource).toContain('<span>Complement</span>');
+    // One action, one name: the dock's Create menu and the Translation panel
+    // both call addTranslationLayer, so both say "Add AA track". The menu has
+    // room for full words at every width, so there is no short spelling left.
     expect(artifactSource).toContain(
-      `<span className="motif-cs-label-full">{selectedInlineTranslationTrack ? 'Remove AA track' : 'Add AA track'}</span>`,
+      "label: selectedInlineTranslationTrack ? 'Remove AA track' : 'Add AA track',",
     );
-    expect(artifactSource).toContain(
-      `<span className="motif-cs-label-short">{selectedInlineTranslationTrack ? 'Del AA' : 'Add AA'}</span>`,
-    );
-    expect(artifactSource).toContain(
-      "aria-label={selectedInlineTranslationTrack ? 'Remove AA track' : 'Add AA track'}",
-    );
-    expect(artifactSource).toContain('disabled={!selectedInlineTranslationTrack && (!selectionActionTranslation || !canPinPreviewTranslation)}');
+    expect(artifactSource).not.toContain('motif-cs-label-short');
+    expect(artifactSource).toContain('disabled: !selectedInlineTranslationTrack && (!selectionActionTranslation || !canPinPreviewTranslation),');
     expect(artifactSource).toContain('if (selectedInlineTranslationTrack) deleteTranslationLayer(selectedInlineTranslationTrack.id);');
     expect(artifactSource).toContain('addTranslationLayer();');
     expect(artifactSource).toContain('onTranslationTrackSelect={handleTranslationTrackSelectAndReveal}');
@@ -608,16 +607,15 @@ describe('workspace layout guards', () => {
     // enabled control here, so it was the one thing the resting bar invited.
     // "New" is the word the Export panel already uses to tell "Copy rev comp"
     // from "New rev comp"; reusing it keeps the two surfaces agreeing.
-    expect(artifactSource).toContain('<span className="motif-cs-label-full">New rev comp</span>');
-    expect(artifactSource).toContain('<span className="motif-cs-label-short">+ RC</span>');
-    expect(artifactSource).toContain('<span className="motif-cs-label-full">New protein</span>');
-    expect(artifactSource).toContain('<span className="motif-cs-label-short">+ Prot</span>');
-    expect(artifactSource).toContain('aria-label="New rev comp record"');
-    expect(artifactSource).toContain('aria-label="New protein record"');
-    // The rule is decoration; the labels carry the meaning, so it stays hidden
-    // from assistive tech and must never become the only signal.
-    expect(artifactSource).toContain('<span className="motif-cs-selection-action-rule" aria-hidden="true" />');
-    expect(artifactCss).toMatch(/\.motif-cs-selection-actions \.motif-cs-selection-action-rule\s*\{[\s\S]*?width:\s*1px/);
+    // In the Create menu they are spelled out: "rev comp" was the one
+    // abbreviation left, and "record" says what lands in the inventory.
+    expect(artifactSource).toContain("label: 'New reverse complement record',");
+    expect(artifactSource).toContain("label: 'New protein record',");
+    // A separator marks where the menu stops acting on this record and starts
+    // adding new ones. The labels carry the meaning; the rule only groups them.
+    expect(artifactSource).toContain('separatorBefore: true,');
+    expect(artifactSource).toContain('className="motif-cs-action-menu-separator" role="separator"');
+    expect(artifactCss).toMatch(/\.motif-cs-action-menu-separator\s*\{[\s\S]*?height:\s*1px/);
     // One switch, not a two-member segmented control: the same click both
     // enters and leaves Detail, so the row reads like the Complement switch
     // beside it. Guard the toggling call, which a split control cannot make.
@@ -629,16 +627,20 @@ describe('workspace layout guards', () => {
     expect(artifactSource).not.toContain('aria-label="Standard sequence view"');
     expect(artifactSource).toContain('if (selectionSummary) {');
     expect(artifactSource).toContain('if (hasMaterializableSequenceSelection) addSelectionReverseComplementRecord();');
-    expect(artifactSource).toContain('onClick={addContextReverseComplementRecord}');
-    expect(artifactSource.match(/onClick=\{addContextReverseComplementRecord\}/g)).toHaveLength(1);
+    expect(artifactSource).toContain('onSelect: addContextReverseComplementRecord,');
+    expect(artifactSource.match(/onSelect: addContextReverseComplementRecord,/g)).toHaveLength(1);
     expect(editToolbar).not.toContain('addContextReverseComplementRecord');
-    expect(artifactSource).toContain('disabled={!isNucleotideRecord || (!!selectionSummary && !hasMaterializableSequenceSelection)} onClick={addContextReverseComplementRecord}');
+    // The menu is mounted only for nucleotide records, so the item's own test
+    // no longer needs a molecule clause.
+    expect(artifactSource).toContain('disabled: !!selectionSummary && !hasMaterializableSequenceSelection,\n');
     expect(artifactSource).toContain('className="motif-cs-edit-controls"');
     expect(artifactCss).toContain('.motif-cs-switch-track');
     expect(artifactCss).not.toContain('.motif-cs-view-toggle');
     expect(artifactCss).not.toMatch(/\.motif-cs-selection-bar\[data-empty\] \.motif-cs-selection-actions\s*\{[\s\S]*?display:\s*none/);
-    expect(artifactCss).toMatch(/@container \(max-width: 560px\)[\s\S]*?\.motif-cs-selection-bar\s*\{[\s\S]*?flex-direction:\s*column;[\s\S]*?min-height:\s*62px/);
-    expect(artifactCss).toMatch(/@container \(max-width: 560px\)[\s\S]*?\.motif-cs-selection-bar\[data-empty\]\s*\{[\s\S]*?min-height:\s*62px/);
+    // Two lines only where a one-line bar would leave the readout no room.
+    expect(artifactCss).toMatch(/@container \(max-width: 400px\) \{\s*\.motif-cs-selection-bar\s*\{[\s\S]*?flex-direction:\s*column;[\s\S]*?min-height:\s*62px/);
+    expect(artifactCss).toMatch(/@container \(max-width: 400px\) \{[\s\S]*?\.motif-cs-selection-bar\[data-empty\]\s*\{[\s\S]*?min-height:\s*62px/);
+    expect(artifactCss).not.toMatch(/@container \(max-width: 640px\) \{\s*\.motif-cs-selection-bar/);
   });
 
   it('supports platform-standard map wheel modifiers', () => {
@@ -646,7 +648,10 @@ describe('workspace layout guards', () => {
     expect(artifactSource).toContain('if (!event.metaKey || event.ctrlKey) return;');
     expect(artifactSource).toContain("mapFrame.addEventListener('wheel', handleCommandWheel, { passive: false, capture: true })");
     expect(artifactSource).toContain('Ctrl/Command-wheel zooms');
-    expect(artifactSource).toContain('if (ctrlKey) {');
+    // Ctrl zooms at any scale; the plain wheel pans only a zoomed map and passes
+    // through at Fit (see mapWheelIntent and its behavioural test).
+    expect(artifactSource).toContain("if (ctrlKey) return 'zoom';");
+    expect(artifactSource).toContain("if (intent === 'pass') return false;");
     expect(artifactSource).toContain('const panX = (shiftKey && Math.abs(normalizedX) < 0.5 ? normalizedY : normalizedX) * panScale;');
   });
 
@@ -669,7 +674,8 @@ describe('workspace layout guards', () => {
 
   it('keeps genetic-code context synchronized across feature, pinned-track, and PCR flows', () => {
     expect(artifactSource).toContain("const TRANSLATION_CODE_FEATURE_TYPES: ReadonlySet<FeatureType> = new Set<FeatureType>(['cds', 'orf']);");
-    expect(artifactSource).toContain('&& (feature.strand === 1 || feature.strand === -1)');
+    expect(sliceBetween(artifactSource, 'export function drawsDefaultTranslationTrack(', '// INSDC /transl_table is meaningful'))
+      .toContain('if (feature.strand !== 1 && feature.strand !== -1) return false;');
     expect(artifactSource).toContain('track.frame,\n      track.completeCds,\n      track.label,');
     expect(artifactSource).toContain("const translateTargetSemanticFeature = translateTarget.translationSource === 'layer'\n    ? null\n    : translateTargetFeature;");
     expect(artifactSource).toContain('const resetCapturedFeatureSemantics = track.needsReview || translationAnchorChanged;');
@@ -810,8 +816,10 @@ describe('workspace layout guards', () => {
   });
 
   it('opens wide-desktop Export and Copy tall enough to show its sequence preview', () => {
-    expect(artifactSource).toContain('resizeExportPanelTo(340)');
-    expect(artifactCss).toContain('.motif-cs-sequence-preview');
+    // The popover sizes to its content up to the room the viewport has, so the
+    // preview keeps its own height instead of a resized panel's leftover.
+    expect(artifactCss).toMatch(/\.motif-cs-sequence-preview\s*\{[\s\S]*?height:\s*clamp\(96px, 18vh, 260px\)/);
+    expect(artifactSource).toContain('const natural = body.scrollHeight;');
   });
 
   it('copies reverse features in feature orientation from the keyboard path', () => {
@@ -860,30 +868,43 @@ describe('workspace layout guards', () => {
     expect(artifactCss).not.toMatch(/@media \(max-width: 840px\)[\s\S]*?\.motif-cs-window\s*\{[\s\S]*?height:\s*min\(30vh, 240px\) !important/);
   });
 
-  it('uses one compact Export scroll owner and retains wide-desktop resizing', () => {
+  it('opens Export as a popover that never scrolls the sequence column, and closes it on Escape', () => {
     const exportPanel = sliceBetween(
       artifactSource,
       'function SequenceToolsPanel({',
       '/**\n * A floating, draggable, resizable, closable window',
     );
+    const reveal = sliceBetween(artifactSource, 'const revealExportPanel = useCallback', '}, [exportOpenedFrom]);');
 
-    expect(exportPanel).toContain('startExportPanelResize');
-    expect(exportPanel).toContain("event.key !== 'ArrowUp' && event.key !== 'ArrowDown'");
-    expect(exportPanel).toContain('const sequenceChromeHeight = Math.max(0, sequenceViewportRect.top - sequencePanelRect.top);');
-    expect(exportPanel).toContain('const available = columnRect.height - topReserve - bottomReserve - sequenceChromeHeight - 160;');
-    expect(exportPanel).toContain('aria-label="Resize Export and Copy panel"');
-    expect(exportPanel).toContain('if (window.matchMedia(OVERLAY_TOOLS_LAYOUT_MEDIA).matches) return null;');
-    expect(exportPanel).toContain("window.addEventListener('resize', syncExportPanelHeight);");
-    expect(exportPanel).toContain('if (exportPanelHeight === null) {');
-    expect(exportPanel).toContain("panel.querySelectorAll<HTMLElement>('.motif-cs-export-row button')");
-    expect(exportPanel).toContain('actionBottom - columnRect.bottom,');
-    expect(exportPanel).toContain('top: column.scrollTop + scrollDelta,');
-    expect(exportPanel).toContain('const observer = new ResizeObserver(() => {');
-    expect(exportPanel).toContain('onDoubleClick={() => resizeExportPanelTo(340)}');
-    expect(artifactCss).toMatch(/\.motif-cs-export-resize-handle\s*\{[\s\S]*?cursor:\s*ns-resize/);
-    expect(artifactCss).toContain('var(--motif-cs-export-panel-height, 220px)');
-    expect(artifactCss).toMatch(/\.motif-cs-sequence-tools-panel\[open\]\[data-resized="true"\] \.motif-cs-export-body\s*\{[\s\S]*?overscroll-behavior:\s*contain;[\s\S]*?scrollbar-gutter:\s*stable/);
+    // Opening no longer moves the column: the in-flow panel it replaced
+    // scrolled it 339px at 1024x768, 1280x720 and 1440x900.
+    expect(reveal).not.toContain('scrollIntoView');
+    expect(reveal).not.toContain('scrollTop');
+    expect(exportPanel).not.toContain('column.scrollTo');
+    expect(artifactSource).not.toContain('exportReturnScrollRef');
+    expect(artifactCss).toMatch(/\.motif-cs-sequence-tools-panel\[open\] > \.motif-cs-export-body\s*\{[\s\S]*?position:\s*fixed;[\s\S]*?overflow:\s*auto;[\s\S]*?container-type:\s*inline-size/);
+    // Anchored to the title-row button, or above the summary that opened it,
+    // and bounded by the room the viewport has.
+    expect(exportPanel).toContain("const anchor = triggerOnScreen ? triggerRect : summary.getBoundingClientRect();");
+    expect(exportPanel).toContain("body.style.maxHeight = `${Math.max(120, Math.floor(below ? roomBelow : roomAbove))}px`;");
+
+    // Escape closes it and hands focus back to whatever opened it, without
+    // reaching the document handler that clears the selection.
+    expect(exportPanel).toMatch(/if \(event\.key !== 'Escape' \|\| !exportPanelRef\.current\?\.open\) return;\s*[\s\S]*?event\.stopPropagation\(\);\s*closeExportPanel\(\);/);
+    expect(exportPanel).toContain("const returnTo = openedFrom === 'header' && trigger?.isConnected");
+    expect(exportPanel).toContain('aria-label="Close Export and copy"');
+
+    // The resizable in-flow viewport is gone with the scrolling it served.
+    expect(artifactSource).not.toContain('Resize Export and Copy panel');
+    expect(artifactCss).not.toContain('motif-cs-export-resize-handle');
+    expect(artifactCss).not.toContain('data-resized');
     expect(artifactCss).toMatch(/\.motif-cs-sequence-preview\s*\{[\s\S]*?max-height:\s*min\(52vh, 520px\)[\s\S]*?overflow:\s*auto/);
+  });
+
+  it('says what each Complement does: the toolbar shows a strand, Export copies one', () => {
+    expect(artifactSource).toContain('>Copy complement</button>');
+    expect(artifactSource).not.toMatch(/onCopy\('Complement', complementSequence\)[^>]*>Complement<\/button>/);
+    expect(artifactSource).toContain('aria-label="Complement strand"');
   });
 
   it('previews the selected export payload instead of always showing raw sequence', () => {
@@ -927,7 +948,7 @@ describe('workspace layout guards', () => {
     // under 100% recovered them.
     const rule = sliceBetween(
       artifactCss,
-      '@media (max-height: 731px) {',
+      '@media (max-height: 709px) {',
       '\n}',
     );
     expect(rule).toContain('.motif-cs-inspector[data-tools-pinned="false"]');
@@ -979,7 +1000,7 @@ describe('workspace layout guards', () => {
     // what makes inline-size containment safe on this element.
     expect(artifactSource).toContain("style={{ left: `${leftCh}ch`, width: `${widthCh}ch`");
     // The name is still reachable without the label.
-    expect(artifactSource).toContain('title={`${feature.name} · ${feature.type} · ${featureRangeLabel(feature)} · Double-click to edit`}');
+    expect(artifactSource).toContain('title={`${feature.name} · ${featureTypeDisplay(feature)} · ${featureRangeLabel(feature)} · Double-click to edit`}');
   });
 
   it('gives two small controls a 24px target without moving their rows', () => {
@@ -1005,7 +1026,8 @@ describe('workspace layout guards', () => {
     // opened once; pBR322 reads 89. The zero was on screen in the default
     // state, for every record, and it was wrong.
     expect(artifactSource).toContain('() => hasOpened ? findGuidesInRange(sequence, sequenceType, nuclease, activeScopeRange, topology) : [],');
-    expect(artifactSource).toMatch(/const guideChip = !isNucleotide\s*\?\s*'n\/a'\s*:\s*hasOpened\s*\?/);
+    // With no record at all there is nothing to count either, so no chip.
+    expect(artifactSource).toMatch(/const guideChip = !hasRecord\s*\?\s*undefined\s*:\s*!isNucleotide\s*\?\s*'n\/a'\s*:\s*hasOpened\s*\?/);
     expect(artifactSource).toContain('{guideChip ? <span className="motif-cs-chip">{guideChip}</span> : null}');
     expect(artifactSource).not.toContain("const guideChip = isNucleotide ? `${guides.length}");
   });
@@ -1023,7 +1045,7 @@ describe('workspace layout guards', () => {
     // the name.
     expect(artifactSource).toContain('<span>Construct Verification</span>');
     // And the count is still reachable from the head itself.
-    expect(artifactSource).toContain('`Construct verification — ${constructVerificationReadCount} eligible Sanger read${constructVerificationReadCount === 1 ? \'\' : \'s\'}`');
+    expect(artifactSource).toContain('`Construct Verification — ${constructVerificationReadCount} eligible Sanger read${constructVerificationReadCount === 1 ? \'\' : \'s\'}`');
   });
 
   it('keeps a disabled control readable in the light themes', () => {

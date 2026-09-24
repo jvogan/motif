@@ -12,10 +12,13 @@ function renderLargeViewer() {
     name: 'Debounced search',
     molecule: 'dna',
     referenceRowId: 'row-000',
-    rows: Array.from({ length: 100 }, (_, index) => ({
+    // 100,000 cells, the debounce threshold, as 10 long rows rather than 100
+    // short ones. The threshold counts cells, but jsdom renders every row: the
+    // 100-row mount cost ~0.9s against ~0.14s for ten, and timed out under load.
+    rows: Array.from({ length: 10 }, (_, index) => ({
       id: `row-${String(index).padStart(3, '0')}`,
       name: `Sample ${String(index).padStart(3, '0')}`,
-      aligned: 'A'.repeat(1_000),
+      aligned: 'A'.repeat(10_000),
     })),
   });
   const props: ClaudeScienceMsaViewerProps = {
@@ -60,7 +63,7 @@ describe('ClaudeScienceMsaViewer finder debounce', () => {
 
     act(() => vi.advanceTimersByTime(1));
     expect(form.getAttribute('aria-busy')).toBe('false');
-    expect(count.textContent).toBe('100 row name · 4,900 motif+');
+    expect(count.textContent).toBe('10 row name · 4,990 motif+');
     expect((screen.getByTestId('msa-search-next') as HTMLButtonElement).disabled).toBe(false);
   });
 

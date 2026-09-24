@@ -153,6 +153,54 @@
   color: var(--red);
 }
 
+/* Beside a verdict the run status is bookkeeping, so it drops to muted ink:
+   a finished run that found an inconsistent construct is not a green result. */
+.motif-cs-agent-result-status[data-demoted] {
+  border-color: var(--border-subtle);
+  background: transparent;
+  color: var(--text-muted);
+  font-weight: 560;
+}
+
+.motif-cs-agent-result-verdict {
+  --motif-cs-agent-verdict-color: var(--text-muted);
+  flex: 0 0 auto;
+  padding: 3px 7px;
+  border: 1px solid color-mix(in srgb, var(--motif-cs-agent-verdict-color) 48%, var(--border));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--motif-cs-agent-verdict-color) 6%, var(--bg-primary));
+  color: var(--motif-cs-agent-verdict-color);
+  font-size: 10.5px;
+  font-weight: 740;
+  white-space: nowrap;
+}
+
+/* Same verdict tokens as the construct-verification evidence panel. */
+.motif-cs-agent-result-verdict[data-verdict="consistent"] {
+  --motif-cs-agent-verdict-color: var(--green);
+}
+
+.motif-cs-agent-result-verdict[data-verdict="needs_review"] {
+  --motif-cs-agent-verdict-color: var(--amber);
+}
+
+.motif-cs-agent-result-verdict[data-verdict="inconsistent"] {
+  --motif-cs-agent-verdict-color: var(--red);
+}
+
+.motif-cs-agent-verification-evidence {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.motif-cs-agent-verification-note {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
 .motif-cs-agent-result-facts {
   display: flex;
   flex-wrap: wrap;
@@ -521,7 +569,8 @@
     width: 100%;
   }
 
-  .motif-cs-agent-result-status {
+  .motif-cs-agent-result-status,
+  .motif-cs-agent-result-verdict {
     width: max-content;
   }
 

@@ -183,8 +183,8 @@ describe('workflow overlay adapters', () => {
       ['design', 'primer-forward', { start: 120, end: 142 }],
       ['design', 'primer-reverse', { start: 640, end: 663 }],
     ]);
-    expect(inputs[0].label).toBe('Forward primer 22 nt (61.3 C)');
-    expect(inputs[1].label).toBe('Reverse primer 23 nt (60.1 C)');
+    expect(inputs[0].label).toBe('Forward primer 22 nt (61.3 °C)');
+    expect(inputs[1].label).toBe('Reverse primer 23 nt (60.1 °C)');
 
     const overlays = projectRangeOverlays(layout, inputs);
     expect(overlays).toHaveLength(2);

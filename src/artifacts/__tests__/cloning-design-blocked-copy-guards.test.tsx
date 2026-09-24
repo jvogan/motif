@@ -60,12 +60,13 @@ afterEach(() => {
 });
 
 describe('cloning design blocked-input copy', () => {
-  it('states the two-part requirement at the add control and describes the Add Part button with it', () => {
+  it('states the two-part requirement at the add control and describes the Add part button with it', () => {
     render(<ClaudeScienceCloningDesignWorkspace {...props({ initialRecordIds: ['promoter'] })} />);
 
     const hint = screen.getByTestId('cloning-design-add-hint');
     expect(hint.textContent).toBe('Add a second part to check fusion boundaries and assembly order.');
     const addButton = screen.getByTestId('cloning-design-add-part');
+    expect(addButton.textContent).toBe('Add part');
     expect(addButton.getAttribute('aria-describedby')).toBe(hint.id);
     expect(addButton.hasAttribute('disabled')).toBe(false);
   });
@@ -95,7 +96,7 @@ describe('cloning design blocked-input copy', () => {
 
   it('drops the order-checked claim while no order can be checked', () => {
     render(<ClaudeScienceCloningDesignWorkspace {...props({ initialRecordIds: ['promoter'] })} />);
-    expect(screen.queryByRole('button', { name: 'Order Checked' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Order checked' })).toBeNull();
   });
 
   it('names the real shortfall when two rows are present but one is unreadable', () => {
@@ -124,7 +125,7 @@ describe('cloning design blocked-input copy', () => {
     expect(screen.queryByTestId('cloning-design-add-hint')).toBeNull();
     expect(screen.queryByText(/Add a second part/)).toBeNull();
     expect(screen.queryByText('Two Parts Needed')).toBeNull();
-    expect(screen.getByRole('button', { name: 'Order Checked' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Order checked' })).toBeTruthy();
     const required = screen.getByText('Required', { selector: 'dt' });
     expect(required.parentElement?.textContent).toMatch(/^Required\d+$/);
     expect(screen.getByText('Preparation Checklist').parentElement?.textContent)
@@ -153,7 +154,7 @@ describe('cloning design blocked-input copy', () => {
       'Preparation has not been evaluated. Add at least 2 DNA inputs to check fusion boundaries and assembly order.',
       'Cloning design requires at least two ordered DNA inputs.',
       'Not evaluated',
-      'Order Checked',
+      'Order checked',
     ]) {
       expect(words).not.toContain(deleted);
     }

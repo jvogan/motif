@@ -240,4 +240,38 @@ describe('ClaudeScienceMsaViewer AB1 intake selection', () => {
     );
     expect(screen.getByTestId('msa-source-link-status').textContent).toContain('1 over the 10-record preview limit');
   });
+
+  it('tells apart two records that share a name, even at the same length', () => {
+    // A bundled pUC19 and an imported pUC19.fasta both list as "pUC19"; the
+    // length alone stops telling them apart once both hold the same 2,686 bp.
+    const sequence = 'ACGT'.repeat(10);
+    render(
+      <Harness
+        initialRecords={[
+          { id: 'bundled', name: 'pUC19', type: 'dna', topology: 'circular', sequence },
+          { id: 'imported', name: 'pUC19', type: 'dna', topology: 'linear', sequence },
+          { id: 'other', name: 'pBR322', type: 'dna', topology: 'circular', sequence },
+        ]}
+        importedRecords={[]}
+        activeRecordId="other"
+      />,
+    );
+    const meta = Array.from(document.querySelectorAll<HTMLElement>('.motif-cs-msa-record-option'))
+      .map((row) => `${row.querySelector('.motif-cs-msa-record-name')?.textContent}: ${row.querySelector('small')?.textContent}`);
+    expect(meta).toEqual(expect.arrayContaining([
+      'pUC19: DNA · circular · 40 bp · same name, 1 of 2',
+      'pUC19: DNA · linear · 40 bp · same name, 2 of 2',
+      'pBR322: DNA · 40 bp',
+    ]));
+
+    // With both selected, the template picker names them apart too.
+    for (const row of Array.from(document.querySelectorAll<HTMLElement>('.motif-cs-msa-record-option'))) {
+      const box = row.querySelector<HTMLInputElement>('input[type="checkbox"]');
+      if (box && !box.checked && row.textContent?.startsWith('pUC19')) fireEvent.click(box);
+    }
+    const template = screen.getByRole('combobox', { name: 'Initial template' });
+    expect(within(template).getAllByRole('option').map((option) => option.textContent)).toEqual(
+      expect.arrayContaining(['pUC19 (same name, 1 of 2)', 'pUC19 (same name, 2 of 2)']),
+    );
+  });
 });

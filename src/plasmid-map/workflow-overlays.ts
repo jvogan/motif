@@ -174,7 +174,7 @@ function ntLabel(value: number): string {
 }
 
 function tmLabel(tm: number | null | undefined): string {
-  return typeof tm === 'number' && Number.isFinite(tm) ? `${tm.toFixed(1)} C` : 'Tm n/a';
+  return typeof tm === 'number' && Number.isFinite(tm) ? `${tm.toFixed(1)} °C` : 'Tm n/a';
 }
 
 function enzymeEndLabel(left: string | null | undefined, right: string | null | undefined): string {

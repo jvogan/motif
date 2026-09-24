@@ -167,8 +167,7 @@ describe('Sequence visual consistency guards', () => {
     expect(clipPad, 'strip clip padding').not.toBeNull();
 
     for (const anchor of [
-      '@media (max-width: 460px)',
-      '@container (max-width: 640px)',
+      '@container (max-width: 400px)',
       '@container (max-width: 360px)',
     ]) {
       const strip = cssBlockAfter(anchor, '.motif-cs-selection-actions');
@@ -208,7 +207,12 @@ describe('Sequence visual consistency guards', () => {
 
   it('uses complete compact labels instead of fragments', () => {
     expect(artifactCss).toMatch(/@media \(max-width: 960px\)[\s\S]*?\.motif-cs-map-title-full\s*\{[\s\S]*?display:\s*none[\s\S]*?\.motif-cs-map-title-compact\s*\{[\s\S]*?display:\s*inline/);
-    expect(artifactCss).toMatch(/@container \(max-width: 520px\)[\s\S]*?\.motif-cs-edit-toolbar \.motif-cs-label-full\s*\{[\s\S]*?display:\s*inline[\s\S]*?\.motif-cs-edit-toolbar \.motif-cs-label-short\s*\{[\s\S]*?display:\s*none/);
+    // The Sequence pane no longer swaps to fragments anywhere: its three dock
+    // actions fit at every width, and the four that did not live in Create in
+    // full words. "Add AA / Primers / + RC / + Prot" painted at every
+    // side-by-side window from 1560 to 2150px wide.
+    expect(artifactCss).not.toContain('.motif-cs-label-short');
+    expect(artifactCss).not.toContain('.motif-cs-label-full');
   });
 
   it('keeps every selection action reachable across the compact-width handoffs', () => {
@@ -224,7 +228,7 @@ describe('Sequence visual consistency guards', () => {
     expect(cssBlock('.motif-cs-selection-actions .motif-cs-mini-button'))
       .toMatch(/scroll-margin-inline:\s*3px/);
 
-    const twoLineActions = cssBlockAfter('@container (max-width: 640px)', '.motif-cs-selection-actions');
+    const twoLineActions = cssBlockAfter('@container (max-width: 400px)', '.motif-cs-selection-actions');
     expect(twoLineActions).toMatch(/width:\s*100%/);
     expect(twoLineActions).toMatch(/max-width:\s*none/);
     expect(twoLineActions).toMatch(/flex-wrap:\s*nowrap/);
@@ -233,10 +237,6 @@ describe('Sequence visual consistency guards', () => {
     expect(narrowActions).toMatch(/overflow-x:\s*auto/);
     expect(narrowActions).toMatch(/overflow-y:\s*hidden/);
     expect(narrowActions).toMatch(/flex-wrap:\s*nowrap/);
-    expect(cssBlockAfter('@container (max-width: 360px)', '.motif-cs-selection-actions .motif-cs-label-full'))
-      .toMatch(/display:\s*none/);
-    expect(cssBlockAfter('@container (max-width: 360px)', '.motif-cs-selection-actions .motif-cs-label-short'))
-      .toMatch(/display:\s*inline/);
 
     const finalNarrowInset = cssBlockAfter(
       '/* The shared 520px metric rule above follows the 360px shorthand-label rule in',
@@ -336,6 +336,48 @@ describe('Sequence visual consistency guards', () => {
       '.motif-cs-feature-block[data-selected="true"]',
     );
     expect(active).not.toMatch(/border/);
+  });
+
+  it('draws focus inside the arrowhead, the panel summaries and the record tabs, where an outer ring is cut', () => {
+    // The clip-path above cut the shared 2px-outside outline too: a focused
+    // arrowhead painted only its hover tint (0 of 46 tab stops on a headed block
+    // showed a ring). `details.motif-cs-panel` clips its summary's outline, and
+    // the record tab strip clips a tab's. Each now draws its ring inside.
+    const head = cssBlock('.motif-cs-feature-block[data-head="true"]:focus-visible');
+    expect(head).toMatch(/inset 0 0 0 2px var\(--focus-ring\)/);
+    expect(head).toMatch(/inset 0 0 0 3px var\(--bg-primary\)/);
+    // It must outrank the shared focus rule's `box-shadow: none`, which is 0,2,0
+    // and comes earlier in that section.
+    const shared = artifactCss.indexOf('.motif-cs-feature-block:focus-visible,');
+    expect(shared).toBeGreaterThanOrEqual(0);
+    expect(artifactCss.indexOf('.motif-cs-feature-block[data-head="true"]:focus-visible {')).toBeGreaterThan(shared);
+
+    // The shell-wide `#root :focus-visible` (1,1,0) sets outline-offset: 2px, so
+    // only a #root-scoped rule can move these rings inward.
+    const inset = cssBlock('#root summary.motif-cs-panel-head:focus-visible,\n#root .motif-cs-record-tab:focus-visible');
+    expect(inset).toMatch(/outline-offset:\s*-2px/);
+
+    // The head ring must stand at 3:1 against the surface outside it and the
+    // resting fill it paints over, for every pUC19 feature colour in every theme.
+    const fillDeclaration = cssBlockAfter('.motif-cs-feature-track-lane', '.motif-cs-feature-block');
+    const featureFillWeight = Number(/background:\s*color-mix\(in srgb, var\(--feature-color\) (\d+)%/.exec(fillDeclaration)![1]) / 100;
+    const featureColors = [...new Set(vectors.find((record) => record.name === 'pUC19')!.features.map((feature) => feature.color))]
+      .map(rgb);
+    for (const block of [
+      cssBlock(':root,\nhtml[data-theme="light"]'),
+      cssBlock('html[data-theme="dark"]'),
+      cssBlock('html[data-theme="claude-light"]'),
+      cssBlock('html[data-theme="claude-dark"]'),
+    ]) {
+      const background = rgb(cssVariable(block, '--bg-primary'));
+      const ringHex = /--focus-ring:\s*(#[0-9a-f]{6})/i.exec(block)?.[1] ?? cssVariable(block, '--accent');
+      const ring = rgb(ringHex);
+      expect(contrast(ring, background), 'focus ring against the surface').toBeGreaterThanOrEqual(3);
+      for (const featureColor of featureColors) {
+        const restingFill = mix(featureColor, background, featureFillWeight);
+        expect(contrast(ring, restingFill), 'focus ring against a resting feature fill').toBeGreaterThanOrEqual(3);
+      }
+    }
   });
 
   it('keeps complement bases muted but opaque enough for text contrast in every theme', () => {

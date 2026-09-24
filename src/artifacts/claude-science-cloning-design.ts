@@ -426,7 +426,7 @@ function requestProvenance(
   };
 }
 
-function overhangLengthForEnzyme(enzyme: GoldenGateEnzymeName): 3 | 4 {
+export function overhangLengthForEnzyme(enzyme: GoldenGateEnzymeName): 3 | 4 {
   return enzyme === 'SapI' || enzyme === 'BspQI' ? 3 : 4;
 }
 

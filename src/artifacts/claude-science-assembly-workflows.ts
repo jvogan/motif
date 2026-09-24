@@ -6,7 +6,9 @@ import {
   type GoldenGateFidelityJunction,
 } from '../bio/golden-gate-fidelity';
 import { reverseComplement } from '../bio/reverse-complement';
-import type { Topology } from '../bio/types';
+import { remapPositionQualifiers, type QualifierBaseMap } from '../bio/transl-except';
+import { isProposedAnnotation } from '../bio/proposed-annotations';
+import type { Feature, Topology } from '../bio/types';
 import {
   normalizeArtifactWorkflowResults,
   type ArtifactJsonObject,
@@ -429,6 +431,11 @@ function recordShapedAssemblyEnd(
   );
 }
 
+/** `5prime`/`3prime` is the stored end chemistry; a reader is shown 5′ and 3′. */
+function endTypeLabel(type: ArtifactAssemblyEndType): string {
+  return type === 'blunt' ? 'blunt' : type === '5prime' ? '5′' : '3′';
+}
+
 function ligationJunction(
   left: { recordId: string; name: string; rightEnd: ArtifactAssemblyEnd | null },
   right: { recordId: string; name: string; leftEnd: ArtifactAssemblyEnd | null },
@@ -473,7 +480,7 @@ function ligationJunction(
       rightEnd,
       type: 'incompatible',
       compatible: false,
-      reason: `${left.name} → ${right.name} mixes blunt and sticky ends.`,
+      reason: `${left.name} → ${right.name} mixes a blunt end with a sticky one. Fill in or chew back the sticky end and ligate blunt, or recut the blunt part so both ends leave the same overhang.`,
     };
   }
   if (leftEnd.type !== rightEnd.type) {
@@ -486,7 +493,7 @@ function ligationJunction(
       rightEnd,
       type: 'incompatible',
       compatible: false,
-      reason: `${left.name} → ${right.name} mixes ${leftEnd.type} and ${rightEnd.type} overhang polarity.`,
+      reason: `${left.name} leaves a ${endTypeLabel(leftEnd.type)} overhang and ${right.name} a ${endTypeLabel(rightEnd.type)} overhang, which cannot pair. Recut one part so both ends leave the same polarity, or blunt both ends and ligate blunt.`,
     };
   }
   const expected = reverseComplement(leftEnd.sequence).toUpperCase();
@@ -501,8 +508,8 @@ function ligationJunction(
     type: compatible ? 'sticky' : 'incompatible',
     compatible,
     reason: compatible
-      ? `${left.name} → ${right.name} has complementary ${leftEnd.type} sticky ends.`
-      : `${left.name} exposes ${leftEnd.sequence}; ${right.name} must expose ${expected}, not ${rightEnd.sequence}.`,
+      ? `${left.name} → ${right.name} has complementary ${endTypeLabel(leftEnd.type)} sticky ends.`
+      : `${left.name} leaves ${endTypeLabel(leftEnd.type)} ${leftEnd.sequence} and ${right.name} starts with ${endTypeLabel(rightEnd.type)} ${rightEnd.sequence}, which cannot pair. Recut ${right.name} to start with ${endTypeLabel(leftEnd.type)} ${expected}, or blunt both ends and ligate blunt — a blunt join carries no part order.`,
   };
 }
 
@@ -545,7 +552,7 @@ function ligationOrderAmbiguityIssues(
       if (compatibleTargets.length > 0) {
         issues.push(issue(
           'ambiguous_terminal_ligation',
-          `${part.name} has a terminal ${rightEnd.type} overhang that can ligate to ${compatibleTargets.length} selected left end${compatibleTargets.length === 1 ? '' : 's'}; the intended linear product is not unique.`,
+          `${part.name} has a terminal ${endTypeLabel(rightEnd.type)} ${rightEnd.sequence} overhang that can ligate to ${compatibleTargets.length} selected left end${compatibleTargets.length === 1 ? '' : 's'}; the intended linear product is not unique.`,
           { recordId: part.recordId },
         ));
       }
@@ -553,9 +560,17 @@ function ligationOrderAmbiguityIssues(
     }
 
     if (compatibleTargets.length !== 1 || compatibleTargets[0] !== intendedTarget) {
+      const end = `${endTypeLabel(rightEnd.type)} ${rightEnd.sequence}`;
+      const intendedName = parts[intendedTarget]?.name ?? `the part at position ${intendedTarget + 1}`;
       issues.push(issue(
         'ambiguous_sticky_ligation',
-        `${part.name} ${rightEnd.type} overhang matches ${compatibleTargets.length} selected left end${compatibleTargets.length === 1 ? '' : 's'} instead of uniquely selecting position ${intendedTarget + 1}.`,
+        compatibleTargets.length === 0
+          ? `${part.name} leaves ${end} and no selected part starts with the matching ${endTypeLabel(rightEnd.type)} ${expectedLeft}, so nothing can follow it at position ${intendedTarget + 1}.`
+          : compatibleTargets.length === 1
+            ? compatibleTargets[0] === index
+              ? `${part.name} leaves ${end}, which matches its own left end, so it can close on itself instead of joining ${intendedName}.`
+              : `${part.name} leaves ${end}, which pairs with ${parts[compatibleTargets[0]]?.name ?? `position ${compatibleTargets[0] + 1}`} rather than ${intendedName}. Move that part to position ${intendedTarget + 1}, or recut so the intended pair matches.`
+            : `${part.name} leaves ${end}, which ${compatibleTargets.length} selected parts start with, so the order is ambiguous. Give each junction its own overhang pair.`,
         {
           recordId: part.recordId,
           ...(junctions.length === 0 ? {} : { junctionIndex: Math.min(index, junctions.length - 1) }),
@@ -1249,4 +1264,300 @@ export function createArtifactAssemblyArtifacts(
     },
   };
   return { workflowResult, derivedRecord };
+}
+
+type CarriedFeatureShape = {
+  start: number;
+  end: number;
+  strand?: number;
+  subRanges?: ReadonlyArray<{ start: number; end: number; strand?: number }>;
+  metadata?: Readonly<Record<string, unknown>>;
+};
+
+/**
+ * A proposed ORF that nobody accepted is a guess about its part, so a product
+ * does not carry it: it would arrive as a feature of a record whose own review
+ * never offered it. An accepted proposal is an annotation and carries.
+ */
+function isUnreviewedGuess(feature: CarriedFeatureShape): boolean {
+  return feature.metadata !== undefined && isProposedAnnotation({ metadata: feature.metadata });
+}
+
+/**
+ * A qualifier such as /transl_except=(pos:1204..1206,aa:Sec) names bases by
+ * absolute position, so it moves with its feature; left behind, it would
+ * recode whatever codon now sits at the old number.
+ */
+function carriedQualifiers(feature: CarriedFeatureShape, map: QualifierBaseMap): { metadata?: Readonly<Record<string, unknown>> } {
+  return feature.metadata === undefined ? {} : { metadata: remapPositionQualifiers(feature.metadata, map) };
+}
+
+/**
+ * A part used reverse-complemented enters the product as its flipped bases, so
+ * each feature is mirrored within the part and moves to the other strand; a
+ * directionless one stays directionless. Sub-ranges keep their stored order:
+ * it is biological 5′→3′ order, and mirroring each piece keeps that true on the
+ * flipped strand. A feature's own bases are unchanged, so `codon_start`, which
+ * counts from the feature's 5′ end, stays right.
+ */
+function orientPart<P extends { sequence: string; features?: readonly CarriedFeatureShape[]; orientation?: string }>(part: P): P {
+  if (part.orientation !== 'reverse') return part;
+  const length = part.sequence.length;
+  const flip = <T extends { start: number; end: number; strand?: number }>(item: T): T => ({
+    ...item,
+    start: length - item.end,
+    end: length - item.start,
+    ...(item.strand === undefined ? {} : { strand: -item.strand || 0 }),
+  });
+  return {
+    ...part,
+    sequence: reverseComplement(part.sequence),
+    features: part.features?.map((feature) => ({
+      ...flip(feature),
+      ...(feature.subRanges && { subRanges: feature.subRanges.map(flip) }),
+      ...carriedQualifiers(feature, {
+        base: (index) => (index >= 0 && index < length ? length - 1 - index : null),
+        flipped: true,
+      }),
+    })),
+  };
+}
+
+/**
+ * True when any base of the feature lies in one of the [start, end) intervals.
+ * A circular location written across the origin (start after end) covers the
+ * bases from start to the molecule's end and from 0 to end.
+ */
+export function featureOverlapsIntervals(
+  feature: Pick<CarriedFeatureShape, 'start' | 'end' | 'subRanges'>,
+  intervals: ReadonlyArray<readonly [number, number]>,
+  moleculeLength: number,
+): boolean {
+  const pieces: Array<readonly [number, number]> = feature.subRanges?.length
+    ? feature.subRanges.map((range) => [range.start, range.end] as const)
+    : feature.start > feature.end
+      ? [[feature.start, moleculeLength], [0, feature.end]]
+      : [[feature.start, feature.end]];
+  return pieces.some(([from, to]) => intervals.some(([start, end]) => from < end && to > start));
+}
+
+/**
+ * The sentence a product's result line adds when the builder left features out
+ * because they cross one of its boundaries: a cut, an amplicon end or a part
+ * end. Names the first three, then counts the rest; null when nothing was left
+ * out, so the line reads as before. An imported GenBank `source` feature
+ * describes the whole record, so any cut crosses it, and a proposed ORF is a
+ * guess, not an annotation: neither is named.
+ */
+export function describeFeaturesLeftOut(
+  features: ReadonlyArray<Pick<Feature, 'name' | 'type' | 'metadata'>>,
+  boundary: 'cut' | 'amplicon' | 'part',
+  productCount = 1,
+): string | null {
+  const names = features
+    .filter((feature) => feature.metadata.motifOriginalFeatureKey !== 'source' && !isProposedAnnotation(feature))
+    .map((feature) => feature.name.trim() || feature.type);
+  if (names.length === 0) return null;
+  const one = names.length === 1;
+  const shown = names.slice(0, 3);
+  const rest = names.length - shown.length;
+  const listed = rest > 0
+    ? `${shown.join(', ')} and ${rest} more`
+    : shown.length > 1 ? `${shown.slice(0, -1).join(', ')} and ${shown[shown.length - 1]}` : shown[0];
+  const crosses = boundary === 'cut'
+    ? productCount === 1 ? 'the cut' : 'a cut'
+    : boundary === 'amplicon' ? 'an amplicon end' : 'a part end';
+  const absent = boundary === 'cut' && productCount === 2
+    ? 'in neither fragment'
+    : boundary === 'cut' && productCount > 2 ? 'in no fragment' : `not in the ${boundary === 'cut' ? 'linearized record' : 'product'}`;
+  return `${names.length} feature${one ? '' : 's'} ${one ? 'crosses' : 'cross'} ${crosses} and ${one ? 'is' : 'are'} ${absent}: ${listed}.`;
+}
+
+/**
+ * Carry each part's features onto a ligation product. The product is the parts'
+ * sequences joined in order, so a feature moves by the summed length of the
+ * parts before it. A feature that does not lie inside its own part (a wrapped
+ * or out-of-range location) is left behind rather than guessed, and pushed on
+ * `leftOut` so the result can say so. Returns [] when the parts do not add up
+ * to the product, so a mismatch never mislabels bases.
+ */
+export function carryLigationPartFeatures<F extends CarriedFeatureShape>(
+  parts: ReadonlyArray<{ sequence: string; features?: readonly F[] }>,
+  productLength: number,
+  leftOut?: F[],
+): F[] {
+  const total = parts.reduce((sum, part) => sum + part.sequence.length, 0);
+  if (total !== productLength) return [];
+  const carried: F[] = [];
+  let offset = 0;
+  for (const part of parts) {
+    const length = part.sequence.length;
+    for (const feature of part.features ?? []) {
+      if (isUnreviewedGuess(feature)) continue;
+      const inside = Number.isInteger(feature.start) && Number.isInteger(feature.end)
+        && feature.start >= 0 && feature.end > feature.start && feature.end <= length
+        && (feature.subRanges ?? []).every((range) => range.start >= 0 && range.end > range.start && range.end <= length);
+      if (!inside) {
+        leftOut?.push(feature);
+        continue;
+      }
+      carried.push({
+        ...feature,
+        start: feature.start + offset,
+        end: feature.end + offset,
+        ...(feature.subRanges === undefined
+          ? {}
+          : { subRanges: feature.subRanges.map((range) => ({ ...range, start: range.start + offset, end: range.end + offset })) }),
+        ...carriedQualifiers(feature, { base: (index) => (index >= 0 && index < length ? index + offset : null) }),
+      });
+    }
+    offset += length;
+  }
+  return carried;
+}
+
+/**
+ * Carry a part's features onto an overlap-assembly product by locating the
+ * part's own bases in it. Gibson shares each overlap between neighbours, so a
+ * part's sequence still appears contiguously in the product and its features
+ * move by where it landed; a part used reverse-complemented is flipped first. A
+ * part contributes nothing when its sequence appears more than once or does not
+ * appear: an ambiguous placement must not label bases it cannot prove. A
+ * feature that does not lie inside its part (a location across a circular
+ * part's origin) is pushed on `leftOut`.
+ */
+export function carryOverlapPartFeatures<F extends CarriedFeatureShape>(
+  parts: ReadonlyArray<{ sequence: string; features?: readonly F[]; orientation?: 'forward' | 'reverse' }>,
+  productSequence: string,
+  leftOut?: F[],
+): F[] {
+  const product = productSequence.toUpperCase();
+  const carried: F[] = [];
+  for (const part of parts.map(orientPart)) {
+    const sequence = part.sequence.toUpperCase();
+    if (!sequence || sequence.length > product.length) continue;
+    const at = product.indexOf(sequence);
+    if (at < 0 || product.indexOf(sequence, at + 1) >= 0) continue;
+    for (const feature of part.features ?? []) {
+      if (isUnreviewedGuess(feature)) continue;
+      const inside = Number.isInteger(feature.start) && Number.isInteger(feature.end)
+        && feature.start >= 0 && feature.end > feature.start && feature.end <= sequence.length
+        && (feature.subRanges ?? []).every((range) => range.start >= 0 && range.end > range.start && range.end <= sequence.length);
+      if (!inside) {
+        leftOut?.push(feature);
+        continue;
+      }
+      // Drop keys whose value is undefined: a record input is validated as JSON,
+      // and a spread copy of a stored feature keeps `subRanges: undefined`.
+      const defined = Object.fromEntries(Object.entries(feature).filter(([, value]) => value !== undefined)) as F;
+      carried.push({
+        ...defined,
+        start: at + feature.start,
+        end: at + feature.end,
+        ...(feature.subRanges === undefined
+          ? {}
+          : { subRanges: feature.subRanges.map((range) => ({ ...range, start: at + range.start, end: at + range.end })) }),
+        ...carriedQualifiers(feature, { base: (index) => (index >= 0 && index < sequence.length ? at + index : null) }),
+      });
+    }
+  }
+  return carried;
+}
+
+/**
+ * Carry each part's features onto a Golden Gate product. Type IIS digestion
+ * keeps only `sequence[insertStart, insertEnd)` of a part, and every released
+ * piece after the first shares its left overhang with the piece before it, so a
+ * part's bases sit at a running offset rather than at a plain sum of lengths.
+ *
+ * A feature is carried only when it lies wholly inside its part's released
+ * region: one that crosses a trim boundary — a recognition site, its spacer, or
+ * the flank beyond it — is dropped rather than clipped, because those bases are
+ * absent from the product. For a circular product the last part's trailing
+ * overhang is the first part's leading overhang, so a feature reaching into it
+ * is dropped too rather than wrapped. Each part is placed only when the product
+ * really carries its released bases there; a part that fails that check
+ * contributes nothing, so an unproven placement never labels bases. A feature
+ * that crosses a trim boundary is pushed on `leftOut`; one wholly outside the
+ * released region is not, since the design discards those bases on purpose.
+ */
+export function carryGoldenGatePartFeatures<F extends CarriedFeatureShape>(
+  parts: ReadonlyArray<{
+    sequence: string;
+    insertStart: number | null;
+    insertEnd: number | null;
+    features?: readonly F[];
+    orientation?: 'forward' | 'reverse';
+  }>,
+  overhangLength: number,
+  productSequence: string,
+  topology: Topology,
+  leftOut?: F[],
+): F[] {
+  if (!Number.isInteger(overhangLength) || overhangLength <= 0 || parts.length === 0) return [];
+  const product = productSequence.toUpperCase();
+  // A design part's insert bounds are measured on its oriented sequence.
+  parts = parts.map(orientPart);
+  const released = parts.map((part) => {
+    const { insertStart, insertEnd } = part;
+    if (!Number.isInteger(insertStart) || !Number.isInteger(insertEnd)) return null;
+    const start = insertStart as number;
+    const end = insertEnd as number;
+    if (start < 0 || end <= start || end > part.sequence.length) return null;
+    const piece = part.sequence.slice(start, end).toUpperCase();
+    return piece.length > overhangLength ? piece : null;
+  });
+  if (released.some((piece) => piece === null)) return [];
+  const pieces = released as string[];
+  const joined = pieces.reduce((sum, piece) => sum + piece.length, 0)
+    - overhangLength * (parts.length - 1)
+    - (topology === 'circular' ? overhangLength : 0);
+  if (joined !== product.length) return [];
+
+  const carried: F[] = [];
+  let offset = 0;
+  parts.forEach((part, index) => {
+    const piece = pieces[index];
+    const head = Math.min(piece.length, product.length - offset);
+    const placed = head > 0
+      && product.slice(offset, offset + head) === piece.slice(0, head)
+      && (head === piece.length
+        || (topology === 'circular' && product.slice(0, piece.length - head) === piece.slice(head)));
+    if (placed) {
+      const start = part.insertStart as number;
+      const end = part.insertEnd as number;
+      const shift = offset - start;
+      for (const feature of part.features ?? []) {
+        if (isUnreviewedGuess(feature)) continue;
+        const inside = Number.isInteger(feature.start) && Number.isInteger(feature.end)
+          && feature.start >= start && feature.end > feature.start && feature.end <= end
+          && feature.end + shift <= product.length
+          && (feature.subRanges ?? []).every((range) => (
+            range.start >= start && range.end > range.start && range.end <= end
+          ));
+        if (!inside) {
+          // A feature wholly outside the released bases (a donor backbone) is
+          // meant to go; one that reaches into them crosses a part end.
+          if (featureOverlapsIntervals(feature, [[start, end]], part.sequence.length)) leftOut?.push(feature);
+          continue;
+        }
+        // Drop keys whose value is undefined: a record input is validated as
+        // JSON, and a spread copy of a stored feature keeps `subRanges: undefined`.
+        const defined = Object.fromEntries(Object.entries(feature).filter(([, value]) => value !== undefined)) as F;
+        carried.push({
+          ...defined,
+          start: feature.start + shift,
+          end: feature.end + shift,
+          ...(feature.subRanges === undefined
+            ? {}
+            : { subRanges: feature.subRanges.map((range) => ({ ...range, start: range.start + shift, end: range.end + shift })) }),
+          ...carriedQualifiers(feature, {
+            base: (index) => (index >= start && index < end && index + shift < product.length ? index + shift : null),
+          }),
+        });
+      }
+    }
+    offset += piece.length - overhangLength;
+  });
+  return carried;
 }

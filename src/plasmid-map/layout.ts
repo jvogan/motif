@@ -6,10 +6,12 @@
  * be asserted in unit tests before any renderer or screenshot exists.
  *
  * PURE: no React, no DOM, no store, no Date.now()/Math.random(). Imports only the
- * bio types, the map contract, and the sibling geometry helpers. Renderers under
- * src/components/plasmid-map/* consume these objects and never re-derive biology.
+ * bio types, the pure featureTypeDisplay, the map contract, and the sibling geometry
+ * helpers. Renderers under src/components/plasmid-map/* consume these objects and
+ * never re-derive biology.
  */
 import type { FeatureStrand } from '../bio/types';
+import { featureTypeDisplay } from '../bio/feature-type-display';
 import type {
   MapInput,
   MapLayout,
@@ -22,6 +24,7 @@ import type {
   MapFeatureSegment,
   MapDisplayOptions,
   MapOverflowRender,
+  MapOverflowSummary,
   MapMode,
   MapCenterTitle,
   MapSpan,
@@ -37,13 +40,14 @@ import {
   bpToX,
   round,
 } from './geometry/coordinates';
-import { featureSegments } from './geometry/ranges';
+import { featureSegments, joinOriginSegments } from './geometry/ranges';
 import { packLanes } from './geometry/lanes';
 import type { LaneItem } from './geometry/lanes';
 import { buildRestrictionClusters } from './geometry/restrictions';
 import type { MapRestrictionCluster } from './geometry/restrictions';
 import {
   approxTextWidth,
+  capitalWidthPadPx,
   arcExtentPx,
   fitsInline,
   deCollideAlongAxis,
@@ -94,9 +98,10 @@ const REC_LABEL_RADIAL_SLOT_PX = 120; // readable radial slot; excess names stay
  * needed +12.4 and six labels across the bundled plasmids silently fell back to two
  * names. 126 = 112 + two separators' worth + headroom, which restores byte-identical
  * enzyme content everywhere: a readable separator must not be paid for with a hidden
- * enzyme name. Verified on pUC19 / pBR322 / pACYC184 / pBluescript / pcDNA3.1 at
- * 1920x1080 — label counts unchanged, zero label-box overlaps, and the worst leader's
- * sideways offset from its own tick unchanged (2.9-9.2% of ring radius).
+ * enzyme name. Verified at 1920x1080 on the synthetic stand-ins then bundled for
+ * pUC19 / pBR322 / pACYC184 / pBluescript / pcDNA3.1 — label counts unchanged, zero
+ * label-box overlaps, and the worst leader's sideways offset from its own tick
+ * unchanged.
  */
 const CIRCULAR_REC_LABEL_MAX_WIDTH_PX = 171;
 const LABEL_BAND_MARGIN = 10; // fitted viewBox padding around outside labels
@@ -117,6 +122,7 @@ const TARGET_COORD_TICKS = 8; // aim for ~6-10 nice coordinate ticks
 const REC_CLUSTER_MIN_SEP_DEG = 6; // circular restriction clustering threshold
 const REC_CLUSTER_MAX_SPAN_BP = 128; // prevents transitive all-enzyme mega-clusters
 const REC_MAX_NAMES = 3; // enzyme names shown before "+N"
+const CLONING_SITE_CLUSTER_MIN_SITES = 8; // see cloningSiteClusterId
 // Adaptive lane compression: when overlapping features stack into many lanes,
 // thickness + gap shrink toward these floors so deep lanes keep DISTINCT descending
 // radii instead of collapsing onto a shared minimum; only when even the floor stack
@@ -133,11 +139,19 @@ const CIRCULAR_ADAPTIVE_FEATURE_STEP = 10;
 const CIRCULAR_ADAPTIVE_RADIUS_STEP = 14;
 const CIRCULAR_ADAPTIVE_HEIGHT_STEP = 42;
 const CIRCULAR_ADAPTIVE_OUTSIDE_GUTTER_STEP = 5;
-const CENTER_TITLE_FONT = 15; // matches .motif-pm-center-name font-size
-const CENTER_TITLE_TWO_LINE_FONT = 14; // dropped a notch when the title wraps
-const CENTER_TITLE_LINE_HEIGHT = 16; // baseline-to-baseline in the 2-line case
+// The ring's name is its largest text: above the 16-unit labels at the floor, and
+// growing with the ring to the cap. The two-line case drops one unit below the size
+// chosen; the length line is 0.72 of the name and never under 14 units.
+const CENTER_TITLE_FONT_MIN = 18;
+const CENTER_TITLE_FONT_MAX = 26;
+// A name too wide for the empty disc at the ring's size steps down to this, the size
+// every name had before, and from there fits exactly as it used to.
+const CENTER_TITLE_FONT_FLOOR = 15;
+const CENTER_TITLE_FONT_PER_RADIUS = 0.06;
+const CENTER_TITLE_LINE_HEIGHT_RATIO = 1.15; // baseline-to-baseline in the 2-line case
 const CENTER_TITLE_WIDTH_RATIO = 1.3;
 const CENTER_TITLE_LENGTH_FONT = 14;
+const CENTER_TITLE_LENGTH_RATIO = 0.72;
 const CENTER_TITLE_DESCENT_PAD = 4;
 const CENTER_TITLE_WIDE_CHARS = new Set(['m', 'w', 'M', 'W', '—', '@', '%']);
 const CENTER_TITLE_NARROW_CHARS = new Set([
@@ -204,9 +218,10 @@ export const LINEAR_REC_LABEL_FONT_PX = 13;
  * They were [50, 64] against a 15px line box for 16px glyphs, and Chromium drew
  * an ink box 19px tall: rows 1 and 2 OVERLAPPED by 5.0px, and row 2's box came
  * within 2.27px of the first feature bar. Nothing collided visibly only because
- * the placer staggers the rows horizontally. Re-measured on pUC19 at 1440x1000
- * with 13px glyphs and a 20px pitch: the rows clear each other by 5.0px and the
- * band clears the first feature bar by 14.06px.
+ * the placer staggers the rows horizontally. With 13px glyphs and a 20px pitch the
+ * rows clear each other by 5.0px, whatever the record; the band's clearance above
+ * the first feature bar was measured on the synthetic stand-in once bundled as
+ * pUC19, at 1440x1000.
  */
 const LINEAR_REC_LABEL_ROW_YS = [50, 70] as const;
 const LINEAR_REC_LABEL_CENTER_OFFSET = LABEL_LINE_HEIGHT_PX / 2;
@@ -233,10 +248,11 @@ const LINEAR_BOTTOM_PAD = 10;
  * the layout draws no longer depends on what the frame measures.
  *
  * This is a ceiling, not a target. Lanes still pack to LINEAR_LANE_PITCH_MAX and
- * a record that needs less gets less: measured natural heights are 216px for a
- * pUC19-shaped record at 1200px wide, 400px for 22 features and 65 sites at the
- * same width, and 492px at 900px wide. 560 sits above all of them, so only a
- * record denser than any of these is squeezed — and it is the same 560px floor
+ * a record that needs less gets less: natural heights measured on the synthetic
+ * records bundled before the real plasmids were 216px for the pUC19 stand-in at
+ * 1200px wide, 400px for 22 features and 65 sites at the same width, and 492px at
+ * 900px wide. 560 sat above all of them, so only a denser record is squeezed —
+ * and it is the same 560px floor
  * the circular frame already uses, not a new number.
  */
 export const LINEAR_MAP_DEPTH_BUDGET = 560;
@@ -258,8 +274,8 @@ const LINEAR_REC_LABEL_MAX_WIDTH_PX = 88;
  *     is simply short by that much, so a very crowded row could drop one more label.
  *
  * Reaching even the 4-digit case needs ~1000 DISTINCT enzymes cutting inside a single
- * cluster window. The bundled set has 154 in total and the densest real cluster on
- * pUC19 is 39. Left unguarded deliberately — the guard would be dead code.
+ * cluster window, and the bundled set has 154 in total. Left unguarded deliberately —
+ * the guard would be dead code.
  */
 const LINEAR_REC_LABEL_MIN_STEM_CHARS = 3;
 const LINEAR_REC_LABEL_GAP_X = 8;
@@ -391,56 +407,83 @@ function splitBalanced(
 }
 
 /**
- * Fit the plasmid title into the ring. `radius` is the backbone radius and `cy`
- * the ring center — both SVG user units, so the returned baselines are absolute y
- * coordinates. Short names return exactly the historical single-line placement
- * (name at cy-2, length at cy+16) so they render unchanged.
+ * The name's type size for a ring of backbone radius `radius`: the largest text in
+ * the ring at every size. Labels around the ring are 16 units, and the name used to
+ * be a fixed 15 — rendered 11.7px beside 12.4px enzyme names at 1440x900, and still
+ * 11.7px on a 677px ring at 1920x1080. It now grows with the ring from 18 units
+ * (radius 300 and under) to 26 (radius 433 and over).
+ */
+function centerTitleFontForRadius(radius: number): number {
+  if (!(radius > 0)) return CENTER_TITLE_FONT_MIN;
+  return clamp(Math.round(radius * CENTER_TITLE_FONT_PER_RADIUS), CENTER_TITLE_FONT_MIN, CENTER_TITLE_FONT_MAX);
+}
+
+/**
+ * Fit the plasmid title into the ring. `radius` is the backbone radius, `clearRadius`
+ * the radius of the disc the innermost feature lane leaves empty, and `cy` the ring
+ * center — all SVG user units, so the returned baselines are absolute y coordinates.
+ *
+ * The name takes the ring's type size (centerTitleFontForRadius) when it fits inside
+ * the empty disc, since a larger name that reached the innermost lane would print over
+ * an arc. When it does not, it steps down toward 15 units, the size every name had
+ * before; a name that still does not fit the disc at 15 is fitted exactly as it used
+ * to be, against 1.3 x radius, wrapping onto two lines a notch smaller or ellipsizing.
  */
 function computeCenterTitle(
   name: string,
   radius: number,
   cy: number,
   fontMode: LabelFontMode = 'proportional',
+  clearRadius: number = radius,
 ): MapCenterTitle {
-  const single: MapCenterTitle = {
-    lines: [{ text: name, fontSize: CENTER_TITLE_FONT, baselineY: round(cy - 2) }],
-    lenBaselineY: round(cy + 16),
-  };
   const maxWidth = radius * CENTER_TITLE_WIDTH_RATIO;
-  if (!(maxWidth > 0) || estimateCenterTextWidth(name, CENTER_TITLE_FONT, fontMode) <= maxWidth) {
+  const clearWidth = 2 * Math.max(0, clearRadius - CENTER_LABEL_PAD);
+  let font = centerTitleFontForRadius(radius);
+  while (font > CENTER_TITLE_FONT_FLOOR && estimateCenterTextWidth(name, font, fontMode) > clearWidth) font -= 1;
+  const lenFontSize = Math.max(CENTER_TITLE_LENGTH_FONT, Math.round(font * CENTER_TITLE_LENGTH_RATIO));
+  const nameBaselineY = round(cy - 2);
+  const single: MapCenterTitle = {
+    lines: [{ text: name, fontSize: font, baselineY: nameBaselineY }],
+    lenBaselineY: round(cy - 2 + Math.round(font * 0.3) + lenFontSize),
+    lenFontSize,
+  };
+  if (!(maxWidth > 0) || estimateCenterTextWidth(name, font, fontMode) <= maxWidth) {
     return single;
   }
-  const font = CENTER_TITLE_TWO_LINE_FONT;
-  const split = splitBalanced(name, font, fontMode);
+  const lineFont = font - 1;
+  const split = splitBalanced(name, lineFont, fontMode);
   if (!split) {
-    // One unbreakable token — ellipsize a single line at the base size.
+    // One unbreakable token — ellipsize a single line at the size reached.
     return {
       ...single,
       lines: [
         {
-          text: ellipsizeCenterTitleLine(name, maxWidth, CENTER_TITLE_FONT, fontMode),
-          fontSize: CENTER_TITLE_FONT,
-          baselineY: round(cy - 2),
+          text: ellipsizeCenterTitleLine(name, maxWidth, font, fontMode),
+          fontSize: font,
+          baselineY: nameBaselineY,
         },
       ],
     };
   }
   // Two centered lines a notch smaller; nudge the block up and push the length
   // line down so it clears the second title line.
+  const lineHeight = Math.round(lineFont * CENTER_TITLE_LINE_HEIGHT_RATIO);
+  const secondBaselineY = round(cy - 2 + Math.round(lineFont * 0.5));
   return {
     lines: [
       {
-        text: ellipsizeCenterTitleLine(split[0], maxWidth, font, fontMode),
-        fontSize: font,
-        baselineY: round(cy - 11),
+        text: ellipsizeCenterTitleLine(split[0], maxWidth, lineFont, fontMode),
+        fontSize: lineFont,
+        baselineY: round(secondBaselineY - lineHeight),
       },
       {
-        text: ellipsizeCenterTitleLine(split[1], maxWidth, font, fontMode),
-        fontSize: font,
-        baselineY: round(cy - 11 + CENTER_TITLE_LINE_HEIGHT),
+        text: ellipsizeCenterTitleLine(split[1], maxWidth, lineFont, fontMode),
+        fontSize: lineFont,
+        baselineY: secondBaselineY,
       },
     ],
-    lenBaselineY: round(cy + 21),
+    lenBaselineY: round(secondBaselineY + Math.round(lineFont * 0.3) + lenFontSize),
+    lenFontSize,
   };
 }
 
@@ -450,12 +493,13 @@ function centerTitleGuard(
   cx: number,
   fontMode: LabelFontMode = 'proportional',
 ): BBox {
+  const lenFont = centerTitle.lenFontSize ?? CENTER_TITLE_LENGTH_FONT;
   const titleWidth = centerTitle.lines.reduce(
     (max, line) => Math.max(max, estimateCenterTextWidth(line.text, line.fontSize, fontMode)),
     0,
   );
   const halfW =
-    Math.max(titleWidth, approxTextWidth(lengthLabel, CENTER_TITLE_LENGTH_FONT, fontMode)) / 2 + CENTER_LABEL_PAD;
+    Math.max(titleWidth, approxTextWidth(lengthLabel, lenFont, fontMode)) / 2 + CENTER_LABEL_PAD;
   const titleMinY = centerTitle.lines.reduce(
     (min, line) => Math.min(min, line.baselineY - line.fontSize),
     Infinity,
@@ -467,7 +511,7 @@ function centerTitleGuard(
   return {
     minX: round(cx - halfW),
     maxX: round(cx + halfW),
-    minY: round(Math.min(titleMinY, centerTitle.lenBaselineY - CENTER_TITLE_LENGTH_FONT)),
+    minY: round(Math.min(titleMinY, centerTitle.lenBaselineY - lenFont)),
     maxY: round(Math.max(titleMaxY, centerTitle.lenBaselineY + CENTER_TITLE_DESCENT_PAD)),
   };
 }
@@ -508,7 +552,6 @@ function computeCircularLayout(input: MapInput): MapLayout {
   const R = Math.max(MIN_INNER_RADIUS + LANE_THICKNESS, baseRadius + radiusGrowth);
   const center = { x: round(cx), y: round(cy) };
   const radius = round(R);
-  const centerTitle = computeCenterTitle(input.name, radius, center.y, labelFontMode);
   // Lane packing over each feature's normalized (non-wrapping) segments. Packed
   // BEFORE the coordinate band so the band can yield to the lane floor when many
   // overlapping features must stack (below).
@@ -581,6 +624,7 @@ function computeCircularLayout(input: MapInput): MapLayout {
     max: cy + featureInsideOuterR - FEATURE_INSIDE_LABEL_CAP_PAD,
   };
 
+  const centerTitle = computeCenterTitle(input.name, radius, center.y, labelFontMode, featureInsideOuterR);
   const centerGuard = centerTitleGuard(centerTitle, `${length} bp`, center.x, labelFontMode);
 
   const insideFeatureLabelGeometry = (
@@ -666,7 +710,6 @@ function computeCircularLayout(input: MapInput): MapLayout {
 
   // --- Features: arcs + inline labels; inside fallback labels deferred to de-collision.
   const featureRenders: MapFeatureRender[] = [];
-  const overflows: MapOverflowRender[] = [];
   let overflowFeatureCount = 0; // features on lanes the floor stack can't fit (arc-less, title-only)
   let featureHiddenLabels = 0;
   const featureGlyphBoxes: BBox[] = [];
@@ -708,11 +751,13 @@ function computeCircularLayout(input: MapInput): MapLayout {
     const lane = packing.laneById.get(f.id);
     const displayStrand = toDisplayStrand(f.strand);
     const name = f.name || f.type;
+    // The drawn label may be a shortened name; the title and accessible name are not.
+    const announcedName = f.titleName || name;
 
     if (segs.length === 0 || lane === undefined) {
       featureRenders.push({
         id: f.id,
-        name,
+        name: announcedName,
         type: f.type,
         displayStrand,
         color: f.color,
@@ -720,6 +765,7 @@ function computeCircularLayout(input: MapInput): MapLayout {
         segmentPaths: [],
         label: null,
         midBp: segs[0]?.start ?? 0,
+        startBp: segs[0]?.start ?? f.start,
       });
       continue;
     }
@@ -732,7 +778,7 @@ function computeCircularLayout(input: MapInput): MapLayout {
       overflowFeatureCount += 1;
       featureRenders.push({
         id: f.id,
-        name,
+        name: announcedName,
         type: f.type,
         displayStrand,
         color: f.color,
@@ -740,11 +786,13 @@ function computeCircularLayout(input: MapInput): MapLayout {
         segmentPaths: [],
         label: null,
         midBp: featureMidBp(segs, length),
-        title: featureTitle(name, f.type, segs, f.strand),
+        startBp: segs[0]?.start ?? f.start,
+        title: featureTitle(announcedName, featureTypeDisplay(f), segs, f.strand),
       });
       continue;
     }
     const { outerR, innerR, centerR } = bandR;
+    const drawSegs = joinOriginSegments(segs, length);
 
     // Fold the 3' strand point into the terminal segment path so the feature is
     // one continuous filled/outlined shape instead of a separate marker triangle.
@@ -755,8 +803,8 @@ function computeCircularLayout(input: MapInput): MapLayout {
       // Segments are stored in biological 5′→3′ order for both strands, so
       // the 3′ arrowhead always belongs to the final segment. Strand chooses
       // which edge of that terminal segment receives the point.
-      terminalIndex = segs.length - 1;
-      const term = segs[terminalIndex];
+      terminalIndex = drawSegs.length - 1;
+      const term = drawSegs[terminalIndex];
       const termExtentPx = arcExtentPx(
         centerR,
         Math.abs(bpToAngle(term.end, length) - bpToAngle(term.start, length)),
@@ -767,7 +815,7 @@ function computeCircularLayout(input: MapInput): MapLayout {
       );
       terminalTipDeltaDeg = arcDeltaDeg(arrowLenPx, centerR) * (forward ? 1 : -1);
     }
-    const segmentPaths = segs.map((s, i) => {
+    const segmentPaths = drawSegs.map((s, i) => {
       const startAngle = bpToAngle(s.start, length);
       const endAngle = bpToAngle(s.end, length);
       const isTerminal = i === terminalIndex;
@@ -830,7 +878,7 @@ function computeCircularLayout(input: MapInput): MapLayout {
 
     featureRenders.push({
       id: f.id,
-      name,
+      name: announcedName,
       type: f.type,
       displayStrand,
       color: f.color,
@@ -838,7 +886,8 @@ function computeCircularLayout(input: MapInput): MapLayout {
       segmentPaths,
       label,
       midBp,
-      title: featureTitle(name, f.type, segs, f.strand),
+      startBp: segs[0]?.start ?? f.start,
+      title: featureTitle(announcedName, featureTypeDisplay(f), segs, f.strand),
     });
   }
 
@@ -1292,9 +1341,10 @@ function computeCircularLayout(input: MapInput): MapLayout {
   // This is the first point where both layers are final. Re-place every feature that
   // now carries no name, against the settled obstacles — every painted glyph, tick,
   // label and leader. Nothing is written unless it clears all of them, so the pass
-  // restores names and removes none. pUC19 at a 955x920 pane keeps "AmpR prom." and
-  // "M13/pUC fwd" through it; measured over 5 records x 6 pane sizes it changes 2
-  // cases, costs no enzyme label, and leaves the fitted viewBox untouched.
+  // restores names and removes none. pUC19 at a 955x920 pane keeps "lac prom." and
+  // "M13/pUC rev" through it. It does not re-test a restored name against the other
+  // labels' leaders: over 5 records x 6 pane sizes it adds 2 of the 20 leader-through-
+  // label crossings listed in circular-label-repack.test.ts.
   const orphanedFeatureCandidates = featureOutsideCandidates.filter((candidate) => {
     const candidateMeta = featureOutsideRadialMeta.get(candidate.id);
     const render = candidateMeta
@@ -1343,8 +1393,9 @@ function computeCircularLayout(input: MapInput): MapLayout {
   // The other half of the same trade. On a narrower pane the reconciliation runs the
   // other way and `dropGroupedRestrictionLabelsConflictingWithFeatures` deletes the
   // enzyme cluster instead, again where it stood. Give those the same second chance.
-  // Measured over 5 records x 6 pane sizes: 3 clusters recovered, no feature name
-  // lost, no new label overlap, and no extra leader drawn across a label.
+  // pcDNA3.1(+) at a 1212x310 pane keeps "BbsI +2" and "AluI +2" through it. Over 5
+  // records x 6 pane sizes it adds no label-box overlap, but it adds 2 of the 20
+  // leader-through-label crossings listed in circular-label-repack.test.ts.
   const orphanedRestrictionCandidates = restrictionOutsideCandidates.filter((candidate) => {
     const candidateMeta = restrictionOutsideMeta.get(candidate.id);
     const render = candidateMeta
@@ -1392,38 +1443,22 @@ function computeCircularLayout(input: MapInput): MapLayout {
     recHiddenLabels = restrictionRenders.reduce((n, r) => n + (r.label ? 0 : 1), 0);
   }
 
-  const centerClearRadius = Math.max(
-    0,
-    (deepestVisibleBand?.innerR ?? fallbackVisibleInnerR) - CENTER_LABEL_PAD,
-  );
-  const overflowChipXOffset = baseSide < 480 ? 0 : Math.min(48, Math.max(0, centerClearRadius * 0.22));
-  // Two chips may stack here. Reserve their real 18px hit pitch plus a little
-  // diagonal corner clearance so the second chip cannot poke through the
-  // innermost feature lane on a compact map.
-  const overflowChipMaxYOffset = Math.max(0, centerClearRadius - OVERFLOW_HIT_HEIGHT_PX * 2.1);
-  const overflowChipMinY = centerGuard.maxY + LABEL_LINE_HEIGHT_PX + 4;
-  const overflowChipMaxY = Math.max(overflowChipMinY, cy + overflowChipMaxYOffset);
-  const overflowChipY = clamp(
-    Math.max(overflowChipMinY, cy + Math.min(44, centerClearRadius * 0.38)),
-    overflowChipMinY,
-    overflowChipMaxY,
-  );
-  const overflowChipX = round(cx + overflowChipXOffset);
-  const overflowChipBaseY = round(overflowChipY);
+  // The ring's centre carries the record's name and length and nothing else. Two
+  // chips used to sit under them: "+2 more", which under the "N bp" length read as two
+  // more base pairs, and "N unnamed sites", whose N moved on pUC19 as the window
+  // shrank and so read as a property of the plasmid rather than of the
+  // drawing. Their counts are unchanged; they are reported as summaries the host
+  // shows beside the map, each a control that opens the list it counts from.
+  const overflowSummaries: MapOverflowSummary[] = [];
   const featureOverflowTotal = featureHiddenLabels + overflowFeatureCount;
   if (featureOverflowTotal > 0) {
-    const text = `+${featureOverflowTotal} more`;
-    overflows.push({
+    overflowSummaries.push({
       id: 'circular-feature-overflow',
       kind: 'feature-labels',
-      text,
+      text: `+${featureOverflowTotal} ${plural(featureOverflowTotal, 'feature', 'features')}`,
       title: featureOverflowTitle(overflowFeatureCount, featureHiddenLabels, 'hidden'),
       hiddenBodies: overflowFeatureCount,
       unlabelled: featureHiddenLabels,
-      x: overflowChipX,
-      y: overflowChipBaseY,
-      anchor: 'middle',
-      hit: overflowHitRect(text, overflowChipX, overflowChipBaseY, 'middle', OVERFLOW_FONT_PX_CIRCULAR),
     });
   }
   const clusterById = new Map(clusters.map((c) => [c.id, c]));
@@ -1439,70 +1474,20 @@ function computeCircularLayout(input: MapInput): MapLayout {
       }, 0)
     : 0;
   if (recUnnamedSites > 0) {
-    // With both summaries present, split them above/below the title rather than
-    // stacking two full hit rows toward the innermost feature lane.
-    const y = featureOverflowTotal > 0
-      ? round(cy - (overflowChipBaseY - cy))
-      : overflowChipBaseY;
-    // How wide the sentence may be here. The chip takes part in no collision pass —
-    // it is placed after every label and nothing dodges it — so its own width is all
-    // that keeps it off its neighbours. Measure the gap to whatever is already drawn
-    // in the row it lands in, on each side of its centre. At a 1032x260 map pane on
-    // pETDuet-1 the full sentence overran by 2.4 units and painted its last "s" under
-    // the AmpR arc; on pcDNA3.1(+) at 1212x314 it reached 1.3 units into NeoR/KanR.
-    const chipRowTop = y - (OVERFLOW_HIT_CENTER_EM * OVERFLOW_FONT_PX_CIRCULAR + OVERFLOW_HIT_HEIGHT_PX / 2);
-    const chipRowBottom = chipRowTop + OVERFLOW_HIT_HEIGHT_PX;
-    let chipHalfWidthBudget = Infinity;
-    // Other TEXT only. Feature bodies are not a usable wall here: measured across the
-    // five bundled vectors at six viewports, the chip's row leaves 8.9 to 27.5 units
-    // to the nearest body on eleven of the thirty maps — less than even the short
-    // form needs, and that was true of the old chip too. The chip has always crossed
-    // an arc on a short pane; what it must not do is land on another name.
-    for (const box of [
-      ...featureRenders.flatMap((f) => (f.label ? [labelBBoxForRender(f.label, labelFontMode)] : [])),
-      ...restrictionRenders.flatMap(
-        (r) => (r.label ? [labelBBoxForRender(r.label, RESTRICTION_LABEL_FONT_MODE)] : []),
-      ),
-    ]) {
-      if (box.maxY <= chipRowTop || box.minY >= chipRowBottom) continue;
-      if (box.maxX <= overflowChipX) {
-        chipHalfWidthBudget = Math.min(chipHalfWidthBudget, overflowChipX - box.maxX);
-      } else if (box.minX >= overflowChipX) {
-        chipHalfWidthBudget = Math.min(chipHalfWidthBudget, box.minX - overflowChipX);
-      }
-      // A box straddling the chip's own centre is left alone: the chip is already
-      // placed clear of the centre title, and shrinking against a straddling box
-      // would only move its ends further into whatever is beside them.
-    }
-    const text = restrictionOverflowText(recUnnamedSites, chipHalfWidthBudget * 2, OVERFLOW_FONT_PX_CIRCULAR);
-    overflows.push({
+    overflowSummaries.push({
       id: 'circular-restriction-overflow',
       kind: 'restriction-labels',
-      text,
+      text: `${recUnnamedSites} unnamed ${plural(recUnnamedSites, 'site', 'sites')}`,
       title: restrictionOverflowTitle(recUnnamedSites, recTotalSites),
       // Every site keeps its density tick, so nothing here is undrawn — only unnamed.
       hiddenBodies: 0,
       unlabelled: recUnnamedSites,
-      x: overflowChipX,
-      y,
-      anchor: 'middle',
-      hit: overflowHitRect(text, overflowChipX, y, 'middle', OVERFLOW_FONT_PX_CIRCULAR),
     });
   }
 
   // Everything the map draws near the middle, expressed as one radius. Sector
   // overlays start outside it so a selection never covers the molecule's name.
-  const centerLabelRadius = round(
-    overflows.reduce(
-      (radius, overflow) => Math.max(radius, boxCornerRadius({
-        minX: overflow.hit.x,
-        minY: overflow.hit.y,
-        maxX: overflow.hit.x + overflow.hit.width,
-        maxY: overflow.hit.y + overflow.hit.height,
-      }, cx, cy)),
-      boxCornerRadius(centerGuard, cx, cy),
-    ),
-  );
+  const centerLabelRadius = round(boxCornerRadius(centerGuard, cx, cy));
 
   const backbonePath = circlePath(cx, cy, R);
   const budgets = tallyBudgets(
@@ -1557,7 +1542,7 @@ function computeCircularLayout(input: MapInput): MapLayout {
     restrictionDensityTicks,
     restrictions: restrictionRenders,
     coordinates,
-    ...(overflows.length > 0 ? { overflows } : {}),
+    ...(overflowSummaries.length > 0 ? { overflowSummaries } : {}),
     budgets,
   };
 }
@@ -1712,11 +1697,13 @@ function computeLinearLayout(input: MapInput): MapLayout {
     const lane = packing.laneById.get(f.id);
     const displayStrand = toDisplayStrand(f.strand);
     const name = f.name || f.type;
+    // The drawn label may be a shortened name; the title and accessible name are not.
+    const announcedName = f.titleName || name;
 
     if (segs.length === 0 || lane === undefined) {
       featureRenders.push({
         id: f.id,
-        name,
+        name: announcedName,
         type: f.type,
         displayStrand,
         color: f.color,
@@ -1724,12 +1711,13 @@ function computeLinearLayout(input: MapInput): MapLayout {
         segmentPaths: [],
         label: null,
         midBp: segs[0]?.start ?? 0,
+        startBp: segs[0]?.start ?? f.start,
       });
       continue;
     }
 
     const midBp = featureMidBp(segs, length);
-    const title = featureTitle(name, f.type, segs, f.strand);
+    const title = featureTitle(announcedName, featureTypeDisplay(f), segs, f.strand);
     const band = rowBand(lane);
     if (!band) {
       // Overflow row — counted ONCE, as a body the map does not draw. It used to be
@@ -1742,7 +1730,7 @@ function computeLinearLayout(input: MapInput): MapLayout {
       overflowFeatureCount += 1;
       featureRenders.push({
         id: f.id,
-        name,
+        name: announcedName,
         type: f.type,
         displayStrand,
         color: f.color,
@@ -1750,6 +1738,7 @@ function computeLinearLayout(input: MapInput): MapLayout {
         segmentPaths: [],
         label: null,
         midBp,
+        startBp: segs[0]?.start ?? f.start,
         title,
       });
       continue;
@@ -1855,7 +1844,7 @@ function computeLinearLayout(input: MapInput): MapLayout {
 
     featureRenders.push({
       id: f.id,
-      name,
+      name: announcedName,
       type: f.type,
       displayStrand,
       color: f.color,
@@ -1863,6 +1852,7 @@ function computeLinearLayout(input: MapInput): MapLayout {
       segmentPaths,
       label,
       midBp,
+      startBp: segs[0]?.start ?? f.start,
       title,
     });
   }
@@ -2043,7 +2033,12 @@ function computeLinearLayout(input: MapInput): MapLayout {
         .map((cand, i, row) => {
           const side = sidesFor(cand)[sideIndex.get(cand.id) ?? 0];
           const availableWidth = linearFeatureSideLabelBudget(cand.lane, cand.id, side);
-          const outsideLabel = ellipsizeToWidth(cand.fullText, availableWidth, labelFontMode);
+          const capitalPad = capitalWidthPadPx(cand.fullText, undefined, labelFontMode);
+          const ellipsized = ellipsizeToWidth(cand.fullText, Math.max(0, availableWidth - capitalPad), labelFontMode);
+          const outsideLabel = {
+            text: ellipsized.text,
+            width: ellipsized.width + capitalWidthPadPx(ellipsized.text, undefined, labelFontMode),
+          };
           const halfW = outsideLabel.width / 2;
           const idealCenterX = side.side === 'right'
             ? side.edgeX + LINEAR_FEATURE_LABEL_GAP_X + halfW
@@ -2357,23 +2352,64 @@ function computeLinearLayout(input: MapInput): MapLayout {
   const recCap = showRestrictionLabels
     ? linearRecCap(axisWidth, clusters.length, display, reserveRestrictionOverflow)
     : 0;
-  const recHidden = showRestrictionLabels
+  let recHidden = showRestrictionLabels
     ? placeLinearRestrictionLabels(recCap, reserveRestrictionOverflow)
     : { hiddenLabels: 0, unnamedSites: 0 };
+
+  // The linear chip's room is the strip the label rows were told to keep clear. Its
+  // hit rect may overhang that strip by its own side padding, which is empty: the
+  // reserve bounds where a label may be placed, and the padding holds no glyphs.
+  const restrictionChipText = (unnamedSites: number): string => restrictionOverflowText(
+    unnamedSites,
+    LINEAR_REC_OVERFLOW_RESERVE_PX + OVERFLOW_HIT_PAD_X * 2,
+    OVERFLOW_FONT_PX,
+  );
+  const restrictionChipX = round(width - padX);
+  const restrictionChipY = round(recLabelRowYs[1] + LINEAR_REC_LABEL_CENTER_OFFSET);
+
+  // Every cluster fitting on the rows does not mean every site is named: "PstI +3"
+  // names one of four sites, so the chip is drawn although no strip was kept clear
+  // for it. On a 600 bp record at 1440x900 it painted over "TaqI" and "PstI +3". When
+  // its glyphs would cover a label, place the rows again with the strip kept, as a
+  // map with more clusters than fit already does. A chip that lands in empty space
+  // leaves every label where it was.
+  if (showRestrictionLabels && !reserveRestrictionOverflow && recHidden.unnamedSites > 0) {
+    const hit = overflowHitRect(
+      restrictionChipText(recHidden.unnamedSites),
+      restrictionChipX,
+      restrictionChipY,
+      'end',
+      OVERFLOW_FONT_PX,
+    );
+    // The chip's text box: its glyph run, one label line tall about its middle. The
+    // hit rect is taller than the text, and a label on the upper row reaches 0.7 unit
+    // into it without meeting the chip's glyphs.
+    const middleY = hit.y + hit.height / 2;
+    const glyphs: BBox = {
+      minX: hit.x + OVERFLOW_HIT_PAD_X,
+      maxX: hit.x + hit.width - OVERFLOW_HIT_PAD_X,
+      minY: middleY - LABEL_LINE_HEIGHT_PX / 2,
+      maxY: middleY + LABEL_LINE_HEIGHT_PX / 2,
+    };
+    const covered = restrictionRenders.some((r) => r.label && bboxIntersects(glyphs, labelBBoxAt(
+      r.label.x,
+      r.label.y,
+      r.label.anchor,
+      approxTextWidth(r.label.text, LINEAR_REC_LABEL_FONT_PX, RESTRICTION_LABEL_FONT_MODE),
+      r.label.baseline,
+    )));
+    if (covered) {
+      for (const render of restrictionRenders) render.label = null;
+      recHidden = placeLinearRestrictionLabels(linearRecCap(axisWidth, clusters.length, display, true), true);
+    }
+  }
 
   hiddenFeatureLabelCount += placeLinearOutsideFeatureLabels();
 
   if (recHidden.unnamedSites > 0) {
-    // The linear chip's room is the strip the label rows were told to keep clear. Its
-    // hit rect may overhang that strip by its own side padding, which is empty: the
-    // reserve bounds where a label may be placed, and the padding holds no glyphs.
-    const text = restrictionOverflowText(
-      recHidden.unnamedSites,
-      LINEAR_REC_OVERFLOW_RESERVE_PX + OVERFLOW_HIT_PAD_X * 2,
-      OVERFLOW_FONT_PX,
-    );
-    const chipX = round(width - padX);
-    const chipY = round(recLabelRowYs[1] + LINEAR_REC_LABEL_CENTER_OFFSET);
+    const text = restrictionChipText(recHidden.unnamedSites);
+    const chipX = restrictionChipX;
+    const chipY = restrictionChipY;
     overflows.push({
       id: 'linear-restriction-overflow',
       kind: 'restriction-labels',
@@ -2683,8 +2719,10 @@ function circularFeatureLabelPriority(
   // Imported records sometimes retain a generic feature key while the readable
   // name carries a standard role. Preserve that semantic priority so a tiny RBS
   // is not the first landmark culled merely because it spans fewer bases than a
-  // neighbouring generic site.
-  const priorityType = feature.type === 'misc_feature' && /\b(?:rbs|ribosome binding site)\b/i.test(feature.name)
+  // neighbouring generic site. Read the full name: the drawn one may be cut
+  // ("ribosome bind…") or stripped of its "(RBS)".
+  const priorityType = feature.type === 'misc_feature'
+    && /\b(?:rbs|ribosome binding site)\b/i.test(feature.titleName ?? feature.name)
     ? 'rbs'
     : feature.type;
   const typeWeight = CIRCULAR_FEATURE_TYPE_PRIORITY[priorityType] ?? CIRCULAR_FEATURE_TYPE_PRIORITY.misc_feature;
@@ -3004,13 +3042,13 @@ function plural(count: number, one: string, many: string): string {
 }
 
 /**
- * Chip type sizes, mirroring `.motif-pm-overflow` in plasmid-map.css (13px, with a
- * 12px circular override). Duplicated here because the hit rect must be sized from
- * the same metric the glyphs are drawn at, and this module may not touch the DOM.
- * `overflow-chip-hit.test.ts` reads the stylesheet and fails if the two drift.
+ * Chip type size, mirroring `.motif-pm-overflow` in plasmid-map.css (13px). Only a
+ * linear map draws chips; a circular map reports its overflows as summaries.
+ * Duplicated here because the hit rect must be sized from the same metric the glyphs
+ * are drawn at, and this module may not touch the DOM. `overflow-chip-hit.test.ts`
+ * reads the stylesheet and fails if the two drift.
  */
 const OVERFLOW_FONT_PX = 13;
-const OVERFLOW_FONT_PX_CIRCULAR = 12;
 const OVERFLOW_HIT_HEIGHT_PX = 18;
 /** Horizontal breathing room each side of the glyph run. */
 const OVERFLOW_HIT_PAD_X = 8;
@@ -3074,10 +3112,12 @@ function featureOverflowTitle(
       `${hiddenLabels} ${plural(hiddenLabels, 'feature label', 'feature labels')} ${labelVerb}`,
     );
   }
+  // "Annotations" is the rail tool that lists every feature. This used to send the
+  // reader to a "Features tab" that the workspace does not have.
   const reachability =
     hiddenBodies > 0
-      ? 'open the Features tab to see all.'
-      : 'hover visible features or open the Features tab.';
+      ? 'open Annotations to see all.'
+      : 'hover visible features or open Annotations.';
   return `${clauses.join(' and ')} - ${reachability}`;
 }
 
@@ -3238,8 +3278,9 @@ function circularClusterLabel(
   }
   const cap = Math.max(0, maxPx);
   const candidateNames = c.shownEnzymes.length > 0 ? c.shownEnzymes : c.enzymes.slice(0, 1);
-  const build = (shown: readonly string[], displayNames: readonly string[] = shown) => {
+  const build = (shown: readonly string[], displayNames: readonly string[] = shown, bare = false) => {
     const overflow = Math.max(0, c.enzymes.length - shown.length);
+    const tail = bare ? '+' : `+${overflow}`;
     // Enzyme names join with ", " and the "+N" overflow tail with " ". The tail is a
     // COUNT, not another list member, so it is deliberately not comma-separated.
     // The space after the comma is load-bearing: without it the only thing separating
@@ -3247,12 +3288,12 @@ function circularClusterLabel(
     // a monochrome export or forced-colors mode. Any change here must be mirrored in
     // SequenceMapView's tspan renderer AND its `segmented` guard, which silently drops
     // per-enzyme coloring when its reconstruction stops matching this string.
-    const text = `${displayNames.join(', ')}${overflow > 0 ? ` +${overflow}` : ''}`;
+    const text = `${displayNames.join(', ')}${overflow > 0 ? ` ${tail}` : ''}`;
     const segments = shown.map((name, index) => ({
       text: displayNames[index] ?? name,
       typeIIS: typeIISByEnzyme.get(name) ?? false,
     }));
-    if (overflow > 0) segments.push({ text: `+${overflow}`, typeIIS: false });
+    if (overflow > 0) segments.push({ text: tail, typeIIS: false });
     return {
       text,
       width: round(approxTextWidth(text, undefined, fontMode)),
@@ -3269,7 +3310,12 @@ function circularClusterLabel(
     if (label.width <= cap) return label;
   }
 
+  // The name is what a reader clicks, so the count's digits are dropped before any
+  // letter of the name: "EcoRI +" rather than "Eco… +14". The "+" is still the tail
+  // that opens the cluster's list, and the tick's title still names every enzyme.
   const lead = candidateNames[0] ?? c.enzymes[0] ?? '';
+  const bare = build([lead], [lead], true);
+  if (bare.width <= cap) return bare;
   const overflow = Math.max(0, c.enzymes.length - 1);
   const suffix = overflow > 0 ? ` +${overflow}` : '';
   let displayLead = lead;
@@ -3674,9 +3720,9 @@ function clusterPositions(c: MapRestrictionCluster): number[] {
  * credited that label with all twelve and reported the other ten as accounted for.
  * Measured on pET-28a(+) in a 780x890 map pane, that put 63 on a chip reading "more
  * sites" while 98 of the 149 ticks had no name a reader could read off the map; on
- * pUC19 at the same pane it put the chip at 0 with 38 of 77 unnamed, so the map's
- * only sentence about what it was withholding disappeared exactly where half the
- * ring was anonymous.
+ * the synthetic pUC19 then bundled it put the chip at 0 while about half the sites
+ * had no name, so the map's only sentence about what it was withholding disappeared
+ * where it was needed.
  *
  * `namedEnzymes` is the label's own shown-name list, so an enzyme cutting twice
  * inside one cluster has BOTH of its sites named by one mention, which is what a
@@ -3748,8 +3794,9 @@ function restrictionTitle(c: MapRestrictionCluster): string {
   const enz = names.join(', ');
   // The short form prints two same-length lists side by side and a reader pairs them
   // off: "AluI, BsmFI, MseI · cut 1898, 1919, 1945" is only true if the Nth cut
-  // belongs to the Nth name. Measured on pUC19 with every source on, 14 of 14
-  // multi-name short-form tooltips were pairable that way — so the pairing is real,
+  // belongs to the Nth name. Measured with every source on, on the synthetic pUC19
+  // then bundled, every multi-name short-form tooltip was pairable that way — so the
+  // pairing is real,
   // and ordering the NAMES for display without reordering the cuts would have quietly
   // made it lie. Sorting the ticks the same way keeps it, and beats the old code when
   // one enzyme cuts twice in a cluster: its two cuts now sit together under its own
@@ -3988,7 +4035,8 @@ function dropFeatureLabelsConflictingWithRestrictionLabels(
 
 /**
  * Settle grouped restriction placement by giving visible feature landmarks
- * precedence. Returns zero because this reconciliation never evicts a feature.
+ * precedence, except over the cloning-site cluster. Returns the number of feature
+ * names deleted for that cluster.
  *
  * The rescue pass deliberately ignores feature labels, and even an ordinary
  * grouped label can cross a feature leader after both layers settle. Remove the
@@ -4040,15 +4088,61 @@ function dropGroupedRestrictionLabelsConflictingWithFeatures(
     );
   };
 
+  // The cloning site is the exception: its label outranks the feature names around
+  // it. pUC19's 18-site polylinker sits under lacZ-alpha, lac prom. and both M13
+  // primers, and at a 900x680 window this pass deleted its name. Delete the colliding
+  // feature names instead; the re-placement pass after this one puts back each one
+  // that still fits.
+  let dropped = 0;
+  const cloningSiteId = cloningSiteClusterId(restrictionRenders);
+  const cloningSite = grouped.find((restriction) => restriction.render.clusterId === cloningSiteId);
+  const displaced = cloningSite ? outsideFeatures.filter((featureEntry) => collides(featureEntry, cloningSite)) : [];
+  // A cloning-site label that would cost three or more feature names yields as every
+  // other cluster does. With no cap, pET-28a(+) lost a net label at 54 of 361 pane
+  // sizes; with a cap of two it loses one at 2.
+  const keepCloningSite = cloningSite !== undefined && displaced.length <= 2;
+  if (keepCloningSite) {
+    for (const featureEntry of displaced) {
+      featureEntry.feature.label = null;
+      outsideFeatures.splice(outsideFeatures.indexOf(featureEntry), 1);
+      dropped += 1;
+    }
+  }
+
   // Stable ordering keeps the result deterministic when multiple grouped
   // enzyme labels contend with one landmark.
   grouped.sort((a, b) => Number(a.rescued) - Number(b.rescued) || cmpKey(a.render.clusterId, b.render.clusterId));
   for (const restriction of grouped) {
+    if (keepCloningSite && restriction === cloningSite) continue;
     if (!outsideFeatures.some((featureEntry) => collides(featureEntry, restriction))) continue;
     restriction.render.label = null;
     restriction.render.labelSegments = undefined;
   }
-  return 0;
+  return dropped;
+}
+
+/**
+ * The cluster that marks a cloning site: the one with the most cut sites, when it
+ * has at least CLONING_SITE_CLUSTER_MIN_SITES and no other cluster ties it. A
+ * polylinker packs many enzymes into a few dozen bases, so it is the largest cluster
+ * on the vectors that have one: pUC19 18 sites against the next 8, pBluescript SK(+)
+ * 25 against 7, pET-28a(+) 16 against 8. On a record without one this picks the
+ * densest ordinary cluster (pBR322 10 against 8).
+ */
+function cloningSiteClusterId(restrictionRenders: readonly MapRestrictionRender[]): string | undefined {
+  let best: MapRestrictionRender | undefined;
+  let runnerUp = 0;
+  for (const render of restrictionRenders) {
+    const sites = render.tickIds.length;
+    if (!best || sites > best.tickIds.length) {
+      runnerUp = best?.tickIds.length ?? 0;
+      best = render;
+    } else if (sites > runnerUp) {
+      runnerUp = sites;
+    }
+  }
+  if (!best || best.tickIds.length < CLONING_SITE_CLUSTER_MIN_SITES || best.tickIds.length === runnerUp) return undefined;
+  return best.clusterId;
 }
 
 function dropRestrictionLabelsConflictingWithFeatureLeaders(

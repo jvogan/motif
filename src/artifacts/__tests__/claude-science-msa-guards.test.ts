@@ -48,7 +48,8 @@ describe('Claude Science MSA integration guards', () => {
     expect(artifactSource).toContain('aria-label="Open alignment workspace"');
     expect(artifactSource).toContain('className="motif-cs-alignment-launch-copy"');
     expect(artifactSource).toContain('className="motif-cs-alignment-boundary" role="note"');
-    expect(artifactSource).toContain('title="Multiple Sequence Alignment"');
+    expect(artifactSource).toContain('title={WORKSPACE_WINDOW_TITLES.alignment}');
+    expect(artifactSource).toContain("alignment: 'Multiple Sequence Alignment',");
     expect(artifactSource).toContain('onCommit={setAlignmentWin}');
     expect(artifactSource).toContain('returnFocusRef={alignmentToggleRef}');
     expect(artifactSource).toContain('maximizable');
@@ -527,7 +528,7 @@ describe('Claude Science MSA interaction and rendering guards', () => {
     // when constructVerificationRecords is assembled, so this count is honest.
     expect(artifactSource).toContain('const constructVerificationReadCount = useMemo(() => constructVerificationRecords.filter(');
     expect(head).toContain('data-rail-count={constructVerificationReadCount || undefined}');
-    expect(head).toContain('`Construct verification — ${constructVerificationReadCount} eligible Sanger read${constructVerificationReadCount === 1 ? \'\' : \'s\'}`');
+    expect(head).toContain('`Construct Verification — ${constructVerificationReadCount} eligible Sanger read${constructVerificationReadCount === 1 ? \'\' : \'s\'}`');
     // A verification session without eligible evidence retains its ordinary
     // accessible name and carries no dot.
     expect(head).toContain("|| undefined");

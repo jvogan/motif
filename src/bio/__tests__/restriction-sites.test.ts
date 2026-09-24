@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { RESTRICTION_ENZYMES_FULL } from '../enzyme-data';
 import { reverseComplement } from '../reverse-complement';
 import {
@@ -19,6 +19,16 @@ import {
 import { digestPreviewDetailed, restrictionDigestDetailed } from '../restriction-digest';
 import { resolveEnzymeUnion } from '../restriction-presets';
 import type { RestrictionEnzyme } from '../types';
+
+// A scan reverse-complements each enzyme's recognition site, and a cache hit
+// never does, so this spy tells a walk from a hit. The caching tests count
+// calls instead of racing a cold scan against a warm one on the clock, which
+// failed on a loaded machine (15.7 ms against a 5.4 ms floor).
+vi.mock('../reverse-complement', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../reverse-complement')>();
+  return { ...actual, reverseComplement: vi.fn(actual.reverseComplement) };
+});
+const walks = vi.mocked(reverseComplement);
 
 function enzyme(name: string) {
   const match = RESTRICTION_ENZYMES.find((candidate) => candidate.name === name);
@@ -463,40 +473,35 @@ describe('restriction site caching', () => {
     return out;
   };
 
-  const timeScan = (
+  // How many times one call reverse-complemented a recognition site: above
+  // zero for a scan, zero for an answer from the cache.
+  const walksDuring = (
     seq: string,
     enzymes: RestrictionEnzyme[],
     options?: Parameters<typeof findRestrictionSites>[2],
   ): number => {
-    const started = performance.now();
+    walks.mockClear();
     findRestrictionSites(seq, enzymes, options);
-    return performance.now() - started;
+    return walks.mock.calls.length;
   };
 
   it('answers a repeat scan from the cache', () => {
-    // Five independent pairs, comparing the fastest of each: a minimum is far
-    // steadier than a mean when a garbage collection can land inside any one
-    // sample. The real gap is two orders of magnitude, so the 3x floor is only
-    // here to keep this from failing on a loaded machine.
-    const misses: number[] = [];
-    const hits: number[] = [];
-    for (let i = 0; i < 5; i += 1) {
-      const seq = randomSequence(20_000, 0x51ed + i);
-      misses.push(timeScan(seq, RESTRICTION_ENZYMES, { topology: 'circular' }));
-      hits.push(timeScan(seq, RESTRICTION_ENZYMES, { topology: 'circular' }));
-    }
-    expect(Math.min(...hits) * 3).toBeLessThan(Math.min(...misses));
+    const seq = randomSequence(2_000, 0x51ed);
+    expect(walksDuring(seq, RESTRICTION_ENZYMES, { topology: 'circular' })).toBeGreaterThan(0);
+    expect(walksDuring(seq, RESTRICTION_ENZYMES, { topology: 'circular' })).toBe(0);
   });
 
   it('bounds what it keeps, so a long session cannot leak', () => {
-    const first = randomSequence(4_000, 0xb0d1);
+    // Short records: the count bound is what this covers, and 41 keys of this
+    // size hold far fewer characters than the character bound.
+    const first = randomSequence(500, 0xb0d1);
     findRestrictionSites(first, RESTRICTION_ENZYMES);
-    const whileWarm = timeScan(first, RESTRICTION_ENZYMES);
+    expect(walksDuring(first, RESTRICTION_ENZYMES)).toBe(0);
     // More distinct sequences than the cache holds, so the first is evicted.
     for (let i = 0; i < 40; i += 1) {
-      findRestrictionSites(randomSequence(4_000, 0xe1c7 + i), RESTRICTION_ENZYMES);
+      findRestrictionSites(randomSequence(500, 0xe1c7 + i), RESTRICTION_ENZYMES);
     }
-    expect(whileWarm * 3).toBeLessThan(timeScan(first, RESTRICTION_ENZYMES));
+    expect(walksDuring(first, RESTRICTION_ENZYMES)).toBeGreaterThan(0);
   });
 
   it('returns but does not cache an oversized restriction-site result', () => {

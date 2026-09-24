@@ -145,13 +145,23 @@ export function clusterRestrictionTicks(
     }
   }
 
-  return groups.map((group, index) => buildCluster(group, index, opts.maxNamesPerCluster));
+  // How often each enzyme cuts the whole molecule, counted over distinct positions.
+  const cutCounts = new Map<string, Set<number>>();
+  for (const tick of ticks) {
+    const positions = cutCounts.get(tick.enzyme) ?? new Set<number>();
+    positions.add(tick.position);
+    cutCounts.set(tick.enzyme, positions);
+  }
+  const cutsOnce = (enzyme: string): boolean => cutCounts.get(enzyme)?.size === 1;
+
+  return groups.map((group, index) => buildCluster(group, index, opts.maxNamesPerCluster, cutsOnce));
 }
 
 function buildCluster(
   group: readonly MapRestrictionTick[],
   index: number,
   maxNames: number,
+  cutsOnce: (enzyme: string) => boolean,
 ): MapRestrictionCluster {
   // Display/name lists are DISTINCT enzyme names — an enzyme that cuts several
   // times inside one cluster becomes a single name, never "BsmFI,BsmFI". Set
@@ -164,9 +174,17 @@ function buildCluster(
   // cluster's tooltip enumerate `enzymes` and still open on the name the label drew.
   // Ordering only the shown slice is what produced a label reading "Nt.BstNBI +38"
   // over a tooltip reading "HindIII, AluI, ...", with the clicked name 14th of 39.
+  //
+  // The other names follow in position order, except that the first enzyme that cuts
+  // the molecule once moves to the front of them. A unique cutter is the enzyme a
+  // cloner reaches for, so a polylinker label leads with one: pUC19's reads
+  // "EcoRI +14", where position order alone put the 4-cutter HaeIII first. Only that
+  // one name moves, so a cluster whose first name already cuts once keeps its label.
+  const leadCutter = group.find((t) => !t.isTypeIIS && cutsOnce(t.enzyme));
   const enzymes = [
     ...new Set([
       ...group.filter((t) => t.isTypeIIS).map((t) => t.enzyme),
+      ...(leadCutter ? [leadCutter.enzyme] : []),
       ...group.filter((t) => !t.isTypeIIS).map((t) => t.enzyme),
     ]),
   ];

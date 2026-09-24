@@ -168,28 +168,25 @@ function leaderSegments(labels: readonly Tagged[]): Segment[] {
 
 function centerTitleBoxes(layout: MapLayout, fontMode: LabelFontMode): Tagged[] {
   if (!layout.centerTitle) return [];
-  const labels: Tagged[] = layout.centerTitle.lines.map((line, i) => {
+  // Sized from the title's own type size, which grows with the ring (18-26 units) and
+  // is larger than the labels': glyphs from baseline - fontSize down to a quarter-em of
+  // descent, the extent the layout's own centre guard reserves.
+  const tagged = (key: string, text: string, baselineY: number, fontSize: number): Tagged => {
     const label: MapLabelRender = {
-      text: line.text,
+      text,
       x: layout.center.x,
-      y: line.baselineY,
+      y: baselineY,
       anchor: 'middle',
       rotate: 0,
       leader: [],
       inside: true,
     };
-    return { fam: 'center', key: `title-${i}`, box: labelBox(label, fontMode), text: line.text, label };
-  });
-  const lenLabel: MapLabelRender = {
-    text: `${layout.length} bp`,
-    x: layout.center.x,
-    y: layout.centerTitle.lenBaselineY,
-    anchor: 'middle',
-    rotate: 0,
-    leader: [],
-    inside: true,
+    const w = approxTextWidth(text, fontSize, fontMode);
+    const box: Box = { x0: layout.center.x - w / 2, y0: baselineY - fontSize, x1: layout.center.x + w / 2, y1: baselineY + fontSize * 0.25 };
+    return { fam: 'center', key, box, text, label };
   };
-  labels.push({ fam: 'center', key: 'length', box: labelBox(lenLabel, fontMode), text: lenLabel.text, label: lenLabel });
+  const labels: Tagged[] = layout.centerTitle.lines.map((line, i) => tagged(`title-${i}`, line.text, line.baselineY, line.fontSize));
+  labels.push(tagged('length', `${layout.length} bp`, layout.centerTitle.lenBaselineY, layout.centerTitle.lenFontSize ?? 14));
   return labels;
 }
 
@@ -356,13 +353,13 @@ describe('label collision regression coverage', () => {
       const layout = computeMapLayout(s.input);
       const fontMode = s.fontMode ?? 'proportional';
       const { pairs } = findOverlaps(layout, fontMode);
-      const marker = layout.overflows?.find((overflow) => overflow.kind === 'feature-labels');
+      const marker = layout.overflowSummaries?.find((overflow) => overflow.kind === 'feature-labels');
       const visibleFeatureLabels = layout.features.filter((f) => f.label).length;
 
       expect(layout.radius).toBeGreaterThan(computeMapLayout(base({ features: denseFeatures(24, 6000) })).radius);
       expect(layout.bg.height).toBeGreaterThan(s.input.height);
       expect(visibleFeatureLabels).toBeLessThanOrEqual(36);
-      expect(marker?.text).toMatch(/^\+\d+ more$/);
+      expect(marker?.text).toMatch(/^\+\d+ features?$/);
       expect(overlapStrings(pairs)).toEqual([]);
       expect(extendedCollisionIssues(layout, fontMode)).toEqual([]);
     });

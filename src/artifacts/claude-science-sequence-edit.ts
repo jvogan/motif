@@ -103,6 +103,89 @@ function rangesEqual(left: ArtifactSequenceRange, right: ArtifactSequenceRange):
   return left.start === right.start && left.end === right.end;
 }
 
+/**
+ * True when committing the edit would leave the record with no residues. A
+ * record must keep at least one, so the editor refuses such an edit up front
+ * instead of letting the checkpoint validator throw after the fact.
+ */
+export function sequenceEditEmptiesRecord(edit: SequenceCoordinateEdit): boolean {
+  return edit.oldLength - edit.deletedLength + edit.insertedLength <= 0;
+}
+
+/**
+ * Whether a committed edit must be announced with an undoable notice: the first
+ * edit to a record in a session (typing a base letter over a placed caret edits
+ * the record, and nothing else says so), and every edit that removes or
+ * replaces more than one base.
+ */
+export function shouldAnnounceSequenceEdit(edit: SequenceCoordinateEdit, firstEditToRecord: boolean): boolean {
+  return firstEditToRecord || edit.deletedLength > 1;
+}
+
+const SHOWN_INSERT_LIMIT = 12;
+
+/**
+ * One-sentence, 1-based description of a committed edit, e.g.
+ * "Replaced 20 bp (11–30) with G." `removed` is the text the edit took out
+ * and `inserted` the text it put in.
+ */
+export function describeSequenceEdit(input: {
+  start: number;
+  removed: string;
+  inserted: string;
+  unit: 'bp' | 'nt' | 'aa';
+}): string {
+  const { start, removed, inserted, unit } = input;
+  const position = (start + 1).toLocaleString();
+  const span = (length: number) => `${(start + 1).toLocaleString()}–${(start + length).toLocaleString()}`;
+  const amount = (length: number) => `${length.toLocaleString()} ${unit}`;
+  const shownInsert = inserted.length <= SHOWN_INSERT_LIMIT ? inserted : amount(inserted.length);
+  if (removed.length === 0) {
+    return inserted.length <= SHOWN_INSERT_LIMIT
+      ? `Inserted ${inserted} at ${position}.`
+      : `Inserted ${amount(inserted.length)} at ${position}.`;
+  }
+  if (inserted.length === 0) {
+    return removed.length === 1
+      ? `Deleted ${removed} at ${position}.`
+      : `Deleted ${amount(removed.length)} (${span(removed.length)}).`;
+  }
+  if (removed.length === 1 && inserted.length === 1) {
+    return `Changed base ${position} from ${removed} to ${inserted}.`;
+  }
+  return `Replaced ${amount(removed.length)} (${span(removed.length)}) with ${shownInsert}.`;
+}
+
+/**
+ * Describes the net change from `before` to `after` as one edit. The first-edit
+ * notice stays up while the user keeps typing, and its Undo reverts every edit
+ * since, so its text must cover them all: typing AAAA over 5–8 reads "Replaced
+ * 4 bp (5–8) with AAAA.", not "Changed base 5 from G to A.". Returns null when
+ * the two sequences are identical.
+ */
+export function describeNetSequenceEdit(input: {
+  before: string;
+  after: string;
+  unit: 'bp' | 'nt' | 'aa';
+}): string | null {
+  const { before, after, unit } = input;
+  const shorter = Math.min(before.length, after.length);
+  let prefix = 0;
+  while (prefix < shorter && before[prefix] === after[prefix]) prefix += 1;
+  if (prefix === before.length && prefix === after.length) return null;
+  let suffix = 0;
+  while (
+    suffix < shorter - prefix
+    && before[before.length - 1 - suffix] === after[after.length - 1 - suffix]
+  ) suffix += 1;
+  return describeSequenceEdit({
+    start: prefix,
+    removed: before.slice(prefix, before.length - suffix),
+    inserted: after.slice(prefix, after.length - suffix),
+    unit,
+  });
+}
+
 export function transformSequenceRange(
   range: ArtifactSequenceRange,
   edit: SequenceCoordinateEdit,

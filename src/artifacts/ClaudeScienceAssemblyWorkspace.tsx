@@ -52,7 +52,8 @@ export type ClaudeScienceAssemblyWorkspaceProps = {
   records: readonly ClaudeScienceAssemblyRecord[];
   onClose: () => void;
   /** Persist the workflow result and optional derived record in one transaction. */
-  onSave: (payload: ClaudeScienceAssemblySavePayload) => void | Promise<void>;
+  /** May return a sentence for the saved line, such as the features the product left out. */
+  onSave: (payload: ClaudeScienceAssemblySavePayload) => void | string | Promise<void | string>;
   initialMode?: ClaudeScienceAssemblyMode;
   initialRecordIds?: readonly string[];
   createId?: () => string;
@@ -115,6 +116,9 @@ function planSummary(plan: ArtifactAssemblyPlan): string {
   }
   return `${plan.inputRecordIds.length} valid part${plan.inputRecordIds.length === 1 ? '' : 's'} · ${plan.errors.length} blocking issue${plan.errors.length === 1 ? '' : 's'}`;
 }
+
+/** Issue codes that state the check's own scope on every plan, not a case to review. */
+const STANDING_SCOPE_CODES = new Set(['ligation_conditions_not_modeled']);
 
 function modeLabel(mode: ClaudeScienceAssemblyMode): string {
   return mode === 'golden_gate' ? 'Golden Gate' : 'Traditional ligation';
@@ -351,9 +355,9 @@ export function ClaudeScienceAssemblyWorkspace({
           },
         } : {}),
       });
-      await onSave({ ...artifacts, plan, intent });
+      const note = await onSave({ ...artifacts, plan, intent });
       setSavedSignatures((current) => new Set(current).add(signature));
-      setStatus(intent === 'product' ? `${productName} saved with its workflow result.` : `${modeLabel(mode)} result saved.`);
+      setStatus(`${intent === 'product' ? `${productName} saved with its workflow result.` : `${modeLabel(mode)} result saved.`}${note ? ` ${note}` : ''}`);
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : 'The assembly result could not be saved.');
     } finally {
@@ -361,6 +365,10 @@ export function ClaudeScienceAssemblyWorkspace({
     }
   }, [mode, now, onSave, plan, productNames, productSaveSignature, resultSaveSignature, savedSignatures, saving, selectedRecords.length]);
 
+  // The scope disclaimer rides on every ligation plan, so counting it as a
+  // warning asked the reader to review something that never changes.
+  const scopeNotes = plan.warnings.filter((entry) => STANDING_SCOPE_CODES.has(entry.code));
+  const reviewWarnings = plan.warnings.filter((entry) => !STANDING_SCOPE_CODES.has(entry.code));
   const goldenGateParts = plan.kind === 'golden_gate' ? plan.parts : [];
   const domesticationNames = plan.kind === 'golden_gate'
     ? plan.domesticationRequiredRecordIds.map((id) => recordsById.get(id)?.name ?? id)
@@ -646,6 +654,27 @@ export function ClaudeScienceAssemblyWorkspace({
                 </strong>
                 <span>{planSummary(plan)}</span>
               </div>
+              {/* Blocking reasons come straight after the verdict they explain. Below
+                  the domestication and fidelity notes they started 138-156px under
+                  the sidebar's fold, leaving a pass note as the visible reason. */}
+              {plan.errors.length > 0 ? (
+                <div className="motif-cs-assembly-issues" data-level="error">
+                  <strong>Blocking issues</strong>
+                  <ul>{plan.errors.map((entry, index) => <li key={`${entry.code}-${index}`}>{entry.message}</li>)}</ul>
+                </div>
+              ) : null}
+              {reviewWarnings.length > 0 ? (
+                <div className="motif-cs-assembly-issues" data-level="warning">
+                  <strong>Warnings</strong>
+                  <ul>{reviewWarnings.map((entry, index) => <li key={`${entry.code}-${index}`}>{entry.message}</li>)}</ul>
+                </div>
+              ) : null}
+              {scopeNotes.length > 0 ? (
+                <div className="motif-cs-assembly-domestication" role="note" data-testid="assembly-scope-note">
+                  <strong>What this check covers</strong>
+                  {scopeNotes.map((entry, index) => <span key={`${entry.code}-${index}`}>{entry.message}</span>)}
+                </div>
+              ) : null}
               {domesticationNames.length > 0 ? (
                 <div className="motif-cs-assembly-domestication" role="note">
                   <strong>Domestication required</strong>
@@ -684,18 +713,6 @@ export function ClaudeScienceAssemblyWorkspace({
                   ) : null}
                 </div>
               ) : null}
-              {plan.errors.length > 0 ? (
-                <div className="motif-cs-assembly-issues" data-level="error">
-                  <strong>Blocking issues</strong>
-                  <ul>{plan.errors.map((entry, index) => <li key={`${entry.code}-${index}`}>{entry.message}</li>)}</ul>
-                </div>
-              ) : null}
-              {plan.warnings.length > 0 ? (
-                <div className="motif-cs-assembly-issues" data-level="warning">
-                  <strong>Warnings</strong>
-                  <ul>{plan.warnings.map((entry, index) => <li key={`${entry.code}-${index}`}>{entry.message}</li>)}</ul>
-                </div>
-              ) : null}
               <div
                 className="motif-cs-visually-hidden"
                 aria-live={plan.errors.length > 0 ? 'assertive' : 'polite'}
@@ -703,9 +720,9 @@ export function ClaudeScienceAssemblyWorkspace({
                 data-testid="assembly-plan-live-status"
               >
                 {plan.errors.length > 0
-                  ? `Assembly blocked. ${plan.errors.length} blocking issue${plan.errors.length === 1 ? '' : 's'} need review.`
-                  : plan.warnings.length > 0
-                    ? `Assembly warning. ${plan.warnings.length} warning${plan.warnings.length === 1 ? '' : 's'} need review.`
+                  ? `Assembly blocked. ${plan.errors.length} blocking issue${plan.errors.length === 1 ? ' needs' : 's need'} review.`
+                  : reviewWarnings.length > 0
+                    ? `Assembly warning. ${reviewWarnings.length} warning${reviewWarnings.length === 1 ? ' needs' : 's need'} review.`
                     : 'Assembly has no blocking issues or warnings.'}
               </div>
             </section>

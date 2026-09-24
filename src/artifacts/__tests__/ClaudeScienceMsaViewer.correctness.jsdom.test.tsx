@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 
 import { useState } from 'react';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, createEvent, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ClaudeScienceMsaViewer,
@@ -299,21 +299,23 @@ describe('ClaudeScienceMsaViewer comparison correctness', () => {
       { id: 'other', name: 'Other', aligned: 'AATA' },
     ]));
 
-    fireEvent.click(screen.getByLabelText('Use Variant as template'), {
-      detail: 1,
-      clientX: 120,
-      clientY: 240,
-    });
+    // The multi-click window is 600 ms of event time. Real event times put
+    // however long the render between the clicks took inside that window, and
+    // on a loaded machine it ran past 600 ms and the second click switched the
+    // template back. Stamp both clicks 100 ms apart instead.
+    const clickAt = (label: string, detail: number, timeStamp: number) => {
+      const target = screen.getByLabelText(label);
+      const event = createEvent.click(target, { detail, clientX: 120, clientY: 240 });
+      Object.defineProperty(event, 'timeStamp', { value: timeStamp });
+      fireEvent(target, event);
+    };
+    clickAt('Use Variant as template', 1, 1_000);
     await waitFor(() => expect(document.querySelector('.motif-cs-msa-matrix-row')?.getAttribute('data-msa-row-id')).toBe('variant'));
 
     // The original reference row has moved into Variant's former screen slot.
     // A second click at that same point belongs to the same multi-click and must
     // not silently switch the template back.
-    fireEvent.click(screen.getByLabelText('Use Reference as template'), {
-      detail: 2,
-      clientX: 120,
-      clientY: 240,
-    });
+    clickAt('Use Reference as template', 2, 1_100);
     await waitFor(() => expect(document.querySelector('.motif-cs-msa-matrix-row')?.getAttribute('data-msa-row-id')).toBe('variant'));
   });
 });

@@ -36,7 +36,11 @@ The original machine-readable downloads and independent checksums are:
 The lossless sparse transcription is
 [`golden-gate-fidelity-data.ts`](../src/bio/golden-gate-fidelity-data.ts). Its
 SHA-256 is
-`79f07cd539b7843e4e6828e538551361f78ca0d8d21a7077a20f5e6c6cb8a1dc`.
+`7ed7572f76c294cb924445b770888aa0df09ec658d65aa203eabf98802a45fe8`.
+The file stores each matrix packed and expands it at load to the same decimal
+triple text the first transcription stored literally (that file's SHA-256 was
+`79f07cd539b7843e4e6828e538551361f78ca0d8d21a7077a20f5e6c6cb8a1dc`);
+`golden-gate-fidelity-data.test.ts` pins the SHA-256 of every expanded matrix.
 Each sparse triple is a source row index, column index, and integer count;
 omitted cells remain explicit zero observations. The source row axis is the
 reverse-complement strand and the column axis is the top-strand 5′→3′ label

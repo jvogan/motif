@@ -196,12 +196,16 @@ describe('plasmid-map.css keeps the chip hit-testable and visibly hoverable', ()
 
   it('lands the hover rule after the theme rules that also set fill-opacity', () => {
     const hoverAt = mapCss.indexOf('.motif-pm-overflow-chip:hover');
-    const lastThemeAt = mapCss.lastIndexOf("] .motif-pm-container[data-map-mode='circular'] .motif-pm-overflow {");
+    const lastThemeAt = mapCss.lastIndexOf("[data-theme='dark'] .motif-pm-overflow {");
 
     expect(hoverAt).toBeGreaterThan(-1);
+    expect(lastThemeAt).toBeGreaterThan(-1);
     expect(hoverAt).toBeGreaterThan(lastThemeAt);
-    // ...and out-specifies them, or the chip would never visibly react to a pointer.
-    expect(mapCss).toContain(".motif-pm-container[data-map-mode='circular'] .motif-pm-overflow-chip:hover .motif-pm-overflow");
+    // ...and out-specifies them (0,4,0 against 0,2,0), or the chip would never visibly
+    // react to a pointer. Only a linear map draws chips; a circular map states its
+    // counts beside the drawing.
+    expect(mapCss).toContain('.motif-pm-container .motif-pm-overflow-chip:hover .motif-pm-overflow {');
+    expect(mapCss).not.toContain("[data-map-mode='circular'] .motif-pm-overflow");
   });
 
   it('keys hover on the group, so the enlarged target reacts as well as answering', () => {

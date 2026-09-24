@@ -1,9 +1,10 @@
-import { useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { useCallback, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import type {
   ArtifactAnalysisAsset,
   ArtifactAnalysisKind,
   ArtifactAnalysisResult,
   ArtifactBlastHit,
+  ArtifactConstructVerificationData,
 } from './claude-science-analysis-results';
 import {
   artifactAnalysisResultAssets,
@@ -19,6 +20,19 @@ import {
   type ScientificFreshnessDisplayEvaluation,
 } from './ClaudeScienceFreshnessBadge';
 import { requestBrowserTextDownload } from './claude-science-download';
+import { ClaudeScienceConstructVerificationPanel } from './ClaudeScienceConstructVerificationPanel';
+import type { ClaudeScienceConstructVerificationRecord } from './ClaudeScienceConstructVerificationWorkspace';
+import {
+  constructVerificationPresentationFromReport,
+  constructVerificationSavedTraces,
+  type ConstructVerificationSavedTraceGap,
+} from './claude-science-construct-verification-display';
+import {
+  constructVariantTraceReadIds,
+  constructVerificationTraceTarget,
+  type ConstructVerificationTraceTarget,
+  type ConstructVerificationTraceVariant,
+} from './claude-science-construct-verification-traces';
 import './claude-science-agent-results.css';
 
 export type ArtifactResultCopyHandler = (
@@ -43,6 +57,13 @@ export type ClaudeScienceAgentResultsPanelProps = {
   onCopyText?: ArtifactResultCopyHandler;
   /** Optional host adapter; the standalone workbench otherwise downloads a text Blob. */
   onDownloadText?: ArtifactResultDownloadHandler;
+  /** The workspace's reference and read records, which a saved verification's traces come from. */
+  verificationRecords?: readonly ClaudeScienceConstructVerificationRecord[];
+  /**
+   * Opens a saved verification's variant in Alignment's Traces view, as the
+   * live variant table does. Without it the saved variant rows are plain text.
+   */
+  onInspectVerificationVariant?: (target: ConstructVerificationTraceTarget) => void;
 };
 
 const KIND_LABELS: Record<ArtifactAnalysisKind, string> = {
@@ -138,8 +159,9 @@ function resultFacts(result: ArtifactAnalysisResult): Array<{ label: string; val
         ...(result.data.standard ? [{ label: 'Standard', value: result.data.standard }] : []),
       ];
     case 'construct_verification':
+      // The verdict is the row's badge (see AnalysisResultRow), so it is not
+      // repeated here as an uncoloured fact.
       return [
-        { label: 'Verdict', value: result.data.state.replaceAll('_', ' ') },
         { label: 'Coverage', value: `${(result.data.coverageFraction * 100).toFixed(1)}%` },
         { label: 'Mapped Reads', value: `${result.data.mappedReadCount}/${result.data.readRecordIds.length}` },
         { label: 'Unexpected', value: result.data.unexpectedVariantCount.toLocaleString() },
@@ -165,6 +187,12 @@ function resultFacts(result: ArtifactAnalysisResult): Array<{ label: string; val
       ];
   }
 }
+
+const CONSTRUCT_VERDICT_LABELS: Record<ArtifactConstructVerificationData['state'], string> = {
+  consistent: 'Consistent',
+  needs_review: 'Needs review',
+  inconsistent: 'Inconsistent',
+};
 
 function constructVerificationPreview(result: ArtifactAnalysisResult): string | null {
   if (result.kind !== 'construct_verification') return null;
@@ -598,6 +626,131 @@ function ResultDataViewer({
   return preview ? <pre aria-label={`${result.name} safe text preview`} tabIndex={0}>{preview}</pre> : null;
 }
 
+/**
+ * The saved verification's evidence, read back from its report asset into the
+ * same panel the run showed. Without it a saved verification could only be
+ * reopened as one reason-code line and a 13,000-character JSON file.
+ */
+const SAVED_TRACE_GAP_ROW: Record<ConstructVerificationSavedTraceGap, (noun: string) => string> = {
+  missing: (noun) => `${noun} not in this workspace`,
+  edited: (noun) => `${noun} edited since this run`,
+  unreadable: (noun) => `${noun} map unreadable`,
+};
+
+/** "Traces unavailable: read_R has been edited since this run. A row only that read covers cannot open." */
+function savedTraceReadsNote(reads: readonly { name: string; gap: ConstructVerificationSavedTraceGap }[]): string {
+  const clause = (gap: ConstructVerificationSavedTraceGap, verbs: [string, string]) => {
+    const names = reads.filter((read) => read.gap === gap).map((read) => read.name);
+    if (!names.length) return [];
+    return [`${names.join(', ')} ${names.length === 1 ? verbs[0] : verbs[1]}`];
+  };
+  const clauses = [
+    ...clause('missing', ['is not in this workspace', 'are not in this workspace']),
+    ...clause('edited', ['has been edited since this run', 'have been edited since this run']),
+    ...clause('unreadable', ['has a saved map that does not fit its trace', 'have saved maps that do not fit their traces']),
+  ];
+  return `Traces unavailable: ${clauses.join('; ')}. A row only ${reads.length === 1 ? 'that read covers' : 'those reads cover'} cannot open.`;
+}
+
+type SavedVerificationTraceActions = {
+  records?: readonly ClaudeScienceConstructVerificationRecord[];
+  onInspectVariant?: (target: ConstructVerificationTraceTarget) => void;
+};
+
+function SavedVerificationEvidence({
+  result,
+  asset,
+  recordNames,
+  records,
+  onInspectVariant,
+}: {
+  result: Extract<ArtifactAnalysisResult, { kind: 'construct_verification' }>;
+  asset: ArtifactAnalysisAsset | undefined;
+  recordNames: Readonly<Record<string, string>>;
+} & SavedVerificationTraceActions) {
+  const presentation = useMemo(
+    () => (asset ? constructVerificationPresentationFromReport(asset.content) : null),
+    [asset],
+  );
+  // The report keeps each mapped read's CIGAR; with the workspace's own reads
+  // and reference it lays the traces out exactly as the live table does.
+  const traces = useMemo(
+    () => (asset && records && onInspectVariant ? constructVerificationSavedTraces(asset.content, records) : null),
+    [asset, onInspectVariant, records],
+  );
+  const ready = traces?.status === 'ready' ? traces : null;
+  const [traceError, setTraceError] = useState('');
+  const canInspectVariant = useCallback((variant: ConstructVerificationTraceVariant) => (
+    ready !== null && constructVariantTraceReadIds(ready.result, variant).length > 0
+  ), [ready]);
+  // A row a saved read covered, when no read covering it can open here, says why.
+  const variantTraceUnavailable = useCallback((variant: ConstructVerificationTraceVariant) => {
+    if (!traces || traces.status === 'no_read_map') return undefined;
+    const readIds = constructVariantTraceReadIds(traces.unavailable, variant);
+    if (!readIds.length) return undefined;
+    if (traces.status === 'no_reference') return SAVED_TRACE_GAP_ROW[traces.gap]('Reference');
+    const gaps = new Set(traces.unavailableReads.filter((read) => readIds.includes(read.id)).map((read) => read.gap));
+    const noun = readIds.length === 1 ? 'Read' : 'Reads';
+    return gaps.size === 1 ? SAVED_TRACE_GAP_ROW[[...gaps][0]](noun) : `${noun} missing or edited since this run`;
+  }, [traces]);
+  const inspectVariant = useCallback((variant: ConstructVerificationTraceVariant) => {
+    if (!ready || !onInspectVariant) return;
+    setTraceError('');
+    try {
+      const target = constructVerificationTraceTarget({
+        result: ready.result,
+        variant,
+        reference: ready.reference,
+        records: ready.records,
+      });
+      if (!target) {
+        setTraceError('The reads that cover this position could not be laid out against the reference, so Traces cannot open here.');
+        return;
+      }
+      onInspectVariant(target);
+    } catch (error) {
+      setTraceError(error instanceof Error && error.message ? error.message : 'Traces could not open for this variant.');
+    }
+  }, [onInspectVariant, ready]);
+  const referenceName = recordNames[result.data.referenceRecordId] ?? presentation?.reference.name ?? 'the reference';
+  const traceNote = !traces || traces.status === 'ready' && traces.unavailableReads.length === 0
+    ? ''
+    : traces.status === 'no_read_map'
+      ? 'This verification was saved before saved reports kept each read\'s map, so its rows cannot open the traces. Run it again and save to open them from here.'
+      : traces.status === 'no_reference'
+        ? `Traces unavailable: ${referenceName} ${traces.gap === 'missing' ? 'is not in this workspace' : 'has been edited since this run'}, so these rows cannot open its traces.`
+        : savedTraceReadsNote(traces.unavailableReads);
+  return (
+    <section
+      className="motif-cs-agent-verification-evidence"
+      aria-label={`${result.name} saved evidence`}
+      data-testid="analysis-result-verification-evidence"
+    >
+      {presentation ? (
+        <>
+          <ClaudeScienceConstructVerificationPanel
+            result={presentation}
+            referenceName={recordNames[result.data.referenceRecordId]}
+            readNames={recordNames}
+            onInspectVariant={ready && onInspectVariant ? inspectVariant : undefined}
+            canInspectVariant={canInspectVariant}
+            variantTraceUnavailable={variantTraceUnavailable}
+          />
+          {traceError ? <p className="motif-cs-agent-viewer-warning" role="alert">{traceError}</p> : null}
+          {traceNote ? (
+            <p className="motif-cs-agent-verification-note" data-testid="saved-verification-traces-note">{traceNote}</p>
+          ) : null}
+          <p className="motif-cs-agent-verification-note">
+            Positions above are 1-based, as in the sequence view. The saved JSON report keeps 0-based, end-exclusive coordinates.
+          </p>
+        </>
+      ) : (
+        <p className="motif-cs-agent-viewer-warning" role="alert">The saved verification report is unavailable or unreadable.</p>
+      )}
+    </section>
+  );
+}
+
 function AnalysisResultRow({
   result,
   assetsById,
@@ -612,6 +765,8 @@ function AnalysisResultRow({
   onConfirmRemove,
   copyText,
   downloadText,
+  records,
+  onInspectVariant,
 }: {
   result: ArtifactAnalysisResult;
   assetsById: ReadonlyMap<string, ArtifactAnalysisAsset>;
@@ -624,8 +779,13 @@ function AnalysisResultRow({
   onRequestRemove: () => void;
   onCancelRemove: () => void;
   onConfirmRemove: () => void;
-} & ResultTextActions) {
+} & ResultTextActions & SavedVerificationTraceActions) {
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [evidenceOpen, setEvidenceOpen] = useState(false);
+  const evidenceId = useId();
+  const verificationReport = result.kind === 'construct_verification' && result.data.verificationReportAssetId
+    ? assetsById.get(result.data.verificationReportAssetId)
+    : undefined;
   const linkedAssets = useMemo(() => (
     detailsOpen ? artifactAnalysisResultAssets(result, assetsById) : []
   ), [assetsById, detailsOpen, result]);
@@ -642,7 +802,23 @@ function AnalysisResultRow({
           <small>{recordList(result.inputRecordIds, recordNames)}</small>
         </div>
         <span className="motif-cs-agent-result-state">
-          <span className="motif-cs-agent-result-status" data-status={result.status}>{result.status}</span>
+          {/* A verification's verdict is the answer the row exists to give, so it
+              is the coloured badge. The run status beside it only says the
+              engine finished, which a failed verification also did; left as the
+              only coloured chip it painted "Inconsistent" runs green. */}
+          {result.kind === 'construct_verification' ? (
+            <span
+              className="motif-cs-agent-result-verdict"
+              data-testid="analysis-result-verdict"
+              data-verdict={result.data.state}
+            >{CONSTRUCT_VERDICT_LABELS[result.data.state] ?? result.data.state}</span>
+          ) : null}
+          <span
+            className="motif-cs-agent-result-status"
+            data-status={result.status}
+            data-demoted={result.kind === 'construct_verification' || undefined}
+            title={result.kind === 'construct_verification' ? `Run status: ${result.status}` : undefined}
+          >{result.status}</span>
           {freshness ? <ClaudeScienceFreshnessBadge evaluation={freshness} recordNames={recordNames} /> : null}
         </span>
       </div>
@@ -656,6 +832,18 @@ function AnalysisResultRow({
           </div>
         ))}
       </dl>
+
+      {result.kind === 'construct_verification' && evidenceOpen ? (
+        <div id={evidenceId}>
+          <SavedVerificationEvidence
+            result={result}
+            asset={verificationReport}
+            recordNames={recordNames}
+            records={records}
+            onInspectVariant={onInspectVariant}
+          />
+        </div>
+      ) : null}
 
       <details className="motif-cs-agent-result-details" onToggle={(event) => setDetailsOpen(event.currentTarget.open)}>
         <summary>Provenance &amp; Data</summary>
@@ -701,6 +889,18 @@ function AnalysisResultRow({
         </div>
       ) : (
         <div className="motif-cs-agent-result-actions">
+          {result.kind === 'construct_verification' ? (
+            <button
+              className="motif-cs-mini-button"
+              type="button"
+              data-testid="analysis-result-open-evidence"
+              aria-expanded={evidenceOpen}
+              aria-controls={evidenceId}
+              disabled={!verificationReport}
+              title={verificationReport ? undefined : 'The saved verification report is not in this workspace.'}
+              onClick={() => setEvidenceOpen((open) => !open)}
+            >{evidenceOpen ? 'Hide evidence' : 'Open evidence'}</button>
+          ) : null}
           {revealId ? <button className="motif-cs-mini-button" type="button" onClick={() => onRevealRecord(revealId)}>Reveal Input</button> : null}
           <button
             ref={setDeleteRef}
@@ -724,6 +924,8 @@ export function ClaudeScienceAgentResultsPanel({
   onRemove,
   onCopyText,
   onDownloadText,
+  verificationRecords,
+  onInspectVerificationVariant,
 }: ClaudeScienceAgentResultsPanelProps) {
   const [filter, setFilter] = useState<ResultFilter>('all');
   const [visibleCount, setVisibleCount] = useState(RESULT_PAGE_SIZE);
@@ -904,6 +1106,8 @@ export function ClaudeScienceAgentResultsPanel({
               onConfirmRemove={() => confirmDelete(result.id)}
               copyText={copyText}
               downloadText={downloadText}
+              records={verificationRecords}
+              onInspectVariant={onInspectVerificationVariant}
             />
           ))}
           {remainingCount > 0 || visibleResults.length > RESULT_PAGE_SIZE ? (

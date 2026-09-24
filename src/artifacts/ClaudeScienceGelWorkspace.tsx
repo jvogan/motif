@@ -1,5 +1,5 @@
 /* eslint-disable react-refresh/only-export-components -- exports a pure candidate adapter for the standalone workspace */
-import { useMemo, useRef, type CSSProperties, type KeyboardEvent } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
 import type { SequenceType, Topology } from '../bio/types';
 import {
   ARTIFACT_GEL_MAX_AGAROSE_PERCENT,
@@ -287,7 +287,55 @@ function moveBandFocus(event: KeyboardEvent<HTMLElement>) {
   bands[nextIndex]?.focus();
 }
 
-function GelLaneView({ lane }: { lane: ArtifactGelLane }) {
+function ladderSizeLabel(sizeBp: number): string {
+  if (sizeBp < 1000) return `${sizeBp} bp`;
+  const kb = sizeBp / 1000;
+  return `${Number.isInteger(kb) ? kb : kb.toFixed(1)} kb`;
+}
+
+/** The track's minimum height in the stylesheet; used until a real height is measured. */
+const GEL_TRACK_MIN_HEIGHT_PX = 210;
+/** Ladder size labels closer than this would overprint each other. */
+const GEL_LADDER_LABEL_MIN_GAP_PX = 11;
+
+/** Pixel offset of a band in a track of `height`, mirroring the band's CSS `top`. */
+function gelBandTopPx(normalizedY: number, height: number): number {
+  return Math.min(Math.max(13, 12 + normalizedY * 0.82 * height), height - 8);
+}
+
+/**
+ * Which ladder bands get a printed size. Labels go top down and skip any band
+ * that would sit within one label height of the last printed one, so close
+ * pairs such as 6 kb and 5 kb print one size at small plates and both once
+ * the plate is tall enough to separate them.
+ */
+export function visibleLadderLabelIndexes(bands: readonly ArtifactGelBand[], trackHeight: number): Set<number> {
+  const visible = new Set<number>();
+  let lastTop = Number.NEGATIVE_INFINITY;
+  for (const band of [...bands].sort((a, b) => a.normalizedY - b.normalizedY)) {
+    const top = gelBandTopPx(band.normalizedY, trackHeight);
+    if (top - lastTop < GEL_LADDER_LABEL_MIN_GAP_PX) continue;
+    visible.add(band.bandIndex);
+    lastTop = top;
+  }
+  return visible;
+}
+
+function GelLaneView({ lane, onReadBand }: { lane: ArtifactGelLane; onReadBand: (label: string) => void }) {
+  const isLadder = lane.sourceKind === 'ladder';
+  const trackRef = useRef<HTMLDivElement>(null);
+  const [trackHeight, setTrackHeight] = useState(GEL_TRACK_MIN_HEIGHT_PX);
+  useLayoutEffect(() => {
+    const track = trackRef.current;
+    if (!isLadder || !track || typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver(() => setTrackHeight(track.getBoundingClientRect().height || GEL_TRACK_MIN_HEIGHT_PX));
+    observer.observe(track);
+    return () => observer.disconnect();
+  }, [isLadder]);
+  const labelledBands = useMemo(
+    () => (isLadder ? visibleLadderLabelIndexes(lane.bands, trackHeight) : new Set<number>()),
+    [isLadder, lane.bands, trackHeight],
+  );
   return (
     <div
       className="motif-cs-gel-lane"
@@ -295,8 +343,19 @@ function GelLaneView({ lane }: { lane: ArtifactGelLane }) {
       data-testid={`gel-lane-${lane.id}`}
       role="listitem"
     >
-      <div className="motif-cs-gel-lane-track" aria-label={`${lane.label}, ${lane.bands.length} visible bands`}>
+      <div ref={trackRef} className="motif-cs-gel-lane-track" aria-label={`${lane.label}, ${lane.bands.length} visible bands`}>
         <span className="motif-cs-gel-well" aria-hidden="true" />
+        {isLadder ? lane.bands.filter((band) => labelledBands.has(band.bandIndex)).map((band) => (
+          <span
+            key={`size-${band.bandIndex}`}
+            className="motif-cs-gel-ladder-size"
+            data-testid={`gel-ladder-size-${band.bandIndex}`}
+            aria-hidden="true"
+            style={{ '--motif-cs-gel-band-y': `${Math.round(band.normalizedY * 10000) / 100}%` } as GelBandStyle}
+          >
+            {ladderSizeLabel(band.representativeSizeBp)}
+          </span>
+        )) : null}
         {lane.bands.map((band) => {
           const label = bandLabel(lane, band);
           const style: GelBandStyle = {
@@ -310,13 +369,14 @@ function GelLaneView({ lane }: { lane: ArtifactGelLane }) {
               data-co-migrating={band.coMigrating || undefined}
               data-clipped={band.clippedAtBoundary || undefined}
               data-testid={`gel-band-${lane.id}-${band.bandIndex}`}
-              data-tooltip={label}
               role="img"
               tabIndex={band.bandIndex === 0 ? 0 : -1}
               aria-label={label}
               title={label}
               style={style}
               onKeyDown={moveBandFocus}
+              onMouseEnter={() => onReadBand(label)}
+              onFocus={() => onReadBand(label)}
             />
           );
         })}
@@ -428,6 +488,13 @@ export function ClaudeScienceGelWorkspace({
   const plateStyle: GelPlateStyle = {
     '--motif-cs-gel-lane-count': `${(built.preview?.lanes.length ?? 1)}`,
   };
+  // Band sizes used to reach the reader only through the native title tooltip,
+  // one band at a time after the OS delay. The last band pointed at or focused
+  // is printed under the plate instead.
+  const [reading, setReading] = useState<{ preview: ArtifactGelPreview | null; label: string }>({ preview: null, label: '' });
+  // A reading belongs to the preview it was taken from; a rebuilt preview starts blank.
+  const bandReading = reading.preview === built.preview ? reading.label : '';
+  const readBand = (label: string) => setReading({ preview: built.preview, label });
 
   return (
     <section
@@ -580,7 +647,7 @@ export function ClaudeScienceGelWorkspace({
           {built.preview ? (
             <div className="motif-cs-gel-plate" data-testid="gel-plate" style={plateStyle}>
               <div className="motif-cs-gel-lanes" role="list" aria-label="Qualitative gel lanes">
-                {built.preview.lanes.map((lane) => <GelLaneView key={lane.id} lane={lane} />)}
+                {built.preview.lanes.map((lane) => <GelLaneView key={lane.id} lane={lane} onReadBand={readBand} />)}
               </div>
             </div>
           ) : (
@@ -590,6 +657,11 @@ export function ClaudeScienceGelWorkspace({
             </div>
           )}
 
+          {built.preview ? (
+            <p className="motif-cs-gel-readout" data-testid="gel-band-readout" data-empty={!bandReading || undefined}>
+              {bandReading || 'Point at or focus a band to read its size.'}
+            </p>
+          ) : null}
           <p className="motif-cs-gel-caveat" id="motif-cs-gel-caveat" role="note">
             <strong>Interpretation limit.</strong> {ARTIFACT_GEL_QUALITATIVE_CAVEAT}
           </p>

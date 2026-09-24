@@ -121,13 +121,25 @@ describe('Claude Science Inventory regression guards', () => {
     expect(artifactCss).toMatch(/\.motif-cs-pane-toggle\[data-active="true"\][\s\S]*?box-shadow:\s*none/);
   });
 
+  it('underlines the selected record tab in the warm themes too', () => {
+    // Each warm theme draws the tab as a bordered pill, and that border shorthand
+    // (0,2,1) outranked the shared underline (0,2,0): the selected tab painted 0
+    // accent pixels in both, against 177 in Light and Dark.
+    for (const theme of ['claude-light', 'claude-dark']) {
+      expect(artifactCss).toContain(`html[data-theme="${theme}"] .motif-cs-record-tab {\n  margin: 4px 3px;\n  border: 1px solid`);
+      expect(artifactCss).toMatch(new RegExp(
+        `html\\[data-theme="${theme}"\\] \\.motif-cs-record-tab\\[data-active="true"\\] \\{\\s*border-bottom-color: var\\(--accent\\);\\s*box-shadow: inset 0 -2px 0 var\\(--accent\\);`,
+      ));
+    }
+  });
+
   it('keeps Inventory chrome fixed while only the record groups scroll', () => {
     expect(artifactCss).toMatch(/\.motif-cs-sidebar\s*\{[\s\S]*?display:\s*flex[\s\S]*?flex-direction:\s*column[\s\S]*?overflow:\s*hidden/);
     expect(artifactCss).toMatch(/\.motif-cs-inventory-list-panel\s*\{[\s\S]*?flex:\s*1 1 auto[\s\S]*?overflow:\s*hidden/);
     expect(artifactCss).toMatch(/\.motif-cs-inventory-groups\s*\{[\s\S]*?overflow:\s*auto[\s\S]*?overscroll-behavior:\s*contain/);
   });
 
-  it('keeps Inventory vertical and record tabs visible in the split workspace', () => {
+  it('keeps Inventory vertical in the split workspace', () => {
     // The stylesheet carries MORE THAN ONE `@media (min-width: 768px) and
     // (max-width: 1535px)` block, so slicing from the first opener to the 1536
     // breakpoint spans everything in between — including the `max-width: 767px`
@@ -149,11 +161,30 @@ describe('Claude Science Inventory regression guards', () => {
     expect(splitWorkspace).toContain('.motif-cs-sidebar .motif-cs-inventory-group-head');
     expect(splitWorkspace).toContain('display: flex;');
     expect(splitWorkspace).not.toContain('--compact-inventory-height');
-    expect(splitWorkspace).not.toContain('.motif-cs-record-tabs[data-inventory-visible="true"]');
-    expect(artifactCss).toContain(
-      '.motif-cs-shell:has(.motif-cs-record-tabs[data-inventory-visible="true"])',
-    );
-    expect(artifactCss).toMatch(/@media \(max-width: 767px\)[\s\S]*?data-inventory-visible="true"\]\)\s*\{\s*grid-template-rows:\s*auto 1fr/);
+    expect(splitWorkspace).not.toContain('.motif-cs-record-strip');
+  });
+
+  it('hides the record tab strip beside a docked Inventory at every width, and keeps one Add entry control', () => {
+    // The strip listed the Inventory's 13 records in the same order with the same
+    // selection, for 32px of full-width height; it was hidden only up to 767px.
+    // It still shows beside a floating or hidden Inventory.
+    expect(artifactSource).toContain("const recordStripHidden = paneVisibility.inventory && panePlacements.inventory === 'docked';");
+    expect(artifactSource).toContain('<div className="motif-cs-record-strip" hidden={recordStripHidden || undefined}>');
+    expect(artifactCss).toMatch(/\n\.motif-cs-record-strip\[hidden\] \{\s*display: none;/);
+    expect(artifactCss).toMatch(/\n\.motif-cs-shell:has\(\.motif-cs-record-strip\[hidden\]\) \{\s*grid-template-rows: auto 1fr;/);
+    expect(artifactCss).not.toContain('data-inventory-visible');
+    // Hiding the Inventory used to leave no visible way to add a record. The strip's
+    // "+" renders only while the Inventory is hidden: the Add entry panel finds its
+    // trigger with querySelector('.motif-cs-add-entry-button'), so two at once would
+    // make one of them close and reopen the panel on a second click.
+    const strip = sliceBetween(artifactSource, '<div className="motif-cs-record-strip"', '</div>\n\n      <main');
+    expect(strip).toContain('{paneVisibility.inventory ? null : (');
+    expect(strip).toContain('className="motif-cs-mini-button motif-cs-add-entry-button"');
+    expect(strip).toContain('{importSequencePanel}');
+    expect(artifactCss).toMatch(/\.motif-cs-record-strip \.motif-cs-import-panel\[open\] \{\s*position: fixed;/);
+    // Focus that used to go to the active tab goes to whichever record control shows.
+    expect(artifactSource.match(/focusActiveRecordControl\(\)/g)?.length).toBeGreaterThanOrEqual(3);
+    expect(artifactSource).not.toContain("document.querySelector<HTMLButtonElement>('.motif-cs-record-tab[data-active=\"true\"]')");
   });
 
   it('gives the inventory scroller a themed scrollbar rather than the platform default', () => {

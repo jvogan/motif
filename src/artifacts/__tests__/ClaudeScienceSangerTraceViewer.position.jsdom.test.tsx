@@ -111,24 +111,24 @@ describe('ClaudeScienceSangerTraceViewer alignment position', () => {
     stubScroller();
     const canvas = screen.getByRole('img');
     fireEvent.pointerDown(canvas, { clientX: 20.5 * 12 });
-    expect(screen.getByText(/Alignment position 21 · read/)).toBeTruthy();
+    expect(screen.getByText(/Template position 21 · alignment column 21 · read/)).toBeTruthy();
 
-    expect(positionSlider().closest('label')?.textContent).toContain('Alignment position');
+    expect(positionSlider().closest('label')?.textContent).toContain('Alignment column');
     fireEvent.change(positionSlider(), {
       target: { value: '80' },
     });
     expect(positionSlider().value).toBe('80');
-    expect(screen.getByText(/Alignment position 21 · read/)).toBeTruthy();
+    expect(screen.getByText(/Template position 21 · alignment column 21 · read/)).toBeTruthy();
 
     first.unmount();
     renderViewer();
     stubScroller();
     expect(positionSlider().value).toBe('80');
-    expect(screen.getByText(/Alignment position 21 · read/)).toBeTruthy();
+    expect(screen.getByText(/Template position 21 · alignment column 21 · read/)).toBeTruthy();
 
     fireEvent.keyDown(screen.getByRole('img'), { key: 'ArrowRight' });
     expect(positionSlider().value).toBe('21');
-    expect(screen.getByText(/Alignment position 22 · read/)).toBeTruthy();
+    expect(screen.getByText(/Template position 22 · alignment column 22 · read/)).toBeTruthy();
   });
 
   it('keeps the positioned biological column centered through zoom in and out', () => {
@@ -145,7 +145,7 @@ describe('ClaudeScienceSangerTraceViewer alignment position', () => {
     while (frames.length > 0) frames.shift()?.(0);
 
     fireEvent.pointerDown(screen.getByRole('img'), { clientX: 20.5 * 12 });
-    expect(screen.getByText(/Alignment position 21 · read/)).toBeTruthy();
+    expect(screen.getByText(/Template position 21 · alignment column 21 · read/)).toBeTruthy();
 
     view.rerender(
       <ClaudeScienceSangerTraceViewer
@@ -164,14 +164,14 @@ describe('ClaudeScienceSangerTraceViewer alignment position', () => {
 
     expect(positionSlider().value).toBe('80');
     expect((scroller.scrollLeft + (scroller.clientWidth / 2)) / 14).toBeCloseTo(centeredBeforeZoom);
-    expect(screen.getByText(/Alignment position 21 · read/)).toBeTruthy();
+    expect(screen.getByText(/Template position 21 · alignment column 21 · read/)).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: 'Zoom chromatogram out' }));
     while (frames.length > 0) frames.shift()?.(0);
 
     expect(positionSlider().value).toBe('80');
     expect((scroller.scrollLeft + (scroller.clientWidth / 2)) / 12).toBeCloseTo(centeredBeforeZoom);
-    expect(screen.getByText(/Alignment position 21 · read/)).toBeTruthy();
+    expect(screen.getByText(/Template position 21 · alignment column 21 · read/)).toBeTruthy();
   });
 
   it('updates the position control when the reader scrolls manually', () => {

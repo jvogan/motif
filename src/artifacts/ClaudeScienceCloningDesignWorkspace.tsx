@@ -263,6 +263,7 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
   const tabPanelId = useId();
   const partHelpId = useId();
   const addHintId = useId();
+  const fusionEditorIdPrefix = useId();
   const workspaceRef = useRef<HTMLElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const [method, setMethod] = useState<ClaudeScienceCloningDesignMethod>(initialMethod);
@@ -287,6 +288,8 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
   const [savedSignatures, setSavedSignatures] = useState<Record<SaveIntent, string>>({ plan: '', product: '' });
+  const [openFusionEditors, setOpenFusionEditors] = useState<ReadonlySet<string>>(() => new Set());
+  const [fusionFocusKey, setFusionFocusKey] = useState<string | null>(null);
 
   const recordsById = useMemo(() => new Map(records.map((record) => [record.id, record])), [records]);
   const selectedIds = useMemo(() => new Set(parts.map((part) => part.recordId)), [parts]);
@@ -522,6 +525,31 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
     setStatus(`Position updated to ${recordsById.get(nextRecordId)?.name ?? 'the selected record'}.`);
     setError('');
   }, [recordsById, selectedIds]);
+
+  const setFusionEditorOpen = useCallback((key: string, open: boolean) => {
+    setOpenFusionEditors((current) => {
+      if (current.has(key) === open) return current;
+      const next = new Set(current);
+      if (open) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+  }, []);
+
+  // The row's "Add flanks" pill and the checklist both open a part's fusion
+  // editor and move focus to its first empty boundary, so the control that
+  // resolves the requirement is the one the reader just pressed.
+  const openFusionEditor = useCallback((key: string) => {
+    setFusionEditorOpen(key, true);
+    setFusionFocusKey(key);
+  }, [setFusionEditorOpen]);
+
+  useEffect(() => {
+    if (fusionFocusKey === null) return;
+    const inputs = [...(document.getElementById(`${fusionEditorIdPrefix}-${fusionFocusKey}`)?.querySelectorAll('input') ?? [])];
+    (inputs.find((input) => !input.value) ?? inputs[0])?.focus();
+    setFusionFocusKey(null);
+  }, [fusionEditorIdPrefix, fusionFocusKey]);
 
   const changePartOrientation = useCallback((key: string, name: string, orientation: PartOrientation) => {
     setParts((current) => current.map((part) => (part.key === key ? { ...part, orientation } : part)));
@@ -929,7 +957,9 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
                 <div>
                   <span>02</span>
                   <h3 id={`${titleId}-parts`}>{organizationMode === 'golden_braid_binary' ? 'Source Modules' : organizationMode === 'golden_braid_tu' ? 'Entry Parts' : 'Ordered Parts'}</h3>
-                  <em>{parts.length}/{partLimit}</em>
+                  {/* Parts in the design against the most it can hold. As "3/10" in
+                      9px mono, its slashed zero read as "3/18" beside the real 3/10. */}
+                  <em>{parts.length} of {partLimit} parts</em>
                 </div>
                 <div className="motif-cs-cloning-design-section-actions">
                   {plan.kind === 'golden_gate_design' && !goldenGateNeedsAnotherInput ? (
@@ -939,7 +969,7 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
                       disabled={!suggestedOrderDiffers}
                       onClick={applySuggestedOrder}
                     >
-                      {suggestedOrderDiffers ? 'Apply Suggested Order' : 'Order Checked'}
+                      {suggestedOrderDiffers ? 'Apply suggested order' : 'Order checked'}
                     </button>
                   ) : null}
                 </div>
@@ -960,6 +990,20 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
                   if (!record) return null;
                   const ggPart = plan.kind === 'golden_gate_design'
                     ? plan.parts.find((entry) => entry.recordId === record.id)
+                    : null;
+                  // A part that also needs domestication still needs flanks, and the
+                  // checklist sends the reader here for them.
+                  const hasFusionEditor = plan.kind === 'golden_gate_design' && Boolean(
+                    ggPart?.status === 'needs_flanks'
+                    || part.requestedLeftOverhang
+                    || part.requestedRightOverhang
+                    || plan.preparation.some((action) => action.kind === 'add_type_iis_flanks' && action.recordIds.includes(record.id)),
+                  );
+                  const fusionEditorOpen = openFusionEditors.has(part.key);
+                  // Boundaries the planner accepted but the record does not carry yet.
+                  const plannedFusion = ggPart?.requestedLeftOverhang && ggPart.requestedRightOverhang
+                    && (ggPart.leftOverhang !== ggPart.requestedLeftOverhang || ggPart.rightOverhang !== ggPart.requestedRightOverhang)
+                    ? `${ggPart.requestedLeftOverhang} → ${ggPart.requestedRightOverhang}`
                     : null;
                   const options = records.filter((entry) => entry.id === record.id || (
                     !selectedIds.has(entry.id) && (!guidedGoldenBraid || entry.id !== destinationRecordId)
@@ -1040,11 +1084,30 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
                               </select>
                             </label>
                           ) : <span><small>Role</small><strong>{ggPart?.roleLabel ?? 'Unassigned'}</strong></span>}
-                          <span><small>Fusion</small><code>{ggPart?.leftOverhang ?? '—'} → {ggPart?.rightOverhang ?? '—'}</code></span>
+                          {plannedFusion ? (
+                            <span data-planned="true" title="Planned boundaries. The record gains them when primers add the flanks.">
+                              <small>Planned</small><code>{plannedFusion}</code>
+                            </span>
+                          ) : <span><small>Fusion</small><code>{ggPart?.leftOverhang ?? '—'} → {ggPart?.rightOverhang ?? '—'}</code></span>}
                           <span><small>Internal</small><strong>{ggPart?.internalSiteCount ?? '—'}</strong></span>
-                          <span className="motif-cs-cloning-design-state" data-state={ggPart?.status ?? 'unknown'}>
-                            {ggPart?.status === 'ready' ? 'Ready' : ggPart?.status === 'needs_domestication' ? 'Domesticate' : 'Add Flanks'}
-                          </span>
+                          {ggPart?.status !== 'ready' && ggPart?.status !== 'needs_domestication' && hasFusionEditor ? (
+                            <button
+                              type="button"
+                              className="motif-cs-cloning-design-state"
+                              data-state={ggPart?.status ?? 'unknown'}
+                              aria-label={`Add flanks to ${record.name}`}
+                              aria-expanded={fusionEditorOpen}
+                              aria-controls={`${fusionEditorIdPrefix}-${part.key}`}
+                              title="Set the fusion sites the flanks will release"
+                              onClick={() => (fusionEditorOpen ? setFusionEditorOpen(part.key, false) : openFusionEditor(part.key))}
+                            >
+                              Add flanks
+                            </button>
+                          ) : (
+                            <span className="motif-cs-cloning-design-state" data-state={ggPart?.status ?? 'unknown'}>
+                              {ggPart?.status === 'ready' ? 'Ready' : ggPart?.status === 'needs_domestication' ? 'Domesticate' : 'Add flanks'}
+                            </span>
+                          )}
                         </div>
                       ) : (
                         <div className="motif-cs-cloning-design-part-metrics" data-method="gibson">
@@ -1058,8 +1121,13 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
                         <button type="button" aria-label={`Move ${record.name} down`} disabled={index === parts.length - 1} onClick={() => movePart(index, index + 1)}>↓</button>
                         <button type="button" aria-label={`Remove ${record.name}`} onClick={() => removePart(part.key, record.name)}>×</button>
                       </div>
-                      {plan.kind === 'golden_gate_design' && (ggPart?.status === 'needs_flanks' || part.requestedLeftOverhang || part.requestedRightOverhang) ? (
-                        <details className="motif-cs-cloning-design-fusion-editor">
+                      {hasFusionEditor ? (
+                        <details
+                          id={`${fusionEditorIdPrefix}-${part.key}`}
+                          className="motif-cs-cloning-design-fusion-editor"
+                          open={fusionEditorOpen}
+                          onToggle={(event) => setFusionEditorOpen(part.key, event.currentTarget.open)}
+                        >
                           <summary>{part.requestedLeftOverhang && part.requestedRightOverhang ? `Planned fusion ${part.requestedLeftOverhang} → ${part.requestedRightOverhang}` : 'Set primer fusion sites'}</summary>
                           <div>
                             <label>
@@ -1147,7 +1215,7 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
                   disabled={!candidateId || parts.length >= partLimit}
                   onClick={addPart}
                 >
-                  {parts.length >= partLimit ? `${partLimit}-Part Limit` : 'Add Part'}
+                  {parts.length >= partLimit ? `${partLimit}-part limit` : 'Add part'}
                 </button>
                 </div>
               </>}
@@ -1269,13 +1337,22 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
                   </div>
                 ) : plan.preparation.map((action) => {
                   const blocker = isPrimerPreparation(action) ? primerPreparationBlocker(plan, action) : null;
+                  // A part row can resolve its own blocker; a destination vector cannot.
+                  const blockedPart = blocker ? parts.find((entry) => action.recordIds.includes(entry.recordId)) : undefined;
+                  const blockedPartName = blockedPart ? recordsById.get(blockedPart.recordId)?.name ?? 'this part' : '';
                   return (
                     <div key={action.id} className="motif-cs-cloning-design-check" data-state={action.status}>
                       <span aria-hidden="true">{action.status === 'required' ? '!' : action.status === 'recommended' ? '·' : '✓'}</span>
                       <div>
                         <strong>{action.label}</strong>
                         <small>{action.detail}</small>
-                        {isPrimerPreparation(action) ? (
+                        {isPrimerPreparation(action) && blockedPart ? (
+                          <button
+                            type="button"
+                            aria-label={`Set fusion sites for ${blockedPartName}`}
+                            onClick={() => openFusionEditor(blockedPart.key)}
+                          >Set fusion sites</button>
+                        ) : isPrimerPreparation(action) ? (
                           <>
                             <button
                               type="button"
@@ -1298,7 +1375,7 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
                   disabled={busy !== null}
                   onClick={() => void requestPrimers(readyPrimerActions)}
                 >
-                  {busy === 'primers' ? 'Opening Primer Workspace…' : `Start ${readyPrimerActions.length}-action primer worklist`}
+                  {busy === 'primers' ? 'Opening primer workspace…' : `Start ${readyPrimerActions.length}-action primer worklist`}
                 </button>
               ) : null}
             </section>
@@ -1341,7 +1418,7 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
               disabled={!currentName.trim() || busy !== null || plan.provenance === null || savedSignatures.plan === currentSignature}
               onClick={() => void save('plan')}
             >
-              {busy === 'plan' ? 'Saving Plan…' : savedSignatures.plan === currentSignature ? 'Plan Saved' : 'Save Plan'}
+              {busy === 'plan' ? 'Saving plan…' : savedSignatures.plan === currentSignature ? 'Plan saved' : 'Save plan'}
             </button>
             <button
               type="button"
@@ -1349,7 +1426,7 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
               disabled={!currentName.trim() || busy !== null || plan.provenance === null || plan.product === null || savedSignatures.product === currentSignature}
               onClick={() => void save('product')}
             >
-              {busy === 'product' ? 'Saving Product…' : savedSignatures.product === currentSignature ? 'Product Saved' : 'Save Product'}
+              {busy === 'product' ? 'Saving product…' : savedSignatures.product === currentSignature ? 'Product saved' : 'Save product'}
             </button>
           </div>
         </footer>

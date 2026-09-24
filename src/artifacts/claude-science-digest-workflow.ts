@@ -1,5 +1,6 @@
 import type { DigestFragment } from '../bio/restriction-digest';
 import { VALID_NCBI_TABLE_IDS } from '../bio/codon-tables';
+import { qualifierMapForSpans, remapPositionQualifiers, type QualifierBaseMap } from '../bio/transl-except';
 import { cloneCanonicalFeature, validateFeatureCollection } from '../bio/feature-bounds';
 import {
   expandCircularFeatureLocation,
@@ -889,6 +890,7 @@ function cloneSourceFeature(
   index: number,
   sourceRecordId: string,
   budget: JsonCloneBudget,
+  qualifierMap: QualifierBaseMap,
 ): Feature {
   const metadata = cloneJsonValue(feature.metadata, `sourceRecord.features[${index}].metadata`, 0, budget);
   return cloneCanonicalFeature(feature, {
@@ -899,7 +901,7 @@ function cloneSourceFeature(
     end: location.end,
     ...(location.subRanges === undefined ? { subRanges: undefined } : { subRanges: location.subRanges.map((range) => ({ ...range })) }),
     metadata: {
-      ...(metadata as Record<string, unknown>),
+      ...remapPositionQualifiers(metadata as Record<string, unknown>, qualifierMap),
       sourceRecordId,
       sourceFeatureId: feature.id,
       generatedBy: 'restriction_digest',
@@ -973,6 +975,7 @@ function sliceSourceFeatures(
       cloned.length,
       source.id,
       budget,
+      qualifierMapForSpans(sourceSpans),
     ));
   });
   return cloned;

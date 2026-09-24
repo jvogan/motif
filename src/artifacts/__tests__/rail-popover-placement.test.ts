@@ -1,10 +1,22 @@
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
+  PANE_CONTROL_ROWS,
+  RAIL_POPOVER_FLOOR_HEIGHT,
   RAIL_POPOVER_MIN_HEIGHT,
   chooseRailPopoverPlacement,
   type PlacementObstacle,
   type RailPopoverPlacementInput,
 } from '../rail-popover-placement';
+
+const artifactsDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+// The map rows render from the plasmid-map components, not from the artifact.
+const markupSource = [
+  resolve(artifactsDir, 'motif-artifact.tsx'),
+  resolve(artifactsDir, '..', 'components', 'plasmid-map', 'MapViewToolbar.tsx'),
+].map((file) => readFileSync(file, 'utf8')).join('\n');
 
 /*
  * Every number below was measured in the running app at 1440x980 with the
@@ -242,5 +254,128 @@ describe('chooseRailPopoverPlacement', () => {
     const softBelow = place({ homeTop: 380, obstacles: [hardZone, softOver(600, 358)] });
     expect(softBelow.top).toBe(160);
     expect(softBelow.softOverlap).toBe(0);
+  });
+});
+
+/*
+ * Docked panes stacked one above the other, measured in the running app: the
+ * sequence record title, editing toolbar and selection actions near the top,
+ * then the map's title row and, at the foot, its dock summaries. The map's rows
+ * may give way — dock summaries first (rank 1), then the title row (rank 2) —
+ * when no clean band can hold the popover's required height. The sequence rows
+ * never do.
+ */
+function stackedPanes({ mapTitleTop, dockTop }: { mapTitleTop: number; dockTop: number }): PlacementObstacle[] {
+  return [
+    TOP_CHROME,
+    { id: 'sequence-title', priority: 'hard', left: 227, top: 80, width: 1155, height: 26 },
+    { id: 'sequence-edit-toolbar', priority: 'hard', left: 227, top: 158, width: 1155, height: 30 },
+    { id: 'sequence-selection-bar', priority: 'hard', left: 227, top: 188, width: 1155, height: 34 },
+    { id: 'map-title', priority: 'hard', yieldRank: 2, left: 10, top: mapTitleTop, width: 1372, height: 30 },
+    { id: 'map-dock-visibility', priority: 'hard', yieldRank: 1, left: 10, top: dockTop, width: 686, height: 32 },
+    { id: 'map-dock-digest', priority: 'hard', yieldRank: 1, left: 697, top: dockTop, width: 685, height: 32 },
+  ];
+}
+
+const SEQUENCE_ROWS = ['sequence-title', 'sequence-edit-toolbar', 'sequence-selection-bar'];
+
+function covered(placement: { top: number; maxHeight: number }, obstacles: PlacementObstacle[], desiredHeight: number) {
+  const bottom = placement.top + Math.min(desiredHeight, placement.maxHeight);
+  return obstacles
+    .filter((o) => o.priority === 'hard' && o.left < COLUMN.right && o.left + o.width > COLUMN.left)
+    .filter((o) => o.top < bottom && o.top + o.height > placement.top)
+    .map((o) => o.id);
+}
+
+describe('chooseRailPopoverPlacement — the height floor over stacked panes', () => {
+  it('keeps a tall panel out of a band shorter than the floor (1440x980)', () => {
+    const obstacles = stackedPanes({ mapTitleTop: 504, dockTop: 937 });
+    // Clearing every row leaves 230-496 (266px) and 542-929 (387px). Without
+    // the floor, a 700px panel took the near 266px band.
+    const tall = place({ obstacles, desiredHeight: 700, requiredHeight: 700 });
+    expect(tall.top).toBe(542);
+    expect(tall.maxHeight).toBe(387);
+    expect(tall.maxHeight).toBeGreaterThanOrEqual(RAIL_POPOVER_FLOOR_HEIGHT);
+    expect(tall.yielded).toEqual([]);
+    expect(covered(tall, obstacles, 700)).toEqual([]);
+
+    // A short panel fits the near band whole, so it keeps it.
+    const short = place({ obstacles, desiredHeight: 96, requiredHeight: 96 });
+    expect(short.top).toBe(230);
+    expect(covered(short, obstacles, 96)).toEqual([]);
+  });
+
+  it('lets the dock summaries give way first (1366x768)', () => {
+    const obstacles = stackedPanes({ mapTitleTop: 330, dockTop: 725 });
+    // Clean, the band under the map title is 368-717: 349px, under the floor.
+    const placement = place({ obstacles, homeTop: 132, viewportHeight: 768, desiredHeight: 800, requiredHeight: 800 });
+    expect(placement.top).toBe(368);
+    expect(placement.maxHeight).toBe(378);
+    expect(placement.strategy).toBe('yielded');
+    // Only Digest preview sits in the popover's column; Map visibility is left of it.
+    expect(placement.yielded).toEqual(['map-dock-digest']);
+    expect(covered(placement, obstacles, 800)).toEqual(['map-dock-digest']);
+  });
+
+  it('covers the map title row alone before covering it and the dock together (1280x720)', () => {
+    const obstacles = stackedPanes({ mapTitleTop: 330, dockTop: 677 });
+    // Clean: 368-669 (301px). Dock yielded: 368-698 (330px). Title yielded:
+    // 230-669 (439px), which clears the dock, so the dock is not covered too.
+    const placement = place({ obstacles, homeTop: 132, viewportHeight: 720, desiredHeight: 800, requiredHeight: 800 });
+    expect(placement.top).toBe(230);
+    expect(placement.maxHeight).toBe(439);
+    expect(placement.yielded).toEqual(['map-title']);
+    expect(covered(placement, obstacles, 800)).toEqual(['map-title']);
+  });
+
+  it('never covers the sequence editing rows, even when nothing reaches the floor', () => {
+    for (let viewportHeight = 420; viewportHeight <= 1200; viewportHeight += 10) {
+      const mapTitleTop = Math.round(viewportHeight * 0.46);
+      const obstacles = stackedPanes({ mapTitleTop, dockTop: viewportHeight - 43 });
+      for (const requiredHeight of [96, 240, 360, 800]) {
+        const placement = place({ obstacles, viewportHeight, desiredHeight: 800, requiredHeight });
+        const hit = covered(placement, obstacles, 800).filter((id) => SEQUENCE_ROWS.includes(id));
+        expect(hit, `${viewportHeight}px tall, required ${requiredHeight}`).toEqual([]);
+      }
+    }
+  });
+
+  it('places exactly as before when no height is required and nothing may yield', () => {
+    const obstacles = [TOP_CHROME, ...windowAt(200)];
+    expect(place({ obstacles })).toEqual(place({ obstacles, requiredHeight: RAIL_POPOVER_MIN_HEIGHT }));
+    expect(place({ obstacles }).yielded).toEqual([]);
+  });
+});
+
+describe('the pane control rows the popover avoids', () => {
+  it('lists every row by a class the markup still uses', () => {
+    // Listed on purpose: renaming one of these rows in the markup must fail
+    // here rather than silently drop a zone and let the popover cover it again.
+    expect(PANE_CONTROL_ROWS.map((row) => row.selector)).toEqual([
+      '.motif-cs-pane-title',
+      '.motif-cs-title-row',
+      '.motif-cs-edit-toolbar',
+      '.motif-cs-selection-bar',
+      '.motif-cs-map-toolbar',
+      '.motif-cs-map-dock-strip > details > summary',
+    ]);
+    const missing: string[] = [];
+    for (const { selector } of PANE_CONTROL_ROWS) {
+      for (const [, token] of selector.matchAll(/\.([a-z0-9-]+)/g)) {
+        const used = new RegExp(`className="(?:[^"]*\\s)?${token}(?=[\\s"])`).test(markupSource);
+        if (!used) missing.push(token);
+      }
+    }
+    expect(missing, 'classes no longer rendered by the workspace markup').toEqual([]);
+  });
+
+  it('lets only the map rows yield, dock summaries before the title row', () => {
+    const ranks = Object.fromEntries(PANE_CONTROL_ROWS.map((row) => [row.selector, row.yields ?? {}]));
+    expect(ranks['.motif-cs-map-dock-strip > details > summary']).toEqual({ map: 1 });
+    expect(ranks['.motif-cs-pane-title']).toEqual({ map: 2 });
+    expect(ranks['.motif-cs-map-toolbar']).toEqual({ map: 2 });
+    for (const never of ['.motif-cs-title-row', '.motif-cs-edit-toolbar', '.motif-cs-selection-bar']) {
+      expect(ranks[never], never).toEqual({});
+    }
   });
 });

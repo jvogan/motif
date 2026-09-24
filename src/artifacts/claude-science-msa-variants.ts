@@ -140,6 +140,11 @@ export function computeMsaVariants(
   const maxVariants = normalizedVariantLimit(options.maxVariants);
   const strictDifferences = options.strictDifferences ?? false;
   const variants: MsaVariant[] = [];
+  // A row's leading and trailing gaps mean the row does not reach that far,
+  // not that it lost those residues: a copy cut at base 2,000 of 2,686 would
+  // otherwise list 686 deletions while its row badge reads 0 differences.
+  // Columns past the template's own ends are skipped for the same reason.
+  // This matches the row badge and the difference navigator.
   const templateCoverage = alignmentCoverage(template.aligned);
   const rowCoverage = new Map(alignment.rows.map((row) => [row.id, alignmentCoverage(row.aligned)]));
   const referenceNumbering = alignment.referenceNumbering;
@@ -263,4 +268,106 @@ export function summarizeMsaVariants(variants: readonly MsaVariant[]): MsaVarian
     incrementKind(column, variant.kind);
   }
   return summary;
+}
+
+/** One listed difference: a substitution, or a whole insertion or deletion. */
+export type MsaVariantRun = {
+  /** The run's first cell; a jump lands here. */
+  first: MsaVariant;
+  last: MsaVariant;
+  /** Differing cells in the run. */
+  length: number;
+  templateResidues: string;
+  residues: string;
+  /** `T400C` for one cell, `700–702del` or `1204–1207ins` for a run. */
+  label: string;
+};
+
+/**
+ * Fold each row's consecutive inserted or deleted cells into one run, so a
+ * 3 bp deletion lists as `700–702del (3 bp)` rather than three rows. Columns
+ * where both the row and the template are gaps do not break a run. Each
+ * substitution stays its own entry.
+ */
+export function groupMsaVariantRuns(
+  variants: readonly MsaVariant[],
+  alignment: ArtifactAlignment,
+): MsaVariantRun[] {
+  const template = alignment.rows.find((row) => row.id === alignment.referenceRowId) ?? alignment.rows[0];
+  const rows = new Map(alignment.rows.map((row) => [row.id, row.aligned]));
+  const open = new Map<string, MsaVariantRun>();
+  const runs: MsaVariantRun[] = [];
+  const onlyGapsBetween = (aligned: string, from: number, to: number) => {
+    for (let column = from + 1; column < to; column += 1) {
+      if (canonicalResidueCodeAt(aligned, column) !== GAP_CODE || canonicalResidueCodeAt(template.aligned, column) !== GAP_CODE) return false;
+    }
+    return true;
+  };
+  for (const variant of variants) {
+    const run = open.get(variant.rowId);
+    if (run && variant.kind !== 'substitution' && run.last.kind === variant.kind
+      && onlyGapsBetween(rows.get(variant.rowId) ?? '', run.last.column, variant.column)) {
+      run.last = variant;
+      run.length += 1;
+      run.templateResidues += variant.templateResidue;
+      run.residues += variant.residue;
+      run.label = `${run.first.label.slice(1, -1)}–${variant.label.slice(1, -1)}${variant.kind === 'deletion' ? 'del' : 'ins'}`;
+      continue;
+    }
+    const next = { first: variant, last: variant, length: 1, templateResidues: variant.templateResidue, residues: variant.residue, label: variant.label };
+    open.set(variant.rowId, next);
+    runs.push(next);
+  }
+  // Without reference numbering an insertion's label held its alignment
+  // column, which reads as a template position: "1548–1551ins" for bases
+  // inserted after template 1,199. Name the two template bases it falls
+  // between instead, in GenBank's between-bases form.
+  if (!alignment.referenceNumbering) {
+    let column = 0;
+    let position = 0;
+    for (const run of runs) {
+      for (; column < run.first.column; column += 1) if (canonicalResidueCodeAt(template.aligned, column) !== GAP_CODE) position += 1;
+      if (run.first.kind === 'insertion') run.label = `${position}^${position + 1}ins`;
+    }
+  }
+  return runs;
+}
+
+export type MsaVariantCounts = Pick<MsaVariantSummary, 'total' | 'substitutions' | 'insertions' | 'deletions'>;
+
+/**
+ * Count every difference from the template without retaining any, so a view
+ * that lists only the first few hundred can still state the full total.
+ * Uses the same comparison as computeMsaVariants.
+ */
+export function countMsaVariants(
+  alignment: ArtifactAlignment,
+  options: Pick<ComputeMsaVariantsOptions, 'strictDifferences'> = {},
+): MsaVariantCounts {
+  const strictDifferences = options.strictDifferences ?? false;
+  const counts: MsaVariantCounts = { total: 0, substitutions: 0, insertions: 0, deletions: 0 };
+  const template = alignment.rows.find((row) => row.id === alignment.referenceRowId)
+    ?? alignment.rows[0];
+  if (!template) return counts;
+  const templateCoverage = alignmentCoverage(template.aligned);
+  const rowCoverage = alignment.rows.map((row) => alignmentCoverage(row.aligned));
+  for (let column = 0; column < alignment.alignmentLength; column += 1) {
+    if (alignment.gapOnly[column] || !coversColumn(templateCoverage, column)) continue;
+    const templateResidue = String.fromCharCode(canonicalResidueCodeAt(template.aligned, column));
+    for (let rowIndex = 0; rowIndex < alignment.rows.length; rowIndex += 1) {
+      const row = alignment.rows[rowIndex];
+      if (row.id === template.id) continue;
+      const outcome = classifyMsaCell(
+        templateResidue,
+        String.fromCharCode(canonicalResidueCodeAt(row.aligned, column)),
+        coversColumn(rowCoverage[rowIndex], column),
+        alignment.molecule,
+        strictDifferences,
+      );
+      if (!isMsaCellDifference(outcome)) continue;
+      counts.total += 1;
+      incrementKind(counts, outcome);
+    }
+  }
+  return counts;
 }

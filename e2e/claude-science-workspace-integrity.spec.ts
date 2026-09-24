@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { selectRecord } from './record-selection';
 
 const artifactUrl = process.env.MOTIF_ARTIFACT_URL;
 
@@ -239,7 +240,7 @@ test.describe('Claude Science workspace integrity', () => {
     });
     expect(afterSameBase).toEqual(before);
     // Present but disabled: the affordance is permanent, the history is empty.
-    await expect(page.getByRole('button', { name: 'Undo' })).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
     await expect(page.getByTestId('session-durability-status')).toHaveText('session only');
     await editor.press('ArrowLeft');
     await editor.press('g');
@@ -273,7 +274,7 @@ test.describe('Claude Science workspace integrity', () => {
     if (!(await annotationsPanel.getAttribute('open'))) await annotationsPanel.locator(':scope > summary').click();
     await expect(annotationsPanel.getByText('Review anchor')).toBeVisible();
 
-    await page.getByRole('button', { name: 'Undo' }).click();
+    await page.getByRole('button', { name: 'Undo', exact: true }).click();
     const afterUndo = await page.evaluate(() => {
       const workspace = structuredClone(window.motifGetWorkspace?.() as Record<string, unknown>);
       delete workspace.exportedAt;
@@ -315,7 +316,7 @@ test.describe('Claude Science workspace integrity', () => {
     await editor.press('g');
     await expect(page.getByTestId('session-durability-status')).toHaveText('unsaved changes');
 
-    await page.getByRole('button', { name: 'Undo' }).click();
+    await page.getByRole('button', { name: 'Undo', exact: true }).click();
     const afterUndo = await page.evaluate(() => {
       const workspace = structuredClone(window.motifGetWorkspace?.() as RuntimeWorkspace);
       delete workspace.exportedAt;
@@ -348,7 +349,7 @@ test.describe('Claude Science workspace integrity', () => {
     }, createdAt);
     await expect(page.getByTestId('session-durability-status')).toHaveText('unsaved changes');
 
-    await page.locator('.motif-cs-record-tab').filter({ hasText: 'Original A' }).click();
+    await selectRecord(page, 'Original A');
     const dirty = await page.evaluate(() => {
       const workspace = structuredClone(window.motifGetWorkspace?.() as RuntimeWorkspace);
       delete workspace.exportedAt;

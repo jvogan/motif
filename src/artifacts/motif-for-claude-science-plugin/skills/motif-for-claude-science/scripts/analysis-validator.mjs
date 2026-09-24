@@ -241,12 +241,13 @@ function normalizeStringArray(value, path, maxEntries, budget, options = {}) {
   if (options.deduplicate && result.length !== normalized.length) throw new Error(`${path} cannot contain duplicate ids.`);
   return result;
 }
-function normalizeJsonValue(value, path, budget, ancestors, depth) {
+var MAX_ARTIFACT_ANALYSIS_JSON_STRING_LENGTH = 16384;
+function normalizeJsonValue(value, path, budget, ancestors, depth, allowance, maxStringLength = MAX_ARTIFACT_ANALYSIS_JSON_STRING_LENGTH) {
   budget.nodes += 1;
   if (budget.nodes > MAX_ARTIFACT_ANALYSIS_STRUCTURED_NODES) throw new Error(`${path} exceeds the structured-data node limit.`);
   if (depth > MAX_ARTIFACT_ANALYSIS_DEPTH) throw new Error(`${path} exceeds the maximum structured-data depth.`);
   if (value === null || typeof value === "boolean") return value;
-  if (typeof value === "string") return boundedString(value, path, 16384, budget, { trim: false, allowBlank: true });
+  if (typeof value === "string") return boundedString(value, path, maxStringLength, budget, { trim: false, allowBlank: true });
   if (typeof value === "number") return finiteNumber(value, path);
   if (typeof value !== "object" || value === null) throw new Error(`${path} must contain JSON-compatible data only.`);
   if (ancestors.has(value)) throw new Error(`${path} must not contain circular references.`);
@@ -254,7 +255,7 @@ function normalizeJsonValue(value, path, budget, ancestors, depth) {
   try {
     if (Array.isArray(value)) {
       if (value.length > MAX_ARTIFACT_ANALYSIS_ARRAY_ENTRIES) throw new Error(`${path} contains too many entries.`);
-      return value.map((item, index) => normalizeJsonValue(item, `${path}[${index}]`, budget, ancestors, depth + 1));
+      return value.map((item, index) => normalizeJsonValue(item, `${path}[${index}]`, budget, ancestors, depth + 1, allowance));
     }
     if (!isPlainObject(value)) throw new Error(`${path} must contain plain JSON objects only.`);
     const entries = Object.entries(value);
@@ -263,7 +264,21 @@ function normalizeJsonValue(value, path, budget, ancestors, depth) {
     for (const [key, item] of entries) {
       if (!key || key.length > 256 || UNSAFE_KEYS.has(key)) throw new Error(`${path}.${key} is not an allowed object key.`);
       consumeText(key, `${path}.${key}`, budget);
-      normalized[key] = normalizeJsonValue(item, `${path}.${key}`, budget, ancestors, depth + 1);
+      const allowed = allowance !== void 0 && allowance.owner === value && allowance.key === key && typeof item === "string" && item.length > MAX_ARTIFACT_ANALYSIS_JSON_STRING_LENGTH;
+      if (allowed && !allowance.pattern.test(item)) {
+        throw new Error(
+          `${path}.${key} cannot exceed ${MAX_ARTIFACT_ANALYSIS_JSON_STRING_LENGTH.toLocaleString()} characters unless it holds ${allowance.patternDescription} only.`
+        );
+      }
+      normalized[key] = normalizeJsonValue(
+        item,
+        `${path}.${key}`,
+        budget,
+        ancestors,
+        depth + 1,
+        allowance,
+        allowed ? allowance.maxLength : MAX_ARTIFACT_ANALYSIS_JSON_STRING_LENGTH
+      );
     }
     return normalized;
   } finally {
@@ -333,7 +348,7 @@ function normalizeAsset(value, index, budget) {
     } catch {
       throw new Error(`${path}.content must be valid JSON for application/json.`);
     }
-    normalizeJsonValue(parsed, `${path}.content JSON`, budget, /* @__PURE__ */ new WeakSet(), 0);
+    normalizeJsonValue(parsed, `${path}.content JSON`, budget, /* @__PURE__ */ new WeakSet(), 0, constructReportConsensusAllowance(parsed));
   }
   const sha256 = value.sha256 === void 0 ? void 0 : normalizeSha256(value.sha256, `${path}.sha256`, budget);
   if (sha256 !== void 0 && sha256 !== sha256HexSync(content)) {
@@ -814,6 +829,18 @@ var CONSTRUCT_REPORT_SUPPORTING_READ_LIMIT = 8;
 var CONSTRUCT_REPORT_OBSERVED_VARIANT_LIMIT = 192;
 var CONSTRUCT_REPORT_IUPAC_CONSENSUS_PATTERN = /^[ACGTN]*$/;
 var CONSTRUCT_REPORT_CANONICAL_DNA_PATTERN = /^[ACGT]*$/;
+var CONSTRUCT_REPORT_MAX_CONSENSUS_LENGTH = CONSTRUCT_REPORT_LIMITS.maxReferenceLength + CONSTRUCT_REPORT_LIMITS.maxObservedVariants * CONSTRUCT_REPORT_LIMITS.maxIndelLength;
+function constructReportConsensusAllowance(parsed) {
+  if (!isPlainObject(parsed) || parsed.schema !== CONSTRUCT_VERIFICATION_REPORT_SCHEMA) return void 0;
+  if (!isPlainObject(parsed.consensus)) return void 0;
+  return {
+    owner: parsed.consensus,
+    key: "sequence",
+    maxLength: CONSTRUCT_REPORT_MAX_CONSENSUS_LENGTH,
+    pattern: CONSTRUCT_REPORT_IUPAC_CONSENSUS_PATTERN,
+    patternDescription: "A/C/G/T/N bases"
+  };
+}
 function reportObject(value, path) {
   if (!isPlainObject(value)) throw new Error(`${path} must be an object.`);
   return value;
@@ -928,6 +955,22 @@ function assertReportThresholds(result, reportThresholds) {
   reportNumberBetween(reportThresholds.minVariantQuality, "verification report thresholds.minVariantQuality", 0, 255);
   reportNumberBetween(reportThresholds.minVariantFraction, "verification report thresholds.minVariantFraction", 0, 1);
 }
+function validateConstructReportCigar(value, path, status, expected) {
+  if (status !== "mapped") throw new Error(`${path} may only be present on a mapped read.`);
+  if (typeof value !== "string" || value.length > MAX_ARTIFACT_ANALYSIS_JSON_STRING_LENGTH || !/^(?:[1-9]\d{0,5}[MID])+$/.test(value)) {
+    throw new Error(`${path} must be a CIGAR of M, I and D runs.`);
+  }
+  const totals = { M: 0, I: 0, D: 0 };
+  let previous = "";
+  for (const [, run, operation] of value.matchAll(/(\d+)([MID])/g)) {
+    if (operation === previous) throw new Error(`${path} must not repeat an operation in adjacent runs.`);
+    previous = operation;
+    totals[operation] += Number(run);
+  }
+  if (totals.M !== expected.M || totals.I !== expected.I || totals.D !== expected.D) {
+    throw new Error(`${path} must agree with the mapping's match, substitution, insertion and deletion counts.`);
+  }
+}
 function validateConstructReportMapping(value, path, topology, referenceLength, trimmedLength, status, thresholds) {
   const mapping = reportObject(value, path);
   assertKnownKeys(mapping, [
@@ -945,7 +988,8 @@ function validateConstructReportMapping(value, path, topology, referenceLength, 
     "substitutions",
     "insertions",
     "deletions",
-    "indelFraction"
+    "indelFraction",
+    "cigar"
   ], path);
   if (mapping.orientation !== "forward" && mapping.orientation !== "reverse") {
     throw new Error(`${path}.orientation must be forward or reverse.`);
@@ -999,6 +1043,11 @@ function validateConstructReportMapping(value, path, topology, referenceLength, 
   if (!reportNumbersAgree(indelFraction, (insertions + deletions) / alignedLength)) {
     throw new Error(`${path}.indelFraction must agree with the insertion and deletion counts.`);
   }
+  if (mapping.cigar !== void 0) validateConstructReportCigar(mapping.cigar, `${path}.cigar`, status, {
+    M: matches + substitutions,
+    I: insertions,
+    D: deletions
+  });
   const minimumIdentity = reportFiniteNumber(
     thresholds.minMappingIdentity,
     "verification report thresholds.minMappingIdentity"
@@ -1051,6 +1100,7 @@ function validateConstructReportRead(value, index, topology, referenceLength, th
     "qualityProvided",
     "meanQuality",
     "status",
+    "searchIncomplete",
     "trim",
     "mapping"
   ], path);
@@ -1062,6 +1112,9 @@ function validateConstructReportRead(value, index, topology, referenceLength, th
   const meanQuality = reportNullableNumber(read.meanQuality, `${path}.meanQuality`, 0, 255);
   const status = reportString(read.status, `${path}.status`);
   if (!CONSTRUCT_REPORT_READ_STATUS_SET.has(status)) throw new Error(`${path}.status is not supported.`);
+  if (read.searchIncomplete !== void 0 && (read.searchIncomplete !== true || status !== "unmapped")) {
+    throw new Error(`${path}.searchIncomplete may only be true, on an unmapped read.`);
+  }
   const trim = reportObject(read.trim, `${path}.trim`);
   assertKnownKeys(trim, [
     "method",

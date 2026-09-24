@@ -112,6 +112,11 @@ export interface MapFeatureRender {
   label: MapLabelRender | null;
   /** midpoint bp for reveal/scroll + deterministic hit ordering. */
   midBp: number;
+  /**
+   * First drawn base (0-based): the start of the range the feature's title and
+   * accessible name announce. Orders keyboard focus through the map.
+   */
+  startBp: number;
   /** hover/native-tooltip text (name · type · range · strand); rendered as <title>. */
   title?: string;
 }
@@ -172,7 +177,12 @@ export interface MapCoordinateTick {
   label: { text: string; x: number; y: number; anchor: 'start' | 'middle' | 'end'; rotate?: number } | null;
 }
 
-export interface MapOverflowRender {
+/**
+ * What an overflow reports, without anywhere to draw it. A circular map reports its
+ * overflows this way (`MapLayout.overflowSummaries`): the ring's centre carries the
+ * record's name and length only, so the host states these counts outside the drawing.
+ */
+export interface MapOverflowSummary {
   id: string;
   kind: string;
   text: string;
@@ -204,7 +214,7 @@ export interface MapOverflowRender {
    */
   /**
    * Items the map draws no geometry for at all: features pushed past the last lane the
-   * compressed stack could fit, kept discoverable by hover title + the Features tab.
+   * compressed stack could fit, kept discoverable by hover title + the Annotations tool.
    * Always 0 on a restriction chip — every site keeps its density tick, which is what
    * that chip's own title promises.
    */
@@ -218,7 +228,8 @@ export interface MapOverflowRender {
    * names its first few enzymes and folds the rest into a "+N" tail, so a cluster
    * labelled "XhoI, TaqI +10" names 2 of its 12 — the ten behind the tail belong here.
    * Counting only unlabelled clusters put 63 on the pET-28a(+) chip in a 780x890 pane
-   * where 98 of 149 sites had no name on the map, and 0 on pUC19 where 38 of 77 did.
+   * where 98 of 149 sites had no name on the map, and 0 on the synthetic pUC19 once
+   * bundled, where about half its sites had none.
    *
    * Counts unnamed ITEMS, not label glyphs. One dropped cluster label can leave a
    * dozen sites unnamed, and "N sites" is the wording the chip, the cluster tooltip
@@ -227,6 +238,10 @@ export interface MapOverflowRender {
    * one.
    */
   unlabelled: number;
+}
+
+/** An overflow the map draws itself, as a chip at `x`/`y` (linear maps). */
+export interface MapOverflowRender extends MapOverflowSummary {
   x: number;
   y: number;
   anchor: 'start' | 'middle' | 'end';
@@ -252,6 +267,8 @@ export interface MapCenterTitle {
   lines: readonly { text: string; fontSize: number; baselineY: number }[];
   /** absolute SVG y baseline for the length line. */
   lenBaselineY: number;
+  /** type size of the length line; absent means the stylesheet's 14. */
+  lenFontSize?: number;
 }
 
 export interface MapBudgets {
@@ -289,13 +306,20 @@ export interface MapDisplayOptions {
   circularOutsideGutterScale?: number;
 }
 
+/**
+ * A feature as the map receives it. A host may shorten `name` so the drawn label
+ * fits ("T7 prom.", "sigma70 -35 b…"); `titleName` then carries the name the
+ * feature really has, and the title and accessible name announce that one.
+ */
+export type MapInputFeature = Feature & { titleName?: string };
+
 export interface MapInput {
   mode: MapMode;
   name: string;
   length: number;
   topology: Topology;
   sequenceType: SequenceType;
-  features: readonly Feature[];
+  features: readonly MapInputFeature[];
   restrictionSites: readonly RestrictionSite[];
   /** Optional pre-aggregated density substrate; interactive clusters still use restrictionSites. */
   restrictionDensitySources?: readonly MapRestrictionDensitySource[];
@@ -342,7 +366,7 @@ export interface MapLayout {
   centerTitle?: MapCenterTitle;
   /**
    * circular-only: radius of the disc at the center that map-owned center content
-   * actually occupies — the fitted title, the length line, and the overflow chips.
+   * actually occupies — the fitted title and the length line.
    *
    * Overlays that sweep a sector of the whole disc (selection, range overlays) start
    * outside it. A sector drawn from r=0 paints over the molecule's own name, which is
@@ -358,6 +382,14 @@ export interface MapLayout {
   restrictions: readonly MapRestrictionRender[];
   coordinates: readonly MapCoordinateTick[];
   overflows?: readonly MapOverflowRender[];
+  /**
+   * Overflows the drawing reports but does not paint (circular maps). Chips placed
+   * in the ring read as part of the molecule — "+2 more" under the "N bp" length read
+   * as two more base pairs — and a count that moves with the window size (unnamed
+   * sites on pUC19) read as a property of the plasmid. The host shows these
+   * beside the drawing, as controls that open the list each one counts from.
+   */
+  overflowSummaries?: readonly MapOverflowSummary[];
   budgets: MapBudgets;
 }
 

@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -9,7 +9,9 @@ import {
   type ClaudeScienceGelLaneCandidate,
   type ClaudeScienceGelRecord,
   type ClaudeScienceGelWorkspaceProps,
+  visibleLadderLabelIndexes,
 } from '../ClaudeScienceGelWorkspace';
+import { buildArtifactGelPreview } from '../claude-science-gel-preview';
 import { sha256HexSync } from '../claude-science-sha256';
 import type { ArtifactWorkflowResult } from '../claude-science-workspace-collections';
 
@@ -355,5 +357,49 @@ describe('ClaudeScienceGelWorkspace', () => {
     const digestGroup = screen.getByTestId('gel-digest-sources');
     await user.click(within(digestGroup).getByRole('checkbox', { name: /EcoRI \+ BamHI digest/ }));
     expect(onSelectedCandidateIdsChange).toHaveBeenCalledWith(['digest:digest-1']);
+  });
+
+  it('prints a ladder size only where the bands leave room for one', () => {
+    const ladder = buildArtifactGelPreview({
+      workflowResultId: 'gel-result-1',
+      workflowName: 'Ladder spacing',
+      createdAt: CREATED_AT,
+      ladderPreset: '1kb',
+      agarosePercent: 1,
+      lanes: [candidates[0].lane],
+      provenance: { source: 'motif-artifact', actor: 'local-user' },
+    }).lanes[0];
+    expect(ladder.sourceKind).toBe('ladder');
+    expect(ladder.bands).toHaveLength(12);
+    // 210px is the track's minimum height. There 8, 6, 4 and 3 kb, 1.5 kb and
+    // 750 bp each fall within 11px of the size printed above them.
+    expect([...visibleLadderLabelIndexes(ladder.bands, 210)].sort((a, b) => a - b)).toEqual([0, 3, 6, 8, 10, 11]);
+    // An 800px track puts at least 13px between every pair, so all twelve print.
+    expect(visibleLadderLabelIndexes(ladder.bands, 800).size).toBe(12);
+  });
+
+  it('prints ladder sizes beside the marker lane and reads the band last pointed at or focused', () => {
+    const view = render(<ClaudeScienceGelWorkspace {...baseProps(candidates)} />);
+
+    const marker = screen.getByTestId('gel-lane-ladder:1kb');
+    expect([...marker.querySelectorAll('.motif-cs-gel-ladder-size')].map((label) => label.textContent))
+      .toEqual(['10 kb', '5 kb', '2 kb', '1 kb', '500 bp', '250 bp']);
+    // Sizes used to reach the reader only through the native title; the bands'
+    // data-tooltip attribute had no rule that displayed it.
+    expect(view.container.querySelector('[data-tooltip]')).toBeNull();
+
+    const readout = screen.getByTestId('gel-band-readout');
+    expect(readout.textContent).toBe('Point at or focus a band to read its size.');
+    fireEvent.mouseEnter(screen.getByTestId('gel-band-digest:digest-1-0'));
+    expect(readout.textContent).toBe('EcoRI + BamHI digest: 3,000 bp.');
+    const ladderBand = screen.getByTestId('gel-band-ladder:1kb-5');
+    act(() => ladderBand.focus());
+    expect(readout.textContent).toBe('1 kb ladder: 3,000 bp.');
+    fireEvent.keyDown(ladderBand, { key: 'ArrowDown' });
+    expect(readout.textContent).toBe('1 kb ladder: 2,000 bp.');
+
+    // A new ladder moves every band, so the old reading is cleared.
+    view.rerender(<ClaudeScienceGelWorkspace {...baseProps(candidates, { ladderPreset: '100bp' })} />);
+    expect(screen.getByTestId('gel-band-readout').textContent).toBe('Point at or focus a band to read its size.');
   });
 });

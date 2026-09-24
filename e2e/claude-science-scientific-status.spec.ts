@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { selectRecord } from './record-selection';
 
 const artifactUrl = process.env.MOTIF_ARTIFACT_URL;
 
@@ -42,7 +43,7 @@ test.describe('Claude Science scientific status UX', () => {
       { id: 'edge-nickase', name: 'Nickase continuity edge', molecule: 'dna', topology: 'linear', seq: 'AAAACCTCAGCAAAA' },
     ]));
 
-    await page.getByRole('tab', { name: 'Type IIS flank edge' }).click();
+    await selectRecord(page, 'Type IIS flank edge');
     const digest = await digestPanel(page);
     const enzymeInput = digest.getByRole('combobox', { name: 'Digest enzymes' });
     await enzymeInput.fill('BsaI');
@@ -59,7 +60,7 @@ test.describe('Claude Science scientific status UX', () => {
     await expect(typeIisStatus).toContainText('insufficient_flanking_bases');
     await expect(typeIisStatus).toContainText(/requires strand cleavage coordinates/i);
 
-    await page.getByRole('tab', { name: 'DpnI methylation edge' }).click();
+    await selectRecord(page, 'DpnI methylation edge');
     await digestPanel(page);
     await enzymeInput.fill('DpnI');
     const methylation = digest.getByTestId('digest-methylation-state');
@@ -78,7 +79,7 @@ test.describe('Claude Science scientific status UX', () => {
     await methylation.selectOption('unmethylated');
     await expect(digest.getByTestId('digest-scientific-status')).toContainText('methylation_unmethylated');
 
-    await page.getByRole('tab', { name: 'Nickase continuity edge' }).click();
+    await selectRecord(page, 'Nickase continuity edge');
     await digestPanel(page);
     await enzymeInput.fill('Nb.BbvCI');
     await expect(digest.locator(':scope > summary')).toContainText('1 nick · continuous');
@@ -106,7 +107,7 @@ test.describe('Claude Science scientific status UX', () => {
       },
     ]));
 
-    await page.getByRole('tab', { name: 'Mixed methylation edge' }).click();
+    await selectRecord(page, 'Mixed methylation edge');
     const digest = await digestPanel(page);
     await digest.getByRole('combobox', { name: 'Digest enzymes' }).fill('DpnI, HpaII, MspI');
     const dam = digest.getByTestId('digest-methylation-state-dam');
@@ -194,7 +195,7 @@ test.describe('Claude Science scientific status UX', () => {
       },
     ]));
 
-    await page.getByRole('tab', { name: 'Translation diagnostics edge' }).click();
+    await selectRecord(page, 'Translation diagnostics edge');
     await page.getByRole('button', { name: /ambiguous codon, cds/i }).first().click();
     await page.getByRole('button', { name: 'Translations window off' }).click();
     const translationWindow = page.locator('.motif-cs-window').filter({ hasText: 'Translation' });
@@ -211,7 +212,7 @@ test.describe('Claude Science scientific status UX', () => {
     await expect(unsupportedStatus).toContainText('unsupported_translation_table');
     await expect(unsupportedStatus).toContainText(/choose a supported genetic code/i);
 
-    await page.getByRole('tab', { name: 'Translation exception edge' }).click();
+    await selectRecord(page, 'Translation exception edge');
     await page.getByRole('button', { name: /codon start with Sec, cds/i }).first().click();
     await expect(page.locator('.motif-cs-sequence').getByRole('button', { name: 'U, codon 5-7' })).toBeVisible();
     await expect(page.locator('.motif-cs-sequence').getByRole('button', { name: 'S, codon 5-7' })).toHaveCount(0);
@@ -220,7 +221,7 @@ test.describe('Claude Science scientific status UX', () => {
     await translationWindow.getByRole('button', { name: 'New protein' }).click();
     await expect.poll(async () => page.evaluate(() => window.motifGetActiveRecord()?.seq)).toBe('MU*');
 
-    await page.getByRole('tab', { name: 'GenBank quarantine edge' }).click();
+    await selectRecord(page, 'GenBank quarantine edge');
     await page.getByRole('button', { name: /remote CDS, cds/i }).first().click();
     const locationStatus = page.getByTestId('feature-location-status');
     await expect(locationStatus).toHaveAttribute('data-status', 'unsupported');
@@ -230,7 +231,10 @@ test.describe('Claude Science scientific status UX', () => {
     await page.keyboard.press('Enter');
     await expect(locationStatus).toContainText('NC_000001.11:100..200');
     await expect(locationStatus).toContainText('3 retained in source order');
-    await expect(page.getByRole('button', { name: 'New protein record' })).toBeDisabled();
+    // New protein record sits in the selection dock's Create menu.
+    await page.locator('.motif-cs-selection-actions').getByRole('button', { name: 'Create', exact: true }).click();
+    await expect(page.getByRole('menuitem', { name: 'New protein record' })).toHaveAttribute('aria-disabled', 'true');
+    await page.keyboard.press('Escape');
   });
 
   test('bounded comparison provenance stays compact and keyboard-reachable at narrow width', async ({ page }) => {

@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { buildArtifactExportLossReport, buildArtifactExportLossReportForRecords, normalizeRecord } from '../motif-artifact';
+import type { Feature } from '../../bio/types';
+import {
+  buildArtifactExportLossReport,
+  buildArtifactExportLossReportForRecords,
+  exportLossItemLines,
+  normalizeRecord,
+  parseImportedRecords,
+  toGenBankLite,
+} from '../motif-artifact';
 
 describe('structured export-loss report', () => {
   it('reuses source-preservation diagnostics and reports every lossy dimension', () => {
@@ -169,5 +177,116 @@ describe('structured export-loss report', () => {
       }),
     ]);
     expect(report.summary).toContain('Inactive annotated record');
+  });
+});
+
+describe('the export popover list of preservation items', () => {
+  const file = [
+    'LOCUS       QATEST                    60 bp    DNA     linear   SYN 23-SEP-2026',
+    'ACCESSION   QATEST',
+    'FEATURES             Location/Qualifiers',
+    '     source          1..60',
+    '                     /organism="synthetic DNA construct"',
+    '     promoter        2..30',
+    '                     /label="Ptest"',
+    '     -35_signal      5..10',
+    '                     /label="m35"',
+    '     CDS             31..60',
+    '                     /label="orf"',
+    '                     /db_xref="a:1"',
+    '                     /db_xref="b:2"',
+    '     misc_feature    <40..>50',
+    '                     /label="partial"',
+    'ORIGIN',
+    `        1 ${'atgcatgcat'.repeat(6).match(/.{1,10}/g)!.join(' ')}`,
+    '//',
+  ].join('\n');
+  const record = normalizeRecord(parseImportedRecords(file, '', 'auto', 'linear')[0], 0)!;
+  const feature = (id: string, name: string, metadata: Record<string, unknown>, type: Feature['type'] = 'exon'): Feature => ({
+    id, name, type, start: 0, end: 3, strand: 1, color: '#000000', metadata,
+  });
+
+  it('names every item the sentence counts, kind by kind', () => {
+    // Five features: five imported keys and five raw locations, one repeated
+    // /db_xref on the CDS and one partial location, 12 items in all.
+    const report = buildArtifactExportLossReport(record, 'genbank');
+    expect(report.summary).toContain('lossy; 12 preservation items require review.');
+    const lines = exportLossItemLines(report, record.features);
+    expect(lines).toEqual([
+      '5 imported feature keys: promoter → regulatory, -35_signal → regulatory, source and 2 more',
+      '5 locations kept as written: source 1..60, Ptest 2..30, m35 5..10 and 2 more',
+      '1 repeated qualifier: /db_xref ×2 on orf',
+      '1 partial location: partial <40..>50',
+    ]);
+    expect(lines.reduce((total, line) => total + Number(line.split(' ')[0]), 0)).toBe(12);
+  });
+
+  it('merges equal examples, so "and N more" still counts items', () => {
+    const exons = Array.from({ length: 9 }, (_, index) => feature(`exon-${index}`, 'SELENOP', { motifOriginalFeatureKey: 'exon' }));
+    const others = [
+      feature('a', 'a', { motifOriginalFeatureKey: 'gene' }, 'gene'),
+      feature('b', 'b', { motifOriginalFeatureKey: 'misc_feature' }, 'misc_feature'),
+      feature('c', 'c', { motifOriginalFeatureKey: 'CDS' }, 'cds'),
+      feature('d', 'd', { motifOriginalFeatureKey: 'CDS' }, 'cds'),
+    ];
+    const features = [...others.slice(0, 1), ...exons, ...others.slice(1)];
+    expect(exportLossItemLines(buildArtifactExportLossReport({ ...record, features }, 'genbank'), features))
+      .toEqual(['13 imported feature keys: gene, exon ×9, misc_feature and 2 more']);
+  });
+
+  it('counts one item as one, and names the fields an export leaves out', () => {
+    const one = [feature('only', 'only', { motifOriginalFeatureKey: 'exon' })];
+    const report = buildArtifactExportLossReport({ ...record, features: one }, 'genbank');
+    expect(report.summary).toContain('lossy; 1 preservation item requires review.');
+    expect(exportLossItemLines(report, one)).toEqual(['1 imported feature key: exon']);
+    const noted = [feature('n', 'noted exon', { note: 'kept in JSON only' })];
+    expect(exportLossItemLines(buildArtifactExportLossReport({ ...record, features: noted }, 'gff3'), noted))
+      .toEqual(['1 feature with fields this GFF3 export leaves out: noted exon (note)']);
+  });
+});
+
+describe('the note and product of a feature built in Motif, in Basic GenBank', () => {
+  // A bundled record's features carry their note and product as metadata, with
+  // no imported qualifier list. One note has quotes and is longer than a line.
+  const note = `Promoter called "P3" in older maps; ${'x'.repeat(90)} ends here`;
+  const record = normalizeRecord({
+    id: 'notes',
+    name: 'notes',
+    molecule: 'dna',
+    topology: 'linear',
+    seq: 'ACGT'.repeat(15),
+    annotations: [
+      { id: 'amp', name: 'AmpR', type: 'resistance', start: 3, end: 30, strand: 1, metadata: { note, product: 'beta-lactamase', resistance: 'ampicillin' } },
+      { id: 'ori', name: 'ori', type: 'origin', start: 33, end: 50, strand: 1, metadata: { note: 'origin' } },
+    ],
+  }, 0)!;
+
+  it('writes each one after /label on one quoted line, and reads it back equal', () => {
+    const exported = toGenBankLite(record, 'linear');
+    const lines = exported.split('\n');
+    const label = lines.indexOf('                     /label="AmpR"');
+    expect(lines.slice(label, label + 3)).toEqual([
+      '                     /label="AmpR"',
+      `                     /note="Promoter called ""P3"" in older maps; ${'x'.repeat(90)} ends here"`,
+      '                     /product="beta-lactamase"',
+    ]);
+    expect(lines).toContain('                     /note="origin"');
+    expect(exported).not.toContain('/resistance');
+    const again = normalizeRecord(parseImportedRecords(exported, '', 'auto', 'linear')[0], 0)!;
+    const amp = again.features.find((feature) => feature.name === 'AmpR')!;
+    expect(amp.metadata.note).toBe(note);
+    expect(amp.metadata.product).toBe('beta-lactamase');
+    expect(toGenBankLite(again, 'linear')).toBe(exported);
+  });
+
+  it('stops listing the fields it writes, and only those', () => {
+    expect(exportLossItemLines(buildArtifactExportLossReport(record, 'genbank'), record.features))
+      .toEqual(['1 feature with fields this GenBank export leaves out: AmpR (resistance)']);
+    expect(exportLossItemLines(buildArtifactExportLossReport(record, 'gff3'), record.features))
+      .toEqual(['2 features with fields this GFF3 export leaves out: AmpR (note, product, resistance), ori (note)']);
+    // An imported feature writes its own qualifier list, so a note beside it is still left out.
+    const imported = { ...record.features[1], metadata: { note: 'origin', motifQualifiers: [{ key: 'label', value: 'ori' }] } };
+    expect(buildArtifactExportLossReport({ ...record, features: [imported] }, 'genbank').unrepresentableMetadata)
+      .toEqual([{ featureId: 'ori', keys: ['note'] }]);
   });
 });

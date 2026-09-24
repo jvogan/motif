@@ -893,8 +893,9 @@ export function findRestrictionSites(
   options?: FindRestrictionSitesOptions,
 ): RestrictionSite[] {
   // Landing on a record you had already opened rescanned it from scratch. The
-  // rail shows "77/77 sites - 34 enzymes" for pUC19, and switching away and
-  // back recomputed every one of them: 7.4-9.6ms per switch, which became the
+  // rail shows "76/76 sites" for pUC19, and switching away and back recomputed
+  // every one of them: 7.4-9.6ms per switch on the synthetic pUC19 once bundled,
+  // which became the
   // largest named JS cost in a record switch once the ORF scan was memoised. A
   // scan of a 5,420 bp record against the shipped catalog costs 6.1ms; the
   // three normalisations that build this key cost 0.23ms of that, and they run

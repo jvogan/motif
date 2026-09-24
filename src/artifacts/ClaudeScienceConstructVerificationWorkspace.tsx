@@ -14,6 +14,12 @@ import {
   ARTIFACT_CONSTRUCT_VERIFICATION_LIMITS,
   type ArtifactConstructVerificationResult,
 } from './claude-science-construct-verification';
+import {
+  constructVariantTraceReadIds,
+  constructVerificationTraceTarget,
+  type ConstructVerificationTraceTarget,
+  type ConstructVerificationTraceVariant,
+} from './claude-science-construct-verification-traces';
 import './claude-science-construct-verification-workspace.css';
 
 const MIN_DEPTH = 1;
@@ -43,6 +49,8 @@ export type ClaudeScienceConstructVerificationRecord = {
   sangerTrace?: ClaudeScienceConstructVerificationSangerTrace;
   /** SHA-256 of the imported Sanger evidence, distinct from the record sequence hash. */
   sangerEvidenceSha256?: string;
+  /** Inventory group; reads in the reference's group are the default evidence. */
+  group?: string;
 };
 
 export type ClaudeScienceConstructVerificationReadRecord = ClaudeScienceConstructVerificationRecord & {
@@ -98,6 +106,27 @@ export type ClaudeScienceConstructVerificationSavePayload = Readonly<{
   snapshot: ClaudeScienceConstructVerificationSnapshot;
 }>;
 
+/**
+ * An unsaved (or just-saved) run, kept by the host while the window is closed.
+ * Opening Alignment closes this window, and the run used to live only in its
+ * component state, so it was lost without a word. The draft is tied to the
+ * records it was made from and is dropped if any of them changed meanwhile.
+ */
+export type ClaudeScienceConstructVerificationDraft = Readonly<{
+  recordSignature: string;
+  form: Readonly<{
+    referenceId: string;
+    selectedReadIds: readonly string[];
+    minDepth: number;
+    requireBothStrands: boolean;
+  }>;
+  completedRun: Readonly<{
+    result: ClaudeScienceConstructVerificationResult;
+    snapshot: ClaudeScienceConstructVerificationSnapshot;
+  }> | null;
+  saved: boolean;
+}>;
+
 export type ClaudeScienceConstructVerificationWorkspaceProps = {
   records: readonly ClaudeScienceConstructVerificationRecord[];
   initialReferenceId?: string;
@@ -106,6 +135,18 @@ export type ClaudeScienceConstructVerificationWorkspaceProps = {
   onSave: (payload: ClaudeScienceConstructVerificationSavePayload) => void;
   onClose?: () => void;
   embedded?: boolean;
+  /** Imports files through the workbench's own importer; offered when no read is available. */
+  onImportReads?: (files: FileList | File[]) => unknown;
+  /** Returns the draft the host kept from the last time this window was open. Read once, at mount. */
+  loadDraft?: () => ClaudeScienceConstructVerificationDraft | null;
+  /** Receives the current run and settings whenever they change, for the host to keep. */
+  onDraftChange?: (draft: ClaudeScienceConstructVerificationDraft) => void;
+  /**
+   * Opens a variant's reads in Alignment's Traces view: receives the alignment
+   * to show (built from the run's own read map), the variant's column and the
+   * read to show first. Without it the variant rows are plain text.
+   */
+  onInspectVariant?: (target: ConstructVerificationTraceTarget) => void;
 };
 
 type VerificationFormState = {
@@ -152,6 +193,27 @@ function eligibleReadRecords(
   ));
 }
 
+function normalizedGroup(record: ClaudeScienceConstructVerificationRecord | undefined): string {
+  return record?.group?.trim().toLocaleLowerCase() ?? '';
+}
+
+/**
+ * The reads a run starts with: those in the reference's inventory group (no
+ * group counts as a group of its own). Selecting every trace in the workspace
+ * pooled unrelated clones: a reference plus two clones' reads in separate
+ * groups defaulted to "4 of 4" and came back Inconsistent on the mixture.
+ */
+function defaultConstructVerificationReadIds(
+  records: readonly ClaudeScienceConstructVerificationRecord[],
+  referenceId: string,
+): string[] {
+  const group = normalizedGroup(records.find((record) => record.id === referenceId));
+  return eligibleReadRecords(records, referenceId)
+    .filter((record) => normalizedGroup(record) === group)
+    .slice(0, MAX_SELECTED_READS)
+    .map((record) => record.id);
+}
+
 function initialFormState(
   records: readonly ClaudeScienceConstructVerificationRecord[],
   initialReferenceId: string | undefined,
@@ -159,12 +221,36 @@ function initialFormState(
   const referenceId = preferredReferenceId(records, initialReferenceId);
   return {
     referenceId,
-    selectedReadIds: eligibleReadRecords(records, referenceId)
-      .slice(0, MAX_SELECTED_READS)
-      .map((record) => record.id),
+    selectedReadIds: defaultConstructVerificationReadIds(records, referenceId),
     minDepth: MIN_DEPTH,
     requireBothStrands: false,
   };
+}
+
+type ReadGroup = {
+  key: string;
+  label: string;
+  reads: ClaudeScienceConstructVerificationReadRecord[];
+};
+
+/** The reference's own group first, then the others by name, ungrouped reads last. */
+function groupReads(
+  reads: readonly ClaudeScienceConstructVerificationReadRecord[],
+  reference: ClaudeScienceConstructVerificationRecord | undefined,
+): ReadGroup[] {
+  const groups = new Map<string, ReadGroup>();
+  for (const read of reads) {
+    const key = normalizedGroup(read);
+    const group = groups.get(key) ?? { key, label: read.group?.trim() || 'No group', reads: [] };
+    group.reads.push(read);
+    groups.set(key, group);
+  }
+  const referenceKey = normalizedGroup(reference);
+  return [...groups.values()].sort((left, right) => (
+    Number(right.key === referenceKey) - Number(left.key === referenceKey)
+    || Number(left.key === '') - Number(right.key === '')
+    || left.label.localeCompare(right.label)
+  ));
 }
 
 function recordsSignature(records: readonly ClaudeScienceConstructVerificationRecord[]): string {
@@ -221,6 +307,10 @@ export function ClaudeScienceConstructVerificationWorkspace({
   onSave,
   onClose,
   embedded = false,
+  onImportReads,
+  loadDraft,
+  onDraftChange,
+  onInspectVariant,
 }: ClaudeScienceConstructVerificationWorkspaceProps) {
   const titleId = useId();
   const criteriaId = useId();
@@ -228,13 +318,36 @@ export function ClaudeScienceConstructVerificationWorkspace({
   const initialFocusRef = useRef<HTMLSelectElement>(null);
   const recordsRef = useRef(records);
   recordsRef.current = records;
+  const importInputRef = useRef<HTMLInputElement>(null);
+  const importPendingRef = useRef(false);
+  const knownReadIdsRef = useRef(new Set(records.filter(isTraceBacked).map((record) => record.id)));
   const recordSignature = useMemo(() => recordsSignature(records), [records]);
+  // Read once: a draft made from the same records comes back whole; one made
+  // from records that have since changed is dropped, and the reader is told.
+  const [restore] = useState(() => {
+    const draft = loadDraft?.() ?? null;
+    if (!draft) return { draft: null, discarded: false };
+    return draft.recordSignature === recordsSignature(records)
+      ? { draft, discarded: false }
+      : { draft: null, discarded: draft.completedRun !== null };
+  });
   const [form, setForm] = useState<VerificationFormState>(() => (
-    initialFormState(records, initialReferenceId)
+    restore.draft
+      ? { ...restore.draft.form, selectedReadIds: [...restore.draft.form.selectedReadIds] }
+      : initialFormState(records, initialReferenceId)
   ));
-  const [completedRun, setCompletedRun] = useState<CompletedRun | null>(null);
-  const [saved, setSaved] = useState(false);
-  const [statusMessage, setStatusMessage] = useState('');
+  const [completedRun, setCompletedRun] = useState<CompletedRun | null>(() => restore.draft?.completedRun ?? null);
+  const [saved, setSaved] = useState(() => restore.draft?.saved ?? false);
+  const [statusMessage, setStatusMessage] = useState(() => {
+    if (restore.discarded) return 'Your earlier run was discarded because its records changed. Run verification again.';
+    if (!restore.draft?.completedRun) return '';
+    return restore.draft.saved
+      ? 'Showing your last run, already saved to Results.'
+      : 'Your unsaved run is restored. Review it, then save it to keep it in Results.';
+  });
+  const appliedSignatureRef = useRef(recordSignature);
+  const onDraftChangeRef = useRef(onDraftChange);
+  onDraftChangeRef.current = onDraftChange;
   const [errorMessage, setErrorMessage] = useState('');
 
   const recordById = useMemo(
@@ -270,7 +383,21 @@ export function ClaudeScienceConstructVerificationWorkspace({
   }, []);
 
   useEffect(() => {
+    onDraftChangeRef.current?.({ recordSignature, form, completedRun, saved });
+  }, [completedRun, form, recordSignature, saved]);
+
+  useEffect(() => {
+    // Only a real change of records invalidates the form and the run; the
+    // records the window opened with (or restored a draft for) do not.
+    if (appliedSignatureRef.current === recordSignature) return;
+    appliedSignatureRef.current = recordSignature;
     const currentRecords = recordsRef.current;
+    const knownReadIds = knownReadIdsRef.current;
+    const importedReadIds = importPendingRef.current
+      ? currentRecords.filter((record) => isTraceBacked(record) && !knownReadIds.has(record.id)).map((record) => record.id)
+      : [];
+    if (importedReadIds.length) importPendingRef.current = false;
+    knownReadIdsRef.current = new Set(currentRecords.filter(isTraceBacked).map((record) => record.id));
     setForm((current) => {
       const referenceStillExists = currentRecords.some((record) => (
         record.id === current.referenceId && !isTraceBacked(record)
@@ -280,9 +407,13 @@ export function ClaudeScienceConstructVerificationWorkspace({
         : preferredReferenceId(currentRecords, undefined);
       const nextEligibleReads = eligibleReadRecords(currentRecords, referenceId);
       const validReadIds = new Set(nextEligibleReads.map((record) => record.id));
+      // Reads imported from this workspace join the selection: that is what
+      // the reader imported them for, whatever group the importer gave them.
       const selectedReadIds = referenceStillExists
-        ? current.selectedReadIds.filter((id) => validReadIds.has(id)).slice(0, MAX_SELECTED_READS)
-        : nextEligibleReads.slice(0, MAX_SELECTED_READS).map((record) => record.id);
+        ? [...new Set([...current.selectedReadIds, ...importedReadIds])]
+          .filter((id) => validReadIds.has(id))
+          .slice(0, MAX_SELECTED_READS)
+        : defaultConstructVerificationReadIds(currentRecords, referenceId);
       if (
         referenceId === current.referenceId
         && selectedReadIds.length === current.selectedReadIds.length
@@ -334,11 +465,30 @@ export function ClaudeScienceConstructVerificationWorkspace({
     setForm((current) => ({
       ...current,
       referenceId,
-      selectedReadIds: eligibleReadRecords(records, referenceId)
-        .slice(0, MAX_SELECTED_READS)
-        .map((record) => record.id),
+      selectedReadIds: defaultConstructVerificationReadIds(records, referenceId),
     }));
     clearCompletedRun();
+  };
+
+  const selectReadGroup = (group: ReadGroup) => {
+    setForm((current) => {
+      const selected = new Set(current.selectedReadIds);
+      for (const read of group.reads) {
+        if (selected.size >= MAX_SELECTED_READS) break;
+        selected.add(read.id);
+      }
+      return {
+        ...current,
+        selectedReadIds: eligibleReads.filter((record) => selected.has(record.id)).map((record) => record.id),
+      };
+    });
+    clearCompletedRun();
+  };
+
+  const importReads = (files: FileList | null) => {
+    if (!files?.length || !onImportReads) return;
+    importPendingRef.current = true;
+    void onImportReads(files);
   };
 
   const updateReadSelection = (readId: string, checked: boolean) => {
@@ -434,7 +584,7 @@ export function ClaudeScienceConstructVerificationWorkspace({
       setSaved(true);
       setStatusMessage('Verification saved to Results with its frozen evidence snapshot.');
     } catch (error) {
-      setErrorMessage(boundedErrorMessage(error));
+      setErrorMessage(boundedErrorMessage(`Verification not saved. ${boundedErrorMessage(error)}`));
     }
   };
 
@@ -445,11 +595,35 @@ export function ClaudeScienceConstructVerificationWorkspace({
     && defaultSelectedReadIds.length === selectedCount
     && defaultSelectedReadIds.every((id) => selectedReadIdSet.has(id));
   const readSelectionAtLimit = selectedCount >= MAX_SELECTED_READS;
+  const readGroups = groupReads(eligibleReads, reference);
+  const showReadGroups = readGroups.length > 1 || (readGroups[0] !== undefined && readGroups[0].key !== '');
+  const referenceGroupLabel = reference?.group?.trim();
   const runDisabled = !reference || isTraceBacked(reference) || eligibleReads.length === 0 || selectedCount === 0;
   const resultReadNames = useMemo(
     () => Object.fromEntries(records.map((record) => [record.id, record.name])),
     [records],
   );
+  const completedResult = completedRun?.result ?? null;
+  const canInspectVariant = useCallback((variant: ConstructVerificationTraceVariant) => (
+    completedResult !== null && constructVariantTraceReadIds(completedResult, variant).length > 0
+  ), [completedResult]);
+  const inspectVariant = useCallback((variant: ConstructVerificationTraceVariant) => {
+    if (!completedResult || !onInspectVariant) return;
+    const runReference = recordById.get(completedResult.reference.id);
+    setErrorMessage('');
+    try {
+      const target = runReference
+        ? constructVerificationTraceTarget({ result: completedResult, variant, reference: runReference, records: recordById })
+        : null;
+      if (!target) {
+        setErrorMessage('The reads that cover this position could not be laid out against the reference, so Traces cannot open here.');
+        return;
+      }
+      onInspectVariant(target);
+    } catch (error) {
+      setErrorMessage(boundedErrorMessage(error));
+    }
+  }, [completedResult, onInspectVariant, recordById]);
 
   const workspace = (
     <section
@@ -535,8 +709,34 @@ export function ClaudeScienceConstructVerificationWorkspace({
                     {eligibleReads.length > MAX_SELECTED_READS ? `First ${MAX_SELECTED_READS.toLocaleString()}` : 'All'}
                   </button>
                   <button type="button" onClick={clearReads} disabled={!selectedCount}>Clear</button>
+                  {onImportReads && eligibleReads.length ? (
+                    <button type="button" data-testid="construct-verification-import-more" onClick={() => importInputRef.current?.click()}>Import…</button>
+                  ) : null}
                 </div>
               </div>
+              {onImportReads ? (
+                <input
+                  ref={importInputRef}
+                  className="motif-cs-verification-sr-only"
+                  type="file"
+                  multiple
+                  accept=".ab1,.abi"
+                  tabIndex={-1}
+                  aria-hidden="true"
+                  data-testid="construct-verification-import-input"
+                  onChange={(event) => {
+                    importReads(event.target.files);
+                    event.target.value = '';
+                  }}
+                />
+              ) : null}
+              {showReadGroups && eligibleReads.length ? (
+                <p className="motif-cs-verification-read-default" data-testid="construct-verification-read-default">
+                  {referenceGroupLabel
+                    ? `Reads in “${referenceGroupLabel}”, the reference's group, start selected.`
+                    : 'Reads without a group, like the reference, start selected.'}
+                </p>
+              ) : null}
 
               {eligibleReads.length ? (
                 <div
@@ -544,33 +744,56 @@ export function ClaudeScienceConstructVerificationWorkspace({
                   data-testid="construct-verification-read-list"
                   aria-label="Available imported Sanger reads"
                 >
-                  {eligibleReads.map((read) => {
-                    const checked = eligibleReadIdSet.has(read.id) && selectedReadIdSet.has(read.id);
-                    const disabledByLimit = !checked && readSelectionAtLimit;
-                    return (
-                      <label key={read.id} className="motif-cs-verification-read-option">
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          disabled={disabledByLimit}
-                          aria-describedby={`${criteriaId}-read-limit`}
-                          title={disabledByLimit ? 'Deselect another read to include this evidence.' : undefined}
-                          onChange={(event) => updateReadSelection(read.id, event.target.checked)}
-                        />
-                        <span>
-                          <strong>{read.name}</strong>
-                          <small>
-                            {read.sangerTrace.baseCalls.length.toLocaleString()} calls · {read.sangerEvidenceSha256 ? 'evidence hash recorded' : 'evidence hash unavailable'}
-                          </small>
-                        </span>
-                      </label>
-                    );
-                  })}
+                  {readGroups.map((group) => (
+                    <div key={group.key || 'ungrouped'} className="motif-cs-verification-read-group" role="group" aria-label={`${group.label}: ${group.reads.length.toLocaleString()} read${group.reads.length === 1 ? '' : 's'}`}>
+                      {showReadGroups ? (
+                        <div className="motif-cs-verification-read-group-heading">
+                          <span>{group.label} · {group.reads.length.toLocaleString()}</span>
+                          <button
+                            type="button"
+                            onClick={() => selectReadGroup(group)}
+                            disabled={group.reads.every((read) => selectedReadIdSet.has(read.id)) || readSelectionAtLimit}
+                            aria-label={`Select the reads in ${group.label}`}
+                          >Select group</button>
+                        </div>
+                      ) : null}
+                      {group.reads.map((read) => {
+                        const checked = eligibleReadIdSet.has(read.id) && selectedReadIdSet.has(read.id);
+                        const disabledByLimit = !checked && readSelectionAtLimit;
+                        return (
+                          <label key={read.id} className="motif-cs-verification-read-option">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              disabled={disabledByLimit}
+                              aria-describedby={`${criteriaId}-read-limit`}
+                              title={disabledByLimit ? 'Deselect another read to include this evidence.' : undefined}
+                              onChange={(event) => updateReadSelection(read.id, event.target.checked)}
+                            />
+                            <span>
+                              <strong>{read.name}</strong>
+                              <small>
+                                {read.sangerTrace.baseCalls.length.toLocaleString()} calls · {read.sangerEvidenceSha256 ? 'evidence hash recorded' : 'evidence hash unavailable'}
+                              </small>
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  ))}
                 </div>
               ) : (
-                <p className="motif-cs-verification-empty-evidence" role="note">
-                  No trace-backed DNA records are available besides the selected reference. Import Sanger evidence to run verification.
-                </p>
+                <div className="motif-cs-verification-empty-evidence" role="note">
+                  <p>No trace-backed DNA records are available besides the selected reference. Import Sanger evidence to run verification.</p>
+                  {onImportReads ? (
+                    <button
+                      type="button"
+                      className="motif-cs-verification-import-button"
+                      data-testid="construct-verification-import"
+                      onClick={() => importInputRef.current?.click()}
+                    >Import AB1 reads…</button>
+                  ) : null}
+                </div>
               )}
             </div>
           </fieldset>
@@ -647,6 +870,8 @@ export function ClaudeScienceConstructVerificationWorkspace({
               result={completedRun.result}
               referenceName={completedRun.result.reference.name ?? reference?.name}
               readNames={resultReadNames}
+              onInspectVariant={onInspectVariant ? inspectVariant : undefined}
+              canInspectVariant={canInspectVariant}
             />
           ) : (
             <div className="motif-cs-verification-awaiting" data-testid="construct-verification-awaiting">

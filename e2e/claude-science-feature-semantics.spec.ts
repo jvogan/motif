@@ -163,6 +163,38 @@ test.describe('Claude Science multipart feature semantics', () => {
     await expect(receipt).toContainText('FASTA export');
   });
 
+  test('lists what a lossy export\'s preservation items are, under the count', async ({ page }) => {
+    await page.evaluate(() => window.motifRenderInventory([{
+      id: 'loss-items-record',
+      name: 'Loss items record',
+      molecule: 'dna',
+      topology: 'linear',
+      seq: 'ACGTACGTACGTACGT',
+      annotations: [{
+        id: 'loss-items-promoter',
+        name: 'Ptest',
+        type: 'promoter',
+        start: 1,
+        end: 10,
+        strand: 1,
+        metadata: { motifOriginalFeatureKey: 'promoter', motifOriginalLocation: '2..10' },
+      }],
+    }]));
+    await expect.poll(() => page.evaluate(() => window.motifGetActiveRecord?.()?.id)).toBe('loss-items-record');
+
+    const exportPanel = page.locator('.motif-cs-sequence-tools-panel');
+    if ((await exportPanel.getAttribute('open')) === null) await exportPanel.locator(':scope > summary').click();
+    await exportPanel.locator('select[name="export-format"]').selectOption('record-genbank');
+    await expect(exportPanel.getByTestId('export-loss-receipt')).toContainText('lossy; 2 preservation items require review.');
+    await expect(exportPanel.getByTestId('export-loss-items').locator('li')).toHaveText([
+      '1 imported feature key: promoter → regulatory',
+      '1 location kept as written: Ptest 2..10',
+    ]);
+    // A complete checkpoint loses nothing, so it lists nothing.
+    await exportPanel.locator('select[name="export-format"]').selectOption('inventory-json');
+    await expect(exportPanel.getByTestId('export-loss-items')).toHaveCount(0);
+  });
+
   test('honors imported codon_start when translating a joined CDS', async ({ page }) => {
     await page.evaluate(() => window.motifRenderInventory([{
       id: 'frame-record',
@@ -227,7 +259,9 @@ test.describe('Claude Science multipart feature semantics', () => {
     if ((await detail.getAttribute('data-active')) !== 'true') await detail.click();
     await page.locator('.motif-cs-feature-block').filter({ hasText: 'ordered CDS' }).first().click();
     await expect.poll(() => page.evaluate(() => window.motifDescribe?.()?.data.selection ?? null)).toBeNull();
-    await expect(page.getByRole('group', { name: 'Selection actions' }).getByRole('button', { name: 'New rev comp record' })).toBeDisabled();
+    await page.getByRole('group', { name: 'Selection actions' }).getByRole('button', { name: 'Create', exact: true }).click();
+    await expect(page.getByRole('menuitem', { name: 'New reverse complement record' })).toHaveAttribute('aria-disabled', 'true');
+    await page.keyboard.press('Escape');
 
     const translation = page.locator('details[data-rail-tool="translation"]');
     if ((await translation.getAttribute('open')) === null) await translation.locator(':scope > summary').click();
@@ -242,7 +276,7 @@ test.describe('Claude Science multipart feature semantics', () => {
     if ((await exportPanel.getAttribute('open')) === null) await exportPanel.locator(':scope > summary').click();
     const selectionActions = exportPanel.locator('.motif-cs-export-row').filter({ hasText: 'Selection' });
     await expect(selectionActions.getByRole('button', { name: 'Copy', exact: true })).toBeDisabled();
-    await expect(exportPanel.getByRole('button', { name: 'Complement', exact: true })).toBeDisabled();
+    await expect(exportPanel.getByRole('button', { name: 'Copy complement', exact: true })).toBeDisabled();
     await expect(exportPanel.getByRole('button', { name: 'Copy rev comp' })).toBeDisabled();
     await expect(exportPanel.getByRole('button', { name: 'New rev comp' })).toBeDisabled();
     await expect(exportPanel).toContainText('does not assert that the pieces form one materializable sequence');
@@ -296,7 +330,7 @@ test.describe('Claude Science multipart feature semantics', () => {
 
     const exportPanel = page.locator('.motif-cs-sequence-tools-panel');
     if ((await exportPanel.getAttribute('open')) === null) await exportPanel.locator(':scope > summary').click();
-    await expect(exportPanel.getByRole('button', { name: 'Complement', exact: true })).toBeDisabled();
+    await expect(exportPanel.getByRole('button', { name: 'Copy complement', exact: true })).toBeDisabled();
     await expect(exportPanel.getByRole('button', { name: 'Copy rev comp' })).toBeDisabled();
     await expect(exportPanel.getByRole('button', { name: 'New rev comp' })).toBeDisabled();
     await expect(exportPanel).toContainText('Basic GenBank and GFF3 label it non-materializable');

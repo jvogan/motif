@@ -149,12 +149,15 @@ function stackedLinearFeatures(count = 40, len = 6000): Feature[] {
   );
 }
 
+// A linear map draws its overflow as a chip; a circular map reports it as a summary
+// the host shows beside the drawing. Either way there is one entry per kind.
 function featureOverflow(layout: MapLayout) {
-  return layout.overflows?.find((overflow) => overflow.kind === 'feature-labels') ?? null;
+  return [...(layout.overflowSummaries ?? []), ...(layout.overflows ?? [])]
+    .find((overflow) => overflow.kind === 'feature-labels') ?? null;
 }
 
 function overflowCount(text: string): number {
-  expect(text).toMatch(/^\+\d+(?: more)?$/);
+  expect(text).toMatch(/^\+\d+(?: more| features?)?$/);
   return Number(text.match(/\d+/)?.[0] ?? 0);
 }
 
@@ -332,26 +335,15 @@ function radiusBand(layout: MapLayout, feature: MapLayout['features'][number]): 
 
 function centerTitleLabelBoxes(layout: MapLayout): Box[] {
   if (!layout.centerTitle) return [];
-  const boxes = layout.centerTitle.lines.map((line) =>
-    labelBox({
-      text: line.text,
-      x: layout.center.x,
-      y: line.baselineY,
-      anchor: 'middle',
-      leader: [],
-      inside: true,
-    }),
-  );
-  boxes.push(
-    labelBox({
-      text: `${layout.length} bp`,
-      x: layout.center.x,
-      y: layout.centerTitle.lenBaselineY,
-      anchor: 'middle',
-      leader: [],
-      inside: true,
-    }),
-  );
+  // Sized from the title's own type size, which grows with the ring (18-26 units)
+  // and is larger than the labels' 16: glyphs from baseline - fontSize down to a
+  // quarter-em of descent, the same extent the layout's own centre guard reserves.
+  const lineBox = (text: string, baselineY: number, fontSize: number): Box => {
+    const w = approxTextWidth(text, fontSize);
+    return { x0: layout.center.x - w / 2, y0: baselineY - fontSize, x1: layout.center.x + w / 2, y1: baselineY + fontSize * 0.25 };
+  };
+  const boxes = layout.centerTitle.lines.map((line) => lineBox(line.text, line.baselineY, line.fontSize));
+  boxes.push(lineBox(`${layout.length} bp`, layout.centerTitle.lenBaselineY, layout.centerTitle.lenFontSize ?? 14));
   return boxes;
 }
 
@@ -1025,8 +1017,16 @@ describe('computeMapLayout: circular pUC19', () => {
 
   it('emits fitted centerTitle metadata for circular titles only', () => {
     expect(layout.centerTitle?.lines).toHaveLength(1);
-    expect(layout.centerTitle?.lines[0]).toEqual({ text: 'pUC19', fontSize: 15, baselineY: 298 });
-    expect(layout.centerTitle?.lenBaselineY).toBe(316);
+    // 18, not the old fixed 15: the name is the largest text in the ring, above the
+    // labels' 16 units, and grows with the ring. The length line keeps 14 here.
+    expect(layout.centerTitle?.lines[0]).toEqual({ text: 'pUC19', fontSize: 18, baselineY: 298 });
+    expect(layout.centerTitle?.lenBaselineY).toBe(317);
+    expect(layout.centerTitle?.lenFontSize).toBe(14);
+
+    // A large ring takes the cap.
+    const large = computeMapLayout(circularInput({ width: 1100, height: 1100 }));
+    expect(large.centerTitle?.lines[0].fontSize).toBe(26);
+    expect(large.centerTitle?.lenFontSize).toBe(19);
 
     const long = computeMapLayout(
       circularInput({
@@ -1078,8 +1078,16 @@ describe('computeMapLayout: circular pUC19', () => {
     // chip's hit rect from 40.747 to 99.277. Deleting `overflows` and
     // `centerLabelRadius` from this layout gives 67a4f8ef… on BOTH sides of the
     // change, so the roll is the chip and nothing that was already projected moved.
+    // Rolled when the ring's centre came to carry only the name and the length: the
+    // chip left the ring for `overflowSummaries` (same "3 unnamed sites"), the name
+    // grew from 15 to 18 units with the length line one unit lower, and
+    // `centerLabelRadius` fell back to the title's own 43.627. Deleting
+    // `centerTitle`, `centerLabelRadius` and `overflows` / `overflowSummaries` gives
+    // d942a3f6… on BOTH sides, so no label, arc or tick moved.
+    // Rolled when each feature gained `startBp`, the base keyboard focus is ordered
+    // by. Dropping that one key from every feature reproduces 3771be4e… exactly.
     expect(layoutHash(layout)).toBe(
-      '9b2b810d353cdcadd1117cc12015ab6bb8c06457d72cc1a74caf3c9bf321bd29',
+      'ca1a8ff809754ba7fa29796a72e3f3051c603d4dd9108cffd3f2b5bb73277e3c',
     );
   });
 
@@ -1184,13 +1192,14 @@ describe('computeMapLayout: circular pUC19', () => {
     expect(overflowCount(marker!.text)).toBe(
       layout.budgets.hiddenLabelCount + layout.budgets.overflowFeatureCount,
     );
-    // Narrow maps center the wider, readable chip so its target remains inside
-    // the innermost feature ring instead of pushing into an arc.
-    expect(marker!.x).toBe(layout.center.x);
-    expect(marker!.y).toBeGreaterThan((layout.centerTitle?.lenBaselineY ?? layout.center.y) + 10);
-    expect(marker!.anchor).toBe('middle');
+    // Reported beside the ring, never drawn in it: the centre carries the name and
+    // the length only.
+    expect(layout.overflows ?? []).toHaveLength(0);
+    expect(marker).not.toHaveProperty('x');
     expect(marker!.title).toContain('feature label');
-    expect(marker!.title).toContain('Features tab');
+    // The rail tool that lists every feature is Annotations; there is no Features tab.
+    expect(marker!.title).toContain('Annotations');
+    expect(marker!.title).not.toContain('Features tab');
   });
 
   it('is deterministic for dense tiny inside-label culling', () => {
@@ -1231,7 +1240,7 @@ describe('computeMapLayout: circular pUC19', () => {
       expect(layouts[i].features.filter((f) => f.label).length).toBeLessThanOrEqual(36);
     }
     for (const layout of layouts.slice(2)) {
-      expect(featureOverflow(layout)?.text).toMatch(/^\+\d+ more$/);
+      expect(featureOverflow(layout)?.text).toMatch(/^\+\d+ features?$/);
     }
   });
 
@@ -1253,7 +1262,7 @@ describe('computeMapLayout: circular pUC19', () => {
     // 16, not 14: the radial repack (placeCircularRadialLabels) re-places two feature
     // names the collision cascade had evicted, so the chip summarizes two fewer.
     expect(visibleFeatureLabels).toBe(16);
-    expect(featureOverflow(layout)?.text).toBe('+6 more');
+    expect(featureOverflow(layout)?.text).toBe('+6 features');
     expect(visibleRestrictionLabels).toBeLessThanOrEqual(visibleFeatureLabels);
     // Narrow layouts abbreviate enzyme clusters and summarize lower-priority
     // feature names rather than shrinking the whole map into unreadable type.
@@ -1430,12 +1439,12 @@ describe('computeMapLayout: circular pUC19', () => {
 
 // ── origin wrap + subranges ───────────────────────────────────────────────────
 describe('computeMapLayout: segmentation', () => {
-  it('splits an origin-wrapping feature into 2 segment paths', () => {
+  it('draws an origin-wrapping feature as one segment path, with no seam at 0', () => {
     const wrap = feat({ id: 'w', name: 'wrap', start: 2600, end: 100, strand: 1 });
     const layout = computeMapLayout(
       circularInput({ features: [wrap], restrictionSites: [] }),
     );
-    expect(layout.features[0].segmentPaths).toHaveLength(2);
+    expect(layout.features[0].segmentPaths).toHaveLength(1);
   });
 
   it('renders one path per subRange for a multi-exon CDS', () => {
@@ -1726,7 +1735,7 @@ describe('computeMapLayout: linear + protein', () => {
     expect(overflowCount(marker!.text)).toBe(18);
     expect(marker!.title).toContain('18 feature bodies hidden');
     expect(marker!.title).not.toContain('feature label');
-    expect(marker!.title).toContain('Features tab');
+    expect(marker!.title).toContain('Annotations');
   });
 
   it('counts a linear overflow feature once, not once per thing it is missing', () => {
@@ -2121,8 +2130,10 @@ describe('computeMapLayout: linear + protein', () => {
     // Rolled when the 3' arrowhead moved inside the feature's own x-range: the
     // terminal segment paths changed, and outside labels now measure their gap
     // from the segment edge because the tip no longer passes it.
+    // Rolled when each feature gained `startBp`; dropping that one key from every
+    // feature reproduces 876daa3e… exactly.
     expect(layoutHash(layout)).toBe(
-      '876daa3e8dc0108bbba0b2c6c1d425d3b1b8e511f4e3944ea38815a12d155bd5',
+      '532410360fa4def7a150f48303a071c4aa45d275bffbbcfb6b40fe0115404e90',
     );
     expect(layout.budgets.hiddenLabelCount).toBe(0);
     expect(layout.budgets.overflowFeatureCount).toBe(0);
@@ -2285,7 +2296,8 @@ describe('computeMapLayout: dense restriction culling', () => {
       expect(visibleLabels.length).toBeLessThan(layout.restrictions.length);
       expect(Math.max(...layout.restrictions.map((r) => r.tickIds.length))).toBeLessThan(100);
       expect(Math.max(...labeledBp) - Math.min(...labeledBp)).toBeGreaterThan(len * 0.6);
-      expect(layout.overflows?.find((o) => o.kind === 'restriction-labels')?.text).toMatch(/^\d+ unnamed( sites?)?$/);
+      expect([...(layout.overflowSummaries ?? []), ...(layout.overflows ?? [])]
+        .find((o) => o.kind === 'restriction-labels')?.text).toMatch(/^\d+ unnamed( sites?)?$/);
       for (const label of visibleLabels) {
         const overflow = label.label!.text.match(/\+(\d+)/);
         if (overflow) expect(Number(overflow[1])).toBeLessThan(100);
@@ -2461,4 +2473,60 @@ describe('computeMapLayout: dense restriction culling', () => {
     expect(layout.restrictions.length).toBeGreaterThan(40); // stayed distinct
     expect(layout.budgets.hiddenLabelCount).toBeGreaterThan(0);
   });
+});
+
+describe('computeMapLayout: feature titles', () => {
+  // A feature read from an INSDC key Motif has no type for is `custom` and
+  // keeps its key, which the title and aria-label name instead.
+  const operator: Feature = {
+    ...feat({ id: 'op', name: 'lac operator', type: 'custom', start: 100, end: 117 }),
+    metadata: { motifOriginalFeatureKey: 'protein_bind' },
+  };
+  const madeHere = feat({ id: 'made', name: 'made here', type: 'custom', start: 300, end: 340 });
+
+  it('names a kept INSDC key in place of custom, circular and linear', () => {
+    for (const mode of ['circular', 'linear'] as const) {
+      const layout = computeMapLayout(circularInput({
+        mode,
+        topology: mode,
+        features: [operator, madeHere],
+        restrictionSites: [],
+      }));
+      const titles = Object.fromEntries(layout.features.map((f) => [f.id, [f.type, f.title]]));
+      expect(titles, mode).toEqual({
+        op: ['custom', 'lac operator · protein_bind · 101–117 →'],
+        made: ['custom', 'made here · custom · 301–340 →'],
+      });
+    }
+  });
+});
+
+describe('a feature whose drawn name the host shortened', () => {
+  // The host draws "lac prom." so the label fits; the title and accessible name
+  // must still say what the feature is called.
+  const shortened = puc19Features.map((f) =>
+    f.id === 'lacP' ? { ...f, name: 'lac prom.', titleName: 'lac promoter' } : f,
+  );
+  const drawnOnly = puc19Features.map((f) => (f.id === 'lacP' ? { ...f, name: 'lac prom.' } : f));
+
+  for (const mode of ['circular', 'linear'] as const) {
+    it(`announces the full name and draws the short one (${mode})`, () => {
+      const layout = computeMapLayout(circularInput({ mode, features: shortened, width: 900, height: 700 }));
+      const lacP = layout.features.find((f) => f.id === 'lacP')!;
+      expect(lacP.title).toBe('lac promoter · promoter · 415–470 ←');
+      expect(lacP.name).toBe('lac promoter');
+      expect(lacP.label?.text).toBe('lac prom.');
+
+      // Only the announced name moves: every drawn label, path and the viewBox
+      // match a layout that was never told the full name.
+      const plain = computeMapLayout(circularInput({ mode, features: drawnOnly, width: 900, height: 700 }));
+      expect(plain.features.find((f) => f.id === 'lacP')!.title).toBe('lac prom. · promoter · 415–470 ←');
+      const drawing = (l: MapLayout) => JSON.stringify({
+        viewBox: l.viewBox,
+        features: l.features.map((f) => [f.id, f.label, f.segmentPaths, f.lane]),
+        restrictions: l.restrictions,
+      });
+      expect(drawing(layout)).toBe(drawing(plain));
+    });
+  }
 });

@@ -172,10 +172,11 @@ describe('editable sequence range transactions', () => {
     expect(selectedRangeCommit).toContain('range.start + replacement.length');
     expect(keyboardHandler).toMatch(/case 'Backspace':[\s\S]*commitSelectedRangeEdit\(selectedRange, ''\)/);
     expect(keyboardHandler).toMatch(/case 'Delete':[\s\S]*commitSelectedRangeEdit\(selectedRange, ''\)/);
-    expect(commitEdit).toContain('undo: [...store.undo, { before, after }]');
     expect(commitEdit).toContain(
       'provenance: sequenceEditAnnotationReviewProvenance(currentRecord, result.features)',
     );
+    expect(commitEdit).toContain('const transaction: EditTransaction = { before, after, edit };');
+    expect(commitEdit).toContain('undo: [...store.undo, transaction]');
     expect(commitEdit).toContain('setMapRangesByRecord');
     expect(commitEdit).toContain('[recordId]: null');
     expect(commitEdit).toContain('setCaret(clamp(caretAfter, 0, result.raw.length));');

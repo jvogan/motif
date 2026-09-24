@@ -78,3 +78,72 @@ export function restrictionDensitySourcesForMap(
   });
   return sources;
 }
+
+/** One enzyme's cut sites inside a map restriction cluster. */
+export interface RestrictionClusterEnzyme {
+  enzyme: string;
+  tickIds: readonly string[];
+}
+
+function enzymeOfLayoutTickId(tickId: string): string {
+  const at = tickId.lastIndexOf('@');
+  return at > 0 ? tickId.slice(0, at) : tickId;
+}
+
+/**
+ * The enzymes a restriction cluster holds, each with its own tick ids, in the order
+ * the cluster's tooltip names them (the order its label reads in), then any the
+ * tooltip does not name. A cluster label names its first few enzymes and folds the
+ * rest into "+N"; a click on one name has to select that enzyme, not all of them —
+ * "HindIII +13" on the synthetic pUC19 once bundled held 14 enzymes and 17 sites.
+ */
+export function restrictionClusterEnzymes(
+  restriction: { tickIds: readonly string[]; title?: string },
+): RestrictionClusterEnzyme[] {
+  const byEnzyme = new Map<string, string[]>();
+  for (const tickId of restriction.tickIds) {
+    const enzyme = enzymeOfLayoutTickId(tickId);
+    const ids = byEnzyme.get(enzyme);
+    if (ids) ids.push(tickId);
+    else byEnzyme.set(enzyme, [tickId]);
+  }
+  const titled = (restriction.title?.split(' · ', 1)[0] ?? '')
+    .split(', ')
+    .map((name) => name.trim())
+    .filter((name) => byEnzyme.has(name));
+  const order = [...new Set([...titled, ...byEnzyme.keys()])];
+  return order.map((enzyme) => ({ enzyme, tickIds: byEnzyme.get(enzyme) ?? [] }));
+}
+
+/**
+ * The enzyme a drawn label token names, or null for the "+N" tail and for a token
+ * that names nothing in the cluster. A token cut short to fit ("HindI…") still
+ * commits the label to one enzyme when exactly one name in the cluster starts with
+ * what is left of it.
+ */
+export function restrictionLabelTokenEnzyme(
+  token: string,
+  enzymes: readonly RestrictionClusterEnzyme[],
+): string | null {
+  const text = token.trim();
+  if (!text || /^\+\d+$/.test(text)) return null;
+  const exact = enzymes.find((entry) => entry.enzyme === text);
+  if (exact) return exact.enzyme;
+  if (!text.endsWith('…')) return null;
+  const stem = text.slice(0, -1);
+  const matches = enzymes.filter((entry) => entry.enzyme.startsWith(stem));
+  return matches.length === 1 ? matches[0].enzyme : null;
+}
+
+/**
+ * Split a cluster label into the tokens it is drawn from — enzyme names joined with
+ * ", " and an optional "+N" tail after a space, or a bare "+" where a small circular
+ * map had no room for the count — so each name can be its own target.
+ * Joining the tokens back with those rules reproduces `text` exactly.
+ */
+export function restrictionLabelTokens(text: string): string[] {
+  const tail = /^(.*\S) (\+\d*)$/.exec(text);
+  const head = tail ? tail[1] : text;
+  const names = head.split(', ');
+  return tail ? [...names, tail[2]] : names;
+}

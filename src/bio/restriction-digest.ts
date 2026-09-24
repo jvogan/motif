@@ -23,6 +23,7 @@ import {
 } from './restriction-sites';
 import { RESTRICTION_ENZYMES_FULL } from './enzyme-data';
 import { reverseComplement } from './reverse-complement';
+import { qualifierMapForSpans, remapPositionQualifiers } from './transl-except';
 import {
   expandCircularFeatureLocation,
   remapFeatureLocation,
@@ -252,6 +253,7 @@ function buildFeatureSlicers(
         start: location.start,
         end: location.end,
         ...(location.subRanges === undefined ? { subRanges: undefined } : { subRanges: location.subRanges }),
+        metadata: remapPositionQualifiers(feature.metadata, qualifierMapForSpans(sourceSpans)),
       })] : [];
     });
   }

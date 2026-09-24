@@ -1590,7 +1590,9 @@ html:is([data-theme="claude-light"], [data-theme="claude-dark"]) .motif-cs-msa-w
   right: 0;
   bottom: 0;
   left: 0;
-  max-height: 100%;
+  /* The viewer sets the reserve to the matrix's height (at most 55% of the
+     stage) while the list is open, so rows a jump lands on stay uncovered. */
+  max-height: calc(100% - var(--motif-cs-msa-differences-reserve, 0px));
   z-index: 12;
   display: flex;
   min-width: 0;
@@ -1629,6 +1631,27 @@ html:is([data-theme="claude-light"], [data-theme="claude-dark"]) .motif-cs-msa-w
   color: var(--text-muted);
   font: 10px/1.35 var(--font-ui);
   font-variant-numeric: tabular-nums;
+}
+
+.motif-cs-msa-differences-actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.motif-cs-msa-differences-export-status {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font: 10px/1.4 var(--font-ui);
+}
+
+.motif-cs-msa-differences-export-status[data-empty] {
+  display: none;
 }
 
 .motif-cs-msa-differences-limit {
@@ -1975,4 +1998,50 @@ html .motif-cs-msa-workspace .motif-cs-msa-view-controls > .motif-cs-msa-search 
 html .motif-cs-msa-workspace .motif-cs-msa-statusbar .motif-cs-msa-difference-nav > .motif-cs-mini-button {
   width: 26px;
   min-height: 26px;
+}
+
+/* ===== Chromatogram call readout and difference strip =====
+   The readout is placed under the chromatogram toolbar (see the viewer), so its
+   divider moves from its top edge to its bottom edge. */
+.motif-cs-sanger-call-status[data-placement="top"] {
+  border-top: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+}
+
+/* One tick per difference across the whole alignment at every zoom, with the
+   visible window outlined. The strip spans the same width as the traces so a
+   tick sits over its column's share of the scroll range. */
+.motif-cs-sanger-difference-strip {
+  display: block;
+  height: 14px;
+  overflow: hidden;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-secondary);
+  cursor: pointer;
+  line-height: 0;
+}
+
+.motif-cs-sanger-difference-strip svg {
+  display: block;
+}
+
+.motif-cs-sanger-strip-window {
+  fill: color-mix(in srgb, var(--accent) 8%, transparent);
+  stroke: var(--border-strong);
+  stroke-width: 1;
+}
+
+.motif-cs-sanger-strip-tick {
+  fill: var(--red);
+}
+
+.motif-cs-sanger-strip-selected {
+  fill: var(--accent);
+}
+
+@media (forced-colors: active) {
+  .motif-cs-sanger-strip-window { fill: transparent; stroke: Highlight; }
+  .motif-cs-sanger-strip-tick { fill: CanvasText; }
+  .motif-cs-sanger-strip-selected { fill: Highlight; }
 }

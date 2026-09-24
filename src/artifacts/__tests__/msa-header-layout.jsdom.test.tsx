@@ -93,7 +93,7 @@ describe('compact MSA header contracts', () => {
     const pinned = screen.getByTestId('msa-pinned-tracks');
     expect(pinned.parentElement?.classList.contains('motif-cs-msa-matrix')).toBe(true);
     expect(pinned.closest('.motif-cs-msa-matrix-scroll')).not.toBeNull();
-    expect(within(pinned).getByRole('row', { name: /Conservation; asterisks/ })).toBeTruthy();
+    expect(within(pinned).getByRole('row', { name: /Conservation marks; asterisks/ })).toBeTruthy();
     expect(within(pinned).getByRole('row', { name: 'Majority consensus row' })).toBeTruthy();
     expect(within(pinned).getByRole('row', { name: 'Per-column conservation histogram' })).toBeTruthy();
     expect(pinned.querySelector('.motif-cs-msa-conservation-mark[data-alignment-column="1"]')).not.toBeNull();

@@ -3,6 +3,7 @@ import { gcContent } from './gc-content';
 import { calculateTm } from './tm-calculator';
 import { DEFAULT_TM_OPTIONS } from './primer-design';
 import type { Feature, Topology } from './types';
+import { qualifierMapForSpans, remapPositionQualifiers } from './transl-except';
 import {
   expandCircularFeatureLocation,
   remapFeatureLocation,
@@ -537,7 +538,7 @@ function propagateFeature(
     end: location.end,
     ...(location.subRanges === undefined ? { subRanges: undefined } : { subRanges: location.subRanges }),
     metadata: {
-      ...feature.metadata,
+      ...remapPositionQualifiers(feature.metadata, qualifierMapForSpans(sourceSpans)),
       pcrSourceFeatureId: feature.id,
       pcrSourceStart: feature.start,
       pcrSourceEnd: feature.end,

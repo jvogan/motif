@@ -20,7 +20,6 @@ import { computeMapLayout } from '../layout';
 import { findRestrictionSites } from '../../bio/restriction-sites';
 import { resolveEnzymeUnion } from '../../bio/restriction-presets';
 import { restrictionDensitySourcesForMap, restrictionSitesForInteractiveMap } from '../restriction-display';
-import { approxTextWidth, CIRCULAR_LABEL_BOX_HEIGHT_PX } from '../geometry/labels';
 import type { Feature, RestrictionSite } from '../../bio/types';
 import type { MapInput, MapLayout } from '../types';
 
@@ -30,7 +29,7 @@ function unnamedSitesFromDrawnLabels(layout: MapLayout): number {
     // A tick id is `<enzyme>@<position>`, and no bundled enzyme name contains "@".
     const enzymes = restriction.tickIds.map((id) => id.slice(0, id.lastIndexOf('@')));
     if (!restriction.label) return count + enzymes.length;
-    const shown = restriction.label.text.replace(/ \+\d+$/, '').split(', ').map((name) => name.trim());
+    const shown = restriction.label.text.replace(/ \+\d*$/, '').split(', ').map((name) => name.trim());
     // An ellipsised name ("Hind…") counts as naming its enzyme: the label has
     // committed to it, and the chip credits it too.
     const exact = new Set(shown.filter((name) => !name.includes('…')));
@@ -46,8 +45,11 @@ function unnamedSitesFromDrawnLabels(layout: MapLayout): number {
  * where the full one would paint over a neighbouring name. The count is in both,
  * because the count is the message; only the noun is ever spent.
  */
+// A circular map reports the count as a summary beside the drawing; a linear map draws
+// it as a chip. Either way there is one entry for the kind.
 function chipCount(layout: MapLayout): number {
-  const chip = layout.overflows?.find((overflow) => overflow.kind === 'restriction-labels');
+  const chip = [...(layout.overflowSummaries ?? []), ...(layout.overflows ?? [])]
+    .find((overflow) => overflow.kind === 'restriction-labels');
   if (!chip) return 0;
   expect(chip.text, 'chip sentence').toMatch(
     new RegExp(`^${chip.unlabelled} unnamed( ${chip.unlabelled === 1 ? 'site' : 'sites'})?$`),
@@ -235,38 +237,14 @@ describe('the chip moves with the map rather than with the packer', () => {
   });
 });
 
-type Box = { minX: number; maxX: number; minY: number; maxY: number };
-
-/** A placed label's box, built the way the circular packer builds its obstacles. */
-function labelBox(label: NonNullable<MapLayout['features'][number]['label']>, monospace: boolean): Box {
-  const width = approxTextWidth(label.text, undefined, monospace ? 'monospace' : 'proportional');
-  const x0 = label.anchor === 'start' ? 0 : label.anchor === 'end' ? -width : -width / 2;
-  const x1 = label.anchor === 'start' ? width : label.anchor === 'end' ? 0 : width / 2;
-  const h = CIRCULAR_LABEL_BOX_HEIGHT_PX;
-  const [y0, y1] = label.baseline === 'middle' ? [-h / 2, h / 2]
-    : label.baseline === 'hanging' ? [0, h]
-      : label.baseline === 'auto' ? [-h, 0]
-        : [-h * 0.8, h * 0.3];
-  const radians = ((label.rotate ?? 0) * Math.PI) / 180;
-  const cos = Math.cos(radians);
-  const sin = Math.sin(radians);
-  const xs: number[] = [];
-  const ys: number[] = [];
-  for (const [dx, dy] of [[x0, y0], [x1, y0], [x1, y1], [x0, y1]] as const) {
-    xs.push(label.x + dx * cos - dy * sin);
-    ys.push(label.y + dx * sin + dy * cos);
-  }
-  return { minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) };
-}
-
 /**
- * The chip is drawn blind — placed after every label, dodged by nothing — so the only
- * thing that keeps its glyphs off a feature or enzyme name is how long its sentence is.
- * The honest count made the sentence longer, and at a 1032x260 map pane on pETDuet-1
- * the full form painted its last "s" under the AmpR arc while pcDNA3.1(+) at 1212x314
- * reached 1.3 units into NeoR/KanR. Both are gone; this is what keeps them gone.
+ * The circular chip used to be drawn blind in the ring's centre — placed after every
+ * label, dodged by nothing — so its sentence was shortened ("54 unnamed") wherever the
+ * full form would reach a neighbouring name, and a clearance test guarded that. The
+ * count now leaves the ring: the layout reports it as a summary the host shows beside
+ * the drawing, where it always has room for its noun and cannot touch a name.
  */
-describe('the chip keeps its sentence clear of the names around it', () => {
+describe('the circular count is stated beside the ring, not in it', () => {
   // The map pane inside each viewport, read off the artifact's own frame in Chromium.
   const PANES = [
     { viewport: '1100x650', width: 1032, height: 260 },
@@ -278,44 +256,23 @@ describe('the chip keeps its sentence clear of the names around it', () => {
   ];
   const RECORDS = ['pUC19', 'pET-28a(+)', 'pETDuet-1', 'pBR322', 'pcDNA3.1(+)'];
 
-  it.each(PANES)('keeps every $viewport chip off a drawn name', ({ width, height }) => {
-    for (const record of RECORDS) {
-      const layout = artifactLayout(record, width, height);
-      const chip = layout.overflows?.find((overflow) => overflow.kind === 'restriction-labels');
-      if (!chip) continue;
-      const hit = { minX: chip.hit.x, maxX: chip.hit.x + chip.hit.width, minY: chip.hit.y, maxY: chip.hit.y + chip.hit.height };
-      const names = [
-        ...layout.features.flatMap((feature) => (feature.label ? [{ text: feature.label.text, box: labelBox(feature.label, false) }] : [])),
-        ...layout.restrictions.flatMap((r) => (r.label ? [{ text: r.label.text, box: labelBox(r.label, true) }] : [])),
-      ];
-      for (const name of names) {
-        const overlapX = Math.min(hit.maxX, name.box.maxX) - Math.max(hit.minX, name.box.minX);
-        const overlapY = Math.min(hit.maxY, name.box.maxY) - Math.max(hit.minY, name.box.minY);
-        expect(
-          overlapX > 0 && overlapY > 0,
-          `${record} ${width}x${height}: "${chip.text}" reaches "${name.text}"`,
-        ).toBe(false);
-      }
-    }
-  });
-
-  it('spends the noun rather than the count when the sentence will not fit', () => {
-    const shortened: string[] = [];
+  it('draws no chip in the ring and keeps the whole sentence at every pane', () => {
+    let reported = 0;
     for (const { width, height } of PANES) {
       for (const record of RECORDS) {
         const layout = artifactLayout(record, width, height);
-        const chip = layout.overflows?.find((overflow) => overflow.kind === 'restriction-labels');
-        if (!chip) continue;
-        // Whichever sentence it picked, the number is in it and it is the right one.
+        expect(layout.overflows ?? [], `${record} ${width}x${height} draws a chip`).toHaveLength(0);
+        const summary = layout.overflowSummaries?.find((overflow) => overflow.kind === 'restriction-labels');
+        if (!summary) continue;
+        reported += 1;
+        expect(summary).not.toHaveProperty('hit');
         expect(chipCount(layout)).toBe(unnamedSitesFromDrawnLabels(layout));
-        expect(chip.title).toMatch(/^\d+ of \d+ cut sites? /);
-        if (!/ sites?$/.test(chip.text)) shortened.push(`${record} ${width}x${height} "${chip.text}"`);
+        expect(summary.title).toMatch(/^\d+ of \d+ cut sites? /);
+        // The four pane/record pairs that used to print "N unnamed" print it in full.
+        expect(summary.text).toMatch(/^\d+ unnamed sites?$/);
       }
     }
-
-    // 4 of the 30, all at the two shortest panes. Without this the clearance test
-    // above could pass on a chip that never had to shorten anything.
-    expect(shortened.length, `shortened: ${shortened.join(', ')}`).toBe(4);
-    expect(shortened.every((entry) => entry.includes('1032x260') || entry.includes('1298x362') || entry.includes('1212x314'))).toBe(true);
+    // Without this the loop could pass on maps that report nothing.
+    expect(reported).toBe(PANES.length * RECORDS.length);
   });
 });

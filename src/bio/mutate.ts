@@ -5,6 +5,7 @@
 import type { Feature } from './types';
 import type { MutationScar } from './types';
 import { FeatureCollectionInputError, validateFeatureCollection } from './feature-bounds';
+import { remapPositionQualifiers } from './transl-except';
 
 export interface MutationResult {
   raw: string;
@@ -128,6 +129,17 @@ function featureExtrema(ranges: readonly { start: number; end: number }[]): { st
 }
 
 /**
+ * Move the positions a feature's qualifiers name (/transl_except, /anticodon, …)
+ * through an edit. `base` returns null for an edited base, so an entry whose
+ * codon the edit touches is dropped: that codon's bases are no longer the ones
+ * the entry was written for.
+ */
+function withEditedQualifiers<T extends Feature>(feature: T, base: (index: number) => number | null): T {
+  const metadata = remapPositionQualifiers(feature.metadata, { base });
+  return metadata === feature.metadata ? feature : { ...feature, metadata };
+}
+
+/**
  * Shift all scar positions by `delta` where the scar position is > editPos.
  * Returns a new array (does not mutate input).
  */
@@ -153,7 +165,7 @@ function shiftFeatures(
   delta: number,
 ): Feature[] {
   const insertIndex = editPos + 1;
-  return features.map((f) => {
+  return features.map((feature) => withEditedQualifiers(feature, (index) => (index >= insertIndex ? index + delta : index))).map((f) => {
     const newStart = f.start > editPos ? f.start + delta : f.start;
     const newEnd = f.end > insertIndex ? f.end + delta : f.end;
     const newSubRanges = f.subRanges?.map((range) => ({
@@ -251,7 +263,10 @@ function transformReplacedFeatures(
   deletedLength: number,
   insertedLength: number,
 ): Feature[] {
-  return features.flatMap((feature) => {
+  const deleteEnd = editStart + deletedLength;
+  return features.map((feature) => withEditedQualifiers(feature, (index) => (
+    index < editStart ? index : index >= deleteEnd ? index + insertedLength - deletedLength : null
+  ))).flatMap((feature) => {
     if (feature.subRanges) {
       const subRanges = feature.subRanges.flatMap((range) => {
         const transformed = transformReplacedRange(range, editStart, deletedLength, insertedLength);
@@ -331,10 +346,13 @@ export function applySubstitution(
     createdAt: Date.now(),
   };
 
+  // Coordinates stay put, but a changed base inside a /transl_except codon
+  // makes a different codon, so that entry goes.
+  const changed = original.toUpperCase() !== normalizedBase;
   return {
     raw: newRaw,
     scars: [...filteredScars, scar],
-    features: [...features],
+    features: changed ? features.map((feature) => withEditedQualifiers(feature, (index) => (index === pos ? null : index))) : [...features],
   };
 }
 
@@ -502,6 +520,9 @@ export function applyDeletion(
   // clamp it to `pos`; if it falls after the deleted range, shift by -count.
   const endOfDeletion = pos + effectiveCount;
   const updatedFeatures = features
+    .map((feature) => withEditedQualifiers(feature, (index) => (
+      index < pos ? index : index >= endOfDeletion ? index - effectiveCount : null
+    )))
     .map((f) => {
       const newStart = transformDeletedCoordinate(
         f.start,

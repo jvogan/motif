@@ -186,12 +186,14 @@ test.describe('state-preserving pane placement', () => {
     expect(resizeBox).not.toBeNull();
     await page.mouse.move(resizeBox!.x + resizeBox!.width / 2, resizeBox!.y + resizeBox!.height / 2);
     await page.mouse.down();
-    await page.mouse.move(resizeBox!.x + 76, resizeBox!.y + 60, { steps: 5 });
+    // Tools pops out at its docked height, the full window, so the grip can
+    // only shorten it.
+    await page.mouse.move(resizeBox!.x + 76, resizeBox!.y - 60, { steps: 5 });
     await page.mouse.up();
     const resized = await tools.boundingBox();
     expect(resized).not.toBeNull();
     expect(resized!.width).toBeGreaterThan(moved!.width);
-    expect(resized!.height).toBeGreaterThan(moved!.height);
+    expect(resized!.height).toBeLessThan(moved!.height);
 
     await tools.evaluate((element) => { element.scrollTop = element.scrollHeight; });
     await expect.poll(() => tools.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
@@ -251,12 +253,15 @@ test.describe('state-preserving pane placement', () => {
         }
 
         const paneElement = page.locator(`[data-pane-key="${pane.key}"]`);
+        const docked = (await paneElement.boundingBox())!;
         await paneElement.getByRole('button', { name: `Pop out ${pane.label} pane` }).click();
         const resize = page.getByTestId(`floating-pane-resize-${pane.key}`);
         await expect(resize).toBeVisible();
         const before = await paneElement.boundingBox();
         const resizeBox = await resize.boundingBox();
         expect(before).not.toBeNull();
+        // Popping out never shrinks the pane much below its docked area.
+        expect(before!.width * before!.height).toBeGreaterThanOrEqual(0.9 * docked.width * docked.height);
         expect(resizeBox).not.toBeNull();
 
         await page.evaluate(() => {
@@ -274,13 +279,15 @@ test.describe('state-preserving pane placement', () => {
           document.elementFromPoint(x, y)?.closest('.motif-cs-floating-pane-resize')?.getAttribute('data-testid')
         ), { x: resizeBox!.x + resizeBox!.width / 2, y: resizeBox!.y + resizeBox!.height / 2 })).toBe(`floating-pane-resize-${pane.key}`);
         await page.mouse.down();
-        await page.mouse.move(resizeBox!.x + 76, resizeBox!.y + 60, { steps: 5 });
+        // A pane pops out no smaller than it was docked, which can fill the
+        // window, so the grip is dragged inward.
+        await page.mouse.move(resizeBox!.x - 76, resizeBox!.y - 60, { steps: 5 });
         await page.mouse.up();
         const after = await paneElement.boundingBox();
         const trusted = await page.evaluate(() => (window as Window & { __motifFloatingGripTrusted?: boolean[] }).__motifFloatingGripTrusted ?? []);
         expect(trusted).toContain(true);
         expect(after).not.toBeNull();
-        expect(after!.width > before!.width + 1 || after!.height > before!.height + 1).toBe(true);
+        expect(after!.width < before!.width - 1 || after!.height < before!.height - 1).toBe(true);
       }
     }
 
@@ -590,6 +597,41 @@ test.describe('state-preserving pane placement', () => {
     expect(settled.columnHides, 'expected no overflow at 1920x1080').toBe(0);
     expect(settled.mapVisibility).toBeLessThan(0);
     expect(settled.digestPreview).toBeLessThan(0);
+  });
+
+  test('opening a map dock panel leaves the map it controls on screen', async ({ page }) => {
+    // The open panel used to be sized to its content with nothing to stop it, so it
+    // took the whole column: with Map Visibility open the ring measured 0px at every
+    // width up to 1536 and 82px at 1920x1080; with Digest Preview open, 0-5px up to
+    // 1535. Now the circular frame keeps half the column and the panel scrolls.
+    const measure = () => page.evaluate(() => {
+      const column = document.querySelector('.motif-cs-map-column')!;
+      const columnBox = column.getBoundingClientRect();
+      const ring = document.querySelector('.motif-cs-map-frame .motif-pm-backbone')!.getBoundingClientRect();
+      const visibleRing = Math.max(0, Math.min(ring.bottom, columnBox.top + column.clientHeight) - Math.max(ring.top, columnBox.top));
+      const heads = [...document.querySelectorAll<HTMLElement>('.motif-cs-map-dock-strip > details > summary')].map((summary) => {
+        const box = summary.getBoundingClientRect();
+        const hit = document.elementFromPoint(box.left + 30, box.top + box.height / 2);
+        return !!hit && summary.contains(hit);
+      });
+      return { ring: Math.round(ring.width), visibleRing: Math.round(visibleRing), heads, columnHides: column.scrollHeight - column.clientHeight };
+    });
+
+    for (const [width, height] of [[1024, 768], [1280, 720], [1440, 900], [1920, 1080]] as const) {
+      for (const index of [0, 1]) {
+        await openArtifact(page, width, height);
+        const closed = await measure();
+        const panel = page.locator('.motif-cs-map-dock-strip > details').nth(index);
+        await panel.locator(':scope > summary').click();
+        await expect(panel).toHaveAttribute('open', '');
+        const open = await measure();
+        const label = `${index === 0 ? 'Map Visibility' : 'Digest Preview'} open at ${width}x${height}`;
+        expect(open.visibleRing, label).toBeGreaterThanOrEqual(Math.round(closed.ring * 0.45));
+        expect(open.visibleRing, label).toBe(open.ring);
+        expect(open.heads, `${label}: both dock heads reachable`).toEqual([true, true]);
+        expect(open.columnHides, `${label}: the column itself scrolls`).toBeLessThanOrEqual(1);
+      }
+    }
   });
 
   test('the annotations list reaches every feature in all three Tools placements', async ({ page }) => {

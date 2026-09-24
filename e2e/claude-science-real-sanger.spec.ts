@@ -172,7 +172,7 @@ test.describe('Claude Science real Sanger campaign', () => {
       expect(reverseRow).toBeTruthy();
       await traceViewer.locator('.motif-cs-sanger-toolbar select').selectOption({ label: reverseRow!.name });
       await expect(traceViewer.locator('.motif-cs-sanger-toolbar .motif-cs-chip')).toHaveText('reverse');
-      const slider = traceViewer.getByRole('slider', { name: 'Alignment position' });
+      const slider = traceViewer.getByRole('slider', { name: 'Alignment column' });
       await slider.fill(String(Math.floor(Number(await slider.getAttribute('max')) * 0.62)));
       await traceViewer.locator('canvas').click({ position: { x: 240, y: 46 } });
       await expect(traceViewer.locator('.motif-cs-sanger-call-status')).toContainText('quality');

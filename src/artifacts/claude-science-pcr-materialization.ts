@@ -1,6 +1,8 @@
 import {
+  computePrimerPairTailStructureWarnings,
   designPrimerPairWithDiagnostics,
   normalizePrimerDesignParams,
+  primerTailStructureReviewCodes,
   primerToFeature,
   type PrimerCandidate,
   type PrimerDesignParams,
@@ -359,6 +361,7 @@ function derivedEvidenceReview(
   if (crossDimer.status === 'work-limit') reasonCodes.push('cross-dimer-work-limit');
   if (diagnostics.some((diagnostic) => diagnostic.status === 'ambiguous')) reasonCodes.push('secondary-structure-ambiguous');
   if (diagnostics.some((diagnostic) => diagnostic.status === 'work-limit')) reasonCodes.push('secondary-structure-work-limit');
+  reasonCodes.push(...primerTailStructureReviewCodes(computePrimerPairTailStructureWarnings(selection.pair)));
 
   if (selection.parameters) {
     const design = designPrimerPairWithDiagnostics(

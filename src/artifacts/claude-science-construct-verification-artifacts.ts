@@ -129,6 +129,8 @@ type ConstructVerificationMappingSource = {
   insertions: number;
   deletions: number;
   indelFraction: number;
+  /** The engine's per-column read map; the report keeps it only as a CIGAR. */
+  coordinateMap?: { columns: readonly { readonly operation?: unknown; readonly [key: string]: unknown }[] };
 };
 
 type ConstructVerificationReadSource = {
@@ -144,6 +146,7 @@ type ConstructVerificationReadSource = {
     | 'ambiguous_mapping'
     | 'low_mapping_identity'
     | 'excessive_indel';
+  searchIncomplete?: true;
   trim: ConstructVerificationTrimSource;
   mapping: ConstructVerificationMappingSource | null;
 };
@@ -326,8 +329,52 @@ function reportReasons(reasons: readonly ConstructVerificationReasonSource[]) {
   }));
 }
 
-function reportMapping(mapping: ConstructVerificationMappingSource | null) {
+/**
+ * A mapped read's path through the reference as a CIGAR in reference order:
+ * M a match or substitution, I a read call the reference lacks, D a
+ * reference base the read lacks. The read's whole trimmed span is aligned, so
+ * with the trim and the start this is enough to place every call on the
+ * reference again, which is what lets a saved variant row open the trace at
+ * its base. A few dozen characters per read instead of the full column map.
+ */
+export function constructReadMappingCigar(
+  columns: readonly { readonly operation?: unknown; readonly [key: string]: unknown }[],
+): string {
+  let cigar = '';
+  let run = 0;
+  let current = '';
+  for (const column of columns) {
+    const operation = column.operation;
+    const code = operation === 'insertion' ? 'I'
+      : operation === 'deletion' ? 'D'
+        : operation === 'match' || operation === 'substitution' ? 'M' : '';
+    if (!code) return '';
+    if (code === current) {
+      run += 1;
+      continue;
+    }
+    if (run > 0) cigar += `${run}${current}`;
+    current = code;
+    run = 1;
+  }
+  return run > 0 ? `${cigar}${run}${current}` : cigar;
+}
+
+/** The CIGAR's M, I and D totals, which must equal the mapping's own counts. */
+function cigarAgreesWithCounts(cigar: string, mapping: ConstructVerificationMappingSource): boolean {
+  const totals: Record<string, number> = { M: 0, I: 0, D: 0 };
+  for (const [, run, code] of cigar.matchAll(/(\d+)([MID])/g)) totals[code] += Number(run);
+  return totals.M === mapping.matches + mapping.substitutions
+    && totals.I === mapping.insertions
+    && totals.D === mapping.deletions;
+}
+
+function reportMapping(mapping: ConstructVerificationMappingSource | null, mapped: boolean) {
   if (mapping === null) return null;
+  const columns = mapped ? mapping.coordinateMap?.columns : undefined;
+  const encoded = columns?.length ? constructReadMappingCigar(columns) : '';
+  // A map that does not spell the counts is left out rather than saved wrong.
+  const cigar = encoded && cigarAgreesWithCounts(encoded, mapping) ? encoded : '';
   return {
     orientation: mapping.orientation,
     referenceStart: mapping.referenceStart,
@@ -344,6 +391,7 @@ function reportMapping(mapping: ConstructVerificationMappingSource | null) {
     insertions: mapping.insertions,
     deletions: mapping.deletions,
     indelFraction: mapping.indelFraction,
+    ...(cigar ? { cigar } : {}),
   };
 }
 
@@ -356,8 +404,9 @@ function reportReads(reads: readonly ConstructVerificationReadSource[]) {
     qualityProvided: read.qualityProvided,
     meanQuality: read.meanQuality,
     status: read.status,
+    ...(read.searchIncomplete === true ? { searchIncomplete: true } : {}),
     trim: { ...read.trim },
-    mapping: reportMapping(read.mapping),
+    mapping: reportMapping(read.mapping, read.status === 'mapped'),
   }));
 }
 

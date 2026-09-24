@@ -123,10 +123,12 @@ describe('ClaudeScienceMsaViewer differing-column view', () => {
   });
 });
 
+// The stepper counts the Differences table's rows: G12D at 10, G13C at 10 and
+// G12D at 25 are three rows, so three steps, though they span two columns.
 describe('ClaudeScienceMsaViewer proactive difference navigation', () => {
   it('lands on the first difference without moving focus', () => {
     render(<StatefulViewer sourceAlignment={alignment('first-difference', 30, [9, 24])} />);
-    expect(screen.getByText('Difference 1 of 2')).toBeTruthy();
+    expect(screen.getByText('Difference 1 of 3')).toBeTruthy();
     expect(document.querySelector('[data-msa-row-id="g12d"] [data-alignment-column="10"]')?.getAttribute('data-jump')).toBe('true');
     expect(document.activeElement).toBe(document.body);
   });
@@ -134,9 +136,9 @@ describe('ClaudeScienceMsaViewer proactive difference navigation', () => {
   it('returns to the first difference when the comparison template changes', () => {
     render(<StatefulViewer sourceAlignment={alignment('template-first-difference', 30, [9, 24])} />);
     fireEvent.keyDown(window, { key: 'n' });
-    expect(screen.getByText('Difference 2 of 2')).toBeTruthy();
+    expect(screen.getByText('Difference 2 of 3')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Use KRAS G12D as template' }));
-    expect(screen.getByText('Difference 1 of 2')).toBeTruthy();
+    expect(screen.getByText('Difference 1 of 3')).toBeTruthy();
     expect(document.querySelector('[data-msa-row-id="reference"] [data-alignment-column="10"]')?.getAttribute('data-jump')).toBe('true');
   });
 
@@ -150,7 +152,7 @@ describe('ClaudeScienceMsaViewer proactive difference navigation', () => {
     first.unmount();
 
     render(<StatefulViewer sourceAlignment={sourceAlignment} />);
-    expect(screen.getByText('Difference — of 2')).toBeTruthy();
+    expect(screen.getByText('Difference — of 3')).toBeTruthy();
   });
 });
 
@@ -169,15 +171,15 @@ describe('ClaudeScienceMsaViewer row-name finding and shortcuts', () => {
   it('handles difference and finder shortcuts while ignoring text and select targets', () => {
     render(<StatefulViewer sourceAlignment={alignment('keyboard-shortcuts')} />);
     fireEvent.keyDown(window, { key: 'n' });
-    expect(screen.getByText('Difference 2 of 2')).toBeTruthy();
+    expect(screen.getByText('Difference 2 of 3')).toBeTruthy();
 
     const sort = screen.getByTestId('msa-row-sort-toolbar');
     sort.focus();
     fireEvent.keyDown(sort, { key: 'p' });
-    expect(screen.getByText('Difference 2 of 2')).toBeTruthy();
+    expect(screen.getByText('Difference 2 of 3')).toBeTruthy();
 
     fireEvent.keyDown(window, { key: 'p' });
-    expect(screen.getByText('Difference 1 of 2')).toBeTruthy();
+    expect(screen.getByText('Difference 1 of 3')).toBeTruthy();
     fireEvent.keyDown(window, { key: '/' });
     expect(document.activeElement).toBe(screen.getByTestId('msa-search-input'));
     (document.activeElement as HTMLElement).blur();

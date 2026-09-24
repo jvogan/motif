@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { normalizeArtifactAlignment, type ArtifactAlignment } from '../claude-science-msa';
 import {
   computeMsaVariants,
+  countMsaVariants,
+  groupMsaVariantRuns,
   summarizeMsaVariants,
 } from '../claude-science-msa-variants';
 
@@ -85,6 +87,22 @@ describe('computeMsaVariants', () => {
       templatePosition: 3,
       label: 'K3-',
     }]);
+  });
+
+  it('treats leading and trailing row gaps as not covered, not as deletions', () => {
+    // A copy cut short, or a read that starts inside the template, does not
+    // reach the ends. The row badge counts 0 differences for it, so the list
+    // and the counts must too. Columns outside the template's own residues
+    // are skipped the same way.
+    const alignment = proteinAlignment([
+      { id: 'template', name: 'Template', aligned: '-ACGTACGT-' },
+      { id: 'short', name: 'Short', aligned: '---GTA-G--' },
+      { id: 'long', name: 'Long', aligned: 'TACGTACGTT' },
+    ]);
+
+    expect(computeMsaVariants(alignment).variants.map((variant) => `${variant.rowId}:${variant.label}`))
+      .toEqual(['short:C6-']);
+    expect(countMsaVariants(alignment)).toEqual({ total: 1, substitutions: 0, insertions: 0, deletions: 1 });
   });
 
   it('emits nothing for an identical row or case-only residue differences', () => {
@@ -270,5 +288,71 @@ describe('summarizeMsaVariants', () => {
         { column: 2, total: 1, substitutions: 0, insertions: 1, deletions: 0 },
       ],
     });
+  });
+});
+
+describe('groupMsaVariantRuns', () => {
+  it('keeps a deletion whole across a column that only another row inserts into', () => {
+    // Row "del" loses template bases 3-5 (G, T, T). Column 5 is row "ins"'s
+    // insertion, a gap in both the template and "del", so it must not split
+    // the deletion into 3-4 and 5.
+    const alignment = normalizeArtifactAlignment({
+      id: 'runs',
+      name: 'runs',
+      molecule: 'dna',
+      referenceRowId: 'template',
+      rows: [
+        { id: 'template', name: 'template', aligned: 'ACGT-TTCA' },
+        { id: 'del', name: 'del', aligned: 'AC----TCA' },
+        { id: 'ins', name: 'ins', aligned: 'ACGTGTTCA' },
+      ],
+    });
+    const runs = groupMsaVariantRuns(computeMsaVariants(alignment).variants, alignment);
+    expect(runs.map(({ label, length, templateResidues, residues, first, last }) => (
+      [label, length, templateResidues, residues, first.column + 1, last.column + 1]
+    ))).toEqual([
+      ['3–5del', 3, 'GTT', '---', 3, 6],
+      ['4^5ins', 1, '-', 'G', 5, 5],
+    ]);
+  });
+});
+
+describe('ambiguity codes in the differences list', () => {
+  // A read's N at template 3 (G) is compatible with G; the grid marks it as
+  // compatible, not as a difference, unless strict comparison is on. The A at
+  // template 8 (T) is a substitution either way.
+  const alignment = normalizeArtifactAlignment({
+    id: 'n-call',
+    name: 'N call',
+    molecule: 'dna',
+    referenceRowId: 'template',
+    rows: [
+      { id: 'template', name: 'template', aligned: 'ACGTACGTAC' },
+      { id: 'read', name: 'read', aligned: 'ACNTACGAAC' },
+    ],
+  });
+
+  it('leaves a compatible ambiguity call out unless strict comparison is on', () => {
+    expect(computeMsaVariants(alignment).variants.map((variant) => variant.label)).toEqual(['T8A']);
+    expect(countMsaVariants(alignment)).toEqual({ total: 1, substitutions: 1, insertions: 0, deletions: 0 });
+    expect(computeMsaVariants(alignment, { strictDifferences: true }).variants.map((variant) => variant.label))
+      .toEqual(['G3N', 'T8A']);
+    expect(countMsaVariants(alignment, { strictDifferences: true }))
+      .toEqual({ total: 2, substitutions: 2, insertions: 0, deletions: 0 });
+  });
+
+  it('keeps an incompatible ambiguity call: R (A or G) against T', () => {
+    const hard = normalizeArtifactAlignment({
+      id: 'r-call',
+      name: 'R call',
+      molecule: 'dna',
+      referenceRowId: 'template',
+      rows: [
+        { id: 'template', name: 'template', aligned: 'ACGTACGTAC' },
+        { id: 'read', name: 'read', aligned: 'ACGRACGTAC' },
+      ],
+    });
+    expect(computeMsaVariants(hard).variants.map((variant) => variant.label)).toEqual(['T4R']);
+    expect(countMsaVariants(hard).total).toBe(1);
   });
 });

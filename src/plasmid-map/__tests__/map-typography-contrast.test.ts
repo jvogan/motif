@@ -37,9 +37,12 @@ function contrast(a: string, b: string): number {
 describe('map typography and backbone visual contracts', () => {
   it('keeps rendered annotation metrics in sync with the readable CSS face', () => {
     expect(LABEL_FONT_PX).toBe(16);
-    for (const selector of ['.motif-pm-coord-label', '.motif-pm-feature-label', '.motif-pm-restriction-label']) {
+    for (const selector of ['.motif-pm-coord-label', '.motif-pm-restriction-label']) {
       expect(ruleBody(mapCss, selector)).toMatch(/font-size:\s*16px;/);
     }
+    // Still 16px wherever the map is not zoomed past the text cap: the factor is 1
+    // unless SequenceMapView sets it on a zoomed circular map's arc-borne name.
+    expect(ruleBody(mapCss, '.motif-pm-feature-label')).toMatch(/font-size:\s*calc\(16px \* var\(--pm-zoom-text-scale, 1\)\);/);
   });
 
   it('draws the linear ruler no larger than the names it sits above', () => {

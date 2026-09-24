@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { defaultAlignmentWindowRect, defaultTranslationsWindowRect } from '../motif-artifact';
+import {
+  defaultAlignmentWindowRect,
+  defaultGelWindowRect,
+  defaultPrimerWindowRect,
+  defaultTranslationsWindowRect,
+} from '../motif-artifact';
 
 /**
  * Viewports this workspace is swept at, plus the two large displays the caps
@@ -66,6 +71,31 @@ describe('floating window defaults', () => {
     expect(defaultAlignmentWindowRect(3840, 2160).w).toBe(1480);
     // 1,032px of workspace still shows beside it on a 2560px screen.
     expect(2560 - defaultAlignmentWindowRect(2560, 1440).w).toBeGreaterThanOrEqual(1000);
+  });
+
+  it('grows the primer window with the screen instead of stopping at 720px', () => {
+    const heights = SWEEP.map(([width, height]) => defaultPrimerWindowRect(width, height).h);
+    // Was 562, 632, 680, 720, 720, 720: the last three screens left 90-272px of
+    // height unused while the selected pair's sequences sat below the fold.
+    expect(heights).toEqual([562, 632, 680, 812, 962, 992]);
+    expect(SWEEP.map(([width, height]) => defaultPrimerWindowRect(width, height).w)).toEqual([1060, 1120, 1120, 1120, 1120, 1120]);
+    expect(defaultPrimerWindowRect(2560, 1440).h).toBe(1000);
+    for (const [width, height] of [...SWEEP, [640, 480] as const, [400, 300] as const]) {
+      const rect = defaultPrimerWindowRect(width, height);
+      expect(rect.y + rect.h, `${width}x${height} bottom`).toBeLessThanOrEqual(height - 8);
+    }
+  });
+
+  it('opens the gel window taller where the screen has height for the plate', () => {
+    const heights = SWEEP.map(([width, height]) => defaultGelWindowRect(width, height).h);
+    // Was 546, 590, 590, 590, 590, 590. The plate now takes the window's spare
+    // height; a 590px window still left the 6 kb and 5 kb ladder bands 1.8px apart.
+    expect(heights).toEqual([546, 616, 664, 760, 760, 760]);
+    expect(defaultGelWindowRect(2560, 1440).h).toBe(760);
+    for (const [width, height] of [...SWEEP, [640, 480] as const, [400, 300] as const]) {
+      const rect = defaultGelWindowRect(width, height);
+      expect(rect.y + rect.h, `${width}x${height} bottom`).toBeLessThanOrEqual(height - 8);
+    }
   });
 
   it('grows the translations window until its frames fit, then stops', () => {

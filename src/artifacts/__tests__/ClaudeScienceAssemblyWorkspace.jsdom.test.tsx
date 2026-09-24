@@ -131,7 +131,9 @@ describe('ClaudeScienceAssemblyWorkspace', () => {
     expect(panel.getAttribute('aria-labelledby')).toBe(ligation.id);
     const liveStatus = screen.getByTestId('assembly-plan-live-status');
     expect(liveStatus.getAttribute('aria-live')).toBe('polite');
-    expect(liveStatus.textContent).toContain('Assembly warning.');
+    // The standing scope note is not a warning to review, so this plan has none.
+    expect(liveStatus.textContent).toContain('Assembly has no blocking issues or warnings.');
+    expect(screen.getByTestId('assembly-scope-note').textContent).toContain('ligase conditions');
 
     await user.keyboard('{ArrowLeft}');
     expect(goldenGate.getAttribute('aria-selected')).toBe('true');
@@ -213,6 +215,31 @@ describe('ClaudeScienceAssemblyWorkspace', () => {
     expect(saveProduct.textContent).toBe('Save product');
   });
 
+  it('adds the host\'s sentence to the saved line, and reads as before without one', async () => {
+    const records = [
+      bsaIRecord('Promoter', 'AAAA', 'CCCC', 'GATG'),
+      bsaIRecord('Backbone', 'GATG', 'GGGG', 'AAAA'),
+    ];
+    const saveWith = async (answer: string | undefined) => {
+      const user = userEvent.setup();
+      render(<ClaudeScienceAssemblyWorkspace {...props({
+        records,
+        onSave: vi.fn().mockResolvedValue(answer),
+        createId: idFactory('row-1', 'row-2', 'save-note'),
+      })} />);
+      await user.clear(screen.getByLabelText('Product name'));
+      await user.type(screen.getByLabelText('Product name'), 'Reporter plasmid');
+      await user.click(screen.getByTestId('assembly-save-product'));
+      await waitFor(() => expect(screen.getByTestId('assembly-save-product').textContent).toBe('Saved'));
+      const text = screen.getByRole('status').textContent;
+      cleanup();
+      return text;
+    };
+    expect(await saveWith('1 feature crosses a part end and is not in the product: bridge.'))
+      .toBe('Reporter plasmid saved with its workflow result. 1 feature crosses a part end and is not in the product: bridge.');
+    expect(await saveWith(undefined)).toBe('Reporter plasmid saved with its workflow result.');
+  });
+
   it('saves an honest blocked result without inventing a product', async () => {
     const user = userEvent.setup();
     const onSave = vi.fn();
@@ -250,6 +277,52 @@ describe('ClaudeScienceAssemblyWorkspace', () => {
     expect(screen.getByText('Domestication required')).toBeTruthy();
     expect(screen.getAllByText(/Internal insert contain/).length).toBeGreaterThan(0);
     expect(screen.getByText(/cannot be assembled honestly/)).toBeTruthy();
+  });
+
+  it('lists blocking issues directly under the verdict, ahead of the site and fidelity notes', () => {
+    const records = [
+      bsaIRecord('Internal insert', 'AAAA', 'CCGGTCTCAA', 'GATG'),
+      bsaIRecord('Backbone', 'GATG', 'GGGG', 'AAAA'),
+    ];
+    render(<ClaudeScienceAssemblyWorkspace {...props({ records })} />);
+
+    const verdict = screen.getByTestId('assembly-plan-status');
+    expect(verdict.textContent).toContain('Needs attention');
+    const blocking = verdict.nextElementSibling;
+    expect(blocking?.getAttribute('data-level')).toBe('error');
+    expect(blocking?.textContent).toContain('Blocking issues');
+    const later = [
+      screen.getByText('Domestication required').closest('.motif-cs-assembly-domestication'),
+      screen.getByTestId('assembly-fidelity-receipt'),
+    ];
+    for (const note of later) {
+      expect(blocking!.compareDocumentPosition(note!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+  });
+
+  it('keeps the standing scope disclaimer out of the warning list and its count', async () => {
+    const user = userEvent.setup();
+    render(<ClaudeScienceAssemblyWorkspace {...props()} />);
+    await user.click(screen.getByRole('tab', { name: 'Traditional ligation' }));
+
+    const note = screen.getByTestId('assembly-scope-note');
+    expect(note.getAttribute('role')).toBe('note');
+    expect(note.textContent).toContain('ligase conditions');
+    expect(screen.queryByText('Warnings')).toBeNull();
+    expect(screen.getByTestId('assembly-plan-live-status').textContent)
+      .toBe('Assembly has no blocking issues or warnings.');
+  });
+
+  it('agrees with its own count when one blocking issue needs review', () => {
+    const records: ClaudeScienceAssemblyRecord[] = [
+      { id: 'a', name: 'Part A', molecule: 'dna', sequence: 'AAAACCCC', overhang5: '', overhang3: 'CAGT', overhang3Type: '5prime' },
+    ];
+    render(<ClaudeScienceAssemblyWorkspace {...props({ records, initialMode: 'ligation', initialRecordIds: ['a'] })} />);
+
+    const live = screen.getByTestId('assembly-plan-live-status').textContent ?? '';
+    const count = Number(/(\d+) blocking issue/.exec(live)?.[1]);
+    expect(count).toBe(1);
+    expect(live).toContain('1 blocking issue needs review.');
   });
 
   it('bounds the ordered-part UI at the same 100-part limit as the planner', () => {

@@ -393,6 +393,28 @@ describe('ClaudeScienceConstructVerificationWorkspace', () => {
     expect(screen.getByText(/Verification saved to Results/)).toBeTruthy();
   });
 
+  it('says a failed save did not save before the reason, and leaves Save available', async () => {
+    const user = userEvent.setup();
+    const reason = 'Its report did not pass the Results format check: analysisAssets[0].content JSON.consensus.sequence cannot exceed 16,384 characters.';
+    const onSave = vi.fn(() => { throw new Error(reason); });
+    render(
+      <ClaudeScienceConstructVerificationWorkspace
+        records={[referenceRecord(), traceRecord('read-a')]}
+        onVerify={() => verificationResult()}
+        onSave={onSave}
+        embedded
+      />,
+    );
+
+    await user.click(screen.getByTestId('construct-verification-run'));
+    await user.click(screen.getByTestId('construct-verification-save'));
+
+    expect(onSave).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('construct-verification-error').textContent).toBe(`Verification not saved. ${reason}`);
+    expect(screen.queryByText(/Verification saved to Results/)).toBeNull();
+    expect((screen.getByTestId('construct-verification-save') as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it('renders callback failures as inert bounded text', async () => {
     const user = userEvent.setup();
     const malicious = '<img src=x onerror=alert(1)> evidence engine failed';

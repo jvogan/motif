@@ -19,6 +19,22 @@ describe('bounded sequence comparison integrity', () => {
     expect(result.warnings).toEqual([]);
   });
 
+  it('shows a 12-base deletion as one run of gaps, in the pairwise result and the MSA', () => {
+    // 100 bases of a pUC19 backbone; the variant drops bases 41-52 of this window.
+    const reference = 'GCTCGTCGTTTGGTATGGCTTCATTCAGCTCCGGTTCCCAACGATCAAGGCGAGTTACATGATCCCCCATGTTGTGCAAAAAAGCGGTTAGCTCCTTCGG';
+    const variant = reference.slice(0, 40) + reference.slice(52);
+    const pair = sequenceDiff(reference, variant, { molecule: 'dna' });
+    expect(pair.method).toBe('needleman-wunsch');
+    expect(pair.aligned2.match(/-+/g)).toEqual(['-'.repeat(12)]);
+    expect(pair.aligned2.indexOf('-')).toBe(40);
+    expect(pair.deletions).toBe(12);
+    expect(pair.segments.filter((segment) => segment.op === 'deletion')).toHaveLength(1);
+
+    const msa = computeMSA([reference, variant], ['reference', 'variant'], { molecule: 'dna' });
+    if (isMSAError(msa)) throw new Error(msa.message);
+    expect(msa.rows[1].aligned.match(/-+/g)).toEqual(['-'.repeat(12)]);
+  });
+
   it('uses an indel-aware linear-space route above 25M cells', () => {
     const reference = 'A'.repeat(5_001);
     const inserted = `T${reference}`;

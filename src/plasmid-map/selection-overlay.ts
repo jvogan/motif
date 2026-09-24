@@ -30,8 +30,8 @@ const LINEAR_BAND_HALF = 9;
 
 /* The narrowest a linear selection band may be drawn.
 
-   The band is `span / length * axisWidth`, so on a 2,578 bp record in a 1,316px
-   axis one base is 0.51px and a six-base restriction site is 3.1px. That was
+   The band is `span / length * axisWidth`, so on a 2,686 bp record in a 1,316px
+   axis one base is 0.49px and a six-base restriction site is 2.9px. That was
    survivable while a 1px accent stroke outlined the band, but the stroke was
    removed because at any readable width the fill alone is clearer and the
    outline was clutter. Below about four bases there was then no fill left to
@@ -158,7 +158,8 @@ const LINEAR_BAND_PATH =
  * They are lines and not a filled column on purpose. Everything below the axis —
  * the enzyme names, the feature labels — is text, and a translucent column
  * darkens the ground under all of it. Measured on the built artifact at
- * 1440x900, light, with a 0.16 accent column over a 537 bp selection on pUC19:
+ * 1440x900, light, with a 0.16 accent column over a 537 bp selection on the
+ * synthetic pUC19 once bundled:
  * 12 of the 15 labels in range lost contrast, and the Type IIS enzyme name went
  * 4.725:1 -> 3.743:1, under the 4.5:1 floor that map-typography-contrast pins
  * for it. Thinning the column did not rescue it — 0.10 gave 4.090, 0.05 gave

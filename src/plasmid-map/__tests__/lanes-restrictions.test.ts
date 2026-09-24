@@ -6,6 +6,9 @@ import {
   buildRestrictionClusters,
 } from '../geometry/restrictions';
 import type { RestrictionSite } from '../../bio/types';
+import { findRestrictionSites } from '../../bio/restriction-sites';
+import { resolveEnzymeUnion } from '../../bio/restriction-presets';
+import vectors from '../../../public/data/vectors.json';
 
 const site = (
   enzyme: string,
@@ -170,6 +173,54 @@ describe('restrictions: clustering', () => {
     expect(cluster.overflow).toBe(2);
     // The property the label depends on, stated rather than implied.
     expect(cluster.enzymes.slice(0, cluster.shownEnzymes.length)).toEqual(cluster.shownEnzymes);
+  });
+
+  it('leads a cluster with the first enzyme that cuts the molecule once', () => {
+    // HaeIII and AluI cut here and again elsewhere; EcoRI and HindIII cut only here.
+    // Position order put the 4-cutter first, so a polylinker read "HaeIII +3".
+    const ticks = [
+      toRestrictionTick(site('HaeIII', 50, 52, 'GGCC')),
+      toRestrictionTick(site('AluI', 51, 53, 'AGCT')),
+      toRestrictionTick(site('EcoRI', 53, 54, 'GAATTC')),
+      toRestrictionTick(site('HindIII', 58, 59, 'AAGCTT')),
+      toRestrictionTick(site('HaeIII', 400, 402, 'GGCC')),
+      toRestrictionTick(site('AluI', 700, 702, 'AGCT')),
+    ];
+    const [cluster] = clusterRestrictionTicks(ticks, 1000, { minSepBp: 10, maxNamesPerCluster: 1, circular: true });
+
+    expect(cluster.enzymes).toEqual(['EcoRI', 'HaeIII', 'AluI', 'HindIII']);
+    expect(cluster.shownEnzymes).toEqual(['EcoRI']);
+    expect(cluster.overflow).toBe(3);
+  });
+
+  it('keeps Type IIS names first and position order when nothing cuts once', () => {
+    const ticks = [
+      toRestrictionTick(site('HaeIII', 50, 52, 'GGCC')),
+      toRestrictionTick(site('EcoRI', 51, 52, 'GAATTC')),
+      toRestrictionTick(site('BsaI', 53, 61, 'GGTCTC')), // downstream cut -> Type IIS
+      toRestrictionTick(site('HaeIII', 400, 402, 'GGCC')),
+      toRestrictionTick(site('EcoRI', 700, 701, 'GAATTC')),
+      toRestrictionTick(site('BsaI', 800, 808, 'GGTCTC')),
+    ];
+    const [cluster] = clusterRestrictionTicks(ticks, 1000, { minSepBp: 10, maxNamesPerCluster: 2, circular: true });
+
+    expect(cluster.enzymes).toEqual(['BsaI', 'HaeIII', 'EcoRI']);
+  });
+
+  it("leads pUC19's polylinker with EcoRI, not HaeIII", () => {
+    const record = vectors.find((candidate) => candidate.name === 'pUC19')!;
+    const sites = findRestrictionSites(record.sequence, resolveEnzymeUnion(['common', 'golden-gate-type-iis']), { topology: 'circular' });
+    const { clusters } = buildRestrictionClusters(sites, record.sequence.length, {
+      minSepBp: Math.round((record.sequence.length * 6) / 360),
+      maxClusterSpanBp: 128,
+      maxNamesPerCluster: 3,
+      circular: true,
+    });
+    const polylinker = [...clusters].sort((a, b) => b.ticks.length - a.ticks.length)[0];
+
+    expect(polylinker.ticks).toHaveLength(18);
+    expect(polylinker.enzymes).toContain('HaeIII');
+    expect(polylinker.enzymes[0]).toBe('EcoRI');
   });
 
   it('merges the circular origin seam', () => {

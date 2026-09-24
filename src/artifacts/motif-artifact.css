@@ -107,6 +107,15 @@ html[data-theme="claude-light"] .motif-cs-record-tab {
   background: var(--bg-primary);
 }
 
+/* The border shorthand above (0,2,1) outranks the shared underline rule (0,2,0),
+   so the selected pill painted no accent at all: 0 pixels against 177 in Light
+   and Dark. The inset shadow makes the line 3px, as there, without resizing the
+   pill. */
+html[data-theme="claude-light"] .motif-cs-record-tab[data-active="true"] {
+  border-bottom-color: var(--accent);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
 html[data-theme="claude-light"] .motif-cs-gel-source-row[data-selected],
 html[data-theme="claude-light"] .motif-cs-gel-source-row[data-selected]:hover,
 html[data-theme="claude-light"] .motif-cs-gel-ladder-picker .motif-cs-segmented label[data-selected],
@@ -235,6 +244,12 @@ html[data-theme="claude-dark"] .motif-cs-record-tab {
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
   background: var(--bg-primary);
+}
+
+/* See the claude-light rule: the pill's border would otherwise hide the underline. */
+html[data-theme="claude-dark"] .motif-cs-record-tab[data-active="true"] {
+  border-bottom-color: var(--accent);
+  box-shadow: inset 0 -2px 0 var(--accent);
 }
 
 html[data-theme="claude-dark"] .motif-cs-gel-source-row[data-selected],
@@ -469,7 +484,7 @@ summary,
 }
 
 /* Drag-a-file-to-import overlay. Covers the whole workbench while a file is
-   dragged over it, and briefly shows the import result on drop. */
+   dragged over it and closes on drop. The import result is a workbench notice. */
 .motif-cs-dropzone {
   position: absolute;
   inset: 0;
@@ -514,6 +529,11 @@ summary,
 
 .motif-cs-workbench-notice[data-tone="error"] {
   border-left: 3px solid var(--red);
+}
+
+.motif-cs-workbench-notice-action {
+  margin-left: 10px;
+  vertical-align: baseline;
 }
 
 .motif-cs-modal-backdrop {
@@ -575,14 +595,20 @@ summary,
   margin-top: 16px;
 }
 
-.motif-cs-danger-button {
+/* Every danger button is also a .motif-cs-mini-button, and that rule has the
+   same specificity and comes later, so it repainted all of them: "Clear…",
+   "Clear all data" and "Replace workspace" matched Cancel in border, fill and
+   text in all four themes. Naming both classes outranks it. A single-entry
+   "Delete…" stays neutral until armed; .motif-cs-confirm-delete[data-armed]
+   paints that state. A disabled danger button keeps its colour at the shared
+   disabled opacity and takes no hover. */
+.motif-cs-mini-button.motif-cs-danger-button:not(.motif-cs-confirm-delete) {
   border-color: color-mix(in srgb, var(--red) 55%, var(--border-strong));
   background: color-mix(in srgb, var(--red) 8%, var(--bg-primary));
   color: var(--red);
 }
 
-.motif-cs-danger-button:hover,
-.motif-cs-danger-button:focus-visible {
+.motif-cs-mini-button.motif-cs-danger-button:not(.motif-cs-confirm-delete, :disabled):is(:hover, :focus-visible) {
   border-color: var(--red);
   background: color-mix(in srgb, var(--red) 13%, var(--bg-primary));
   color: var(--red);
@@ -649,6 +675,70 @@ summary,
   scrollbar-color:
     color-mix(in srgb, var(--text-muted) 68%, var(--border-strong))
     color-mix(in srgb, var(--bg-secondary) 78%, var(--bg-primary));
+}
+
+/* The strip row: the tabs, and the Add entry "+" while the Inventory is hidden.
+   Beside a docked Inventory the strip repeats its records, so the script hides
+   it and the shell drops its row. */
+.motif-cs-record-strip {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--topbar-bg) 78%, var(--bg-secondary));
+}
+
+.motif-cs-record-strip[hidden] {
+  display: none;
+}
+
+.motif-cs-shell:has(.motif-cs-record-strip[hidden]) {
+  grid-template-rows: auto 1fr;
+}
+
+.motif-cs-record-strip > .motif-cs-record-tabs {
+  flex: 1 1 auto;
+  border-bottom: 0;
+}
+
+.motif-cs-record-strip > .motif-cs-add-entry-button {
+  flex: 0 0 auto;
+  align-self: center;
+  margin-inline: 8px 4px;
+}
+
+/* The same popover the Inventory opens, dropped from the strip's "+" instead. */
+.motif-cs-record-strip .motif-cs-import-panel:not([open]) {
+  display: none;
+}
+
+.motif-cs-record-strip .motif-cs-import-panel[open] {
+  position: fixed;
+  z-index: 40;
+  top: calc(var(--motif-cs-topbar-height, 38px) + 41px);
+  left: 8px;
+  width: min(344px, calc(100vw - 64px));
+  max-height: calc(100vh - var(--motif-cs-topbar-height, 38px) - 53px);
+  margin: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--border-strong);
+  border-radius: 2px;
+  background: var(--bg-primary);
+  box-shadow: var(--elevation-popover);
+}
+
+.motif-cs-record-strip .motif-cs-import-panel[open] > .motif-cs-panel-head {
+  position: sticky;
+  z-index: 1;
+  top: 0;
+  min-height: 34px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-primary);
+}
+
+.motif-cs-record-strip .motif-cs-import-panel[open] .motif-cs-form-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 /* The cap was a flat 190px, so a 1920px window showed exactly as much of a name
@@ -947,8 +1037,9 @@ summary,
 }
 
 .motif-cs-theme-picker select {
+  /* Sized by its longest option, "Warm Light": 91px. It had a 120px floor for a
+     control that repeats Settings > Appearance. */
   height: 26px;
-  min-width: 120px;
   border: 1px solid var(--border-control);
   border-radius: var(--radius-sm);
   background: var(--control-bg);
@@ -1169,8 +1260,8 @@ summary,
 /* Size the title block from the free space, not from its own text. With an
    `auto` basis every character of the title or its subtitle came out of the
    width beside it and moved the controls sideways: measured 23.9px at both
-   900px and 1440px when the subtitle went from "2,578 bp" to
-   "circular · 2,578 bp". Any record switch that changed the title's length did
+   900px and 1440px when the subtitle went from "N bp" to
+   "circular · N bp". Any record switch that changed the title's length did
    the same. A zero basis takes the text out of the arithmetic, so Fit and the
    shape button stay where the pointer left them; the title still ellipsizes
    because it keeps min-width: 0.
@@ -1301,7 +1392,6 @@ body[data-motif-cs-resizing] {
 
 body[data-motif-cs-pane-dragging],
 body[data-motif-cs-window-dragging],
-body[data-motif-cs-export-resizing],
 body[data-motif-cs-rail-popover-resizing] {
   user-select: none;
 }
@@ -1345,9 +1435,10 @@ body[data-motif-cs-rail-popover-resizing] {
   pointer-events: auto;
 }
 
-/* Sixteen 34px tool heads, their gaps, the title, and padding need 662px below
-   the top bar. Once they no longer fit, the rail becomes its own scroll area. */
-@media (max-height: 731px) {
+/* Sixteen 34px tool heads at a 37px pitch, the title, and padding need 640px
+   below the 70px top bar. Once they no longer fit, the rail becomes its own
+   scroll area. */
+@media (max-height: 709px) {
   .motif-cs-inspector[data-tools-pinned="false"] {
     overflow-y: auto;
     overflow-x: hidden;
@@ -1389,6 +1480,10 @@ body[data-motif-cs-rail-popover-resizing] {
   align-self: center;
   width: 38px;
   overflow: visible;
+  /* No border: a transparent 1px above and below every head made the pitch
+     39px, so the rail needed a 742px-tall window and scrolled at 1280x720,
+     where Settings had 21 of its 34px on screen. 37px fits 720. */
+  border-width: 0;
   border-color: transparent;
   border-radius: 0;
   background: transparent;
@@ -1440,21 +1535,26 @@ body[data-motif-cs-rail-popover-resizing] {
    of that name, the same guard the count dot below relies on.
 
    Absolute rather than fixed: a fixed box takes its static position from the
-   unscrolled layout, and below 731px tall the rail becomes its own scroll area.
-   Measured at 1440x700, fixed put the bottom heads' names 33px from their icon
-   and off the viewport. Absolute rides the scroll, at the cost of being clipped
-   by that same scroll area — see the media query below, which stands the flyout
-   down rather than paint it half-cut or misaligned. */
+   unscrolled layout. Absolute rides the rail, and below 710px tall, where the
+   rail scrolls and would clip it, the media query below switches to a fixed
+   box at the position placeRailFlyout measured. The "Expand tools panel"
+   chevron gets the same name, which it never had. */
+.motif-cs-inspector[data-tools-pinned="false"] .motif-cs-pane-title > .motif-cs-pane-collapse {
+  position: relative;
+}
+
 .motif-cs-inspector[data-tools-pinned="false"]
-  .motif-cs-panel:not([open])
-  > .motif-cs-panel-head:is(:hover, :focus-visible)::before {
+  :is(.motif-cs-panel:not([open]) > .motif-cs-panel-head, .motif-cs-pane-title > .motif-cs-pane-collapse):is(:hover, :focus-visible)::before {
   content: attr(title) / "";
   position: absolute;
   top: 50%;
   right: calc(100% + 11px);
   z-index: 71;
   transform: translateY(-50%);
-  max-width: min(280px, calc(100vw - 96px));
+  /* 340px holds the longest title, "Results — primers, PCR, assembly plans,
+     verification", at 329px; 280px cut it and "Construct Verification — 12
+     eligible Sanger reads" (306px) to an ellipsis. */
+  max-width: min(340px, calc(100vw - 96px));
   overflow: hidden;
   padding: 3px 8px;
   border: 1px solid var(--border-strong);
@@ -1472,22 +1572,55 @@ body[data-motif-cs-rail-popover-resizing] {
   pointer-events: none;
 }
 
-/* Once the rail scrolls it clips, and neither escape works: `position: fixed`
-   takes its static position from the unscrolled layout, so at 1440x700 the
-   bottom heads drew their name 33px adrift and off the viewport, and
-   `overflow-x: clip` computes to `hidden` on a box that scrolls the other axis,
-   so `overflow-clip-margin` is ignored — measured at 22 painted pixels where
-   the flyout needs 3895. A name pointing at the wrong icon is worse than no
-   name, so the flyout stands down and the native title is once again the only
-   cue, exactly as it was everywhere before this rule existed. Same query as the
-   rule that starts the scrolling, and it has to follow the rule above: same
-   specificity, so only source order separates them. */
-@media (max-height: 731px) {
+/* Once the rail scrolls it clips the absolute flyout, and `overflow-x: clip`
+   cannot help: it computes to `hidden` on a box that scrolls the other axis,
+   so `overflow-clip-margin` is ignored (22 painted pixels of the 3895 the
+   flyout needs). A fixed box is not clipped by the rail, but without offsets
+   it takes its static position from the unscrolled layout, 33px adrift at
+   1440x700. So on hover and focus placeRailFlyout writes the head's measured
+   centre and left edge into two properties and marks the head; the flyout is
+   fixed there. A scroll clears the mark, and an unmarked head shows no flyout
+   rather than one at a stale position. Same query as the rule that starts the
+   scrolling; it follows the rule above and outranks it. */
+@media (max-height: 709px) {
+  .motif-cs-inspector[data-tools-pinned="false"] :is(.motif-cs-panel-head, .motif-cs-pane-collapse) {
+    --motif-cs-rail-flyout-top: 0px;
+    --motif-cs-rail-flyout-right: 0px;
+  }
+
   .motif-cs-inspector[data-tools-pinned="false"]
-    .motif-cs-panel:not([open])
-    > .motif-cs-panel-head:is(:hover, :focus-visible)::before {
+    :is(.motif-cs-panel:not([open]) > .motif-cs-panel-head, .motif-cs-pane-title > .motif-cs-pane-collapse)[data-rail-flyout]:is(:hover, :focus-visible)::before {
+    position: fixed;
+    top: var(--motif-cs-rail-flyout-top);
+    right: var(--motif-cs-rail-flyout-right);
+  }
+
+  .motif-cs-inspector[data-tools-pinned="false"]
+    :is(.motif-cs-panel:not([open]) > .motif-cs-panel-head, .motif-cs-pane-title > .motif-cs-pane-collapse):not([data-rail-flyout]):is(:hover, :focus-visible)::before {
     content: none;
   }
+}
+
+/* Results and Workflow Results each say where the other kind of save went. The
+   panel body has no padding of its own; 12px matches the empty state below. */
+.motif-cs-results-elsewhere {
+  margin: 0;
+  padding: 8px 12px 6px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.motif-cs-results-elsewhere button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
 }
 
 .motif-cs-inspector[data-tools-pinned="false"] .motif-cs-panel-icon {
@@ -1565,6 +1698,19 @@ body[data-motif-cs-rail-popover-resizing] {
   border-color: color-mix(in srgb, var(--accent) 22%, var(--border-subtle));
   background: color-mix(in srgb, var(--accent) 9%, var(--bg-primary));
   box-shadow: none;
+}
+
+/* A tool whose workspace window is open reads as on, the way an open popover
+   does. With the Primer workspace open the Primer icon used to look idle, and
+   a click on it offered to open the workspace that was already on screen. */
+.motif-cs-inspector[data-tools-pinned="false"] .motif-cs-panel:not([open]) > .motif-cs-panel-head[data-workspace-open] {
+  border-color: color-mix(in srgb, var(--accent) 22%, var(--border-subtle));
+  background: color-mix(in srgb, var(--accent) 9%, var(--bg-primary));
+  box-shadow: none;
+}
+
+.motif-cs-inspector[data-tools-pinned="false"] .motif-cs-panel-head[data-workspace-open] .motif-cs-panel-icon {
+  color: var(--accent);
 }
 
 .motif-cs-tool-panel-body {
@@ -2010,7 +2156,8 @@ body[data-motif-cs-rail-popover-resizing] .motif-cs-rail-popover-resize::after {
 
    Its viewBox is as wide as its pane, which pins `meet` at scale 1: every pixel
    of frame past the drawing is padding, and no amount of it can make the map
-   bigger. Measured on pUC19, the frame stood 67.3% empty at 1600x1100 and 75.2%
+   bigger. Measured on the synthetic pUC19 once bundled, the frame stood 67.3%
+   empty at 1600x1100 and 75.2%
    at 2000x1400, and the map's own visibility and digest controls sat the better
    part of a thousand pixels below the map they belong to.
 
@@ -2051,8 +2198,8 @@ body[data-motif-cs-rail-popover-resizing] .motif-cs-rail-popover-resize::after {
    dock strip is `position: sticky; bottom: -10px` while collapsed, so it then
    painted over the frame's own bottom edge: 24px of map behind an opaque bar at
    1920x720 and 34px at 1536x700, with one restriction label covered outright on
-   7 of the 13 shipped records at 1920x720 ("BsmBI, Esp3I +1" on pUC19,
-   "BspQI, SapI +1" on the three pET-28 vectors). 34px of column scroll revealed
+   several shipped records at 1920x720 ("BspQI, SapI +1" on the three pET-28
+   vectors). 34px of column scroll revealed
    it, and nothing on screen said so.
 
    Dropping the floor lets the frame fit the column the way it already does
@@ -2326,6 +2473,175 @@ body[data-motif-cs-rail-popover-resizing] .motif-cs-rail-popover-resize::after {
   }
 }
 
+/* What a circular map leaves unnamed ("+2 features", "35 unnamed sites"). These
+   were chips in the ring's centre at 9.3px and 3.23:1 in light, under the length
+   line they read as part of. They sit in the lower-right corner, which no other
+   frame control uses in any band — the readout takes the lower-left or, from 768
+   to 1535px wide, the upper-right — and each opens the list it counts from. */
+.motif-cs-map-overflow-actions {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  max-width: calc(100% - 24px);
+}
+
+.motif-cs-map-overflow-button {
+  max-width: 100%;
+  min-height: 20px;
+  padding: 1px 4px;
+  overflow: hidden;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* The enzymes one restriction cluster holds, opened from its "+N" tail, its tick
+   or Enter. Width and row height are mirrored by MAP_ENZYME_MENU_* in the TSX,
+   which places the list before it has rendered. */
+.motif-cs-map-enzyme-menu {
+  position: absolute;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  width: 200px;
+  max-height: min(248px, calc(100% - 16px));
+  padding: 4px;
+  overflow-y: auto;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  background: var(--bg-primary);
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--text-primary) 18%, transparent);
+}
+
+.motif-cs-map-enzyme-menu-item {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 24px;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.motif-cs-map-enzyme-menu-name {
+  font-family: var(--font-mono);
+}
+
+.motif-cs-map-enzyme-menu-meta {
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.motif-cs-map-enzyme-menu-all {
+  margin-top: 2px;
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 3px 3px;
+}
+
+.motif-cs-map-enzyme-menu-all .motif-cs-map-enzyme-menu-name {
+  font-family: inherit;
+}
+
+/* Hover and focus share the tint; the workspace's own focus ring marks focus. */
+.motif-cs-map-enzyme-menu-item:hover,
+.motif-cs-map-enzyme-menu-item:focus-visible {
+  background: color-mix(in srgb, var(--accent-base) 14%, transparent);
+}
+
+.motif-cs-map-overflow-button:hover,
+.motif-cs-map-overflow-button:focus-visible {
+  border-color: color-mix(in srgb, var(--border-strong) 55%, transparent);
+  background: color-mix(in srgb, var(--bg-primary) 82%, transparent);
+  color: var(--text-primary);
+  text-decoration-style: solid;
+}
+
+/* The Digest Preview heading names its enzymes only while the panel is closed. Open,
+   the recipe row below it names them, and at 390px the names pushed the open
+   heading 78px past its own width. */
+details[open] > summary .motif-cs-digest-summary-enzymes {
+  display: none;
+}
+
+/* The collapsed heading's names start at the left. The chip centred text wider than
+   itself, so its overflow was cut from both ends and EcoRI, the first enzyme, was the
+   one lost. The names row is one line tall and wraps: a name that does not fit goes
+   whole onto the hidden second line, and DigestSummaryEnzymes counts it into "+N".
+   The outcome ("3 cuts · 3 fragments") never shrinks. */
+.motif-cs-digest-summary-chip {
+  justify-content: flex-start;
+}
+
+/* The full title gives way before the names do, down to "DIGEST…". The compact one,
+   "Digest", keeps its own width (the rules at max-width 900px and container 560px). */
+@media (min-width: 901px) {
+  @container (min-width: 561px) {
+    .motif-cs-map-dock-strip > details:not([open]) > .motif-cs-panel-head.motif-cs-digest-head > span:first-of-type {
+      flex-shrink: 1000;
+      min-width: 5em;
+    }
+  }
+}
+
+.motif-cs-digest-summary-chip > .motif-cs-full-label {
+  display: flex;
+  min-width: 0;
+}
+
+.motif-cs-digest-summary-enzymes {
+  display: flex;
+  flex: 0 1 auto;
+  min-width: 0;
+  white-space: pre;
+}
+
+.motif-cs-digest-summary-names {
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  min-width: 0;
+  height: 1.3em;
+  overflow: hidden;
+  line-height: 1.3;
+}
+
+.motif-cs-digest-summary-names > span,
+.motif-cs-digest-summary-more,
+.motif-cs-digest-summary-outcome {
+  flex: none;
+}
+
+/* Once measured, only the names that fit are drawn, so they keep their width: a
+   fraction of a pixel of shrink would otherwise wrap the last one out of view. */
+.motif-cs-digest-summary-enzymes[data-fit="drawn"],
+.motif-cs-digest-summary-enzymes[data-fit="drawn"] > .motif-cs-digest-summary-names {
+  flex-shrink: 0;
+  flex-wrap: nowrap;
+}
+
 .motif-cs-panel {
   margin-top: 10px;
   overflow: hidden;
@@ -2442,6 +2758,53 @@ body[data-motif-cs-rail-popover-resizing] .motif-cs-rail-popover-resize::after {
   z-index: 4;
   border-top: 1px solid color-mix(in srgb, var(--border-subtle) 78%, transparent);
   background: var(--bg-primary);
+}
+
+/* An open dock panel shares the column with the map it controls instead of
+   replacing it. From 640px up the frame is `flex: 1 1 0; min-height: 0`, and the
+   open panel was sized to its content with nothing to stop it, so it took the
+   whole column: with Map Visibility open the ring measured 0px at every width
+   up to 1536 and 82px at 1920x1080; with Digest Preview open, 0-5px up to 1535.
+   The Digest's own fragment rows say "Show this fragment on the map", which
+   could not be honoured.
+
+   So while a panel is open the circular frame keeps half the column, and the
+   panel takes the rest and scrolls inside it, its head pinned so the way to
+   close it never scrolls off. The strip becomes a column so the closed
+   neighbour's head stays in view below the open one rather than being pushed
+   past the column's edge. A linear frame is already sized to its drawing
+   (`flex: none`), so it needs no floor. Phone widths keep their fixed-height
+   frame and scroll the page, as before. */
+@media (min-width: 640px) {
+  .motif-cs-map-column:has(> .motif-cs-map-dock-strip > details[open]) > .motif-cs-map-frame[data-map-mode="circular"] {
+    min-height: 50%;
+  }
+
+  .motif-cs-map-dock-strip:has(> details[open]) {
+    display: flex;
+    flex: 0 1 auto;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .motif-cs-map-dock-strip > details {
+    flex: 0 0 auto;
+  }
+
+  .motif-cs-map-dock-strip > details[open] {
+    flex: 0 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+  }
+
+  .motif-cs-map-dock-strip > details[open] > summary.motif-cs-panel-head {
+    position: sticky;
+    z-index: 1;
+    top: 0;
+  }
 }
 
 .motif-cs-map-dock-strip > .motif-cs-panel {
@@ -2605,29 +2968,6 @@ details[open] > summary.motif-cs-panel-head::after {
   border-left: 0;
   border-radius: 0;
   background: var(--bg-primary);
-}
-
-/* A section heading is not a control. Every other --accent-rule in this file is
-   the border of something you interact with — a focused rename field, an active
-   source row — and every one of those is 1px. This was the only decorative use
-   and the only 2px one: a saturated blue bar across the full width of the
-   Sequence header, louder than any real control under it, in a colour that is
-   not even the accent (--accent mixed 62% with --border-strong). A 1px neutral
-   rule is what the selection bar 74px below already draws. */
-.motif-cs-sequence-panel > .motif-cs-panel-head {
-  background: transparent;
-  border-bottom: 1px solid var(--border);
-}
-.motif-cs-sequence-panel > .motif-cs-panel-head > span:first-child {
-  color: var(--text-secondary);
-}
-
-.motif-cs-sequence-panel > .motif-cs-panel-head > .motif-cs-panel-meta {
-  color: var(--text-secondary);
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0;
-  text-transform: none;
 }
 
 summary.motif-cs-panel-head {
@@ -3894,14 +4234,41 @@ html:is([data-theme="claude-light"], [data-theme="claude-dark"])
   position: sticky;
   z-index: 2;
   top: 0;
-  display: block;
+  display: grid;
+  gap: 6px;
   padding: 8px 12px;
   border-bottom: 1px solid var(--border-subtle);
   background: var(--bg-primary);
 }
 
+.motif-cs-restriction-filter > label {
+  display: block;
+}
+
 .motif-cs-restriction-filter .motif-cs-field {
   width: 100%;
+}
+
+/* Enzymes | Sites. Full width so each half is a large target, and the counts
+   the two list headings used to carry ride on the switch itself. */
+.motif-cs-restriction-view {
+  display: flex;
+}
+
+.motif-cs-restriction-view button {
+  display: inline-flex;
+  flex: 1 1 0;
+  align-items: baseline;
+  justify-content: center;
+  gap: 6px;
+  min-height: 26px;
+  font-size: 12px;
+}
+
+.motif-cs-restriction-view small {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
 }
 
 .motif-cs-restriction-row:first-child {
@@ -3991,9 +4358,7 @@ html:is([data-theme="claude-light"], [data-theme="claude-dark"])
   border-bottom: 1px solid var(--border-subtle);
 }
 
-.motif-cs-restriction-sources-head,
-.motif-cs-restriction-site-head,
-.motif-cs-restriction-enzyme-head {
+.motif-cs-restriction-sources-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -4114,18 +4479,31 @@ html:is([data-theme="claude-light"], [data-theme="claude-dark"])
   white-space: nowrap;
 }
 
+/* The count of enzymes in the group, with a check mark when the group is on.
+   It used to read "On · 30 enz" at 8.5px behind a 62px min-width, which cut
+   "Golden Gate" to "Golden …" in the 344px popover. The word "On" is gone
+   (aria-pressed and the filled badge carry it); the type is 10px. */
 .motif-cs-source-state {
-  min-width: 62px;
-  padding: 2px 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  min-width: 34px;
+  padding: 2px 5px;
   border: 1px solid color-mix(in srgb, var(--text-muted) 22%, var(--border-subtle));
   border-radius: 5px;
   background: color-mix(in srgb, var(--bg-secondary) 80%, var(--bg-primary));
   color: var(--text-muted);
-  font-size: 8.5px;
-  font-weight: 800;
-  line-height: 1;
+  font-size: 10px;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
   text-align: center;
-  letter-spacing: 0.02em;
+}
+
+.motif-cs-source-check {
+  font-size: 10px;
+  line-height: 1;
 }
 
 /* The only thing separating an enabled source group from a disabled one was this
@@ -4144,27 +4522,16 @@ html:is([data-theme="claude-light"], [data-theme="claude-dark"])
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr));
   gap: 0;
-  padding-top: 8px;
+}
+
+/* Either list now starts right under the filter's own bottom border. */
+.motif-cs-restriction-site-list > .motif-cs-restriction-site-row:first-child {
+  border-top: 0;
 }
 
 .motif-cs-restriction-enzyme-list {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(270px, 100%), 1fr));
-  border-top: 1px solid var(--border-subtle);
-}
-
-.motif-cs-restriction-site-head,
-.motif-cs-restriction-enzyme-head {
-  grid-column: 1 / -1;
-  padding: 0 12px 6px;
-}
-
-.motif-cs-restriction-enzyme-head {
-  padding-top: 8px;
-}
-
-.motif-cs-restriction-enzyme-head + .motif-cs-restriction-row {
-  border-top: 0;
 }
 
 .motif-cs-restriction-site-row {
@@ -4435,6 +4802,11 @@ html:is([data-theme="claude-light"], [data-theme="claude-dark"])
   line-height: 1.4;
 }
 
+.motif-cs-export-loss-items {
+  margin: 3px 0 6px;
+  padding-left: 14px;
+}
+
 .motif-cs-record-ends {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -4570,81 +4942,63 @@ html:is([data-theme="claude-light"], [data-theme="claude-dark"])
 
 .motif-cs-sequence-tools-panel {
   position: relative;
+}
+
+/* Export and copy is a popover. Its body is fixed-position and placed by
+   SequenceToolsPanel under the title-row Export button, or above the panel's own
+   summary row when that opened it, so opening it never scrolls the sequence
+   column: the in-flow panel it replaces scrolled the column 339px at 1024x768,
+   1280x720 and 1440x900 and left no base, no title and no Export button on
+   screen. It is the query container for its own rows, since it is narrower
+   than the pane. */
+.motif-cs-sequence-tools-panel[open] > .motif-cs-export-body {
+  position: fixed;
+  z-index: 84;
+  width: min(460px, calc(100vw - 16px));
+  max-height: calc(100vh - 16px);
+  overflow: auto;
+  overscroll-behavior: contain;
   container-type: inline-size;
-}
-
-.motif-cs-sequence-tools-panel[open][data-resized="true"] {
-  display: flex;
-  flex: 0 0 var(--motif-cs-export-panel-height, 220px);
-  flex-direction: column;
-  height: var(--motif-cs-export-panel-height, 220px);
-  min-height: 180px;
-  overflow: hidden;
-}
-
-.motif-cs-sequence-tools-panel[open][data-resized="true"] > .motif-cs-panel-head {
-  flex: 0 0 auto;
-}
-
-.motif-cs-export-resize-handle {
-  position: absolute;
-  z-index: 3;
-  top: 0;
-  right: 0;
-  left: 0;
-  height: 10px;
-  cursor: ns-resize;
-  touch-action: none;
-}
-
-.motif-cs-export-resize-handle::after {
-  position: absolute;
-  top: 4px;
-  left: 50%;
-  width: 32px;
-  height: 2px;
-  border-radius: 1px;
-  background: color-mix(in srgb, var(--border-strong) 48%, transparent);
-  content: '';
-  transform: translateX(-50%);
-}
-
-.motif-cs-export-resize-handle:hover::after,
-.motif-cs-export-resize-handle:focus-visible::after,
-body[data-motif-cs-export-resizing] .motif-cs-export-resize-handle::after {
-  background: var(--accent);
-}
-
-.motif-cs-export-resize-handle:focus-visible {
-  outline: none;
-}
-
-body[data-motif-cs-export-resizing] {
-  cursor: ns-resize;
-  user-select: none;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  box-shadow: var(--elevation-popover);
 }
 
 .motif-cs-export-body {
   display: grid;
   gap: 0;
-  padding: 8px 10px 10px;
+  padding: 0 10px 10px;
 }
 
-.motif-cs-sequence-tools-panel[open][data-resized="true"] .motif-cs-export-body {
+/* The title-row Export button reads as pressed while its popover is open. */
+.motif-cs-sequence-title .motif-cs-mini-button[data-open] {
+  border-color: var(--border-strong);
+  background: var(--control-hover);
+  color: var(--text-primary);
+}
+
+.motif-cs-export-popover-head {
+  position: sticky;
+  z-index: 1;
+  top: 0;
   display: flex;
-  flex: 0 0 calc(var(--motif-cs-export-panel-height, 220px) - 38px);
-  flex-direction: column;
-  height: calc(var(--motif-cs-export-panel-height, 220px) - 38px);
-  min-height: 0;
-  overflow: auto;
-  overscroll-behavior: contain;
-  scrollbar-gutter: stable;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 36px;
+  margin: 0 -10px 2px;
+  padding: 4px 6px 4px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-primary);
 }
 
-.motif-cs-sequence-tools-panel[open][data-resized="true"] .motif-cs-export-body > .motif-cs-form-note,
-.motif-cs-sequence-tools-panel[open][data-resized="true"] .motif-cs-export-row,
-.motif-cs-sequence-tools-panel[open][data-resized="true"] .motif-cs-export-picker {
-  flex: 0 0 auto;
+.motif-cs-export-popover-head strong {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 760;
+  letter-spacing: 0.045em;
+  text-transform: uppercase;
 }
 
 .motif-cs-export-row {
@@ -4728,13 +5082,9 @@ body[data-motif-cs-export-resizing] {
   resize: vertical;
 }
 
-.motif-cs-sequence-tools-panel[open][data-resized="true"] .motif-cs-sequence-preview {
-  flex: 1 1 120px;
-  height: auto;
-  max-height: none;
-}
-
-@container (max-width: 560px) {
+/* The rows now query the 460px popover, not the pane, so the two-column row
+   holds until the popover itself is phone-narrow. */
+@container (max-width: 380px) {
   .motif-cs-export-row {
     grid-template-columns: minmax(0, 1fr);
     gap: 5px;
@@ -4789,6 +5139,15 @@ body[data-motif-cs-export-resizing] {
   overflow: hidden;
   color: var(--text-primary);
   font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The single-strand mass under the duplex mass on a DNA record. */
+.motif-cs-stat small {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -5219,10 +5578,6 @@ body[data-motif-cs-export-resizing] {
   flex: 0 0 auto;
 }
 
-.motif-cs-edit-toolbar .motif-cs-label-short {
-  display: none;
-}
-
 .motif-cs-mini-button:hover,
 .motif-cs-mini-button:focus-visible {
   border-color: var(--border-strong);
@@ -5447,6 +5802,75 @@ body[data-motif-cs-export-resizing] {
   flex-wrap: nowrap;
   gap: 4px;
   min-width: 0;
+}
+
+/* The sequence pane's controls in one wrapping strip: the edit toolbar first,
+   then the selection dock. They used to stack as four rows - a "SEQUENCE | 5'->3'"
+   head (38px), this toolbar (30), the dock (34, or 62 in panes under 641px) - so
+   152-180px of chrome sat over the bases and 1280x720 showed one row of them.
+
+   The dock's basis is its three buttons (222px) plus a readout that can still
+   hold "5'->3' Drag to select a range" or "lacZ-alpha 150-506 357 bp" (~190px)
+   plus padding. When the toolbar and that
+   basis fit side by side they share one row; when they do not, the dock wraps to
+   a row of its own and the toolbar, alone on its line, spreads to full width.
+   Flex line-breaking does this without a breakpoint to re-measure whenever a
+   control is added. The 1000:1 grow ratio keeps the toolbar at its content width
+   on a shared row. */
+.motif-cs-sequence-chrome {
+  display: flex;
+  /* The panel is a flex column in most layouts, and a clipping box has no
+     content floor there: without this the strip shrank to 5px. */
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: stretch;
+  overflow: hidden;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+/* 34px, the selection dock's height, so a shared row does not grow a step and a
+   wrapped pair reads as one block: 2px + the 30px segmented control + 2px. The
+   focus ring (2px at a 2px offset) still lands inside the strip's clip. */
+.motif-cs-sequence-chrome > .motif-cs-edit-toolbar {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 34px;
+  padding-block: 2px;
+}
+
+/* Narrower than its two groups, the toolbar puts the display switches on a second
+   line instead of scrolling them away: at 390x844 it hid 69px, and "Complement"
+   with it. The groups take 377px after the 7px start padding, so 383px is the
+   widest pane that cuts a control; a 387px pane (1280x720) scrolls only its end
+   padding and keeps its one line. */
+@container (max-width: 383px) {
+  .motif-cs-sequence-chrome > .motif-cs-edit-toolbar {
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+}
+
+/* One hairline on whichever edge meets the toolbar: the left edge on a shared
+   row, the top edge once the dock has wrapped. The other shadow falls outside
+   the chrome box and the chrome clips it. */
+.motif-cs-sequence-chrome > .motif-cs-selection-bar {
+  flex: 1000 1 440px;
+  min-width: 0;
+  border-bottom: 0;
+  box-shadow: -1px 0 0 var(--border-subtle), 0 -1px 0 var(--border-subtle);
+}
+
+/* Replaces "Caret 6 · edited", whose "edited" half was display:none in panes
+   under 560px and gone whenever the caret was. Present at every width. */
+.motif-cs-edit-state {
+  flex: 0 0 auto;
+  min-height: 20px;
+  padding: 0 6px;
+  border-color: color-mix(in srgb, var(--amber) 62%, var(--border-strong));
+  background: color-mix(in srgb, var(--amber) 12%, var(--bg-primary));
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 700;
 }
 
 .motif-cs-add-entry-button {
@@ -5842,9 +6266,11 @@ body[data-motif-cs-export-resizing] {
   white-space: normal;
 }
 
+/* Equal halves: the name field also carries the datalist's picker arrow, so at
+   1fr / 1.2fr its placeholder had about 78px and lost its closing bracket. */
 .motif-cs-add-enzyme-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) auto;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
   gap: 6px;
 }
 
@@ -5904,8 +6330,10 @@ body[data-motif-cs-export-resizing] {
   display: flex;
   align-items: center;
   gap: 8px;
-  /* Shrink first so the actions stay a fixed, single-row cluster. */
-  flex: 1 1 auto;
+  /* Shrink first so the actions stay a fixed, single-row cluster. A shrink
+     factor of 1 only shared the shortfall by width, which cut 12-21px off Create
+     at a 823px pane while the readout still had text to give. */
+  flex: 1 1000 auto;
   min-width: 0;
   font-size: 12px;
   font-weight: 700;
@@ -5915,6 +6343,26 @@ body[data-motif-cs-export-resizing] {
 .motif-cs-selection-name {
   overflow: hidden;
   max-width: 34ch;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The strand direction the removed panel head used to carry. It shows in the
+   resting readout only, so the pane states it once and never beside a range. */
+.motif-cs-seq-orientation {
+  flex: 0 0 auto;
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.motif-cs-selection-label .motif-cs-edit-hint {
+  margin-left: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 700;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -5971,21 +6419,112 @@ body[data-motif-cs-export-resizing] {
   white-space: nowrap;
 }
 
-/* Marks where this bar stops editing the open record and starts adding new ones
-   to the inventory. Decoration only — the "New" in the two labels after it is
-   what actually carries the meaning, so this is aria-hidden and never the sole
-   signal. Kept to a hairline because the cluster already clips below ~720px. */
-.motif-cs-selection-actions .motif-cs-selection-action-rule {
-  flex: 0 0 auto;
-  align-self: center;
-  width: 1px;
-  height: 16px;
-  margin-inline: 1px;
-  background: color-mix(in srgb, var(--border-strong) 70%, transparent);
+/* Copy and Copied share one grid cell, so the confirmation cannot widen the
+   button and shove + Feature and Create sideways while it shows. */
+.motif-cs-copy-button {
+  display: inline-grid;
+  place-items: center;
 }
 
-.motif-cs-selection-actions .motif-cs-label-short {
+.motif-cs-copy-button > span {
+  grid-area: 1 / 1;
+}
+
+.motif-cs-copy-button[data-copied] > span:first-child,
+.motif-cs-copy-button:not([data-copied]) > span:last-child {
+  visibility: hidden;
+}
+
+.motif-cs-action-menu {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.motif-cs-action-menu-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.motif-cs-action-menu-button[data-open] {
+  border-color: var(--border-strong);
+  background: var(--control-hover);
+  color: var(--text-primary);
+}
+
+.motif-cs-action-menu-list {
+  position: fixed;
+  z-index: 85;
+  display: grid;
+  width: max-content;
+  min-width: 220px;
+  max-width: min(320px, calc(100vw - 16px));
+  padding: 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  box-shadow: var(--elevation-popover);
+}
+
+.motif-cs-action-menu-list[hidden] {
   display: none;
+}
+
+.motif-cs-action-menu-item {
+  display: grid;
+  gap: 1px;
+  width: 100%;
+  padding: 6px 9px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.motif-cs-action-menu-item:hover,
+.motif-cs-action-menu-item:focus-visible {
+  background: var(--control-hover);
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--focus-ring);
+}
+
+.motif-cs-action-menu-item:hover:not(:focus-visible) {
+  box-shadow: none;
+}
+
+.motif-cs-action-menu-label {
+  font-size: 12.5px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.motif-cs-action-menu-note {
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1.3;
+}
+
+/* An unavailable entry keeps its place and its focus stop, so the reason under
+   it can be read; only the label dims. */
+.motif-cs-action-menu-item[aria-disabled="true"] {
+  cursor: default;
+}
+
+.motif-cs-action-menu-item[aria-disabled="true"] .motif-cs-action-menu-label {
+  color: var(--text-muted);
+}
+
+.motif-cs-action-menu-separator {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--border-subtle);
 }
 
 @media (max-width: 720px) {
@@ -5994,52 +6533,12 @@ body[data-motif-cs-export-resizing] {
   }
 }
 
-@media (max-width: 460px) {
-  .motif-cs-selection-bar {
-    align-items: stretch;
-    flex-direction: column;
-    justify-content: center;
-    min-height: 62px;
-    gap: 2px;
-    padding: 4px 8px;
-    overflow: hidden;
-  }
-
-  .motif-cs-selection-bar[data-empty] {
-    min-height: 62px;
-    padding: 4px 8px;
-  }
-
-  .motif-cs-selection-label {
-    flex: 0 0 22px;
-    width: 100%;
-    min-width: 0;
-  }
-
-  /* 32px is the 26px button plus the base rule's 3px of clip padding on each
-     side. The container copy of this rule below records what 24px cost. */
-  .motif-cs-selection-actions {
-    flex: 0 0 32px;
-    flex-wrap: nowrap;
-    width: 100%;
-    max-width: none;
-    gap: 4px;
-  }
-
-  .motif-cs-selection-actions .motif-cs-mini-button {
-    min-height: 22px;
-    padding-inline: 4px;
-    font-size: 10.5px;
-  }
-}
-
-/* The bar goes two-line before the actions run out of room, not after. Measured on
-   the built artifact: the label at its compressed width plus the five-button row plus
-   the bar's own padding needs 626px, and the row is cut from 625px down. A sixth
-   button pushes that to 742px, so this threshold is a number to re-measure whenever
-   one is added rather than a constant to keep. Below it the actions get the full
-   panel width and every label stays whole. */
-@container (max-width: 640px) {
+/* The bar goes two-line only where the readout would otherwise have no room.
+   With three actions the strip needs ~212px, so a one-line bar still leaves the
+   readout ~150px at a 400px pane; the six-button strip needed 742px and forced
+   this at 640px, where it cost every side-by-side window a 62px bar. Below it
+   the actions get the full panel width. */
+@container (max-width: 400px) {
   .motif-cs-selection-bar {
     align-items: stretch;
     flex-direction: column;
@@ -6070,10 +6569,7 @@ body[data-motif-cs-export-resizing] {
 
   /* A stable one-line dock that scrolls, NOT a wrapping row: the bar's height is
      fixed here on purpose, because growing it pushes the sequence down while you
-     are reading it. The cost is that the last actions sit off-panel behind a
-     scrollbar this rule hides - measured at 700px and 740px, a press on
-     `New protein` lands on the panel head. That wants a visible scroll
-     affordance, not a second line. */
+     are reading it. */
   /* 32px, because the buttons are 26px and the base rule adds 3px of clip
      padding above and below them. This strip was sized for the 22px button that
      `@container (max-width: 560px)` still asks for, but the role grid at (0,3,0)
@@ -6095,10 +6591,6 @@ body[data-motif-cs-export-resizing] {
 }
 
 @container (max-width: 560px) {
-  .motif-cs-edit-hint {
-    display: none;
-  }
-
   .motif-cs-display-toggles {
     margin-left: 0;
   }
@@ -6128,16 +6620,6 @@ body[data-motif-cs-export-resizing] {
   }
 }
 
-@container (max-width: 520px) {
-  .motif-cs-edit-toolbar .motif-cs-label-full {
-    display: inline;
-  }
-
-  .motif-cs-edit-toolbar .motif-cs-label-short {
-    display: none;
-  }
-}
-
 @container (max-width: 360px) {
   .motif-cs-selection-bar,
   .motif-cs-selection-bar[data-empty] {
@@ -6158,27 +6640,6 @@ body[data-motif-cs-export-resizing] {
   .motif-cs-selection-actions .motif-cs-mini-button {
     padding-inline: 3px;
     font-size: 10px;
-  }
-
-  .motif-cs-selection-actions .motif-cs-label-full {
-    display: none;
-  }
-
-  .motif-cs-selection-actions .motif-cs-label-short {
-    display: inline;
-  }
-}
-
-/* Full action labels need more room than the six-button dock has below 715px,
-   even after the bar switches to two lines. Use the existing explicit short
-   labels throughout that range so every action remains visible and reachable. */
-@container (max-width: 714px) {
-  .motif-cs-selection-actions .motif-cs-label-full {
-    display: none;
-  }
-
-  .motif-cs-selection-actions .motif-cs-label-short {
-    display: inline;
   }
 }
 
@@ -6345,8 +6806,11 @@ body[data-motif-cs-export-resizing] {
 }
 
 .motif-cs-window-title small {
+  /* No width cap: a 22ch cap cut "Golden Gate profiles + Gibson" to
+     "Golden Gate profiles + Gib…" with 1,000px of title bar free. A narrow
+     window still ends the subtitle in an ellipsis, because overflow: hidden
+     lets this flex item shrink. */
   overflow: hidden;
-  max-width: 22ch;
   color: var(--text-muted);
   font-size: 11px;
   text-overflow: ellipsis;
@@ -6470,6 +6934,31 @@ summary.motif-cs-panel-head:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--focus-ring) 82%, var(--accent));
   outline-offset: 2px;
   box-shadow: none;
+}
+
+/* Three places cut the 2px-outside ring above, so focus there painted nothing
+   or one edge. Measured as focused-vs-blurred pixels at 1440x900 in all four
+   themes, before this block:
+   - An arrow-headed feature block clips its own outline with its clip-path:
+     20 of 20 head blocks showed only the hover tint (p90 1.00-1.20:1). An
+     inset box-shadow draws inside the polygon; the 1px page-colour line
+     inside it keeps the ring off the feature fill whatever the feature hue.
+   - `details.motif-cs-panel` is overflow: hidden, so the Map Visibility,
+     Digest Preview and Export and copy summaries changed 0.0% of pixels.
+   - The record tab strip scrolls, leaving 0-1px above and below a tab: 2.2%
+     changed in Light and Dark, the right edge only.
+   The last two move the ring inside the element. The shell-wide
+   `#root :focus-visible` rule is (1,1,0) and sets the offset, so this one
+   carries #root too. */
+.motif-cs-feature-block[data-head="true"]:focus-visible {
+  box-shadow:
+    inset 0 0 0 2px var(--focus-ring),
+    inset 0 0 0 3px var(--bg-primary);
+}
+
+#root summary.motif-cs-panel-head:focus-visible,
+#root .motif-cs-record-tab:focus-visible {
+  outline-offset: -2px;
 }
 
 @media (max-width: 840px) {
@@ -6803,6 +7292,13 @@ summary.motif-cs-panel-head:focus-visible {
 }
 
 .motif-cs-gel-plate {
+  /* The plate takes the column's spare height, so the lane track's 1fr row
+     finally has room to grow: it was 262px tall in an 860x590 window and in
+     the same window maximized to 1856x1064. It never shrinks below its
+     content, so a short window scrolls the column instead of the plate. */
+  display: flex;
+  flex: 1 0 auto;
+  flex-direction: column;
   min-width: max(100%, calc(var(--motif-cs-gel-lane-count, 1) * 72px));
   padding: 12px 12px 9px;
   overflow-x: auto;
@@ -6813,9 +7309,12 @@ summary.motif-cs-panel-head:focus-visible {
 
 .motif-cs-gel-lanes {
   display: grid;
+  flex: 1 1 auto;
   grid-template-columns: repeat(var(--motif-cs-gel-lane-count, 1), minmax(54px, 1fr));
   gap: 8px;
   min-width: calc(var(--motif-cs-gel-lane-count, 1) * 60px);
+  /* Room for the ladder sizes printed left of the marker lane. */
+  padding-left: 38px;
 }
 
 .motif-cs-gel-lane {
@@ -6858,6 +7357,27 @@ summary.motif-cs-panel-head:focus-visible {
 
 .motif-cs-gel-band[data-co-migrating] {
   height: 5px;
+}
+
+.motif-cs-gel-ladder-size {
+  position: absolute;
+  top: clamp(13px, calc(12px + (var(--motif-cs-gel-band-y, 0%) * .82)), calc(100% - 8px));
+  right: calc(100% + 4px);
+  transform: translateY(calc(-50% + 1.5px));
+  color: var(--text-secondary);
+  font: 10px/1 var(--font-mono);
+  white-space: nowrap;
+}
+
+.motif-cs-gel-readout {
+  margin: 8px 0 0;
+  color: var(--text-primary);
+  font: 11px/1.4 var(--font-mono);
+}
+
+.motif-cs-gel-readout[data-empty] {
+  color: var(--text-muted);
+  font-family: inherit;
 }
 
 .motif-cs-gel-band:focus-visible {
@@ -10132,12 +10652,16 @@ summary.motif-cs-panel-head:focus-visible {
 /* ── Guide RNA (CRISPR) finder ── */
 .motif-cs-guide-controls {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 4px 8px;
   padding: 8px 12px 4px;
 }
+/* 150px shows the longest nuclease, "Cas13d (CasRx) · no PAM" (144px). Where
+   the select and "Copy as RNA (U)" cannot share a line, as in the pinned Tools
+   pane, the checkbox moves under the select instead of cutting its text. */
 .motif-cs-guide-controls .motif-cs-field {
-  flex: 1 1 auto;
+  flex: 1 1 150px;
   min-width: 0;
 }
 .motif-cs-toggle-inline {
@@ -10147,10 +10671,12 @@ summary.motif-cs-panel-head:focus-visible {
      13x13. The row is a centred flex line whose tallest item is a 32px field,
      so 24px here changes no layout at any viewport. */
   min-height: 24px;
+  flex: 0 0 auto;
   gap: 4px;
   color: var(--text-secondary);
   font-size: 11px;
   font-weight: 600;
+  white-space: nowrap;
   cursor: pointer;
 }
 .motif-cs-guide-note {
@@ -10186,18 +10712,24 @@ summary.motif-cs-panel-head:focus-visible {
   display: flex;
   align-items: stretch;
   gap: 4px;
-  padding: 0 8px 0 12px;
+  padding: 0 5px 0 12px;
 }
 .motif-cs-guide-row:hover {
   background: var(--bg-secondary);
 }
 .motif-cs-guide-select {
   display: grid;
-  grid-template-columns: 14px 40px minmax(0, 1fr) 54px;
-  /* `start`, not `center`: the spacer wraps to two lines on the longer PAMs, and
-     centring would drag the checkbox and score off the first line with it. */
+  /* GC sits under the position rather than in a fourth column. With the 54px
+     GC column the spacer had 122px for a 23-27 nt string that needs about
+     152-185px at 11px mono, so all 30 rows wrapped mid-sequence. */
+  grid-template-columns: 10px 40px minmax(0, 1fr);
+  grid-template-areas:
+    "strand pos spacer"
+    ". gc spacer";
+  /* `start`, not `center`: the spacer can still wrap in a narrow popover, and
+     centring would drag the strand and position off its first line. */
   align-items: start;
-  gap: 8px;
+  gap: 1px 6px;
   flex: 1 1 auto;
   min-width: 0;
   padding: 5px 0;
@@ -10208,17 +10740,20 @@ summary.motif-cs-panel-head:focus-visible {
   cursor: pointer;
 }
 .motif-cs-guide-strand {
+  grid-area: strand;
   font-size: 9px;
   color: var(--text-muted);
 }
 .motif-cs-guide-strand[data-strand="1"] { color: var(--accent); }
 .motif-cs-guide-strand[data-strand="-1"] { color: var(--amber); }
 .motif-cs-guide-pos {
+  grid-area: pos;
   color: var(--text-muted);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
 .motif-cs-guide-spacer {
+  grid-area: spacer;
   font-family: var(--font-mono);
   font-size: 11px;
   letter-spacing: 0.01em;
@@ -10240,14 +10775,30 @@ summary.motif-cs-panel-head:focus-visible {
 .motif-cs-guide-pam:first-child { margin-right: 2px; }
 .motif-cs-guide-pam:last-child { margin-left: 2px; }
 .motif-cs-guide-gc {
+  grid-area: gc;
   color: var(--text-muted);
   font-size: 10px;
   font-variant-numeric: tabular-nums;
-  text-align: right;
+  white-space: nowrap;
 }
 .motif-cs-guide-gc[data-ok] { color: var(--green); }
-.motif-cs-guide-copy {
+/* Copy over Add, one fixed column wide enough for "Added", so the spacer
+   keeps the width a 27 nt string needs on one line and no row shifts when a
+   guide is added. 22px tall at a 24px pitch: each target keeps a 24px circle
+   clear of the other. */
+.motif-cs-guide-actions {
+  display: grid;
+  gap: 2px;
   align-self: center;
+  width: 52px;
+}
+.motif-cs-guide-actions .motif-cs-mini-button {
+  min-height: 22px;
+  padding: 0 4px;
+}
+.motif-cs-guide-actions [aria-disabled] {
+  cursor: default;
+  opacity: 0.62;
 }
 .motif-cs-guide-more {
   margin: 6px 12px 10px;
@@ -10296,7 +10847,7 @@ summary.motif-cs-panel-head:focus-visible {
   text-align: left;
 }
 
-.motif-cs-inspector[data-tools-pinned="true"] .motif-cs-guide-copy {
+.motif-cs-inspector[data-tools-pinned="true"] .motif-cs-guide-actions {
   flex: 0 0 auto;
   justify-self: end;
 }
@@ -10629,6 +11180,30 @@ summary.motif-cs-panel-head:focus-visible {
   .motif-cs-seq-caret { animation: none; }
 }
 
+/* The bases an edit, Undo or Redo just changed, tinted for ~1.5 s so a typed
+   letter that replaced a base cannot pass unseen. Green is the one overlay hue
+   the selection (accent), pattern hits (purple) and enzyme sites (amber) do not
+   use. A pure deletion leaves a narrow seam at the join. The runtime removes
+   the element after 1.6 s, so reduced motion keeps a static tint for that long. */
+@keyframes motif-edit-flash { 0%, 60% { opacity: 1; } 100% { opacity: 0; } }
+.motif-cs-seq-edit-flash {
+  position: absolute;
+  top: 0.1em;
+  bottom: 0.1em;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--green) 32%, transparent);
+  box-shadow: inset 0 -2px 0 var(--green);
+  animation: motif-edit-flash 1.5s ease-out forwards;
+  pointer-events: none;
+}
+.motif-cs-seq-edit-flash[data-seam="true"] {
+  width: 0.6ch;
+  margin-left: -0.3ch;
+}
+@media (prefers-reduced-motion: reduce) {
+  .motif-cs-seq-edit-flash { animation: none; }
+}
+
 @media (max-width: 767px) {
   .motif-cs-main {
     display: flex;
@@ -10780,16 +11355,6 @@ summary.motif-cs-panel-head:focus-visible {
   .motif-cs-map-frame[data-map-mode="circular"] {
     height: clamp(340px, calc(100vw - 8px), 460px);
     min-height: 340px;
-  }
-}
-
-@media (max-width: 767px) {
-  .motif-cs-shell:has(.motif-cs-record-tabs[data-inventory-visible="true"]) {
-    grid-template-rows: auto 1fr;
-  }
-
-  .motif-cs-record-tabs[data-inventory-visible="true"] {
-    display: none;
   }
 }
 
@@ -11085,7 +11650,14 @@ summary.motif-cs-panel-head:focus-visible {
     min-height: 0;
   }
 
-  .motif-cs-main[data-content-pane-count="2"],
+  /* Two panes share one row, EXCEPT when those two are Sequence and Map in the
+     stacked arrangement: then Sequence keeps the full-width top row and Map the
+     bottom one, exactly as with Inventory showing. Dropping to one row there
+     moved the Map from below the Sequence to beside it and back every time
+     Inventory was toggled. `:where` keeps these at their old specificity: one
+     class higher and their `!important` widths outrank the floating-pane rule,
+     so a popped-out pane opened 232px wide. */
+  .motif-cs-main[data-content-pane-count="2"]:where(:not([data-workspace-arrangement="stacked"])),
   .motif-cs-main[data-content-pane-count="1"] {
     display: flex;
     flex-direction: row;
@@ -11093,9 +11665,13 @@ summary.motif-cs-panel-head:focus-visible {
     overflow: hidden;
   }
 
-  .motif-cs-main[data-content-pane-count="2"] > .motif-cs-sidebar,
-  .motif-cs-main[data-content-pane-count="2"] > .motif-cs-sequence-column,
-  .motif-cs-main[data-content-pane-count="2"] > .motif-cs-map-column,
+  .motif-cs-main[data-workspace-arrangement="stacked"][data-inventory-hidden="true"] > .motif-cs-sequence-column {
+    grid-column: 1 / 4;
+  }
+
+  .motif-cs-main[data-content-pane-count="2"]:where(:not([data-workspace-arrangement="stacked"])) > .motif-cs-sidebar,
+  .motif-cs-main[data-content-pane-count="2"]:where(:not([data-workspace-arrangement="stacked"])) > .motif-cs-sequence-column,
+  .motif-cs-main[data-content-pane-count="2"]:where(:not([data-workspace-arrangement="stacked"])) > .motif-cs-map-column,
   .motif-cs-main[data-content-pane-count="1"] > .motif-cs-sidebar,
   .motif-cs-main[data-content-pane-count="1"] > .motif-cs-sequence-column,
   .motif-cs-main[data-content-pane-count="1"] > .motif-cs-map-column {
@@ -11108,18 +11684,18 @@ summary.motif-cs-panel-head:focus-visible {
     border-bottom: 0;
   }
 
-  .motif-cs-main[data-content-pane-count="2"] > .motif-cs-sequence-column {
+  .motif-cs-main[data-content-pane-count="2"]:where(:not([data-workspace-arrangement="stacked"])) > .motif-cs-sequence-column {
     flex-grow: 1;
     flex-shrink: 1;
   }
 
-  .motif-cs-main[data-content-pane-count="2"] > .motif-cs-resize-handle[data-pane="sequence"] {
+  .motif-cs-main[data-content-pane-count="2"]:where(:not([data-workspace-arrangement="stacked"])) > .motif-cs-resize-handle[data-pane="sequence"] {
     display: block;
     width: 7px;
     height: 100%;
   }
 
-  .motif-cs-main[data-content-pane-count="2"] > .motif-cs-stacked-resize-handle[data-pane="sequence"],
+  .motif-cs-main[data-content-pane-count="2"]:where(:not([data-workspace-arrangement="stacked"])) > .motif-cs-stacked-resize-handle[data-pane="sequence"],
   .motif-cs-main[data-content-pane-count="1"] > .motif-cs-stacked-resize-handle[data-pane="sequence"] {
     display: none;
   }
@@ -11270,10 +11846,6 @@ summary.motif-cs-panel-head:focus-visible {
     display: none;
   }
 
-  .motif-cs-theme-picker select {
-    min-width: 96px;
-  }
-
   .motif-cs-record-tab {
     max-width: 168px;
     padding: 0 9px;
@@ -11316,6 +11888,13 @@ summary.motif-cs-panel-head:focus-visible {
     overflow: hidden;
     text-overflow: clip;
     white-space: nowrap;
+  }
+
+  /* The cap cut "Translations" to "Translation", which reads as another word,
+     from 690 to 840px. Uncut it still leaves 40px or more before the Annotate
+     reserve at every width in that range. */
+  .motif-cs-window-toggle > span {
+    max-width: none;
   }
 }
 
@@ -11820,11 +12399,13 @@ summary.motif-cs-panel-head:focus-visible {
     overflow-y: hidden;
   }
 
-  .motif-cs-main[data-content-pane-count="3"] > .motif-cs-map-column .motif-cs-map-frame {
+  .motif-cs-main[data-content-pane-count="3"] > .motif-cs-map-column .motif-cs-map-frame,
+  .motif-cs-main[data-workspace-arrangement="stacked"] > .motif-cs-map-column .motif-cs-map-frame {
     min-height: 120px;
   }
 
-  .motif-cs-main[data-content-pane-count="3"] > .motif-cs-map-column {
+  .motif-cs-main[data-content-pane-count="3"] > .motif-cs-map-column,
+  .motif-cs-main[data-workspace-arrangement="stacked"] > .motif-cs-map-column {
     padding-block: 0;
   }
 }
@@ -11835,12 +12416,109 @@ summary.motif-cs-panel-head:focus-visible {
    the normal full-height overflow guard. */
 @media (min-width: 640px) and (max-width: 1535px) and (max-height: 330px) {
   .motif-cs-main[data-content-pane-count="3"],
+  .motif-cs-main[data-workspace-arrangement="stacked"],
   .motif-cs-main[data-tools-pinned="true"][data-content-pane-count="3"] {
     align-content: start;
     overflow-x: hidden;
     overflow-y: auto;
     overscroll-behavior: contain;
     scrollbar-gutter: stable;
+  }
+}
+
+/* Side-by-side compact workspace: Inventory | Sequence | Map in one row, with
+   Tools as the overlaid rail or, pinned, a fourth column. The script decides the
+   arrangement from the viewport and publishes it as `data-workspace-arrangement`
+   (see COMPACT_SIDE_BY_SIDE_MIN_WIDTH), so these rules key on that attribute
+   rather than repeating a media query the row-sizing code could disagree with.
+
+   Stacked, a laptop window gave Sequence a 240px row under which Map stood
+   full-width and letterboxed: at 1280x720 one row of bases (120 bp) and a 206px
+   ring, with 8 of the 13 bundled records opening on no complete row at all.
+   Sequence and Map split what is left by share, 40:60 by default, because the
+   map is a fixed-aspect drawing that only grows with its short axis. Pinning
+   Tools no longer changes which pane sits where; it only takes a column of
+   width, as it does from 1536px up. Every rule here is scoped to DOCKED panes so
+   a popped-out pane keeps its own floating geometry. */
+@media (min-width: 640px) and (max-width: 1535px) {
+  .motif-cs-main[data-workspace-arrangement="side-by-side"] {
+    display: flex;
+    flex-direction: row;
+    align-items: stretch;
+    overflow: hidden;
+  }
+
+  .motif-cs-main[data-workspace-arrangement="side-by-side"][data-tools-pinned="true"] {
+    padding-right: 0;
+  }
+
+  .motif-cs-main[data-workspace-arrangement="side-by-side"] > .motif-cs-sidebar[data-pane-placement="docked"],
+  .motif-cs-main[data-workspace-arrangement="side-by-side"] > .motif-cs-sequence-column[data-pane-placement="docked"],
+  .motif-cs-main[data-workspace-arrangement="side-by-side"] > .motif-cs-map-column[data-pane-placement="docked"] {
+    grid-column: auto;
+    grid-row: auto;
+    height: 100% !important;
+    max-width: none;
+    border-top: 0;
+    border-bottom: 0;
+  }
+
+  .motif-cs-main[data-workspace-arrangement="side-by-side"] > .motif-cs-sidebar[data-pane-placement="docked"] {
+    flex: 0 0 clamp(160px, var(--motif-cs-inventory-pane-width, 210px), 280px) !important;
+    width: clamp(160px, var(--motif-cs-inventory-pane-width, 210px), 280px) !important;
+    min-width: 160px;
+  }
+
+  .motif-cs-main[data-workspace-arrangement="side-by-side"] > .motif-cs-sequence-column[data-pane-placement="docked"] {
+    flex: var(--motif-cs-side-by-side-sequence-grow, 0.4) 1 0 !important;
+    width: auto !important;
+    min-width: 240px;
+  }
+
+  .motif-cs-main[data-workspace-arrangement="side-by-side"] > .motif-cs-map-column[data-pane-placement="docked"] {
+    flex: var(--motif-cs-side-by-side-map-grow, 0.6) 1 0 !important;
+    width: auto !important;
+    min-width: 300px;
+  }
+
+  .motif-cs-main[data-workspace-arrangement="side-by-side"] > .motif-cs-resize-handle[data-pane="inventory"],
+  .motif-cs-main[data-workspace-arrangement="side-by-side"] > .motif-cs-resize-handle[data-pane="sequence"] {
+    grid-column: auto;
+    grid-row: auto;
+    display: block;
+    width: 7px;
+    height: 100%;
+  }
+
+  .motif-cs-main[data-workspace-arrangement="side-by-side"] > .motif-cs-stacked-resize-handle[data-pane] {
+    display: none;
+  }
+
+  .motif-cs-main[data-workspace-arrangement="side-by-side"] > .motif-cs-resize-handle[data-pane="tools"] {
+    position: relative;
+    inset: auto;
+    z-index: 2;
+    grid-column: auto;
+    grid-row: auto;
+    display: block;
+    width: 7px;
+    height: 100%;
+  }
+
+  .motif-cs-main[data-workspace-arrangement="side-by-side"] > .motif-cs-inspector[data-tools-pinned="true"][data-pane-placement="docked"] {
+    position: relative;
+    inset: auto;
+    z-index: 1;
+    grid-column: auto;
+    grid-row: auto;
+    flex: 0 0 clamp(240px, var(--motif-cs-tools-pane-width, 280px), 320px) !important;
+    width: clamp(240px, var(--motif-cs-tools-pane-width, 280px), 320px) !important;
+    min-width: 240px;
+    height: 100% !important;
+    border-top: 0;
+    border-left: 1px solid var(--border-strong);
+    box-shadow: none;
+    overflow: auto;
   }
 }
 
@@ -11851,6 +12529,8 @@ summary.motif-cs-panel-head:focus-visible {
   /* Narrow stacked rules set height:auto and overflow:visible. In this
      two-row grid, clip/scroll inside each pane so Sequence (especially
      Export & Copy) can never paint into Map's hit area. */
+  .motif-cs-main[data-workspace-arrangement="stacked"] > .motif-cs-sequence-column,
+  .motif-cs-main[data-workspace-arrangement="stacked"] > .motif-cs-map-column,
   .motif-cs-main[data-content-pane-count="3"] > .motif-cs-sidebar,
   .motif-cs-main[data-content-pane-count="3"] > .motif-cs-sequence-column,
   .motif-cs-main[data-content-pane-count="3"] > .motif-cs-map-column {
@@ -11863,6 +12543,8 @@ summary.motif-cs-panel-head:focus-visible {
     overflow: hidden;
   }
 
+  .motif-cs-main[data-workspace-arrangement="stacked"] > .motif-cs-sequence-column,
+  .motif-cs-main[data-workspace-arrangement="stacked"] > .motif-cs-map-column,
   .motif-cs-main[data-content-pane-count="3"] > .motif-cs-sequence-column,
   .motif-cs-main[data-content-pane-count="3"] > .motif-cs-map-column {
     overflow-x: hidden;
@@ -11939,6 +12621,7 @@ summary.motif-cs-panel-head:focus-visible {
    bases behind the toolbar. */
 @media (min-width: 640px) and (max-width: 767px) and (max-height: 450px) {
   .motif-cs-main[data-content-pane-count="3"],
+  .motif-cs-main[data-workspace-arrangement="stacked"],
   .motif-cs-main[data-tools-pinned="true"][data-map-hidden="true"] {
     grid-template-rows: 300px 9px minmax(140px, 1fr);
     align-content: start;

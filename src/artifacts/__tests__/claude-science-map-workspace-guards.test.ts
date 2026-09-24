@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 const here = dirname(fileURLToPath(import.meta.url));
 const artifactSource = readFileSync(resolve(here, '..', 'motif-artifact.tsx'), 'utf8');
 const artifactCss = readFileSync(resolve(here, '..', 'motif-artifact.css'), 'utf8');
+const toolbarSource = readFileSync(resolve(here, '..', '..', 'components', 'plasmid-map', 'MapViewToolbar.tsx'), 'utf8');
 
 function sliceBetween(source: string, startNeedle: string, endNeedle: string): string {
   const start = source.indexOf(startNeedle);
@@ -78,7 +79,9 @@ describe('Claude Science map workspace regression guards', () => {
     expect(toolbar).not.toMatch(/position:\s*absolute/);
     expect(toolbar).not.toMatch(/\btop:/);
     expect(toolbar).not.toMatch(/\bbottom:/);
-    const toolbarIndex = artifactSource.indexOf('className="motif-cs-map-toolbar"');
+    // The group renders from MapViewToolbar; the heading places that component.
+    expect(toolbarSource).toContain('className="motif-cs-map-toolbar"');
+    const toolbarIndex = artifactSource.indexOf('<MapViewToolbar');
     const frameIndex = artifactSource.indexOf('ref={mapFrameRef}');
     expect(toolbarIndex).toBeGreaterThanOrEqual(0);
     expect(frameIndex).toBeGreaterThan(toolbarIndex);

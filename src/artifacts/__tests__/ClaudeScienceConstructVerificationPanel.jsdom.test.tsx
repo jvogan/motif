@@ -65,6 +65,33 @@ function resultFixture(
 afterEach(cleanup);
 
 describe('ClaudeScienceConstructVerificationPanel', () => {
+  it('does not show a rejected read as mapped', () => {
+    const base = resultFixture();
+    render(<ClaudeScienceConstructVerificationPanel result={resultFixture({
+      reads: [...base.reads, {
+        id: 'read-other-plasmid',
+        name: 'Other plasmid',
+        rawLength: 700,
+        meanQuality: 40,
+        status: 'low_mapping_identity',
+        mapping: { orientation: 'forward', referenceStart: 770, referenceEnd: 1_447, alignedLength: 677, identity: 0.52 },
+      }, {
+        id: 'read-short',
+        name: 'Short read',
+        rawLength: 90,
+        meanQuality: 8,
+        status: 'trimmed_read_too_short',
+        mapping: null,
+      }],
+    })} />);
+    const reads = screen;
+    const rejected = reads.getByText('Other plasmid').closest('article');
+    expect(rejected?.textContent).toContain('low mapping identity · not mapped (best hit ref 771–1,447)');
+    expect(rejected?.textContent).not.toMatch(/forward/i);
+    expect(reads.getByText('Short read').closest('article')?.textContent).toContain('trimmed read too short · not mapped');
+    expect(reads.getByText('Forward read 1').closest('article')?.textContent).toContain('forward · mapped · ref 2–672');
+  });
+
   it('states a consistent verdict and presents compact coverage, strand, and read facts', () => {
     render(<ClaudeScienceConstructVerificationPanel result={resultFixture()} />);
 
@@ -116,8 +143,9 @@ describe('ClaudeScienceConstructVerificationPanel', () => {
     await user.selectOptions(screen.getByLabelText('Show'), 'unexpected');
     const variantTable = screen.getByLabelText('Scrollable variant evidence table');
     expect(within(variantTable).getByText('Unexpected')).toBeTruthy();
-    expect(within(variantTable).getByText('420')).toBeTruthy();
-    expect(within(variantTable).queryByText('170')).toBeNull();
+    // Positions are 1-based: the deletion of 0-based 420..421 is bases 421–422.
+    expect(within(variantTable).getByText('421–422')).toBeTruthy();
+    expect(within(variantTable).queryByText('171')).toBeNull();
   });
 
   it('separates low-confidence unexpected evidence from supported contradictions', async () => {

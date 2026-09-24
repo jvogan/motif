@@ -691,7 +691,10 @@
 .motif-pm-feature-label {
   fill: var(--text-primary, #131313);
   font-family: var(--font-ui, var(--font-sans, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif));
-  font-size: 16px;
+  /* A name riding its feature's arc holds its size on a zoomed circular map through
+     this factor, which SequenceMapView sets on that name's group only; a transform
+     would pull the text off the arc. Every other name scales with a transform. */
+  font-size: calc(16px * var(--pm-zoom-text-scale, 1));
   /* Clickable so the readable name (including outside-leader labels sitting
      away from the arc) selects its feature via the group handler, instead of
      falling through to the background and CLEARING the selection. */
@@ -782,7 +785,7 @@
      the child overriding the group — is the entire fix.
 
      `all` rather than `visiblePainted` so the target does not depend on the chip being
-     painted; it is the faintest ink on the map (fill-opacity 0.56 in circular) and a
+     painted; it is the faintest ink on the map (fill-opacity under 1 in every theme) and a
      theme or forced-colors pass that drove it to zero would otherwise take the
      explanation with it.
 
@@ -818,46 +821,35 @@
   cursor: help;
 }
 
-.motif-pm-container[data-map-mode='circular'] .motif-pm-overflow {
-  font-size: 12px;
-  fill-opacity: 0.58;
-}
-
-/* And the count chip that summarises dropped labels was as loud as the labels
-   themselves. In circular it renders 9.3 against the enzyme names' 12.4, a
-   ratio of 0.75; in linear both landed on 13. 10px restores the ratio. */
+/* Only a linear map draws chips; a circular map states its overflows beside the
+   drawing (see MapLayout.overflowSummaries). The count chip that summarises dropped
+   labels was as loud as the labels themselves: both landed on 13. 10px restores the
+   0.75 ratio the circular chip had against the enzyme names. */
 .motif-pm-container[data-map-mode='linear'] .motif-pm-overflow {
   font-size: 10px;
 }
 
+/* 0.68 measured 4.42:1 from pixels on the linear chip in light, under the 4.5 floor
+   for its 10px text. */
 [data-theme='light'] .motif-pm-overflow {
-  fill-opacity: 0.68;
+  fill-opacity: 0.8;
 }
 
 [data-theme='dark'] .motif-pm-overflow {
   fill-opacity: 0.74;
 }
 
-[data-theme='light'] .motif-pm-container[data-map-mode='circular'] .motif-pm-overflow {
-  fill-opacity: 0.56;
-}
-
-[data-theme='dark'] .motif-pm-container[data-map-mode='circular'] .motif-pm-overflow {
-  fill-opacity: 0.62;
-}
-
 /* Dead-looking text invites no hover, and the chip is deliberately the faintest ink on
    the map. Lifting it to full strength under the pointer is the cue that there is
-   something here to read. Must out-specify (and follow) the four theme rules above,
-   which set fill-opacity at up to (0,4,0) — a bare .motif-pm-overflow:hover loses to
-   them and the chip would never visibly react.
+   something here to read. Must out-specify (and follow) the theme rules above, which
+   set fill-opacity at (0,2,0) — a bare .motif-pm-overflow:hover loses to them and the
+   chip would never visibly react.
 
    Keyed on the GROUP, not the text. The hit rect is the text's SIBLING, so hovering
    the rect never puts :hover on the text — the enlarged target would answer with a
    tooltip while the chip sat there looking inert, which is worse than a small target
    that reacts. The group is the one element both children have in common. */
-.motif-pm-container .motif-pm-overflow-chip:hover .motif-pm-overflow,
-.motif-pm-container[data-map-mode='circular'] .motif-pm-overflow-chip:hover .motif-pm-overflow {
+.motif-pm-container .motif-pm-overflow-chip:hover .motif-pm-overflow {
   fill: var(--text-primary, #131313);
   fill-opacity: 1;
 }

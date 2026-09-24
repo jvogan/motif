@@ -326,4 +326,198 @@ test.describe('Claude Science construct verification trust loop', () => {
     }, { resultId, assetId: saved.asset?.id })).toEqual({ resultPresent: false, assetPresent: false });
     expect(diagnostics).toEqual([]);
   });
+
+  test('opens a variant row in Traces at the reference position the table names', async ({ page }) => {
+    const diagnostics: string[] = [];
+    page.on('pageerror', (error) => diagnostics.push(`pageerror: ${error.message}`));
+    page.on('console', (message) => {
+      if (message.type() === 'error' || message.type() === 'warning') {
+        diagnostics.push(`console.${message.type()}: ${message.text()}`);
+      }
+    });
+
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.addInitScript(() => {
+      window.localStorage.clear();
+      window.sessionStorage.clear();
+    });
+    await page.goto(artifactUrl!);
+    await expect(page.locator('.motif-cs-shell')).toBeVisible();
+
+    // One substitution at 0-based 150, which the table and the readout both call 151.
+    const substituted = `${REFERENCE_SEQUENCE.slice(0, 150)}${REFERENCE_SEQUENCE[150] === 'A' ? 'G' : 'A'}${REFERENCE_SEQUENCE.slice(151)}`;
+    await page.evaluate(({ ids, reference, read }) => {
+      const trace = (baseCalls: string) => ({
+        schema: 'motif.sanger-trace.v1',
+        version: 1,
+        baseCalls,
+        sequence: baseCalls,
+        qualityScores: Array.from({ length: baseCalls.length }, () => 40),
+        peakPositions: [],
+        channels: { A: [], C: [], G: [], T: [] },
+        sampleCount: 0,
+        dyeOrder: null,
+        storedReverseComplement: false,
+        warnings: [],
+        metadata: {
+          format: 'ABIF',
+          abifVersion: 101,
+          baseCallsTag: 'PBAS2',
+          qualityScoresTag: 'PCON2',
+          peakPositionsTag: null,
+          channelTags: {},
+          sampleName: 'Sanger forward E2E',
+        },
+      });
+      window.motifAddRecords?.([
+        { id: ids.reference, name: 'Predicted construct E2E', type: 'dna', topology: 'linear', group: 'Construct verification E2E', sequence: reference },
+        { id: ids.forward, name: 'Sanger forward E2E', type: 'dna', topology: 'linear', group: 'Construct verification E2E', sequence: read, sangerTrace: trace(read) },
+      ] as never);
+    }, { ids: RECORD_IDS, reference: REFERENCE_SEQUENCE, read: substituted });
+
+    const tool = page.locator('details[data-rail-tool="construct-verification"]');
+    const openVerification = async () => {
+      if ((await tool.getAttribute('open')) === null) {
+        await tool.scrollIntoViewIfNeeded();
+        await tool.locator(':scope > summary').click();
+      }
+      await tool.getByTestId('open-construct-verification').click();
+    };
+    await openVerification();
+    const workspace = page.getByTestId('construct-verification-workspace');
+    await expect(workspace).toBeVisible();
+    await workspace.getByTestId('construct-verification-run').click();
+    const position = workspace.getByTestId('construct-verification-variant-table')
+      .getByRole('button', { name: 'Show the traces at reference position 151' });
+    await expect(position).toHaveText('151');
+    await position.focus();
+    await page.keyboard.press('Enter');
+
+    const alignment = page.getByTestId('msa-workspace');
+    await expect(alignment).toBeVisible();
+    await expect(workspace).toHaveCount(0);
+    await expect(alignment.getByRole('button', { name: 'Traces' })).toHaveAttribute('aria-pressed', 'true');
+    await expect(alignment.getByTestId('sanger-call-status'))
+      .toHaveText(/^Reference position 151 · alignment column 151 · read [ACGT] · template [ACGT]/);
+    await expect(alignment.getByRole('slider', { name: /Alignment column/ })).toHaveValue('150');
+    const savedAlignments = () => page.evaluate(() => window.motifGetAlignments?.().map((saved) => ({
+      rows: saved.rows.map((row) => row.sourceRecordId),
+      numbering: saved.referenceNumbering,
+    })));
+    expect(await savedAlignments()).toEqual([{
+      rows: [RECORD_IDS.reference, RECORD_IDS.forward],
+      numbering: { rowId: 'reference', firstResiduePosition: 1 },
+    }]);
+
+    // The run is still there when verification opens again, and the same row
+    // opens the alignment it already saved.
+    await openVerification();
+    await expect(workspace.getByTestId('construct-verification-panel')).toBeVisible();
+    await workspace.getByTestId('construct-verification-variant-table')
+      .getByRole('button', { name: 'Show the traces at reference position 151' })
+      .click();
+    await expect(alignment.getByTestId('sanger-call-status')).toHaveText(/^Reference position 151 · /);
+    expect(await savedAlignments()).toHaveLength(1);
+    await page.screenshot({ path: path.join(outputDirectory, 'construct-verification-variant-traces.png'), fullPage: true });
+    expect(diagnostics).toEqual([]);
+  });
+
+  test('opens a saved variant in Traces from Results after the workspace comes back', async ({ page }) => {
+    const diagnostics: string[] = [];
+    page.on('pageerror', (error) => diagnostics.push(`pageerror: ${error.message}`));
+    page.on('console', (message) => {
+      if (message.type() === 'error' || message.type() === 'warning') {
+        diagnostics.push(`console.${message.type()}: ${message.text()}`);
+      }
+    });
+
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto(artifactUrl!);
+    await page.evaluate(() => {
+      window.localStorage.clear();
+      window.sessionStorage.clear();
+    });
+    await expect(page.locator('.motif-cs-shell')).toBeVisible();
+
+    // One substitution at 0-based 150, which the table and the readout both call 151.
+    const substituted = `${REFERENCE_SEQUENCE.slice(0, 150)}${REFERENCE_SEQUENCE[150] === 'A' ? 'G' : 'A'}${REFERENCE_SEQUENCE.slice(151)}`;
+    await page.evaluate(({ ids, reference, read }) => {
+      window.motifAddRecords?.([
+        { id: ids.reference, name: 'Predicted construct E2E', type: 'dna', topology: 'linear', group: 'Construct verification E2E', sequence: reference },
+        {
+          id: ids.forward,
+          name: 'Sanger forward E2E',
+          type: 'dna',
+          topology: 'linear',
+          group: 'Construct verification E2E',
+          sequence: read,
+          sangerTrace: {
+            schema: 'motif.sanger-trace.v1',
+            version: 1,
+            baseCalls: read,
+            sequence: read,
+            qualityScores: Array.from({ length: read.length }, () => 40),
+            peakPositions: [],
+            channels: { A: [], C: [], G: [], T: [] },
+            sampleCount: 0,
+            dyeOrder: null,
+            storedReverseComplement: false,
+            warnings: [],
+            metadata: {
+              format: 'ABIF',
+              abifVersion: 101,
+              baseCallsTag: 'PBAS2',
+              qualityScoresTag: 'PCON2',
+              peakPositionsTag: null,
+              channelTags: {},
+              sampleName: 'Sanger forward E2E',
+            },
+          },
+        },
+      ] as never);
+    }, { ids: RECORD_IDS, reference: REFERENCE_SEQUENCE, read: substituted });
+
+    const tool = page.locator('details[data-rail-tool="construct-verification"]');
+    await tool.scrollIntoViewIfNeeded();
+    await tool.locator(':scope > summary').click();
+    await tool.getByTestId('open-construct-verification').click();
+    const workspace = page.getByTestId('construct-verification-workspace');
+    await workspace.getByTestId('construct-verification-run').click();
+    await workspace.getByTestId('construct-verification-save').click();
+    await expect(workspace.getByTestId('construct-verification-status')).toContainText('saved to Results');
+    const saved = await page.evaluate(() => {
+      const analysis = window.motifGetAnalysisWorkspace?.();
+      const result = analysis?.analysisResults.find((candidate) => candidate.kind === 'construct_verification');
+      const asset = analysis?.analysisAssets.find((candidate) => candidate.id === result?.data.verificationReportAssetId);
+      return { id: result?.id, report: asset ? JSON.parse(asset.content) : null };
+    });
+    expect(saved.report.reads).toEqual([expect.objectContaining({ mapping: expect.objectContaining({ cigar: '240M' }) })]);
+
+    // The workspace comes back the way a host restores it; a reload alone keeps nothing.
+    const snapshot = await page.evaluate(() => JSON.stringify(window.motifGetWorkspace?.()));
+    await page.reload();
+    await expect(page.locator('.motif-cs-shell')).toBeVisible();
+    expect(await page.evaluate(() => window.motifGetAnalysisWorkspace?.().analysisResults.length)).toBe(0);
+    await page.evaluate((text) => window.motifReplaceWorkspace?.(JSON.parse(text)), snapshot);
+
+    const results = page.locator('details[data-rail-tool="analysis-results"]');
+    await results.scrollIntoViewIfNeeded();
+    await results.locator(':scope > summary').click();
+    const resultRow = page.getByTestId(`analysis-result-${saved.id}`);
+    await resultRow.getByTestId('analysis-result-open-evidence').click();
+    const position = resultRow.getByTestId('construct-verification-variant-table')
+      .getByRole('button', { name: 'Show the traces at reference position 151' });
+    await expect(position).toHaveText('151');
+    await position.focus();
+    await page.keyboard.press('Enter');
+
+    const alignment = page.getByTestId('msa-workspace');
+    await expect(alignment).toBeVisible();
+    await expect(alignment.getByRole('button', { name: 'Traces' })).toHaveAttribute('aria-pressed', 'true');
+    await expect(alignment.getByTestId('sanger-call-status'))
+      .toHaveText(/^Reference position 151 · alignment column 151 · read [ACGT] · template [ACGT]/);
+    await expect(alignment.getByRole('slider', { name: /Alignment column/ })).toHaveValue('150');
+    await page.screenshot({ path: path.join(outputDirectory, 'construct-verification-saved-variant-traces.png'), fullPage: true });
+    expect(diagnostics).toEqual([]);
+  });
 });

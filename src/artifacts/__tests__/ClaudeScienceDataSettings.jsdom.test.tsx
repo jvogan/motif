@@ -31,6 +31,15 @@ function renderSettings(overrides: Partial<React.ComponentProps<typeof ClaudeSci
 }
 
 describe('ClaudeScienceDataSettings', () => {
+  it.each([
+    { hasUnsavedChanges: true, backupDownloaded: false, chip: 'Unsaved changes' },
+    { hasUnsavedChanges: true, backupDownloaded: true, chip: 'Backup downloaded' },
+    { hasUnsavedChanges: false, backupDownloaded: false, chip: 'Backup current' },
+  ])('reads "$chip" on the backup chip', ({ hasUnsavedChanges, backupDownloaded, chip }) => {
+    const { getByTestId } = renderSettings({ hasUnsavedChanges, backupDownloaded });
+    expect(getByTestId('data-backup-status').textContent).toBe(chip);
+  });
+
   it('presents explicit backup/restore controls, counts, and the session privacy boundary', async () => {
     const onDownloadBackup = vi.fn(() => ({
       status: 'requested' as const,

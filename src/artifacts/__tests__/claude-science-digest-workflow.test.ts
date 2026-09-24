@@ -348,6 +348,29 @@ describe('Claude Science digest workflow materialization', () => {
     });
   });
 
+  it('moves a CDS /transl_except onto the fragment with its CDS', () => {
+    // ATG GCA TGA AAA TAA with the TGA read as Sec; the CDS lands 4 bases
+    // into the right-hand EcoRI fragment.
+    const cds = 'ATGGCATGAAAATAA';
+    const sequence = `CCCCGAATTCGG${cds}GGATCCAA`;
+    const feature: Feature = {
+      id: 'sec',
+      name: 'selenoprotein',
+      type: 'cds',
+      start: 12,
+      end: 27,
+      strand: 1,
+      color: '#abcdef',
+      metadata: { transl_except: '(pos:19..21,aa:Sec)' },
+    };
+    const source = sourceRecord(sequence, 'linear', [feature]);
+    const result = materialize(source, recipeFor(source, 'EcoRI'));
+    const withCds = result.records.find((record) => record.annotations.length > 0)!;
+    const at = withCds.seq.indexOf(cds);
+    expect(withCds.seq.slice(at + 6, at + 9)).toBe('TGA');
+    expect(withCds.annotations[0].metadata.transl_except).toBe(`(pos:${at + 7}..${at + 9},aa:Sec)`);
+  });
+
   it('re-keys propagated features deterministically and returns defensive nested metadata', () => {
     const feature: Feature = {
       id: 'source-feature',

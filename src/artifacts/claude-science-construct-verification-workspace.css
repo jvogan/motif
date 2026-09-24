@@ -363,6 +363,92 @@
   line-height: 1.5;
 }
 
+.motif-cs-verification-empty-evidence p {
+  margin: 0;
+}
+
+.motif-cs-verification-import-button {
+  min-height: 28px;
+  margin-top: 8px;
+  padding: 3px 10px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.motif-cs-verification-import-button:hover {
+  background: var(--control-hover);
+}
+
+.motif-cs-verification-import-button:focus-visible,
+.motif-cs-verification-read-group-heading button:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.motif-cs-verification-read-default {
+  margin: 6px 0 0;
+  color: var(--text-muted);
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+/* Reads are listed by inventory group, the reference's group first, so a
+   workspace holding several clones shows which reads belong together. */
+.motif-cs-verification-read-group-heading {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 4px 9px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.motif-cs-verification-read-group-heading span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.motif-cs-verification-read-group-heading button {
+  flex: 0 0 auto;
+  min-height: 22px;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text-secondary);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  cursor: pointer;
+}
+
+.motif-cs-verification-read-group-heading button:disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.motif-cs-verification-read-group:last-child .motif-cs-verification-read-option:last-child {
+  border-bottom: 0;
+}
+
 .motif-cs-verification-acceptance-heading {
   display: grid;
   justify-content: stretch;

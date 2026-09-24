@@ -40,6 +40,27 @@ import type { MapLayout } from '../types';
  * one of the 15 is a frequent-cutter cluster that already carried a "+N" tail. Nothing
  * on the ring overlaps, leader-through-label crossings fell from 780 to 778, and the
  * fitted viewBox is byte-identical on all 1,805 panes.
+ *
+ * The census rose again, from 69 to 85, when pUC19, pBR322 and pcDNA3.1(+) were
+ * replaced by the real plasmid sequences. The worst step
+ * improved from -4 to -3 and is held there. The real records carry far more enzyme
+ * clusters (pBR322 25 against 6), so their rings are harder to pack; the two
+ * mechanisms above are unchanged, and the pET and Duet counts did not move.
+ *
+ * It rose from 85 to 86 when the cloning-site cluster began to outrank up to two
+ * feature names around it. Over the 361 panes of this sweep the polylinker is named
+ * on pUC19 at 361 instead of 275, on pBluescript SK(+) at 361 instead of 314 and on
+ * pET-28a(+) at 91 instead of 3. pET-28a(+) pays for it: one more shrink step, and 2
+ * panes where the cluster's name costs two feature names.
+ *
+ * Leading each cluster label with an enzyme that cuts once re-words labels, so their
+ * widths and the packing move. The total stays 86: pBR322 17 to 15, pcDNA3.1(+) 14 to
+ * 13, pETDuet-1 29 to 32.
+ *
+ * It rose from 86 to 87 when a small map began spelling a cluster's lead enzyme whole
+ * and dropping the count's digits instead ("HaeIII +" for "HaeI… +1"). No pane lost a
+ * label. pUC19 gained a feature name at baseSide 290 to 296, which it drops again at
+ * 298, and that drop is the new step.
  */
 
 /** The artifact's own map-label shortening, so these names match the painted page. */
@@ -157,7 +178,7 @@ describe('circular label placement across pane sizes', () => {
     expect(differences).toEqual([]);
   }, 120_000);
 
-  it('drops a label at 69 of the 1800 steps that make the pane bigger', () => {
+  it('drops a label at 87 of the 1800 steps that make the pane bigger', () => {
     // The census. Each record is swept over baseSide 240 to 960 in 2px steps, which
     // spans every map pane the artifact produces (260 at the shortest dock, 955 at the
     // tallest window). A step counts as a shrink when the pane grew and the map came
@@ -185,33 +206,38 @@ describe('circular label placement across pane sizes', () => {
     // One assertion so a change to the worst step cannot hide behind the per-record
     // counts. Raising any count means a pane change took a name off the ring that used
     // to be there. Lowering one is an improvement — re-measure and re-pin it.
+    // repin:census:start
     expect({ steps, worst, ...shrinkByRecord }).toEqual({
       steps: 1800,
-      worst: -4,
-      'pUC19': 6,
-      'pET-28a(+)': 15,
-      'pETDuet-1': 29,
-      'pBR322': 12,
-      'pcDNA3.1(+)': 7,
+      worst: -3,
+      'pUC19': 11,
+      'pET-28a(+)': 16,
+      'pETDuet-1': 32,
+      'pBR322': 15,
+      'pcDNA3.1(+)': 13,
     });
+    // repin:census:end
   }, 120_000);
 
   it('trades labels for enzyme names at the baseSide 480 text-budget step', () => {
-    // The single largest cliff, and the only one every record falls off. Growing the
-    // pane by 2px here costs pUC19 four labels and pET-28a(+) three, and pays for them
-    // in enzyme names the surviving labels now spell out instead of summing into "+N".
+    // A cliff every record falls off. Growing the pane by 2px here costs pET-28a(+)
+    // and pETDuet-1 three labels, pBR322 and pcDNA3.1(+) two and pUC19 one, and pays
+    // for them in enzyme names the surviving labels now spell out instead of summing
+    // into "+N": every record names more sites afterwards than before.
     const observed = RECORDS.map((name) => {
       const before = read(circularLayout(name, 878, 478));
       const after = read(circularLayout(name, 880, 480));
       return `${name} ${after.labels - before.labels} labels ${after.namedSites - before.namedSites} names`;
     });
 
+    // repin:trade-480:start
     expect(observed).toEqual([
-      'pUC19 -4 labels 3 names',
-      'pET-28a(+) -3 labels 10 names',
-      'pETDuet-1 -2 labels 10 names',
-      'pBR322 -1 labels 2 names',
-      'pcDNA3.1(+) -1 labels 5 names',
+      'pUC19 -1 labels 7 names',
+      'pET-28a(+) -3 labels 9 names',
+      'pETDuet-1 -3 labels 9 names',
+      'pBR322 -2 labels 12 names',
+      'pcDNA3.1(+) -2 labels 16 names',
     ]);
+    // repin:trade-480:end
   }, 120_000);
 });

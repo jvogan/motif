@@ -251,6 +251,33 @@ export interface GenBankRecord {
  */
 const CONTINUOUS_SEQUENCE_QUALIFIERS: ReadonlySet<string> = new Set(['translation']);
 
+/**
+ * INSDC locations have no "no direction" form: a plain `3..12` means forward.
+ * Motif's Basic GenBank export marks an unstranded feature with this
+ * Motif-owned qualifier so it reads back unstranded. Other readers keep an
+ * unknown qualifier as an ordinary one and ignore it.
+ */
+export const MOTIF_STRAND_QUALIFIER = 'motif_strand';
+export const MOTIF_UNSTRANDED_VALUE = 'none';
+
+function marksUnstranded(qualifiers: Readonly<Record<string, string | true>>): boolean {
+  const value = qualifiers[MOTIF_STRAND_QUALIFIER];
+  return typeof value === 'string' && value.trim().toLowerCase() === MOTIF_UNSTRANDED_VALUE;
+}
+
+// The marker only turns a plain (all-forward) location unstranded. A
+// `complement(...)` or mixed-strand join states its own direction, and that
+// text wins over a qualifier another editor may have left stale.
+function withUnstrandedMarker(location: ParsedLocation): ParsedLocation {
+  if (location.strand !== 1) return location;
+  if (location.subRanges?.some((part) => (part.strand ?? 1) !== 1)) return location;
+  return {
+    ...location,
+    strand: 0,
+    ...(location.subRanges ? { subRanges: location.subRanges.map((part) => ({ ...part, strand: 0 as const })) } : {}),
+  };
+}
+
 const FEATURE_TYPE_MAP: Record<string, FeatureType> = {
   gene: 'gene',
   cds: 'cds',
@@ -283,7 +310,91 @@ const FEATURE_TYPE_MAP: Record<string, FeatureType> = {
   restriction_site: 'restriction_site',
 };
 
-const SAFE_IMPORTED_FEATURE_COLOR = /^(?:#[0-9a-f]{3,8}|(?:rgb|hsl)a?\([\d\s.,%+\-/]+\)|[a-z]+)$/i;
+/**
+ * INSDC replaced the promoter, terminator, RBS, polyA_signal and enhancer keys
+ * with `regulatory` plus a /regulatory_class on 15-DEC-2014, and has no key for
+ * an ORF, a resistance marker, a restriction site or a free-form feature.
+ * Basic GenBank writes the key below; for the four Motif-only types it adds the
+ * Motif-owned /motif_type qualifier, which other readers keep and ignore.
+ */
+export const MOTIF_TYPE_QUALIFIER = 'motif_type';
+const REGULATORY_CLASSES: Array<[FeatureType, string]> = [
+  ['promoter', 'promoter'],
+  ['terminator', 'terminator'],
+  ['rbs', 'ribosome_binding_site'],
+  ['polyA_signal', 'polyA_signal_sequence'],
+  ['enhancer', 'enhancer'],
+];
+const MOTIF_ONLY_TYPES: FeatureType[] = ['orf', 'resistance', 'restriction_site', 'custom'];
+/**
+ * The INSDC keys (Feature Table 11.4) Motif has no type for. A feature under
+ * one reads as `custom`, and the reader keeps its key, lower-cased, as
+ * `motifOriginalFeatureKey`; Basic GenBank writes the key back in INSDC case.
+ */
+const INSDC_KEYS_WITHOUT_A_TYPE = "assembly_gap C_region centromere D-loop D_segment gap iDNA J_segment misc_binding misc_difference misc_recomb misc_RNA misc_structure mobile_element modified_base N_region old_sequence operon oriT polyA_site precursor_RNA prim_transcript propeptide protein_bind S_region source stem_loop STS telomere tmRNA unsure V_region V_segment variation 3'UTR 5'UTR"
+  .split(' ');
+
+/**
+ * The other keys INSDC retired for `regulatory` on 15-DEC-2014, lower-cased,
+ * with the /regulatory_class that replaced each. A feature under one reads as
+ * a `regulatory` feature with that class. The vocabulary has no class for
+ * misc_signal, so it gets "other" and a /note naming the old key, which is
+ * what INSDC asks of an "other".
+ */
+const RETIRED_REGULATORY_KEYS: Readonly<Record<string, string>> = {
+  '-10_signal': 'minus_10_signal',
+  '-35_signal': 'minus_35_signal',
+  tata_signal: 'TATA_box',
+  gc_signal: 'GC_signal',
+  caat_signal: 'CAAT_signal',
+  attenuator: 'attenuator',
+  misc_signal: 'other',
+};
+
+function keptInsdcKey(type: FeatureType, originalKey: unknown): string | undefined {
+  if (type !== 'custom' || typeof originalKey !== 'string') return undefined;
+  return INSDC_KEYS_WITHOUT_A_TYPE.find((key) => key.toLowerCase() === originalKey.toLowerCase());
+}
+
+/** The type a feature shows: its kept INSDC key in place of `custom`. */
+export function featureTypeLabel(feature: Pick<Feature, 'type' | 'metadata'>): string {
+  return keptInsdcKey(feature.type, feature.metadata.motifOriginalFeatureKey) ?? feature.type;
+}
+
+/**
+ * The INSDC key, /regulatory_class and /motif_type Basic GenBank writes for a
+ * type. A `custom` feature read from an INSDC key Motif has no type for keeps
+ * that key.
+ */
+export function insdcFeatureKey(type: FeatureType, originalKey?: unknown): [string, string | null, FeatureType | null] {
+  const keptKey = keptInsdcKey(type, originalKey);
+  if (keptKey) return [keptKey, null, null];
+  const regulatoryClass = REGULATORY_CLASSES.find(([motifType]) => motifType === type)?.[1];
+  if (regulatoryClass) return ['regulatory', regulatoryClass, null];
+  const motifType = MOTIF_ONLY_TYPES.includes(type) ? type : null;
+  if (type === 'cds' || type === 'orf') return ['CDS', null, motifType];
+  if (type === 'origin') return ['rep_origin', null, null];
+  return [motifType ? 'misc_feature' : type, null, motifType];
+}
+
+/**
+ * The Motif type a `regulatory` feature with this /regulatory_class reads as,
+ * or undefined when it stays a `regulatory` feature.
+ */
+export function regulatoryClassFeatureType(regulatoryClass: string): FeatureType | undefined {
+  return REGULATORY_CLASSES.find(([, name]) => name === regulatoryClass.trim())?.[0];
+}
+
+function importedFeatureType(featureKey: string, qualifiers: Readonly<Record<string, string | true>>): FeatureType {
+  const marked = MOTIF_ONLY_TYPES.find((type) => type === qualifiers[MOTIF_TYPE_QUALIFIER]);
+  const regulatoryClass = qualifiers.regulatory_class;
+  const regulatory = featureKey === 'regulatory' && typeof regulatoryClass === 'string'
+    ? regulatoryClassFeatureType(regulatoryClass)
+    : undefined;
+  return marked ?? regulatory ?? FEATURE_TYPE_MAP[featureKey] ?? 'custom';
+}
+
+export const SAFE_IMPORTED_FEATURE_COLOR = /^(?:#[0-9a-f]{3,8}|(?:rgb|hsl)a?\([\d\s.,%+\-/]+\)|[a-z]+)$/i;
 
 function importedFeatureColor(
   qualifiers: Readonly<Record<string, string | true>>,
@@ -649,7 +760,14 @@ export function parseFeatures(featuresText: string): Feature[] {
         }
         value = raw;
       }
-      qualifiers[currentQualKey] = value;
+      // INSDC writes one /transl_except per recoded codon, so a selenoprotein
+      // can carry several. The translation readers parse every parenthesized
+      // entry of one value, so repeats join instead of the last one replacing
+      // the others.
+      const previous = qualifiers[currentQualKey];
+      qualifiers[currentQualKey] = currentQualKey === 'transl_except' && typeof previous === 'string' && typeof value === 'string'
+        ? `${previous},${value}`
+        : value;
       qualifierEntries.push({ key: currentQualKey, value });
     };
 
@@ -725,8 +843,19 @@ export function parseFeatures(featuresText: string): Feature[] {
     // Save last qualifier
     saveQualifier();
 
+    // A retired key gains the class that replaced it, first in the list, as
+    // though the file had written `regulatory`. A class already present stays.
+    const retiredClass = Object.hasOwn(RETIRED_REGULATORY_KEYS, featureKey) ? RETIRED_REGULATORY_KEYS[featureKey] : undefined;
+    if (retiredClass && !qualifierEntries.some((entry) => entry.key.toLowerCase() === 'regulatory_class')) {
+      const added: GenBankQualifier[] = [{ key: 'regulatory_class', value: retiredClass }];
+      if (retiredClass === 'other') added.push({ key: 'note', value: featureKey });
+      qualifierEntries.unshift(...added);
+      qualifiers.regulatory_class = retiredClass;
+      if (!('note' in qualifiers) && retiredClass === 'other') qualifiers.note = featureKey;
+    }
+
     // Determine feature type
-    const mappedType: FeatureType = FEATURE_TYPE_MAP[featureKey] ?? 'custom';
+    const mappedType = importedFeatureType(retiredClass ? 'regulatory' : featureKey, qualifiers);
 
     // Determine name from qualifiers. Each read is string-guarded: a valueless
     // qualifier is stored as `true` (see saveQualifier) and `name.replace()`
@@ -749,6 +878,7 @@ export function parseFeatures(featuresText: string): Feature[] {
     let locationDiagnostic: GenBankImportDiagnostic | null = null;
     try {
       locationResult = parseLocation(locationStr);
+      if (marksUnstranded(qualifiers)) locationResult = withUnstrandedMarker(locationResult);
     } catch (error) {
       locationDiagnostic = unprojectableLocationDiagnostic(locationStr, featureKey);
       if (locationDiagnostic) {
@@ -847,7 +977,7 @@ function splitGenBankRecords(input: string): string[] {
  *   LOCUS       pBR322     4361 bp    ds-DNA   circular SYN 26-APR-2010
  *   LOCUS       NC_001416  48502 bp    DNA     linear   PHG 10-FEB-2015
  *   LOCUS       MYSEQ        500 aa            linear            01-JAN-2020
- *   LOCUS       pUC19      2578 bp    DNA     circular UNK
+ *   LOCUS       pUC19      2686 bp    DNA     circular UNK
  */
 interface LocusFields {
   name: string;
@@ -883,11 +1013,12 @@ function parseLocusLine(line: string): LocusFields {
 
   // Strandedness — `ss-`, `ds-`, `ms-` prefix on the molecule type field.
   // We strip the prefix from `moleculeType` so the rest of the codebase
-  // continues to receive plain `DNA` / `RNA`.
+  // continues to receive plain `DNA` / `RNA`. `mRNA` keeps INSDC's spelling:
+  // an import that keeps the LOCUS token writes it back on export.
   const strandMatch = line.match(/\b(ss|ds|ms)-(DNA|RNA|mRNA)\b/i);
   if (strandMatch) {
     result.strandedness = strandMatch[1].toLowerCase() as GenBankStrandedness;
-    result.moleculeType = strandMatch[2].toUpperCase();
+    result.moleculeType = /^mrna$/i.test(strandMatch[2]) ? 'mRNA' : strandMatch[2].toUpperCase();
   } else {
     const molMatch = line.match(/\b(DNA|RNA|mRNA|cDNA|tRNA|rRNA|ncRNA)\b/i);
     if (molMatch) result.moleculeType = molMatch[1];

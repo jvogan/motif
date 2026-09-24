@@ -8,6 +8,7 @@ import {
   cloneCanonicalFeature,
   snapshotFeatureCollection,
 } from './feature-bounds';
+import { remapPositionQualifiers } from './transl-except';
 
 const DNA_COMPLEMENT: Record<string, string> = {
   A: 'T', T: 'A', G: 'C', C: 'G',
@@ -84,5 +85,11 @@ export function reverseComplementFeatures(features: readonly Feature[], seqLengt
       end: seqLength - r.start,
       strand: r.strand != null ? r.strand * -1 : undefined,
     })),
+    // A /transl_except or /anticodon position is mirrored too, and its
+    // complement() toggles with the strand.
+    metadata: remapPositionQualifiers(f.metadata, {
+      base: (index) => (index >= 0 && index < seqLength ? seqLength - 1 - index : null),
+      flipped: true,
+    }),
   }));
 }

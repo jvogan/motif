@@ -215,6 +215,12 @@ export type ArtifactConstructReadVerification = {
   qualityProvided: boolean;
   meanQuality: number | null;
   status: ArtifactConstructReadStatus;
+  /**
+   * Present only on an 'unmapped' read whose work budget stopped the search
+   * before it had checked the whole reference. The search found no close
+   * alignment, but a fuller one could still align the read.
+   */
+  searchIncomplete?: true;
   trim: ArtifactConstructReadTrim;
   mapping: ArtifactConstructReadMapping | null;
 };
@@ -348,12 +354,32 @@ const IUPAC_DNA_PATTERN = /^[ACGTRYSWKMBDHVN]+$/;
 const CANONICAL_DNA_PATTERN = /^[ACGT]*$/;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/i;
 const MAX_MAPPING_CANDIDATES_PER_ORIENTATION = 16;
-const EXHAUSTIVE_MAPPING_WORK_FRACTION = 0.92;
+const PROVEN_MAPPING_WORK_FRACTION = 0.92;
+/** Longest seed block used by the proven mapping search (see searchProvenMapping). */
+const PROVEN_SEED_LENGTH = 12;
+/** Shorter seeds hit too much of a plasmid to narrow the search; align the whole reference instead. */
+const PROVEN_MIN_SEED_LENGTH = 8;
+/**
+ * Score deficit the first seeded pass allows for beyond the margin, so a typical
+ * read needs one pass: the larger of a floor and a fraction of the perfect score.
+ * These only set cost; completeness is checked after every pass.
+ */
+const PROVEN_FIRST_PASS_SLACK = 64;
+const PROVEN_FIRST_PASS_ERROR_FRACTION = 0.05;
 const NEGATIVE_INFINITY = -1_000_000_000;
 const MATCH_SCORE = 3;
 const AMBIGUOUS_MATCH_SCORE = 1;
 const MISMATCH_SCORE = -3;
 const GAP_SCORE = -4;
+const BASE_CODE_SYMBOLS = 'ACGTRYSWKMBDHVN';
+const BASE_CODE_COUNT = 16;
+const BASE_CODE_BY_CHAR = (() => {
+  const codes = new Int8Array(128).fill(-1);
+  for (let code = 0; code < BASE_CODE_SYMBOLS.length; code += 1) {
+    codes[BASE_CODE_SYMBOLS.charCodeAt(code)] = code;
+  }
+  return codes;
+})();
 
 const IUPAC_MASK: Readonly<Record<string, number>> = {
   A: 1,
@@ -372,6 +398,20 @@ const IUPAC_MASK: Readonly<Record<string, number>> = {
   V: 7,
   N: 15,
 };
+
+/** baseAlignmentScore as a table indexed by [referenceCode * BASE_CODE_COUNT + readCode]. */
+const BASE_SCORE_TABLE = (() => {
+  const table = new Int8Array(BASE_CODE_COUNT * BASE_CODE_COUNT);
+  for (let referenceCode = 0; referenceCode < BASE_CODE_SYMBOLS.length; referenceCode += 1) {
+    for (let readCode = 0; readCode < BASE_CODE_SYMBOLS.length; readCode += 1) {
+      table[(referenceCode * BASE_CODE_COUNT) + readCode] = baseAlignmentScore(
+        BASE_CODE_SYMBOLS[referenceCode],
+        BASE_CODE_SYMBOLS[readCode],
+      );
+    }
+  }
+  return table;
+})();
 
 type NormalizedReference = {
   id: string;
@@ -1161,58 +1201,6 @@ function mappingCandidates(
   return { candidates: [], truncated };
 }
 
-function exhaustiveMappingWorkEstimate(
-  readLength: number,
-  reference: NormalizedReference,
-  band: number,
-): number {
-  const candidateCount = reference.topology === 'circular'
-    ? reference.sequence.length
-    : reference.sequence.length + Math.min(band, readLength);
-  const dynamicProgrammingWidth = (band * 2) + 3;
-  const scoringPasses = candidateCount * 2;
-  // A fixed alignment path can fall inside at most 2*band+1 integer-centered
-  // bands for one orientation. After the best traceback, that many duplicate
-  // paths may need to be skipped before the first scientifically distinct
-  // runner-up is found. The opposite orientation is already a distinct path.
-  // This is a complete bound, while avoiding an unnecessary traceback reserve
-  // for every start that was already scored.
-  const tracebackPasses = Math.min(scoringPasses, (band * 2) + 2);
-  return (scoringPasses + tracebackPasses)
-    * readLength
-    * dynamicProgrammingWidth;
-}
-
-function exhaustiveAlignmentBand(
-  readLength: number,
-  reference: NormalizedReference,
-  maxIndelFraction: number,
-): number {
-  const maximumCumulativeIndels = maxIndelFraction >= 1
-    ? reference.sequence.length + readLength
-    : Math.ceil((maxIndelFraction * readLength) / Math.max(Number.EPSILON, 1 - maxIndelFraction));
-  // Every allowed path has a diagonal range no larger than its cumulative
-  // indel count. Enumerating all integer centers with half that range covers it.
-  return Math.max(
-    ARTIFACT_CONSTRUCT_VERIFICATION_LIMITS.maxIndelLength,
-    Math.ceil(maximumCumulativeIndels / 2),
-  );
-}
-
-function exhaustiveCandidateStarts(
-  readLength: number,
-  reference: NormalizedReference,
-  band: number,
-): CandidateStart[] {
-  const first = reference.topology === 'linear'
-    ? -Math.min(band, readLength)
-    : 0;
-  const last = reference.sequence.length - 1;
-  const candidates: CandidateStart[] = [];
-  for (let start = first; start <= last; start += 1) candidates.push({ start, votes: 0 });
-  return candidates;
-}
-
 function exactOccurrenceStarts(
   oriented: OrientedRead,
   reference: NormalizedReference,
@@ -1268,127 +1256,175 @@ type BandedAlignmentRun = {
   alignment: AlignmentResult | null;
 };
 
-function runBandedAlignment(
+/**
+ * A set of alignment diagonals. A DP cell (row r, absolute reference boundary a)
+ * lies on diagonal a - r; row r has consumed r oriented read calls and a is the
+ * number of reference bases before the cell on the unrolled reference.
+ */
+type DiagonalRegion = {
+  low: number;
+  high: number;
+};
+
+type DiagonalRegionRun = {
+  score: number;
+  /** Diagonal offset (a - r - low) of the chosen final-row cell, or -1. */
+  endOffset: number;
+  traces: Uint8Array | null;
+};
+
+/**
+ * Glocal alignment of the whole oriented read against every reference start whose
+ * path stays inside `region`. Row 0 is free (any start); the final row is free
+ * (any end). A band of half-width B around start c is the region [c - B, c + B].
+ * `forbidden[i]` bars the diagonal move that aligns oriented call i to that
+ * normalized reference position, so a run can exclude one alignment's pairs.
+ */
+function alignDiagonalRegion(
   oriented: OrientedRead,
   reference: NormalizedReference,
-  candidateStart: number,
-  band: number,
+  region: DiagonalRegion,
   work: WorkCounter,
-  includeTraceback: boolean,
-): BandedAlignmentRun {
+  options: {
+    traceback: boolean;
+    expectedEnd?: number;
+    forbidden?: Int32Array;
+  },
+): DiagonalRegionRun {
   const readLength = oriented.sequence.length;
-  const rawWindowStart = candidateStart - band;
-  const rawWindowEnd = candidateStart + readLength + band;
-  const windowStart = reference.topology === 'linear' ? Math.max(0, rawWindowStart) : rawWindowStart;
-  const windowEnd = reference.topology === 'linear'
-    ? Math.min(reference.sequence.length, rawWindowEnd)
-    : rawWindowEnd;
-  const windowLength = windowEnd - windowStart;
-  if (windowLength <= 0) return { score: NEGATIVE_INFINITY, alignment: null };
-  const expectedOffset = candidateStart - windowStart;
-  const width = (band * 2) + 3;
-  const previous = new Int32Array(windowLength + 1);
-  const current = new Int32Array(windowLength + 1);
-  const rowStarts = includeTraceback ? new Int32Array(readLength + 1) : null;
-  const traces = includeTraceback ? new Uint8Array((readLength + 1) * width) : null;
+  const referenceLength = reference.sequence.length;
+  const linear = reference.topology === 'linear';
+  const width = region.high - region.low + 1;
+  if (width <= 0) return { score: NEGATIVE_INFINITY, endOffset: -1, traces: null };
+  const low = region.low;
+  const readCodes = new Uint8Array(readLength);
+  for (let index = 0; index < readLength; index += 1) {
+    readCodes[index] = BASE_CODE_BY_CHAR[oriented.sequence.charCodeAt(index)];
+  }
+  // Reference base codes for absolute positions low .. low + readLength + width - 2,
+  // the only bases a diagonal move inside the region can consume.
+  const spanLength = readLength + width - 1;
+  const referenceCodes = new Int8Array(Math.max(0, spanLength));
+  const forbidden = options.forbidden ?? null;
+  const spanPositions = forbidden === null ? null : new Int32Array(Math.max(0, spanLength));
+  for (let index = 0; index < spanLength; index += 1) {
+    const absolute = low + index;
+    let position: number;
+    if (linear) {
+      position = absolute;
+      referenceCodes[index] = absolute < 0 || absolute >= referenceLength
+        ? -1
+        : BASE_CODE_BY_CHAR[reference.sequence.charCodeAt(absolute)];
+    } else {
+      position = modulo(absolute, referenceLength);
+      referenceCodes[index] = BASE_CODE_BY_CHAR[reference.sequence.charCodeAt(position)];
+    }
+    if (spanPositions !== null) spanPositions[index] = position;
+  }
 
-  let previousStart = Math.max(0, expectedOffset - band);
-  let previousEnd = Math.min(windowLength, expectedOffset + band);
-  for (let column = previousStart; column <= previousEnd; column += 1) previous[column] = 0;
-  if (rowStarts !== null) rowStarts[0] = previousStart;
+  let previous = new Int32Array(width);
+  let current = new Int32Array(width);
+  const traces = options.traceback ? new Uint8Array((readLength + 1) * width) : null;
+  // A linear reference only has boundaries 0..referenceLength.
+  let previousMin = linear ? Math.max(0, -low) : 0;
+  let previousMax = linear ? Math.min(width - 1, referenceLength - low) : width - 1;
+  for (let offset = previousMin; offset <= previousMax; offset += 1) previous[offset] = 0;
 
   for (let row = 1; row <= readLength; row += 1) {
-    const expectedColumn = expectedOffset + row;
-    const currentStart = Math.max(0, expectedColumn - band);
-    const currentEnd = Math.min(windowLength, expectedColumn + band);
-    if (rowStarts !== null) rowStarts[row] = currentStart;
-    for (let column = currentStart; column <= currentEnd; column += 1) {
-      work.spend();
+    const rowMin = linear ? Math.max(0, -(low + row)) : 0;
+    const rowMax = linear ? Math.min(width - 1, referenceLength - low - row) : width - 1;
+    if (rowMax >= rowMin) work.spend(rowMax - rowMin + 1);
+    const readCode = readCodes[row - 1];
+    const forbiddenPosition = forbidden === null ? -1 : forbidden[row - 1];
+    const traceRow = row * width;
+    for (let offset = rowMin; offset <= rowMax; offset += 1) {
       let bestScore = NEGATIVE_INFINITY;
       let direction = 0;
-      if (
-        column > 0
-        && column - 1 >= previousStart
-        && column - 1 <= previousEnd
-      ) {
-        const referenceBase = referenceBaseAt(windowStart + column - 1, reference);
-        if (referenceBase !== null) {
-          bestScore = previous[column - 1]
-            + baseAlignmentScore(referenceBase, oriented.sequence[row - 1]);
+      if (offset >= previousMin && offset <= previousMax) {
+        const span = row - 1 + offset;
+        const referenceCode = referenceCodes[span];
+        if (
+          referenceCode >= 0
+          && (spanPositions === null || forbiddenPosition < 0 || spanPositions[span] !== forbiddenPosition)
+        ) {
+          bestScore = previous[offset] + BASE_SCORE_TABLE[(referenceCode * BASE_CODE_COUNT) + readCode];
           direction = 1;
         }
       }
-      if (column >= previousStart && column <= previousEnd) {
-        const insertionScore = previous[column] + GAP_SCORE;
+      if (offset + 1 >= previousMin && offset + 1 <= previousMax) {
+        const insertionScore = previous[offset + 1] + GAP_SCORE;
         if (insertionScore > bestScore) {
           bestScore = insertionScore;
           direction = 2;
         }
       }
-      if (column > currentStart) {
-        const deletionScore = current[column - 1] + GAP_SCORE;
+      if (offset > rowMin) {
+        const deletionScore = current[offset - 1] + GAP_SCORE;
         if (deletionScore > bestScore) {
           bestScore = deletionScore;
           direction = 3;
         }
       }
-      current[column] = bestScore;
-      if (traces !== null) traces[(row * width) + (column - currentStart)] = direction;
+      current[offset] = bestScore;
+      if (traces !== null) traces[traceRow + offset] = direction;
     }
-    for (let column = currentStart; column <= currentEnd; column += 1) {
-      previous[column] = current[column];
-    }
-    previousStart = currentStart;
-    previousEnd = currentEnd;
+    const swap = previous;
+    previous = current;
+    current = swap;
+    previousMin = rowMin;
+    previousMax = rowMax;
   }
 
-  const expectedEnd = expectedOffset + readLength;
-  let endColumn = -1;
+  const expectedOffset = options.expectedEnd === undefined
+    ? null
+    : options.expectedEnd - low - readLength;
+  let endOffset = -1;
   let bestScore = NEGATIVE_INFINITY;
-  for (let column = previousStart; column <= previousEnd; column += 1) {
-    const score = previous[column];
+  for (let offset = previousMin; offset <= previousMax; offset += 1) {
+    const score = previous[offset];
     if (
       score > bestScore
       || (
         score === bestScore
         && (
-          endColumn < 0
-          || Math.abs(column - expectedEnd) < Math.abs(endColumn - expectedEnd)
+          endOffset < 0
           || (
-            Math.abs(column - expectedEnd) === Math.abs(endColumn - expectedEnd)
-            && column < endColumn
+            expectedOffset !== null
+            && Math.abs(offset - expectedOffset) < Math.abs(endOffset - expectedOffset)
           )
         )
       )
     ) {
       bestScore = score;
-      endColumn = column;
+      endOffset = offset;
     }
   }
-  if (!includeTraceback || traces === null || rowStarts === null || endColumn < 0) {
-    return { score: bestScore, alignment: null };
-  }
+  return { score: bestScore, endOffset, traces };
+}
 
-  const reversedColumns: Array<{
-    column: ArtifactConstructAlignmentColumn;
-    absoluteReferencePosition: number | null;
-  }> = [];
-  let row = readLength;
-  let column = endColumn;
+function traceDiagonalRegion(
+  oriented: OrientedRead,
+  reference: NormalizedReference,
+  region: DiagonalRegion,
+  run: DiagonalRegionRun,
+): AlignmentResult | null {
+  const traces = run.traces;
+  if (traces === null || run.endOffset < 0) return null;
+  const width = region.high - region.low + 1;
+  const reversedColumns: TracedColumn[] = [];
+  let row = oriented.sequence.length;
+  let offset = run.endOffset;
   while (row > 0) {
-    const rowStart = rowStarts[row];
-    const traceOffset = column - rowStart;
-    if (traceOffset < 0 || traceOffset >= width) return { score: bestScore, alignment: null };
-    const direction = traces[(row * width) + traceOffset];
+    if (offset < 0 || offset >= width) return null;
+    const direction = traces[(row * width) + offset];
+    const boundary = region.low + row + offset;
     if (direction === 1) {
-      const absoluteReferencePosition = windowStart + column - 1;
+      const absoluteReferencePosition = boundary - 1;
       const referencePosition = normalizedReferencePosition(absoluteReferencePosition, reference);
       const referenceBase = referenceBaseAt(absoluteReferencePosition, reference);
       const orientedIndex = row - 1;
       const readBase = oriented.sequence[orientedIndex];
-      if (referencePosition === null || referenceBase === null) {
-        return { score: bestScore, alignment: null };
-      }
+      if (referencePosition === null || referenceBase === null) return null;
       reversedColumns.push({
         absoluteReferencePosition,
         column: {
@@ -1406,17 +1442,16 @@ function runBandedAlignment(
         },
       });
       row -= 1;
-      column -= 1;
     } else if (direction === 2) {
       const orientedIndex = row - 1;
-      const boundary = normalizedReferenceBoundary(windowStart + column, reference);
-      if (boundary === null) return { score: bestScore, alignment: null };
+      const referenceBoundary = normalizedReferenceBoundary(boundary, reference);
+      if (referenceBoundary === null) return null;
       reversedColumns.push({
         absoluteReferencePosition: null,
         column: {
           operation: 'insertion',
           referencePosition: null,
-          referenceBoundary: boundary,
+          referenceBoundary,
           rawCallIndex: oriented.rawCallIndices[orientedIndex],
           orientedCallIndex: orientedIndex,
           referenceBase: null,
@@ -1426,13 +1461,12 @@ function runBandedAlignment(
         },
       });
       row -= 1;
+      offset += 1;
     } else if (direction === 3) {
-      const absoluteReferencePosition = windowStart + column - 1;
+      const absoluteReferencePosition = boundary - 1;
       const referencePosition = normalizedReferencePosition(absoluteReferencePosition, reference);
       const referenceBase = referenceBaseAt(absoluteReferencePosition, reference);
-      if (referencePosition === null || referenceBase === null) {
-        return { score: bestScore, alignment: null };
-      }
+      if (referencePosition === null || referenceBase === null) return null;
       reversedColumns.push({
         absoluteReferencePosition,
         column: {
@@ -1447,15 +1481,27 @@ function runBandedAlignment(
           qualityScore: null,
         },
       });
-      column -= 1;
+      offset -= 1;
     } else {
-      return { score: bestScore, alignment: null };
+      return null;
     }
   }
+  return alignmentFromTrace(oriented, reference, reversedColumns.reverse(), run.score);
+}
 
-  const traced = reversedColumns.reverse();
+type TracedColumn = {
+  column: ArtifactConstructAlignmentColumn;
+  absoluteReferencePosition: number | null;
+};
+
+function alignmentFromTrace(
+  oriented: OrientedRead,
+  reference: NormalizedReference,
+  traced: TracedColumn[],
+  bestScore: number,
+): AlignmentResult | null {
   const referenceColumns = traced.filter((entry) => entry.absoluteReferencePosition !== null);
-  if (referenceColumns.length === 0) return { score: bestScore, alignment: null };
+  if (referenceColumns.length === 0) return null;
   const firstAbsolute = referenceColumns[0].absoluteReferencePosition as number;
   const lastAbsolute = referenceColumns.at(-1)?.absoluteReferencePosition as number;
   const referenceSpan = lastAbsolute - firstAbsolute + 1;
@@ -1500,33 +1546,47 @@ function runBandedAlignment(
   const identity = alignedLength === 0 ? 0 : matches / alignedLength;
   const indelFraction = alignedLength === 0 ? 0 : (insertions + deletions) / alignedLength;
   return {
-    score: bestScore,
-    alignment: {
-      maximumIndelRun,
-      mapping: {
-        orientation: oriented.orientation,
-        referenceStart,
-        referenceEnd,
-        wraps,
-        referenceSpan,
-        score: bestScore,
-        secondBestScore: null,
-        mappingMargin: null,
-        identity,
-        alignedLength,
-        matches,
-        substitutions,
-        insertions,
-        deletions,
-        indelFraction,
-        coordinateMap: {
-          columns,
-          referencePositions: columns.map((entry) => entry.referencePosition),
-          rawCallIndices: columns.map((entry) => entry.rawCallIndex),
-        },
+    maximumIndelRun,
+    mapping: {
+      orientation: oriented.orientation,
+      referenceStart,
+      referenceEnd,
+      wraps,
+      referenceSpan,
+      score: bestScore,
+      secondBestScore: null,
+      mappingMargin: null,
+      identity,
+      alignedLength,
+      matches,
+      substitutions,
+      insertions,
+      deletions,
+      indelFraction,
+      coordinateMap: {
+        columns,
+        referencePositions: columns.map((entry) => entry.referencePosition),
+        rawCallIndices: columns.map((entry) => entry.rawCallIndex),
       },
     },
   };
+}
+
+function runBandedAlignment(
+  oriented: OrientedRead,
+  reference: NormalizedReference,
+  candidateStart: number,
+  band: number,
+  work: WorkCounter,
+  includeTraceback: boolean,
+): BandedAlignmentRun {
+  const region = { low: candidateStart - band, high: candidateStart + band };
+  const run = alignDiagonalRegion(oriented, reference, region, work, {
+    traceback: includeTraceback,
+    expectedEnd: candidateStart + oriented.sequence.length,
+  });
+  if (!includeTraceback) return { score: run.score, alignment: null };
+  return { score: run.score, alignment: traceDiagonalRegion(oriented, reference, region, run) };
 }
 
 function alignmentPathSignature(mapping: ArtifactConstructReadMapping): string {
@@ -1545,6 +1605,477 @@ function circularMappingRepeatsReferencePosition(mapping: ArtifactConstructReadM
   return false;
 }
 
+/*
+ * Proven mapping search.
+ *
+ * A read's verdict depends on its best glocal alignment (the whole trimmed read
+ * against any reference start) and on its runner-up: the best alignment that is a
+ * different placement, meaning it is on the other strand or shares no aligned
+ * (read call, reference base) pair with the best one. A realignment of the same
+ * locus that only moves a few end calls around an indel shares the rest of its
+ * pairs, so it is not a second placement. Another repeat copy, a shift inside a
+ * tandem repeat, and the opposite strand share none, so they still compete.
+ * The read is ambiguous when that runner-up ties the best score or is closer
+ * than minMappingMargin * 3 * readLength.
+ *
+ * Proof that the seeded search finds every alignment that can matter.
+ * With match +3, IUPAC-compatible match +1, mismatch -3 and gap column -4, an
+ * alignment of a read of length L has cost 3L - score = 2*compatible
+ * + 6*mismatches + 7*insertions + 4*deletions (an identical non-A/C/G/T symbol
+ * scores +3 and costs 0). Let S be the score of any alignment already found, so
+ * the best score S1 >= S, and let T = S - (floor(margin * 3L) + 1). Every
+ * alignment that can decide the verdict scores >= S1 - margin * 3L > T, so its
+ * cost is at most D = 3L - T. Take any alignment Q with cost <= D.
+ * 1. Q's diagonal (reference boundary minus read row) moves right only through
+ *    deletions (4 each) and left only through insertions (7 each). A point on Q
+ *    can sit anywhere along the read. After it, Q's diagonal moves right by the
+ *    deletions between them and left by the insertions; before it, the other way
+ *    round. Deletions are the cheaper gap, so from any point on Q it stays within
+ *    [d - floor(D / 4), d + floor(D / 4)].
+ * 2. Cut the read into disjoint blocks of k calls; a block is usable when all its
+ *    calls are A/C/G/T. An error inside a usable block costs at least c, where
+ *    c = 4 (a deletion) when the reference is all A/C/G/T and c = 2 otherwise (a
+ *    compatible match against an IUPAC reference base). Each error sits in at
+ *    most one block, so Q breaks at most b = floor(D / c) of the U usable blocks.
+ * 3. Q keeps at least U - b usable blocks whole: k calls aligned without a gap to
+ *    k identical reference bases. Each is in the reference seed index at Q's
+ *    diagonal there, and by 1 the window around each of those hits contains Q, so
+ *    the hits merge into one window holding at least U - b distinct blocks.
+ * So when U > b, every alignment with cost <= D lies in a merged window with at
+ * least U - b distinct blocks; windows with fewer are skipped, and a dynamic
+ * program over the rest returns the true best alignment. A different placement
+ * cannot keep whole a block that the best alignment aligns at the same diagonal
+ * (they would share its pairs), so the same argument holds for the runner-up with
+ * only the hits the best alignment does not explain, plus the other windows and
+ * the other strand. The runner-up is therefore exact whenever it scores >= T, and
+ * when none does the margin is proven.
+ *
+ * Passes. A pass at D uses the longest k from PROVEN_SEED_LENGTH down to
+ * PROVEN_MIN_SEED_LENGTH with U > b in both orientations. Such a k exists exactly
+ * when D <= D* = c * U* - 1, where U* is the largest of those block counts, so
+ * D* is the largest deficit seeds can prove. The first pass takes D0 = the margin
+ * window plus max(64, 5% of 3L), or the margin window alone after one exact
+ * occurrence (which proves S1 = 3L), capped at D*. A seeded pass can only be
+ * complete when D >= S1's deficit >= the margin window, so when D* is below the
+ * margin window the whole reference is aligned instead. A seeded pass at D ends
+ * in one of three ways:
+ * - its best alignment implies a deficit <= D: the search is complete;
+ * - its best alignment implies a larger deficit F: the pass is repeated at F,
+ *   which finds that alignment again and so is complete, or, when F > D*, the
+ *   whole reference is aligned;
+ * - no window holds an alignment: by 1-3 no alignment costs <= D, so the pass is
+ *   repeated at min(2D, D*), or the whole reference is aligned when D = D*.
+ * Windows that would cost as much as the whole reference are replaced by it.
+ * Every repeat raises D and D never exceeds D*, so the search ends without a pass
+ * limit. Aligning the whole reference is complete for a linear reference and, for
+ * a circular one, whenever floor(D / 4) <= L. Only the read's share of the work
+ * budget can stop the search early, and a stopped read is never reported as
+ * mapped. An alignment found before the stop is kept as review evidence: it is
+ * reported as ambiguous unless it already fails the identity or indel checks.
+ * With no alignment found, the read is unmapped when a pass proved that no
+ * alignment costs <= D for some D >= min(D0, D*), and otherwise goes through the
+ * older sampled search, which is review-only. An unmapped read whose search the
+ * budget stopped carries searchIncomplete: a costlier alignment may still exist.
+ */
+
+type SeedHitSet = {
+  seedLength: number;
+  usableBlocks: number;
+  /** Parallel arrays: the read block and the normalized diagonal of each hit. */
+  blocks: number[];
+  diagonals: number[];
+  units: number;
+};
+
+type SearchWindow = DiagonalRegion & {
+  orientation: number;
+  /** Indices into the orientation's SeedHitSet; null for a whole-reference window. */
+  hits: number[] | null;
+  score: number;
+};
+
+type ProvenBest = {
+  window: SearchWindow;
+  run: DiagonalRegionRun;
+};
+
+type ProvenSearch = {
+  complete: boolean;
+  /** The read's work budget ended the search before it could finish. */
+  stopped: boolean;
+  best: ProvenBest | null;
+  /** The largest deficit a seeded pass proved no alignment reaches, or null. */
+  emptyDeficit: number | null;
+  windows: SearchWindow[];
+  hitSets: SeedHitSet[] | null;
+  /** floor(margin * 3L) + 1: runner-ups at or above bestScore minus this are exact. */
+  marginWindow: number;
+  blockBreakCost: number;
+  spent: number;
+};
+
+function usableBlockCount(sequence: string, seedLength: number): number {
+  let usable = 0;
+  const blockCount = Math.floor(sequence.length / seedLength);
+  for (let block = 0; block < blockCount; block += 1) {
+    const offset = block * seedLength;
+    if (CANONICAL_DNA_PATTERN.test(sequence.slice(offset, offset + seedLength))) usable += 1;
+  }
+  return usable;
+}
+
+function blockSeedHits(
+  oriented: OrientedRead,
+  reference: NormalizedReference,
+  seedLength: number,
+  cache: ReferenceSeedIndexCache,
+  work: WorkCounter,
+): SeedHitSet {
+  const index = referenceSeedIndex(reference, seedLength, cache, work);
+  const referenceLength = reference.sequence.length;
+  const blockCount = Math.floor(oriented.sequence.length / seedLength);
+  const hits: SeedHitSet = { seedLength, usableBlocks: 0, blocks: [], diagonals: [], units: 0 };
+  for (let block = 0; block < blockCount; block += 1) {
+    const offset = block * seedLength;
+    const seed = oriented.sequence.slice(offset, offset + seedLength);
+    if (!CANONICAL_DNA_PATTERN.test(seed)) continue;
+    hits.usableBlocks += 1;
+    const positions = index.get(seed);
+    // Every occurrence is kept: the proof needs all of them.
+    const units = 1 + (positions?.length ?? 0);
+    work.spend(units);
+    hits.units += units;
+    if (positions === undefined) continue;
+    for (const position of positions) {
+      hits.blocks.push(block);
+      hits.diagonals.push(reference.topology === 'circular'
+        ? modulo(position - offset, referenceLength)
+        : position - offset);
+    }
+  }
+  return hits;
+}
+
+function wholeReferenceRegion(reference: NormalizedReference, readLength: number): DiagonalRegion {
+  return reference.topology === 'linear'
+    ? { low: -readLength, high: reference.sequence.length }
+    : { low: -readLength, high: reference.sequence.length - 1 + readLength };
+}
+
+/**
+ * Merged windows [d - floor(deficit / 4), d + floor(deficit / 4)] around the
+ * given hits, keeping only windows with at least minimumBlocks distinct blocks
+ * (steps 1 and 3 of the proof). Null when a window would cover a whole circle.
+ */
+function seedWindows(
+  hitSet: SeedHitSet,
+  hitIndices: readonly number[],
+  deficit: number,
+  minimumBlocks: number,
+  reference: NormalizedReference,
+  readLength: number,
+  orientation: number,
+): SearchWindow[] | null {
+  const referenceLength = reference.sequence.length;
+  const bounds = wholeReferenceRegion(reference, readLength);
+  // Deletions before a hit put the read start left of it, so both sides reach D / 4.
+  const reach = Math.floor(deficit / -GAP_SCORE);
+  const ordered = [...hitIndices].sort((left, right) => (
+    hitSet.diagonals[left] - hitSet.diagonals[right] || left - right
+  ));
+  const windows: SearchWindow[] = [];
+  for (const hit of ordered) {
+    const diagonal = hitSet.diagonals[hit];
+    let low = diagonal - reach;
+    let high = diagonal + reach;
+    if (reference.topology === 'linear') {
+      low = Math.max(low, bounds.low);
+      high = Math.min(high, bounds.high);
+    }
+    const last = windows.at(-1);
+    if (last !== undefined && low <= last.high + 1) {
+      last.high = Math.max(last.high, high);
+      last.hits?.push(hit);
+    } else {
+      windows.push({ low, high, orientation, hits: [hit], score: NEGATIVE_INFINITY });
+    }
+  }
+  if (reference.topology === 'circular') {
+    while (windows.length > 1 && windows[0].low + referenceLength <= (windows.at(-1) as SearchWindow).high + 1) {
+      const first = windows.shift() as SearchWindow;
+      const last = windows.at(-1) as SearchWindow;
+      last.high = Math.max(last.high, first.high + referenceLength);
+      last.hits?.push(...(first.hits ?? []));
+    }
+    if (windows.some((window) => window.high - window.low + 1 >= referenceLength)) return null;
+  }
+  return windows.filter((window) => (
+    new Set((window.hits ?? []).map((hit) => hitSet.blocks[hit])).size >= minimumBlocks
+  ));
+}
+
+function windowCost(windows: readonly DiagonalRegion[], readLength: number): number {
+  return windows.reduce((total, window) => total + (readLength * (window.high - window.low + 1)), 0);
+}
+
+function searchProvenMapping(
+  orientedReads: readonly OrientedRead[],
+  reference: NormalizedReference,
+  thresholds: ArtifactConstructVerificationThresholds,
+  seedCache: ReferenceSeedIndexCache,
+  work: WorkCounter,
+  budget: number,
+  exactHit: boolean,
+): ProvenSearch {
+  const readLength = orientedReads[0].sequence.length;
+  const perfectScore = MATCH_SCORE * readLength;
+  const marginWindow = Math.floor(Math.max(1, perfectScore) * thresholds.minMappingMargin) + 1;
+  // Cheapest error that can break a usable block (step 2 of the proof).
+  const blockBreakCost = CANONICAL_DNA_PATTERN.test(reference.sequence)
+    ? -GAP_SCORE
+    : MATCH_SCORE - AMBIGUOUS_MATCH_SCORE;
+  const deficitFor = (score: number) => perfectScore - score + marginWindow;
+  const whole = wholeReferenceRegion(reference, readLength);
+  const wholeWindows = () => orientedReads.map((_, orientation): SearchWindow => ({
+    ...whole,
+    orientation,
+    hits: null,
+    score: NEGATIVE_INFINITY,
+  }));
+  const wholeCost = windowCost(wholeWindows(), readLength);
+  const longestSeed = Math.min(PROVEN_SEED_LENGTH, readLength);
+  const shortestSeed = Math.min(PROVEN_MIN_SEED_LENGTH, readLength);
+  // D* from the proof: planFor(deficit) is non-null exactly when deficit <= provableDeficit.
+  let provableDeficit = -1;
+  for (let seedLength = longestSeed; seedLength >= shortestSeed; seedLength -= 1) {
+    const usable = Math.min(...orientedReads.map((oriented) => usableBlockCount(oriented.sequence, seedLength)));
+    provableDeficit = Math.max(provableDeficit, (blockBreakCost * usable) - 1);
+  }
+  // The longest seed whose block count proves the deficit.
+  const planFor = (deficit: number): { seedLength: number; deficit: number } | null => {
+    const brokenBlocks = Math.floor(deficit / blockBreakCost);
+    for (let seedLength = longestSeed; seedLength >= shortestSeed; seedLength -= 1) {
+      if (orientedReads.every((oriented) => usableBlockCount(oriented.sequence, seedLength) > brokenBlocks)) {
+        return { seedLength, deficit };
+      }
+    }
+    return null;
+  };
+
+  // The first pass assumes a deficit that covers a typical read's errors; one exact
+  // occurrence already proves S1 = 3L, so it needs only the margin.
+  const firstDeficit = Math.min(provableDeficit, exactHit
+    ? marginWindow
+    : marginWindow + Math.max(
+      PROVEN_FIRST_PASS_SLACK,
+      Math.floor(perfectScore * PROVEN_FIRST_PASS_ERROR_FRACTION),
+    ));
+  let plan = firstDeficit >= marginWindow ? planFor(firstDeficit) : null;
+  let spent = 0;
+  let best: ProvenBest | null = null;
+  let emptyDeficit: number | null = null;
+  const result = (
+    complete: boolean,
+    windows: SearchWindow[],
+    hitSets: SeedHitSet[] | null,
+    stopped = false,
+  ): ProvenSearch => ({
+    complete,
+    stopped,
+    best,
+    emptyDeficit,
+    windows,
+    hitSets,
+    marginWindow,
+    blockBreakCost,
+    spent,
+  });
+  const alignWindows = (windows: readonly SearchWindow[]): ProvenBest | null => {
+    let windowsBest: ProvenBest | null = null;
+    for (const window of windows) {
+      const run = alignDiagonalRegion(orientedReads[window.orientation], reference, window, work, {
+        traceback: true,
+      });
+      window.score = run.score;
+      // Forward before reverse, then lower diagonals: the first maximum wins.
+      if (run.score > NEGATIVE_INFINITY / 2 && (windowsBest === null || run.score > windowsBest.run.score)) {
+        windowsBest = { window, run };
+      }
+    }
+    return windowsBest;
+  };
+
+  // Every repeat raises plan.deficit and planFor is null past D*, so this loop ends.
+  while (plan !== null) {
+    const seedLength: number = plan.seedLength;
+    const deficit: number = plan.deficit;
+    const hitSets = orientedReads.map((oriented) => blockSeedHits(oriented, reference, seedLength, seedCache, work));
+    spent += hitSets.reduce((total, hitSet) => total + hitSet.units, 0);
+    if (spent > budget) return result(false, [], null, true);
+    const perOrientation: Array<SearchWindow[] | null> = hitSets.map((hitSet, orientation) => seedWindows(
+      hitSet,
+      hitSet.blocks.map((_, index) => index),
+      deficit,
+      hitSet.usableBlocks - Math.floor(deficit / blockBreakCost),
+      reference,
+      readLength,
+      orientation,
+    ));
+    if (perOrientation.some((entry) => entry === null)) break;
+    const windows = perOrientation.flatMap((entry) => entry as SearchWindow[]);
+    const cost = windowCost(windows, readLength);
+    // Aligning the whole reference is never costlier than seeded windows that cover it.
+    if (cost >= wholeCost) break;
+    if (spent + cost > budget) return result(false, [], null, true);
+    spent += cost;
+    const passBest = alignWindows(windows);
+    if (passBest === null) {
+      // No alignment costs <= deficit (steps 1-3 of the proof); assume a larger one.
+      emptyDeficit = deficit;
+      plan = deficit < provableDeficit ? planFor(Math.min(deficit * 2, provableDeficit)) : null;
+      continue;
+    }
+    best = passBest;
+    const found = deficitFor(passBest.run.score);
+    if (found <= deficit) return result(true, windows, hitSets);
+    // The found score bounds the deficit, and the repeat finds this alignment again.
+    plan = planFor(found);
+  }
+
+  // Seeds cannot prove the deficit, or would cover the whole reference anyway.
+  const windows = wholeWindows();
+  if (spent + wholeCost > budget) return result(false, [], null, true);
+  spent += wholeCost;
+  best = alignWindows(windows);
+  const complete = best !== null && (
+    reference.topology === 'linear'
+    || Math.floor(deficitFor(best.run.score) / -GAP_SCORE) <= readLength
+  );
+  return result(complete, complete ? windows : [], null);
+}
+
+/**
+ * Best score among different placements (see the proof above), or null when no
+ * such alignment scores within the proven window. Undefined when the constrained
+ * search does not fit the budget.
+ */
+function provenRunnerUp(
+  search: ProvenSearch,
+  best: ProvenBest,
+  alignment: AlignmentResult,
+  orientedReads: readonly OrientedRead[],
+  reference: NormalizedReference,
+  work: WorkCounter,
+  budget: number,
+): number | null | undefined {
+  let runnerUp = NEGATIVE_INFINITY;
+  // Windows are disjoint, so nothing in another window can share a pair with the best.
+  for (const window of search.windows) {
+    if (window !== best.window) runnerUp = Math.max(runnerUp, window.score);
+  }
+  const oriented = orientedReads[best.window.orientation];
+  const forbidden = new Int32Array(oriented.sequence.length).fill(-1);
+  for (const column of alignment.mapping.coordinateMap.columns) {
+    if (column.referencePosition !== null && column.orientedCallIndex !== null) {
+      forbidden[column.orientedCallIndex] = column.referencePosition;
+    }
+  }
+  let regions: DiagonalRegion[] = [best.window];
+  const hitSet = search.hitSets?.[best.window.orientation];
+  if (hitSet !== undefined && best.window.hits !== null) {
+    const referenceLength = reference.sequence.length;
+    const unexplained = best.window.hits.filter((hit) => {
+      const callIndex = hitSet.blocks[hit] * hitSet.seedLength;
+      const position = reference.topology === 'circular'
+        ? modulo(callIndex + hitSet.diagonals[hit], referenceLength)
+        : callIndex + hitSet.diagonals[hit];
+      return forbidden[callIndex] !== position;
+    });
+    const deficit = (MATCH_SCORE * oriented.sequence.length) - best.run.score + search.marginWindow;
+    regions = seedWindows(
+      hitSet,
+      unexplained,
+      deficit,
+      hitSet.usableBlocks - Math.floor(deficit / search.blockBreakCost),
+      reference,
+      oriented.sequence.length,
+      best.window.orientation,
+    ) ?? [best.window];
+  }
+  const cost = windowCost(regions, oriented.sequence.length);
+  if (search.spent + cost > budget) return undefined;
+  for (const region of regions) {
+    const run = alignDiagonalRegion(oriented, reference, region, work, { traceback: false, forbidden });
+    runnerUp = Math.max(runnerUp, run.score);
+  }
+  return runnerUp > NEGATIVE_INFINITY / 2 && runnerUp >= best.run.score - search.marginWindow
+    ? runnerUp
+    : null;
+}
+
+function classifyProvenMapping(
+  search: ProvenSearch,
+  best: ProvenBest,
+  orientedReads: readonly OrientedRead[],
+  reference: NormalizedReference,
+  thresholds: ArtifactConstructVerificationThresholds,
+  work: WorkCounter,
+  budget: number,
+): { status: ArtifactConstructReadStatus; alignment: AlignmentResult | null } {
+  const alignment = traceDiagonalRegion(
+    orientedReads[best.window.orientation],
+    reference,
+    best.window,
+    best.run,
+  );
+  if (alignment === null) return { status: 'unmapped', alignment: null };
+  if (alignment.mapping.identity < thresholds.minMappingIdentity) {
+    return { status: 'low_mapping_identity', alignment };
+  }
+  if (
+    alignment.maximumIndelRun > ARTIFACT_CONSTRUCT_VERIFICATION_LIMITS.maxIndelLength
+    || alignment.mapping.indelFraction > thresholds.maxIndelFraction
+  ) {
+    return { status: 'excessive_indel', alignment };
+  }
+  if (
+    reference.topology === 'circular'
+    && circularMappingRepeatsReferencePosition(alignment.mapping)
+  ) {
+    return { status: 'ambiguous_mapping', alignment };
+  }
+  // Without a completeness proof an unseen placement could tie the best one.
+  if (!search.complete) return { status: 'ambiguous_mapping', alignment };
+  const secondBestScore = provenRunnerUp(search, best, alignment, orientedReads, reference, work, budget);
+  if (secondBestScore === undefined) return { status: 'ambiguous_mapping', alignment };
+  const bestScore = alignment.mapping.score;
+  const mappingMargin = secondBestScore === null
+    ? null
+    : (bestScore - secondBestScore) / Math.max(1, MATCH_SCORE * orientedReads[0].sequence.length);
+  alignment.mapping.secondBestScore = secondBestScore;
+  alignment.mapping.mappingMargin = mappingMargin;
+  if (
+    secondBestScore !== null
+    && (secondBestScore === bestScore || (mappingMargin ?? 0) < thresholds.minMappingMargin)
+  ) {
+    return { status: 'ambiguous_mapping', alignment };
+  }
+  return { status: 'mapped', alignment };
+}
+
+type MappedRead = {
+  status: ArtifactConstructReadStatus;
+  alignment: AlignmentResult | null;
+  /** Set on an 'unmapped' read only when the work budget stopped its search. */
+  searchIncomplete?: true;
+};
+
+function unmappedRead(searchStopped: boolean): MappedRead {
+  return searchStopped
+    ? { status: 'unmapped', alignment: null, searchIncomplete: true }
+    : { status: 'unmapped', alignment: null };
+}
+
 function mapRead(
   read: NormalizedRead,
   trim: ArtifactConstructReadTrim,
@@ -1552,8 +2083,8 @@ function mapRead(
   thresholds: ArtifactConstructVerificationThresholds,
   seedCache: ReferenceSeedIndexCache,
   work: WorkCounter,
-  exhaustiveSearchBudget: number,
-): { status: ArtifactConstructReadStatus; alignment: AlignmentResult | null } {
+  provenSearchBudget: number,
+): MappedRead {
   const orientedReads = [
     orientRead(read, trim, 'forward'),
     orientRead(read, trim, 'reverse'),
@@ -1565,28 +2096,43 @@ function mapRead(
   // shortcut only when no positive mapping margin was requested.
   const useExactShortcut = exactCandidates.length >= 2
     || (exactCandidates.length === 1 && thresholds.minMappingMargin === 0);
-  const exhaustiveBand = exhaustiveAlignmentBand(
-    trim.trimmedLength,
-    reference,
-    thresholds.maxIndelFraction,
-  );
-  const useExhaustiveSearch = !useExactShortcut
-    && exhaustiveMappingWorkEstimate(
-      trim.trimmedLength,
+  // When the budget stopped the proven search, an 'unmapped' verdict below means
+  // only that no close alignment turned up, not that the read aligns nowhere.
+  let provenSearchStopped = false;
+  if (!useExactShortcut) {
+    const proven = searchProvenMapping(
+      orientedReads,
       reference,
-      exhaustiveBand,
-    ) <= exhaustiveSearchBudget;
-  const exhaustiveCandidates = useExhaustiveSearch
-    ? exhaustiveCandidateStarts(trim.trimmedLength, reference, exhaustiveBand)
-    : null;
-  const alignmentBand = exhaustiveCandidates === null
-    ? ARTIFACT_CONSTRUCT_VERIFICATION_LIMITS.maxIndelLength
-    : exhaustiveBand;
+      thresholds,
+      seedCache,
+      work,
+      provenSearchBudget,
+      exactCandidates.length === 1,
+    );
+    if (proven.best !== null) {
+      return classifyProvenMapping(
+        proven,
+        proven.best,
+        orientedReads,
+        reference,
+        thresholds,
+        work,
+        provenSearchBudget,
+      );
+    }
+    // The budget stopped the search before it found an alignment. When a pass had
+    // already proved that none lies within its deficit, report the read as not
+    // mapped rather than spend the shared budget on a sampled search that cannot
+    // prove anything either.
+    provenSearchStopped = proven.stopped;
+    if (proven.emptyDeficit !== null) return unmappedRead(provenSearchStopped);
+  }
+  const alignmentBand = ARTIFACT_CONSTRUCT_VERIFICATION_LIMITS.maxIndelLength;
   const scored: ScoredCandidate[] = [];
   // Sampled seeds schedule a useful tentative alignment, but they are not a
-  // completeness proof. Only a unique exact global maximum or an exhaustive
-  // bounded start scan may support a claim of unique mapping.
-  let candidateSearchIncomplete = !useExactShortcut && exhaustiveCandidates === null;
+  // completeness proof. Only exact occurrences or the proven search above may
+  // support a claim of unique mapping.
+  let candidateSearchIncomplete = !useExactShortcut;
   for (const oriented of orientedReads) {
     const search: CandidateSearch = useExactShortcut
       ? {
@@ -1595,9 +2141,7 @@ function mapRead(
             .map((candidate) => ({ start: candidate.start, votes: 0 })),
           truncated: false,
         }
-      : exhaustiveCandidates !== null
-        ? { candidates: exhaustiveCandidates, truncated: false }
-        : mappingCandidates(oriented, reference, seedCache, work);
+      : mappingCandidates(oriented, reference, seedCache, work);
     candidateSearchIncomplete ||= search.truncated;
     for (const candidate of search.candidates) {
       const run = runBandedAlignment(
@@ -1617,13 +2161,14 @@ function mapRead(
       }
     }
   }
+
   scored.sort((left, right) => (
     right.score - left.score
     || (left.orientation === right.orientation ? 0 : left.orientation === 'forward' ? -1 : 1)
     || left.candidateStart - right.candidateStart
   ));
   const best = scored[0];
-  if (best === undefined) return { status: 'unmapped', alignment: null };
+  if (best === undefined) return unmappedRead(provenSearchStopped);
   const oriented = orientedReads.find((entry) => entry.orientation === best.orientation) as OrientedRead;
   const rerun = runBandedAlignment(
     oriented,
@@ -1633,7 +2178,7 @@ function mapRead(
     work,
     true,
   );
-  if (rerun.alignment === null) return { status: 'unmapped', alignment: null };
+  if (rerun.alignment === null) return unmappedRead(provenSearchStopped);
   const bestSignature = alignmentPathSignature(rerun.alignment.mapping);
 
   if (rerun.alignment.mapping.identity < thresholds.minMappingIdentity) {
@@ -1709,7 +2254,11 @@ function reason(
   };
 }
 
-function readReason(read: NormalizedRead, status: ArtifactConstructReadStatus): ArtifactConstructVerificationReason {
+function readReason(
+  read: NormalizedRead,
+  status: ArtifactConstructReadStatus,
+  searchIncomplete = false,
+): ArtifactConstructVerificationReason {
   const label = read.name ?? read.id;
   if (status === 'trimmed_read_too_short') {
     return reason('trimmed_read_too_short', 'review', `${label} is too short after quality-aware end trimming.`, { readId: read.id });
@@ -1722,6 +2271,14 @@ function readReason(read: NormalizedRead, status: ArtifactConstructReadStatus): 
   }
   if (status === 'excessive_indel') {
     return reason('excessive_indel', 'review', `${label}'s best mapping exceeds the bounded indel allowance.`, { readId: read.id });
+  }
+  if (searchIncomplete) {
+    return reason(
+      'unmapped_read',
+      'review',
+      `The search for ${label} stopped at its work budget before it found a close alignment to the reference.`,
+      { readId: read.id },
+    );
   }
   return reason('unmapped_read', 'review', `${label} could not be mapped to the reference.`, { readId: read.id });
 }
@@ -2502,8 +3059,8 @@ export function verifyArtifactConstruct(
   const work = new WorkCounter();
   const reasons: ArtifactConstructVerificationReason[] = [];
   const seedCache: ReferenceSeedIndexCache = new Map();
-  const exhaustiveSearchBudget = Math.floor(
-    (ARTIFACT_CONSTRUCT_VERIFICATION_LIMITS.maxWorkUnits * EXHAUSTIVE_MAPPING_WORK_FRACTION)
+  const provenSearchBudget = Math.floor(
+    (ARTIFACT_CONSTRUCT_VERIFICATION_LIMITS.maxWorkUnits * PROVEN_MAPPING_WORK_FRACTION)
       / Math.max(1, normalized.reads.length),
   );
   const reads = normalized.reads.map((read): ArtifactConstructReadVerification => {
@@ -2518,6 +3075,7 @@ export function verifyArtifactConstruct(
     }
     let status: ArtifactConstructReadStatus;
     let mapping: ArtifactConstructReadMapping | null = null;
+    let searchIncomplete = false;
     if (trim.trimmedLength < normalized.thresholds.minTrimmedReadLength) {
       status = 'trimmed_read_too_short';
     } else {
@@ -2528,12 +3086,13 @@ export function verifyArtifactConstruct(
         normalized.thresholds,
         seedCache,
         work,
-        exhaustiveSearchBudget,
+        provenSearchBudget,
       );
       status = mapped.status;
       mapping = mapped.alignment?.mapping ?? null;
+      searchIncomplete = mapped.searchIncomplete === true;
     }
-    if (status !== 'mapped') reasons.push(readReason(read, status));
+    if (status !== 'mapped') reasons.push(readReason(read, status, searchIncomplete));
     return {
       id: read.id,
       ...(read.name === undefined ? {} : { name: read.name }),
@@ -2542,6 +3101,7 @@ export function verifyArtifactConstruct(
       qualityProvided: read.qualityScores !== null,
       meanQuality,
       status,
+      ...(searchIncomplete ? { searchIncomplete: true as const } : {}),
       trim,
       mapping,
     };

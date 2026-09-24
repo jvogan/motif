@@ -200,6 +200,65 @@ function tracePairwiseStats(aligned: string, template: string): TracePairwiseSta
   };
 }
 
+/**
+ * The template (or reference) coordinate of an alignment column, numbered the
+ * way the differences list numbers it, so a trace readout and a difference
+ * label name the same base the same way. The alignment column is a separate,
+ * navigation-only coordinate: a 1 bp insertion upstream puts template base 105
+ * in column 106.
+ */
+export function traceTemplateCoordinateLabel(
+  alignment: {
+    rows: readonly Pick<ArtifactAlignmentRow, 'id' | 'aligned'>[];
+    referenceNumbering?: ArtifactAlignment['referenceNumbering'];
+  },
+  template: Pick<ArtifactAlignmentRow, 'aligned'>,
+  column: number,
+): string {
+  const numbering = alignment.referenceNumbering;
+  const numberingRow = numbering ? alignment.rows.find((row) => row.id === numbering.rowId) : undefined;
+  const coordinateRow = numberingRow ?? template;
+  const noun = numberingRow ? 'Reference' : 'Template';
+  const offset = numberingRow && numbering ? numbering.firstResiduePosition - 1 : 0;
+  let residues = 0;
+  const last = Math.min(column, coordinateRow.aligned.length - 1);
+  for (let index = 0; index <= last; index += 1) {
+    const symbol = coordinateRow.aligned[index];
+    if (symbol !== '-' && symbol !== '.') residues += 1;
+  }
+  const symbol = coordinateRow.aligned[column];
+  if (symbol === undefined || symbol === '-' || symbol === '.') {
+    return residues === 0
+      ? `Before ${noun.toLocaleLowerCase()} position ${(offset + 1).toLocaleString()}`
+      : `Insertion after ${noun.toLocaleLowerCase()} position ${(offset + residues).toLocaleString()}`;
+  }
+  return `${noun} position ${(offset + residues).toLocaleString()}`;
+}
+
+/**
+ * Columns where a read differs from the template inside both their covered
+ * spans: substitutions, and gaps on either side (indels). A read's leading and
+ * trailing gaps are not differences, they are where the read has no data.
+ */
+export function traceDifferenceColumns(aligned: string, template: string): number[] {
+  const rowCoverage = traceCoverage(aligned);
+  const templateCoverage = traceCoverage(template);
+  if (!rowCoverage || !templateCoverage) return [];
+  const first = Math.max(rowCoverage.first, templateCoverage.first);
+  const last = Math.min(rowCoverage.last, templateCoverage.last);
+  const columns: number[] = [];
+  for (let column = first; column <= last; column += 1) {
+    const symbol = aligned[column] ?? '-';
+    const templateSymbol = template[column] ?? '-';
+    if (symbol === '-' && templateSymbol === '-') continue;
+    if (symbol !== templateSymbol) columns.push(column);
+  }
+  return columns;
+}
+
+/** Solid mark painted over every difference column: at least 2px wide at any zoom. */
+export const TRACE_DIFFERENCE_MARK_MIN_WIDTH = 2;
+
 function formatTraceIdentity(identity: number): string {
   return identity < 100 && identity >= 99.9 ? identity.toFixed(2) : identity.toFixed(1);
 }
@@ -305,6 +364,10 @@ function SangerStackedTraceCanvas({
     }))
     .filter((anchor) => anchor.x >= 0)
     .sort((left, right) => left.sample - right.sample), [cellWidth, columnByRaw, item.trace.peakPositions]);
+  const differenceSet = useMemo(
+    () => new Set(traceDifferenceColumns(item.row.aligned, template.aligned)),
+    [item.row.aligned, template.aligned],
+  );
 
   useLayoutEffect(() => {
     const canvas = canvasRef.current;
@@ -369,11 +432,17 @@ function SangerStackedTraceCanvas({
         context.fillRect(localX - (cellWidth / 2), 28, cellWidth, baseline - 28);
         context.globalAlpha = 1;
       }
-      if (readSymbol !== '-' && templateSymbol !== '-' && readSymbol !== templateSymbol) {
+      if (differenceSet.has(column)) {
         context.globalAlpha = 0.12;
         context.fillStyle = mismatch;
         context.fillRect(localX - (cellWidth / 2), 0, cellWidth, STACKED_TRACE_HEIGHT);
         context.globalAlpha = 1;
+        // The wash alone measured 1.2:1 against a plain column, and once letters
+        // drop out below 10px per column it was the only sign of a difference.
+        // A solid bar at least 2px wide stays visible at Fit.
+        const markWidth = Math.max(TRACE_DIFFERENCE_MARK_MIN_WIDTH, cellWidth);
+        context.fillStyle = mismatch;
+        context.fillRect(localX - (markWidth / 2), 0, markWidth, cellWidth >= 10 ? 3 : 55);
       }
       if (selectedColumn === column) {
         context.globalAlpha = 0.18;
@@ -437,7 +506,7 @@ function SangerStackedTraceCanvas({
       context.stroke();
     }
     context.setLineDash([]);
-  }, [alignmentLength, cellWidth, item, rawByColumn, scrollLeft, selectedColumn, showQuality, template.aligned, themeRevision, traceAnchors, viewportWidth]);
+  }, [alignmentLength, cellWidth, differenceSet, item, rawByColumn, scrollLeft, selectedColumn, showQuality, template.aligned, themeRevision, traceAnchors, viewportWidth]);
 
   const chooseColumn = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     const bounds = event.currentTarget.getBoundingClientRect();
@@ -465,18 +534,95 @@ function SangerStackedTraceCanvas({
   );
 }
 
+/**
+ * A whole-alignment tick strip: one solid tick per difference column, however
+ * far the chromatogram is zoomed, with the visible window outlined. At Fit on a
+ * 900-base read each column is 1.16px wide and the per-column wash is the only
+ * other sign of a difference.
+ */
+function SangerDifferenceStrip({
+  alignmentLength,
+  differenceColumns,
+  width,
+  scrollLeft,
+  cellWidth,
+  selectedColumn,
+  onChooseColumn,
+}: {
+  alignmentLength: number;
+  differenceColumns: readonly number[];
+  width: number;
+  scrollLeft: number;
+  cellWidth: number;
+  selectedColumn: number | null;
+  onChooseColumn: (column: number) => void;
+}) {
+  const length = Math.max(1, alignmentLength);
+  const xOf = (column: number) => ((column + 0.5) / length) * width;
+  const ticks: number[] = [];
+  let lastPixel = Number.NEGATIVE_INFINITY;
+  for (const column of differenceColumns) {
+    const x = Math.round(xOf(column));
+    if (x === lastPixel) continue;
+    ticks.push(x);
+    lastPixel = x;
+  }
+  const windowStart = Math.max(0, Math.min(width, (scrollLeft / Math.max(1e-6, cellWidth) / length) * width));
+  const windowWidth = Math.max(2, Math.min(width - windowStart, ((width / Math.max(1e-6, cellWidth)) / length) * width));
+  return (
+    <div
+      className="motif-cs-sanger-difference-strip"
+      data-testid="sanger-difference-strip"
+      data-difference-count={differenceColumns.length}
+      // A pointer shortcut only. Keyboard and screen-reader users reach the same
+      // columns through Previous/Next difference (P/N) and the call readout.
+      aria-hidden="true"
+      // Columns, not differences: a 3 bp deletion is three ticks here but one
+      // step of the difference counter beside it.
+      title={`${differenceColumns.length.toLocaleString()} of ${alignmentLength.toLocaleString()} alignment column${alignmentLength === 1 ? '' : 's'} differ${differenceColumns.length === 1 ? 's' : ''} from the template. Click to move there.`}
+      onPointerDown={(event) => {
+        const bounds = event.currentTarget.getBoundingClientRect();
+        if (bounds.width <= 0) return;
+        const fraction = (event.clientX - bounds.left) / bounds.width;
+        onChooseColumn(Math.max(0, Math.min(alignmentLength - 1, Math.floor(fraction * alignmentLength))));
+      }}
+    >
+      <svg width={width} height={14} aria-hidden="true" focusable="false">
+        <rect className="motif-cs-sanger-strip-window" x={windowStart} y={0.5} width={windowWidth} height={13} />
+        {ticks.map((x) => (
+          <rect
+            key={x}
+            className="motif-cs-sanger-strip-tick"
+            data-column-x={x}
+            x={x - (TRACE_DIFFERENCE_MARK_MIN_WIDTH / 2)}
+            y={2}
+            width={TRACE_DIFFERENCE_MARK_MIN_WIDTH}
+            height={10}
+          />
+        ))}
+        {selectedColumn !== null ? (
+          <rect className="motif-cs-sanger-strip-selected" x={Math.round(xOf(selectedColumn)) - 1} y={0} width={2} height={14} />
+        ) : null}
+      </svg>
+    </div>
+  );
+}
+
 export function ClaudeScienceSangerTraceViewer({
   alignment,
   records,
   templateRowId,
   jumpColumn,
   jumpToken,
+  jumpRowId = null,
 }: {
   alignment: ArtifactAlignment;
   records: readonly SangerTraceViewerRecord[];
   templateRowId: string;
   jumpColumn: number | null;
   jumpToken: number;
+  /** The aligned row a jump is about (a chosen difference); null lets the viewer pick a read that differs there. */
+  jumpRowId?: string | null;
 }) {
   const linked = useMemo(() => linkedTraceRows(alignment, records), [alignment, records]);
   const initialPreferences = useMemo(() => loadSangerViewPreferences(), []);
@@ -586,6 +732,14 @@ export function ClaudeScienceSangerTraceViewer({
     () => selected ? alignmentColumnByRawIndex(selectedRawByColumn, selected.trace.baseCalls.length) : [],
     [selected, selectedRawByColumn],
   );
+  const selectedDifferenceSet = useMemo(
+    () => new Set(selected && template ? traceDifferenceColumns(selected.row.aligned, template.aligned) : []),
+    [selected, template],
+  );
+  const differenceColumnsByRow = useMemo(() => new Map(linked.map((item) => [
+    item.row.id,
+    template ? traceDifferenceColumns(item.row.aligned, template.aligned) : [],
+  ])), [linked, template]);
   const traceAnchors = useMemo(() => {
     if (!selected) return [];
     return selected.trace.peakPositions
@@ -621,6 +775,35 @@ export function ClaudeScienceSangerTraceViewer({
     scrollColumnIntoView(next, behavior);
   }, [alignment.alignmentLength, scrollColumnIntoView]);
 
+  const focusTraceRow = useCallback((rowId: string) => {
+    setSelectedRowId(rowId);
+    if (effectiveViewMode !== 'stacked') return;
+    const index = linked.findIndex((item) => item.row.id === rowId);
+    if (index < 0) return;
+    window.requestAnimationFrame(() => {
+      const scroller = scrollerRef.current;
+      if (!scroller) return;
+      scroller.scrollTo({
+        left: scroller.scrollLeft,
+        top: index * STACKED_LANE_HEIGHT,
+        behavior: 'auto',
+      });
+      window.requestAnimationFrame(() => {
+        const lane = scroller.querySelectorAll<HTMLElement>('.motif-cs-sanger-lane')[index];
+        const windowBody = scroller.closest<HTMLElement>('.motif-cs-window-body');
+        const windowPanel = scroller.closest<HTMLElement>('.motif-cs-window');
+        if (!lane || !windowBody || !windowPanel) return;
+        const laneRect = lane.getBoundingClientRect();
+        const bodyRect = windowBody.getBoundingClientRect();
+        const windowRect = windowPanel.getBoundingClientRect();
+        const visibleTop = Math.max(bodyRect.top, windowRect.top + 42);
+        const visibleBottom = Math.min(bodyRect.bottom, windowRect.bottom - 12);
+        if (laneRect.bottom > visibleBottom) windowBody.scrollTop += laneRect.bottom - visibleBottom + 8;
+        else if (laneRect.top < visibleTop) windowBody.scrollTop -= visibleTop - laneRect.top + 8;
+      });
+    });
+  }, [effectiveViewMode, linked]);
+
   useEffect(() => {
     if (jumpColumn === null) return;
     const handledJump = handledJumpRef.current;
@@ -632,7 +815,17 @@ export function ClaudeScienceSangerTraceViewer({
     // A jump is an explicit navigation event; zoom-driven callback changes must not replay it.
     handledJumpRef.current = { alignmentId: alignment.id, column: jumpColumn, token: jumpToken };
     movePositionToColumn(jumpColumn);
-  }, [alignment.id, jumpColumn, jumpToken, movePositionToColumn]);
+    // A jump names a difference, so it inspects that call too. Moving only the
+    // view left the readout on "Click a base…" after every Next difference.
+    const target = Math.max(0, Math.min(alignment.alignmentLength - 1, jumpColumn));
+    setSelectedColumn(target);
+    const differsHere = (rowId: string) => differenceColumnsByRow.get(rowId)?.includes(target) ?? false;
+    const requested = jumpRowId ? linked.find((item) => item.row.id === jumpRowId) : undefined;
+    const current = linked.find((item) => item.row.id === selectedRowId);
+    const nextRow = requested
+      ?? (current && differsHere(current.row.id) ? current : linked.find((item) => differsHere(item.row.id)));
+    if (nextRow && nextRow.row.id !== selectedRowId) focusTraceRow(nextRow.row.id);
+  }, [alignment.alignmentLength, alignment.id, differenceColumnsByRow, focusTraceRow, jumpColumn, jumpRowId, jumpToken, linked, movePositionToColumn, selectedRowId]);
 
   useEffect(() => {
     if (!selected) return;
@@ -648,7 +841,13 @@ export function ClaudeScienceSangerTraceViewer({
       return start < 0 ? earliest : Math.min(earliest, start);
     }, alignment.alignmentLength);
     if (firstCoveredColumn >= alignment.alignmentLength) return;
-    const frame = window.requestAnimationFrame(() => movePositionToColumn(firstCoveredColumn, 'auto'));
+    const frame = window.requestAnimationFrame(() => {
+      // A jump that arrived with the mount (a variant opened from verification)
+      // says where to look. This frame fires after it and used to scroll the
+      // view back to column 1, leaving the selected call off screen.
+      if (handledJumpRef.current?.alignmentId === alignment.id) return;
+      movePositionToColumn(firstCoveredColumn, 'auto');
+    });
     return () => window.cancelAnimationFrame(frame);
   }, [alignment.alignmentLength, alignment.id, linked, movePositionToColumn, selected]);
 
@@ -807,11 +1006,14 @@ export function ClaudeScienceSangerTraceViewer({
         context.fillRect(localX - (cellWidth / 2), 29, cellWidth, 57);
         context.globalAlpha = 1;
       }
-      if (readSymbol !== '-' && templateSymbol !== '-' && readSymbol !== templateSymbol) {
+      if (selectedDifferenceSet.has(column)) {
         context.globalAlpha = 0.13;
         context.fillStyle = mismatch;
         context.fillRect(localX - (cellWidth / 2), 0, cellWidth, TRACE_HEIGHT);
         context.globalAlpha = 1;
+        const markWidth = Math.max(TRACE_DIFFERENCE_MARK_MIN_WIDTH, cellWidth);
+        context.fillStyle = mismatch;
+        context.fillRect(localX - (markWidth / 2), 0, markWidth, cellWidth >= 10 ? 3 : 57);
       }
       if (selectedColumn === column) {
         context.globalAlpha = 0.25;
@@ -884,7 +1086,7 @@ export function ClaudeScienceSangerTraceViewer({
       context.stroke();
     }
     context.setLineDash([]);
-  }, [alignment, cellWidth, effectiveViewMode, scrollLeft, selected, selectedColumn, selectedRawByColumn, showQuality, template, themeRevision, traceAnchors, viewportWidth]);
+  }, [alignment, cellWidth, effectiveViewMode, scrollLeft, selected, selectedColumn, selectedDifferenceSet, selectedRawByColumn, showQuality, template, themeRevision, traceAnchors, viewportWidth]);
 
   if (!selected || !template) {
     return (
@@ -904,6 +1106,14 @@ export function ClaudeScienceSangerTraceViewer({
     alignment.alignmentLength - 1,
     positionColumn ?? viewportCenterColumn,
   ));
+  const callStatus = selectedColumn === null
+    ? 'Click a base or use the arrow keys to inspect a call.'
+    : `${traceTemplateCoordinateLabel(alignment, template, selectedColumn)} · alignment column ${(selectedColumn + 1).toLocaleString()} · read ${selected.row.aligned[selectedColumn] ?? '-'} · template ${template.aligned[selectedColumn] ?? '-'} · quality ${selectedQuality === undefined ? 'not reported' : `Q${selectedQuality}`}`;
+  // The strip summarises the reads on screen: every lane when stacked, the
+  // focused read alone in single view.
+  const stripDifferenceColumns = effectiveViewMode === 'stacked'
+    ? Array.from(new Set(linked.flatMap((item) => differenceColumnsByRow.get(item.row.id) ?? []))).sort((left, right) => left - right)
+    : differenceColumnsByRow.get(selected.row.id) ?? [];
   const firstVisibleLane = Math.max(0, Math.floor(stackScrollTop / STACKED_LANE_HEIGHT) - 1);
   const lastVisibleLane = Math.min(linked.length, Math.ceil((stackScrollTop + viewportHeight) / STACKED_LANE_HEIGHT) + 1);
 
@@ -918,35 +1128,6 @@ export function ClaudeScienceSangerTraceViewer({
     const next = Math.max(0, Math.min(alignment.alignmentLength - 1, (selectedColumn ?? positionValue) + delta));
     setSelectedColumn(next);
     movePositionToColumn(next);
-  };
-
-  const focusTraceRow = (rowId: string) => {
-    setSelectedRowId(rowId);
-    if (effectiveViewMode !== 'stacked') return;
-    const index = linked.findIndex((item) => item.row.id === rowId);
-    if (index < 0) return;
-    window.requestAnimationFrame(() => {
-      const scroller = scrollerRef.current;
-      if (!scroller) return;
-      scroller.scrollTo({
-        left: scroller.scrollLeft,
-        top: index * STACKED_LANE_HEIGHT,
-        behavior: 'auto',
-      });
-      window.requestAnimationFrame(() => {
-        const lane = scroller.querySelectorAll<HTMLElement>('.motif-cs-sanger-lane')[index];
-        const windowBody = scroller.closest<HTMLElement>('.motif-cs-window-body');
-        const windowPanel = scroller.closest<HTMLElement>('.motif-cs-window');
-        if (!lane || !windowBody || !windowPanel) return;
-        const laneRect = lane.getBoundingClientRect();
-        const bodyRect = windowBody.getBoundingClientRect();
-        const windowRect = windowPanel.getBoundingClientRect();
-        const visibleTop = Math.max(bodyRect.top, windowRect.top + 42);
-        const visibleBottom = Math.min(bodyRect.bottom, windowRect.bottom - 12);
-        if (laneRect.bottom > visibleBottom) windowBody.scrollTop += laneRect.bottom - visibleBottom + 8;
-        else if (laneRect.top < visibleTop) windowBody.scrollTop -= visibleTop - laneRect.top + 8;
-      });
-    });
   };
 
   return (
@@ -991,6 +1172,21 @@ export function ClaudeScienceSangerTraceViewer({
         </div>
       </div>
 
+      {/* The readout sits under the toolbar rather than under the traces. Below
+          them it started at y=656 in a window body ending at 644 at 1280x720 in
+          Stacked view, so the call you had just chosen was out of sight. */}
+      <p className="motif-cs-sanger-call-status" data-placement="top" aria-live="polite" data-testid="sanger-call-status">
+        {callStatus}
+      </p>
+      <SangerDifferenceStrip
+        alignmentLength={alignment.alignmentLength}
+        differenceColumns={stripDifferenceColumns}
+        width={viewportWidth}
+        scrollLeft={scrollLeft}
+        cellWidth={cellWidth}
+        selectedColumn={selectedColumn}
+        onChooseColumn={(column) => movePositionToColumn(column, 'auto')}
+      />
       <div className="motif-cs-sanger-column-labels" aria-hidden="true">
         <span>Template</span><span>Read</span><span>Quality</span><span>Trace intensity</span>
       </div>
@@ -1082,7 +1278,7 @@ export function ClaudeScienceSangerTraceViewer({
 
       <div className="motif-cs-sanger-navigation">
         <label>
-          <span>Alignment position</span>
+          <span>Alignment column</span>
           <input
             type="range"
             min={0}
@@ -1096,11 +1292,6 @@ export function ClaudeScienceSangerTraceViewer({
           {BASES.map((base) => <span key={base} data-base={base}><i aria-hidden="true" />{base}</span>)}
         </div>
       </div>
-      <p className="motif-cs-sanger-call-status" aria-live="polite">
-        {selectedColumn === null
-          ? 'Click a base or use the arrow keys to inspect a call.'
-          : `Alignment position ${selectedColumn + 1} · read ${selected.row.aligned[selectedColumn] ?? '-'} · template ${template.aligned[selectedColumn] ?? '-'} · quality ${selectedQuality === undefined ? 'not reported' : `Q${selectedQuality}`}`}
-      </p>
       {selected.trace.warnings.length > 0 ? (
         <details className="motif-cs-sanger-warnings">
           <summary>{selected.trace.warnings.length} import warning{selected.trace.warnings.length === 1 ? '' : 's'}</summary>

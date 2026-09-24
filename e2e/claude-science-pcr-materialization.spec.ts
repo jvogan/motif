@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
+import { selectRecord } from './record-selection';
 
 const artifactUrl = process.env.MOTIF_ARTIFACT_URL;
 const outputDir = path.resolve('output/playwright/pcr-materialization');
@@ -112,6 +113,93 @@ test.describe('Claude Science PCR materialization', () => {
     await expect(materializedRow).toBeVisible();
     expect(await resultsPanel.locator('.motif-cs-agent-results').evaluate((element) => element.scrollWidth <= element.clientWidth + 2)).toBe(true);
     await page.screenshot({ path: path.join(outputDir, 'materialized-result-compact-dark.png'), fullPage: true });
+    expect(diagnostics).toEqual([]);
+  });
+
+  test('the selected pair states the tailed amplicon length that Create amplicon record makes', async ({ page }) => {
+    // The evidence heading read "373 bp amplicon" for a pair with two 8-nt
+    // tails, and the amplicon record it created was 389 bp.
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.addInitScript(() => {
+      window.localStorage.clear();
+      window.sessionStorage.clear();
+    });
+    await page.goto(artifactUrl!);
+    await expect(page.locator('.motif-cs-shell')).toBeVisible();
+    const countBefore = await page.evaluate(() => window.motifGetInventory?.().length ?? 0);
+
+    const primerPanel = page.locator('details[data-rail-tool="primer-design"]');
+    await primerPanel.locator(':scope > summary').click();
+    await primerPanel.getByTestId('open-primer-workspace').click();
+    const workspace = page.getByTestId('primer-workspace');
+    await expect(workspace.locator('.motif-cs-primer-pair-row').first()).toBeVisible();
+    await workspace.getByText('Advanced constraints').click();
+    await workspace.getByLabel('Forward 5′ tail').fill('GCGAATTC');
+    await workspace.getByLabel('Reverse 5′ tail').fill('GCAAGCTT');
+
+    const heading = workspace.locator('.motif-cs-primer-evidence-heading > span');
+    await expect(heading).toHaveText(/^[\d,]+ bp amplicon with tails$/);
+    const stated = Number((await heading.textContent())!.replace(/[^\d]/g, ''));
+
+    await workspace.getByRole('button', { name: 'Create amplicon record' }).click();
+    await expect.poll(() => page.evaluate(() => window.motifGetInventory?.().length ?? 0)).toBe(countBefore + 1);
+    const created = await page.evaluate(() => {
+      const records = window.motifGetInventory?.() ?? [];
+      return records[records.length - 1].seq;
+    });
+    expect(created.length).toBe(stated);
+    expect(created.startsWith('GCGAATTC')).toBe(true);
+    expect(created.endsWith('AAGCTTGC')).toBe(true);
+  });
+
+  test('uses the pair\'s amplicon, not its template, as the cloning design\'s first part', async ({ page }) => {
+    const diagnostics: string[] = [];
+    page.on('pageerror', (error) => diagnostics.push(`pageerror: ${error.message}`));
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.addInitScript(() => {
+      window.localStorage.clear();
+      window.sessionStorage.clear();
+    });
+    await page.goto(artifactUrl!);
+    await expect(page.locator('.motif-cs-shell')).toBeVisible();
+    const source = await page.evaluate(() => ({
+      id: window.motifGetActiveRecord?.()?.id,
+      name: window.motifGetActiveRecord?.()?.name,
+      count: window.motifGetInventory?.().length ?? 0,
+    }));
+
+    const useInCloning = async () => {
+      const primerPanel = page.locator('details[data-rail-tool="primer-design"]');
+      if (!(await primerPanel.evaluate((element) => (element as HTMLDetailsElement).open))) {
+        await primerPanel.locator(':scope > summary').click();
+      }
+      await primerPanel.getByTestId('open-primer-workspace').click();
+      const workspace = page.getByTestId('primer-workspace');
+      await expect(workspace.locator('.motif-cs-primer-pair-row').first()).toBeVisible();
+      await workspace.getByRole('button', { name: 'Use in cloning' }).click();
+      await expect(workspace).toHaveCount(0);
+      const design = page.getByTestId('cloning-design-workspace');
+      await expect(design).toBeVisible();
+      return (await design.getByTestId('cloning-design-part-1').getByRole('combobox', { name: 'Part 1' })
+        .evaluate((select) => (select as HTMLSelectElement).selectedOptions[0]?.textContent ?? ''));
+    };
+
+    const firstPart = await useInCloning();
+    const afterFirst = await page.evaluate(() => ({
+      count: window.motifGetInventory?.().length ?? 0,
+      active: window.motifGetActiveRecord?.(),
+    }));
+    expect(afterFirst.count).toBe(source.count + 1);
+    expect(afterFirst.active?.provenance).toMatchObject({ operation: 'pcr_materialization', parentRecordId: source.id });
+    expect(firstPart).toContain(afterFirst.active?.name ?? '<missing>');
+    expect(firstPart).not.toBe(source.name);
+
+    // A second press on the same pair reuses the amplicon through the same
+    // duplicate guard as "Create amplicon record".
+    await selectRecord(page, source.name!);
+    const secondPart = await useInCloning();
+    expect(await page.evaluate(() => window.motifGetInventory?.().length ?? 0)).toBe(source.count + 1);
+    expect(secondPart).toBe(firstPart);
     expect(diagnostics).toEqual([]);
   });
 });

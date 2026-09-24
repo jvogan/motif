@@ -50,7 +50,11 @@ function measuredAlignment(id = 'resize-position-regression') {
     name: 'Resize position regression',
     molecule: 'dna',
     referenceRowId: 'reference',
-    rows: Array.from({ length: 100 }, (_, index) => ({
+    // The browser report was 100 x 1,500, but what these tests hold is a column,
+    // and the column count is what makes scrollLeft 8,000 reachable. jsdom
+    // renders every row: a 100-row mount cost ~0.9s against ~0.05s for three,
+    // and the two-mount restore test timed out on a loaded machine.
+    rows: Array.from({ length: 3 }, (_, index) => ({
       id: index === 0 ? 'reference' : `row-${index}`,
       name: index === 0 ? 'Reference' : `Row ${index}`,
       aligned: index === 1 ? firstDifference : reference,

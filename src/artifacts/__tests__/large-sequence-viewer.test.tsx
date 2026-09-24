@@ -27,7 +27,7 @@ describe('LargeSequenceViewer', () => {
       />,
     );
 
-    expect(html).toContain('Map selection: 60,001–62,000.');
+    expect(html).toContain('Selection: 60,001–62,000 (2,000 residues).');
     expect(html).toContain('data-selection-start="60000"');
     expect(html).toContain('data-selection-end="62000"');
     expect(html).toContain(`>${sequence}</textarea>`);

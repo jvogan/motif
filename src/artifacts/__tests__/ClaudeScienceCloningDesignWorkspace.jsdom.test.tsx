@@ -101,6 +101,13 @@ describe('ClaudeScienceCloningDesignWorkspace', () => {
     expect(screen.queryByText('Preparation Complete')).toBeNull();
   });
 
+  it('says what the part count beside the parts heading counts', () => {
+    const records = [bsaIPart('single-part', 'GGAG', 'ATGAAATTT', 'GCTT')];
+    render(<ClaudeScienceCloningDesignWorkspace {...props({ records, initialRecordIds: ['single-part'] })} />);
+    const heading = screen.getByRole('heading', { name: 'Ordered Parts' });
+    expect(heading.nextElementSibling?.textContent).toBe('1 of 10 parts');
+  });
+
   it('searches, adds, removes, and reorders inventory records with mouse and keyboard controls', async () => {
     const user = userEvent.setup();
     render(<ClaudeScienceCloningDesignWorkspace {...props()} />);
@@ -155,7 +162,7 @@ describe('ClaudeScienceCloningDesignWorkspace', () => {
     expect((screen.getByLabelText('Left fusion site for Tagged terminator') as HTMLInputElement).value).toBe('');
     expect((screen.getByLabelText('Right fusion site for Tagged terminator') as HTMLInputElement).value).toBe('');
 
-    await user.click(screen.getByRole('button', { name: 'Save Plan' }));
+    await user.click(screen.getByRole('button', { name: 'Save plan' }));
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
     expect(onSave.mock.calls[0][0]).toMatchObject({
       orderedRecordIds: ['extra', 'vector'],
@@ -188,17 +195,17 @@ describe('ClaudeScienceCloningDesignWorkspace', () => {
     expect(screen.queryByLabelText('Type IIS enzyme')).toBeNull();
     expect(screen.getByTestId('cloning-design-organization-help').textContent).toContain('level α destination with BsaI');
     expect(screen.getByTestId('cloning-design-plan-status').dataset.state).toBe('needs_preparation');
-    expect((screen.getByRole('button', { name: 'Save Product' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Save product' }) as HTMLButtonElement).disabled).toBe(true);
     await user.selectOptions(screen.getByLabelText('GoldenBraid destination vector'), 'alpha-destination');
     expect((screen.getByLabelText('GoldenBraid destination type') as HTMLSelectElement).value).toBe('1');
     expect(screen.getByText('GoldenBraid 3.0 Reference')).toBeTruthy();
     expect(screen.getByText(/Next level:/).closest('p')?.textContent).toContain('Level alpha TU with BsmBI');
-    expect((screen.getByRole('button', { name: 'Apply Suggested Order' }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole('button', { name: 'Apply suggested order' }) as HTMLButtonElement).disabled).toBe(false);
     expect(partNames()).toEqual(['terminator', 'promoter', 'cds']);
 
-    await user.click(screen.getByRole('button', { name: 'Apply Suggested Order' }));
+    await user.click(screen.getByRole('button', { name: 'Apply suggested order' }));
     expect(partNames()).toEqual(['promoter', 'cds', 'terminator']);
-    expect((screen.getByRole('button', { name: 'Order Checked' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Order checked' }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByTestId('cloning-design-plan-status').dataset.state).toBe('ready');
   });
 
@@ -235,13 +242,15 @@ describe('ClaudeScienceCloningDesignWorkspace', () => {
 
     expect(screen.getByTestId('cloning-design-plan-status').dataset.state).toBe('needs_preparation');
     expect(screen.getByTestId('cloning-design-product-empty').textContent).toContain('no product sequence is invented');
-    const blockedPrimerActions = screen.getAllByRole('button', { name: 'Set fusion sites first' });
-    expect(blockedPrimerActions).toHaveLength(2);
-    expect(blockedPrimerActions.every((button) => (button as HTMLButtonElement).disabled)).toBe(true);
-    expect(screen.getAllByRole('note').some((note) => note.textContent?.includes('enter both boundaries'))).toBe(true);
+    // Neither part has boundaries yet, so each checklist item offers the control
+    // that sets them in place of a disabled primer button and a note naming it.
+    expect(screen.getByRole('button', { name: 'Set fusion sites for Destination vector' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Set fusion sites for Reporter insert' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Open primer workspace' })).toBeNull();
+    expect(screen.queryByText(/enter both boundaries/)).toBeNull();
     expect(screen.queryByRole('button', { name: 'Start 2-action primer worklist' })).toBeNull();
 
-    await user.click(screen.getAllByText('Set primer fusion sites')[0]);
+    await user.click(screen.getByRole('button', { name: 'Set fusion sites for Destination vector' }));
     await user.type(screen.getByLabelText('Left fusion site for Destination vector'), 'ggag');
     await user.type(screen.getByLabelText('Right fusion site for Destination vector'), 'gctt');
     expect(screen.getByText('Planned fusion GGAG → GCTT')).toBeTruthy();
@@ -263,6 +272,53 @@ describe('ClaudeScienceCloningDesignWorkspace', () => {
       },
     });
     expect(screen.getByRole('status').textContent).toContain('Primer workspace opened');
+  });
+
+  it('opens a part’s fusion editor from its row or its checklist item and shows accepted boundaries on the row', async () => {
+    const user = userEvent.setup();
+    render(<ClaudeScienceCloningDesignWorkspace {...props()} />);
+
+    const row = screen.getByTestId('cloning-design-part-1');
+    const pill = within(row).getByRole('button', { name: 'Add flanks to Destination vector' });
+    const editor = document.getElementById(pill.getAttribute('aria-controls') ?? '') as HTMLDetailsElement;
+    expect(editor.tagName).toBe('DETAILS');
+    expect(pill.getAttribute('aria-expanded')).toBe('false');
+    expect(editor.open).toBe(false);
+    await user.click(pill);
+    expect(editor.open).toBe(true);
+    expect(pill.getAttribute('aria-expanded')).toBe('true');
+    expect(document.activeElement).toBe(screen.getByLabelText('Left fusion site for Destination vector'));
+
+    // The Fusion cell used to stay at "— → —" after both boundaries were entered.
+    expect(within(row).getByText('Fusion').parentElement?.textContent).toBe('Fusion— → —');
+    await user.keyboard('GGAG');
+    await user.type(screen.getByLabelText('Right fusion site for Destination vector'), 'GCTT');
+    expect(within(row).getByText('Planned').parentElement?.textContent).toBe('PlannedGGAG → GCTT');
+    expect(within(row).queryByText('Fusion')).toBeNull();
+
+    // The other part's checklist item opens that row's editor at its first empty boundary.
+    const insertLeft = screen.getByLabelText('Left fusion site for Reporter insert');
+    expect((insertLeft.closest('details') as HTMLDetailsElement).open).toBe(false);
+    await user.click(screen.getByRole('button', { name: 'Set fusion sites for Reporter insert' }));
+    expect((insertLeft.closest('details') as HTMLDetailsElement).open).toBe(true);
+    expect(document.activeElement).toBe(insertLeft);
+    expect(screen.getByRole('button', { name: 'Open primer workspace' })).toBeTruthy();
+  });
+
+  it('gives a part that needs both domestication and flanks a fusion editor the checklist can open', async () => {
+    const user = userEvent.setup();
+    const internalSite: ClaudeScienceCloningDesignRecord = {
+      id: 'internal', name: 'Internal site part', molecule: 'dna', sequence: 'ATGAAAGGTCTCATTTCCCGGG', group: 'Parts',
+    };
+    render(<ClaudeScienceCloningDesignWorkspace {...props({ records: [plainRecords[0], internalSite] })} />);
+
+    const row = screen.getByTestId('cloning-design-part-2');
+    expect(within(row).getByText('Domesticate').tagName).toBe('SPAN');
+    // The checklist asked for this part's fusion sites while the row had no editor for them.
+    const left = within(row).getByLabelText('Left fusion site for Internal site part');
+    await user.click(screen.getByRole('button', { name: 'Set fusion sites for Internal site part' }));
+    expect((left.closest('details') as HTMLDetailsElement).open).toBe(true);
+    expect(document.activeElement).toBe(left);
   });
 
   it('replaces only the verified prepared part, preserves live draft choices, and replans against the amplicon', async () => {
@@ -309,7 +365,7 @@ describe('ClaudeScienceCloningDesignWorkspace', () => {
     expect((screen.getByLabelText('Right fusion site for Destination vector · PCR amplicon') as HTMLInputElement).value).toBe('GCTT');
     expect(screen.getByRole('status').textContent).toContain('rechecked');
 
-    await user.click(screen.getByRole('button', { name: 'Save Plan' }));
+    await user.click(screen.getByRole('button', { name: 'Save plan' }));
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
     expect(onSave.mock.calls[0][0]).toMatchObject({
       requestedRecordIds: ['amplicon', 'insert'],
@@ -349,7 +405,7 @@ describe('ClaudeScienceCloningDesignWorkspace', () => {
 
     await user.clear(screen.getByRole('textbox', { name: 'Design Name' }));
     await user.type(screen.getByRole('textbox', { name: 'Design Name' }), 'Reporter assembly');
-    await user.click(screen.getByRole('button', { name: 'Save Plan' }));
+    await user.click(screen.getByRole('button', { name: 'Save plan' }));
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
     expect(onSave.mock.calls[0][0]).toMatchObject({
       intent: 'plan',
@@ -363,7 +419,7 @@ describe('ClaudeScienceCloningDesignWorkspace', () => {
     });
     expect(onSave.mock.calls[0][0].provenance.requestSha256).toMatch(/^[0-9a-f]{64}$/);
 
-    await user.click(screen.getByRole('button', { name: 'Save Product' }));
+    await user.click(screen.getByRole('button', { name: 'Save product' }));
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(2));
     expect(onSave.mock.calls[1][0]).toMatchObject({
       intent: 'product',
@@ -372,8 +428,8 @@ describe('ClaudeScienceCloningDesignWorkspace', () => {
       requestedRecordIds: ['left', 'right'],
       requestedOrientations: ['forward', 'forward'],
     });
-    expect((screen.getByRole('button', { name: 'Plan Saved' }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole('button', { name: 'Product Saved' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Plan saved' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Product saved' }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('disables plan persistence when invalid inputs cannot produce provenance', () => {
@@ -382,7 +438,7 @@ describe('ClaudeScienceCloningDesignWorkspace', () => {
     ];
     render(<ClaudeScienceCloningDesignWorkspace {...props({ records, initialRecordIds: ['invalid'] })} />);
 
-    expect((screen.getByRole('button', { name: 'Save Plan' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Save plan' }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByTestId('cloning-design-plan-status').dataset.state).toBe('blocked');
     expect(screen.getByTestId('cloning-design-product-empty').textContent)
       .toBe('Two Parts NeededAdd a second part in step 02.');
@@ -396,7 +452,7 @@ describe('ClaudeScienceCloningDesignWorkspace', () => {
     render(<ClaudeScienceCloningDesignWorkspace {...props({ onClose, onSave })} />);
 
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Close cloning design workspace' }));
-    await user.click(screen.getByRole('button', { name: 'Save Plan' }));
+    await user.click(screen.getByRole('button', { name: 'Save plan' }));
     expect((await screen.findByRole('alert')).textContent).toContain('Workspace is read-only.');
     expect(screen.getByRole('status').textContent).toBe('');
 

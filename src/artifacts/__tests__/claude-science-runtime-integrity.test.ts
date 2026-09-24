@@ -1104,6 +1104,19 @@ describe('Claude Science runtime data-integrity behavior', () => {
     expect(() => parseImportedRecords(lengthMismatchGenBank, '', 'auto', 'linear')).toThrowError(
       expect.objectContaining({ code: 'MOTIF_TRUNCATED_GENBANK_IMPORT' }),
     );
+    // NCBI's plain GenBank download of a contig record has a CONTIG line and no ORIGIN.
+    const contigGenBank = [
+      'LOCUS       NG_001152               2482 bp    DNA     linear   CON 20-MAR-2026',
+      'DEFINITION  Contig test record.',
+      'CONTIG      join(complement(AC133565.5:64930..67411))',
+      '//',
+    ].join('\n');
+    expect(() => parseImportedRecords(contigGenBank, '', 'auto', 'linear')).toThrowError(
+      expect.objectContaining({
+        code: 'MOTIF_TRUNCATED_GENBANK_IMPORT',
+        message: expect.stringContaining('GenBank (full)'),
+      }),
+    );
     expect(() => validateRuntimeRecordInputs([
       {
         id: 'partial',
@@ -1189,7 +1202,7 @@ describe('Claude Science runtime data-integrity behavior', () => {
   });
 
   it('validates UI record batches before one atomic payload commit', () => {
-    const addRecordsStart = artifactSource.indexOf('const addRecords = useCallback((recordInputs: readonly ArtifactRecordInput[]): number => {');
+    const addRecordsStart = artifactSource.indexOf('const addRecords = useCallback((\n    recordInputs: readonly ArtifactRecordInput[],');
     const addRecordsEnd = artifactSource.indexOf('const addRecord = useCallback', addRecordsStart);
     const addRecordsHandler = artifactSource.slice(addRecordsStart, addRecordsEnd);
 
@@ -1206,7 +1219,9 @@ describe('Claude Science runtime data-integrity behavior', () => {
     const saveHandler = artifactSource.slice(saveStart, saveEnd);
 
     expect(saveHandler).toContain('setPayload(nextPayload);');
-    expect(saveHandler).toContain('return { workflowResultId, recordCount: additions.length };');
+    // The receipt may carry the sentence naming features a cut left out; the
+    // panel shows it inline on the same saved line.
+    expect(saveHandler).toContain('return { workflowResultId, recordCount: additions.length, ...(leftOutNotice ? { leftOutNotice } : {}) };');
     expect(saveHandler).not.toContain("'status'");
     expect(saveHandler).toContain("'error'");
   });
@@ -1217,20 +1232,18 @@ describe('Claude Science runtime data-integrity behavior', () => {
     const analysisPanel = artifactSource.slice(analysisStart, analysisEnd);
 
     expect(analysisPanel).toContain('const allOrfs = useMemo(');
-    expect(analysisPanel).toContain('const visibleOrfs = useMemo(() => allOrfs.slice(0, 8), [allOrfs]);');
-    expect(analysisPanel).toContain('orfCount: allOrfs.length');
+    expect(analysisPanel).toContain('const visibleOrfs = useMemo(() => stopOrfs.slice(0, 8), [stopOrfs]);');
+    expect(analysisPanel).toContain('orfCount: stopOrfs.length');
     // Both readouts still publish the COMPLETE total while only eight rows
-    // render, which is what this guard exists for. The wording moved because
-    // "ORFs" was doing two jobs: this panel counts start-to-stop intervals at a
-    // 10 aa floor while the record summary counts at 30 aa, and the two
-    // published 221 and 96 for the same record in the same session under the
-    // same word. Each count now names its own floor, so assert the floor
-    // travels WITH the number rather than pinning the prose around it.
-    expect(analysisPanel).toContain('Showing the 8 longest of {allOrfs.length} start-to-stop intervals');
-    expect(analysisPanel).toContain('≥{ANALYSIS_ORF_MIN_AA} aa');
-    expect(analysisPanel).toContain('`${allOrfs.length} ORFs ≥${ANALYSIS_ORF_MIN_AA} aa`');
+    // render, which is what this guard exists for. The total is now one ORF
+    // per strand and stop rather than one per start codon, so the eight rows
+    // no longer repeat one reading frame. Each count names its own floor, so
+    // assert the floor travels WITH the number rather than pinning the prose.
+    expect(analysisPanel).toContain('{visibleOrfs.length} longest of {stopOrfs.length}, one per stop');
+    expect(analysisPanel).toContain('≥${ANALYSIS_ORF_MIN_AA} aa');
+    expect(analysisPanel).toContain('`${stopOrfs.length} ORFs ≥${ANALYSIS_ORF_MIN_AA} aa`');
     // A bare count with no floor beside it is the defect this replaced.
-    expect(analysisPanel).not.toContain('`${allOrfs.length} ORFs`');
+    expect(analysisPanel).not.toContain('`${stopOrfs.length} ORFs`');
   });
 
   it('labels lossy interchange exports and session durability honestly', () => {

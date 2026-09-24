@@ -174,7 +174,7 @@
 
 .motif-cs-cloning-design-methods small {
   overflow: hidden;
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 500;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -256,7 +256,7 @@
 .motif-cs-cloning-design-section-head > small {
   max-width: 42ch;
   color: var(--text-muted);
-  font-size: 9.5px;
+  font-size: 10.5px;
   line-height: 1.35;
   text-align: right;
   text-wrap: pretty;
@@ -283,7 +283,7 @@
 
 .motif-cs-cloning-design-field-grid > label > small {
   color: var(--text-muted);
-  font-size: 9.5px;
+  font-size: 10px;
   font-weight: 500;
   letter-spacing: 0;
   line-height: 1.35;
@@ -293,7 +293,7 @@
 .motif-cs-cloning-design-organization-help {
   margin: 8px 2px 0;
   color: var(--text-muted);
-  font-size: 9.5px;
+  font-size: 10.5px;
   line-height: 1.4;
   text-wrap: pretty;
 }
@@ -312,7 +312,7 @@
 .motif-cs-cloning-design-advanced {
   margin-top: 7px;
   color: var(--text-muted);
-  font-size: 9.5px;
+  font-size: 10.5px;
 }
 
 .motif-cs-cloning-design-advanced summary {
@@ -372,7 +372,7 @@
   margin-bottom: 3px;
   padding: 0;
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 720;
 }
 
@@ -442,7 +442,7 @@
   border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--bg-secondary) 48%, var(--bg-primary));
   color: var(--text-secondary);
-  font-size: 9.5px;
+  font-size: 10.5px;
 }
 
 .motif-cs-cloning-design-profile-note summary,
@@ -487,7 +487,7 @@
 .motif-cs-cloning-design-help {
   margin: 5px 0 8px 22px;
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: 10.5px;
   line-height: 1.35;
 }
 
@@ -623,7 +623,7 @@
 .motif-cs-cloning-design-part-identity small {
   overflow: hidden;
   color: var(--text-muted);
-  font-size: 9.5px;
+  font-size: 10.5px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -656,7 +656,7 @@
   height: 26px;
   padding-inline: 6px;
   font-family: var(--font-mono);
-  font-size: 9.5px;
+  font-size: 10.5px;
 }
 
 .motif-cs-cloning-design-part-metrics small {
@@ -672,7 +672,7 @@
   min-width: 0;
   overflow: hidden;
   color: var(--text-secondary);
-  font-size: 9.5px;
+  font-size: 10.5px;
   font-weight: 620;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -690,7 +690,7 @@
   border-radius: 999px;
   background: var(--bg-primary);
   color: var(--text-secondary);
-  font-size: 9.5px;
+  font-size: 10px;
   font-weight: 720;
   white-space: nowrap;
 }
@@ -699,6 +699,20 @@
 .motif-cs-cloning-design-plan-badge[data-state="ready"] {
   border-color: color-mix(in srgb, var(--green) 36%, var(--border-subtle));
   background: color-mix(in srgb, var(--green) 6%, var(--bg-primary));
+}
+
+/* The "Add flanks" pill opens the part's fusion editor. The broad
+   `.motif-cs-cloning-design button { font: inherit }` rule would otherwise
+   set it at the row's size instead of the other pills'. */
+.motif-cs-cloning-design-part-metrics button.motif-cs-cloning-design-state {
+  font-size: 10px;
+  font-weight: 720;
+  cursor: pointer;
+}
+
+.motif-cs-cloning-design-part-metrics button.motif-cs-cloning-design-state:hover {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
 }
 
 .motif-cs-cloning-design-state[data-state="needs_domestication"],
@@ -730,12 +744,13 @@
   padding: 5px 0 2px;
   border-top: 1px solid var(--border-subtle);
   color: var(--text-muted);
-  font-size: 9.5px;
+  font-size: 10.5px;
 }
 
 .motif-cs-cloning-design-fusion-editor summary {
   width: fit-content;
   color: var(--text-secondary);
+  font-size: 11px;
   font-weight: 680;
   cursor: pointer;
 }
@@ -743,6 +758,9 @@
 .motif-cs-cloning-design-fusion-editor > div {
   display: grid;
   grid-template-columns: minmax(105px, 150px) auto minmax(105px, 150px);
+  /* Without this the arrow's auto track took the spare width and set the
+     right boundary 474px from the left one at 1440x900. */
+  justify-content: start;
   align-items: end;
   gap: 7px;
   margin-top: 7px;
@@ -779,7 +797,7 @@
 .motif-cs-cloning-design-source-limit {
   margin: 8px 0 0;
   color: var(--text-muted);
-  font-size: 9.5px;
+  font-size: 10.5px;
   line-height: 1.35;
 }
 
@@ -788,7 +806,7 @@
 .motif-cs-cloning-design-add-hint {
   margin: 9px 0 0;
   color: var(--text-muted);
-  font-size: 9.5px;
+  font-size: 10.5px;
   line-height: 1.35;
 }
 
@@ -817,7 +835,7 @@
   /* The fallback in the old `var(--accent-contrast, var(--bg-primary))` named
      the right colour and never got to supply it, because --accent-contrast is
      defined in every theme. On this --accent fill the near-white it does supply
-     read 2.86 in dark and 2.33 in claude-dark on Add Part. */
+     read 2.86 in dark and 2.33 in claude-dark on Add part. */
   color: var(--accent-fill-contrast);
 }
 
@@ -848,7 +866,7 @@
 .motif-cs-cloning-design-lanes > p {
   margin: 0;
   color: var(--text-muted);
-  font-size: 9.5px;
+  font-size: 10.5px;
 }
 
 .motif-cs-cloning-design-lane {
@@ -872,7 +890,7 @@
 
 .motif-cs-cloning-design-lane strong {
   overflow: hidden;
-  font-size: 9.5px;
+  font-size: 10.5px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -940,7 +958,7 @@
   border-radius: 999px;
   background: var(--bg-primary);
   color: var(--text-secondary);
-  font-size: 9px;
+  font-size: 10.5px;
 }
 
 .motif-cs-cloning-design-product-chain small {
@@ -1022,12 +1040,12 @@
 
 .motif-cs-cloning-design-empty strong {
   color: var(--text-secondary);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .motif-cs-cloning-design-empty span {
   max-width: 60ch;
-  font-size: 9px;
+  font-size: 10.5px;
   line-height: 1.4;
   text-wrap: pretty;
 }
@@ -1070,7 +1088,7 @@
   border-radius: var(--radius-sm);
   background: var(--bg-primary);
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: 10.5px;
   line-height: 1.4;
 }
 
@@ -1130,14 +1148,14 @@
 
 .motif-cs-cloning-design-check strong {
   color: var(--text-secondary);
-  font-size: 9.5px;
+  font-size: 11px;
   line-height: 1.3;
   overflow-wrap: anywhere;
 }
 
 .motif-cs-cloning-design-check small {
   color: var(--text-muted);
-  font-size: 9.5px;
+  font-size: 10.5px;
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
@@ -1149,7 +1167,7 @@
   border: 0;
   background: transparent;
   color: var(--text-secondary);
-  font-size: 9.5px;
+  font-size: 10.5px;
   font-weight: 720;
   text-decoration: underline;
   text-underline-offset: 2px;
@@ -1176,7 +1194,7 @@
 
 .motif-cs-cloning-design-issues {
   background: transparent;
-  font-size: 9px;
+  font-size: 10.5px;
 }
 
 .motif-cs-cloning-design-issues ul {
@@ -1214,7 +1232,7 @@
 .motif-cs-cloning-design-feedback p {
   margin: 0;
   color: var(--text-secondary);
-  font-size: 9px;
+  font-size: 10.5px;
   line-height: 1.35;
   overflow-wrap: anywhere;
 }

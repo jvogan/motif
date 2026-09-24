@@ -6,9 +6,14 @@ import { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ClaudeSciencePrimerWorkspace,
+  type ClaudeSciencePrimerHandoff,
   type ClaudeSciencePrimerPreparationContext,
   type ClaudeSciencePrimerWorkspaceProps,
 } from '../ClaudeSciencePrimerWorkspace';
+import vectors from '../../../public/data/vectors.json';
+import { PRIMER_TAIL_STRUCTURE_3_PRIME_REVIEW_CODE } from '../../bio/primer-design';
+import { reverseComplement } from '../../bio/reverse-complement';
+import { materializePcrAmplicon } from '../claude-science-pcr-materialization';
 
 const primerFixtureSeed = 'ATGCGTACGATCCGTAAGCTGACCTAGTCGATGCTACGGTCAATCG';
 const sequence = primerFixtureSeed.repeat(24);
@@ -200,6 +205,33 @@ describe('ClaudeSciencePrimerWorkspace', () => {
     expect(screen.getByText('Custom conditions')).toBeTruthy();
   });
 
+  it('counts both 5′ tails in the selected amplicon length', async () => {
+    const user = userEvent.setup();
+    render(<ClaudeSciencePrimerWorkspace {...props()} />);
+    const evidence = () => screen.getByRole('region', { name: 'Primer pair 1 evidence' });
+    const heading = () => evidence().querySelector('.motif-cs-primer-evidence-heading > span')?.textContent ?? '';
+    const untailed = Number(/^([\d,]+) bp amplicon$/.exec(heading())![1].replace(/,/g, ''));
+    expect(heading()).not.toContain('with tails');
+
+    await user.click(screen.getByText('Advanced constraints'));
+    // Pasted, not typed: every keystroke re-ranks the primer pairs, and 16 of
+    // them timed this test out on a loaded machine. Only the final tails count.
+    await user.click(screen.getByLabelText('Forward 5′ tail'));
+    await user.paste('GCGAATTC');
+    await user.click(screen.getByLabelText('Reverse 5′ tail'));
+    await user.paste('GCAAGCTT');
+    expect((screen.getByLabelText('Forward 5′ tail') as HTMLInputElement).value).toBe('GCGAATTC');
+    expect((screen.getByLabelText('Reverse 5′ tail') as HTMLInputElement).value).toBe('GCAAGCTT');
+    const tailed = /^([\d,]+) bp amplicon with tails$/.exec(heading());
+    expect(tailed).not.toBeNull();
+    // Pair 1 may change once tails change the ranking, so read its own primers.
+    const text = evidence().textContent ?? '';
+    const forwardStart = Number(/Forward\D*?(\d+)[–-]\d+/.exec(text)![1]);
+    const reverseEnd = Number(/Reverse\D*?\d+[–-](\d+)/.exec(text)![1]);
+    expect(Number(tailed![1].replace(/,/g, ''))).toBe(reverseEnd - forwardStart + 1 + 16);
+    expect(untailed).toBeGreaterThan(0);
+  });
+
   it('initializes a cloning preparation request with cloning conditions and editable verified tails', async () => {
     const user = userEvent.setup();
     const onNextPreparation = vi.fn();
@@ -284,6 +316,31 @@ describe('ClaudeSciencePrimerWorkspace', () => {
     expect(options[1].getAttribute('aria-selected')).toBe('true');
     expect(onSelectRange).toHaveBeenCalledTimes(1);
     expect(onSelectRange.mock.calls[0][0]).toBeLessThan(onSelectRange.mock.calls[0][1]);
+  });
+
+  it('scrolls a chosen pair’s sequences into view without scrolling the chosen row away', async () => {
+    const user = userEvent.setup();
+    // jsdom has no layout: give the results pane a 400px view, ranked rows 52px
+    // apart from y=60, and the reverse oligo's bottom edge at y=700.
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function rect(this: HTMLElement) {
+      const box = (top: number, bottom: number) => ({ top, bottom, left: 0, right: 600, x: 0, y: top, width: 600, height: bottom - top, toJSON: () => ({}) }) as DOMRect;
+      if (this.classList.contains('motif-cs-primer-results')) return box(0, 400);
+      if (this.classList.contains('motif-cs-primer-oligo')) return box(600, 700);
+      const index = this.getAttribute('data-pair-index');
+      if (index !== null) return box(60 + Number(index) * 52, 112 + Number(index) * 52);
+      return box(0, 0);
+    });
+    render(<ClaudeSciencePrimerWorkspace {...props()} />);
+    const results = document.querySelector<HTMLElement>('.motif-cs-primer-results')!;
+    let scrollTop = 0;
+    Object.defineProperty(results, 'scrollTop', { configurable: true, get: () => scrollTop, set: (value: number) => { scrollTop = value; } });
+    expect(scrollTop).toBe(0);
+
+    // Pair 3 sits at y=164: the whole 300px shortfall fits above it only in part,
+    // so the pane scrolls 164px and the row ends at the top edge, still in view.
+    await user.click(within(screen.getByRole('listbox', { name: 'Ranked primer pairs' })).getAllByRole('option')[2]);
+    await waitFor(() => expect(scrollTop).toBe(164));
+    expect(screen.getByRole('region', { name: 'Primer pair 3 evidence' })).toBeTruthy();
   });
 
   it('keeps the explicit target and focus when the host echoes a pair preview selection', async () => {
@@ -443,4 +500,89 @@ describe('ClaudeSciencePrimerWorkspace', () => {
     expect(selected.getAttribute('data-selected')).not.toBeNull();
     expect(within(screen.getByRole('listbox')).getAllByRole('option').length).toBeGreaterThan(0);
   });
+});
+
+describe('ClaudeSciencePrimerWorkspace 5′-tail structure', () => {
+  it('shows a palindromic tail site as a warning on the pair, in its evidence, and in the FASTA export', async () => {
+    const user = userEvent.setup();
+    const onExport = vi.fn();
+    // XhoI's CTCGAG is its own reverse complement: GCGCCTCGAG pairs with itself
+    // at −5.4 kcal/mol, past the −5 self-dimer cutoff, whatever it is attached to.
+    render(<ClaudeSciencePrimerWorkspace {...props({ initialReverseTail: 'GCGCCTCGAG', onExport })} />);
+
+    const options = within(screen.getByRole('listbox', { name: 'Ranked primer pairs' })).getAllByRole('option');
+    expect(options.length).toBeGreaterThan(0);
+    expect(screen.getByTestId('primer-tail-note').textContent).toContain(`on ${options.length} of ${options.length} pairs`);
+    expect(options[0].textContent).toContain('tail structure');
+    const evidence = screen.getByTestId('primer-tail-structure');
+    expect(evidence.textContent).toContain('XhoI site CTCGAG');
+    expect(evidence.textContent).toMatch(/self-dimer −\d+\.\d kcal\/mol/);
+    expect(evidence.getAttribute('data-state')).toBe('note');
+
+    const acknowledgment = screen.queryByTestId('primer-evidence-acknowledgment');
+    if (acknowledgment) await user.click(acknowledgment);
+    await user.click(screen.getByRole('button', { name: 'Export FASTA' }));
+    await waitFor(() => expect(onExport).toHaveBeenCalledTimes(1));
+    const fasta: string = onExport.mock.calls[0][0].text;
+    expect(fasta).toMatch(/>Example_insert_pair_1_reverse 5'-tail structure: self-dimer -\d+\.\d\d kcal\/mol via XhoI site CTCGAG, 3' end free/);
+    expect(fasta.split('\n')[0]).toBe('>Example_insert_pair_1_forward');
+  }, 60_000);
+
+  it('names the tails as not the cause when the annealing regions fail on their own', () => {
+    // ACGT repeats are self-complementary, so every annealing region fails its
+    // structure check with or without a tail.
+    render(<ClaudeSciencePrimerWorkspace {...props({
+      record: { id: 'record-1', name: 'Repeat', molecule: 'dna', sequence: 'ACGT'.repeat(150) },
+      selectedRange: { start: 100, end: 400 },
+      initialForwardTail: 'GCGCCATATG',
+      initialReverseTail: 'GCGCCTCGAG',
+    })} />);
+    const empty = document.querySelector('.motif-cs-primer-empty')?.textContent ?? '';
+    expect(empty).toContain('The 5′ tails are not the cause: this target gives no pair without them either.');
+    expect(empty).toMatch(/No forward primer passes \(rejected: .*\)\./);
+    expect(empty).not.toContain('Rejections:');
+  }, 60_000);
+
+  it('sends the tail review code that PCR materialization recomputes, so the amplicon is created', async () => {
+    const user = userEvent.setup();
+    const onCreateAmplicon = vi.fn();
+    const template = (vectors as Array<{ name: string; sequence: string }>)
+      .find((entry) => entry.name === 'pUC19')!.sequence.toUpperCase().slice(148, 548);
+    // Every forward candidate starts at base 1, and this tail is the reverse
+    // complement of bases 1-16, so each candidate's 3′ end can fold onto its tail.
+    const tail = reverseComplement(template.slice(0, 28)).slice(0, 16);
+    render(<ClaudeSciencePrimerWorkspace {...props({
+      record: { id: 'tail-fixture', name: 'Tail fixture', molecule: 'dna', sequence: template },
+      selectedRange: null,
+      targetRange: { start: 0, end: 400 },
+      initialForwardTail: tail,
+      onCreateAmplicon,
+    })} />);
+
+    expect(screen.getByTestId('primer-tail-structure').getAttribute('data-state')).toBe('review');
+    expect(screen.getByTestId('primer-evidence-review').textContent).toContain('A 5′-tail structure pairs a primer’s 3′ end');
+    await user.click(screen.getByTestId('primer-evidence-acknowledgment'));
+    await user.click(screen.getByRole('button', { name: 'Create amplicon record' }));
+    await waitFor(() => expect(onCreateAmplicon).toHaveBeenCalledTimes(1));
+    const handoff: ClaudeSciencePrimerHandoff = onCreateAmplicon.mock.calls[0][0];
+    expect(handoff.evidenceReview?.reasonCodes).toContain(PRIMER_TAIL_STRUCTURE_3_PRIME_REVIEW_CODE);
+
+    const materialize = (reasonCodes: readonly string[]) => materializePcrAmplicon({
+      sourceRecord: { id: 'tail-fixture', name: 'Tail fixture', sequence: template, type: 'dna', topology: 'linear', active: true, features: [] },
+      selection: {
+        pair: handoff.pair,
+        pairNumber: handoff.pairNumber,
+        target: handoff.target,
+        parameters: handoff.parameters,
+        evidenceReview: { ...handoff.evidenceReview!, reasonCodes: [...reasonCodes] },
+      },
+      identity: { recordId: 'pcr-record-1', resultId: 'pcr-1', productId: 'amplicon-1', createdAt: '2026-09-22T00:00:00.000Z' },
+      primerDesignResultId: 'primer-design-1',
+    });
+    const created = materialize(handoff.evidenceReview!.reasonCodes);
+    expect((created.record.provenance.evidenceReview as { reasonCodes?: string[] } | undefined)?.reasonCodes)
+      .toContain(PRIMER_TAIL_STRUCTURE_3_PRIME_REVIEW_CODE);
+    expect(() => materialize(handoff.evidenceReview!.reasonCodes.filter((code) => code !== PRIMER_TAIL_STRUCTURE_3_PRIME_REVIEW_CODE)))
+      .toThrow(/does not match the recomputed primer evidence/);
+  }, 60_000);
 });

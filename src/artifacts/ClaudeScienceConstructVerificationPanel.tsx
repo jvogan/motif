@@ -1,4 +1,11 @@
 import { useId, useMemo, useState } from 'react';
+import {
+  constructConflictCount,
+  constructLowConfidenceCount,
+  constructReferenceRangeLabel,
+  constructVariantDisplayPosition,
+  constructVerificationFindings,
+} from './claude-science-construct-verification-display';
 import './claude-science-construct-verification.css';
 
 type ArtifactConstructVerificationState = 'consistent' | 'needs_review' | 'inconsistent';
@@ -74,6 +81,9 @@ type ArtifactConstructVerificationReadPresentation = {
     orientation: 'forward' | 'reverse';
     referenceStart?: number;
     referenceEnd?: number;
+    referenceSpan?: number;
+    wraps?: boolean;
+    secondBestScore?: number | null;
     alignedBases?: number;
     alignedLength?: number;
     identity?: number;
@@ -101,6 +111,9 @@ export type ArtifactConstructVerificationPresentationResult = {
     topology?: string;
   };
   reads: readonly ArtifactConstructVerificationReadPresentation[];
+  thresholds?: {
+    minMappingIdentity?: number;
+  };
   coverage: {
     depth?: readonly number[];
     forward?: readonly number[];
@@ -131,6 +144,12 @@ export type ClaudeScienceConstructVerificationPanelProps = {
   result: ArtifactConstructVerificationPresentationResult;
   referenceName?: string;
   readNames?: Readonly<Record<string, string>>;
+  /** Opens the reads' traces at a variant. Without it the variant rows are plain text. */
+  onInspectVariant?: (variant: ArtifactConstructVerificationVariantPresentation) => void;
+  /** Whether a mapped read covers the variant, so there is a trace to open. */
+  canInspectVariant?: (variant: ArtifactConstructVerificationVariantPresentation) => boolean;
+  /** Why a row that cannot open its traces cannot, said in the row; nothing for a row with no trace to open. */
+  variantTraceUnavailable?: (variant: ArtifactConstructVerificationVariantPresentation) => string | undefined;
 };
 
 type VariantClassification = 'expected' | 'unexpected' | 'missing_expected' | 'uncertain';
@@ -193,10 +212,6 @@ function readableToken(value: string | undefined): string {
   return value.replaceAll('_', ' ').replaceAll('-', ' ');
 }
 
-function variantPosition(variant: ArtifactConstructVerificationVariantPresentation): string {
-  const position = variant.position ?? variant.referencePosition ?? variant.referenceStart;
-  return Number.isFinite(position) ? (position ?? 0).toLocaleString() : '—';
-}
 
 function variantAlleles(variant: ArtifactConstructVerificationVariantPresentation): string {
   const reference = variant.reference ?? variant.ref ?? '—';
@@ -213,6 +228,13 @@ function variantSupport(variant: ArtifactConstructVerificationVariantPresentatio
 function variantQuality(variant: ArtifactConstructVerificationVariantPresentation): string {
   const quality = variant.quality ?? variant.meanQuality;
   return Number.isFinite(quality) ? `Q${(quality ?? 0).toFixed(1)}` : '—';
+}
+
+/** "18" -> "…reference position 18"; "19–21" -> "…positions 19–21"; "after 50" -> "…the insertion after reference position 50". */
+function variantTraceLabel(variant: ArtifactConstructVerificationVariantPresentation, position: string): string {
+  const side = /^(after|before) (.+)$/.exec(position);
+  if (variant.type === 'insertion' && side) return `Show the traces at the insertion ${side[1]} reference position ${side[2]}`;
+  return `Show the traces at reference position${position.includes('–') ? 's' : ''} ${position}`;
 }
 
 function variantKey(variant: ArtifactConstructVerificationVariantPresentation, index: number): string {
@@ -266,9 +288,8 @@ function regionName(region: ArtifactConstructVerificationRegionPresentation, ind
   return region.name ?? region.label ?? region.id ?? `Required region ${index + 1}`;
 }
 
-function regionRange(region: ArtifactConstructVerificationRegionPresentation): string {
-  if (!Number.isFinite(region.start) || !Number.isFinite(region.end)) return '—';
-  return `${(region.start ?? 0).toLocaleString()}–${(region.end ?? 0).toLocaleString()}`;
+function regionRange(region: ArtifactConstructVerificationRegionPresentation, referenceLength?: number): string {
+  return constructReferenceRangeLabel(region.start, region.end, referenceLength) ?? '—';
 }
 
 function regionStrands(region: ArtifactConstructVerificationRegionPresentation): string {
@@ -280,17 +301,27 @@ function regionStrands(region: ArtifactConstructVerificationRegionPresentation):
   return 'No strand support';
 }
 
-function readRange(read: ArtifactConstructVerificationReadPresentation): string {
-  const start = read.mapping?.referenceStart;
-  const end = read.mapping?.referenceEnd;
-  if (!Number.isFinite(start) || !Number.isFinite(end)) return 'No mapped range';
-  return `ref ${(start ?? 0).toLocaleString()}–${(end ?? 0).toLocaleString()} (0-based, end exclusive)`;
+function readPlacement(read: ArtifactConstructVerificationReadPresentation, referenceLength?: number): string {
+  const range = constructReferenceRangeLabel(
+    read.mapping?.referenceStart,
+    read.mapping?.referenceEnd,
+    referenceLength,
+  );
+  if (read.status === 'mapped') {
+    return `${readableToken(read.mapping?.orientation)} · mapped · ${range ? `ref ${range}` : 'No mapped range'}`;
+  }
+  // A rejected read is not on the reference. Its best hit is named as such, with
+  // no strand, so it does not read like the mapped rows around it.
+  return `${readableToken(read.status)} · not mapped${range ? ` (best hit ref ${range})` : ''}`;
 }
 
 export function ClaudeScienceConstructVerificationPanel({
   result,
   referenceName,
   readNames = {},
+  onInspectVariant,
+  canInspectVariant,
+  variantTraceUnavailable,
 }: ClaudeScienceConstructVerificationPanelProps) {
   const sectionId = useId();
   const [variantFilter, setVariantFilter] = useState<VariantFilter>('all');
@@ -317,9 +348,13 @@ export function ClaudeScienceConstructVerificationPanel({
   }, [result.variants.observed]);
   const averageDepth = result.coverage.meanDepth ?? meanDepth(result.coverage.depth);
   const coveragePercent = boundedPercent(result.coverage.coveredFraction);
-  const primaryReasons = result.reasons.slice(0, PRIMARY_REASON_LIMIT);
-  const additionalReasons = result.reasons.slice(PRIMARY_REASON_LIMIT, TOTAL_REASON_LIMIT);
-  const omittedReasons = Math.max(0, result.reasons.length - TOTAL_REASON_LIMIT);
+  // One line per kind of finding, the ones that decided the verdict first.
+  const findings = useMemo(() => constructVerificationFindings(result, readNames), [readNames, result]);
+  const primaryReasons = findings.slice(0, PRIMARY_REASON_LIMIT);
+  const additionalReasons = findings.slice(PRIMARY_REASON_LIMIT, TOTAL_REASON_LIMIT);
+  const omittedReasons = Math.max(0, findings.length - TOTAL_REASON_LIMIT);
+  const conflictCount = constructConflictCount(result.reasons);
+  const lowConfidenceCount = constructLowConfidenceCount(result);
   const referenceLabel = referenceName
     ?? result.reference.name
     ?? result.reference.recordId
@@ -356,6 +391,8 @@ export function ClaudeScienceConstructVerificationPanel({
         <div><dt>Strand support</dt><dd>{forwardReads.toLocaleString()} F · {reverseReads.toLocaleString()} R</dd></div>
         <div><dt>Mean depth</dt><dd>{averageDepth === null ? '—' : `${averageDepth.toFixed(1)}×`}</dd></div>
         <div><dt>Unexpected</dt><dd>{unexpectedVariantCount.toLocaleString()}</dd></div>
+        <div data-fact="conflicts"><dt>Conflicts</dt><dd>{conflictCount === null ? '—' : conflictCount.toLocaleString()}</dd></div>
+        <div data-fact="low-confidence"><dt>Low confidence</dt><dd>{lowConfidenceCount.toLocaleString()}</dd></div>
         <div><dt>Mean read quality</dt><dd>{formatQuality(meanReadQuality)}</dd></div>
       </dl>
 
@@ -374,15 +411,18 @@ export function ClaudeScienceConstructVerificationPanel({
       <section className="motif-cs-construct-verification-section" aria-labelledby={`${sectionId}-findings`}>
         <div className="motif-cs-construct-verification-section-heading">
           <span id={`${sectionId}-findings`}>Review findings</span>
-          <small>{result.reasons.length.toLocaleString()} reason{result.reasons.length === 1 ? '' : 's'}</small>
+          <small>
+            {findings.length.toLocaleString()} finding{findings.length === 1 ? '' : 's'}
+            {findings.length !== result.reasons.length ? ` · ${result.reasons.length.toLocaleString()} reason${result.reasons.length === 1 ? '' : 's'}` : ''}
+          </small>
         </div>
         {primaryReasons.length ? (
           <>
             <ul className="motif-cs-construct-verification-reasons">
-              {primaryReasons.map((reason, index) => (
-                <li className="motif-cs-construct-verification-reason" key={`${reason.code}:${reason.readId ?? reason.regionId ?? reason.variantId ?? index}`}>
-                  <span className="motif-cs-construct-verification-reason-code">{readableToken(reason.severity)} · {readableToken(reason.code)}</span>
-                  <span>{reason.message}</span>
+              {primaryReasons.map((finding) => (
+                <li className="motif-cs-construct-verification-reason" key={finding.key} data-severity={finding.severity} data-code={finding.code}>
+                  <span className="motif-cs-construct-verification-reason-code">{readableToken(finding.severity)} · {readableToken(finding.code)}</span>
+                  <span>{finding.message}</span>
                 </li>
               ))}
             </ul>
@@ -390,10 +430,10 @@ export function ClaudeScienceConstructVerificationPanel({
               <details className="motif-cs-construct-verification-disclosure">
                 <summary>Show {additionalReasons.length.toLocaleString()} more finding{additionalReasons.length === 1 ? '' : 's'}</summary>
                 <ul className="motif-cs-construct-verification-reasons">
-                  {additionalReasons.map((reason, index) => (
-                    <li className="motif-cs-construct-verification-reason" key={`${reason.code}:${reason.readId ?? reason.regionId ?? reason.variantId ?? index}`}>
-                      <span className="motif-cs-construct-verification-reason-code">{readableToken(reason.severity)} · {readableToken(reason.code)}</span>
-                      <span>{reason.message}</span>
+                  {additionalReasons.map((finding) => (
+                    <li className="motif-cs-construct-verification-reason" key={finding.key} data-severity={finding.severity} data-code={finding.code}>
+                      <span className="motif-cs-construct-verification-reason-code">{readableToken(finding.severity)} · {readableToken(finding.code)}</span>
+                      <span>{finding.message}</span>
                     </li>
                   ))}
                 </ul>
@@ -427,21 +467,59 @@ export function ClaudeScienceConstructVerificationPanel({
             aria-label="Scrollable variant evidence table"
             data-testid="construct-verification-variant-table"
           >
-            <table className="motif-cs-construct-verification-table">
-              <thead>
-                <tr><th>Position (0-based)</th><th>Change</th><th>Type</th><th>Assessment</th><th>Support</th><th>Quality</th></tr>
+            {/* The roles keep this a table for assistive technology where a
+                narrow panel lays each row out as a grid. */}
+            <table className="motif-cs-construct-verification-table motif-cs-construct-verification-variants" role="table">
+              <thead role="rowgroup">
+                <tr role="row">
+                  <th role="columnheader" title="1-based reference position, as in the sequence view">Position</th>
+                  <th role="columnheader">Change</th>
+                  <th role="columnheader">Type</th>
+                  <th role="columnheader">Assessment</th>
+                  <th role="columnheader">Support</th>
+                  <th role="columnheader">Quality</th>
+                </tr>
               </thead>
-              <tbody>
-                {filteredVariants.map(({ classification, variant, key }) => (
-                  <tr key={key}>
-                    <td data-numeric>{variantPosition(variant)}</td>
-                    <td data-sequence>{variantAlleles(variant)}</td>
-                    <td>{readableToken(variant.type)}</td>
-                    <td><span className="motif-cs-construct-verification-tag" data-classification={classification}>{CLASSIFICATION_LABELS[classification]}</span></td>
-                    <td data-numeric>{variantSupport(variant)}</td>
-                    <td data-numeric>{variantQuality(variant)}</td>
-                  </tr>
-                ))}
+              <tbody role="rowgroup">
+                {filteredVariants.map(({ classification, variant, key }) => {
+                  const position = constructVariantDisplayPosition(variant, result.reference.length);
+                  const inspect = onInspectVariant && (canInspectVariant?.(variant) ?? true)
+                    ? () => onInspectVariant(variant)
+                    : undefined;
+                  const unavailable = inspect ? undefined : variantTraceUnavailable?.(variant);
+                  return (
+                    <tr
+                      key={key}
+                      role="row"
+                      data-actionable={inspect ? true : undefined}
+                      // The whole row opens the traces for a pointer; the
+                      // Position button is the keyboard and screen-reader way in.
+                      onClick={inspect ? (event) => {
+                        if (event.target instanceof Element && event.target.closest('button')) return;
+                        if (!window.getSelection()?.isCollapsed) return;
+                        inspect();
+                      } : undefined}
+                    >
+                      <td role="cell" data-numeric>
+                        {inspect ? (
+                          <button
+                            type="button"
+                            className="motif-cs-construct-verification-position"
+                            aria-label={variantTraceLabel(variant, position)}
+                            title={variantTraceLabel(variant, position)}
+                            onClick={inspect}
+                          >{position}</button>
+                        ) : position}
+                        {unavailable ? <small className="motif-cs-construct-verification-no-trace">{unavailable}</small> : null}
+                      </td>
+                      <td role="cell" data-sequence>{variantAlleles(variant)}</td>
+                      <td role="cell">{readableToken(variant.type)}</td>
+                      <td role="cell"><span className="motif-cs-construct-verification-tag" data-classification={classification}>{CLASSIFICATION_LABELS[classification]}</span></td>
+                      <td role="cell" data-numeric>{variantSupport(variant)}</td>
+                      <td role="cell" data-numeric>{variantQuality(variant)}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
             {filteredVariantCount > VARIANT_LIMIT ? (
@@ -461,12 +539,12 @@ export function ClaudeScienceConstructVerificationPanel({
           </div>
           <div className="motif-cs-construct-verification-table-scroll" tabIndex={0} aria-label="Scrollable required region coverage table">
             <table className="motif-cs-construct-verification-table">
-              <thead><tr><th>Region</th><th>Reference range (0-based, end exclusive)</th><th>Coverage</th><th>Strands</th><th>Status</th></tr></thead>
+              <thead><tr><th>Region</th><th title="1-based, inclusive">Reference range</th><th>Coverage</th><th>Strands</th><th>Status</th></tr></thead>
               <tbody>
                 {result.coverage.requiredRegions.slice(0, REGION_LIMIT).map((region, index) => (
                   <tr key={region.id ?? `${regionName(region, index)}:${index}`}>
                     <td>{regionName(region, index)}</td>
-                    <td data-numeric>{regionRange(region)}</td>
+                    <td data-numeric>{regionRange(region, result.reference.length)}</td>
                     <td data-numeric>{formatPercent(region.coveredFraction)}</td>
                     <td>{regionStrands(region)}</td>
                     <td>{readableToken(region.status)}</td>
@@ -492,12 +570,11 @@ export function ClaudeScienceConstructVerificationPanel({
             <div className="motif-cs-construct-verification-read-grid">
               {result.reads.slice(0, READ_LIMIT).map((read) => {
                 const label = readNames[read.id] ?? read.name ?? read.id;
-                const orientation = read.mapping?.orientation;
                 const variantCount = variantsByReadId.get(read.id) ?? 0;
                 return (
                   <article className="motif-cs-construct-verification-read" key={read.id}>
                     <strong>{label}</strong>
-                    <span>{readableToken(orientation)} · {readableToken(read.status)} · {readRange(read)}</span>
+                    <span>{readPlacement(read, result.reference.length)}</span>
                     <span>{read.rawLength.toLocaleString()} calls · {formatQuality(read.meanQuality)} · {variantCount.toLocaleString()} variant{variantCount === 1 ? '' : 's'}</span>
                   </article>
                 );

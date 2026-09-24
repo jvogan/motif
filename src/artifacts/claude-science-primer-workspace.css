@@ -574,6 +574,41 @@
   font: 11px/1 var(--font-mono);
 }
 
+.motif-cs-primer-pair-flag[data-state="review"] {
+  color: var(--amber);
+}
+
+.motif-cs-primer-tail-note {
+  margin: 0 0 10px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.motif-cs-primer-tail-structure {
+  display: grid;
+  gap: 5px;
+  padding: 10px 13px;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.motif-cs-primer-tail-structure strong {
+  color: var(--text-primary);
+  font-size: 11px;
+}
+
+.motif-cs-primer-tail-structure[data-state="review"] strong {
+  color: var(--amber);
+}
+
+.motif-cs-primer-tail-structure ul {
+  margin: 0;
+  padding-left: 17px;
+  line-height: 1.45;
+}
+
 .motif-cs-primer-pair-arrow {
   color: var(--text-muted);
   font-size: 18px;

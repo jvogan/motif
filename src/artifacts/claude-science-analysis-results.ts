@@ -356,18 +356,36 @@ function normalizeStringArray(
   return result;
 }
 
+/** Longest string any structured-JSON value may hold, unless a {@link JsonLongStringAllowance} names it. */
+const MAX_ARTIFACT_ANALYSIS_JSON_STRING_LENGTH = 16_384;
+
+/**
+ * One string in a parsed JSON asset that may pass the general string cap. It is
+ * tied to the object that holds it, not to a path, so a key spelled
+ * "consensus.sequence" or the same key on any other object gets the general cap.
+ */
+interface JsonLongStringAllowance {
+  readonly owner: object;
+  readonly key: string;
+  readonly maxLength: number;
+  readonly pattern: RegExp;
+  readonly patternDescription: string;
+}
+
 function normalizeJsonValue(
   value: unknown,
   path: string,
   budget: Budget,
   ancestors: WeakSet<object>,
   depth: number,
+  allowance?: JsonLongStringAllowance,
+  maxStringLength = MAX_ARTIFACT_ANALYSIS_JSON_STRING_LENGTH,
 ): ArtifactJsonValue {
   budget.nodes += 1;
   if (budget.nodes > MAX_ARTIFACT_ANALYSIS_STRUCTURED_NODES) throw new Error(`${path} exceeds the structured-data node limit.`);
   if (depth > MAX_ARTIFACT_ANALYSIS_DEPTH) throw new Error(`${path} exceeds the maximum structured-data depth.`);
   if (value === null || typeof value === 'boolean') return value;
-  if (typeof value === 'string') return boundedString(value, path, 16_384, budget, { trim: false, allowBlank: true });
+  if (typeof value === 'string') return boundedString(value, path, maxStringLength, budget, { trim: false, allowBlank: true });
   if (typeof value === 'number') return finiteNumber(value, path);
   if (typeof value !== 'object' || value === null) throw new Error(`${path} must contain JSON-compatible data only.`);
   if (ancestors.has(value)) throw new Error(`${path} must not contain circular references.`);
@@ -375,7 +393,7 @@ function normalizeJsonValue(
   try {
     if (Array.isArray(value)) {
       if (value.length > MAX_ARTIFACT_ANALYSIS_ARRAY_ENTRIES) throw new Error(`${path} contains too many entries.`);
-      return value.map((item, index) => normalizeJsonValue(item, `${path}[${index}]`, budget, ancestors, depth + 1));
+      return value.map((item, index) => normalizeJsonValue(item, `${path}[${index}]`, budget, ancestors, depth + 1, allowance));
     }
     if (!isPlainObject(value)) throw new Error(`${path} must contain plain JSON objects only.`);
     const entries = Object.entries(value);
@@ -384,7 +402,25 @@ function normalizeJsonValue(
     for (const [key, item] of entries) {
       if (!key || key.length > 256 || UNSAFE_KEYS.has(key)) throw new Error(`${path}.${key} is not an allowed object key.`);
       consumeText(key, `${path}.${key}`, budget);
-      normalized[key] = normalizeJsonValue(item, `${path}.${key}`, budget, ancestors, depth + 1);
+      const allowed = allowance !== undefined
+        && allowance.owner === value
+        && allowance.key === key
+        && typeof item === 'string'
+        && item.length > MAX_ARTIFACT_ANALYSIS_JSON_STRING_LENGTH;
+      if (allowed && !allowance.pattern.test(item)) {
+        throw new Error(
+          `${path}.${key} cannot exceed ${MAX_ARTIFACT_ANALYSIS_JSON_STRING_LENGTH.toLocaleString()} characters unless it holds ${allowance.patternDescription} only.`,
+        );
+      }
+      normalized[key] = normalizeJsonValue(
+        item,
+        `${path}.${key}`,
+        budget,
+        ancestors,
+        depth + 1,
+        allowance,
+        allowed ? allowance.maxLength : MAX_ARTIFACT_ANALYSIS_JSON_STRING_LENGTH,
+      );
     }
     return normalized;
   } finally {
@@ -462,7 +498,7 @@ function normalizeAsset(value: unknown, index: number, budget: Budget): Artifact
     } catch {
       throw new Error(`${path}.content must be valid JSON for application/json.`);
     }
-    normalizeJsonValue(parsed, `${path}.content JSON`, budget, new WeakSet<object>(), 0);
+    normalizeJsonValue(parsed, `${path}.content JSON`, budget, new WeakSet<object>(), 0, constructReportConsensusAllowance(parsed));
   }
   const sha256 = value.sha256 === undefined ? undefined : normalizeSha256(value.sha256, `${path}.sha256`, budget);
   if (sha256 !== undefined && sha256 !== sha256HexSync(content)) {
@@ -977,6 +1013,26 @@ const CONSTRUCT_REPORT_SUPPORTING_READ_LIMIT = 8;
 const CONSTRUCT_REPORT_OBSERVED_VARIANT_LIMIT = 192;
 const CONSTRUCT_REPORT_IUPAC_CONSENSUS_PATTERN = /^[ACGTN]*$/;
 const CONSTRUCT_REPORT_CANONICAL_DNA_PATTERN = /^[ACGT]*$/;
+/**
+ * The report stores its consensus at reference length plus accepted insertions.
+ * At the engine's limits that is 50,000 + 2,000 x 24 = 98,000 characters, the
+ * most the consensus check below can accept, so a reference over 16,384 bp
+ * needs more than the general JSON string cap.
+ */
+const CONSTRUCT_REPORT_MAX_CONSENSUS_LENGTH = CONSTRUCT_REPORT_LIMITS.maxReferenceLength
+  + (CONSTRUCT_REPORT_LIMITS.maxObservedVariants * CONSTRUCT_REPORT_LIMITS.maxIndelLength);
+
+function constructReportConsensusAllowance(parsed: unknown): JsonLongStringAllowance | undefined {
+  if (!isPlainObject(parsed) || parsed.schema !== CONSTRUCT_VERIFICATION_REPORT_SCHEMA) return undefined;
+  if (!isPlainObject(parsed.consensus)) return undefined;
+  return {
+    owner: parsed.consensus,
+    key: 'sequence',
+    maxLength: CONSTRUCT_REPORT_MAX_CONSENSUS_LENGTH,
+    pattern: CONSTRUCT_REPORT_IUPAC_CONSENSUS_PATTERN,
+    patternDescription: 'A/C/G/T/N bases',
+  };
+}
 
 function reportObject(value: unknown, path: string): Record<string, unknown> {
   if (!isPlainObject(value)) throw new Error(`${path} must be an object.`);
@@ -1149,6 +1205,33 @@ type ConstructReportRead = {
   qualityProvided: boolean;
 };
 
+/**
+ * A mapped read's CIGAR (M, I and D runs in reference order) must spell the
+ * same alignment the mapping's counts describe, since a saved variant row
+ * places the read's calls on the reference from it.
+ */
+function validateConstructReportCigar(
+  value: unknown,
+  path: string,
+  status: string,
+  expected: { M: number; I: number; D: number },
+): void {
+  if (status !== 'mapped') throw new Error(`${path} may only be present on a mapped read.`);
+  if (typeof value !== 'string' || value.length > MAX_ARTIFACT_ANALYSIS_JSON_STRING_LENGTH || !/^(?:[1-9]\d{0,5}[MID])+$/.test(value)) {
+    throw new Error(`${path} must be a CIGAR of M, I and D runs.`);
+  }
+  const totals = { M: 0, I: 0, D: 0 };
+  let previous = '';
+  for (const [, run, operation] of value.matchAll(/(\d+)([MID])/g)) {
+    if (operation === previous) throw new Error(`${path} must not repeat an operation in adjacent runs.`);
+    previous = operation;
+    totals[operation as 'M' | 'I' | 'D'] += Number(run);
+  }
+  if (totals.M !== expected.M || totals.I !== expected.I || totals.D !== expected.D) {
+    throw new Error(`${path} must agree with the mapping's match, substitution, insertion and deletion counts.`);
+  }
+}
+
 function validateConstructReportMapping(
   value: unknown,
   path: string,
@@ -1175,6 +1258,7 @@ function validateConstructReportMapping(
     'insertions',
     'deletions',
     'indelFraction',
+    'cigar',
   ], path);
   if (mapping.orientation !== 'forward' && mapping.orientation !== 'reverse') {
     throw new Error(`${path}.orientation must be forward or reverse.`);
@@ -1230,6 +1314,12 @@ function validateConstructReportMapping(
   if (!reportNumbersAgree(indelFraction, (insertions + deletions) / alignedLength)) {
     throw new Error(`${path}.indelFraction must agree with the insertion and deletion counts.`);
   }
+  // Optional since saved rows could open traces: reports saved before it omit the key.
+  if (mapping.cigar !== undefined) validateConstructReportCigar(mapping.cigar, `${path}.cigar`, status, {
+    M: matches + substitutions,
+    I: insertions,
+    D: deletions,
+  });
   const minimumIdentity = reportFiniteNumber(
     thresholds.minMappingIdentity,
     'verification report thresholds.minMappingIdentity',
@@ -1303,6 +1393,7 @@ function validateConstructReportRead(
     'qualityProvided',
     'meanQuality',
     'status',
+    'searchIncomplete',
     'trim',
     'mapping',
   ], path);
@@ -1314,6 +1405,10 @@ function validateConstructReportRead(
   const meanQuality = reportNullableNumber(read.meanQuality, `${path}.meanQuality`, 0, 255);
   const status = reportString(read.status, `${path}.status`);
   if (!CONSTRUCT_REPORT_READ_STATUS_SET.has(status)) throw new Error(`${path}.status is not supported.`);
+  // Optional since the marker was added: reports saved before it omit the key.
+  if (read.searchIncomplete !== undefined && (read.searchIncomplete !== true || status !== 'unmapped')) {
+    throw new Error(`${path}.searchIncomplete may only be true, on an unmapped read.`);
+  }
 
   const trim = reportObject(read.trim, `${path}.trim`);
   assertKnownKeys(trim, [

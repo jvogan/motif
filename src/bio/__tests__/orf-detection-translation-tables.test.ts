@@ -1,7 +1,18 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { getTranslationTable, STANDARD_CODE } from '../codon-tables';
 import { findORFs } from '../orf-detection';
+import { reverseComplement } from '../reverse-complement';
 import type { CodonTable, ORF } from '../types';
+
+// Every scan that walks a record reverse-complements it exactly once, and a
+// cache hit never does, so this spy counts walks. The memoisation tests below
+// count them instead of timing a cold scan against a warm one: a timing race
+// said the same thing on a quiet machine and failed on a loaded one.
+vi.mock('../reverse-complement', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../reverse-complement')>();
+  return { ...actual, reverseComplement: vi.fn(actual.reverseComplement) };
+});
+const scans = vi.mocked(reverseComplement);
 
 function forwardOrfAtOrigin(sequence: string, table: CodonTable): ORF | undefined {
   return findORFs(sequence, 1, table).find((orf) => orf.strand === 1 && orf.start === 0);
@@ -125,7 +136,8 @@ describe('ORF scan memoisation', () => {
     };
   }
 
-  // A 2,578-base circular record, the size the workspace actually opens. The
+  // A 2,578-base circular record, about the size of the 2,686 bp pUC19 the workspace
+  // opens. The
   // scan doubles both strands for a circular topology and tests every codon in
   // six frames, so it is the most expensive pure function the artifact calls.
   const sequence = (() => {
@@ -145,23 +157,18 @@ describe('ORF scan memoisation', () => {
   })();
 
   it('answers a repeated scan from cache instead of walking the record again', () => {
-    const first = findORFs(sequence, 30, STANDARD_CODE, { topology: 'circular' });
+    // A record no earlier test has scanned, so the first call is the miss.
+    const record = `${sequence}CAT`;
+    scans.mockClear();
+    const first = findORFs(record, 30, STANDARD_CODE, { topology: 'circular' });
     expect(first.length).toBeGreaterThan(0);
+    expect(scans).toHaveBeenCalledTimes(1);
 
-    const coldStart = performance.now();
-    findORFs(`${sequence}A`, 30, STANDARD_CODE, { topology: 'circular' });
-    const cold = performance.now() - coldStart;
-
-    const warmStart = performance.now();
-    const second = findORFs(sequence, 30, STANDARD_CODE, { topology: 'circular' });
-    const warm = performance.now() - warmStart;
-
+    // This guards that the cache exists at all, not a particular speed.
+    // Dragging a selection re-asked this same question on every pointermove.
+    const second = findORFs(record, 30, STANDARD_CODE, { topology: 'circular' });
     expect(second).toEqual(first);
-    // A hit is a map lookup and an array copy against a six-frame walk. The
-    // margin is wide on purpose: this guards that the cache exists at all, not
-    // a particular speed. Dragging a selection re-asked this same question on
-    // every pointermove.
-    expect(warm).toBeLessThan(cold / 10);
+    expect(scans).toHaveBeenCalledTimes(1);
   });
 
   it('does not let a caller that sorts its result rewrite the cached answer', () => {
@@ -203,20 +210,16 @@ describe('ORF scan memoisation', () => {
     // for and every lap missed. Round-robin switching improved from 48.5ms to
     // only 42.5ms because of it, while a two-record alternation reached 27.0ms.
     const inventory = Array.from({ length: 13 }, (_, index) => `${sequence.slice(index * 3)}${'ACG'.repeat(index + 1)}`);
+    scans.mockClear();
     const answers = inventory.map((seq) => findORFs(seq, 30, STANDARD_CODE, { topology: 'circular' }));
-
-    const coldStart = performance.now();
-    findORFs(`${sequence}TTTTTTTTT`, 30, STANDARD_CODE, { topology: 'circular' });
-    const cold = performance.now() - coldStart;
+    expect(scans).toHaveBeenCalledTimes(13);
 
     // A full lap: every record must still answer from cache after all 13 have
     // been scanned, which is exactly what a 12-entry cache could not do.
-    const lapStart = performance.now();
     const secondLap = inventory.map((seq) => findORFs(seq, 30, STANDARD_CODE, { topology: 'circular' }));
-    const lap = performance.now() - lapStart;
 
     expect(secondLap).toEqual(answers);
-    expect(lap).toBeLessThan(cold);
+    expect(scans).toHaveBeenCalledTimes(13);
   });
 
   it('survives a record that yields more ORFs than an argument list can hold', () => {
@@ -289,6 +292,20 @@ describe('ORF scan memoisation', () => {
     // And the cache still works for ordinary records afterwards.
     const small = findORFs(sequence, 30, STANDARD_CODE, { topology: 'linear' });
     expect(findORFs(sequence, 30, STANDARD_CODE, { topology: 'linear' })).toEqual(small);
+  });
+
+  it('stores every scan through the bounded cache', () => {
+    // A table nothing else has used gets an empty cache of its own. After 33
+    // scans the count bound of 32 has dropped the first, so asking again walks
+    // it again, while the last is still answered from the cache.
+    const table: CodonTable = { ...STANDARD_CODE };
+    const records = Array.from({ length: 33 }, (_, index) => `ATG${'GCA'.repeat(index + 1)}TAA`);
+    for (const record of records) findORFs(record, 1, table);
+    scans.mockClear();
+    findORFs(records[32], 1, table);
+    expect(scans).toHaveBeenCalledTimes(0);
+    findORFs(records[0], 1, table);
+    expect(scans).toHaveBeenCalledTimes(1);
   });
 
   it('keys the cache on every input that changes the answer', () => {

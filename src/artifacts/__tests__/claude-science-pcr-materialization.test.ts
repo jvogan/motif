@@ -1,6 +1,11 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
+import vectors from '../../../public/data/vectors.json';
 import {
+  DEFAULT_PRIMER_TM_CONDITION_PRESET_ID,
   designPrimerPairWithDiagnostics,
+  ENZYME_TAIL_PRESETS,
+  PRIMER_TM_CONDITION_PRESETS,
   type PrimerCandidate,
   type PrimerDesignParams,
   type PrimerPair,
@@ -227,6 +232,33 @@ describe('PCR engine selected-pair semantics', () => {
 });
 
 describe('PCR amplicon materialization', () => {
+  it('materializes an amplicon without tail structure exactly as before the tail-structure rule', () => {
+    // Hashes recorded from the materializer before tail structure became a
+    // warning; an untailed pair and a clean EcoRI/HindIII pair must not move.
+    const puc = (vectors as Array<{ name: string; sequence: string }>).find((entry) => entry.name === 'pUC19')!;
+    const tmPreset = PRIMER_TM_CONDITION_PRESETS.find((preset) => preset.id === DEFAULT_PRIMER_TM_CONDITION_PRESET_ID)!;
+    const tailOf = (name: string) => ENZYME_TAIL_PRESETS.find((preset) => preset.name === name)!.tail;
+    const cases: Array<[string | undefined, string | undefined, string]> = [
+      [undefined, undefined, '4f0a9c5e5a2675a1436bd18fdc7a522e930ec1ee5f8c33e76d8a7c3884752b49'],
+      [tailOf('EcoRI'), tailOf('HindIII'), '7019518233392f705b8f25f14609c6d02ef587e707b0c96999acd4000359bcb5'],
+    ];
+    for (const [forwardTail, reverseTail, expected] of cases) {
+      const parameters: PrimerDesignParams = {
+        targetStart: 149, targetEnd: 506, minLength: 18, maxLength: 28, targetTm: 60, tmTolerance: 5, minGC: 0.3, maxGC: 0.7,
+        flankingWindow: 50, requireGcClamp: true, forwardTail, reverseTail, tmConditionPresetId: tmPreset.id,
+        tmOptions: { ...tmPreset.options }, maxCrossDimerDeltaG: -5, maxPairs: 10,
+      };
+      const pair = designPrimerPairWithDiagnostics(puc.sequence, parameters).pairs[0];
+      const materialized = materializePcrAmplicon({
+        sourceRecord: { id: 'puc19', name: 'pUC19', sequence: puc.sequence, type: 'dna', topology: 'circular', active: true, features: [] },
+        selection: { pair, pairNumber: 1, target: { start: 149, end: 506 }, parameters },
+        identity: { recordId: 'pcr-record-1', resultId: 'pcr-1', productId: 'amplicon-1', createdAt: '2026-09-22T00:00:00.000Z', recordName: 'pUC19 · PCR amplicon' },
+        primerDesignResultId: 'primer-design-1',
+      });
+      expect(createHash('sha256').update(JSON.stringify(materialized)).digest('hex'), forwardTail ?? 'untailed').toBe(expected);
+    }
+  }, 60_000);
+
   it('does not save a record or result when PCR reports conflicting overlap edits', () => {
     const template = 'AAAACCCCGGGGTTTTAAAACCCCGGGGTTTT';
     const selected = selection(pairFor(template, 4, 14, 20, 30));

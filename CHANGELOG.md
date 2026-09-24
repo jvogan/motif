@@ -2,6 +2,48 @@
 
 ## Unreleased
 
+- Replaced the bundled pUC19, pBR322, pACYC184, pBluescript SK(+), and
+  pcDNA3.1(+) records with their published sequences; pUC19 is now the
+  2,686 bp GenBank L09137.2 molecule. Stored the built-in vectors and the
+  Golden Gate fidelity counts in a packed form, which keeps the artifact
+  within its existing size budget.
+- Made Basic GenBank export round-trip more of a record: INSDC feature keys
+  with `/regulatory_class` and the Motif type kept in `/motif_type`,
+  `/motif_strand="none"` for unstranded features, custom feature colors in
+  `/ApEinfo_fwdcolor` and `/ApEinfo_revcolor`, a built feature's `/note`
+  and `/product`, the record name in LOCUS, imported ACCESSION and VERSION
+  lines, `/ncRNA_class`, and every `/transl_except` through edits, reverse
+  complements, extractions, and cloning products.
+- Kept the parts' features on ligation, overlap-assembly, and Golden Gate
+  products, and named any feature a digest, PCR, or assembly product left
+  out. Unaccepted ORF proposals no longer reach a product.
+- Mapped plasmid-scale Sanger reads that were previously called ambiguous,
+  placed reads that begin after a deletion at their true start, and saved
+  construct verifications on references longer than 16,384 bp. Saved
+  verification reports can carry optional `cigar` and `searchIncomplete`
+  read fields, which earlier builds reject. Results reopens a saved
+  verification's variants in Traces, and a new verification starts with the
+  reference's group of reads.
+- Listed a multi-base insertion or deletion as one Differences row, labeled
+  an insertion by the template bases it falls between, stopped counting a
+  short row's missing ends as deletions, and exported every difference as
+  TSV. A residue-pair score table removed a page freeze when aligning three
+  plasmids.
+- Put feature changes and base edits on one Undo history, tinted the bases
+  an edit changed, extended a sequence selection with Shift+click and the
+  line keys, and offered Undo after deleting an entry.
+- Imported pasted ORIGIN blocks that keep their position numbers, named
+  every skipped file with its reason, skipped a chosen file whose record is
+  already open, reported EMBL and SnapGene files as unsupported formats,
+  read NCBI mRNA GenBank files as DNA, listed an imported GenBank record
+  with a SOURCE line under Imported, and named multi-record FASTA entries by
+  their header IDs. Pattern Search now starts empty instead of `GAATTC`.
+- Capped circular-map label growth at 1.6x zoom, drew an origin-crossing
+  feature as one band, led restriction cluster labels with a single cutter,
+  and made map features and sites walkable with the arrow keys. Limited the
+  primer hairpin and dimer veto to the annealing region; structure in a 5′
+  tail is a warning.
+
 ## 0.4.0 — 2026-09-01
 
 - Added a local Codex plugin and private-marketplace package around the same

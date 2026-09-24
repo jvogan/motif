@@ -18,6 +18,8 @@ export interface ClaudeScienceDataSettingsProps {
   analysisResultCount?: number;
   sessionOnly: boolean;
   hasUnsavedChanges: boolean;
+  /** The session still matches the backup last handed to the browser. */
+  backupDownloaded?: boolean;
   onDownloadBackup: () => MaybeDownloadPromise;
   onRestoreFile: (file: File, returnFocus: HTMLElement | null) => MaybePromise;
   onClearWorkspace: () => MaybePromise;
@@ -55,6 +57,7 @@ export default function ClaudeScienceDataSettings({
   analysisResultCount = 0,
   sessionOnly,
   hasUnsavedChanges,
+  backupDownloaded = false,
   onDownloadBackup,
   onRestoreFile,
   onClearWorkspace,
@@ -168,7 +171,13 @@ export default function ClaudeScienceDataSettings({
     >
       <div className="motif-cs-settings-section-heading">
         <h3 id="motif-cs-data-settings-title">Data &amp; recovery</h3>
-        <span className="motif-cs-chip">{hasUnsavedChanges ? 'Unsaved changes' : 'Backup current'}</span>
+        <span
+          className="motif-cs-chip"
+          data-testid="data-backup-status"
+          title={backupDownloaded ? 'This session matches the backup last handed to the browser. Open the file to confirm it saved.' : undefined}
+        >
+          {backupDownloaded ? 'Backup downloaded' : hasUnsavedChanges ? 'Unsaved changes' : 'Backup current'}
+        </span>
       </div>
 
       <div className="motif-cs-settings-row">

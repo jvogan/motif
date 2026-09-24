@@ -4,8 +4,12 @@ import type { PortableTranslationTrack } from '../claude-science-session';
 import {
   applySequenceEditToAnchors,
   confirmNoteRangeAnchor,
+  describeNetSequenceEdit,
+  describeSequenceEdit,
   getNoteRangeAnchorReview,
   restoreNoteAnchors,
+  sequenceEditEmptiesRecord,
+  shouldAnnounceSequenceEdit,
   snapshotNoteAnchors,
   transformSequenceRange,
 } from '../claude-science-sequence-edit';
@@ -302,5 +306,53 @@ describe('sequence-edit anchor transactions', () => {
     expect(getNoteRangeAnchorReview(confirmed)).toBeNull();
     expect(confirmed.provenance?.metadata?.retained).toBe(true);
     expect(confirmed.provenance?.operation).toBe('sequence_edit_anchor_confirmed');
+  });
+});
+
+describe('announcing sequence edits', () => {
+  it('announces the first edit to a record and every edit that removes more than one base', () => {
+    const single = { start: 5, deletedLength: 1, insertedLength: 1, oldLength: 2578 };
+    const insertion = { start: 5, deletedLength: 0, insertedLength: 40, oldLength: 2578 };
+    const range = { start: 10, deletedLength: 20, insertedLength: 1, oldLength: 2578 };
+    expect(shouldAnnounceSequenceEdit(single, true)).toBe(true);
+    expect(shouldAnnounceSequenceEdit(single, false)).toBe(false);
+    expect(shouldAnnounceSequenceEdit(insertion, false)).toBe(false);
+    expect(shouldAnnounceSequenceEdit(range, false)).toBe(true);
+    expect(shouldAnnounceSequenceEdit({ ...range, deletedLength: 2 }, false)).toBe(true);
+  });
+
+  it('describes each edit in one 1-based sentence', () => {
+    expect(describeSequenceEdit({ start: 5, removed: 'C', inserted: 'H', unit: 'bp' }))
+      .toBe('Changed base 6 from C to H.');
+    expect(describeSequenceEdit({ start: 10, removed: 'A'.repeat(20), inserted: 'G', unit: 'bp' }))
+      .toBe('Replaced 20 bp (11–30) with G.');
+    expect(describeSequenceEdit({ start: 1_199, removed: 'A'.repeat(2_000), inserted: 'C'.repeat(35), unit: 'nt' }))
+      .toBe('Replaced 2,000 nt (1,200–3,199) with 35 nt.');
+    expect(describeSequenceEdit({ start: 10, removed: 'A'.repeat(20), inserted: '', unit: 'bp' }))
+      .toBe('Deleted 20 bp (11–30).');
+    expect(describeSequenceEdit({ start: 0, removed: 'T', inserted: '', unit: 'bp' })).toBe('Deleted T at 1.');
+    expect(describeSequenceEdit({ start: 59, removed: '', inserted: 'ATGCATGC', unit: 'bp' })).toBe('Inserted ATGCATGC at 60.');
+    expect(describeSequenceEdit({ start: 59, removed: '', inserted: 'A'.repeat(13), unit: 'bp' })).toBe('Inserted 13 bp at 60.');
+  });
+
+  it('describes the net change a multi-edit Undo reverts, not only the first edit', () => {
+    const before = 'TCGCGCGTTTCGG';
+    // Four bases typed over 5-8 in Replace mode: the notice's Undo reverts all four.
+    expect(describeNetSequenceEdit({ before, after: 'TCGCAAAATTCGG', unit: 'bp' }))
+      .toBe('Replaced 4 bp (5–8) with AAAA.');
+    expect(describeNetSequenceEdit({ before, after: 'TCGCACGTTTCGG', unit: 'bp' }))
+      .toBe('Changed base 5 from G to A.');
+    expect(describeNetSequenceEdit({ before, after: 'TCGCGCGTTTAAACGG', unit: 'bp' }))
+      .toBe('Inserted AAA at 11.');
+    expect(describeNetSequenceEdit({ before, after: 'TCGCGCGTCGG', unit: 'bp' }))
+      .toBe('Deleted 2 bp (9–10).');
+    expect(describeNetSequenceEdit({ before, after: before, unit: 'bp' })).toBeNull();
+  });
+
+  it('flags an edit that would leave a record with no residues', () => {
+    expect(sequenceEditEmptiesRecord({ start: 0, deletedLength: 2578, insertedLength: 0, oldLength: 2578 })).toBe(true);
+    expect(sequenceEditEmptiesRecord({ start: 0, deletedLength: 1, insertedLength: 0, oldLength: 1 })).toBe(true);
+    expect(sequenceEditEmptiesRecord({ start: 0, deletedLength: 2578, insertedLength: 1, oldLength: 2578 })).toBe(false);
+    expect(sequenceEditEmptiesRecord({ start: 0, deletedLength: 2577, insertedLength: 0, oldLength: 2578 })).toBe(false);
   });
 });

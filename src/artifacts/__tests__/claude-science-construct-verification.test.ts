@@ -178,6 +178,24 @@ describe('verifyArtifactConstruct', () => {
     }));
   });
 
+  it('does not count a realignment of the same locus as a second placement', () => {
+    const reference = deterministicDna(400, 0x77aa11);
+    const source = reference.slice(50, 250);
+    // A deletion two calls from the read start: moving those two calls onto the
+    // neighbouring diagonal instead of opening a gap scores only 3 points less, but
+    // it keeps every other (call, base) pair, so it is the same placement.
+    const nearStart = `${source.slice(0, 2)}${source.slice(3)}`;
+    const nearEnd = `${source.slice(0, 197)}${source.slice(198)}`;
+    const result = verifyArtifactConstruct(verificationInput(reference, [
+      read('deletion-near-start', nearStart),
+      read('deletion-near-end', nearEnd),
+    ], { thresholds: { minCoverageFraction: 0 } }));
+
+    expect(result.reads.map((entry) => [entry.status, entry.mapping?.referenceStart, entry.mapping?.secondBestScore]))
+      .toEqual([['mapped', 50, null], ['mapped', 50, null]]);
+    expect(result.reasons.some((entry) => entry.code === 'ambiguous_mapping')).toBe(false);
+  });
+
   it('proves the default runner-up margin for two exact full-length reads within the shared budget', () => {
     const reference = deterministicDna(240, 0x404040);
     const result = verifyArtifactConstruct(verificationInput(reference, [
@@ -193,27 +211,61 @@ describe('verifyArtifactConstruct', () => {
     expect(result.provenance.workUnits).toBeLessThan(ARTIFACT_CONSTRUCT_VERIFICATION_LIMITS.maxWorkUnits);
   });
 
-  it('keeps non-exhaustive seeded mappings review-only in either orientation', () => {
+  it('proves a unique mapping for inexact reads on a large reference in either orientation', () => {
     const reference = deterministicDna(5_000, 0x202020);
     const source = reference.slice(2_400, 2_600);
-    const changed = substitute(source, 100).sequence;
+    const changed = substitute(source, 100);
     const result = verifyArtifactConstruct(verificationInput(reference, [
-      read('large-forward-noisy', changed),
-      read('large-reverse-noisy', reverseComplement(changed)),
+      read('large-forward-noisy', changed.sequence),
+      read('large-reverse-noisy', reverseComplement(changed.sequence)),
     ], { thresholds: { minCoverageFraction: 0 } }));
 
     expect(result.reads).toEqual([
       expect.objectContaining({
-        status: 'ambiguous_mapping',
-        mapping: expect.objectContaining({ orientation: 'forward', referenceStart: 2_400 }),
+        status: 'mapped',
+        mapping: expect.objectContaining({ orientation: 'forward', referenceStart: 2_400, secondBestScore: null }),
       }),
       expect.objectContaining({
-        status: 'ambiguous_mapping',
-        mapping: expect.objectContaining({ orientation: 'reverse', referenceStart: 2_400 }),
+        status: 'mapped',
+        mapping: expect.objectContaining({ orientation: 'reverse', referenceStart: 2_400, secondBestScore: null }),
       }),
     ]);
-    expect(result.state).toBe('needs_review');
-    expect(result.reasons.filter((entry) => entry.code === 'ambiguous_mapping')).toHaveLength(2);
+    expect(result.reasons.some((entry) => entry.code === 'ambiguous_mapping')).toBe(false);
+    expect(result.variants.observed).toEqual([
+      expect.objectContaining({ type: 'substitution', referenceStart: 2_500, alternate: changed.alternate, support: 2 }),
+    ]);
+    expect(result.state).toBe('inconsistent');
+  });
+
+  it('finishes the proven search for an error-dense read when seeds cannot prove the first deficit', () => {
+    // An N in the reference halves the cheapest block-breaking error, and the read's
+    // no-calls leave too few usable blocks to prove the first pass's deficit. With
+    // sixteen more miscalls, the search needs a whole-reference pass to finish; it
+    // must take it rather than stop early and leave the read unconfirmed.
+    const reference = [...deterministicDna(1_200, 0x31a7)];
+    for (const position of [100, 600, 1_100]) reference[position] = 'N';
+    const sequence = reference.join('');
+    const calls = [...sequence.slice(300, 600)];
+    for (const offset of [20, 60, 100, 140, 180, 220, 260]) calls[offset] = 'N';
+    for (const offset of [6, 30, 45, 78, 90, 114, 126, 150, 162, 198, 210, 234, 246, 270, 282, 294]) {
+      calls[offset] = calls[offset] === 'A' ? 'C' : 'A';
+    }
+    const baseCalls = calls.join('');
+    const result = verifyArtifactConstruct(verificationInput(sequence, [
+      read('dense-forward', baseCalls),
+      read('dense-reverse', reverseComplement(baseCalls)),
+    ], { thresholds: { minCoverageFraction: 0, minMappingMargin: 0 } }));
+
+    expect(result.reads.map((entry) => [
+      entry.status,
+      entry.mapping?.orientation,
+      entry.mapping?.referenceStart,
+      entry.mapping?.score,
+      entry.mapping?.secondBestScore,
+    ])).toEqual([
+      ['mapped', 'forward', 300, 790, null],
+      ['mapped', 'reverse', 300, 790, null],
+    ]);
   });
 
   it('makes an unexpected high-confidence SNV inconsistent and accepts it when expected', () => {
@@ -551,12 +603,11 @@ describe('verifyArtifactConstruct', () => {
       read('candidate-cap-read', baseCalls),
     ], { thresholds: { minCoverageFraction: 0 } }));
 
+    // Two copies carry six mismatches each; the search scores both, so the tie is proven.
     expect(result.reads[0]).toMatchObject({
       status: 'ambiguous_mapping',
-      mapping: { referenceStart: 80, score: 264 },
+      mapping: { referenceStart: 80, score: 264, secondBestScore: 264, mappingMargin: 0 },
     });
-    expect(result.reads[0].mapping?.secondBestScore).toBeNull();
-    expect(result.reads[0].mapping?.mappingMargin).toBeNull();
     expect(result.state).toBe('needs_review');
     expect(result.reasons).toContainEqual(expect.objectContaining({
       code: 'ambiguous_mapping',

@@ -15,13 +15,19 @@ import {
   CUSTOM_PRIMER_TM_CONDITION_PRESET_ID,
   DEFAULT_PRIMER_TM_CONDITION_PRESET_ID,
   DEFAULT_TM_OPTIONS,
+  PRIMER_TAIL_STRUCTURE_3_PRIME_REVIEW_CODE,
   PRIMER_TM_CONDITION_PRESETS,
+  computePrimerPairTailStructureWarnings,
   designPrimerPairWithDiagnostics,
+  primerPairTailStructureWarnings,
+  primerTailStructureReviewCodes,
   primerToFeature,
   type PrimerCandidate,
   type PrimerDesignParams,
   type PrimerPair,
   type PrimerPairResult,
+  type PrimerRejectionCounts,
+  type PrimerTailStructureWarning,
   type PrimerTmEvidence,
 } from '../bio/primer-design';
 import {
@@ -242,12 +248,26 @@ function defaultTarget(
   return { start, end: Math.max(start, end) };
 }
 
+/** ASCII FASTA description for an oligo's tail-structure warnings; empty when it has none. */
+function fastaTailNote(warnings: readonly PrimerTailStructureWarning[], oligo: 'forward' | 'reverse'): string {
+  const notes = warnings
+    .filter((warning) => warning.oligo === oligo || warning.oligo === 'pair')
+    .map((warning) => {
+      const site = warning.site ? ` via ${warning.site.name} site ${warning.site.sequence}` : '';
+      const partner = warning.oligo === 'pair' ? ' with the other primer' : '';
+      const end = warning.threePrimeDeltaG === null ? "3' end free" : `3' end pairs (${warning.threePrimeDeltaG.toFixed(2)} kcal/mol)`;
+      return `${warning.kind}${partner} ${warning.deltaG.toFixed(2)} kcal/mol${site}, ${end}`;
+    });
+  return notes.length > 0 ? ` 5'-tail structure: ${notes.join('; ')}` : '';
+}
+
 function fastaForPair(recordName: string, pair: PrimerPair, pairNumber: number): string {
   const safeName = recordName.trim().replace(/\s+/g, '_') || 'sequence';
+  const warnings = primerPairTailStructureWarnings(pair);
   return [
-    `>${safeName}_pair_${pairNumber}_forward`,
+    `>${safeName}_pair_${pairNumber}_forward${fastaTailNote(warnings, 'forward')}`,
     pair.forward.fullSequence,
-    `>${safeName}_pair_${pairNumber}_reverse`,
+    `>${safeName}_pair_${pairNumber}_reverse${fastaTailNote(warnings, 'reverse')}`,
     pair.reverse.fullSequence,
   ].join('\n');
 }
@@ -257,30 +277,63 @@ function filenameFor(recordName: string): string {
   return `${safe}-primers.fasta`;
 }
 
-function diagnosticMessage(result: PrimerPairResult): string {
+/** What the empty state knows about the 5′ tails behind a zero-pair result. */
+type PrimerTailDiagnosis = {
+  /** True when either primer carries a 5′ tail. */
+  tailed: boolean;
+  /** Pairs the same design returns with both tails removed; null when not measured. */
+  pairsWithoutTails: number | null;
+};
+
+function directionRejections(rejections: PrimerRejectionCounts): string {
+  const reasons: string[] = [];
+  if (rejections.gc > 0) reasons.push(`${rejections.gc.toLocaleString()} GC`);
+  if (rejections.tm > 0) reasons.push(`${rejections.tm.toLocaleString()} Tm`);
+  if (rejections.clamp > 0) reasons.push(`${rejections.clamp.toLocaleString()} clamp`);
+  if ((rejections.hairpin ?? 0) > 0) reasons.push(`${rejections.hairpin?.toLocaleString()} hairpin`);
+  if ((rejections.dimer ?? 0) > 0) reasons.push(`${rejections.dimer?.toLocaleString()} self-dimer`);
+  if ((rejections.workLimit ?? 0) > 0) reasons.push(`${rejections.workLimit?.toLocaleString()} bounded structure checks`);
+  if (rejections.invalid > 0) reasons.push(`${rejections.invalid.toLocaleString()} ambiguous-base windows`);
+  return reasons.join(', ');
+}
+
+/**
+ * Explain a zero-pair result. With tails set, the message leads with the
+ * tails: either they are the measured cause (removing them yields pairs), or
+ * the message says they are not before listing the filters that are. GC, Tm,
+ * and clamp are computed on the annealing region, so they never implicate a tail.
+ */
+function diagnosticMessage(result: PrimerPairResult, tails: PrimerTailDiagnosis): string {
+  const tailLead = !tails.tailed || tails.pairsWithoutTails === null
+    ? ''
+    : tails.pairsWithoutTails > 0
+      ? `The 5′ tails block every pair: without them, ${tails.pairsWithoutTails.toLocaleString()} pair${tails.pairsWithoutTails === 1 ? '' : 's'} pass. `
+      : 'The 5′ tails are not the cause: this target gives no pair without them either. ';
   if (result.warnings && result.warnings.length > 0) {
-    return `${result.warnings.join(' ')} ${result.forwardCount + result.reverseCount === 0 ? 'No exact primer candidates were evaluated.' : 'Review the affected candidates before ordering.'}`;
+    return `${tailLead}${result.warnings.join(' ')} ${result.forwardCount + result.reverseCount === 0 ? 'No exact primer candidates were evaluated.' : 'Review the affected candidates before ordering.'}`;
   }
   if (result.forwardCount > 0 && result.reverseCount > 0) {
     const reasons: string[] = [];
     if (result.rejections.tmDiff > 0) reasons.push(`${result.rejections.tmDiff.toLocaleString()} pairings exceeded ΔTm 5 °C`);
     if (result.rejections.productLength > 0) reasons.push(`${result.rejections.productLength.toLocaleString()} produced no amplicon`);
+    if ((result.rejections.crossDimer ?? 0) > 0) reasons.push(`${result.rejections.crossDimer?.toLocaleString()} failed the cross-dimer cutoff`);
     return reasons.length > 0
-      ? `${result.forwardCount} forward and ${result.reverseCount} reverse candidates were found, but ${reasons.join(' and ')}.`
-      : 'Forward and reverse candidates were found, but none formed a valid pair.';
+      ? `${tailLead}${result.forwardCount} forward and ${result.reverseCount} reverse candidates were found, but ${reasons.join(' and ')}.`
+      : `${tailLead}Forward and reverse candidates were found, but none formed a valid pair.`;
   }
 
-  const reasons: string[] = [];
-  if (result.rejections.gc > 0) reasons.push(`${result.rejections.gc.toLocaleString()} GC`);
-  if (result.rejections.tm > 0) reasons.push(`${result.rejections.tm.toLocaleString()} Tm`);
-  if (result.rejections.clamp > 0) reasons.push(`${result.rejections.clamp.toLocaleString()} clamp`);
-  if ((result.rejections.hairpin ?? 0) > 0) reasons.push(`${result.rejections.hairpin?.toLocaleString()} hairpin`);
-  if ((result.rejections.dimer ?? 0) > 0) reasons.push(`${result.rejections.dimer?.toLocaleString()} self-dimer`);
-  if ((result.rejections.crossDimer ?? 0) > 0) reasons.push(`${result.rejections.crossDimer?.toLocaleString()} cross-dimer`);
-  if ((result.rejections.workLimit ?? 0) > 0) reasons.push(`${result.rejections.workLimit?.toLocaleString()} bounded structure checks`);
-  if (reasons.length > 0) return `No pair passed the current filters. Rejections: ${reasons.join(', ')}.`;
-  if (result.rejections.invalid > 0) return 'No pair was found because candidate windows contain ambiguous bases.';
-  return 'No pair fits this target. Widen the flank or move the target away from a sequence edge.';
+  const failing = ([
+    ['forward', result.forwardCount, result.forwardRejections],
+    ['reverse', result.reverseCount, result.reverseRejections],
+  ] as const)
+    .filter(([, count]) => count === 0)
+    .map(([direction, , rejections]) => {
+      const reasons = directionRejections(rejections);
+      return reasons ? `No ${direction} primer passes (rejected: ${reasons}).` : '';
+    })
+    .filter(Boolean);
+  if (failing.length > 0) return `${tailLead}${failing.join(' ')}`;
+  return `${tailLead}No pair fits this target. Widen the flank or move the target away from a sequence edge.`;
 }
 
 function hasClamp(candidate: PrimerCandidate): boolean {
@@ -300,6 +353,7 @@ function evidenceReviewLabel(code: string): string {
     case 'secondary-structure-ambiguous': return 'Hairpin or self-dimer evidence includes ambiguous symbols.';
     case 'secondary-structure-work-limit': return 'Hairpin or self-dimer scoring reached its bounded work limit.';
     case 'search-evidence-incomplete': return 'Candidate search or pool pairing was bounded; the returned ranking is not exhaustive.';
+    case PRIMER_TAIL_STRUCTURE_3_PRIME_REVIEW_CODE: return 'A 5′-tail structure pairs a primer’s 3′ end, so the primer can extend on itself or its partner.';
     default: return 'Additional interaction evidence requires review.';
   }
 }
@@ -340,6 +394,8 @@ export function ClaudeSciencePrimerWorkspace({
   const validationMessageId = useId();
   const workspaceRef = useRef<HTMLElement>(null);
   const initialFocusRef = useRef<HTMLButtonElement>(null);
+  const resultsRef = useRef<HTMLElement>(null);
+  const evidenceRef = useRef<HTMLElement>(null);
   const effectiveTargetRange = targetRange === undefined ? selectedRange : targetRange;
   const initialTarget = useMemo(
     () => defaultTarget(record.sequence.length, effectiveTargetRange, initialIntent === 'cloning'),
@@ -370,6 +426,7 @@ export function ClaudeSciencePrimerWorkspace({
   const [forwardTail, setForwardTail] = useState(() => normalizeInitialTail(initialForwardTail));
   const [reverseTail, setReverseTail] = useState(() => normalizeInitialTail(initialReverseTail));
   const [selectedPairIndex, setSelectedPairIndex] = useState(0);
+  const [evidenceRevealRequest, setEvidenceRevealRequest] = useState(0);
   const [acknowledgedEvidenceKey, setAcknowledgedEvidenceKey] = useState('');
   const [status, setStatus] = useState('');
   const [busyAction, setBusyAction] = useState('');
@@ -521,6 +578,23 @@ export function ClaudeSciencePrimerWorkspace({
   }, [normalizedSequence, parameters, validationMessage]);
   const pairs = useMemo(() => result?.pairs ?? [], [result]);
   const selectedPair = pairs[selectedPairIndex] ?? pairs[0] ?? null;
+  const tailed = Boolean(parameters.forwardTail || parameters.reverseTail);
+  // Only a tailed zero-pair result pays for a second design: whether the same
+  // target passes without tails is what tells the reader if the tails are the cause.
+  const tailDiagnosis = useMemo<PrimerTailDiagnosis>(() => ({
+    tailed,
+    pairsWithoutTails: result && tailed && result.pairs.length === 0
+      ? designPrimerPairWithDiagnostics(normalizedSequence, {
+          ...parameters,
+          forwardTail: undefined,
+          reverseTail: undefined,
+        }).pairs.length
+      : null,
+  }), [normalizedSequence, parameters, result, tailed]);
+  const tailWarnedPairs = useMemo(
+    () => pairs.filter((pair) => primerPairTailStructureWarnings(pair).length > 0).length,
+    [pairs],
+  );
 
   const selectedPairKey = selectedPair
     ? `${selectedPair.forward.start}:${selectedPair.forward.end}:${selectedPair.reverse.start}:${selectedPair.reverse.end}:${selectedPair.forward.fullSequence}:${selectedPair.reverse.fullSequence}`
@@ -537,7 +611,10 @@ export function ClaudeSciencePrimerWorkspace({
     const forwardDimer = predictSelfDimer(selectedPair.forward.fullSequence);
     const reverseDimer = predictSelfDimer(selectedPair.reverse.fullSequence);
     const crossDimer = predictPrimerDimer(selectedPair.forward.fullSequence, selectedPair.reverse.fullSequence);
-    return { forwardHairpin, reverseHairpin, forwardDimer, reverseDimer, crossDimer };
+    // Recomputed from the oligos, as PCR materialization recomputes it, so the
+    // review codes this workspace sends always match the ones it verifies.
+    const tailWarnings = computePrimerPairTailStructureWarnings(selectedPair);
+    return { forwardHairpin, reverseHairpin, forwardDimer, reverseDimer, crossDimer, tailWarnings };
   }, [selectedPair]);
 
   const evidenceReviewReasons = useMemo(() => {
@@ -560,6 +637,7 @@ export function ClaudeSciencePrimerWorkspace({
       .some((diagnostic) => diagnostic.status === 'work-limit')) {
       reasons.push('secondary-structure-work-limit');
     }
+    reasons.push(...primerTailStructureReviewCodes(selectedDiagnostics.tailWarnings));
     if ((result?.warnings ?? []).some((warning) => /work units|incomplete|not exhaustive/i.test(warning))) {
       reasons.push('search-evidence-incomplete');
     }
@@ -619,10 +697,41 @@ export function ClaudeSciencePrimerWorkspace({
     const pair = pairs[index];
     if (!pair) return;
     setSelectedPairIndex(index);
+    setEvidenceRevealRequest((request) => request + 1);
     previewRangeKeyRef.current = `${pair.forward.start}:${pair.reverse.end}`;
     onSelectRange?.(pair.forward.start, pair.reverse.end);
     setStatus(`Pair ${index + 1} selected on the sequence.`);
   }, [onSelectRange, pairs]);
+
+  // Choosing a pair scrolls its sequences into view. Ten ranked rows fill the
+  // pane, so the evidence below them started 170-270px under the fold and never
+  // moved when a pair was picked. The scroll stops at the chosen row: the row
+  // stays in view, so keyboard selection never scrolls its own focus away.
+  useEffect(() => {
+    if (evidenceRevealRequest === 0) return;
+    const evidence = evidenceRef.current;
+    const results = resultsRef.current;
+    if (!evidence || !results) return;
+    let scroller: HTMLElement = results;
+    for (let node: HTMLElement | null = results; node && node !== workspaceRef.current?.parentElement; node = node.parentElement) {
+      const overflowY = getComputedStyle(node).overflowY;
+      if ((overflowY === 'auto' || overflowY === 'scroll') && node.scrollHeight > node.clientHeight) {
+        scroller = node;
+        break;
+      }
+    }
+    const view = scroller.getBoundingClientRect();
+    const oligos = evidence.querySelectorAll<HTMLElement>('.motif-cs-primer-oligo');
+    const target = oligos[oligos.length - 1] ?? evidence;
+    const shortfall = target.getBoundingClientRect().bottom - view.bottom;
+    if (shortfall <= 0) return;
+    const row = results.querySelector<HTMLElement>(`[data-pair-index="${selectedPairIndex}"]`);
+    const rowSlack = row ? row.getBoundingClientRect().top - view.top : shortfall;
+    const delta = Math.min(shortfall, Math.max(0, rowSlack));
+    if (delta > 0) scroller.scrollTop += delta;
+    // Reads the selection at the moment of the request only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [evidenceRevealRequest]);
 
   const runAction = useCallback(async (label: string, action: (() => void | Promise<void>) | undefined) => {
     if (!action || busyAction) return;
@@ -667,8 +776,15 @@ export function ClaudeSciencePrimerWorkspace({
     void runAction('Add annotations', () => onAddAnnotations(features, handoff));
   }, [handoff, onAddAnnotations, record.name, runAction]);
 
+  // productLength spans the template only. The PCR product also carries both
+  // 5′ tails, and that is the length a gel band and the amplicon record show.
+  const selectedAmpliconLabel = selectedPair
+    ? selectedPair.forward.tail.length + selectedPair.reverse.tail.length > 0
+      ? `${(selectedPair.productLength + selectedPair.forward.tail.length + selectedPair.reverse.tail.length).toLocaleString()} bp amplicon with tails`
+      : `${selectedPair.productLength.toLocaleString()} bp amplicon`
+    : '';
   const selectedSummary = selectedPair
-    ? `Pair ${selectedPairIndex + 1}: ${selectedPair.productLength.toLocaleString()} bp amplicon; melting temperatures differ by ${selectedPair.tmDifference.toFixed(1)} degrees Celsius.`
+    ? `Pair ${selectedPairIndex + 1}: ${selectedAmpliconLabel}; melting temperatures differ by ${selectedPair.tmDifference.toFixed(1)} degrees Celsius.`
     : '';
 
   const handlePairKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
@@ -915,7 +1031,7 @@ export function ClaudeSciencePrimerWorkspace({
           </details>
         </aside>
 
-        <main className="motif-cs-primer-results">
+        <main className="motif-cs-primer-results" ref={resultsRef}>
           <div className="motif-cs-primer-results-heading">
             <div>
               <span className="motif-cs-primer-eyebrow">Ranked candidates</span>
@@ -939,36 +1055,55 @@ export function ClaudeSciencePrimerWorkspace({
           {validationMessage ? (
             <div className="motif-cs-primer-empty" role="alert" id={validationMessageId}><strong>Cannot design primers</strong><p>{validationMessage}</p></div>
           ) : pairs.length === 0 ? (
-            <div className="motif-cs-primer-empty" role="status"><strong>No passing pair</strong><p>{result ? diagnosticMessage(result) : 'Adjust the design conditions.'}</p></div>
+            <div className="motif-cs-primer-empty" role="status"><strong>No passing pair</strong><p>{result ? diagnosticMessage(result, tailDiagnosis) : 'Adjust the design conditions.'}</p></div>
           ) : (
             <>
+              {tailWarnedPairs > 0 ? (
+                <p className="motif-cs-primer-tail-note" data-testid="primer-tail-note">
+                  5′-tail structure warning on {tailWarnedPairs} of {pairs.length} pairs. Annealing regions pass every structure check; warned pairs rank after clean ones.
+                </p>
+              ) : null}
               <div className="motif-cs-primer-pair-list" role="listbox" aria-label="Ranked primer pairs" aria-describedby={statusId}>
-                {pairs.map((pair, index) => (
-                  <button
-                    className="motif-cs-primer-pair-row"
-                    type="button"
-                    role="option"
-                    aria-selected={selectedPairIndex === index}
-                    data-selected={selectedPairIndex === index || undefined}
-                    data-pair-index={index}
-                    key={`${pair.forward.start}:${pair.reverse.end}:${index}`}
-                    onClick={() => choosePair(index)}
-                    onKeyDown={(event) => handlePairKeyDown(event, index)}
-                  >
-                    <span className="motif-cs-primer-pair-rank">{String(index + 1).padStart(2, '0')}</span>
-                    <span className="motif-cs-primer-pair-main"><strong>{pair.productLength.toLocaleString()} bp</strong><small>{pair.forward.start + 1}–{pair.reverse.end}</small></span>
-                    <span><small>F / R Tm</small><strong>{pair.forward.tm.toFixed(1)} / {pair.reverse.tm.toFixed(1)}°</strong></span>
-                    <span><small>ΔTm</small><strong>{pair.tmDifference.toFixed(1)} °C</strong></span>
-                    <span className="motif-cs-primer-pair-arrow" aria-hidden="true">›</span>
-                  </button>
-                ))}
+                {pairs.map((pair, index) => {
+                  const pairTailWarnings = primerPairTailStructureWarnings(pair);
+                  const tailReview = pairTailWarnings.some((warning) => warning.threePrimeDeltaG !== null);
+                  return (
+                    <button
+                      className="motif-cs-primer-pair-row"
+                      type="button"
+                      role="option"
+                      aria-selected={selectedPairIndex === index}
+                      data-selected={selectedPairIndex === index || undefined}
+                      data-pair-index={index}
+                      key={`${pair.forward.start}:${pair.reverse.end}:${index}`}
+                      onClick={() => choosePair(index)}
+                      onKeyDown={(event) => handlePairKeyDown(event, index)}
+                    >
+                      <span className="motif-cs-primer-pair-rank">{String(index + 1).padStart(2, '0')}</span>
+                      <span className="motif-cs-primer-pair-main">
+                        <strong>{pair.productLength.toLocaleString()} bp</strong>
+                        <small>
+                          {pair.forward.start + 1}–{pair.reverse.end}
+                          {pairTailWarnings.length > 0 ? (
+                            <span className="motif-cs-primer-pair-flag" data-state={tailReview ? 'review' : 'note'}>
+                              {tailReview ? ' · tail pairs 3′ end' : ' · tail structure'}
+                            </span>
+                          ) : null}
+                        </small>
+                      </span>
+                      <span><small>F / R Tm</small><strong>{pair.forward.tm.toFixed(1)} / {pair.reverse.tm.toFixed(1)}°</strong></span>
+                      <span><small>ΔTm</small><strong>{pair.tmDifference.toFixed(1)} °C</strong></span>
+                      <span className="motif-cs-primer-pair-arrow" aria-hidden="true">›</span>
+                    </button>
+                  );
+                })}
               </div>
 
               {selectedPair && selectedDiagnostics ? (
-                <section className="motif-cs-primer-evidence" aria-label={`Primer pair ${selectedPairIndex + 1} evidence`}>
+                <section className="motif-cs-primer-evidence" ref={evidenceRef} aria-label={`Primer pair ${selectedPairIndex + 1} evidence`}>
                   <div className="motif-cs-primer-evidence-heading">
                     <div><span className="motif-cs-primer-eyebrow">Selected pair</span><h3>Pair {selectedPairIndex + 1}</h3></div>
-                    <span>{selectedPair.productLength.toLocaleString()} bp amplicon</span>
+                    <span>{selectedAmpliconLabel}</span>
                   </div>
 
                   {([
@@ -994,6 +1129,19 @@ export function ClaudeSciencePrimerWorkspace({
                     <strong>ΔG {selectedDiagnostics.crossDimer.deltaG.toFixed(1)} kcal/mol{selectedDiagnostics.crossDimer.status === 'exact' ? '' : ' · review'}</strong>
                     <small>{selectedDiagnostics.crossDimer.status !== 'exact' || selectedDiagnostics.crossDimer.deltaG < DEFAULT_MAX_DIMER_DG ? 'Review before ordering' : 'No strong pair interaction predicted'}</small>
                   </div>
+
+                  {selectedDiagnostics.tailWarnings.length > 0 ? (
+                    <div
+                      className="motif-cs-primer-tail-structure"
+                      data-testid="primer-tail-structure"
+                      data-state={selectedDiagnostics.tailWarnings.some((warning) => warning.threePrimeDeltaG !== null) ? 'review' : 'note'}
+                    >
+                      <strong>5′-tail structure</strong>
+                      <ul>
+                        {selectedDiagnostics.tailWarnings.map((warning) => <li key={`${warning.oligo}:${warning.kind}`}>{warning.message}</li>)}
+                      </ul>
+                    </div>
+                  ) : null}
 
                   {evidenceReviewRequired ? (
                     <div className="motif-cs-primer-evidence-review" role="group" aria-label="Interaction evidence review" data-testid="primer-evidence-review">
@@ -1049,6 +1197,7 @@ export function ClaudeSciencePrimerWorkspace({
           <button
             className="motif-cs-primer-primary-action"
             type="button"
+            title={preparationContext ? undefined : 'Creates the amplicon record, or reuses an identical one, and opens a cloning design with it as part 1.'}
             disabled={!handoff || !(preparationContext ? onCreateAmplicon : onUseForCloning) || actionBlockedByReview || !!busyAction}
             onClick={() => {
               if (!handoff) return;

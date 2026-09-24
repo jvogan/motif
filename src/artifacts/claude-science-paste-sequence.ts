@@ -231,3 +231,58 @@ export function parsePastedSequence(value: string, alphabet: string): PastedSequ
     droppedCharacters,
   };
 }
+
+/**
+ * A GenBank ORIGIN row: a position counter, then residues in blocks of ten.
+ * `        61 ggtgatgtta atgggcacaa`. After the counter only characters a
+ * sequence row can hold may follow: letters, `*` stops, `-`/`.` gaps (the FASTA
+ * parser removes those and records it), spaces and tabs. A row with any other
+ * character, including a second number, keeps its digits and is rejected by the
+ * importer with the first bad character's position.
+ */
+const ORIGIN_ROW = /^(\s*)(\d+)([ \t]+[A-Za-z*.-][A-Za-z*. \t-]*)$/;
+const ORIGIN_HEADER = /^\s*ORIGIN\s*$/i;
+const RECORD_JSON_START = /^\s*[[{]/;
+// Any LOCUS line marks a whole GenBank record, which the importer reads as it is.
+const GENBANK_RECORD_LOCUS = /^\s*LOCUS\s/m;
+
+export interface ImportPastePreparation {
+  /** The text to parse. Same line count and column positions as the paste. */
+  text: string;
+  /** ORIGIN rows whose leading position number was blanked out. */
+  numberedLines: number;
+}
+
+/**
+ * Add entry paste only: blank out the position numbers that most sequence
+ * sources copy at the start of each ORIGIN row, so `1 atggctagca …` imports as
+ * the sequence it plainly is instead of failing on the digit `1`.
+ *
+ * The numbers are replaced with spaces rather than deleted, and a bare `ORIGIN`
+ * header or `//` terminator in the same paste is blanked the same way, so every
+ * remaining character keeps its line and column. An error the importer reports
+ * afterwards therefore points at the character in the text the person pasted.
+ *
+ * A complete GenBank record (it has a LOCUS line) and Record or Database JSON are
+ * returned unchanged: the GenBank parser reads its own ORIGIN block, and a JSON
+ * string can hold digits that are data. This never runs on the strict direct and
+ * MCP boundary, which must not remove characters from a sequence it was given.
+ */
+export function stripOriginPositionNumbers(value: string): ImportPastePreparation {
+  if (RECORD_JSON_START.test(value) || GENBANK_RECORD_LOCUS.test(value)) return { text: value, numberedLines: 0 };
+  const lines = value.split(/(\r\n|\r|\n)/);
+  let numberedLines = 0;
+  for (let index = 0; index < lines.length; index += 2) {
+    const match = ORIGIN_ROW.exec(lines[index]);
+    if (!match) continue;
+    lines[index] = `${match[1]}${' '.repeat(match[2].length)}${match[3]}`;
+    numberedLines += 1;
+  }
+  if (numberedLines === 0) return { text: value, numberedLines: 0 };
+  for (let index = 0; index < lines.length; index += 2) {
+    if (ORIGIN_HEADER.test(lines[index]) || GENBANK_TERMINATOR.test(lines[index])) {
+      lines[index] = ' '.repeat(lines[index].length);
+    }
+  }
+  return { text: lines.join(''), numberedLines };
+}

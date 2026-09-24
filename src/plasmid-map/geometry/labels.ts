@@ -53,6 +53,28 @@ export function approxTextWidth(
   return text.length * labelAdvancePx(fontPx, mode);
 }
 
+/** Extra advance, as a share of the fixed one, that a wide capital letter paints. */
+const CAPITAL_EXTRA_ADVANCE = 0.12;
+
+/**
+ * Width a proportional label needs beyond approxTextWidth for its wide capitals.
+ * The fixed advance over-covers lowercase and under-covers capitals, so it holds
+ * for mixed-case names; a name set in capitals and digits paints wider than it
+ * ("HCMVUL56": 71.8 estimated, 76.7 painted) and ran into the next label on its
+ * row. Each lowercase letter offsets one capital; I, J and L are narrow and count
+ * as neither. Never negative, so no name gets less room than before.
+ */
+export function capitalWidthPadPx(
+  text: string,
+  fontPx: number = LABEL_FONT_PX,
+  mode: LabelFontMode = 'proportional',
+): number {
+  if (mode !== 'proportional') return 0;
+  const capitals = text.match(/[A-HKM-Z]/g)?.length ?? 0;
+  const lowercase = text.match(/[a-z]/g)?.length ?? 0;
+  return Math.max(0, capitals - lowercase) * CAPITAL_EXTRA_ADVANCE * labelAdvancePx(fontPx, mode);
+}
+
 /** Arc length (px) subtended by an angular span (deg) at a given radius. */
 export function arcExtentPx(radius: number, angleSpanDeg: number): number {
   return Math.abs(radius) * Math.abs(angleSpanDeg) * DEG2RAD;

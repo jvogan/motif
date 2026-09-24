@@ -3,6 +3,7 @@ import {
   appendArtifactAnalysisAsset,
   appendArtifactAnalysisWorkspaceResult,
   MAX_ARTIFACT_ANALYSIS_ASSET_BYTES,
+  normalizeArtifactAnalysisWorkspace,
 } from '../claude-science-analysis-results';
 import {
   ARTIFACT_CONSTRUCT_READ_EVIDENCE_SCHEMA,
@@ -873,5 +874,168 @@ describe('construct verification evidence and persistence artifacts', () => {
       evidenceSha256s().slice(0, 1),
       { resultId: 'result', assetId: 'asset', createdAt: CREATED_AT },
     )).toThrow(/one-to-one/i);
+  });
+});
+
+function deterministicDna(length: number, seed: number): string {
+  const bases = ['A', 'C', 'G', 'T'] as const;
+  let state = seed >>> 0;
+  let sequence = '';
+  for (let index = 0; index < length; index += 1) {
+    state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
+    sequence += bases[(state >>> 28) & 3];
+  }
+  return sequence;
+}
+
+// The plugin ships a generated copy of the saved-report validator; check it too.
+const PLUGIN_VALIDATOR_PATH = '../motif-for-claude-science-plugin/skills/motif-for-claude-science/scripts/analysis-validator.mjs';
+
+describe('the search-incomplete marker on a saved unmapped read', () => {
+  // A 5,000-call read with no counterpart in a 12 kb reference: aligning it to the
+  // whole reference costs more than its work budget, so the search stops first.
+  const reference = deterministicDna(12_000, 0xabc123);
+  const stray = deterministicDna(5_000, 0x5eed + 5_000);
+  const qualityScores = Array.from({ length: stray.length }, () => 40);
+
+  function buildStray() {
+    const verification = verifyArtifactConstruct({
+      reference: { id: 'stray-reference', sequence: reference, topology: 'linear', sha256: sha256HexSync(reference) },
+      reads: [{ id: 'stray-read', name: 'stray.ab1', baseCalls: stray, qualityScores, sha256: sha256HexSync(stray) }],
+      thresholds: { minCoverageFraction: 0 },
+    });
+    expect(verification.reads[0]).toMatchObject({ status: 'unmapped', searchIncomplete: true, mapping: null });
+    return buildArtifactConstructVerificationArtifacts(
+      verification,
+      [artifactConstructReadEvidenceSha256({ baseCalls: stray, qualityScores })],
+      { resultId: 'stray-result', assetId: 'stray-report', createdAt: CREATED_AT },
+    );
+  }
+
+  it('is written into the report and passes both the app and the plugin validators', async () => {
+    const built = buildStray();
+    const report = JSON.parse(built.asset.content) as { reads: Array<Record<string, unknown>> };
+    expect(report.reads[0]).toMatchObject({ status: 'unmapped', searchIncomplete: true });
+
+    const withAsset = appendArtifactAnalysisAsset(undefined, built.asset);
+    expect(() => appendArtifactAnalysisWorkspaceResult(withAsset, built.result)).not.toThrow();
+    const plugin = await import(/* @vite-ignore */ PLUGIN_VALIDATOR_PATH);
+    const pluginWithAsset = plugin.appendArtifactAnalysisAsset(undefined, built.asset);
+    expect(() => plugin.appendArtifactAnalysisWorkspaceResult(pluginWithAsset, built.result)).not.toThrow();
+  });
+
+  it('still validates a report saved before the marker existed', async () => {
+    const old = mutateBuiltReport(buildStray(), (report) => {
+      delete (report.reads as Array<Record<string, unknown>>)[0].searchIncomplete;
+    });
+    expect(old.asset.content).not.toContain('searchIncomplete');
+    const withAsset = appendArtifactAnalysisAsset(undefined, old.asset);
+    expect(() => appendArtifactAnalysisWorkspaceResult(withAsset, old.result)).not.toThrow();
+    const plugin = await import(/* @vite-ignore */ PLUGIN_VALIDATOR_PATH);
+    const pluginWithAsset = plugin.appendArtifactAnalysisAsset(undefined, old.asset);
+    expect(() => plugin.appendArtifactAnalysisWorkspaceResult(pluginWithAsset, old.result)).not.toThrow();
+  });
+
+  it('rejects the marker with any value but true, or on a read that is not unmapped', async () => {
+    const plugin = await import(/* @vite-ignore */ PLUGIN_VALIDATOR_PATH);
+    const falseMarker = mutateBuiltReport(buildStray(), (report) => {
+      (report.reads as Array<Record<string, unknown>>)[0].searchIncomplete = false;
+    });
+    const mappedWithMarker = mutateBuiltReport(build(), (report) => {
+      (report.reads as Array<Record<string, unknown>>)[0].searchIncomplete = true;
+    });
+    const recordLengths = new Map([
+      ['reference', REFERENCE_SEQUENCE.length],
+      ['read-1', READ_SEQUENCES[0].length],
+      ['read-2', READ_SEQUENCES[1].length],
+    ]);
+    for (const [mutated, options] of [
+      [falseMarker, undefined],
+      [mappedWithMarker, { recordLengths }],
+    ] as const) {
+      const withAsset = appendArtifactAnalysisAsset(undefined, mutated.asset, options);
+      expect(() => appendArtifactAnalysisWorkspaceResult(withAsset, mutated.result, options))
+        .toThrow(/searchIncomplete may only be true, on an unmapped read/);
+      const pluginWithAsset = plugin.appendArtifactAnalysisAsset(undefined, mutated.asset, options);
+      expect(() => plugin.appendArtifactAnalysisWorkspaceResult(pluginWithAsset, mutated.result, options))
+        .toThrow(/searchIncomplete may only be true, on an unmapped read/);
+    }
+  });
+});
+
+describe('saving a report whose consensus is longer than the general JSON string cap', () => {
+  // The report stores its consensus at reference length. The engine accepts
+  // references up to 50,000 bp, and every other JSON string stays capped at 16,384.
+  function buildLong(referenceLength: number) {
+    const reference = deterministicDna(referenceLength, 0xabc123 + referenceLength);
+    const read = reference.slice(2_000, 3_000);
+    const qualityScores = Array.from({ length: read.length }, () => 40);
+    const verification = verifyArtifactConstruct({
+      reference: { id: 'long-reference', sequence: reference, topology: 'linear', sha256: sha256HexSync(reference) },
+      reads: [{ id: 'long-read', name: 'long_F.ab1', baseCalls: read, qualityScores, sha256: sha256HexSync(read) }],
+      thresholds: { minCoverageFraction: 0 },
+    });
+    const built = buildArtifactConstructVerificationArtifacts(
+      verification,
+      [artifactConstructReadEvidenceSha256({ baseCalls: read, qualityScores })],
+      { resultId: `long-result-${referenceLength}`, assetId: `long-report-${referenceLength}`, createdAt: CREATED_AT },
+    );
+    const context = { recordLengths: new Map([['long-reference', reference.length], ['long-read', read.length]]) };
+    return { built, context };
+  }
+
+  function consensusOf(content: string): string {
+    return (JSON.parse(content) as { consensus: { sequence: string } }).consensus.sequence;
+  }
+
+  it.each([20_000, 50_000])('saves and reloads a %i bp consensus through the app and plugin validators', async (length) => {
+    const { built, context } = buildLong(length);
+    const consensus = consensusOf(built.asset.content);
+    expect(consensus).toHaveLength(length);
+    expect(consensus).toMatch(/^[ACGTN]+$/);
+
+    const plugin = await import(/* @vite-ignore */ PLUGIN_VALIDATOR_PATH);
+    for (const validator of [
+      { appendArtifactAnalysisAsset, appendArtifactAnalysisWorkspaceResult, normalizeArtifactAnalysisWorkspace },
+      plugin,
+    ]) {
+      const saved = validator.appendArtifactAnalysisWorkspaceResult(
+        validator.appendArtifactAnalysisAsset(undefined, built.asset, context),
+        built.result,
+        context,
+      );
+      const reloaded = validator.normalizeArtifactAnalysisWorkspace(JSON.parse(JSON.stringify(saved)), context);
+      expect(reloaded.analysisResults.map((result: { id: string }) => result.id)).toEqual([built.result.id]);
+      expect(consensusOf(reloaded.analysisAssets[0].content)).toBe(consensus);
+    }
+  });
+
+  it('keeps the 16,384-character cap on every other string, and on a long consensus that is not DNA', async () => {
+    const { built, context } = buildLong(20_000);
+    const consensus = consensusOf(built.asset.content);
+    const cases: Array<[string, (report: Record<string, unknown>) => void, RegExp]> = [
+      ['the same bases under another field', (report) => {
+        (report.reads as Array<Record<string, unknown>>)[0].name = consensus;
+      }, /reads\[0\]\.name cannot exceed 16,384 characters\./],
+      ['a top-level key spelled like the consensus path', (report) => {
+        report['consensus.sequence'] = consensus;
+        (report.consensus as Record<string, unknown>).sequence = 'N';
+      }, /content JSON\.consensus\.sequence cannot exceed 16,384 characters\./],
+      ['a long consensus of letters that are not bases', (report) => {
+        (report.consensus as Record<string, unknown>).sequence = 'x'.repeat(20_000);
+      }, /consensus\.sequence cannot exceed 16,384 characters unless it holds A\/C\/G\/T\/N bases only\./],
+      ['a consensus past the engine bound', (report) => {
+        (report.consensus as Record<string, unknown>).sequence = 'N'.repeat(98_001);
+      }, /consensus\.sequence cannot exceed 98,000 characters\./],
+      ['a long consensus in a JSON asset that is not a verification report', (report) => {
+        report.schema = 'example.other-report.v1';
+      }, /consensus\.sequence cannot exceed 16,384 characters\./],
+    ];
+    const plugin = await import(/* @vite-ignore */ PLUGIN_VALIDATOR_PATH);
+    for (const [label, mutate, message] of cases) {
+      const mutated = mutateBuiltReport(built, mutate);
+      expect(() => appendArtifactAnalysisAsset(undefined, mutated.asset, context), label).toThrow(message);
+      expect(() => plugin.appendArtifactAnalysisAsset(undefined, mutated.asset, context), label).toThrow(message);
+    }
   });
 });

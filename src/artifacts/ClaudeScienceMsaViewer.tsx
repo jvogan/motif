@@ -111,9 +111,11 @@ import {
 } from './claude-science-msa-view-preferences';
 import {
   computeMsaVariants,
-  summarizeMsaVariants,
+  countMsaVariants,
+  groupMsaVariantRuns,
   type MsaVariant,
-  type MsaVariantSummary,
+  type MsaVariantCounts,
+  type MsaVariantRun,
 } from './claude-science-msa-variants';
 import { createMsaColumnView } from './claude-science-msa-column-view';
 
@@ -149,7 +151,11 @@ type MsaVisibleColumnWindow = {
 function isMsaShortcutTextTarget(target: EventTarget | null): boolean {
   const element = target instanceof HTMLElement ? target : null;
   if (!element) return false;
-  return element.matches('input, textarea, select') || element.isContentEditable;
+  // A slider, checkbox or radio takes no letters, so N and P still belong to
+  // difference navigation there. In Traces the position slider is where focus
+  // usually sits after moving along a read.
+  return element.matches('input:not([type="range"]):not([type="checkbox"]):not([type="radio"]), textarea, select')
+    || element.isContentEditable;
 }
 
 function escapeMsaAttributeSelector(value: string): string {
@@ -342,6 +348,24 @@ export type ClaudeScienceMsaViewerProps = {
   onImportRecords: (files: FileList | File[]) => Promise<ClaudeScienceMsaRecordImportResult>;
   onCopy: (label: string, content: string) => Promise<boolean>;
   onDownload: (filename: string, content: string, mime?: string) => void;
+  /** A column to show, sent from another tool (a verification variant row). Applied once per token. */
+  navigationRequest?: ClaudeScienceMsaNavigationRequest | null;
+  /** Told when a navigation request has been applied, so the host can drop it. */
+  onNavigationRequestHandled?: (token: number) => void;
+};
+
+export type ClaudeScienceMsaNavigationRequest = {
+  alignmentId: string;
+  /** 0-based alignment column. */
+  column: number;
+  /** The row the column is about; Traces focuses that read. */
+  rowId: string | null;
+  /**
+   * Unique per request across mounts. The trace viewer remembers the last jump
+   * it handled per alignment, so a token this viewer had already used would
+   * be skipped when the same alignment opens again.
+   */
+  token: number;
 };
 
 function compatibleDefaultIds(records: readonly ViewerRecord[], activeRecordId?: string): Set<string> {
@@ -810,6 +834,52 @@ export function differenceColumns(
     ))) columns.push(column);
   }
   return columns;
+}
+
+/** Where one Differences-table row starts: its row and its first column. */
+export type MsaDifferenceStop = { rowId: string; column: number };
+
+/**
+ * The stops the difference stepper walks, one per Differences-table row: each
+ * substitution, and each whole insertion or deletion at its first column. A
+ * run continues across columns where both the row and the template are gaps,
+ * as groupMsaVariantRuns folds them. Stepping per column read "Difference 5 of
+ * 7" beside a table of 3 rows. Cells count by the same rule as the grid's
+ * difference marks, so a compatible ambiguity code is not a stop unless
+ * strict comparison is on. Ordered by column, then row, like the table.
+ */
+// eslint-disable-next-line react-refresh/only-export-components -- pure MSA helper exported for unit tests
+export function differenceStops(
+  alignment: ArtifactAlignment,
+  referenceRowId: string,
+  strictDifferences = false,
+): MsaDifferenceStop[] {
+  const reference = alignment.rows.find((row) => row.id === referenceRowId) ?? alignment.rows[0];
+  if (!reference) return [];
+  const referenceCoverage = alignmentCoverage(reference.aligned);
+  const rows = alignment.rows.filter((row) => row.id !== reference.id);
+  const rowCoverage = rows.map((row) => alignmentCoverage(row.aligned));
+  // The indel kind each row's current run is extending, or null when none is open.
+  const openRun: Array<'insertion' | 'deletion' | null> = rows.map(() => null);
+  const stops: MsaDifferenceStop[] = [];
+  for (let column = 0; column < alignment.alignmentLength; column += 1) {
+    const referenceResidue = reference.aligned[column] ?? '-';
+    const counted = !alignment.gapOnly[column] && coversColumn(referenceCoverage, column);
+    for (let index = 0; index < rows.length; index += 1) {
+      const residue = rows[index].aligned[column] ?? '-';
+      const outcome = counted
+        ? classifyMsaCell(referenceResidue, residue, coversColumn(rowCoverage[index], column), alignment.molecule, strictDifferences)
+        : null;
+      if (outcome === 'substitution' || outcome === 'insertion' || outcome === 'deletion') {
+        if (outcome !== 'substitution' && openRun[index] === outcome) continue;
+        stops.push({ rowId: rows[index].id, column });
+        openRun[index] = outcome === 'substitution' ? null : outcome;
+      } else if (referenceResidue !== '-' || residue !== '-') {
+        openRun[index] = null;
+      }
+    }
+  }
+  return stops;
 }
 
 // eslint-disable-next-line react-refresh/only-export-components -- pure MSA helper exported for unit tests
@@ -1368,6 +1438,7 @@ function MsaDifferenceNavigation({
   onPrevious,
   onNext,
   onToggle,
+  toggleRef,
 }: {
   disabled: boolean;
   label: string;
@@ -1376,6 +1447,8 @@ function MsaDifferenceNavigation({
   onPrevious: () => void;
   onNext: () => void;
   onToggle: () => void;
+  /** Close in the Differences pane returns focus here. */
+  toggleRef?: RefObject<HTMLButtonElement | null>;
 }) {
   return (
     <div className="motif-cs-msa-difference-nav" role="group" aria-label="Variable column navigation">
@@ -1383,6 +1456,7 @@ function MsaDifferenceNavigation({
       <span style={{ minWidth: `${labelWidth}ch` }}>{label}</span>
       <button className="motif-cs-mini-button" type="button" disabled={disabled} onClick={onNext} aria-label="Next variable column" title="Next variable column (N)"><ChevronRight size={13} /></button>
       <button
+        ref={toggleRef}
         className="motif-cs-mini-button motif-cs-msa-differences-toggle"
         type="button"
         data-testid="msa-differences-toggle"
@@ -1399,17 +1473,52 @@ function MsaDifferenceNavigation({
   );
 }
 
+/**
+ * The differences list as tab-separated text, one line per table row: full
+ * row names (the table shortens a shared head), the residues, the first
+ * biological position and the 1-based first and last alignment columns. Tabs
+ * and line breaks inside a value become spaces so every record stays one line.
+ */
+function msaDifferencesTsv(
+  runs: readonly MsaVariantRun[],
+  positionHeader: 'Template position' | 'Reference position' = 'Template position',
+): string {
+  const clean = (value: string | number | null) => (value === null ? '' : String(value)).replace(/[\t\r\n]+/g, ' ');
+  const lines = [
+    ['Variant', 'Row', 'Type', 'Length', 'Template residue', 'Observed residue', positionHeader, 'Alignment column', 'Alignment end'],
+    ...runs.map(({ first, last, length, templateResidues, residues, label }) => [
+      label,
+      first.rowName,
+      first.kind,
+      length,
+      templateResidues,
+      residues,
+      first.templatePosition,
+      first.column + 1,
+      last.column + 1,
+    ]),
+  ];
+  return `${lines.map((line) => line.map(clean).join('\t')).join('\n')}\n`;
+}
+
 function MsaDifferencesPane({
-  variants,
+  runs,
+  unit,
   summary,
   truncated,
   templateName,
   rowLabels,
   onClose,
   onJump,
+  onCopyTsv,
+  onDownloadTsv,
 }: {
-  variants: readonly MsaVariant[];
-  summary: MsaVariantSummary;
+  /** The listed rows: the first MSA_VARIANT_LIST_LIMIT when truncated. */
+  runs: readonly MsaVariantRun[];
+  /** bp, nt or aa: the counts are differing cells, as in each row's Δ badge. */
+  unit: string;
+  /** Counts over every difference, listed or not. The exports write all of them. */
+  summary: MsaVariantCounts;
   truncated: boolean;
   templateName: string;
   /** Row names with the prefix every row shares removed, as the gutter and the
@@ -1420,19 +1529,21 @@ function MsaDifferencesPane({
   rowLabels: ReadonlyMap<string, string>;
   onClose: () => void;
   onJump: (variant: MsaVariant) => void;
+  onCopyTsv?: () => Promise<boolean>;
+  onDownloadTsv?: () => void;
 }) {
   const paneRef = useRef<HTMLElement>(null);
+  const [exportStatus, setExportStatus] = useState('');
+  const countLabel = `the differences (${summary.total.toLocaleString()} ${unit})`;
+  // Cells, like the Δ badge: a listed 12 bp deletion is one row but 12 bp here.
   const summaryParts = [
     summary.substitutions > 0
       ? `${summary.substitutions.toLocaleString()} substitution${summary.substitutions === 1 ? '' : 's'}`
       : null,
-    summary.insertions > 0
-      ? `${summary.insertions.toLocaleString()} insertion${summary.insertions === 1 ? '' : 's'}`
-      : null,
-    summary.deletions > 0
-      ? `${summary.deletions.toLocaleString()} deletion${summary.deletions === 1 ? '' : 's'}`
-      : null,
+    summary.insertions > 0 ? `${summary.insertions.toLocaleString()} ${unit} inserted` : null,
+    summary.deletions > 0 ? `${summary.deletions.toLocaleString()} ${unit} deleted` : null,
   ].filter((part): part is string => part !== null);
+  const clip = (residues: string) => (residues.length > 12 ? `${residues.slice(0, 11)}…` : residues);
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => paneRef.current?.focus());
     return () => window.cancelAnimationFrame(frame);
@@ -1457,14 +1568,43 @@ function MsaDifferencesPane({
             </p>
           ) : null}
         </div>
-        <button type="button" className="motif-cs-mini-button" data-testid="msa-differences-close" onClick={onClose}>Close</button>
+        <div className="motif-cs-msa-differences-actions">
+          {onCopyTsv ? (
+            <button
+              type="button"
+              className="motif-cs-mini-button"
+              data-testid="msa-differences-copy-tsv"
+              disabled={runs.length === 0}
+              onClick={() => {
+                void onCopyTsv().then((ok) => setExportStatus(ok
+                  ? `Copied ${countLabel} as TSV.`
+                  : 'Copy was blocked. Use Download TSV.'));
+              }}
+            >Copy TSV</button>
+          ) : null}
+          {onDownloadTsv ? (
+            <button
+              type="button"
+              className="motif-cs-mini-button"
+              data-testid="msa-differences-download-tsv"
+              disabled={runs.length === 0}
+              onClick={() => {
+                onDownloadTsv();
+                setExportStatus(`Download requested for ${countLabel}.`);
+              }}
+            >Download TSV</button>
+          ) : null}
+          <button type="button" className="motif-cs-mini-button" data-testid="msa-differences-close" onClick={onClose}>Close</button>
+        </div>
       </header>
+      <p className="motif-cs-msa-differences-export-status" role="status" aria-live="polite" data-empty={exportStatus ? undefined : true}>{exportStatus}</p>
       {truncated ? (
         <p className="motif-cs-msa-differences-limit" data-testid="msa-differences-limit" role="status">
-          Showing {summary.total.toLocaleString()} differences. More exist.
+          Showing the first {runs.length.toLocaleString()} rows.
+          {' '}Copy TSV and Download TSV include all {summary.total.toLocaleString()} differing {unit}.
         </p>
       ) : null}
-      {variants.length === 0 ? (
+      {runs.length === 0 ? (
         <p className="motif-cs-msa-differences-empty">No differences from {templateName}</p>
       ) : (
         <div className="motif-cs-msa-differences-table-wrap">
@@ -1479,12 +1619,12 @@ function MsaDifferencesPane({
               </tr>
             </thead>
             <tbody>
-              {variants.map((variant) => (
+              {runs.map(({ first: variant, last, length, templateResidues, residues, label }) => (
                 <tr
                   key={`${variant.rowId}:${variant.column}`}
                   data-testid="msa-difference-row"
                   tabIndex={0}
-                  aria-label={`Jump to ${variant.label} in ${variant.rowName}, alignment column ${variant.column + 1}`}
+                  aria-label={`Jump to ${label} in ${variant.rowName}, alignment column ${variant.column + 1}`}
                   onClick={() => onJump(variant)}
                   onKeyDown={(event) => {
                     if (event.key !== 'Enter' && event.key !== ' ') return;
@@ -1492,11 +1632,11 @@ function MsaDifferencesPane({
                     onJump(variant);
                   }}
                 >
-                  <th scope="row"><code>{variant.label}</code></th>
+                  <th scope="row"><code>{label}</code></th>
                   <td title={variant.rowName}>{rowLabels.get(variant.rowId) ?? variant.rowName}</td>
-                  <td>{variant.kind}</td>
-                  <td><code>{variant.templateResidue} → {variant.residue}</code></td>
-                  <td>{(variant.column + 1).toLocaleString()}</td>
+                  <td>{variant.kind}{length > 1 ? ` (${length.toLocaleString()} ${unit})` : ''}</td>
+                  <td><code title={length > 12 ? `${templateResidues} → ${residues}` : undefined}>{clip(templateResidues)} → {clip(residues)}</code></td>
+                  <td>{(variant.column + 1).toLocaleString()}{length > 1 ? `–${(last.column + 1).toLocaleString()}` : ''}</td>
                 </tr>
               ))}
             </tbody>
@@ -2110,17 +2250,9 @@ function AlignmentMatrix({
     viewportRef,
   ]);
 
-  useEffect(() => {
-    if (jumpColumn === null || !viewportRef.current) return;
-    if (handledJumpTokenRef.current === jumpToken) return;
-    handledJumpTokenRef.current = jumpToken;
-    const saved = msaMatrixViewportSession.get(alignment.id);
-    if (saved) msaMatrixViewportSession.set(alignment.id, { ...saved, handledJumpToken: jumpToken });
-    const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
-    scrollToColumn(jumpColumn, reducedMotion ? 'auto' : 'smooth');
-  }, [alignment.id, jumpColumn, jumpToken, scrollToColumn, viewportRef]);
-
-  // Bring a search hit's row into vertical view (horizontal is handled above).
+  // Bring a jump's row into vertical view (horizontal is handled below). It runs
+  // first because any scroll aborts a smooth one: after the horizontal scroll
+  // had started, this assignment stopped it before it moved.
   useEffect(() => {
     if (!jumpRowId) return;
     const viewport = viewportRef.current;
@@ -2132,6 +2264,16 @@ function AlignmentMatrix({
     const delta = (rowRect.top + rowRect.bottom) / 2 - (viewportRect.top + viewportRect.bottom) / 2;
     if (Math.abs(delta) > 4) viewport.scrollTop += delta;
   }, [jumpRowId, jumpToken, viewportRef]);
+
+  useEffect(() => {
+    if (jumpColumn === null || !viewportRef.current) return;
+    if (handledJumpTokenRef.current === jumpToken) return;
+    handledJumpTokenRef.current = jumpToken;
+    const saved = msaMatrixViewportSession.get(alignment.id);
+    if (saved) msaMatrixViewportSession.set(alignment.id, { ...saved, handledJumpToken: jumpToken });
+    const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
+    scrollToColumn(jumpColumn, reducedMotion ? 'auto' : 'smooth');
+  }, [alignment.id, jumpColumn, jumpToken, scrollToColumn, viewportRef]);
 
   useEffect(() => {
     if (lastResetTokenRef.current === resetToken) return;
@@ -2557,7 +2699,11 @@ function AlignmentMatrix({
     }
     const cellLeft = activeSlotIndex * cellWidth;
     const cellRight = cellLeft + cellWidth;
-    if (cellLeft < viewport.scrollLeft) setHorizontalScroll(cellLeft);
+    // A jump to this column has already started a smooth scroll that centres it.
+    // Judged from the scrollLeft it is leaving, the cell looked off-screen, and a
+    // nearest-edge scroll here cancelled the centring and parked it on the edge.
+    if (desiredCenterColumnRef.current === activeCell.column + 0.5) { /* already on its way */ }
+    else if (cellLeft < viewport.scrollLeft) setHorizontalScroll(cellLeft);
     else if (cellRight > viewport.scrollLeft + sequenceViewportWidth) {
       setHorizontalScroll(cellRight - sequenceViewportWidth);
     }
@@ -3763,8 +3909,11 @@ function AlignmentMatrix({
 
           {visibility.showConservation || visibility.showConsensus || visibility.showConservationHistogram ? (
             <div className="motif-cs-msa-pinned-tracks" data-testid="msa-pinned-tracks" role="rowgroup">
-              {visibility.showConservation ? <div className="motif-cs-msa-conservation-row" role="row" aria-rowindex={firstSequenceRow + orderedRows.length} aria-label="Conservation; asterisks mark columns conserved across every row">
-                <div className="motif-cs-msa-sticky-label motif-cs-msa-row-label" role="rowheader"><span>Conserved</span></div>
+              {visibility.showConservation ? <div className="motif-cs-msa-conservation-row" role="row" aria-rowindex={firstSequenceRow + orderedRows.length} aria-label="Conservation marks; asterisks mark columns conserved across every row">
+                {/* Named as the View menu names it: "Conserved" sat beside "Consensus"
+                    and "Conservation", and unchecking "Conservation marks" removed
+                    the row called "Conserved". */}
+                <div className="motif-cs-msa-sticky-label motif-cs-msa-row-label" role="rowheader"><span>Conservation marks</span></div>
                 <div className="motif-cs-msa-symbol-window" style={{ left: labelWidth + (startSlot * cellWidth) }} aria-hidden="true">
                   {renderedSlots.map((slot) => slot.kind === 'elision' ? (
                     <span key={`elision-${slot.startColumn}-${slot.endColumn}`} className="motif-cs-msa-symbol motif-cs-msa-elision-spacer" data-msa-elision-spacer="true" />
@@ -3787,7 +3936,7 @@ function AlignmentMatrix({
                 aria-rowindex={firstSequenceRow + orderedRows.length + Number(visibility.showConservation) + Number(visibility.showConsensus)}
                 aria-label="Per-column conservation histogram"
               >
-                <div className="motif-cs-msa-sticky-label motif-cs-msa-row-label motif-cs-msa-hist-label" role="rowheader"><span>Conservation</span></div>
+                <div className="motif-cs-msa-sticky-label motif-cs-msa-row-label motif-cs-msa-hist-label" role="rowheader"><span>Conservation histogram</span></div>
                 {renderHistogram((stat) => stat.conservation, 'conservation')}
               </div> : null}
             </div>
@@ -4048,6 +4197,8 @@ export function ClaudeScienceMsaViewer({
   onImportRecords,
   onCopy,
   onDownload,
+  navigationRequest = null,
+  onNavigationRequestHandled,
 }: ClaudeScienceMsaViewerProps) {
   const activeAlignment = useMemo(
     () => alignments.find((alignment) => alignment.id === activeAlignmentId) ?? alignments[0] ?? null,
@@ -4269,6 +4420,22 @@ export function ClaudeScienceMsaViewer({
     setLocalTemplateId(nextTemplate?.id ?? '');
   }, [activeRecordId, localTemplateId, selectedRecords]);
   const selectedType = selectedRecords[0]?.type ?? null;
+  // Two records can share a name (a bundled pUC19 and an imported pUC19.fasta).
+  // The picker marks each one with its place among the records of that name,
+  // so the row can be told apart even when the lengths match.
+  const sameNameOrdinals = useMemo(() => {
+    const byName = new Map<string, string[]>();
+    for (const record of records) {
+      const key = record.name.trim().toLowerCase();
+      byName.set(key, [...(byName.get(key) ?? []), record.id]);
+    }
+    const ordinals = new Map<string, { index: number; count: number }>();
+    for (const ids of byName.values()) {
+      if (ids.length < 2) continue;
+      ids.forEach((id, index) => ordinals.set(id, { index: index + 1, count: ids.length }));
+    }
+    return ordinals;
+  }, [records]);
   const filteredRecords = useMemo(() => {
     const query = filter.trim().toLowerCase();
     const selected = records.filter((record) => selectedIds.has(record.id));
@@ -4288,19 +4455,34 @@ export function ClaudeScienceMsaViewer({
     if (!activeAlignment || activeAlignment.referenceRowId === referenceRowId) return activeAlignment;
     return { ...activeAlignment, referenceRowId };
   }, [activeAlignment, referenceRowId]);
-  const variantResult = useMemo(
-    () => variantAlignment
-      ? computeMsaVariants(variantAlignment, { maxVariants: MSA_VARIANT_LIST_LIMIT, strictDifferences })
-      : { variants: [], truncated: false },
-    [strictDifferences, variantAlignment],
-  );
+  // One row per substitution or whole indel. The list stops at
+  // MSA_VARIANT_LIST_LIMIT rows; the header counts and the TSV exports cover
+  // every difference.
+  const variantResult = useMemo(() => {
+    if (!variantAlignment) return { runs: [], truncated: false };
+    const { variants, truncated } = computeMsaVariants(variantAlignment, { strictDifferences });
+    const runs = groupMsaVariantRuns(variants, variantAlignment);
+    return { runs: runs.slice(0, MSA_VARIANT_LIST_LIMIT), truncated: truncated || runs.length > MSA_VARIANT_LIST_LIMIT };
+  }, [strictDifferences, variantAlignment]);
   const variantSummary = useMemo(
-    () => summarizeMsaVariants(variantResult.variants),
-    [variantResult.variants],
+    () => variantAlignment
+      ? countMsaVariants(variantAlignment, { strictDifferences })
+      : { total: 0, substitutions: 0, insertions: 0, deletions: 0 },
+    [strictDifferences, variantAlignment],
   );
   const differences = useMemo(
     () => activeAlignment ? differenceColumns(activeAlignment, referenceRowId, strictDifferences) : [],
     [activeAlignment, referenceRowId, strictDifferences],
+  );
+  // The stepper walks the Differences table's rows, not columns: a 3 bp
+  // deletion is one step, as it is one row.
+  const stops = useMemo(
+    () => activeAlignment ? differenceStops(activeAlignment, referenceRowId, strictDifferences) : [],
+    [activeAlignment, referenceRowId, strictDifferences],
+  );
+  const stopIndex = useCallback(
+    (column: number, rowId: string | null) => stops.findIndex((stop) => stop.column === column && (rowId === null || stop.rowId === rowId)),
+    [stops],
   );
   useEffect(() => {
     if (!activeAlignment) {
@@ -4315,17 +4497,17 @@ export function ClaudeScienceMsaViewer({
       && previous.strictDifferences === scope.strictDifferences
     ) return;
     differenceLandingScopeRef.current = scope;
-    if (differences.length === 0) {
+    if (stops.length === 0) {
       setDifferenceIndex(-1);
       return;
     }
     const openingAlignment = !previous || previous.alignmentId !== scope.alignmentId;
     if (openingAlignment && msaMatrixViewportSession.has(scope.alignmentId)) return;
     setDifferenceIndex(0);
-    setJumpColumn(differences[0]);
+    setJumpColumn(stops[0].column);
     setJumpRowId(null);
     setJumpToken((token) => token + 1);
-  }, [activeAlignment, differences, referenceRowId, strictDifferences]);
+  }, [activeAlignment, stops, referenceRowId, strictDifferences]);
   const ambiguities = useMemo(
     () => activeAlignment ? ambiguousColumns(activeAlignment, referenceRowId, strictDifferences) : [],
     [activeAlignment, referenceRowId, strictDifferences],
@@ -4420,20 +4602,20 @@ export function ClaudeScienceMsaViewer({
   const avgIdentity = hasComparableRows
     ? comparisonStats.reduce((sum, stats) => sum + stats.identity, 0) / comparisonStats.length
     : null;
-  const differenceNavigationDisabled = !hasComparableRows || differences.length === 0;
+  const differenceNavigationDisabled = !hasComparableRows || stops.length === 0;
   // One phrasing in both states. Reading "717 differences" before stepping and
   // "Difference 1 of 717" after made the same control look like two controls.
   const differenceNavigationLabel = !hasComparableRows
     ? 'No comparable rows'
     : differenceIndex >= 0
-      ? `Difference ${differenceIndex + 1} of ${differences.length}`
-      : `Difference — of ${differences.length}`;
+      ? `Difference ${differenceIndex + 1} of ${stops.length}`
+      : `Difference — of ${stops.length}`;
   // Reserve the widest label this alignment can produce. The counter gains
   // digits as you step, and a box that grows with it walks the "next" button
   // out from under the cursor clicking it.
   const differenceNavigationWidth = Math.max(
     'No comparable rows'.length,
-    `Difference ${differences.length} of ${differences.length}`.length,
+    `Difference ${stops.length} of ${stops.length}`.length,
   );
   const textContent = activeAlignment ? formatAlignment(activeAlignment, textFormat) : '';
   const selectedExport = formatExtension(textFormat);
@@ -4491,6 +4673,55 @@ export function ClaudeScienceMsaViewer({
     }, 2200);
     return ok;
   }, [onCopy]);
+
+  // The list stays open after a jump in the grid, so it must not cover the
+  // rows the jump scrolls to. While open it reserves the matrix's own height
+  // (up to 55% of the stage) above itself; with a short alignment it then fills
+  // only the empty space under the rows, and with a tall one it keeps the top.
+  const differencesStageRef = useRef<HTMLDivElement>(null);
+  // The pane's Close button unmounts with it, so focus goes back to the toggle
+  // that opened the pane rather than to the page.
+  const differencesToggleRef = useRef<HTMLButtonElement>(null);
+  const closeDifferences = useCallback(() => {
+    setDifferencesOpen(false);
+    differencesToggleRef.current?.focus({ preventScroll: true });
+  }, []);
+  useLayoutEffect(() => {
+    const stage = differencesStageRef.current;
+    if (!stage || !differencesOpen) return undefined;
+    const shell = stage.querySelector<HTMLElement>(':scope > .motif-cs-msa-matrix-shell');
+    const update = () => {
+      const reserve = shell ? Math.min(shell.offsetHeight, Math.round(stage.clientHeight * 0.55)) : 0;
+      stage.style.setProperty('--motif-cs-msa-differences-reserve', `${Math.max(0, reserve)}px`);
+    };
+    update();
+    if (typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver(update);
+    observer.observe(stage);
+    if (shell) observer.observe(shell);
+    return () => observer.disconnect();
+  }, [differencesOpen, displayMode, activeAlignment?.id]);
+
+  // Exports recompute without the list cap, so the file holds every
+  // difference rather than the first MSA_VARIANT_LIST_LIMIT the pane lists.
+  const differencesTsv = useCallback(() => msaDifferencesTsv(
+    variantResult.truncated && variantAlignment
+      ? groupMsaVariantRuns(computeMsaVariants(variantAlignment, { maxVariants: Number.MAX_SAFE_INTEGER, strictDifferences }).variants, variantAlignment)
+      : variantResult.runs,
+    activeReferenceCoordinates ? 'Reference position' : 'Template position',
+  ), [activeReferenceCoordinates, strictDifferences, variantAlignment, variantResult]);
+  const copyDifferencesTsv = useCallback(
+    () => copyFromViewer('Differences TSV', differencesTsv()),
+    [copyFromViewer, differencesTsv],
+  );
+  const downloadDifferencesTsv = useCallback(() => {
+    if (!activeAlignment) return;
+    onDownload(
+      safeAlignmentFilename(activeAlignment, 'tsv').replace(/\.tsv$/, '-differences.tsv'),
+      differencesTsv(),
+      'text/tab-separated-values',
+    );
+  }, [activeAlignment, differencesTsv, onDownload]);
 
   // Transient status line (reuses the copy-status region) for image export.
   const flashStatus = useCallback((label: string, message: string, tone: 'status' | 'error') => {
@@ -4894,25 +5125,31 @@ export function ClaudeScienceMsaViewer({
     }
     const nextIndex = differenceIndex < 0
       ? 0
-      : (differenceIndex + direction + differences.length) % differences.length;
-    const column = differences[nextIndex];
+      : (differenceIndex + direction + stops.length) % stops.length;
+    // A step lands where a click on that table row lands: its row, first column.
+    const { column, rowId } = stops[nextIndex];
     setDifferenceIndex(nextIndex);
     setJumpColumn(column);
-    setJumpRowId(null);
+    setJumpRowId(rowId);
     setJumpToken((token) => token + 1);
-    const rowId = matrixActiveCellRef.current?.rowId
-      ?? activeAlignment?.referenceRowId
-      ?? activeAlignment?.rows[0]?.id;
-    if (rowId) {
-      setMatrixFocusRequest((request) => ({ rowId, column, focus: false, token: (request?.token ?? 0) + 1 }));
-    }
-  }, [activeAlignment, differenceIndex, differenceNavigationDisabled, differences]);
+    setMatrixFocusRequest((request) => ({ rowId, column, focus: false, token: (request?.token ?? 0) + 1 }));
+  }, [differenceIndex, differenceNavigationDisabled, stops]);
 
   useEffect(() => {
-    if (!activeAlignment || displayMode !== 'viewer') return undefined;
+    // N and P step through differences in Traces too; the Next button's own
+    // tooltip promises "(N)" there. Find (/ and Cmd/Ctrl+F) stays grid-only,
+    // because the search field only exists in the grid view.
+    if (!activeAlignment || (displayMode !== 'viewer' && displayMode !== 'trace')) return undefined;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || isMsaShortcutTextTarget(event.target)) return;
       const key = event.key.toLocaleLowerCase();
+      if (displayMode === 'trace') {
+        if (!event.metaKey && !event.ctrlKey && !event.altKey && (key === 'n' || key === 'p')) {
+          event.preventDefault();
+          jumpDifference(key === 'n' ? 1 : -1);
+        }
+        return;
+      }
       if ((event.metaKey || event.ctrlKey) && key === 'f') {
         event.preventDefault();
         searchInputRef.current?.focus();
@@ -4940,7 +5177,7 @@ export function ClaudeScienceMsaViewer({
     // Variants retain the full-alignment zero-based column. Hand that coordinate
     // straight to both navigation channels: filtered windows are only a view and
     // must never change the scientific address of the selected cell.
-    setDifferenceIndex(differences.indexOf(variant.column));
+    setDifferenceIndex(stopIndex(variant.column, variant.rowId));
     setJumpColumn(variant.column);
     setJumpRowId(variant.rowId);
     setJumpToken((token) => token + 1);
@@ -4950,9 +5187,36 @@ export function ClaudeScienceMsaViewer({
       focus: true,
       token: (request?.token ?? 0) + 1,
     }));
-    setDifferencesOpen(false);
-    if (displayMode !== 'viewer') updateViewPreferences({ displayMode: 'viewer' });
-  }, [differences, displayMode, updateViewPreferences]);
+    // In the grid the list is docked under the rows it describes, so it stays
+    // open and the reader can take the next entry. In Traces it would cover the
+    // chromatogram the jump is meant to show.
+    if (displayMode !== 'viewer') setDifferencesOpen(false);
+    // Traces is a view of the same columns, so a chosen difference opens there:
+    // the trace viewer moves to the column, selects the call and focuses the
+    // read. Only the text view has nothing to show a column in.
+    if (displayMode === 'text') updateViewPreferences({ displayMode: 'viewer' });
+  }, [displayMode, stopIndex, updateViewPreferences]);
+
+  // A request from another tool (a verification variant row). Declared after
+  // the effect that lands a newly opened alignment on its first difference, so
+  // on the same mount this jump is the one that stays.
+  const handledNavigationTokenRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!navigationRequest || !activeAlignment || activeAlignment.id !== navigationRequest.alignmentId) return;
+    if (handledNavigationTokenRef.current === navigationRequest.token) return;
+    handledNavigationTokenRef.current = navigationRequest.token;
+    const column = Math.max(0, Math.min(activeAlignment.alignmentLength - 1, Math.trunc(navigationRequest.column)));
+    const rowId = navigationRequest.rowId && activeAlignment.rows.some((row) => row.id === navigationRequest.rowId)
+      ? navigationRequest.rowId
+      : null;
+    setDifferenceIndex(stopIndex(column, rowId));
+    setJumpColumn(column);
+    setJumpRowId(rowId);
+    setJumpToken((token) => Math.max(token + 1, navigationRequest.token));
+    const focusRowId = rowId ?? activeAlignment.referenceRowId;
+    setMatrixFocusRequest((request) => ({ rowId: focusRowId, column, focus: false, token: (request?.token ?? 0) + 1 }));
+    onNavigationRequestHandled?.(navigationRequest.token);
+  }, [activeAlignment, navigationRequest, onNavigationRequestHandled, stopIndex]);
 
   const goToSearchMatch = useCallback((index: number, matches: readonly MsaSearchMatch[] = searchMatches) => {
     const count = matches.length;
@@ -5305,12 +5569,23 @@ export function ClaudeScienceMsaViewer({
                   const wrongType = Boolean(selectedType && selectedType !== record.type && !checked);
                   const atCapacity = !checked && selectedIds.size >= ARTIFACT_MSA_MAX_LOCAL_SEQUENCES;
                   const disabled = tooLong || wrongType || atCapacity;
+                  const sameName = sameNameOrdinals.get(record.id);
                   return (
-                    <label key={record.id} className="motif-cs-msa-record-option" data-active={checked || undefined} data-disabled={disabled || undefined}>
+                    <label
+                      key={record.id}
+                      className="motif-cs-msa-record-option"
+                      data-active={checked || undefined}
+                      data-disabled={disabled || undefined}
+                      title={tooLong ? `The browser aligns records up to ${MSA_MAX_SEQ_LEN.toLocaleString()} ${sequenceUnit(record.type)}. Align longer ones with an external aligner and import the aligned file.` : undefined}
+                    >
                       <input type="checkbox" checked={checked} disabled={disabled} onChange={(event) => toggleRecord(record, event.target.checked)} />
                       <span className="motif-cs-msa-record-name" title={record.name}>{record.name}</span>
-                      <small>{record.group ? `${record.group} · ` : ''}{record.type.toUpperCase()} · {record.sequence.length.toLocaleString()} {sequenceUnit(record.type)}</small>
-                      {tooLong ? <em>import an external alignment</em> : wrongType ? <em>different molecule</em> : atCapacity ? <em>preview limit reached</em> : null}
+                      <small>
+                        {record.group ? `${record.group} · ` : ''}{record.type.toUpperCase()} · {sameName && record.topology ? `${record.topology} · ` : ''}{record.sequence.length.toLocaleString()} {sequenceUnit(record.type)}
+                        {sameName ? ` · same name, ${sameName.index} of ${sameName.count}` : ''}
+                      </small>
+                      {/* Say why the record is off: it is over the in-browser length limit. */}
+                      {tooLong ? <em>over the {MSA_MAX_SEQ_LEN.toLocaleString()} {sequenceUnit(record.type)} browser limit</em> : wrongType ? <em>different molecule</em> : atCapacity ? <em>preview limit reached</em> : null}
                     </label>
                   );
                 })}
@@ -5324,7 +5599,14 @@ export function ClaudeScienceMsaViewer({
                       setLocalTemplateId(event.target.value);
                       explicitlySelectedTemplateIdRef.current = event.target.value;
                     }}>
-                      {selectedRecords.map((record) => <option key={record.id} value={record.id}>{record.name}</option>)}
+                      {selectedRecords.map((record) => {
+                        const sameName = sameNameOrdinals.get(record.id);
+                        return (
+                          <option key={record.id} value={record.id}>
+                            {sameName ? `${record.name} (same name, ${sameName.index} of ${sameName.count})` : record.name}
+                          </option>
+                        );
+                      })}
                     </select>
                   </label>
                   {selectedTraceCount > 0 && selectedType === 'dna' ? (
@@ -5338,9 +5620,11 @@ export function ClaudeScienceMsaViewer({
               <div className="motif-cs-msa-run-row">
                 <span className="motif-cs-muted">
                   {selectedRecords.length >= 2
+                    // Stated against the in-browser limit rather than as a raw
+                    // count of comparison cells, which no reader can judge.
                     ? exceedsLocalBudget
-                      ? `Estimated work exceeds the browser limit at ${Math.round(workEstimate / 1_000_000).toLocaleString()} million comparison cells. Import an aligned file.`
-                      : `Estimated work: ${Math.max(1, Math.round(workEstimate / 1_000_000)).toLocaleString()} million comparison cells`
+                      ? `Too large to align in the browser: about ${Math.round((workEstimate / ARTIFACT_MSA_LOCAL_WORK_BUDGET) * 100).toLocaleString()}% of its size limit. Align with an external aligner and import the aligned file.`
+                      : `Within the browser's size limit (about ${Math.max(1, Math.round((workEstimate / ARTIFACT_MSA_LOCAL_WORK_BUDGET) * 100)).toLocaleString()}% of it)`
                     : `Select 2–${ARTIFACT_MSA_MAX_LOCAL_SEQUENCES} records of one molecule type`}
                 </span>
                 <button
@@ -6026,16 +6310,19 @@ export function ClaudeScienceMsaViewer({
                   onJump={jumpToRowDifference}
                 />
               ) : null}
-              <div className="motif-cs-msa-differences-stage" data-testid="msa-differences-stage">
+              <div ref={differencesStageRef} className="motif-cs-msa-differences-stage" data-testid="msa-differences-stage">
               {differencesOpen ? (
                 <MsaDifferencesPane
-                  variants={variantResult.variants}
+                  runs={variantResult.runs}
+                  unit={sequenceUnit(activeAlignment.molecule)}
                   summary={variantSummary}
                   truncated={variantResult.truncated}
                   templateName={activeTemplate?.name ?? 'template'}
                   rowLabels={compareRowLabels}
-                  onClose={() => setDifferencesOpen(false)}
+                  onClose={closeDifferences}
                   onJump={jumpToVariant}
+                  onCopyTsv={copyDifferencesTsv}
+                  onDownloadTsv={downloadDifferencesTsv}
                 />
               ) : null}
               <AlignmentMatrix
@@ -6078,6 +6365,7 @@ export function ClaudeScienceMsaViewer({
                     onPrevious={() => jumpDifference(-1)}
                     onNext={() => jumpDifference(1)}
                     onToggle={() => setDifferencesOpen((open) => !open)}
+                    toggleRef={differencesToggleRef}
                   />
                 )}
               />
@@ -6100,19 +6388,23 @@ export function ClaudeScienceMsaViewer({
                   onPrevious={() => jumpDifference(-1)}
                   onNext={() => jumpDifference(1)}
                   onToggle={() => setDifferencesOpen((open) => !open)}
+                  toggleRef={differencesToggleRef}
                 />
                 <span className="motif-cs-muted">Click a call, drag the position slider, or use arrow keys inside the trace.</span>
               </div>
               <div className="motif-cs-msa-differences-stage motif-cs-msa-differences-stage-trace">
               {differencesOpen ? (
                 <MsaDifferencesPane
-                  variants={variantResult.variants}
+                  runs={variantResult.runs}
+                  unit={sequenceUnit(activeAlignment.molecule)}
                   summary={variantSummary}
                   truncated={variantResult.truncated}
                   templateName={activeTemplate?.name ?? 'template'}
                   rowLabels={compareRowLabels}
-                  onClose={() => setDifferencesOpen(false)}
+                  onClose={closeDifferences}
                   onJump={jumpToVariant}
+                  onCopyTsv={copyDifferencesTsv}
+                  onDownloadTsv={downloadDifferencesTsv}
                 />
               ) : null}
               <ClaudeScienceSangerTraceViewer
@@ -6122,6 +6414,7 @@ export function ClaudeScienceMsaViewer({
                 templateRowId={referenceRowId}
                 jumpColumn={jumpColumn}
                 jumpToken={jumpToken}
+                jumpRowId={jumpRowId}
               />
               </div>
             </>

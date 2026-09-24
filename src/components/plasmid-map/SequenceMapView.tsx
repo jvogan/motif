@@ -12,6 +12,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -28,7 +29,14 @@ import type {
   MapLabelRender,
 } from '../../plasmid-map/types';
 import type { MapRangeOverlayRender } from '../../plasmid-map/range-overlays';
+import {
+  restrictionClusterEnzymes,
+  restrictionLabelTokenEnzyme,
+  restrictionLabelTokens,
+  type RestrictionClusterEnzyme,
+} from '../../plasmid-map/restriction-display';
 import { linearSelectionEdgePaths } from '../../plasmid-map/selection-overlay';
+import { keepSettledSquares, measureMoreHitSquares, type HitRect } from '../../plasmid-map/more-hit-area';
 import type { FeatureType } from '../../bio/types';
 import { featureDisplayTokens } from '../sequence-stack/feature-display-colors';
 import './plasmid-map.css';
@@ -64,7 +72,20 @@ export interface SequenceMapViewProps {
   selectionPaths?: readonly string[];
   viewport?: MapViewport;
   onFeatureClick?: (featureId: string) => void;
-  onRestrictionClick?: (clusterId: string, tickIds: readonly string[]) => void;
+  /**
+   * A restriction cluster, or one enzyme in it. `enzyme` is set when the click named
+   * one — a name in the cluster's label, or a cluster that holds only one enzyme — and
+   * `tickIds` are then that enzyme's sites alone.
+   */
+  onRestrictionClick?: (clusterId: string, tickIds: readonly string[], enzyme?: string) => void;
+  /**
+   * Asked for when a press lands on a multi-enzyme cluster's "+N" tail, its tick, or
+   * the gap between two names, and on Enter/Space on the cluster: the host lists the
+   * cluster's enzymes so one can be picked. `anchor` is the element pressed, for
+   * placing the list, and focus should return to it. Without this handler those
+   * presses select the whole cluster, as they always did.
+   */
+  onRestrictionMenu?: (clusterId: string, enzymes: readonly RestrictionClusterEnzyme[], anchor: Element) => void;
   onRangeOverlayClick?: (overlayId: string) => void;
   onBackgroundClick?: () => void;
   /**
@@ -73,6 +94,10 @@ export interface SequenceMapViewProps {
    * host's range selection, and this component used to advertise a pan (data-pannable,
    * cursor:grab, onPanStart/Move/End) that nothing ever wired, so a grab cursor invited
    * a drag that moved nothing. An affordance nobody implements is worse than none.
+   *
+   * Return false to decline a wheel event: it is then neither prevented nor stopped,
+   * so the page or pane around the map scrolls. The host declines the plain wheel at
+   * Fit, where there is nothing off-frame to pan to.
    */
   onWheelZoom?: (point: SvgPoint, deltaX: number, deltaY: number, deltaMode: number, ctrlKey: boolean, shiftKey: boolean) => boolean;
   /** Dock-fill linear maps are height-stretched by CSS; center their content in that viewport. */
@@ -80,12 +105,14 @@ export interface SequenceMapViewProps {
 }
 
 const DEFAULT_VIEWPORT: MapViewport = { k: 1, tx: 0, ty: 0 };
+const NO_MORE_HITS: ReadonlyMap<string, HitRect> = new Map();
 const RESTRICTION_DENSITY_TICK_STYLE = {
   stroke: 'var(--border, var(--text-secondary, #8a8a8a))',
 } as CSSProperties;
 const MAX_RESTRICTION_DENSITY_TICKS = 512;
-/** Keep circular restriction annotations legible without letting deep zoom turn
- * 10px enzyme labels and their leaders into dominant, oversized geometry. */
+/** Keep circular map text legible without letting deep zoom turn it into dominant,
+ * oversized geometry: enzyme labels, feature labels, coordinate labels and the centre
+ * title grow with the zoom up to this multiple of their fitted size, then hold. */
 const MAX_RESTRICTION_ANNOTATION_VISUAL_SCALE = 1.6;
 const MAP_NUMBER_FORMAT = new Intl.NumberFormat();
 
@@ -96,6 +123,13 @@ type RovingMapKeyDown = (
 ) => void;
 
 type RenderedRestrictionDensityTick = MapRestrictionDensityTick;
+
+interface LabelSegment {
+  text: string;
+  typeIIS: boolean;
+  /** The enzyme this token names, when it names exactly one in the cluster. */
+  enzyme?: string | null;
+}
 
 interface RestrictionDensityRender {
   ticks: readonly RenderedRestrictionDensityTick[];
@@ -131,6 +165,11 @@ function restrictionAccessibleName(restriction: MapRestrictionRender): string {
 function restrictionAnnotationSemanticScale(zoom: number): number {
   const safeZoom = Number.isFinite(zoom) ? Math.max(1, zoom) : 1;
   return Math.min(safeZoom, MAX_RESTRICTION_ANNOTATION_VISUAL_SCALE) / safeZoom;
+}
+
+/** A scale of `scale` about (x, y), or nothing while the text is at its natural size. */
+function counterScaleAbout(scale: number, x: number, y: number): string | undefined {
+  return scale < 0.9999 ? `translate(${x} ${y}) scale(${scale}) translate(${-x} ${-y})` : undefined;
 }
 
 function roundDensityCoordinate(value: number): number {
@@ -235,13 +274,18 @@ function MapText({
   label,
   className,
   segments,
+  textTransform,
 }: {
   label: MapLabelRender;
   className: string;
+  /** Applied to the text alone, outside its rotation; the leader keeps its geometry. */
+  textTransform?: string;
   /** Per-token breakdown; when present the visible text is rebuilt from these
    * tspans (Type IIS tokens get their own class) instead of the flat label.text.
-   * The reconstructed string is byte-identical to label.text. */
-  segments?: readonly { text: string; typeIIS: boolean }[];
+   * The reconstructed string is byte-identical to label.text. A token that names an
+   * enzyme carries it as data-enzyme, and the "+N" tail carries data-label-more, so
+   * a click can tell which part of a cluster label it landed on. */
+  segments?: readonly LabelSegment[];
 }) {
   const rawId = useId();
   // On-arc inline labels ride a baseline arc via <textPath> so long names follow
@@ -273,7 +317,8 @@ function MapText({
         y={label.y}
         textAnchor={label.anchor}
         dominantBaseline={label.baseline}
-        transform={label.rotate ? `rotate(${label.rotate} ${label.x} ${label.y})` : undefined}
+        transform={[textTransform, label.rotate ? `rotate(${label.rotate} ${label.x} ${label.y})` : undefined]
+          .filter(Boolean).join(' ') || undefined}
       >
         {segments && segments.length > 0
           ? segments.map((seg, i) => (
@@ -283,7 +328,11 @@ function MapText({
                     first) with " " — matching clusterLabelText exactly. Only the
                     enzyme <tspan> carries the Type IIS class, so commas/tail stay ink. */}
                 {i > 0 ? (seg.text.startsWith('+') ? ' ' : ', ') : null}
-                <tspan className={seg.typeIIS ? 'motif-pm-restriction-enz--typeiis' : undefined}>
+                <tspan
+                  className={seg.typeIIS ? 'motif-pm-restriction-enz--typeiis' : undefined}
+                  data-enzyme={seg.enzyme ?? undefined}
+                  data-label-more={seg.text.startsWith('+') || undefined}
+                >
                   {seg.text}
                 </tspan>
               </Fragment>
@@ -304,6 +353,7 @@ const FeatureShape = memo(function FeatureShape({
   onRovingFocus,
   onRovingKeyDown,
   onClick,
+  textScale,
 }: {
   feature: MapFeatureRender;
   theme: ThemeName;
@@ -314,6 +364,8 @@ const FeatureShape = memo(function FeatureShape({
   onRovingFocus?: (interactionIndex: number) => void;
   onRovingKeyDown?: RovingMapKeyDown;
   onClick?: (id: string) => void;
+  /** 1 at Fit; below 1 once a circular map is zoomed past the text cap. */
+  textScale: number;
 }) {
   const base = useMemo(
     () => featureDisplayTokens({ type: feature.type as FeatureType, color: feature.color }, theme).base,
@@ -350,14 +402,53 @@ const FeatureShape = memo(function FeatureShape({
       {feature.segmentPaths.map((d, i) => (
         <path key={i} className="motif-pm-feature-body" d={d} />
       ))}
-      {feature.label ? <MapText label={feature.label} className="motif-pm-feature-label" /> : null}
+      {feature.label ? (
+        <FeatureAnnotation label={feature.label} textScale={textScale} />
+      ) : null}
     </g>
   );
 });
 
+/**
+ * A feature's name, held at the text cap as the map zooms. A name at the end of a
+ * leader shrinks toward that end, so the gap between them keeps its proportion and
+ * the name stays inside the space it already had; the leader is drawn at full zoom.
+ * Pulling the name in along its leader instead, as an enzyme name is pulled toward
+ * its tick, put it on top of the enzyme names that had been pulled in the same way.
+ * A name with no leader shrinks about its own anchor. A name that rides the
+ * feature's arc cannot move without leaving the arc, so only its font shrinks,
+ * centred where it sits.
+ */
+function FeatureAnnotation({ label, textScale }: { label: MapLabelRender; textScale: number }) {
+  const scaled = textScale < 0.9999;
+  if (label.arcPath) {
+    return (
+      <g
+        className="motif-pm-feature-annotation"
+        data-semantic-scale={scaled ? textScale : undefined}
+        style={scaled ? ({ '--pm-zoom-text-scale': textScale } as CSSProperties) : undefined}
+      >
+        <MapText label={label} className="motif-pm-feature-label" />
+      </g>
+    );
+  }
+  const origin = label.leader.length > 1 ? label.leader[label.leader.length - 1] : { x: label.x, y: label.y };
+  return (
+    <g className="motif-pm-feature-annotation" data-semantic-scale={scaled ? textScale : undefined}>
+      <MapText
+        label={label}
+        className="motif-pm-feature-label"
+        textTransform={counterScaleAbout(textScale, origin.x, origin.y)}
+      />
+    </g>
+  );
+}
+
 const RestrictionMark = memo(function RestrictionMark({
   restriction,
   annotationScale,
+  circular = false,
+  moreHit = null,
   active,
   interactive,
   interactionIndex,
@@ -365,18 +456,46 @@ const RestrictionMark = memo(function RestrictionMark({
   onRovingFocus,
   onRovingKeyDown,
   onClick,
+  onMenu,
 }: {
   restriction: MapRestrictionRender;
   annotationScale: number;
+  /** A circular map's tail gets an invisible 24x24 press target (see more-hit-area). */
+  circular?: boolean;
+  /** That target, in this group's user units. */
+  moreHit?: HitRect | null;
   active: boolean;
   interactive: boolean;
   interactionIndex: number;
   tabIndex: 0 | -1;
   onRovingFocus?: (interactionIndex: number) => void;
   onRovingKeyDown?: RovingMapKeyDown;
-  onClick?: (clusterId: string, tickIds: readonly string[]) => void;
+  onClick?: (clusterId: string, tickIds: readonly string[], enzyme?: string) => void;
+  onMenu?: (clusterId: string, enzymes: readonly RestrictionClusterEnzyme[], anchor: Element) => void;
 }) {
-  const activate = () => onClick?.(restriction.clusterId, restriction.tickIds);
+  const enzymes = useMemo(
+    () => restrictionClusterEnzymes(restriction),
+    [restriction],
+  );
+  const onlyEnzyme = enzymes.length === 1 ? enzymes[0] : null;
+  const hasMenu = !!onMenu && enzymes.length > 1;
+  // A press on a name selects that enzyme. A cluster of one enzyme IS that enzyme,
+  // wherever it is pressed. Anything else on a crowded cluster — its "+N" tail, its
+  // tick, the gap between two names, or Enter — asks the host for the list of what
+  // it holds, so the reader picks one instead of getting all of them.
+  const activate = (target: Element | null, anchor: Element) => {
+    const named = target?.closest?.('[data-enzyme]')?.getAttribute('data-enzyme');
+    const entry = named ? enzymes.find((candidate) => candidate.enzyme === named) : onlyEnzyme;
+    if (entry) {
+      onClick?.(restriction.clusterId, entry.tickIds, entry.enzyme);
+      return;
+    }
+    if (hasMenu) {
+      onMenu?.(restriction.clusterId, enzymes, anchor);
+      return;
+    }
+    onClick?.(restriction.clusterId, restriction.tickIds);
+  };
   // Segmented labels color per-enzyme via <tspan>; data-segmented tells the CSS to
   // drop the aggregate whole-label tint (unsegmented linear labels keep it).
   // Must reproduce clusterLabelText's join rule exactly: mismatch silently falls back
@@ -386,9 +505,21 @@ const RestrictionMark = memo(function RestrictionMark({
     .join('');
   const segmented =
     !!restriction.label && !!restriction.labelSegments && restriction.labelSegments.length > 0 && segmentedText === restriction.label.text;
-  const annotationTransform = annotationScale < 0.9999
-    ? `translate(${restriction.tick.x2} ${restriction.tick.y2}) scale(${annotationScale}) translate(${-restriction.tick.x2} ${-restriction.tick.y2})`
-    : undefined;
+  // Every label is drawn as tokens so each name is its own target. An unsegmented
+  // (linear) label is split by the same join rule; its tokens carry no Type IIS class,
+  // so the whole-label tint it keeps still paints them.
+  const labelSegments = useMemo((): readonly LabelSegment[] | undefined => {
+    if (!restriction.label) return undefined;
+    const base: readonly LabelSegment[] = segmented && restriction.labelSegments
+      ? restriction.labelSegments
+      : restrictionLabelTokens(restriction.label.text).map((text) => ({ text, typeIIS: false }));
+    return base.map((seg) => ({ ...seg, enzyme: restrictionLabelTokenEnzyme(seg.text, enzymes) }));
+  }, [enzymes, restriction.label, restriction.labelSegments, segmented]);
+  const annotationTransform = counterScaleAbout(annotationScale, restriction.tick.x2, restriction.tick.y2);
+  // The "+N" tail is the only part of the label that opens the rest of the cluster,
+  // and on a small circular map it drew about 4x7 CSS px. The map places a square
+  // for every tail in one read of the drawing (see SequenceMapView's moreHits).
+  const hasTail = interactive && circular && hasMenu && !!restriction.label;
   return (
     <g
       className="motif-pm-restriction"
@@ -401,14 +532,20 @@ const RestrictionMark = memo(function RestrictionMark({
       tabIndex={interactive ? tabIndex : undefined}
       aria-label={restrictionAccessibleName(restriction)}
       aria-pressed={interactive ? active : undefined}
+      aria-haspopup={interactive && hasMenu ? 'menu' : undefined}
       onClick={interactive ? (e) => {
         e.stopPropagation();
         onRovingFocus?.(interactionIndex);
-        activate();
+        const target = e.target instanceof Element ? e.target : null;
+        activate(target, target ?? e.currentTarget);
       } : undefined}
       onFocus={interactive ? () => onRovingFocus?.(interactionIndex) : undefined}
       onKeyDown={interactive ? (event) => {
-        onRovingKeyDown?.(event, interactionIndex, activate);
+        const group = event.currentTarget;
+        onRovingKeyDown?.(event, interactionIndex, () => activate(
+          null,
+          group.querySelector('.motif-pm-restriction-label') ?? group,
+        ));
       } : undefined}
     >
       {restriction.title ? <title>{restriction.title}</title> : null}
@@ -421,6 +558,18 @@ const RestrictionMark = memo(function RestrictionMark({
         pointerEvents="stroke"
         aria-hidden="true"
       />
+      {hasTail && moreHit ? (
+        <rect
+          className="motif-pm-restriction-more-hit"
+          x={moreHit.x}
+          y={moreHit.y}
+          width={moreHit.width}
+          height={moreHit.height}
+          fill="none"
+          pointerEvents="all"
+          aria-hidden="true"
+        />
+      ) : null}
       <line
         className="motif-pm-tick"
         x1={restriction.tick.x1}
@@ -437,7 +586,7 @@ const RestrictionMark = memo(function RestrictionMark({
           <MapText
             label={restriction.label}
             className="motif-pm-restriction-label"
-            segments={segmented ? restriction.labelSegments : undefined}
+            segments={labelSegments}
           />
         </g>
       ) : null}
@@ -467,7 +616,17 @@ function RestrictionDensityTick({ densityTick }: { densityTick: RenderedRestrict
   );
 }
 
-function CoordinateTick({ coord }: { coord: MapCoordinateTick }) {
+function CoordinateTick({ coord, textScale }: { coord: MapCoordinateTick; textScale: number }) {
+  // The number scales about whichever end of its tick it stands beside, so the gap
+  // between them keeps its proportion instead of growing with the zoom.
+  const { tick, label } = coord;
+  const nearFirstEnd = label
+    && Math.hypot(label.x - tick.x1, label.y - tick.y1) < Math.hypot(label.x - tick.x2, label.y - tick.y2);
+  const counterScale = label
+    ? counterScaleAbout(textScale, nearFirstEnd ? tick.x1 : tick.x2, nearFirstEnd ? tick.y1 : tick.y2)
+    : undefined;
+  const rotate = label?.rotate ? `rotate(${label.rotate} ${label.x} ${label.y})` : undefined;
+  const transform = [counterScale, rotate].filter(Boolean).join(' ') || undefined;
   return (
     <g aria-hidden="true">
       <line className="motif-pm-coord-tick" x1={coord.tick.x1} y1={coord.tick.y1} x2={coord.tick.x2} y2={coord.tick.y2} />
@@ -477,7 +636,7 @@ function CoordinateTick({ coord }: { coord: MapCoordinateTick }) {
           x={coord.label.x}
           y={coord.label.y}
           textAnchor={coord.label.anchor}
-          transform={coord.label.rotate ? `rotate(${coord.label.rotate} ${coord.label.x} ${coord.label.y})` : undefined}
+          transform={transform}
         >
           {coord.label.text}
         </text>
@@ -498,6 +657,7 @@ export const SequenceMapView = memo(function SequenceMapView({
   viewport = DEFAULT_VIEWPORT,
   onFeatureClick,
   onRestrictionClick,
+  onRestrictionMenu,
   onRangeOverlayClick,
   onBackgroundClick,
   onWheelZoom,
@@ -518,7 +678,10 @@ export const SequenceMapView = memo(function SequenceMapView({
   const isPanned = Math.abs(viewport.tx) > 0.01 || Math.abs(viewport.ty) > 0.01;
   const hasViewportTransform = isZoomed || isPanned;
   const viewportTransform = hasViewportTransform ? `translate(${viewport.tx} ${viewport.ty}) scale(${viewport.k})` : undefined;
-  const restrictionAnnotationScale = isCircular ? restrictionAnnotationSemanticScale(viewport.k) : 1;
+  // Zoom magnifies the drawing, and the words on it stop growing at the cap: enzyme
+  // and feature names, coordinate numbers and the centre title alike. A linear map
+  // keeps scaling its text with the zoom; that wants a re-layout, not a cap.
+  const circularTextScale = isCircular ? restrictionAnnotationSemanticScale(viewport.k) : 1;
   const rangeOverlaysInteractive = interactive && !!onRangeOverlayClick;
   const rawSelectionGradientId = useId();
   const selectionGradientId = `motif-pm-selection-gradient-${rawSelectionGradientId.replace(/:/g, '')}`;
@@ -532,19 +695,33 @@ export const SequenceMapView = memo(function SequenceMapView({
     () => ({ '--motif-pm-selection-edge-gradient': `url(#${selectionEdgeGradientId})` }) as CSSProperties,
     [selectionEdgeGradientId],
   );
-  // A linear selection is a band 18px tall on a drawing 274px deep on pUC19 at
-  // 1440x900, so it marks the ruler and says nothing about the restriction band
+  // A linear selection is a band 18px tall on a drawing 274px deep (measured on the
+  // synthetic pUC19 once bundled, at 1440x900), so it marks the ruler and says nothing about the restriction band
   // or the feature rows the same bases run through. These carry each span's two
   // boundaries down to where the coordinate gridlines stop.
   const linearSelectionEdges = useMemo(
     () => selectionPaths?.flatMap((d) => linearSelectionEdgePaths(layout, d)) ?? [],
     [selectionPaths, layout],
   );
+  // Arrow keys walk the map in sequence order: clockwise from the origin on a
+  // ring, left to right on a line. Features and sites interleave, each at the
+  // first base its accessible name announces (a feature's start, a site's
+  // position), so the coordinates a screen reader speaks only climb within a
+  // lap. The keys used to follow the record's feature list and then every site,
+  // so focus jumped back and forth around the map between features and then
+  // began a second lap for the sites. Paint order stays layout order; only the
+  // roving index follows position.
   const mapInteractionModel = useMemo(() => {
     const keys = [
-      ...layout.features.map((feature) => mapInteractionKey('feature', feature.id)),
-      ...layout.restrictions.map((restriction) => mapInteractionKey('restriction', restriction.clusterId)),
-    ];
+      ...layout.features.map((feature) => ({ key: mapInteractionKey('feature', feature.id), bp: feature.startBp })),
+      ...layout.restrictions.map((restriction) => ({
+        key: mapInteractionKey('restriction', restriction.clusterId),
+        bp: restriction.anchorBp,
+      })),
+    ]
+      // A stable sort, so a feature and a site at one base keep the feature first.
+      .sort((a, b) => a.bp - b.bp)
+      .map((item) => item.key);
     return {
       keys,
       indexByKey: new Map(keys.map((key, index) => [key, index])),
@@ -577,6 +754,16 @@ export const SequenceMapView = memo(function SequenceMapView({
     () => layout.restrictionDensityTicks.reduce((sum, tick) => sum + (tick.siteCount ?? 1), 0),
     [layout.restrictionDensityTicks],
   );
+  // Each "+N" tail on a circular map gets a 24x24 CSS px square clear of every other
+  // target (see more-hit-area). One read of the drawn map, after the marks are laid
+  // out, places all of them; a read per mark cost 19 reads a commit on pBR322.
+  const measuresTails = interactive && isCircular && !!onRestrictionMenu;
+  const [moreHits, setMoreHits] = useState<ReadonlyMap<string, HitRect>>(NO_MORE_HITS);
+  useLayoutEffect(() => {
+    const svg = svgRef.current;
+    const next = measuresTails && svg ? measureMoreHitSquares(svg) : NO_MORE_HITS;
+    setMoreHits((current) => keepSettledSquares(current, next));
+  }, [circularTextScale, layout, measuresTails]);
 
   const handleMapItemFocus = useCallback((interactionIndex: number) => {
     const key = mapInteractionModel.keys[interactionIndex];
@@ -798,7 +985,7 @@ export const SequenceMapView = memo(function SequenceMapView({
 
         <g className="motif-pm-coords">
           {layout.coordinates.map((coord) => (
-            <CoordinateTick key={`c${coord.bp}`} coord={coord} />
+            <CoordinateTick key={`c${coord.bp}`} coord={coord} textScale={circularTextScale} />
           ))}
         </g>
 
@@ -844,7 +1031,9 @@ export const SequenceMapView = memo(function SequenceMapView({
         ) : null}
 
         <g className="motif-pm-features">
-          {layout.features.map((feature, interactionIndex) => (
+          {layout.features.map((feature) => {
+            const interactionIndex = mapInteractionModel.indexByKey.get(mapInteractionKey('feature', feature.id)) ?? -1;
+            return (
             <FeatureShape
               key={feature.id}
               feature={feature}
@@ -856,8 +1045,10 @@ export const SequenceMapView = memo(function SequenceMapView({
               onRovingFocus={handleMapItemFocus}
               onRovingKeyDown={handleMapItemKeyDown}
               onClick={onFeatureClick}
+              textScale={circularTextScale}
             />
-          ))}
+            );
+          })}
         </g>
 
         <g
@@ -874,13 +1065,15 @@ export const SequenceMapView = memo(function SequenceMapView({
         </g>
 
         <g className="motif-pm-restrictions">
-          {layout.restrictions.map((restriction, restrictionIndex) => {
-            const interactionIndex = layout.features.length + restrictionIndex;
+          {layout.restrictions.map((restriction) => {
+            const interactionIndex = mapInteractionModel.indexByKey.get(mapInteractionKey('restriction', restriction.clusterId)) ?? -1;
             return (
             <RestrictionMark
               key={restriction.clusterId}
               restriction={restriction}
-              annotationScale={restrictionAnnotationScale}
+              annotationScale={circularTextScale}
+              circular={isCircular}
+              moreHit={moreHits.get(restriction.clusterId) ?? null}
               active={restriction.clusterId === activeClusterId}
               interactive={interactive}
               interactionIndex={interactionIndex}
@@ -888,13 +1081,18 @@ export const SequenceMapView = memo(function SequenceMapView({
               onRovingFocus={handleMapItemFocus}
               onRovingKeyDown={handleMapItemKeyDown}
               onClick={onRestrictionClick}
+              onMenu={onRestrictionMenu}
             />
             );
           })}
         </g>
 
         {isCircular ? (
-          <g className="motif-pm-center" aria-hidden="true">
+          <g
+            className="motif-pm-center"
+            aria-hidden="true"
+            transform={counterScaleAbout(circularTextScale, layout.center.x, layout.center.y)}
+          >
             {centerTitle.lines.map((line, i) => (
               <text
                 key={i}
@@ -914,6 +1112,7 @@ export const SequenceMapView = memo(function SequenceMapView({
               x={layout.center.x}
               y={centerTitle.lenBaselineY}
               textAnchor="middle"
+              style={centerTitle.lenFontSize ? { fontSize: `${centerTitle.lenFontSize}px` } : undefined}
             >
               {layout.length.toLocaleString()} {unit}
             </text>

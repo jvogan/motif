@@ -1,11 +1,13 @@
 /* eslint-disable react-refresh/only-export-components -- artifact entry exports pure runtime test seams */
-import { Component, memo, useCallback, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from 'react';
+import { Component, Fragment, memo, useCallback, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
-import { Activity, AlignCenter, Beaker, ChevronDown, ChevronLeft, ChevronRight, Circle, Crosshair, Dna, FileText, History, Info, Languages, LayoutGrid, List, Map as MapIcon, Maximize2, Minimize2, MoveHorizontal, NotebookPen, Plus, Redo2, Scissors, Search, Settings, ShieldCheck, Tag, Trash2, Undo2, Workflow, Wrench, X, type LucideIcon } from 'lucide-react';
+import { Activity, AlignCenter, Beaker, ChevronDown, ChevronLeft, ChevronRight, Crosshair, Dna, FileText, History, Info, Languages, LayoutGrid, List, Map as MapIcon, Maximize2, Minimize2, NotebookPen, Plus, Redo2, Scissors, Search, Settings, ShieldCheck, Tag, Trash2, Undo2, Workflow, Wrench, X, type LucideIcon } from 'lucide-react';
 import vectorsRaw from '../../public/data/vectors.json?raw';
 import type { Feature, FeatureStrand, FeatureType, ORF, RestrictionEnzyme, RestrictionMethylationState, RestrictionMethylationTarget, RestrictionSite, SequenceType, Topology } from '../bio/types';
 import { resolveFeatureColor, resolveFeatureColorPickerValue } from '../bio/feature-palette';
+import { featureTypeDisplay } from '../bio/feature-type-display';
+import { SquareArrowDownLeft, SquareArrowOutUpRight } from 'lucide-react';
 import {
   acceptProposedAnnotation,
   isProposedAnnotation,
@@ -14,8 +16,15 @@ import {
 } from '../bio/proposed-annotations';
 import { extractEmbeddedFastaContent, parseFasta } from '../bio/fasta-parser';
 import {
+  featureTypeLabel,
+  insdcFeatureKey,
+  MOTIF_STRAND_QUALIFIER,
+  MOTIF_TYPE_QUALIFIER,
+  MOTIF_UNSTRANDED_VALUE,
   parseFeatures,
   parseGenBank,
+  regulatoryClassFeatureType,
+  SAFE_IMPORTED_FEATURE_COLOR,
   type GenBankImportDiagnostic,
   type GenBankQualifier,
   type GenBankQualifierTruncation,
@@ -62,7 +71,7 @@ import {
 } from '../bio/feature-location';
 import { normalizeSequenceStrict } from '../bio/sequence-normalization';
 import { translate, translateCompleteCds } from '../bio/translate';
-import { materializeTranslationExceptions } from '../bio/transl-except';
+import { describeDroppedTranslationExceptions, droppedTranslationExceptions, materializeTranslationExceptions, qualifierMapForFeatureSequence, remapPositionQualifiers, translationExceptionEntries } from '../bio/transl-except';
 import { computeMapLayout, LINEAR_MAP_DEPTH_BUDGET } from '../plasmid-map/layout';
 import { featureSegments as mapFeatureSegments, featureSpans, normalizeSpan } from '../plasmid-map/geometry/ranges';
 import { circularSelectionEdgePath, selectionOverlayPaths } from '../plasmid-map/selection-overlay';
@@ -70,6 +79,7 @@ import { mapModeForBlock, type MapLayout, type MapMode, type MapSpan } from '../
 import {
   restrictionDensitySourcesForMap,
   restrictionSitesForInteractiveMap,
+  type RestrictionClusterEnzyme,
 } from '../plasmid-map/restriction-display';
 import {
   contentPointFromRoot,
@@ -79,6 +89,7 @@ import {
   type MapContentPoint,
   type MapRootPoint,
 } from '../plasmid-map/point-spaces';
+import { MapViewToolbar } from '../components/plasmid-map/MapViewToolbar';
 import { SequenceMapView } from '../components/plasmid-map/SequenceMapView';
 import { LargeSequenceViewer } from './LargeSequenceViewer';
 import { ClaudeScienceMsaViewer } from './ClaudeScienceMsaViewer';
@@ -97,8 +108,20 @@ import ClaudeScienceGelWorkspace, {
   type ClaudeScienceGelResultIdentity,
 } from './ClaudeScienceGelWorkspace';
 import { type ArtifactGelLadderPreset, type ArtifactGelPreview } from './claude-science-gel-preview';
-import { parsePastedSequence } from './claude-science-paste-sequence';
+import { parsePastedSequence, stripOriginPositionNumbers } from './claude-science-paste-sequence';
+import {
+  describeFileImportOutcome,
+  describeImportPreflight,
+  describeSequenceRejection,
+  duplicateOfOpenRecord,
+  explainUnimportedFile,
+  explainUnimportedPaste,
+  unreadableFileReason,
+  type ImportSkip,
+  type SkippedImport,
+} from './claude-science-import-feedback';
 import { ClaudeScienceAssemblyWorkspace, type ClaudeScienceAssemblySavePayload } from './ClaudeScienceAssemblyWorkspace';
+import { carryGoldenGatePartFeatures, carryLigationPartFeatures, carryOverlapPartFeatures, describeFeaturesLeftOut, featureOverlapsIntervals } from './claude-science-assembly-workflows';
 import {
   ClaudeScienceCloningDesignWorkspace,
   type ClaudeScienceCloningDesignWorkspaceHandle,
@@ -107,6 +130,7 @@ import {
 } from './ClaudeScienceCloningDesignWorkspace';
 import {
   ClaudeScienceConstructVerificationWorkspace,
+  type ClaudeScienceConstructVerificationDraft,
   type ClaudeScienceConstructVerificationRecord,
   type ClaudeScienceConstructVerificationRequest,
   type ClaudeScienceConstructVerificationSavePayload,
@@ -128,6 +152,7 @@ import {
   type PcrMaterializationSourceRecord,
 } from './claude-science-pcr-materialization';
 import {
+  overhangLengthForEnzyme,
   planArtifactGibsonDesign,
   planArtifactGoldenGateDesign,
   type ArtifactCloningInput,
@@ -200,7 +225,7 @@ import {
   type ArtifactWorkflowResult,
 } from './claude-science-workspace-collections';
 import { normalizeArtifactWorkspaceEnvelope } from './claude-science-workspace-envelope';
-import { chooseRailPopoverPlacement, collectRailPopoverObstacles, RAIL_POPOVER_MIN_HEIGHT } from './rail-popover-placement';
+import { chooseRailPopoverPlacement, collectRailPopoverObstacles, RAIL_POPOVER_FLOOR_HEIGHT, RAIL_POPOVER_MIN_HEIGHT } from './rail-popover-placement';
 import {
   MOTIF_INVENTORY_SCHEMA,
   MOTIF_INVENTORY_SCHEMA_V1,
@@ -230,7 +255,11 @@ import {
 import {
   applySequenceEditToAnchors,
   confirmNoteRangeAnchor,
+  describeNetSequenceEdit,
+  describeSequenceEdit,
   restoreNoteAnchors,
+  sequenceEditEmptiesRecord,
+  shouldAnnounceSequenceEdit,
   snapshotNoteAnchors,
   type NoteAnchorSnapshot,
   type SequenceCoordinateEdit,
@@ -240,6 +269,7 @@ import {
   requestBrowserTextDownload,
   type BrowserDownloadReceipt,
 } from './claude-science-download';
+import { planRecordDeleteUndo } from './claude-science-record-delete-undo';
 import './motif-artifact.css';
 
 const MOTIF_ARTIFACT_VERSION = '0.4.0';
@@ -486,14 +516,21 @@ type PendingArtifactDatabaseRestore = {
   returnFocus: HTMLElement | null;
 };
 
-type WorkbenchNotice = { message: string; tone: 'status' | 'error' };
-type DigestSaveReceipt = { workflowResultId: string; recordCount: number };
+// An optional single action (Undo after an edit). `accessibleLabel` keeps the
+// visible word short while giving the button a name distinct from the
+// toolbar's own Undo.
+type WorkbenchNoticeAction = { label: string; accessibleLabel: string; run: () => void };
+type WorkbenchNotice = { message: string; tone: 'status' | 'error'; action?: WorkbenchNoticeAction };
+type DigestSaveReceipt = { workflowResultId: string; recordCount: number; leftOutNotice?: string };
 
 type ArtifactFileImportResult = {
   records: ArtifactVector[];
   message: string;
   tone: 'status' | 'error';
+  /** The message with every skipped file named; `message` counts past the third. */
+  detail?: string;
 };
+type DroppedImportOutcome = { id: number; text: string; error: boolean };
 
 let lastGoodRuntimeRecoveryPayload: RuntimeRecoveryPayload | null = null;
 
@@ -725,6 +762,135 @@ const STACKED_LAYOUT_MEDIA = '(max-width: 767px)';
 const COMPACT_PINNED_LAYOUT_MEDIA = '(min-width: 640px) and (max-width: 1535px)';
 const TWO_ROW_LAYOUT_MEDIA = '(min-width: 640px) and (max-width: 1535px)';
 const OVERLAY_TOOLS_LAYOUT_MEDIA = '(max-width: 1535px)';
+
+// Where the compact band (640-1535px) puts Sequence beside Map instead of above
+// it. Stacked, a laptop window gave the sequence a 240px row: at 1280x720 and
+// 1366x768 eight of the thirteen bundled records opened with no complete row of
+// bases, and the map was a 206-260px ring letterboxed in a full-width frame.
+// Swept at 840-1535 wide by 600-1400 tall with the 40:60 split below, against
+// a stacked row tall enough for the sequence column's own chrome (see
+// stackedSequenceRowFloor): from 960px wide, in every window at least 9:8
+// landscape, side by side draws the ring 0.93-4.6x as large (the low end is
+// 1180-1200x1000) and shows 0.7-2.6x the bases. At 1024x768 that is 263px and
+// 175 bp against 128px and 170 bp. Narrower, the sequence column sits on its
+// 240px floor and shows fewer bases (840x700: 105 against 120); squarer,
+// stacked keeps the larger ring (1024x1000: 323px against 263, 820x1100: 326
+// against 147). Hence a width floor AND a landscape floor. Both read the
+// viewport, not the workspace, so hiding a pane (which changes the
+// workspace's own height by the record tab strip) can never flip the
+// arrangement.
+const COMPACT_SIDE_BY_SIDE_MIN_WIDTH = 960;
+const COMPACT_SIDE_BY_SIDE_MIN_ASPECT = 1.125;
+// Sequence's share of the Sequence|Map width when they sit side by side. Map
+// gets the larger part because it is a fixed-aspect drawing that only grows
+// with its short axis: at 1280x720 an even-handed 45:55 split drew restriction
+// labels at 9.61px, 40:60 at 10.16px (11.33px is the stacked size).
+const SIDE_BY_SIDE_SEQUENCE_SHARE_DEFAULT = 0.4;
+const SIDE_BY_SIDE_SEQUENCE_SHARE_LIMITS = { min: 0.15, max: 0.8 };
+
+export type CompactWorkspaceArrangement = 'side-by-side' | 'stacked';
+
+export function compactWorkspaceArrangement(viewportWidth: number, viewportHeight: number): CompactWorkspaceArrangement {
+  return viewportWidth >= COMPACT_SIDE_BY_SIDE_MIN_WIDTH
+    && viewportWidth >= viewportHeight * COMPACT_SIDE_BY_SIDE_MIN_ASPECT
+    ? 'side-by-side'
+    : 'stacked';
+}
+
+export type StackedRowMinimums = {
+  /** The Sequence column's content minimum: its chrome plus the bases' own min-height. */
+  sequence: number;
+  /** The shortest row that keeps the edit toolbar in view once the column scrolls to its end. */
+  toolbarKeep: number;
+  /** The Map column's content minimum: its title, the frame's min-height and the dock strip. */
+  map: number;
+};
+
+/**
+ * Where the stacked Sequence row's default starts, from minimums measured on the
+ * page: the Sequence column's content minimum, as far as the Map row can give it
+ * without dropping below its own, or 0 (the proportional default stands) where
+ * even that row would leave the edit toolbar to scroll away.
+ */
+/**
+ * The Sequence panel's edit toolbar, which the stacked row measures to keep in
+ * view. It renders inside the panel's wrapping chrome strip; a selector for a
+ * direct child found nothing there, so the whole column counted as "above the
+ * toolbar kept in view" and the row fell to its 240px default once the record
+ * tab strip took 33px of the workspace.
+ */
+export function sequencePanelEditToolbar(panel: ParentNode): HTMLElement | null {
+  return panel.querySelector<HTMLElement>(':scope > .motif-cs-edit-toolbar, :scope > .motif-cs-sequence-chrome > .motif-cs-edit-toolbar');
+}
+
+export function stackedSequenceRowFloor(minimums: StackedRowMinimums, workspaceHeight: number, topRowMaxHeight: number): number {
+  const ceiling = Math.min(topRowMaxHeight, workspaceHeight - COMPACT_ROW_DIVIDER_HEIGHT - minimums.map);
+  return minimums.toolbarKeep <= ceiling ? Math.min(minimums.sequence, ceiling) : 0;
+}
+
+/**
+ * Focuses the control that names the active record and returns it: its tab
+ * while the record tab strip shows, or its Inventory row while the strip is
+ * hidden beside a docked Inventory.
+ */
+function focusActiveRecordControl(): HTMLElement | null {
+  const control = [
+    document.querySelector<HTMLElement>('.motif-cs-record-tab[data-active="true"]'),
+    document.querySelector<HTMLElement>('.motif-cs-inventory-record-row[aria-current="true"]'),
+  ].find((element) => element && element.getClientRects().length > 0) ?? null;
+  control?.focus({ preventScroll: true });
+  return control;
+}
+
+export type SideBySideSplitGeometry = {
+  /** Rendered border-box widths of the two panes. */
+  sequence: number;
+  map: number;
+  /** Each pane's own padding + border: what a `flex-basis: 0` item keeps before any share is handed out. */
+  sequenceInset: number;
+  mapInset: number;
+};
+
+/**
+ * The Sequence|Map divider in the side-by-side arrangement stores a SHARE, not a
+ * width, so a split chosen at 1280px still means the same thing at 1440px, and so
+ * that dragging it never rewrites the pixel widths the wide desktop layout uses.
+ * The share is of the growable width only: each pane renders as its inset plus
+ * its share of the rest, so pricing the share against the whole width made every
+ * step land about 4% short and a keyboard step 8px long.
+ */
+export function sideBySideSequenceShareAfterResize(start: SideBySideSplitGeometry, sequenceDelta: number): number {
+  const total = Math.max(1, start.sequence + start.map);
+  const sequenceWidth = clamp(
+    start.sequence + sequenceDelta,
+    Math.min(PANE_WIDTH_LIMITS.sequence.min, total / 2),
+    Math.max(total / 2, total - PANE_WIDTH_LIMITS.map.min),
+  );
+  const growable = Math.max(1, total - start.sequenceInset - start.mapInset);
+  return clamp(
+    (sequenceWidth - start.sequenceInset) / growable,
+    SIDE_BY_SIDE_SEQUENCE_SHARE_LIMITS.min,
+    SIDE_BY_SIDE_SEQUENCE_SHARE_LIMITS.max,
+  );
+}
+
+function sideBySideSplitGeometry(): SideBySideSplitGeometry | null {
+  if (typeof document === 'undefined') return null;
+  const sequence = document.querySelector<HTMLElement>(PANE_SELECTOR.sequence);
+  const map = document.querySelector<HTMLElement>(PANE_SELECTOR.map);
+  if (!sequence || !map) return null;
+  const inset = (element: HTMLElement) => {
+    const style = window.getComputedStyle(element);
+    return ['paddingLeft', 'paddingRight', 'borderLeftWidth', 'borderRightWidth']
+      .reduce((sum, key) => sum + (Number.parseFloat(style[key as 'paddingLeft']) || 0), 0);
+  };
+  return {
+    sequence: sequence.getBoundingClientRect().width,
+    map: map.getBoundingClientRect().width,
+    sequenceInset: inset(sequence),
+    mapInset: inset(map),
+  };
+}
 const PANE_RESIZE_START_EVENT = 'motif-cs-pane-resize-start';
 const PANE_RESIZE_END_EVENT = 'motif-cs-pane-resize-end';
 const PANE_ORDER_FALLBACK: Record<PaneKey, number> = DEFAULT_PANE_ORDER.reduce(
@@ -782,11 +948,14 @@ const DEFAULT_PANE_PLACEMENTS: PanePlacements = {
   tools: 'docked',
 };
 
+// The maximum heights were 760-900px, under what a docked pane measures in a
+// 1080px-tall window, so a pane popped out at its docked size was cut down to
+// them (see popOutFloatingPaneRect).
 const FLOATING_PANE_LIMITS: Record<PaneKey, FloatingSurfaceSizeLimits> = {
-  inventory: { minWidth: 260, minHeight: 280, maxWidth: 620, maxHeight: 760 },
-  sequence: { minWidth: 420, minHeight: 320, maxWidth: 1040, maxHeight: 900 },
-  map: { minWidth: 340, minHeight: 320, maxWidth: 900, maxHeight: 900 },
-  tools: { minWidth: 280, minHeight: 280, maxWidth: 720, maxHeight: 900 },
+  inventory: { minWidth: 260, minHeight: 280, maxWidth: 620, maxHeight: 1200 },
+  sequence: { minWidth: 420, minHeight: 320, maxWidth: 1040, maxHeight: 1200 },
+  map: { minWidth: 340, minHeight: 320, maxWidth: 1200, maxHeight: 1200 },
+  tools: { minWidth: 280, minHeight: 280, maxWidth: 720, maxHeight: 1200 },
 };
 
 function floatingPaneViewport(): FloatingSurfaceViewport {
@@ -818,10 +987,32 @@ function defaultFloatingPaneRects(viewport = floatingPaneViewport()): FloatingPa
   return defaults;
 }
 
+/**
+ * Where a docked pane pops out to: its saved floating rect, grown to at least
+ * the size it had docked, then fitted to the viewport and the pane's limits.
+ * The map's 580x580 default drew its ring at 303px at 1920x1080, against 682px
+ * docked, so popping out made the thing being popped out smaller. Each side
+ * grows on its own: keeping only a square of the map's shorter side drew a
+ * 303px ring from a 772x569 pane that had shown 377px at 820x1100.
+ */
+export function popOutFloatingPaneRect(
+  saved: FloatingSurfaceRect,
+  docked: { width: number; height: number } | null,
+  viewport: FloatingSurfaceViewport,
+  limits: FloatingSurfaceSizeLimits,
+): FloatingSurfaceRect {
+  const grown = docked
+    ? { ...saved, w: Math.max(saved.w, Math.round(docked.width)), h: Math.max(saved.h, Math.round(docked.height)) }
+    : saved;
+  return clampFloatingSurfaceRect(grown, viewport, limits);
+}
+
 type WorkspaceLayoutPrefs = {
   theme: ArtifactThemeName;
   paneWidths: PaneWidths;
   stackedPaneHeights: StackedPaneHeights;
+  /** Sequence's share of the side-by-side Sequence|Map row; null means the default split. */
+  sideBySideSequenceShare: number | null;
   paneVisibility: PaneVisibility;
   paneOrder: PaneKey[];
   toolsPinned: boolean;
@@ -836,6 +1027,7 @@ const DEFAULT_WORKSPACE_LAYOUT: WorkspaceLayoutPrefs = {
   theme: 'light',
   paneWidths: DEFAULT_PANE_WIDTHS,
   stackedPaneHeights: DEFAULT_STACKED_PANE_HEIGHTS,
+  sideBySideSequenceShare: null,
   paneVisibility: DEFAULT_PANE_VISIBILITY,
   paneOrder: [...DEFAULT_PANE_ORDER],
   toolsPinned: false,
@@ -914,6 +1106,57 @@ function normalizePaneOrder(value: unknown): PaneKey[] {
   return [...ordered, ...DEFAULT_PANE_ORDER].filter((pane, index, list) => list.indexOf(pane) === index);
 }
 
+/**
+ * The workspace's panes as its children, in paneOrder. Flex `order`
+ * (paneCssOrder) draws them in that order, but Tab follows the DOM: written
+ * inventory, map, sequence, Tab went from the inventory to the map drawn on
+ * the right and then back to the sequence drawn between them. Each slot is
+ * keyed, so a drag or Alt+Shift+Arrow reorder moves the DOM nodes as well.
+ */
+export function orderPaneSlots<T>(paneOrder: readonly PaneKey[], slots: Record<PaneKey, T>): T[] {
+  return normalizePaneOrder(paneOrder).map((pane) => slots[pane]);
+}
+
+/**
+ * Puts back the scroll offsets a pane reorder takes away. Moving a keyed pane
+ * detaches its scrollers and the browser brings them back at 0: the sequence
+ * column lost 1107px of scroll when Sequence moved past Map. A capture
+ * listener keeps each scroller's last offsets, and once a new order commits,
+ * every scroller that no longer matches gets them back before paint.
+ */
+export function useKeepScrollAcrossPaneReorder(containerRef: RefObject<HTMLElement | null>, paneOrder: readonly PaneKey[]): void {
+  const offsetsRef = useRef(new Map<Element, { top: number; left: number }>());
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return undefined;
+    const offsets = offsetsRef.current;
+    const remember = (event: Event) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      if (offsets.size > 64) {
+        for (const element of offsets.keys()) if (!element.isConnected) offsets.delete(element);
+      }
+      offsets.set(target, { top: target.scrollTop, left: target.scrollLeft });
+    };
+    container.addEventListener('scroll', remember, { capture: true, passive: true });
+    return () => container.removeEventListener('scroll', remember, { capture: true });
+  }, [containerRef]);
+  const orderKey = paneOrder.join(',');
+  const committedOrderKeyRef = useRef(orderKey);
+  useLayoutEffect(() => {
+    if (committedOrderKeyRef.current === orderKey) return;
+    committedOrderKeyRef.current = orderKey;
+    for (const [element, offset] of offsetsRef.current) {
+      if (!element.isConnected) {
+        offsetsRef.current.delete(element);
+        continue;
+      }
+      if (element.scrollTop !== offset.top) element.scrollTop = offset.top;
+      if (element.scrollLeft !== offset.left) element.scrollLeft = offset.left;
+    }
+  }, [orderKey]);
+}
+
 function normalizePanePlacements(value: unknown): PanePlacements {
   const source = value && typeof value === 'object' ? value as Partial<Record<PaneKey, unknown>> : {};
   return Object.fromEntries(DEFAULT_PANE_ORDER.map((pane) => [
@@ -959,6 +1202,9 @@ function normalizeWorkspaceLayout(value: unknown): WorkspaceLayoutPrefs {
     theme: normalizeArtifactThemeName(source.theme),
     paneWidths: normalizePaneWidths(source.paneWidths),
     stackedPaneHeights: normalizeStackedPaneHeights(source.stackedPaneHeights),
+    sideBySideSequenceShare: Number.isFinite(source.sideBySideSequenceShare)
+      ? clamp(source.sideBySideSequenceShare as number, SIDE_BY_SIDE_SEQUENCE_SHARE_LIMITS.min, SIDE_BY_SIDE_SEQUENCE_SHARE_LIMITS.max)
+      : null,
     paneVisibility,
     paneOrder: normalizePaneOrder(source.paneOrder),
     toolsPinned: panePlacements.tools === 'floating'
@@ -1058,6 +1304,8 @@ type MapDragState =
       lastAngle: number;
       cumulativeAngle: number;
       moved: boolean;
+      /** A release without movement places a 1 bp position (see mapClickPlacesPosition). */
+      clickPlacesPosition: boolean;
     }
   | {
       mode: 'pan';
@@ -1094,7 +1342,7 @@ export function defaultTranslationsWindowRect(
   // The height was a flat 360 with no viewport term at all, so this window cut
   // off the same 307px of its own reading frames at every size from 1100x650 to
   // 1920x1080 while 274px to 704px of screen height below it went unused. The
-  // body wants 622px for the shipped pUC19 record, and window chrome takes 45,
+  // body wanted 622px for the synthetic pUC19 once shipped, and window chrome takes 45,
   // so 680 clears the frames from a 900px-tall viewport up and the viewport term
   // beside it still shrinks the window on a short screen. Width stays 420:
   // nothing inside this window overflows horizontally at that size.
@@ -1118,6 +1366,8 @@ export function defaultAlignmentWindowRect(
   // windows below take no such fraction because measurement says they do not
   // want one: at 1920x1080 no element inside Primer Design, Cloning Design,
   // Cloning Workspace, or Gel Preview overflows its own width at their caps.
+  // That is a statement about width only; Primer Design's height is argued at
+  // defaultPrimerWindowRect.
   // The 940 floor holds every viewport up to 1245px exactly where it was, so
   // the growth starts only where there is screen to gain, and the 1480 ceiling
   // keeps a large display from being taken over.
@@ -1138,11 +1388,16 @@ export function defaultAlignmentWindowRect(
   }, viewportWidth, viewportHeight);
 }
 
-function defaultGelWindowRect(): WindowRect {
-  const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1280;
-  const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 800;
+export function defaultGelWindowRect(
+  viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1280,
+  viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 800,
+): WindowRect {
   const width = Math.min(860, Math.max(320, viewportWidth - 48));
-  const height = Math.min(590, Math.max(320, viewportHeight - 104));
+  // The gel plate now takes the window's spare height, and band separation
+  // scales with it: at 590 the 6 kb and 5 kb ladder bands were 1.8px apart.
+  // A 760 cap opens the window 760 tall from a 864px-high screen up, where
+  // they are 4.6px apart; shorter screens keep the viewport term.
+  const height = Math.min(760, Math.max(320, viewportHeight - 104));
   return clampWindowRect({
     x: Math.max(16, Math.round((viewportWidth - width) / 2)),
     y: Math.max(50, Math.round((viewportHeight - height) / 2)),
@@ -1164,11 +1419,18 @@ function defaultAssemblyWindowRect(): WindowRect {
   }, viewportWidth, viewportHeight);
 }
 
-function defaultPrimerWindowRect(): WindowRect {
-  const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1280;
-  const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 800;
+export function defaultPrimerWindowRect(
+  viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1280,
+  viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 800,
+): WindowRect {
   const width = Math.min(1120, Math.max(340, viewportWidth - 40));
-  const height = Math.min(720, Math.max(360, viewportHeight - 88));
+  // Ten ranked pairs fill the results pane, and the selected pair's sequences
+  // sit under them: the reverse primer ended 282px below the pane at both
+  // 1440x900 and 1920x1080, because a flat 720 cap stopped the window growing
+  // at any screen taller than 808px. The viewport term already fits short
+  // screens; the 1000 cap lets a 1080-high screen show both sequences, and
+  // choosing a pair scrolls them into view where the screen cannot.
+  const height = Math.min(1000, Math.max(360, viewportHeight - 88));
   return clampWindowRect({
     x: Math.max(16, Math.round((viewportWidth - width) / 2)),
     y: Math.max(42, Math.round((viewportHeight - height) / 2)),
@@ -1277,8 +1539,9 @@ const DATA_PLACEHOLDERS = ['__SEQUENCE_INVENTORY__', '__MOTIF_ARTIFACT_DATA__'];
 const DEFAULT_SCHEMA = MOTIF_INVENTORY_SCHEMA;
 /* Two different ORF floors are in use and they are not interchangeable. The
    Analysis panel scans exploratively at 10 aa; the record summary makes a
-   citable statement at the classic 30 aa floor. On pUC19 that is 221 against
-   96 — the same word, the same record, and a 2.3x disagreement that no reader
+   citable statement at the classic 30 aa floor. On the synthetic pUC19 once
+   bundled that was 221 against 96 — the same word, the same record, and a 2.3x
+   disagreement that no reader
    could resolve, because neither readout named its floor except the summary's
    empty case ("none >=30 aa"). Both are correct populations, so the fix is that
    both now say which one they are; unifying them would have moved a number
@@ -1292,8 +1555,11 @@ const ZOOM_STEP = 1.25;
 const MAP_PAN_MARGIN_SCALE = 0.24;
 const MAP_PAN_MARGIN_MIN = 56;
 const MAP_LINEAR_PAN_MARGIN_Y_MIN = 160;
-const MAP_FIT_WHEEL_PAN_SCALE = 0.22;
 const MAP_ZOOMED_WHEEL_PAN_SCALE = 0.78;
+/** The restriction cluster's enzyme list: must match .motif-cs-map-enzyme-menu. */
+const MAP_ENZYME_MENU_WIDTH = 200;
+const MAP_ENZYME_MENU_ROW_HEIGHT = 24;
+const MAP_ENZYME_MENU_MAX_HEIGHT = 248;
 const MAP_CIRCULAR_RANGE_HIT_MIN = 18;
 const MAP_CIRCULAR_RANGE_HIT_MAX = 34;
 const MAP_LINEAR_RANGE_HIT_TOP_Y = 18;
@@ -1800,6 +2066,32 @@ function clampMapViewport(
     tx: clamp(Number.isFinite(viewport.tx) ? viewport.tx : 0, Math.min(minTx, maxTx), Math.max(minTx, maxTx)),
     ty: clamp(Number.isFinite(viewport.ty) ? viewport.ty : 0, Math.min(minTy, maxTy), Math.max(minTy, maxTy)),
   };
+}
+
+/**
+ * What one wheel event over the map does. At Fit the whole map is already in the
+ * frame: three plain notches used to translate it 66 units up, pushing the ring's
+ * top out of view while the status corner printed "100%", and the page or column
+ * under it never scrolled. So at Fit the plain wheel is not the map's — it passes
+ * through to whatever scrolls around the map. Ctrl (or a pinch, which the browser
+ * reports as Ctrl) always zooms, and once zoomed the plain wheel pans again.
+ */
+export function mapWheelIntent(zoom: number, ctrlKey: boolean): 'zoom' | 'pan' | 'pass' {
+  if (ctrlKey) return 'zoom';
+  return Number.isFinite(zoom) && zoom > MIN_ZOOM + 0.0001 ? 'pan' : 'pass';
+}
+
+/** The zoom readout for the map's status corner: a percentage only while zoomed. */
+export function mapZoomHint(zoom: number): string | null {
+  return Number.isFinite(zoom) && zoom > MIN_ZOOM + 0.0001 ? `${Math.round(zoom * 100)}%` : null;
+}
+
+/**
+ * A protein map draws features only (no sites, ORFs or ring), so a protein with
+ * none was a bare ruler with no word about why. This says what fills it.
+ */
+export function emptyProteinMapHint(sequenceType: SequenceType, featureCount: number): string | null {
+  return sequenceType === 'protein' && featureCount === 0 ? 'No features yet · select residues, then + Feature' : null;
 }
 
 function effectiveSequenceScroller(sequenceElement: HTMLElement): HTMLElement {
@@ -2418,7 +2710,12 @@ export type ArtifactExportLossReport = {
   }>;
   unsupportedOrRawLocations: Array<{ featureId: string; key: string; location: string; diagnostics: GenBankImportDiagnostic[] }>;
   fuzzyLocations: Array<{ featureId: string; key: string; location: string }>;
-  originalFeatureKeys: Array<{ featureId: string; key: string; exportedType: FeatureType }>;
+  /**
+   * The type each imported feature goes out as: the INSDC key in GenBank, the
+   * type column in GFF3, CSV and the HTML report, the Motif type in JSON, and
+   * null in FASTA and raw sequence, which write no features.
+   */
+  originalFeatureKeys: Array<{ featureId: string; key: string; exportedType: string | null }>;
   multipartBiologicalOrder: Array<{ featureId: string; key: string; segmentCount: number; order: string; preserved: boolean }>;
   unrepresentableMetadata: Array<{ featureId: string; keys: string[] }>;
   sequenceNormalization: Array<{ code: string; count?: number; detail: string }>;
@@ -2471,6 +2768,13 @@ function exportLossFormatLabel(format: ArtifactExportLossFormat): string {
     case 'report': return 'report';
     case 'genbank': return 'GenBank';
   }
+}
+
+function exportedFeatureType(feature: Feature, format: ArtifactExportLossFormat): string | null {
+  if (format === 'genbank') return insdcFeatureKey(feature.type, feature.metadata.motifOriginalFeatureKey)[0];
+  if (format === 'raw-sequence' || format === 'fasta') return null;
+  if (format === 'record-json' || format === 'database-json' || format === 'zip') return feature.type;
+  return featureTypeLabel(feature);
 }
 
 /**
@@ -2539,7 +2843,7 @@ export function buildArtifactExportLossReport(
       });
     }
     if (typeof metadata.motifOriginalFeatureKey === 'string') {
-      originalFeatureKeys.push({ featureId: feature.id, key, exportedType: feature.type });
+      originalFeatureKeys.push({ featureId: feature.id, key, exportedType: exportedFeatureType(feature, format) });
     }
     const diagnostics = Array.isArray(metadata.motifImportDiagnostics)
       ? metadata.motifImportDiagnostics.filter((value): value is GenBankImportDiagnostic => (
@@ -2574,7 +2878,11 @@ export function buildArtifactExportLossReport(
         preserved: !isAmbiguousFeatureLocation(feature),
       });
     }
-    const representedKeys = new Set(rawQualifiers.map((qualifier) => qualifier.key));
+    // Without imported qualifiers, Basic GenBank writes the metadata's INSDC ones.
+    const representedKeys = new Set([
+      ...rawQualifiers,
+      ...(format === 'genbank' && rawQualifiers.length === 0 ? genBankMetadataQualifiers(feature) : []),
+    ].map((qualifier) => qualifier.key));
     const omittedKeys = Object.keys(metadata).filter((metadataKey) => (
       !EXPORT_LOSS_INTERNAL_METADATA_KEYS.has(metadataKey)
       && !representedKeys.has(metadataKey)
@@ -2621,8 +2929,8 @@ export function buildArtifactExportLossReport(
         ? 'This raw sequence export contains the record sequence only; it does not claim feature or metadata round-trip support.'
         : 'This export is faithful for the represented record content; it does not claim full INSDC round-trip support.'
       : format === 'raw-sequence'
-        ? `This raw sequence export contains sequence text only and is lossy; ${lossCount} preservation item${lossCount === 1 ? '' : 's'} require review. Use Database JSON or ZIP for the complete Motif checkpoint.`
-        : `This ${exportLossFormatLabel(format)} export is lossy; ${lossCount} preservation item${lossCount === 1 ? '' : 's'} require review. Use Database JSON or ZIP for the complete Motif checkpoint.`;
+        ? `This raw sequence export contains sequence text only and is lossy; ${lossCount} preservation item${lossCount === 1 ? ' requires' : 's require'} review. Use Database JSON or ZIP for the complete Motif checkpoint.`
+        : `This ${exportLossFormatLabel(format)} export is lossy; ${lossCount} preservation item${lossCount === 1 ? ' requires' : 's require'} review. Use Database JSON or ZIP for the complete Motif checkpoint.`;
   return {
     format,
     faithful,
@@ -2645,6 +2953,56 @@ export function buildArtifactExportLossReport(
     sequenceNormalization,
     summary,
   };
+}
+
+/**
+ * What an export's preservation items are, for the export popover: one line
+ * per kind with its count and at most three examples. The counts add up to the
+ * items the receipt's sentence counts.
+ */
+export function exportLossItemLines(
+  report: ArtifactExportLossReport,
+  features: readonly Pick<Feature, 'id' | 'name'>[],
+): string[] {
+  const names = new Map(features.map((feature) => [feature.id, feature.name]));
+  const nameOf = (featureId: string) => names.get(featureId) ?? featureId;
+  const clip = (text: string) => (text.length > 40 ? `${text.slice(0, 39)}…` : text);
+  // One example per item; equal examples merge as "exon ×9", and "and N more"
+  // counts the items the three shown do not cover.
+  const line = (noun: string, nouns: string, examples: string[]): string[] => {
+    if (examples.length === 0) return [];
+    const groups = new Map<string, number>();
+    for (const example of examples) groups.set(clip(example), (groups.get(clip(example)) ?? 0) + 1);
+    const shown = [...groups].slice(0, 3);
+    const more = examples.length - shown.reduce((total, [, count]) => total + count, 0);
+    const listed = shown.map(([example, count]) => (count > 1 ? `${example} ×${count}` : example)).join(', ');
+    return [`${examples.length.toLocaleString()} ${examples.length === 1 ? noun : nouns}: ${listed}${more > 0 ? ` and ${more.toLocaleString()} more` : ''}`];
+  };
+  const unordered = report.multipartBiologicalOrder.filter((entry) => !entry.preserved);
+  // A key written as another key is the item worth reading first.
+  const keys = [...report.originalFeatureKeys].sort((a, b) => (
+    Number(a.exportedType === null || a.exportedType.toLowerCase() === a.key.toLowerCase())
+    - Number(b.exportedType === null || b.exportedType.toLowerCase() === b.key.toLowerCase())
+  ));
+  // A location Motif could not place on the sequence comes before one it kept as written.
+  const locations = [...report.unsupportedOrRawLocations].sort((a, b) => b.diagnostics.length - a.diagnostics.length);
+  const format = exportLossFormatLabel(report.format);
+  return [
+    ...line('imported feature key', 'imported feature keys', keys.map((entry) => (
+      entry.exportedType === null
+        ? entry.key
+        : entry.exportedType.toLowerCase() === entry.key.toLowerCase()
+          ? entry.exportedType
+          : `${entry.key} → ${entry.exportedType}`
+    ))),
+    ...line('location kept as written', 'locations kept as written', locations.map((entry) => `${nameOf(entry.featureId)} ${entry.location}`)),
+    ...line('repeated qualifier', 'repeated qualifiers', report.repeatedQualifiers.map((entry) => `/${entry.key} ×${entry.count} on ${nameOf(entry.featureId)}`)),
+    ...line('qualifier cut short at import', 'qualifiers cut short at import', report.truncatedQualifiers.map((entry) => `/${entry.key} on ${nameOf(entry.featureId)}`)),
+    ...line('partial location', 'partial locations', report.fuzzyLocations.map((entry) => `${nameOf(entry.featureId)} ${entry.location}`)),
+    ...line('multipart location of unknown order', 'multipart locations of unknown order', unordered.map((entry) => nameOf(entry.featureId))),
+    ...line(`feature with fields this ${format} export leaves out`, `features with fields this ${format} export leaves out`, report.unrepresentableMetadata.map((entry) => `${nameOf(entry.featureId)} (${entry.keys.join(', ')})`)),
+    ...line('sequence change at import', 'sequence changes at import', report.sequenceNormalization.map((entry) => entry.detail)),
+  ];
 }
 
 function mergeArtifactExportLossReports(
@@ -2965,7 +3323,7 @@ function buildRecordSummary(
   if (featureList.length > 0) {
     const shown = featureList
       .slice(0, 8)
-      .map((feature) => `${feature.name} ${feature.type} ${feature.location} · ${feature.length} ${unit} (${strandGlyph(feature.strand)})${feature.materializable ? '' : ` [${feature.locationOrder}]`}`)
+      .map((feature, index) => `${feature.name} ${featureTypeLabel(features[index])} ${feature.location} · ${feature.length} ${unit} (${strandGlyph(feature.strand)})${feature.materializable ? '' : ` [${feature.locationOrder}]`}`)
       .join('; ');
     lines.push(`Features (${featureList.length}): ${shown}${featureList.length > 8 ? '; …' : ''}`);
   } else {
@@ -3031,12 +3389,6 @@ function toFasta(name: string, sequence: string, lineWidth = 80): string {
   return `>${header}\n${lines.join('\n')}`;
 }
 
-function genBankFeatureType(type: FeatureType): string {
-  if (type === 'origin') return 'rep_origin';
-  if (type === 'polyA_signal') return 'polyA_signal';
-  return type;
-}
-
 function genBankLocation(feature: Feature): string {
   const originalLocation = feature.metadata.motifOriginalLocation;
   if (isQuarantinedFeatureLocation(feature)) return originalLocation as string;
@@ -3066,11 +3418,19 @@ function genBankLocation(feature: Feature): string {
   return featureGenBankLocation(feature);
 }
 
+// INSDC writes these location-valued qualifiers without quotes, as in
+// /transl_except=(pos:158..160,aa:Sec). A value with a space or a quote in it
+// keeps its quotes, so that it still reads back as one value.
+const UNQUOTED_GENBANK_QUALIFIERS = new Set(['transl_except', 'anticodon', 'rpt_unit_range', 'tag_peptide']);
+
 function genBankQualifierLines(
   qualifier: GenBankQualifier,
   continuationPrefix: string,
 ): string[] {
   if (qualifier.value === true) return [`${continuationPrefix}/${qualifier.key}`];
+  if (UNQUOTED_GENBANK_QUALIFIERS.has(qualifier.key.toLowerCase()) && /^[^\s"]+$/.test(qualifier.value)) {
+    return [`${continuationPrefix}/${qualifier.key}=${qualifier.value}`];
+  }
   const escaped = qualifier.value.replace(/"/g, '""');
   const lines = escaped.split(/\r?\n/u);
   if (lines.length === 1) return [`${continuationPrefix}/${qualifier.key}="${lines[0]}"`];
@@ -3081,10 +3441,21 @@ function genBankQualifierLines(
   ];
 }
 
+// The INSDC qualifiers a feature without imported qualifiers (a bundled record's,
+// or one built in Motif) keeps as metadata, and Basic GenBank writes after /label,
+// one line per value as the imported qualifiers are written. `resistance` is not
+// an INSDC qualifier and stays out.
+function genBankMetadataQualifiers(feature: Feature): GenBankQualifier[] {
+  return (['note', 'product'] as const).flatMap((key) => {
+    const value = feature.metadata[key];
+    return typeof value === 'string' ? [{ key, value }] : [];
+  });
+}
+
 function preservedGenBankQualifierLines(
   feature: Feature,
   continuationPrefix: string,
-  overrides: ReadonlyMap<string, string | true | null> = new Map(),
+  overrides: ReadonlyMap<string, string | true | null | string[]> = new Map(),
 ): string[] | null {
   const raw = feature.metadata.motifQualifiers;
   if (!Array.isArray(raw)) return null;
@@ -3104,6 +3475,12 @@ function preservedGenBankQualifierLines(
     return genBankQualifierLines(qualifier, continuationPrefix);
   };
   const emittedOverrides = new Set<string>();
+  const occurrences = new Map<string, number>();
+  for (const qualifier of qualifiers) {
+    const normalizedKey = qualifier.key.toLowerCase();
+    occurrences.set(normalizedKey, (occurrences.get(normalizedKey) ?? 0) + 1);
+  }
+  const replayed = new Map<string, number>();
   const lines = qualifiers.flatMap((qualifier) => {
     const normalizedKey = qualifier.key.toLowerCase();
     const override = overrides.get(normalizedKey);
@@ -3112,6 +3489,17 @@ function preservedGenBankQualifierLines(
         normalizedKey === 'label' ? { ...qualifier, value: feature.name } : qualifier,
       );
     }
+    if (Array.isArray(override)) {
+      // A list override replaces a repeated qualifier in place: the i-th copy
+      // takes the i-th value, and the last copy also takes any left over.
+      const index = replayed.get(normalizedKey) ?? 0;
+      replayed.set(normalizedKey, index + 1);
+      emittedOverrides.add(normalizedKey);
+      const values = index === (occurrences.get(normalizedKey) ?? 0) - 1
+        ? override.slice(index)
+        : override.slice(index, index + 1);
+      return values.flatMap((value) => qualifierLines({ ...qualifier, value }));
+    }
     if (emittedOverrides.has(normalizedKey)) return [];
     emittedOverrides.add(normalizedKey);
     if (override === null || override === undefined) return [];
@@ -3119,7 +3507,9 @@ function preservedGenBankQualifierLines(
   });
   for (const [normalizedKey, override] of overrides) {
     if (override === null || emittedOverrides.has(normalizedKey)) continue;
-    lines.push(...qualifierLines({ key: normalizedKey, value: override }));
+    for (const value of Array.isArray(override) ? override : [override]) {
+      lines.push(...qualifierLines({ key: normalizedKey.replace('apeinfo', 'ApEinfo').replace('ncrna', 'ncRNA'), value }));
+    }
   }
   if (!keys.has('label')) lines.push(`${continuationPrefix}/label="${feature.name.replace(/"/g, '""')}"`);
   return lines;
@@ -3127,7 +3517,8 @@ function preservedGenBankQualifierLines(
 
 function genBankFeatureLines(feature: Feature, recordTranslationTableId?: number): string[] {
   const location = genBankLocation(feature);
-  const firstPrefix = `     ${genBankFeatureType(feature.type).padEnd(15, ' ')} `;
+  const [featureKey, regulatoryClass, motifType] = insdcFeatureKey(feature.type, feature.metadata.motifOriginalFeatureKey);
+  const firstPrefix = `     ${featureKey.padEnd(15, ' ')} `;
   const continuationPrefix = ' '.repeat(firstPrefix.length);
   const chunkWidth = 80 - firstPrefix.length;
   const chunks: string[] = [];
@@ -3182,16 +3573,20 @@ function genBankFeatureLines(feature: Feature, recordTranslationTableId?: number
   const normalizedTranslationException = typeof rawTranslationException === 'string' && rawTranslationException.trim()
     ? rawTranslationException
     : null;
-  const translationExceptionLine = normalizedTranslationException
-    ? [`                     /transl_except="${normalizedTranslationException.replace(/"/g, "'")}"`]
+  // One /transl_except per recoded codon, as INSDC writes them.
+  const translationExceptions = normalizedTranslationException
+    ? translationExceptionEntries(normalizedTranslationException)
     : [];
+  const translationExceptionLine = translationExceptions.flatMap((entry) => (
+    genBankQualifierLines({ key: 'transl_except', value: entry }, continuationPrefix)
+  ));
   // Imported GenBank qualifiers are retained verbatim for loss-aware export,
   // but editable semantic fields also live as normalized metadata.  Once a
   // user changes one of those fields, emitting the stale raw qualifier would
   // silently round-trip the old frame/table/exception.  Override (or remove)
   // only the semantic keys whose current value is authoritative; unrelated and
   // repeated qualifiers remain in source order.
-  const qualifierOverrides = new Map<string, string | true | null>();
+  const qualifierOverrides = new Map<string, string | true | null | string[]>();
   if (Number.isInteger(rawCodonStart) && rawCodonStart >= 1 && rawCodonStart <= 3) {
     qualifierOverrides.set('codon_start', String(rawCodonStart));
   } else if (hasMetadataKey(['codon_start', 'codonStart']) || (feature.type !== 'cds' && feature.type !== 'orf')) {
@@ -3215,9 +3610,52 @@ function genBankFeatureLines(feature: Feature, recordTranslationTableId?: number
   if ((feature.type === 'cds' || feature.type === 'orf') && hasMetadataKey(['transl_except', 'translExcept'])) {
     qualifierOverrides.set(
       'transl_except',
-      normalizedTranslationException,
+      translationExceptions.length > 1 ? translationExceptions : normalizedTranslationException,
     );
   }
+  // A plain location reads back as forward, so an unstranded feature carries
+  // the Motif-owned marker that the reader turns back into strand 0. A marker
+  // left on a feature that now has a direction is dropped.
+  const unstrandedMarker = feature.strand === 0
+    && !isQuarantinedFeatureLocation(feature)
+    && featureLocationSegments(feature).every((segment) => segment.strand === 0);
+  // The Motif type rides on the INSDC key, its /regulatory_class, or the
+  // Motif-owned /motif_type. Each replaces a stale preserved copy; one the
+  // current type does not need is dropped. A Motif `regulatory` feature keeps
+  // the class it arrived with when that class reads back as `regulatory`, and
+  // otherwise writes INSDC's "other": a feature imported as a promoter and
+  // retyped to `regulatory` would read back as a promoter.
+  const ownedQualifiers: Array<[string, string | null]> = [
+    [MOTIF_STRAND_QUALIFIER, unstrandedMarker ? MOTIF_UNSTRANDED_VALUE : null],
+    [MOTIF_TYPE_QUALIFIER, motifType],
+  ];
+  const preservedRegulatoryClass = Array.isArray(feature.metadata.motifQualifiers)
+    ? feature.metadata.motifQualifiers.find((value) => (
+      isPlainObject(value) && typeof value.key === 'string' && value.key.toLowerCase() === 'regulatory_class'
+    ))?.value
+    : undefined;
+  if (feature.type !== 'regulatory') ownedQualifiers.push(['regulatory_class', regulatoryClass]);
+  else if (typeof preservedRegulatoryClass !== 'string' || regulatoryClassFeatureType(preservedRegulatoryClass)) {
+    ownedQualifiers.push(['regulatory_class', 'other']);
+  }
+  // INSDC requires an ncRNA's /ncRNA_class, legal on ncRNA alone, and its
+  // vocabulary's term for a class outside the list is "other".
+  const ncRnaClass = feature.metadata.ncRNA_class;
+  if (feature.type !== 'ncRNA') ownedQualifiers.push(['ncRNA_class', null]);
+  else if (!hasPreservedQualifier('ncrna_class')) {
+    ownedQualifiers.push(['ncRNA_class', typeof ncRnaClass === 'string' && /^\w+$/.test(ncRnaClass) ? ncRnaClass : 'other']);
+  }
+  // A colour other than the palette's for this name and type goes out as the
+  // ApE colour pair, which Motif and other plasmid editors read. A palette
+  // colour stays out: the reader derives the same one, and the file does not
+  // pin Motif's palette on other tools.
+  const color = feature.color !== resolveFeatureColor({ name: feature.name, type: feature.type })
+    && SAFE_IMPORTED_FEATURE_COLOR.test(feature.color) ? feature.color : null;
+  ownedQualifiers.push(['ApEinfo_fwdcolor', color], ['ApEinfo_revcolor', color]);
+  for (const [key, value] of ownedQualifiers) qualifierOverrides.set(key.toLowerCase(), value);
+  const ownedLines = ownedQualifiers.flatMap(([key, value]) => (
+    value === null ? [] : [`${continuationPrefix}/${key}="${value}"`]
+  ));
   const preservedQualifierLines = preservedGenBankQualifierLines(feature, continuationPrefix, qualifierOverrides);
   const diagnosticLines = isQuarantinedFeatureLocation(feature)
     ? [`                     /note="Motif import diagnostic: this valid INSDC location was retained but quarantined because it cannot be projected onto the local sequence."`]
@@ -3226,9 +3664,11 @@ function genBankFeatureLines(feature: Feature, recordTranslationTableId?: number
     ...locationLines,
     ...(preservedQualifierLines ?? [
       `                     /label="${feature.name.replace(/"/g, "'")}"`,
+      ...genBankMetadataQualifiers(feature).flatMap((qualifier) => genBankQualifierLines(qualifier, continuationPrefix)),
       ...codonStartLine,
       ...translationTableLine,
       ...translationExceptionLine,
+      ...ownedLines,
     ]),
     ...diagnosticLines,
   ];
@@ -3245,23 +3685,58 @@ function sequenceOriginLines(sequence: string): string {
   return lines.join('\n');
 }
 
+// The LOCUS date is the exporter's calendar day. A UTC date read tomorrow's
+// date for anyone west of UTC exporting in the evening.
 function genBankDate(date = new Date()): string {
   const months = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
-  const day = String(date.getUTCDate()).padStart(2, '0');
-  return `${day}-${months[date.getUTCMonth()]}-${date.getUTCFullYear()}`;
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${day}-${months[date.getMonth()]}-${date.getFullYear()}`;
+}
+
+// A reader names the imported record after the LOCUS name, so the token keeps
+// the record name's case and punctuation ("pUC19", "pET-28a(+)"). Only what
+// cannot sit in one whitespace-delimited token is replaced.
+function genBankLocusName(name: string): string {
+  const token = name.trim().replace(/\s+/g, '_').replace(/[^!-~]/g, '');
+  return token.slice(0, 16) || 'record';
+}
+
+function genBankSequenceCrc32(sequence: string): number {
+  return zipCrc32(new TextEncoder().encode(sequence.toUpperCase()));
+}
+
+// A record read from GenBank writes its ACCESSION back, and its VERSION while
+// its bases are still the ones that version names: an edit makes it a new
+// sequence. Records derived from it (fragments, PCR products, assemblies) get
+// their own provenance and write their record id as one token, as before.
+function genBankAccessionLines(record: ArtifactVector): string[] {
+  const kept = record.provenance?.genbankAccession;
+  const version = record.provenance?.genbankVersion;
+  if (typeof kept !== 'string' || !/^[ !-~]+$/.test(kept) || !kept.trim()) {
+    return [`ACCESSION   ${record.id.trim().replace(/\s+/g, '_').replace(/[^!-~]/g, '') || 'unknown'}`];
+  }
+  const writesVersion = typeof version === 'string' && /^[!-~]+$/.test(version)
+    && record.provenance?.genbankVersionCrc32 === genBankSequenceCrc32(record.sequence);
+  return [`ACCESSION   ${kept.trim().split(/ +/).join(' ')}`, ...(writesVersion ? [`VERSION     ${version}`] : [])];
 }
 
 export function toGenBankLite(record: ArtifactVector, topology: Topology): string {
   const date = genBankDate();
-  const molecule = record.type === 'protein' ? 'aa' : record.type === 'rna' ? 'RNA' : 'DNA';
+  // A DNA record imported from an RNA LOCUS writes that token back ("mRNA",
+  // "ss-RNA"), if it is one of INSDC's LOCUS molecule values for an RNA.
+  const keptMolecule = record.provenance?.genbankMolecule;
+  const [strandPrefix, molecule] = record.type === 'dna' && typeof keptMolecule === 'string' && /^(?:(?:ss|ds|ms)-)?(?:RNA|mRNA|tRNA|rRNA|uRNA)$/.test(keptMolecule)
+    ? keptMolecule.includes('-') ? [keptMolecule.slice(0, 3), keptMolecule.slice(3)] : ['', keptMolecule]
+    : ['', record.type === 'protein' ? '' : record.type === 'rna' ? 'RNA' : 'DNA'];
   const topologyLabel = topology === 'circular' ? 'circular' : 'linear';
   // The length needs its unit token. A reader only records a declared length when
   // `bp` or `aa` follows the number, and that declared length is what arms the
-  // truncation checks when the file is read back in. Protein records already
-  // satisfy this because their molecule token is `aa`, so spelling out the unit
-  // is only needed for nucleotides.
-  const lengthUnit = record.type === 'protein' ? '' : 'bp ';
-  const locus = `LOCUS       ${safeSlug(record.name).slice(0, 16).padEnd(16, ' ')} ${String(record.sequence.length).padStart(11, ' ')} ${lengthUnit}${molecule.padEnd(6, ' ')} ${topologyLabel.padEnd(8, ' ')} UNK ${date}`;
+  // truncation checks when the file is read back in.
+  const lengthUnit = record.type === 'protein' ? 'aa' : 'bp';
+  // NCBI's columns: length ends at 40, unit at 42, strandedness at 45, molecule
+  // at 48, topology at 56, division at 65, date at 69. A strict reader warns
+  // about any other layout.
+  const locus = `LOCUS       ${genBankLocusName(record.name).padEnd(16, ' ')} ${String(record.sequence.length).padStart(11, ' ')} ${lengthUnit} ${strandPrefix.padStart(3, ' ')}${molecule.padEnd(6, ' ')}  ${topologyLabel.padEnd(8, ' ')} UNK ${date}`;
   const features = record.features
     .flatMap((feature) => genBankFeatureLines(feature, record.translationTableId))
     .join('\n');
@@ -3273,14 +3748,20 @@ export function toGenBankLite(record: ArtifactVector, topology: Topology): strin
       : []),
   ];
 
+  // A DEFINITION ends with one period. Descriptions that already end with one
+  // (including every DEFINITION read back from a GenBank file) keep it, so an
+  // export-import-export cycle does not grow "..", "...".
+  const definition = (record.description || record.name).trim();
   return [
     locus,
-    `DEFINITION  ${record.description || record.name}.`,
-    `ACCESSION   ${record.id}`,
+    `DEFINITION  ${definition.endsWith('.') ? definition : `${definition}.`}`,
+    ...genBankAccessionLines(record),
     `SOURCE      ${record.source || 'Motif'}`,
     ...exportComments,
     'FEATURES             Location/Qualifiers',
-    features || '     source          1..1',
+    // A record with no features leaves the table empty. A placeholder
+    // `source 1..1` would read back as a one-base feature the record never had.
+    ...(features ? [features] : []),
     'ORIGIN',
     sequenceOriginLines(record.sequence),
     '//',
@@ -3331,7 +3812,7 @@ export function toGff3Lite(record: ArtifactVector): string {
         return [
           seqId,
           'Motif',
-          feature.type,
+          featureTypeLabel(feature),
           String(segment.start + 1),
           String(segment.end),
           '.',
@@ -3397,7 +3878,7 @@ export function featuresToCsv(records: readonly ArtifactVector[]): string {
         isNucleotideType(record.type) ? record.translationTableId ?? 1 : '',
         feature.id,
         feature.name,
-        feature.type,
+        featureTypeLabel(feature),
         featureCodeValue === '__invalid__' ? 'invalid' : featureCodeValue,
         effectiveCode?.supported ? effectiveCode.id : '',
         feature.start + 1,
@@ -3528,7 +4009,7 @@ export function inventoryReportHtml(records: readonly ArtifactVector[]): string 
         <dt>Topology</dt><dd>${htmlEscape(record.topology)}</dd>
         <dt>Length</dt><dd>${htmlEscape(sequenceLengthLabel(record.sequence.length, record.type))}</dd>
       </dl>
-      ${record.features.length > 0 ? `<h3>Features</h3><ul>${record.features.map((feature) => `<li>${htmlEscape(feature.name)} · ${htmlEscape(feature.type)} · ${htmlEscape(featureRangeLabel(feature))} · ${featureLocationLength(feature).toLocaleString()} ${htmlEscape(sequenceUnitLabel(record.type))}</li>`).join('')}</ul>` : ''}
+      ${record.features.length > 0 ? `<h3>Features</h3><ul>${record.features.map((feature) => `<li>${htmlEscape(feature.name)} · ${htmlEscape(featureTypeLabel(feature))} · ${htmlEscape(featureRangeLabel(feature))} · ${featureLocationLength(feature).toLocaleString()} ${htmlEscape(sequenceUnitLabel(record.type))}</li>`).join('')}</ul>` : ''}
     </section>`).join('');
   return `<!doctype html>
 <html lang="en">
@@ -3663,11 +4144,25 @@ function createZipBlob(files: readonly ArtifactZipTextFile[]): Blob {
   return createArtifactWorkspaceZipBlob(files);
 }
 
+// INSDC writes every molecule in DNA letters, so an mRNA LOCUS (every NM_, XM_,
+// NR_ and XR_ record) has t and no u. Read as RNA, its bases failed the RNA
+// alphabet and the whole file was refused. Such a record is DNA here, with
+// NCBI's bases unchanged; `genbankMolecule` keeps the LOCUS token so Basic
+// GenBank writes it back. An RNA LOCUS whose bases use u stays RNA.
 function recordInputFromGenBank(record: ReturnType<typeof parseGenBank>[number], index: number): ArtifactRecordInput {
-  const type = normalizeSequenceType(record.moleculeType?.toLowerCase().includes('rna') ? 'rna' : undefined, record.sequence);
+  const locusRna = record.moleculeType?.toLowerCase().includes('rna') ?? false;
+  const rnaInDnaLetters = locusRna && /t/i.test(record.sequence) && !/u/i.test(record.sequence);
+  const type = normalizeSequenceType(rnaInDnaLetters ? 'dna' : locusRna ? 'rna' : undefined, record.sequence);
   const provenance = {
     ...(record.importDiagnostics ? { genbankImportDiagnostics: record.importDiagnostics } : {}),
     ...(record.qualifierTruncations ? { genbankQualifierTruncations: record.qualifierTruncations } : {}),
+    ...(rnaInDnaLetters ? { genbankMolecule: `${record.strandedness ? `${record.strandedness}-` : ''}${record.moleculeType}` } : {}),
+    // Basic GenBank writes these back (see toGenBankLite). The checksum names
+    // the bases the VERSION was read with.
+    ...(record.accession ? { genbankAccession: record.accession } : {}),
+    ...(record.accession && record.version
+      ? { genbankVersion: record.version, genbankVersionCrc32: genBankSequenceCrc32(record.sequence) }
+      : {}),
   };
   return {
     id: record.accession || record.version || record.name || `genbank-${index + 1}`,
@@ -3683,6 +4178,15 @@ function recordInputFromGenBank(record: ReturnType<typeof parseGenBank>[number],
     dateAdded: new Date().toISOString(),
     active: true,
   };
+}
+
+/** The import notice line for GenBank records read as DNA although their LOCUS names an RNA. */
+export function genBankRelabelNote(records: readonly ArtifactRecordInput[]): string | null {
+  const relabelled = records.filter((record) => typeof record.provenance?.genbankMolecule === 'string');
+  if (relabelled.length === 0) return null;
+  if (relabelled.length > 1) return `${relabelled.length.toLocaleString()} records are RNA written in DNA letters; imported as DNA`;
+  const [record] = relabelled;
+  return `${record.name ?? record.id} is ${String(record.provenance?.genbankMolecule)} written in DNA letters; imported as DNA`;
 }
 
 /**
@@ -3705,8 +4209,12 @@ function importFailureReason(error: unknown): string {
         return `the sequence is over the ${MOTIF_MAX_RECORD_LENGTH.toLocaleString()}-residue artifact limit. Split it and retry.`;
       case 'MOTIF_INPUT_LIMIT_EXCEEDED':
         return "it exceeds the artifact's bounded resource limits. Reduce its annotations or metadata and retry.";
-      default:
-        return 'it is not a record this artifact can open.';
+      default: {
+        const issues = Array.isArray(error.details.issues) ? error.details.issues as RuntimeRecordIssue[] : [];
+        return issues.some((issue) => issue.path?.endsWith('.sequence'))
+          ? 'its sequence is not valid DNA, RNA, or protein. Check the file and retry.'
+          : 'its features or metadata could not be read. Export the record again and retry.';
+      }
     }
   }
   return actionableImportError(error);
@@ -3718,11 +4226,18 @@ function actionableImportError(error: unknown): string {
   return 'The sequence could not be imported. Check that the file is a complete FASTA, GenBank, AB1/ABI, Database JSON, or valid raw sequence.';
 }
 
+/**
+ * `skipped`, when given, receives one entry for every record the parser found but
+ * could not use, with the normaliser's reason. Without it those records are
+ * filtered out in silence, which is what made a batch report "Imported 1 record"
+ * for two pasted records, or "No usable sequence found" for one stray digit.
+ */
 export function parseImportedRecords(
   input: string,
   preferredName: string,
   typeHint: SequenceType | 'auto',
   topologyHint: Topology,
+  skipped?: ImportSkip[],
 ): ArtifactRecordInput[] {
   const text = input.trim();
   if (!text) return [];
@@ -3756,9 +4271,14 @@ export function parseImportedRecords(
       })
       .filter((entry) => entry.incomplete);
     if (truncated.length > 0) {
+      // An NCBI contig (CON) record names its pieces on a CONTIG line and carries
+      // no ORIGIN, so the file is complete; it only needs fetching with its bases.
+      const contigOnly = /^CONTIG\s/m.test(text) && !/^ORIGIN/m.test(text);
       throw new MotifArtifactRuntimeError(
         'MOTIF_TRUNCATED_GENBANK_IMPORT',
-        'This GenBank import is incomplete. Paste or export the complete record through the end of the ORIGIN sequence, then retry.',
+        contigOnly
+          ? 'This is an NCBI contig (CON) record: it lists its pieces on a CONTIG line and has no sequence. Download it with its sequence (NCBI format "GenBank (full)"), then retry.'
+          : 'This GenBank import is incomplete. Paste or export the complete record through the end of the ORIGIN sequence, then retry.',
         {
           records: truncated.map(({ index, record, reason }) => ({
             index,
@@ -3785,9 +4305,16 @@ export function parseImportedRecords(
       return records.map((record, index) => {
         const seq = normalizeSequence(record.sequence, typeHint === 'auto' ? undefined : typeHint);
         const molecule = typeHint === 'auto' ? normalizeSequenceType(undefined, seq) : typeHint;
-        const name = records.length === 1 && preferredName.trim()
-          ? preferredName.trim()
-          : record.rawHeader || record.header || `FASTA record ${index + 1}`;
+        // A record in a multi-record file is named by its header's ID, the
+        // first word, and the rest of the line is its description
+        // (">seqA first one" -> "seqA"). One pasted record keeps its whole
+        // header as its name.
+        const name = records.length === 1
+          ? preferredName.trim() || record.rawHeader || record.header || 'FASTA record 1'
+          : record.header || record.rawHeader || `FASTA record ${index + 1}`;
+        if (!seq) {
+          skipped?.push({ record: name, reason: describeSequenceRejection(record.sequence, typeHint) ?? 'No usable sequence found.' });
+        }
         return {
           id: safeSlug(name),
           name,
@@ -3805,7 +4332,17 @@ export function parseImportedRecords(
   }
 
   const seq = normalizeSequence(text, typeHint === 'auto' ? undefined : typeHint);
-  if (!seq) return [];
+  if (!seq) {
+    // FASTA text reaches this line only when its headers had no sequence rows.
+    skipped?.push({
+      reason: fastaInput
+        ? 'The FASTA header has no sequence under it.'
+        : /^[[{]/.test(text)
+          ? 'This JSON is not a Record JSON or Database JSON export.'
+          : describeSequenceRejection(text, typeHint) ?? 'No usable sequence found.',
+    });
+    return [];
+  }
   const molecule = typeHint === 'auto' ? normalizeSequenceType(undefined, seq) : typeHint;
   const name = preferredName.trim() || 'Pasted sequence';
   return [{
@@ -4034,6 +4571,23 @@ function mapPointerActionAtPoint(point: MapContentPoint, layout: MapLayout, zoom
   return alongAxis && inSequenceBand ? 'range' : 'pan';
 }
 
+/**
+ * Whether a CLICK (a press that never moved) at `point` places a 1 bp position.
+ * On a ring only a press on the backbone band does, within the same tolerance a
+ * drag uses to acquire the ring: the interior is drag space, where the angle picks
+ * the bases, but a click there has no base under it. Clicking the centre name used
+ * to drop a caret at base 1, and clicking the empty disc after selecting pMB1 ori
+ * replaced it with "range 1834-1834" and scrolled the sequence 651px. A linear
+ * press is on the axis's own band whenever it is range space.
+ */
+export function mapClickPlacesPosition(point: MapContentPoint, layout: MapLayout, zoom: number): boolean {
+  if (layout.mode !== 'circular') return true;
+  const contentScale = Math.max(MIN_ZOOM, Number.isFinite(zoom) ? zoom : MIN_ZOOM);
+  const distance = Math.hypot(point.x - layout.center.x, point.y - layout.center.y);
+  const tolerance = clamp(layout.radius * 0.14, MAP_CIRCULAR_RANGE_HIT_MIN, MAP_CIRCULAR_RANGE_HIT_MAX) / contentScale;
+  return Math.abs(distance - layout.radius) <= tolerance;
+}
+
 function signedCircularAngleDelta(fromAngle: number, toAngle: number): number {
   return ((toAngle - fromAngle + 540) % 360) - 180;
 }
@@ -4215,7 +4769,9 @@ function loadArtifactPayload(
     },
     records: fallbackRecords,
     selectedRecordId: resolveSelectedRecordId(fallbackRecords, {}, fallbackSelectedRecordId),
-    defaultMotif: 'GAATTC',
+    // Empty: a prefilled GAATTC drew an unexplained underline under EcoRI on
+    // first load, with its "1 hit" hidden in the collapsed rail.
+    defaultMotif: '',
     alignments: [],
     notes: [],
     workflowResults: [],
@@ -5441,6 +5997,34 @@ function findGuidesInRange(
   });
 }
 
+// A saved guide is a feature over the protospacer on its own strand. The PAM
+// stays outside it, as guide annotations usually leave it; the note carries
+// the spacer, the PAM and the nuclease so a GenBank export keeps all three.
+export function guideFeatureInput(
+  guide: Pick<GuideHit, 'strand' | 'start' | 'end' | 'spacer' | 'pam'>,
+  enzyme: string,
+  sequenceLength: number,
+  topology: Topology,
+) {
+  const spans = normalizeSpan(guide.start, guide.end, sequenceLength, topology);
+  const note = `${enzyme} guide; spacer ${guide.spacer}${guide.pam ? `; PAM ${guide.pam}` : ''}`;
+  return {
+    name: `${enzyme} guide ${guide.start + 1} (${guide.strand === 1 ? '+' : '-'})`,
+    type: 'misc_feature' as const,
+    start: Math.min(...spans.map((span) => span.start)),
+    end: Math.max(...spans.map((span) => span.end)),
+    strand: guide.strand,
+    subRanges: spans.length > 1
+      ? (guide.strand === -1 ? [...spans].reverse() : spans).map((span) => ({ ...span, strand: guide.strand }))
+      : undefined,
+    metadata: {
+      note,
+      motifQualifiers: [{ key: 'note', value: note }],
+      ...(spans.length > 1 ? { motifSubRangeOrder: 'biological' } : {}),
+    },
+  };
+}
+
 function formatRange(start: number, end: number): string {
   return `${start + 1}-${end}`;
 }
@@ -5547,7 +6131,16 @@ type EditSnapshot = ArtifactRecordEditSnapshot & {
 type EditTransaction = {
   before: EditSnapshot;
   after: EditSnapshot;
+  // Base edits carry their coordinates so Undo and Redo can tint the bases
+  // they change. Feature-only transactions have none.
+  edit?: SequenceCoordinateEdit;
 };
+
+// A briefly tinted span of the sequence after an edit, Undo or Redo. A pure
+// deletion has start === end and is drawn as a seam at that boundary.
+type SequenceEditFlash = { start: number; end: number; key: number };
+
+const EMPTY_SEQUENCE_EDIT_NOTICE = 'A record needs at least one base, so nothing was deleted. To remove the whole record, use Delete entry in Entry Details.';
 
 function portableTranslationLayersByRecord(
   value: Readonly<Record<string, readonly InlineTranslationTrack[]>>,
@@ -5613,6 +6206,19 @@ function compactMapFeatureLabel(name: string): string {
   return compact.length > MAP_LABEL_MAX_CHARS
     ? `${compact.slice(0, MAP_LABEL_MAX_CHARS - 1).trimEnd()}…`
     : compact;
+}
+
+/**
+ * The features as the map receives them: a shortened `name` to draw, and the
+ * full name as `titleName`, which the map's tooltip and accessible name read.
+ * A screen reader hears "sigma70 -35 box" where the label draws "sigma70 -35 b…".
+ */
+export function mapFeaturesForDrawing(features: readonly Feature[]) {
+  return features.map((feature) => (
+    feature.name
+      ? { ...feature, name: compactMapFeatureLabel(feature.name), titleName: feature.name }
+      : feature
+  ));
 }
 
 type ArtifactRuntimeErrorBoundaryState = {
@@ -5761,15 +6367,21 @@ function App() {
   const [dropState, setDropState] = useState<{ active: boolean; message: string }>({ active: false, message: '' });
   const [workbenchNotice, setWorkbenchNotice] = useState<WorkbenchNotice | null>(null);
   const workbenchNoticeTimerRef = useRef<number | null>(null);
+  // The action of the notice on screen, so an edit can tell whether its own
+  // Undo notice is still the one showing.
+  const workbenchNoticeActionRef = useRef<WorkbenchNoticeAction | null>(null);
   const [pendingDatabaseRestore, setPendingDatabaseRestore] = useState<PendingArtifactDatabaseRestore | null>(null);
   const [confirmedDatabaseRestoreCount, bumpConfirmedDatabaseRestoreCount] = useReducer((count: number) => count + 1, 0);
   const [importDefaults, setImportDefaults] = useState<ImportDefaults>({ name: '', group: '', type: 'auto', topology: 'linear' });
   const [importPanelOpen, setImportPanelOpen] = useState(false);
+  // A dropped batch's full outcome, for the Add entry status line that a pick fills.
+  const [droppedImportOutcome, setDroppedImportOutcome] = useState<DroppedImportOutcome | null>(null);
   const dragDepthRef = useRef(0);
   const [theme, setTheme] = useState<ArtifactThemeName>(initialWorkspaceLayout.theme);
   const [preferredPaneWidths, setPreferredPaneWidths] = useState<PaneWidths>(initialWorkspaceLayout.paneWidths);
   const [paneWidths, setPaneWidths] = useState<PaneWidths>(initialWorkspaceLayout.paneWidths);
   const [stackedPaneHeights, setStackedPaneHeights] = useState<StackedPaneHeights>(initialWorkspaceLayout.stackedPaneHeights);
+  const [sideBySideSequenceShare, setSideBySideSequenceShare] = useState<number | null>(initialWorkspaceLayout.sideBySideSequenceShare);
   const [paneVisibility, setPaneVisibility] = useState<PaneVisibility>(initialWorkspaceLayout.paneVisibility);
   const [toolsPinned, setToolsPinned] = useState(initialWorkspaceLayout.toolsPinned);
   const [paneOrder, setPaneOrder] = useState<PaneKey[]>(initialWorkspaceLayout.paneOrder);
@@ -5866,18 +6478,29 @@ function App() {
   const savedDurableFingerprintRef = useRef(savedDurableFingerprint);
   const [hasSessionCheckpoint, setHasSessionCheckpoint] = useState(false);
   const hasUnsavedChanges = currentDurableFingerprint !== savedDurableFingerprint;
+  // The session a Download backup last wrote. The browser is handed the file
+  // but never confirms it saved, so the chips say "backup downloaded" while the
+  // close-tab warning and the replace guard stay on.
+  const [downloadedDurableFingerprint, setDownloadedDurableFingerprint] = useState<string | null>(null);
+  const backupDownloaded = hasUnsavedChanges && downloadedDurableFingerprint === currentDurableFingerprint;
   const establishSessionBaseline = useCallback((fingerprint: string, hasDurableCheckpoint: boolean) => {
     savedDurableFingerprintRef.current = fingerprint;
     setSavedDurableFingerprint(fingerprint);
     setHasSessionCheckpoint(hasDurableCheckpoint);
   }, []);
-  const showWorkbenchNotice = useCallback((message: string, tone: WorkbenchNotice['tone'] = 'status') => {
+  const showWorkbenchNotice = useCallback((
+    message: string,
+    tone: WorkbenchNotice['tone'] = 'status',
+    action?: WorkbenchNoticeAction,
+  ) => {
     if (workbenchNoticeTimerRef.current !== null) window.clearTimeout(workbenchNoticeTimerRef.current);
-    setWorkbenchNotice({ message, tone });
+    workbenchNoticeActionRef.current = action ?? null;
+    setWorkbenchNotice(action ? { message, tone, action } : { message, tone });
+    // A notice that offers an action stays long enough to reach it.
     workbenchNoticeTimerRef.current = window.setTimeout(() => {
       workbenchNoticeTimerRef.current = null;
       setWorkbenchNotice(null);
-    }, tone === 'error' ? 5_000 : 2_800);
+    }, action ? 8_000 : tone === 'error' ? 5_000 : 2_800);
   }, []);
 
   useEffect(() => () => {
@@ -5966,6 +6589,7 @@ function App() {
         sequence: record.sequence,
         topology: record.topology,
         sha256: sha256HexSync(record.sequence),
+        ...(record.group ? { group: record.group } : {}),
         ...(evidence ? {
           sangerTrace: {
             baseCalls: evidence.baseCalls,
@@ -6345,22 +6969,15 @@ function App() {
   // default and can be removed individually, without a noisy global "AA Off" mode.
   const inlineTranslationTracks = useMemo<readonly InlineTranslationTrack[]>(() => {
     if (!isNucleotideType(sequenceType)) return emptyTracks;
-    const fromFeatures: InlineTranslationTrack[] = features
-      .filter((feature) => (
-        CODING_FEATURE_TYPES.has(feature.type)
-        && (feature.strand === 1 || feature.strand === -1)
-        && featureLocationLength(feature) >= 3
-        && !isMultipartFeature(feature)
-        && !hiddenFeatureTranslationIds.has(`feat:${feature.id}`)
-      ))
-      .flatMap((feature) => {
+    const materialized = new Map<string, ReturnType<typeof materializeTranslationExceptions> | null>();
+    const materializeFeature = (feature: Feature) => {
+      if (!materialized.has(feature.id)) {
+        const rawTranslationException = feature.metadata.transl_except ?? feature.metadata.translExcept;
         const code = resolveArtifactTranslationCode(
           vector.translationTableId,
           TRANSLATION_CODE_FEATURE_TYPES.has(feature.type) ? feature.metadata : undefined,
         );
-        if (!code.supported) return [];
-        const rawTranslationException = feature.metadata.transl_except ?? feature.metadata.translExcept;
-        const translationException = rawTranslationException === undefined
+        materialized.set(feature.id, rawTranslationException === undefined || !code.supported
           ? null
           : materializeTranslationExceptions({
               sequence,
@@ -6368,7 +6985,24 @@ function App() {
               qualifier: rawTranslationException,
               translationTableId: code.id,
               expectedProtein: feature.metadata.translation,
-            });
+            }));
+      }
+      return materialized.get(feature.id) ?? null;
+    };
+    const codonOverrides = cdsCodonOverrides(features, materializeFeature);
+    const fromFeatures: InlineTranslationTrack[] = features
+      .filter((feature) => !hiddenFeatureTranslationIds.has(`feat:${feature.id}`))
+      .flatMap((feature) => {
+        const code = resolveArtifactTranslationCode(
+          vector.translationTableId,
+          TRANSLATION_CODE_FEATURE_TYPES.has(feature.type) ? feature.metadata : undefined,
+        );
+        // A CDS, ORF, resistance marker or peptide draws a track. A gene or
+        // exon draws one only when its own frame, after /codon_start and in the
+        // record's code, reads as one open frame: whole codons, a stop as the
+        // last codon and no other stop, and neither end partial.
+        if (!code.supported || !drawsDefaultTranslationTrack(feature, sequence, sequenceType, topology, code.table)) return [];
+        const translationException = materializeFeature(feature);
         return [{
           id: `feat:${feature.id}`,
           label: feature.name,
@@ -6382,10 +7016,12 @@ function App() {
           completeCds: isCompleteCodingFeature(feature),
           featureId: feature.id,
           materializedProtein: translationException?.ok ? translationException.materializedProtein : undefined,
+          codonOverrides: codonOverrides.size > 0 && !TRANSLATION_CODE_FEATURE_TYPES.has(feature.type) ? codonOverrides : undefined,
+          kind: featureTypeDisplay(feature),
         }];
       });
     return translationLayers.length > 0 ? [...fromFeatures, ...translationLayers] : fromFeatures;
-  }, [sequence, sequenceType, features, hiddenFeatureTranslationIds, translationLayers, vector.translationTableId]);
+  }, [sequence, sequenceType, topology, features, hiddenFeatureTranslationIds, translationLayers, vector.translationTableId]);
   const selectedInlineTranslationTrack = inlineTranslationTracks.find((track) => track.id === selectedTranslationLayerId) ?? null;
   const selectedTranslationLayer = selectedInlineTranslationTrack?.source === 'layer' ? selectedInlineTranslationTrack : null;
   const selectedPinnedLayerNeedsReview = !!selectedTranslationLayer?.needsReview;
@@ -6553,13 +7189,10 @@ function App() {
       durability === 'durable-checkpoint',
     );
     const count = restored.payload.records.length;
-    setDropState({
-      active: true,
-      message: `${sourceLabel} restored · ${count} record${count === 1 ? '' : 's'}`,
-    });
-    window.setTimeout(() => setDropState({ active: false, message: '' }), 2200);
+    // A notice, like every other import outcome: the drop card is the drag prompt.
+    showWorkbenchNotice(`${sourceLabel} restored · ${count} record${count === 1 ? '' : 's'}`);
     return count;
-  }, [describeRuntimePayloadSnapshot, establishSessionBaseline, rememberActiveSequenceScroll, resetRecordTransientState, resetWorkflowWindowState]);
+  }, [describeRuntimePayloadSnapshot, establishSessionBaseline, rememberActiveSequenceScroll, resetRecordTransientState, resetWorkflowWindowState, showWorkbenchNotice]);
 
   const requestArtifactDatabaseRestore = useCallback((
     rawDatabase: Record<string, unknown>,
@@ -6623,7 +7256,7 @@ function App() {
     applyArtifactDatabaseRestore(prepared, sourceLabel, durability);
     bumpConfirmedDatabaseRestoreCount();
     window.requestAnimationFrame(() => {
-      document.querySelector<HTMLButtonElement>('.motif-cs-record-tab[data-active="true"]')?.focus({ preventScroll: true });
+      focusActiveRecordControl();
     });
   }, [applyArtifactDatabaseRestore, pendingDatabaseRestore]);
 
@@ -6643,33 +7276,15 @@ function App() {
 
     const removed = new Set(ids);
     const firstRemovedIndex = current.records.findIndex((record) => removed.has(record.id));
-    const records = current.records.filter((record) => !removed.has(record.id));
-    const alignments = current.alignments.filter((alignment) => (
-      !alignment.rows.some((row) => row.sourceRecordId && removed.has(row.sourceRecordId))
-    ));
-    const notes = current.notes.filter((note) => !note.recordId || !removed.has(note.recordId));
-    const workflowResults = current.workflowResults.filter((result) => (
-      !result.inputRecordIds.some((id) => removed.has(id))
-      && !result.outputRecordIds.some((id) => removed.has(id))
-    ));
-    let analysisWorkspace = {
-      analysisResults: current.analysisResults,
-      analysisAssets: current.analysisAssets,
-    };
-    for (const id of removed) {
-      analysisWorkspace = removeArtifactAnalysisResultsForRecord(analysisWorkspace, id, { removeOrphanAssets: true });
-    }
+    const remaining = planRecordRemoval(current, ids);
+    const { records } = remaining;
     const currentSelectedRecordId = selectedRecordIdRef.current;
     const selectedRecordId = records.some((record) => record.id === currentSelectedRecordId)
       ? currentSelectedRecordId
       : records[Math.min(Math.max(firstRemovedIndex, 0), records.length - 1)]?.id ?? 'record-1';
     const nextPayload: LoadedPayload = {
       ...current,
-      records,
-      alignments,
-      notes,
-      workflowResults,
-      ...analysisWorkspace,
+      ...remaining,
       selectedRecordId,
     };
     const nextArtifactState = normalizeArtifactDurableState(
@@ -7296,13 +7911,9 @@ function App() {
   // neighbours; a few very long feature names (e.g. "M13/pUC reverse primer
   // (-48)") otherwise get hidden entirely. Feed the MAP shortened display names
   // so the boxes fit and stay visible — full names remain everywhere else
-  // (sequence ribbons, inspector, Features list, exports).
-  const mapFeatures = useMemo(
-    () => features.map((feature) => (
-      feature.name ? { ...feature, name: compactMapFeatureLabel(feature.name) } : feature
-    )),
-    [features],
-  );
+  // (sequence ribbons, inspector, Features list, exports, and the map's own
+  // tooltip and accessible name).
+  const mapFeatures = useMemo(() => mapFeaturesForDrawing(features), [features]);
 
   const layout = useMemo(
     () => computeMapLayout({
@@ -7325,7 +7936,8 @@ function App() {
       // A circular drawing is scaled by whichever of the frame's two dimensions
       // is smaller, so height buys it ring. A linear one is not: its viewBox is
       // as wide as the pane, so `meet` pins the scale at 1 and every pixel of
-      // frame beyond the drawing is padding. Measured on pUC19: the frame left
+      // frame beyond the drawing is padding. Measured on the synthetic pUC19 once
+      // bundled: the frame left
       // 67.3% of itself empty at 1600x1100 and 75.2% at 2000x1400, which put
       // the map's own visibility and digest controls the better part of a
       // thousand pixels below the map they control.
@@ -7453,10 +8065,12 @@ function App() {
   // ternary, so any zoom or pan silently replaced the range readout — the
   // selection stayed drawn on the map and stopped saying what it was. They are
   // not alternatives, so join them instead of choosing.
+  // The percentage is a zoom readout, so it shows only while zoomed. It used to
+  // appear for any pan too, and "100%" beside a map that has not been scaled
+  // reads as a zoom level the reader did not set.
   const mapStatusHint = [
-    mapViewport.k > MIN_ZOOM + 0.0001 || Math.abs(mapViewport.tx) > 0.5 || Math.abs(mapViewport.ty) > 0.5
-      ? `${Math.round(mapViewport.k * 100)}%`
-      : null,
+    hasActiveRecord ? emptyProteinMapHint(sequenceType, features.length) : null,
+    mapZoomHint(mapViewport.k),
     selectedMapRange ? `range ${mapRangeLabel(selectedMapRange, sequence.length)}` : null,
     mapRestrictionSitesOmitted > 0
       ? `${interactiveMapRestrictionSites.length.toLocaleString()} of ${visibleRestrictionSites.length.toLocaleString()} sites selectable`
@@ -7475,8 +8089,11 @@ function App() {
   // site keeps its density tick), so a total would read the same today and start
   // lying the moment it did not; on the FEATURE chip a total is already meaningless
   // as a single number, which is why the field is not offered.
+  // A circular map reports its counts as summaries beside the drawing and a linear
+  // map draws them as chips; either way it is one entry per kind.
   const mapUnlabelledSiteCount =
-    layout.overflows?.find((overflow) => overflow.kind === 'restriction-labels')?.unlabelled ?? 0;
+    [...(layout.overflowSummaries ?? []), ...(layout.overflows ?? [])]
+      .find((overflow) => overflow.kind === 'restriction-labels')?.unlabelled ?? 0;
 
   // The Translate window's target: the current selection (feature or range), or the
   // whole sequence when nothing is selected. Carries the target's natural strand so
@@ -7707,6 +8324,20 @@ function App() {
   const handleZoomOut = useCallback(() => zoomAtPoint(buttonZoomAnchor(), 1 / ZOOM_STEP), [buttonZoomAnchor, zoomAtPoint]);
   const handleZoomReset = useCallback(() => setCurrentMapViewport(DEFAULT_MAP_VIEWPORT), [setCurrentMapViewport]);
 
+  /**
+   * Open a rail tool from the map and move focus to its heading. The map's
+   * overflow counts are only worth stating if the reader can go to the list each
+   * one counts from: Annotations lists every feature, Restriction Sites every site.
+   */
+  const openRailToolFromMap = useCallback((tool: 'annotations' | 'restriction-sites') => {
+    const panel = document.querySelector<HTMLDetailsElement>(`details[name="motif-cs-tools"][data-rail-tool="${tool}"]`);
+    if (!panel) return;
+    if (!panel.open) panel.open = true;
+    window.requestAnimationFrame(() => {
+      panel.querySelector<HTMLElement>(':scope > summary')?.focus();
+    });
+  }, []);
+
   const handleMapWheel = useCallback((
     point: MapRootPoint,
     deltaX: number,
@@ -7715,17 +8346,20 @@ function App() {
     ctrlKey: boolean,
     shiftKey: boolean,
   ): boolean => {
+    const intent = mapWheelIntent(mapViewport.k, ctrlKey);
+    // Not consumed: the event keeps its default, so the page or column scrolls.
+    if (intent === 'pass') return false;
     lastZoomAnchorRef.current = point;
     const wheelUnit = deltaMode === 1 ? 18 : deltaMode === 2 ? (mapFrameRef.current?.clientHeight ?? 640) : 1;
     const normalizedX = deltaX * wheelUnit;
     const normalizedY = deltaY * wheelUnit;
 
-    if (ctrlKey) {
+    if (intent === 'zoom') {
       zoomAtPoint(point, Math.exp(-normalizedY * 0.0015));
       return true;
     }
 
-    const panScale = mapViewport.k <= MIN_ZOOM + 0.0001 ? MAP_FIT_WHEEL_PAN_SCALE : MAP_ZOOMED_WHEEL_PAN_SCALE;
+    const panScale = MAP_ZOOMED_WHEEL_PAN_SCALE;
     const panX = (shiftKey && Math.abs(normalizedX) < 0.5 ? normalizedY : normalizedX) * panScale;
     const panY = (shiftKey ? 0 : normalizedY) * panScale;
     setCurrentMapViewport((currentViewport) => ({
@@ -7746,7 +8380,15 @@ function App() {
 
     const startBp = pointToSequenceOffset(contentPoint, layout);
     const startAngle = pointToSequenceAngle(contentPoint, layout);
-    mapDragRef.current = { mode: 'range', start: contentPoint, startBp, lastAngle: startAngle, cumulativeAngle: 0, moved: false };
+    mapDragRef.current = {
+      mode: 'range',
+      start: contentPoint,
+      startBp,
+      lastAngle: startAngle,
+      cumulativeAngle: 0,
+      moved: false,
+      clickPlacesPosition: mapClickPlacesPosition(contentPoint, layout, mapViewport.k),
+    };
     // Nothing is committed on the press itself. Committing here meant a press had
     // to be kept away from anything clickable, which is why a quarter of the disc
     // could not start a drag at all. It is committed on the first movement of a
@@ -7818,11 +8460,12 @@ function App() {
 
   const handleMapPointerEnd = useCallback(() => {
     const drag = mapDragRef.current;
-    // A press that never moved and never landed on an object is a click on the map,
-    // and a click on the map places a 1 bp range at that base — the backbone's
-    // click-to-position. A press that landed on a feature or a tick belongs to that
-    // object's own click instead.
-    if (drag && !drag.moved && drag.mode === 'range' && !mapPressOnObjectRef.current) {
+    // A press that never moved and never landed on an object is a click on the map.
+    // On the backbone it places a 1 bp range at that base — click-to-position. Inside
+    // the ring it does nothing here, and the background click that follows clears the
+    // selection. A press that landed on a feature or a tick belongs to that object's
+    // own click instead.
+    if (drag && !drag.moved && drag.mode === 'range' && drag.clickPlacesPosition && !mapPressOnObjectRef.current) {
       beginMapRangeSelection(drag.startBp);
       // The browser's `click` follows, and clearing on a background click would
       // undo the range this press just placed. This used to be handled implicitly,
@@ -7964,13 +8607,8 @@ function App() {
   }, [recordId]);
 
   const handleFeatureClick = useCallback((featureId: string) => {
-    const feature = features.find((candidate) => candidate.id === featureId);
-    const automaticTranslationId = feature
-      && CODING_FEATURE_TYPES.has(feature.type)
-      && featureLocationLength(feature) >= 3
-      && !isMultipartFeature(feature)
-      && !hiddenFeatureTranslationIds.has(`feat:${feature.id}`)
-      ? `feat:${feature.id}`
+    const automaticTranslationId = inlineTranslationTracks.some((track) => track.id === `feat:${featureId}`)
+      ? `feat:${featureId}`
       : null;
     setLockedTranslateTarget(null);
     setSelectedTranslationLayerByRecord((current) => ({ ...current, [recordId]: automaticTranslationId }));
@@ -7980,7 +8618,7 @@ function App() {
       if (!current[recordId]) return current;
       return { ...current, [recordId]: null };
     });
-  }, [features, hiddenFeatureTranslationIds, recordId]);
+  }, [inlineTranslationTracks, recordId]);
 
   // A single click keeps its selection-and-reveal contract. Double-click is the
   // separate edit gesture, so repeated map selections never move the target after
@@ -8037,6 +8675,101 @@ function App() {
     }
     handleRestrictionClick(clusterId, tickIds, enzyme);
   }, [handleRestrictionClick]);
+
+  /**
+   * The list a crowded restriction cluster opens: one row per enzyme it holds, then
+   * the whole cluster. A cluster label names its first few enzymes and folds the rest
+   * into "+N", so the tail, the tick and Enter open this rather than selecting all 14
+   * enzymes and 17 sites under "HindIII +13" on the synthetic pUC19 once bundled.
+   */
+  const [mapEnzymeMenu, setMapEnzymeMenu] = useState<{
+    clusterId: string;
+    enzymes: readonly RestrictionClusterEnzyme[];
+    left: number;
+    top: number;
+  } | null>(null);
+  const mapEnzymeMenuRef = useRef<HTMLDivElement>(null);
+  const focusMapCluster = useCallback((clusterId: string) => {
+    const frame = mapFrameRef.current;
+    const cluster = frame
+      ? [...frame.querySelectorAll<SVGGElement>('.motif-pm-restriction[data-cluster-id]')]
+        .find((element) => element.dataset.clusterId === clusterId)
+      : undefined;
+    cluster?.focus({ preventScroll: true });
+  }, [mapFrameRef]);
+  const handleMapRestrictionMenu = useCallback((
+    clusterId: string,
+    enzymes: readonly RestrictionClusterEnzyme[],
+    anchor: Element,
+  ) => {
+    if (suppressNextMapObjectClick.current) {
+      suppressNextMapObjectClick.current = false;
+      return;
+    }
+    const frame = mapFrameRef.current;
+    if (!frame) return;
+    const frameBox = frame.getBoundingClientRect();
+    const anchorBox = anchor.getBoundingClientRect();
+    // Below what was pressed, and above it when that would run off the frame. The
+    // height is the list's own cap, so the flip never depends on a measurement of a
+    // list that has not rendered yet.
+    const estimatedHeight = Math.min(MAP_ENZYME_MENU_MAX_HEIGHT, 8 + MAP_ENZYME_MENU_ROW_HEIGHT * (enzymes.length + 1));
+    const below = anchorBox.bottom - frameBox.top + 4;
+    const top = below + estimatedHeight <= frameBox.height - 8
+      ? below
+      : Math.max(8, anchorBox.top - frameBox.top - 4 - estimatedHeight);
+    const left = clamp(anchorBox.left - frameBox.left, 8, Math.max(8, frameBox.width - MAP_ENZYME_MENU_WIDTH - 8));
+    setMapEnzymeMenu({ clusterId, enzymes, left, top });
+  }, [mapFrameRef]);
+  const closeMapEnzymeMenu = useCallback((restoreFocus: boolean) => {
+    const clusterId = mapEnzymeMenu?.clusterId;
+    setMapEnzymeMenu(null);
+    if (restoreFocus && clusterId) window.requestAnimationFrame(() => focusMapCluster(clusterId));
+  }, [focusMapCluster, mapEnzymeMenu]);
+  const pickMapEnzymeMenuEntry = useCallback((clusterId: string, tickIds: readonly string[], enzyme?: string) => {
+    setMapEnzymeMenu(null);
+    handleRestrictionClick(clusterId, tickIds, enzyme);
+    window.requestAnimationFrame(() => focusMapCluster(clusterId));
+  }, [focusMapCluster, handleRestrictionClick]);
+  const handleMapEnzymeMenuKeyDown = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
+    const items = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
+    const index = items.indexOf(document.activeElement as HTMLButtonElement);
+    let next: number | null = null;
+    if (event.key === 'ArrowDown') next = (index + 1) % items.length;
+    else if (event.key === 'ArrowUp') next = (index - 1 + items.length) % items.length;
+    else if (event.key === 'Home') next = 0;
+    else if (event.key === 'End') next = items.length - 1;
+    else if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      closeMapEnzymeMenu(true);
+      return;
+    } else if (event.key === 'Tab') {
+      closeMapEnzymeMenu(false);
+      return;
+    }
+    if (next === null) return;
+    event.preventDefault();
+    items[next]?.focus();
+  }, [closeMapEnzymeMenu]);
+  useEffect(() => {
+    if (!mapEnzymeMenu) return undefined;
+    mapEnzymeMenuRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus({ preventScroll: true });
+    const closeFromOutside = (event: PointerEvent) => {
+      if (event.target instanceof Node && mapEnzymeMenuRef.current?.contains(event.target)) return;
+      setMapEnzymeMenu(null);
+    };
+    document.addEventListener('pointerdown', closeFromOutside, true);
+    return () => document.removeEventListener('pointerdown', closeFromOutside, true);
+  }, [mapEnzymeMenu]);
+  // The list is placed against the drawing as it stood; any change to the view or
+  // the record leaves it pointing at nothing.
+  useEffect(() => {
+    setMapEnzymeMenu(null);
+  }, [recordId, layout.mode, mapViewport.k, mapViewport.tx, mapViewport.ty]);
+  const mapEnzymeMenuCluster = mapEnzymeMenu
+    ? layout.restrictions.find((restriction) => restriction.clusterId === mapEnzymeMenu.clusterId) ?? null
+    : null;
 
   const handleSequenceRestrictionClick = useCallback((site: RestrictionSite) => {
     const tickId = restrictionSiteTickId(site);
@@ -8115,10 +8848,17 @@ function App() {
     }));
   }, [recordId, sequence.length, topology, translateStrand]);
 
-  const copyText = useCallback(async (label: string, value: string) => {
+  // A copy used to confirm only in the Export and copy chip: ~836px from the
+  // sequence Copy button at 1920x1080, clipped below the pane at 1440x900 and
+  // 1280x720, and covered by the Guide RNA popover that launched it. The
+  // workbench notice stays on screen over every pane and popover and is a
+  // role=status region. `notice: false` is for a caller that already confirms
+  // in place with its own status (the MSA window), so nothing is said twice.
+  const copyText = useCallback(async (label: string, value: string, options?: { notice?: boolean }) => {
     const ok = await writeTextToClipboard(value);
     setCopyStatus(ok ? `${label} copied` : 'Copy blocked');
     if (!ok) showWorkbenchNotice('Copy was blocked. Select the export preview and copy it manually.', 'error');
+    else if (options?.notice !== false) showWorkbenchNotice(`${label} copied`);
     window.setTimeout(() => setCopyStatus(null), 1800);
     return ok;
   }, [showWorkbenchNotice]);
@@ -8253,6 +8993,39 @@ function App() {
   // Mutations run through the real Motif mutate engine (feature/subRange
   // coordinates shift automatically). One transaction also remaps range notes
   // and pinned translations before either React state is committed.
+  //
+  // A single click places the caret, and any IUPAC letter typed after it edits
+  // the record, so edits must never be silent: the first edit to each record in
+  // a session and every edit that removes or replaces more than one base
+  // announce themselves with an Undo action, and the changed bases are tinted
+  // briefly. (A read-only mode could later gate `isEditable` without touching
+  // any of this.)
+  const announcedEditRecordIdsRef = useRef(new Set<string>());
+  const liveEditNoticeRef = useRef<{
+    recordId: string;
+    transaction: EditTransaction;
+    action: WorkbenchNoticeAction;
+  } | null>(null);
+  const [sequenceEditFlash, setSequenceEditFlash] = useState<(SequenceEditFlash & { recordId: string }) | null>(null);
+  const sequenceEditFlashTimerRef = useRef<number | null>(null);
+  const sequenceEditFlashKeyRef = useRef(0);
+  const flashSequenceEdit = useCallback((flashRecordId: string, start: number, end: number) => {
+    if (sequenceEditFlashTimerRef.current !== null) window.clearTimeout(sequenceEditFlashTimerRef.current);
+    sequenceEditFlashKeyRef.current += 1;
+    setSequenceEditFlash({ recordId: flashRecordId, start, end, key: sequenceEditFlashKeyRef.current });
+    sequenceEditFlashTimerRef.current = window.setTimeout(() => {
+      sequenceEditFlashTimerRef.current = null;
+      setSequenceEditFlash(null);
+    }, 1_600);
+  }, []);
+  useEffect(() => () => {
+    if (sequenceEditFlashTimerRef.current !== null) window.clearTimeout(sequenceEditFlashTimerRef.current);
+  }, []);
+  const activeSequenceEditFlash = sequenceEditFlash?.recordId === recordId ? sequenceEditFlash : null;
+  // The notice's Undo runs after later renders, so it reaches the current
+  // record and undo function through a ref instead of a stale closure.
+  const undoEditsThroughRef = useRef<(targetRecordId: string, transaction: EditTransaction) => void>(() => {});
+
   const captureEditSnapshot = useCallback((): EditSnapshot | null => {
     const current = payloadRef.current;
     const currentRecord = current.records.find((record) => record.id === recordId);
@@ -8274,10 +9047,15 @@ function App() {
     result: MutationResult,
     caretAfter: number,
     edit: SequenceCoordinateEdit,
+    leadingNotices: readonly string[] = [],
   ) => {
     const capacity = preflightSequenceEdit(edit.oldLength, edit, MOTIF_MAX_RECORD_LENGTH);
     if (!capacity.ok) {
       showWorkbenchNotice(capacity.message ?? `This edit exceeds the ${MOTIF_MAX_RECORD_LENGTH.toLocaleString()}-residue record limit. Delete residues or split the record before editing.`, 'error');
+      return;
+    }
+    if (sequenceEditEmptiesRecord(edit)) {
+      showWorkbenchNotice(EMPTY_SEQUENCE_EDIT_NOTICE, 'error');
       return;
     }
     const current = payloadRef.current;
@@ -8354,16 +9132,52 @@ function App() {
         ? before.selectedTranslationLayerId
         : null,
     };
+    const transaction: EditTransaction = { before, after, edit };
     const store = editHistoryRef.current[recordId] ?? { undo: [], redo: [] };
     editHistoryRef.current[recordId] = {
-      undo: [...store.undo, { before, after }].slice(-200),
+      undo: [...store.undo, transaction].slice(-200),
       redo: [],
     };
     payloadRef.current = nextPayload;
     artifactStateRef.current = nextArtifactState;
     setPayload(nextPayload);
     setTranslationLayersByRecord(nextArtifactState.translationLayersByRecord);
+    const firstEditToRecord = !announcedEditRecordIdsRef.current.has(recordId);
+    announcedEditRecordIdsRef.current.add(recordId);
+    const announce = shouldAnnounceSequenceEdit(edit, firstEditToRecord);
+    // A later unannounced edit (the next typed base) keeps the first notice up,
+    // and that notice's Undo reverts it too, so the text is rewritten to cover
+    // every edit its Undo would take back.
+    const liveNotice = liveEditNoticeRef.current;
+    const liveUndo = editHistoryRef.current[recordId]?.undo ?? [];
+    const extendsLiveNotice = !announce
+      && liveNotice !== null
+      && liveNotice.recordId === recordId
+      && workbenchNoticeTimerRef.current !== null
+      && workbenchNoticeActionRef.current === liveNotice.action
+      && liveUndo.includes(liveNotice.transaction);
+    // An edit to a recoded codon drops its /transl_except, and the CDS then
+    // reads that codon plainly, so the change is said rather than silent. A
+    // rewritten notice names the net change in the coordinates before its
+    // first edit, so the override is named where that edit found it.
+    const droppedExceptionNotice = describeDroppedTranslationExceptions(extendsLiveNotice
+      ? droppedTranslationExceptions(
+        liveNotice.transaction.before.features,
+        result.features,
+        liveUndo.slice(liveUndo.indexOf(liveNotice.transaction)).flatMap((entry) => (entry.edit ? [entry.edit] : [])),
+      )
+      : droppedTranslationExceptions(currentRecord.features, result.features, edit));
     const notices = [
+      ...(announce
+        ? [describeSequenceEdit({
+            start: edit.start,
+            removed: currentRecord.sequence.slice(edit.start, edit.start + edit.deletedLength),
+            inserted: result.raw.slice(edit.start, edit.start + edit.insertedLength),
+            unit: sequenceUnitLabel(currentRecord.type),
+          })]
+        : []),
+      ...leadingNotices,
+      ...(droppedExceptionNotice ? [droppedExceptionNotice] : []),
       ...(currentRecord.sangerTrace
         ? ['The edited sequence is no longer linked to its original chromatogram. Undo restores the trace.']
         : []),
@@ -8378,7 +9192,30 @@ function App() {
           ? [`${anchors.adjustedLayerCount} translation anchor${anchors.adjustedLayerCount === 1 ? '' : 's'} updated.`]
           : []),
     ];
-    if (notices.length > 0) showWorkbenchNotice(notices.join(' '), 'status');
+    if (announce) {
+      const editedRecordId = recordId;
+      const action: WorkbenchNoticeAction = {
+        label: 'Undo',
+        accessibleLabel: 'Undo this edit',
+        run: () => undoEditsThroughRef.current(editedRecordId, transaction),
+      };
+      liveEditNoticeRef.current = { recordId, transaction, action };
+      showWorkbenchNotice(notices.join(' '), 'status', action);
+    } else if (extendsLiveNotice) {
+      const net = describeNetSequenceEdit({
+        before: liveNotice.transaction.before.sequence,
+        after: result.raw,
+        unit: sequenceUnitLabel(currentRecord.type),
+      });
+      showWorkbenchNotice(
+        [net ?? 'The sequence matches its state before these edits.', ...notices].join(' '),
+        'status',
+        liveNotice.action,
+      );
+    } else if (notices.length > 0) {
+      showWorkbenchNotice(notices.join(' '), 'status');
+    }
+    flashSequenceEdit(recordId, edit.start, edit.start + edit.insertedLength);
     setSelectedTranslationLayerByRecord((selected) => {
       const selectedId = selected[recordId];
       if (!selectedId || anchors.translationLayers.some((layer) => layer.id === selectedId)) return selected;
@@ -8389,20 +9226,27 @@ function App() {
     setMapRangesByRecord((cur) => (cur[recordId] ? { ...cur, [recordId]: null } : cur));
     setCaret(clamp(caretAfter, 0, result.raw.length));
     bumpEditHistory();
-  }, [captureEditSnapshot, recordId, showWorkbenchNotice]);
+  }, [captureEditSnapshot, flashSequenceEdit, recordId, showWorkbenchNotice]);
 
   const commitMutation = useCallback((
     build: () => MutationResult,
     caretAfter: number,
     edit: SequenceCoordinateEdit,
+    leadingNotices: readonly string[] = [],
   ) => {
     const capacity = preflightSequenceEdit(edit.oldLength, edit, MOTIF_MAX_RECORD_LENGTH);
     if (!capacity.ok) {
       showWorkbenchNotice(capacity.message ?? `This edit exceeds the ${MOTIF_MAX_RECORD_LENGTH.toLocaleString()}-residue record limit. Delete residues or split the record before editing.`, 'error');
       return;
     }
+    // Refuse before building: an empty record fails checkpoint validation,
+    // which used to surface only as an uncaught error with nothing on screen.
+    if (sequenceEditEmptiesRecord(edit)) {
+      showWorkbenchNotice(EMPTY_SEQUENCE_EDIT_NOTICE, 'error');
+      return;
+    }
     try {
-      commitEdit(build(), caretAfter, edit);
+      commitEdit(build(), caretAfter, edit, leadingNotices);
     } catch (error) {
       // The pure mutators retain their throwing API for non-UI callers. The
       // browser editor has already preflighted this transaction; keep a
@@ -8410,6 +9254,13 @@ function App() {
       const message = error instanceof Error ? error.message : String(error);
       if (/record limit|result limit|exceed(?:s|ed)? .*residue/i.test(message)) {
         showWorkbenchNotice(message, 'error');
+        return;
+      }
+      // commitEdit validates the whole checkpoint before publishing anything,
+      // so a validation failure leaves the record untouched. Say so on screen
+      // instead of throwing into the event loop.
+      if (error instanceof MotifArtifactRuntimeError) {
+        showWorkbenchNotice(`The edit was not applied and the record is unchanged. ${message}`, 'error');
         return;
       }
       throw error;
@@ -8454,7 +9305,13 @@ function App() {
       ...artifactStateRef.current,
       translationLayersByRecord: restoredTranslationLayersByRecord,
     }, recordLengths);
-    createArtifactDatabaseSnapshot(nextPayload, nextArtifactState);
+    try {
+      createArtifactDatabaseSnapshot(nextPayload, nextArtifactState);
+    } catch (error) {
+      if (!(error instanceof MotifArtifactRuntimeError)) throw error;
+      showWorkbenchNotice(`That step could not be restored, so the record is unchanged. ${error.message}`, 'error');
+      return false;
+    }
     payloadRef.current = nextPayload;
     artifactStateRef.current = nextArtifactState;
     setPayload(nextPayload);
@@ -8466,7 +9323,8 @@ function App() {
         ? snap.selectedTranslationLayerId
         : null,
     }));
-  }, [recordId]);
+    return true;
+  }, [recordId, showWorkbenchNotice]);
 
   const undoEdit = useCallback(() => {
     const store = editHistoryRef.current[recordId];
@@ -8474,14 +9332,17 @@ function App() {
     const transaction = store.undo[store.undo.length - 1];
     const currentAfter = captureEditSnapshot() ?? transaction.after;
     const liveTransaction = { ...transaction, after: currentAfter };
-    restoreSnapshot(liveTransaction.before, transaction.after);
+    if (!restoreSnapshot(liveTransaction.before, transaction.after)) return;
     editHistoryRef.current[recordId] = {
       undo: store.undo.slice(0, -1),
       redo: [...store.redo, liveTransaction],
     };
+    if (transaction.edit) {
+      flashSequenceEdit(recordId, transaction.edit.start, transaction.edit.start + transaction.edit.deletedLength);
+    }
     setCaret((c) => (c === null ? null : clamp(c, 0, liveTransaction.before.sequence.length)));
     bumpEditHistory();
-  }, [captureEditSnapshot, recordId, restoreSnapshot]);
+  }, [captureEditSnapshot, flashSequenceEdit, recordId, restoreSnapshot]);
 
   const redoEdit = useCallback(() => {
     const store = editHistoryRef.current[recordId];
@@ -8489,14 +9350,104 @@ function App() {
     const transaction = store.redo[store.redo.length - 1];
     const currentBefore = captureEditSnapshot() ?? transaction.before;
     const liveTransaction = { ...transaction, before: currentBefore };
-    restoreSnapshot(liveTransaction.after, transaction.before);
+    if (!restoreSnapshot(liveTransaction.after, transaction.before)) return;
+    if (transaction.edit) {
+      flashSequenceEdit(recordId, transaction.edit.start, transaction.edit.start + transaction.edit.insertedLength);
+    }
     editHistoryRef.current[recordId] = {
       undo: [...store.undo, liveTransaction],
       redo: store.redo.slice(0, -1),
     };
     setCaret((c) => (c === null ? null : clamp(c, 0, liveTransaction.after.sequence.length)));
     bumpEditHistory();
-  }, [captureEditSnapshot, recordId, restoreSnapshot]);
+  }, [captureEditSnapshot, flashSequenceEdit, recordId, restoreSnapshot]);
+
+  // Undo from a notice reverts that edit and every later one still on the
+  // stack (the first-edit notice stays up while the user keeps typing), one
+  // Cmd/Ctrl+Z step at a time so Redo can replay each of them.
+  useEffect(() => {
+    undoEditsThroughRef.current = (targetRecordId, transaction) => {
+      if (targetRecordId !== recordId) {
+        showWorkbenchNotice('That edit belongs to another record. Open it and use Undo there.', 'error');
+        return;
+      }
+      if (!editHistoryRef.current[targetRecordId]?.undo.includes(transaction)) {
+        showWorkbenchNotice('That edit is no longer in the undo history.', 'status');
+        return;
+      }
+      for (;;) {
+        const pending = editHistoryRef.current[targetRecordId]?.undo ?? [];
+        if (!pending.includes(transaction)) return;
+        undoEdit();
+        // A refused restore leaves the stack as it was; stop rather than retry.
+        if ((editHistoryRef.current[targetRecordId]?.undo.length ?? 0) >= pending.length) return;
+      }
+    };
+  }, [recordId, showWorkbenchNotice, undoEdit]);
+
+  // Cmd/Ctrl+Z (Shift for redo, or Ctrl+Y) works wherever focus is, not only
+  // inside the sequence field: after clicking the map or adding a feature, the
+  // history was out of reach. Text fields keep their own native undo, and a key
+  // the sequence field already handled is left alone.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (pendingDatabaseRestore || event.defaultPrevented || event.altKey) return;
+      if (!(event.metaKey || event.ctrlKey)) return;
+      const key = event.key.toLowerCase();
+      if (key !== 'z' && key !== 'y') return;
+      const el = document.activeElement as HTMLElement | null;
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable)) return;
+      const redo = key === 'y' || event.shiftKey;
+      const store = editHistoryRef.current[recordId];
+      if (!store || (redo ? store.redo : store.undo).length === 0) return;
+      event.preventDefault();
+      if (redo) redoEdit(); else undoEdit();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [pendingDatabaseRestore, recordId, redoEdit, undoEdit]);
+
+  // Feature add, update and delete go on the same history as base edits, so
+  // Undo reverses them and a later base-edit Undo cannot silently roll back a
+  // feature change it never recorded. The snapshot already carries features;
+  // a feature-only transaction has no coordinates to tint.
+  const commitFeatureHistory = useCallback((
+    nextFeatures: Feature[],
+    reviewTranslationsOfFeatureId?: string,
+    // A delete recomputes the record's proposal-review counts; the other
+    // feature edits leave provenance as it is.
+    nextProvenance?: Record<string, unknown>,
+  ): boolean => {
+    const current = payloadRef.current;
+    const recordIndex = current.records.findIndex((record) => record.id === recordId);
+    const currentRecord = current.records[recordIndex];
+    if (!currentRecord) return false;
+    const before = captureEditSnapshot();
+    if (!before) return false;
+    const records = [...current.records];
+    const provenance = nextProvenance ?? currentRecord.provenance;
+    records[recordIndex] = { ...currentRecord, features: nextFeatures, provenance };
+    const nextPayload: LoadedPayload = { ...current, records };
+    const after: EditSnapshot = {
+      ...before,
+      features: nextFeatures.map((feature) => ({ ...feature })),
+      provenance: provenance ? normalizeJsonObject(provenance) : undefined,
+      translationLayers: before.translationLayers.map((layer) => (
+        reviewTranslationsOfFeatureId && layer.featureId === reviewTranslationsOfFeatureId
+          ? { ...layer, needsReview: true }
+          : { ...layer }
+      )),
+    };
+    const store = editHistoryRef.current[recordId] ?? { undo: [], redo: [] };
+    editHistoryRef.current[recordId] = {
+      undo: [...store.undo, { before, after }].slice(-200),
+      redo: [],
+    };
+    payloadRef.current = nextPayload;
+    setPayload(nextPayload);
+    bumpEditHistory();
+    return true;
+  }, [captureEditSnapshot, recordId]);
 
   const handlePlaceCaret = useCallback((index: number) => {
     setLockedTranslateTarget(null);
@@ -8505,7 +9456,11 @@ function App() {
     setCaret(clamp(index, 0, sequence.length));
   }, [recordId, sequence.length]);
 
-  const commitSelectedRangeEdit = useCallback((range: MapSelectionRange, replacement: string) => {
+  const commitSelectedRangeEdit = useCallback((
+    range: MapSelectionRange,
+    replacement: string,
+    leadingNotices: readonly string[] = [],
+  ) => {
     const edit = {
       start: range.start,
       deletedLength: range.end - range.start,
@@ -8523,6 +9478,7 @@ function App() {
       ),
       range.start + replacement.length,
       edit,
+      leadingNotices,
     );
   }, [commitMutation, features, sequence, sequenceType]);
 
@@ -8553,6 +9509,13 @@ function App() {
       : null;
     const navigationRange = selectedRange ?? originWrappingRange;
     const c = navigationRange?.start ?? caret;
+    // Tabbing into the field leaves no caret, and typing stays inert until one
+    // exists. A navigation key places it (End at the end, the rest at the start).
+    if (c === null && (event.key === 'ArrowLeft' || event.key === 'ArrowRight' || event.key === 'Home' || event.key === 'End')) {
+      event.preventDefault();
+      handlePlaceCaret(event.key === 'End' ? len : 0);
+      return;
+    }
     if (c === null) return;
     const featureList = features as Feature[];
     switch (event.key) {
@@ -8677,12 +9640,14 @@ function App() {
       const dropped = parsed.droppedCharacters === 1 ? '1 character' : `${parsed.droppedCharacters.toLocaleString()} characters`;
       pasteNotes.push(`${dropped} were not ${unit} and were left out.`);
     }
-    if (pasteNotes.length > 0) {
-      showWorkbenchNotice(`Pasted ${parsed.sequence.length.toLocaleString()} bases. ${pasteNotes.join(' ')}`);
-    }
+    // Handed to the commit so they share its one notice (and its Undo) instead
+    // of being replaced by it a moment later.
+    const leadingNotices = pasteNotes.length > 0
+      ? [`Pasted ${parsed.sequence.length.toLocaleString()} bases. ${pasteNotes.join(' ')}`]
+      : [];
     const pasted = parsed.sequence;
     if (selectedRange) {
-      commitSelectedRangeEdit(selectedRange, pasted);
+      commitSelectedRangeEdit(selectedRange, pasted, leadingNotices);
       return;
     }
     const edit = { start: insertionStart, deletedLength: 0, insertedLength: pasted.length, oldLength: sequence.length };
@@ -8690,14 +9655,20 @@ function App() {
       () => applyInsertion(sequence, [], features as Feature[], insertionStart - 1, pasted, sequenceType),
       insertionStart + pasted.length,
       edit,
+      leadingNotices,
     );
   }, [caret, commitMutation, commitSelectedRangeEdit, features, isEditable, selectedMapRange, sequence, sequenceType, showWorkbenchNotice, topology]);
 
-  const addRecords = useCallback((recordInputs: readonly ArtifactRecordInput[]): number => {
+  // `reportFailure` lets a file import fold the reason into its own outcome
+  // message instead of having that message replace this notice.
+  const addRecords = useCallback((
+    recordInputs: readonly ArtifactRecordInput[],
+    reportFailure: (message: string) => void = (message) => showWorkbenchNotice(message, 'error'),
+  ): number => {
     if (recordInputs.length === 0) return 0;
     const current = payloadRef.current;
     if (current.records.length + recordInputs.length > MOTIF_MAX_RECORDS) {
-      showWorkbenchNotice(`Adding ${recordInputs.length} records exceeds the ${MOTIF_MAX_RECORDS}-record artifact limit. Remove records or import fewer records. No records were added.`, 'error');
+      reportFailure(`Adding ${recordInputs.length} records exceeds the ${MOTIF_MAX_RECORDS}-record artifact limit. Remove records or import fewer records. No records were added.`);
       return 0;
     }
 
@@ -8712,7 +9683,7 @@ function App() {
       // public window.motifAddRecords path remains deliberately strict.
       validateRuntimeRecordInputs(sanitizedRecordInputs, 'motifAddRecords');
     } catch (error) {
-      showWorkbenchNotice(actionableImportError(error), 'error');
+      reportFailure(actionableImportError(error));
       return 0;
     }
 
@@ -8722,7 +9693,7 @@ function App() {
       // Validation above makes this defensive branch unreachable for supported
       // inputs. Keep the batch untouched if normalization ever grows stricter.
       if (!normalized) {
-        showWorkbenchNotice('The import could not be normalized. No records were added.', 'error');
+        reportFailure('The import could not be normalized. No records were added.');
         return 0;
       }
       const id = uniqueRecordId(normalized.id, [...current.records, ...additions]);
@@ -8733,7 +9704,7 @@ function App() {
       total + (record.sangerTrace ? artifactSangerTraceSampleEntries(record.sangerTrace) : 0)
     ), 0);
     if (traceSampleEntries > ARTIFACT_SANGER_MAX_WORKSPACE_SAMPLE_ENTRIES) {
-      showWorkbenchNotice(`These traces exceed the ${ARTIFACT_SANGER_MAX_WORKSPACE_SAMPLE_ENTRIES.toLocaleString()}-sample workspace limit. Remove trace samples or import fewer traces. No records were added.`, 'error');
+      reportFailure(`These traces exceed the ${ARTIFACT_SANGER_MAX_WORKSPACE_SAMPLE_ENTRIES.toLocaleString()}-sample workspace limit. Remove trace samples or import fewer traces. No records were added.`);
       return 0;
     }
 
@@ -8807,7 +9778,8 @@ function App() {
           topology: vector.topology,
           translationTableId: vector.translationTableId,
           active: vector.active,
-          features: vector.features,
+          // A proposed ORF nobody accepted stays a guess on its own record.
+          features: vector.features.filter((feature) => !isProposedAnnotation(feature)),
           description: vector.description,
           organism: vector.organism,
           source: vector.source,
@@ -8854,7 +9826,17 @@ function App() {
       };
       payloadRef.current = nextPayload;
       setPayload(nextPayload);
-      return { workflowResultId, recordCount: additions.length };
+      // A feature that crosses a cut is in no fragment; the save line names it
+      // rather than leave the scientist to find the CDS missing.
+      const carriedIds = new Set(materialized.records.flatMap((record) => (
+        record.annotations.map((feature) => feature.metadata.sourceFeatureId)
+      )));
+      const leftOutNotice = describeFeaturesLeftOut(
+        vector.features.filter((feature) => !carriedIds.has(feature.id)),
+        'cut',
+        additions.length,
+      );
+      return { workflowResultId, recordCount: additions.length, ...(leftOutNotice ? { leftOutNotice } : {}) };
     } catch (error) {
       showWorkbenchNotice(
         error instanceof Error ? `Digest was not saved: ${error.message}` : 'Digest was not saved.',
@@ -8893,24 +9875,98 @@ function App() {
     }));
   }, [recordId]);
 
+  // Undo for a delete puts back the record, its linked notes, alignments and
+  // results, and its view state, each at its old place. Anything done between
+  // the delete and the undo is kept.
+  const undoRecordDelete = useCallback((snapshot: {
+    name: string;
+    recordId: string;
+    before: LoadedPayload;
+    after: LoadedPayload;
+    beforeState: ArtifactDurableState;
+    editHistory: { undo: EditTransaction[]; redo: EditTransaction[] } | undefined;
+  }) => {
+    const plan = planRecordDeleteUndo({
+      before: snapshot.before,
+      after: snapshot.after,
+      current: payloadRef.current,
+      beforeState: snapshot.beforeState,
+      currentState: artifactStateRef.current,
+      deletedRecordIds: [snapshot.recordId],
+    });
+    if (!plan.ok) {
+      showWorkbenchNotice(plan.message, 'error');
+      return;
+    }
+    const restoredDependents = recordRemovalDependents(plan.payload, payloadRef.current);
+    const nextArtifactState = plan.artifactState;
+    artifactStateRef.current = nextArtifactState;
+    enzymeSourcesByRecordRef.current = nextArtifactState.enzymeSourcesByRecord;
+    setTranslationLayersByRecord(nextArtifactState.translationLayersByRecord);
+    setEnzymeSourcesByRecord(nextArtifactState.enzymeSourcesByRecord);
+    setHiddenEnzymesByRecord(nextArtifactState.hiddenEnzymesByRecord);
+    setHiddenFeatureTranslationsByRecord(nextArtifactState.hiddenFeatureTranslationsByRecord);
+    setRestrictionLabelsByRecord(nextArtifactState.restrictionLabelsByRecord);
+    setMotifsByRecord(nextArtifactState.motifsByRecord);
+    if (snapshot.editHistory && !editHistoryRef.current[snapshot.recordId]) {
+      editHistoryRef.current[snapshot.recordId] = snapshot.editHistory;
+      bumpEditHistory();
+    }
+    payloadRef.current = plan.payload;
+    selectedRecordIdRef.current = plan.payload.selectedRecordId;
+    setSelectedRecordId(plan.payload.selectedRecordId);
+    setPayload(plan.payload);
+    setSelection(null);
+    setCaret(null);
+    showWorkbenchNotice(
+      restoredDependents ? `Restored ${snapshot.name} and ${restoredDependents}.` : `Restored ${snapshot.name}.`,
+      'status',
+    );
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+      focusActiveRecordControl();
+    }));
+  }, [bumpEditHistory, showWorkbenchNotice]);
+
+  const describeActiveRecordDeleteDependents = useCallback(() => {
+    const current = payloadRef.current;
+    return recordRemovalDependents(current, planRecordRemoval(current, [recordId]));
+  }, [recordId]);
+
   const deleteActiveRecord = useCallback(() => {
     const deletedName = vector.name;
-    const removed = removeRecords(recordId);
+    const deletedRecordId = recordId;
+    const before = payloadRef.current;
+    const beforeState = artifactStateRef.current;
+    const editHistory = editHistoryRef.current[deletedRecordId];
+    const removed = removeRecords(deletedRecordId);
     if (removed === 0) return;
-    showWorkbenchNotice(`Deleted ${deletedName}. Linked notes, alignments, and results were removed with it.`, 'status');
+    const after = payloadRef.current;
+    const dependents = recordRemovalDependents(before, after);
+    showWorkbenchNotice(dependents ? `Deleted ${deletedName} and ${dependents}.` : `Deleted ${deletedName}.`, 'status', {
+      label: 'Undo',
+      accessibleLabel: `Undo deleting ${deletedName}`,
+      run: () => undoRecordDelete({ name: deletedName, recordId: deletedRecordId, before, after, beforeState, editHistory }),
+    });
     window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
-      const nextRecord = document.querySelector<HTMLButtonElement>('.motif-cs-record-tab[data-active="true"]');
+      const nextRecord = focusActiveRecordControl();
       (nextRecord ?? document.querySelector<HTMLButtonElement>('.motif-cs-add-entry-button'))?.focus({ preventScroll: true });
     }));
-  }, [recordId, removeRecords, showWorkbenchNotice, vector.name]);
+  }, [recordId, removeRecords, showWorkbenchNotice, undoRecordDelete, vector.name]);
 
   // Drag a FASTA / GenBank file anywhere onto the workbench to import it — the
   // same parser the Add-sequence panel uses, so raw / FASTA / GenBank all work.
-  const importFiles = useCallback(async (files: FileList | File[], showDropFeedback = true): Promise<ArtifactFileImportResult> => {
+  // The outcome goes to the workbench notice, which names every skipped file and
+  // why. It used to go to the drag-prompt card for 1.6 s, without a file name, and
+  // a file that yielded no record was left out of the message entirely.
+  const importFiles = useCallback(async (
+    files: FileList | File[],
+    showNotice = true,
+    source: 'pick' | 'drop' = 'pick',
+  ): Promise<ArtifactFileImportResult> => {
     const pendingFiles = Array.from(files);
     const loadedFiles: Array<{ file: File; text: string }> = [];
-    const sangerRecords: ArtifactRecordInput[] = [];
-    const errors: string[] = [];
+    const sangerRecords: Array<{ record: ArtifactRecordInput; source: string }> = [];
+    const skipped: SkippedImport[] = [];
     let pendingTraceSampleEntries = payloadRef.current.records.reduce((total, record) => (
       total + (record.sangerTrace ? artifactSangerTraceSampleEntries(record.sangerTrace) : 0)
     ), 0);
@@ -8950,7 +10006,7 @@ function App() {
               format: 'ABIF',
               warnings: parsed.warnings,
             },
-          }], { ...importDefaults, type: 'dna', topology: 'linear' }));
+          }], { ...importDefaults, type: 'dna', topology: 'linear' }).map((record) => ({ record, source: file.name })));
           continue;
         }
         const maxImportBytes = isDatabaseJsonFile(file)
@@ -8962,7 +10018,7 @@ function App() {
         const text = await file.text();
         loadedFiles.push({ file, text });
       } catch (error) {
-        errors.push(`${file.name}: ${actionableImportError(error)}`);
+        skipped.push({ source: file.name, reason: actionableImportError(error) });
       }
     }
 
@@ -8974,17 +10030,14 @@ function App() {
         if (database) databaseFiles.push({ file: loaded.file, database });
         else ordinaryFiles.push(loaded);
       } catch (error) {
-        errors.push(`${loaded.file.name}: ${actionableImportError(error)}`);
+        skipped.push({ source: loaded.file.name, reason: actionableImportError(error) });
       }
     }
 
     if (databaseFiles.length > 0) {
-      if (databaseFiles.length !== 1 || ordinaryFiles.length > 0 || sangerRecords.length > 0 || errors.length > 0) {
+      if (databaseFiles.length !== 1 || ordinaryFiles.length > 0 || sangerRecords.length > 0 || skipped.length > 0) {
         const message = 'Restore one Database JSON file at a time; no files were imported.';
-        if (showDropFeedback) {
-          setDropState({ active: true, message });
-          window.setTimeout(() => setDropState({ active: false, message: '' }), 5000);
-        }
+        if (showNotice) showWorkbenchNotice(message, 'error');
         return { records: [], message, tone: 'error' };
       }
       const [{ file, database }] = databaseFiles;
@@ -8993,25 +10046,36 @@ function App() {
         return { records: [], message: `Review the ${file.name} workspace restore.`, tone: 'status' };
       } catch (error) {
         const message = `${file.name}: ${actionableImportError(error)}`;
-        if (showDropFeedback) {
-          setDropState({ active: true, message });
-          window.setTimeout(() => setDropState({ active: false, message: '' }), 5000);
-        }
+        if (showNotice) showWorkbenchNotice(message, 'error');
         return { records: [], message, tone: 'error' };
       }
     }
 
-    const additions: ArtifactRecordInput[] = [...sangerRecords];
+    const additions: Array<{ record: ArtifactRecordInput; source: string; genBank?: boolean }> = [...sangerRecords];
     for (const { file, text } of ordinaryFiles) {
       try {
+        const unreadable = unreadableFileReason(file, text);
+        if (unreadable) {
+          skipped.push({ source: file.name, reason: unreadable });
+          continue;
+        }
         const baseName = file.name.replace(/\.[^.]+$/, '');
         const preferredName = importDefaults.name.trim() || baseName;
-        additions.push(...applyImportDefaults(
-          parseImportedRecords(text, preferredName, importDefaults.type, importDefaults.topology),
-          importDefaults,
-        ));
+        const fileSkips: ImportSkip[] = [];
+        const parsed = parseImportedRecords(text, preferredName, importDefaults.type, importDefaults.topology, fileSkips);
+        if (parsed.length === 0) {
+          skipped.push({ source: file.name, reason: explainUnimportedFile(file, text, fileSkips) });
+          continue;
+        }
+        // A file with several records names the one that failed, not just the file.
+        const inFile = (name: string | undefined) => (parsed.length + fileSkips.length > 1 && name ? `${name} in ${file.name}` : file.name);
+        for (const skip of fileSkips) skipped.push({ source: inFile(skip.record), reason: skip.reason });
+        const genBank = /^\s*LOCUS\s/m.test(text);
+        for (const record of applyImportDefaults(parsed, importDefaults)) {
+          additions.push({ record, source: inFile(record.name), genBank });
+        }
       } catch (error) {
-        errors.push(`${file.name}: ${actionableImportError(error)}`);
+        skipped.push({ source: file.name, reason: actionableImportError(error) });
       }
     }
     // `addRecords` validates its whole argument and returns 0 for all of it, so a
@@ -9023,31 +10087,54 @@ function App() {
     // call still runs once, so the record-count and trace-budget limits are still
     // checked against the selection as a whole rather than per file.
     const importable: ArtifactRecordInput[] = [];
-    for (const record of additions) {
+    for (const { record, source, genBank } of additions) {
+      if (!String(record.seq ?? record.sequence ?? '').trim()) {
+        skipped.push({
+          source,
+          reason: genBank ? 'the GenBank record has no ORIGIN sequence. Export the complete record and retry' : 'no sequence found',
+        });
+        continue;
+      }
+      const repeats = duplicateOfOpenRecord(record, [...payloadRef.current.records, ...importable]);
+      if (repeats) {
+        skipped.push({ source, reason: `${repeats} is already in the inventory` });
+        continue;
+      }
       try {
         validateRuntimeRecordInputs([omitUndefinedObjectProperties(record)], 'motifAddRecords', true);
         importable.push(record);
       } catch (error) {
-        errors.push(`${record.name}: ${importFailureReason(error)}`);
+        skipped.push({ source, reason: importFailureReason(error) });
       }
     }
-    const added = addRecords(importable);
-    const alsoFailed = errors.length - 1;
-    const importMessage = errors.length > 0
-      ? `${added > 0 ? `Imported ${added}; ` : ''}${errors[0]}${alsoFailed > 0 ? ` (${alsoFailed} more file${alsoFailed === 1 ? '' : 's'} also failed)` : ''}`
-      : added > 0
-        ? `Imported ${added} record${added === 1 ? '' : 's'}`
-        : 'No usable sequence found. Check the file format or choose the molecule type explicitly.';
-    if (showDropFeedback) {
-      setDropState({ active: true, message: importMessage });
-      window.setTimeout(() => setDropState({ active: false, message: '' }), errors.length > 0 ? 5000 : 1600);
+    const batchFailures: string[] = [];
+    const added = addRecords(importable, (message) => { batchFailures.push(message); });
+    const outcome = describeFileImportOutcome(added, skipped);
+    const relabelNote = added > 0 ? genBankRelabelNote(importable) : null;
+    const importMessage = batchFailures.length > 0
+      ? [batchFailures[0], ...(skipped.length > 0 ? [outcome.message] : [])].join(' · ')
+      : [outcome.message, ...(relabelNote ? [relabelNote] : [])].join(' · ');
+    const importDetail = batchFailures.length > 0
+      ? [batchFailures[0], ...(skipped.length > 0 ? [outcome.detail ?? outcome.message] : [])].join(' · ')
+      : [outcome.detail ?? outcome.message, ...(relabelNote ? [relabelNote] : [])].join(' · ');
+    const tone = batchFailures.length > 0 ? 'error' : outcome.tone;
+    if (showNotice && source === 'drop') {
+      // A drop has no panel open. The Add entry status line keeps the full list,
+      // and when the notice counts past the third skipped file it offers to show it.
+      setDroppedImportOutcome((previous) => ({ id: (previous?.id ?? 0) + 1, text: importDetail, error: tone === 'error' }));
+      showWorkbenchNotice(importMessage, tone, importDetail !== importMessage
+        ? { label: 'Show all', accessibleLabel: 'Show every skipped file in Add entry', run: () => setImportPanelOpen(true) }
+        : undefined);
+    } else if (showNotice) {
+      showWorkbenchNotice(importMessage, tone);
     }
     return {
       records: added > 0 ? payloadRef.current.records.slice(-added) : [],
       message: importMessage,
-      tone: errors.length > 0 || added === 0 ? 'error' : 'status',
+      tone,
+      detail: importDetail,
     };
-  }, [addRecords, importDefaults, requestArtifactDatabaseRestore]);
+  }, [addRecords, importDefaults, requestArtifactDatabaseRestore, showWorkbenchNotice]);
 
   const dragHasFiles = (event: ReactDragEvent) => Array.from(event.dataTransfer?.types ?? []).includes('Files');
   const handleDragEnter = useCallback((event: ReactDragEvent) => {
@@ -9073,9 +10160,10 @@ function App() {
     if (!dragHasFiles(event)) return;
     event.preventDefault();
     dragDepthRef.current = 0;
+    // The card is the drag prompt only; the import outcome is a workbench notice.
+    setDropState({ active: false, message: '' });
     const files = event.dataTransfer?.files;
-    if (files && files.length > 0) void importFiles(files);
-    else setDropState({ active: false, message: '' });
+    if (files && files.length > 0) void importFiles(files, true, 'drop');
   }, [importFiles]);
   const importMsaRecords = useCallback((files: FileList | File[]) => importFiles(files, false), [importFiles]);
 
@@ -9084,53 +10172,38 @@ function App() {
       showWorkbenchNotice(`A record can contain at most ${MOTIF_MAX_FEATURES_PER_RECORD.toLocaleString()} features.`, 'error');
       return;
     }
-    setPayload((current) => {
-      const currentRecord = current.records.find((record) => record.id === recordId);
-      if (!currentRecord) return current;
-      const feature = normalizeFeature(featureInput, currentRecord.features.length, currentRecord.sequence.length);
-      if (!feature) return current;
-      const nextFeature = {
-        ...feature,
-        id: uniqueFeatureId(feature.name, currentRecord.features),
-      };
+    const currentRecord = payloadRef.current.records.find((record) => record.id === recordId);
+    if (!currentRecord) return;
+    const feature = normalizeFeature(featureInput, currentRecord.features.length, currentRecord.sequence.length);
+    if (!feature) return;
+    const nextFeature = {
+      ...feature,
+      id: uniqueFeatureId(feature.name, currentRecord.features),
+    };
+    if (commitFeatureHistory([...currentRecord.features, nextFeature])) {
       setSelection({ kind: 'feature', id: nextFeature.id });
-      return {
-        ...current,
-        records: current.records.map((record) => (
-          record.id === recordId
-            ? { ...record, features: [...record.features, nextFeature] }
-            : record
-        )),
-      };
-    });
-  }, [features.length, recordId, showWorkbenchNotice]);
+    }
+  }, [commitFeatureHistory, features.length, recordId, showWorkbenchNotice]);
 
   const addFeatures = useCallback((featureInputs: readonly ArtifactFeatureInput[]) => {
     if (features.length + featureInputs.length > MOTIF_MAX_FEATURES_PER_RECORD) {
       showWorkbenchNotice(`These features exceed the ${MOTIF_MAX_FEATURES_PER_RECORD.toLocaleString()}-feature record limit. Remove features or add fewer features. No features were added.`, 'error');
       return;
     }
-    setPayload((current) => {
-      const currentRecord = current.records.find((record) => record.id === recordId);
-      if (!currentRecord) return current;
-      const nextFeatures = [...currentRecord.features];
-      for (const featureInput of featureInputs) {
-        const feature = normalizeFeature(featureInput, nextFeatures.length, currentRecord.sequence.length);
-        if (!feature) continue;
-        nextFeatures.push({
-          ...feature,
-          id: uniqueFeatureId(feature.name, nextFeatures),
-        });
-      }
-      if (nextFeatures.length === currentRecord.features.length) return current;
-      return {
-        ...current,
-        records: current.records.map((record) => (
-          record.id === recordId ? { ...record, features: nextFeatures } : record
-        )),
-      };
-    });
-  }, [features.length, recordId, showWorkbenchNotice]);
+    const currentRecord = payloadRef.current.records.find((record) => record.id === recordId);
+    if (!currentRecord) return;
+    const nextFeatures = [...currentRecord.features];
+    for (const featureInput of featureInputs) {
+      const feature = normalizeFeature(featureInput, nextFeatures.length, currentRecord.sequence.length);
+      if (!feature) continue;
+      nextFeatures.push({
+        ...feature,
+        id: uniqueFeatureId(feature.name, nextFeatures),
+      });
+    }
+    if (nextFeatures.length === currentRecord.features.length) return;
+    commitFeatureHistory(nextFeatures);
+  }, [commitFeatureHistory, features.length, recordId, showWorkbenchNotice]);
 
   // Open the prefilled feature editor for the current selection. Creating a
   // durable annotation should remain an explicit, named action rather than a
@@ -9164,24 +10237,21 @@ function App() {
       sequence.length,
     );
     if (!feature) return;
-    if (featureTranslationSignature(existingFeature) !== featureTranslationSignature(feature)) {
-      markFeatureTranslationLayersForReview(featureId);
-    }
-    setPayload((current) => ({
-      ...current,
-      records: current.records.map((record) => (
-        record.id === recordId
-          ? {
-              ...record,
-              features: record.features.map((currentFeature) => (
-                currentFeature.id === featureId ? { ...feature, id: featureId } : currentFeature
-              )),
-            }
-          : record
+    const currentRecord = payloadRef.current.records.find((record) => record.id === recordId);
+    if (!currentRecord) return;
+    const translationChanged = featureTranslationSignature(existingFeature) !== featureTranslationSignature(feature);
+    // Record the history first: the review flag below updates the durable
+    // layer state eagerly, and the snapshot must see the layers as they were.
+    const committed = commitFeatureHistory(
+      currentRecord.features.map((currentFeature) => (
+        currentFeature.id === featureId ? { ...feature, id: featureId } : currentFeature
       )),
-    }));
+      translationChanged ? featureId : undefined,
+    );
+    if (!committed) return;
+    if (translationChanged) markFeatureTranslationLayersForReview(featureId);
     setSelection({ kind: 'feature', id: featureId });
-  }, [features, markFeatureTranslationLayersForReview, recordId, sequence.length]);
+  }, [commitFeatureHistory, features, markFeatureTranslationLayersForReview, recordId, sequence.length]);
 
   const updateTranslationCodeForTarget = useCallback((translationTableId: number) => {
     if (!isSupportedArtifactTranslationTableId(translationTableId)) return;
@@ -9236,24 +10306,24 @@ function App() {
   }, [markFeatureTranslationLayersForReview, recordId, selectedTranslationLayer, translateTarget.translationTableId, translateTargetCodeFeature?.id, updateTranslationLayers]);
 
   const deleteFeature = useCallback((featureId: string) => {
+    const currentRecord = payloadRef.current.records.find((record) => record.id === recordId);
+    // Every deletion goes through deleteArtifactFeature, which also keeps the
+    // record's proposal-review counts current; the history snapshot carries
+    // that provenance, so Undo restores it with the feature.
+    const nextRecord = currentRecord ? deleteArtifactFeature(currentRecord, featureId) : undefined;
+    // History first, then the review flag: see updateFeature.
+    const committed = !!currentRecord
+      && !!nextRecord
+      && nextRecord !== currentRecord
+      && commitFeatureHistory([...nextRecord.features], featureId, nextRecord.provenance);
     markFeatureTranslationLayersForReview(featureId);
-    setPayload((current) => {
-      const currentRecord = current.records.find((record) => record.id === recordId);
-      if (!currentRecord || !currentRecord.features.some((feature) => feature.id === featureId)) return current;
-      const nextRecord = deleteArtifactFeature(currentRecord, featureId);
-      setSelection((currentSelection) => (
-        currentSelection?.kind === 'feature' && currentSelection.id === featureId
-          ? null
-          : currentSelection
-      ));
-      return {
-        ...current,
-        records: current.records.map((record) => (
-          record.id === recordId ? nextRecord : record
-        )),
-      };
-    });
-  }, [markFeatureTranslationLayersForReview, recordId]);
+    if (!committed) return;
+    setSelection((currentSelection) => (
+      currentSelection?.kind === 'feature' && currentSelection.id === featureId
+        ? null
+        : currentSelection
+    ));
+  }, [commitFeatureHistory, markFeatureTranslationLayersForReview, recordId]);
 
   const acceptProposedFeature = useCallback((featureId: string) => {
     setPayload((current) => ({
@@ -9333,7 +10403,7 @@ function App() {
       ? resolveArtifactTranslationCode(vector.translationTableId, selectedFeature.metadata)
       : null;
     const selectedFeatureMetadata: Record<string, unknown> | null = selectedFeature ? {
-      ...selectedFeature.metadata,
+      ...remapPositionQualifiers(selectedFeature.metadata, qualifierMapForFeatureSequence(selectedFeature, true)),
       sourceRecordId: recordId,
       sourceFeatureId: selectedFeature.id,
       generatedBy: 'reverse_complement_selection',
@@ -9414,7 +10484,7 @@ function App() {
         strand: sequenceType === 'protein' ? 0 : 1,
         color: selectedFeature.color,
         metadata: {
-          ...selectedFeature.metadata,
+          ...remapPositionQualifiers(selectedFeature.metadata, qualifierMapForFeatureSequence(selectedFeature)),
           sourceRecordId: recordId,
           sourceFeatureId: selectedFeature.id,
           sourceStrand: selectedFeature.strand,
@@ -9757,9 +10827,9 @@ function App() {
     // well hid nothing extra, and instead reached the data: exports and
     // `motifDescribe()` read the sources, so a control the user reads as "stop
     // drawing these" silently changed what a downloaded GenBank/CSV/JSON said
-    // about the molecule. Measured on pUC19 before this change: the summary went
-    // from "11 single cutters; 22 enzymes cut" to "0 single cutters; 0 enzymes
-    // cut", and the exports quietly lost every non-Common source.
+    // about the molecule. On pUC19 before this change the summary's single-cutter
+    // and enzyme counts fell to "0 single cutters; 0 enzymes cut", and the exports
+    // quietly lost every non-Common source.
     setHiddenEnzymesByRecord((current) => ({
       ...current,
       [recordId]: enzymeNames,
@@ -9824,6 +10894,19 @@ function App() {
   }, []);
 
   const popOutPane = useCallback((pane: PaneKey) => {
+    // The Tools rail is a strip of icons, not a docked pane size to keep.
+    const dockedPane = panePlacements[pane] === 'docked' && paneVisibility[pane] && (pane !== 'tools' || toolsPinned)
+      ? paneElementForKey(pane)
+      : null;
+    const dockedBox = dockedPane?.getBoundingClientRect();
+    const rect = popOutFloatingPaneRect(
+      floatingPaneRectsRef.current[pane],
+      dockedBox && dockedBox.width > 0 ? dockedBox : null,
+      floatingPaneViewport(),
+      FLOATING_PANE_LIMITS[pane],
+    );
+    floatingPaneRectsRef.current = { ...floatingPaneRectsRef.current, [pane]: rect };
+    setFloatingPaneRects((current) => ({ ...current, [pane]: rect }));
     setPaneVisibility((current) => current[pane] ? current : { ...current, [pane]: true });
     setPanePlacements((current) => current[pane] === 'floating'
       ? current
@@ -9833,7 +10916,7 @@ function App() {
     window.requestAnimationFrame(() => {
       paneElementForKey(pane)?.querySelector<HTMLButtonElement>('[data-pane-dock]')?.focus({ preventScroll: true });
     });
-  }, [bringFloatingPaneToFront, paneElementForKey]);
+  }, [bringFloatingPaneToFront, paneElementForKey, panePlacements, paneVisibility, toolsPinned]);
 
   const dockPane = useCallback((pane: PaneKey) => {
     setPanePlacements((current) => current[pane] === 'docked'
@@ -10214,7 +11297,14 @@ function App() {
           forward: primer(handoff.pair.forward),
           reverse: primer(handoff.pair.reverse),
           productLengthBp: handoff.pair.productLength,
-          warnings: handoff.pair.tmDifference > 5 ? [`Primer melting temperatures differ by ${handoff.pair.tmDifference.toFixed(1)} °C.`] : [],
+          warnings: [
+            ...(handoff.pair.tmDifference > 5 ? [`Primer melting temperatures differ by ${handoff.pair.tmDifference.toFixed(1)} °C.`] : []),
+            ...[
+              ...(handoff.pair.forward.tailStructureWarnings ?? []),
+              ...(handoff.pair.reverse.tailStructureWarnings ?? []),
+              ...(handoff.pair.tailStructureWarnings ?? []),
+            ].map((warning) => warning.message),
+          ],
         }],
         selectedPairId: pairId,
       },
@@ -10364,7 +11454,9 @@ function App() {
     showWorkbenchNotice('PCR simulation saved in Results only. No sequence record was created.');
   }, [savePrimerDesignResult, showWorkbenchNotice]);
 
-  const materializePrimerAmplicon = useCallback((handoff: ClaudeSciencePrimerHandoff) => {
+  // Returns the amplicon record now in the inventory, created or reused, or
+  // null when an identical amplicon exists but is inactive.
+  const createPrimerAmpliconRecord = useCallback((handoff: ClaudeSciencePrimerHandoff): { id: string; name: string } | null => {
     const primerResult = savePrimerDesignResult(handoff);
     const current = payloadRef.current;
     const template = current.records.find((record) => record.id === handoff.recordId);
@@ -10379,7 +11471,8 @@ function App() {
       topology: template.topology,
       translationTableId: template.translationTableId,
       active: template.active,
-      features: template.features,
+      // A proposed ORF nobody accepted stays a guess on its own record.
+      features: template.features.filter((feature) => !isProposedAnnotation(feature)),
       ...(template.description ? { description: template.description } : {}),
       ...(template.organism ? { organism: template.organism } : {}),
       ...(template.source ? { source: template.source } : {}),
@@ -10450,7 +11543,7 @@ function App() {
       } else {
         showWorkbenchNotice(`This exact amplicon already exists as “${duplicate.name}”. No duplicate record was created.${reusable ? '' : ' Reactivate it before using it in cloning.'}`);
       }
-      return;
+      return reusable ? { id: reusable.id, name: reusable.name } : null;
     }
     if (current.records.length >= MOTIF_MAX_RECORDS) {
       throw new Error(`Creating this amplicon exceeds the ${MOTIF_MAX_RECORDS}-record artifact limit. Remove a record, then try again.`);
@@ -10478,13 +11571,30 @@ function App() {
     const nextPayload: LoadedPayload = { ...current, records, ...workspace };
     payloadRef.current = nextPayload;
     setPayload(nextPayload);
+    // A template feature that crosses an amplicon end is not in the product;
+    // the notice names it. The builder draws its own primer features, so a
+    // template primer_bind is not counted as lost.
+    const { simulation } = materialized;
+    const carriedIds = new Set(simulation.features.map((feature) => feature.metadata.pcrSourceFeatureId));
+    const amplified: Array<[number, number]> = simulation.wrapsOrigin
+      ? [[simulation.forward.bindStart, template.sequence.length], [0, simulation.reverse.bindEnd]]
+      : [[simulation.forward.bindStart, simulation.reverse.bindEnd]];
+    const leftOutNotice = describeFeaturesLeftOut(
+      template.features.filter((feature) => (
+        feature.type !== 'primer_bind'
+        && !carriedIds.has(feature.id)
+        && featureOverlapsIntervals(feature, amplified, template.sequence.length)
+      )),
+      'amplicon',
+    );
+    const leftOutSuffix = leftOutNotice ? ` ${leftOutNotice}` : '';
 
     if (replaced) {
       setShowPrimerDesign(false);
       setCloningPrimerRequest(null);
       setCompletedCloningPrimerActionIds([]);
-      showWorkbenchNotice(`Created “${normalized.name}”, replaced the prepared part, and rechecked the cloning draft. The source record is unchanged.`);
-      return;
+      showWorkbenchNotice(`Created “${normalized.name}”, replaced the prepared part, and rechecked the cloning draft. The source record is unchanged.${leftOutSuffix}`);
+      return { id: normalized.id, name: normalized.name };
     }
 
     rememberActiveSequenceScroll();
@@ -10492,10 +11602,15 @@ function App() {
     setSelectedRecordId(normalized.id);
     setSelection(null);
     setShowPrimerDesign(false);
-    showWorkbenchNotice(handoff.preparationContext
+    showWorkbenchNotice(`${handoff.preparationContext
       ? `Created “${normalized.name}”, but the cloning draft changed and was not replaced. Review the draft before using this record.`
-      : `Created and opened “${normalized.name}”. The source record is unchanged.`);
+      : `Created and opened “${normalized.name}”. The source record is unchanged.`}${leftOutSuffix}`);
+    return { id: normalized.id, name: normalized.name };
   }, [rememberActiveSequenceScroll, savePrimerDesignResult, showWorkbenchNotice]);
+
+  const materializePrimerAmplicon = useCallback((handoff: ClaudeSciencePrimerHandoff) => {
+    createPrimerAmpliconRecord(handoff);
+  }, [createPrimerAmpliconRecord]);
 
   const selectTranslationCodonAndReveal = useCallback((
     start: number,
@@ -10663,10 +11778,14 @@ function App() {
     setShowAssembly(false);
     setShowPrimerDesign(false);
     setShowConstructVerification(false);
-    const active = assemblyRecords.find((record) => record.id === preferredRecordId)?.id;
+    // The live payload, not the rendered record list: "Use in cloning" creates
+    // the amplicon in the same handler that opens this window.
+    const active = payloadRef.current.records.find((record) => (
+      record.id === preferredRecordId && record.active && record.type === 'dna'
+    ))?.id;
     setCloningDesignInitialRecordIds(active ? [active] : []);
     setShowCloningDesign(true);
-  }, [assemblyRecords, closeOpenToolDetails, recordId]);
+  }, [closeOpenToolDetails, recordId]);
 
   const saveAssemblyArtifacts = useCallback((saved: ClaudeScienceAssemblySavePayload) => {
     const current = payloadRef.current;
@@ -10693,6 +11812,7 @@ function App() {
       throw new Error(`A record named “${saved.derivedRecord.name}” already exists. Choose a unique product name.`);
     }
     const additions: ArtifactVector[] = [];
+    const leftOut: Feature[] = [];
     if (saved.derivedRecord) {
       const inputTranslationTableIds = saved.workflowResult.inputRecordIds.map((id) => (
         current.records.find((record) => record.id === id)?.translationTableId ?? 1
@@ -10702,8 +11822,34 @@ function App() {
         ? current.records.find((record) => record.id === uniqueInputRecordIds[0])
         : undefined;
       const translationTableId = singleParentRecord?.translationTableId;
+      // A ligation product is its parts joined in order, so each part's features
+      // carry over shifted by the parts before it. Without them the product
+      // showed no AmpR or ori, only proposed ORFs.
+      const ligationParts = saved.workflowResult.kind === 'ligation'
+        ? saved.workflowResult.inputRecordIds.map((id) => current.records.find((record) => record.id === id))
+        : [];
+      const carriedFeatures = ligationParts.length > 0 && ligationParts.every((part) => part !== undefined)
+        ? carryLigationPartFeatures(ligationParts as ArtifactVector[], saved.derivedRecord.sequence.length, leftOut)
+        : saved.plan.kind === 'golden_gate' && saved.plan.enzyme
+          ? carryGoldenGatePartFeatures(
+            saved.plan.parts.map((part) => {
+              const record = current.records.find((entry) => entry.id === part.recordId);
+              return {
+                sequence: record?.sequence ?? '',
+                insertStart: part.insertStart,
+                insertEnd: part.insertEnd,
+                features: record?.features ?? [],
+              };
+            }),
+            saved.plan.enzyme.overhangLength,
+            saved.derivedRecord.sequence,
+            saved.plan.topology,
+            leftOut,
+          )
+          : [];
       const recordInput = omitUndefinedObjectProperties({
         ...saved.derivedRecord,
+        ...(carriedFeatures.length > 0 ? { features: carriedFeatures } : {}),
         translationTableId,
         provenance: {
           ...saved.derivedRecord.provenance,
@@ -10734,6 +11880,9 @@ function App() {
     };
     payloadRef.current = nextPayload;
     setPayload(nextPayload);
+    // The workspace adds this to its saved line: a feature across a part end
+    // is in no part of the product.
+    return describeFeaturesLeftOut(leftOut, 'part') ?? undefined;
   }, []);
 
   const designCloningPreparationPrimers = useCallback((request: ClaudeScienceCloningPrimerRequest) => {
@@ -10782,12 +11931,19 @@ function App() {
   }, [cloningPrimerRequest, cloningPrimerWorklist, selectRecord, showWorkbenchNotice]);
 
   const usePrimerDesignForCloning = useCallback((handoff: ClaudeSciencePrimerHandoff) => {
-    savePrimerDesignResult(handoff);
     if (!cloningPrimerRequest || !activeCloningPrimerItem) {
+      // The design takes the pair's PCR product, not its template: this used to
+      // open with the whole source plasmid as part 1 and no trace of the pair.
+      // Creating the amplicon goes through the same path, duplicate guard and
+      // record limit as "Create amplicon record", and saves the design result.
+      const amplicon = createPrimerAmpliconRecord(handoff);
+      if (!amplicon) return;
       setShowPrimerDesign(false);
-      openCloningDesignWorkspace(handoff.recordId);
+      openCloningDesignWorkspace(amplicon.id);
+      showWorkbenchNotice(`Opened a cloning design with “${amplicon.name}” as part 1. The source record is unchanged.`);
       return;
     }
+    savePrimerDesignResult(handoff);
 
     const completed = new Set(completedCloningPrimerActionIds);
     completed.add(activeCloningPrimerItem.action.id);
@@ -10812,6 +11968,7 @@ function App() {
     cloningPrimerRequest,
     cloningPrimerWorklist,
     completedCloningPrimerActionIds,
+    createPrimerAmpliconRecord,
     navigateCloningPrimerRecord,
     openCloningDesignWorkspace,
     savePrimerDesignResult,
@@ -10915,8 +12072,51 @@ function App() {
     }
 
     const additions: ArtifactVector[] = [];
+    const leftOut: Feature[] = [];
     if (verifiedProduct) {
+      // An overlap-assembly product is its parts with each overlap shared once,
+      // so a part's bases still sit contiguously in it and its features belong
+      // where that part landed. Without this the product carried no features and
+      // the map filled with proposed ORFs instead.
+      const carriedFeatures = saved.method === 'gibson'
+        ? carryOverlapPartFeatures(
+          actualOrderedRecordIds.map((id, index) => {
+            const record = currentRecordsById.get(id);
+            return {
+              sequence: record?.sequence ?? '',
+              features: record?.features ?? [],
+              orientation: actualOrientations[index] ?? 'forward',
+            };
+          }),
+          verifiedProduct.sequence,
+          leftOut,
+        )
+        // A Golden Gate design product is the parts' released pieces, each
+        // trimmed at its Type IIS sites and sharing one overhang with the next,
+        // so the offsets come from the boundaries the plan measured.
+        : verifiedPlan.kind === 'golden_gate_design' && verifiedPlan.enzyme
+          ? carryGoldenGatePartFeatures(
+            actualOrderedRecordIds.map((id, index) => {
+              const record = currentRecordsById.get(id);
+              const prepared = verifiedPlan.kind === 'golden_gate_design'
+                ? verifiedPlan.parts.find((part) => part.recordId === id)
+                : undefined;
+              return {
+                sequence: record?.sequence ?? '',
+                insertStart: prepared?.insertStart ?? null,
+                insertEnd: prepared?.insertEnd ?? null,
+                features: record?.features ?? [],
+                orientation: actualOrientations[index] ?? 'forward',
+              };
+            }),
+            overhangLengthForEnzyme(verifiedPlan.enzyme),
+            verifiedProduct.sequence,
+            verifiedProduct.topology,
+            leftOut,
+          )
+          : [];
       const recordInput: ArtifactRecordInput = {
+        ...(carriedFeatures.length > 0 ? { features: carriedFeatures } : {}),
         id: `cloning-product-${crypto.randomUUID()}`,
         name: saved.name,
         description: `${saved.method === 'gibson' ? 'Gibson' : 'Golden Gate'} design product generated from ${verifiedProduct.orderedRecordIds.length} ordered inputs.`,
@@ -11057,8 +12257,21 @@ function App() {
       selectedRecordIdRef.current = additions[0].id;
       setSelectedRecordId(additions[0].id);
     }
-    showWorkbenchNotice(shouldCreateProduct ? 'Design and product saved.' : 'Assembly plan saved in Results.');
+    const leftOutNotice = describeFeaturesLeftOut(leftOut, 'part');
+    showWorkbenchNotice(shouldCreateProduct
+      ? `Design and product saved.${leftOutNotice ? ` ${leftOutNotice}` : ''}`
+      : 'Assembly plan saved in Results.');
   }, [showWorkbenchNotice]);
+
+  // The verification window shares the one-tool-window slot, so opening
+  // Alignment (or any other tool) unmounts it. Its run used to live only in
+  // that component and was lost without a word; the host keeps the latest run
+  // and settings here, and the window restores them when it next opens.
+  const constructVerificationDraftRef = useRef<ClaudeScienceConstructVerificationDraft | null>(null);
+  const loadConstructVerificationDraft = useCallback(() => constructVerificationDraftRef.current, []);
+  const keepConstructVerificationDraft = useCallback((draft: ClaudeScienceConstructVerificationDraft) => {
+    constructVerificationDraftRef.current = draft;
+  }, []);
 
   const runConstructVerification = useCallback((request: ClaudeScienceConstructVerificationRequest) => {
     return verifyArtifactConstruct({
@@ -11150,19 +12363,26 @@ function App() {
     if (duplicate) throw new Error(`This exact verification is already saved as “${duplicate.name}”.`);
 
     const createdAt = new Date().toISOString();
-    const artifacts = buildArtifactConstructVerificationArtifacts(saved.result, evidenceSha256s, {
-      resultId: `construct-verification-${crypto.randomUUID()}`,
-      assetId: `construct-verification-report-${crypto.randomUUID()}`,
-      createdAt,
-    });
     const context = {
       recordLengths: new Map(current.records.map((record) => [record.id, record.sequence.length])),
     };
-    let workspace = appendArtifactAnalysisAsset({
-      analysisResults: current.analysisResults,
-      analysisAssets: current.analysisAssets,
-    }, artifacts.asset, context);
-    workspace = appendArtifactAnalysisWorkspaceResult(workspace, artifacts.result, context);
+    let workspace: ReturnType<typeof appendArtifactAnalysisWorkspaceResult>;
+    try {
+      const artifacts = buildArtifactConstructVerificationArtifacts(saved.result, evidenceSha256s, {
+        resultId: `construct-verification-${crypto.randomUUID()}`,
+        assetId: `construct-verification-report-${crypto.randomUUID()}`,
+        createdAt,
+      });
+      workspace = appendArtifactAnalysisAsset({
+        analysisResults: current.analysisResults,
+        analysisAssets: current.analysisAssets,
+      }, artifacts.asset, context);
+      workspace = appendArtifactAnalysisWorkspaceResult(workspace, artifacts.result, context);
+    } catch (error) {
+      // The format checks name a field path; lead with what failed in plain words.
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(`Its report did not pass the Results format check: ${detail}`);
+    }
     const nextPayload: LoadedPayload = { ...current, ...workspace };
     payloadRef.current = nextPayload;
     setPayload(nextPayload);
@@ -11216,6 +12436,36 @@ function App() {
     setShowConstructVerification(false);
     setShowAlignment(true);
   }, [closeOpenToolDetails]);
+
+  // A variant row in the verification window opens its reads in Alignment's
+  // Traces view at that base. The workspace builds the alignment from the
+  // run's own read map, and the same reads name the same alignment, so opening
+  // another variant they cover reuses the saved one instead of adding a copy.
+  const [alignmentNavigationRequest, setAlignmentNavigationRequest] = useState<{
+    alignmentId: string;
+    column: number;
+    rowId: string | null;
+    token: number;
+  } | null>(null);
+  const alignmentNavigationTokenRef = useRef(0);
+  const inspectConstructVerificationVariant = useCallback((target: {
+    alignment: ArtifactAlignment;
+    column: number;
+    rowId: string | null;
+  }) => {
+    const existing = payloadRef.current.alignments.find((alignment) => alignment.id === target.alignment.id);
+    const alignment = existing ?? saveAlignment(target.alignment);
+    // Unique across mounts of the viewer; see ClaudeScienceMsaNavigationRequest.
+    const token = Math.max(alignmentNavigationTokenRef.current + 1, Date.now());
+    alignmentNavigationTokenRef.current = token;
+    setActiveAlignmentId(alignment.id);
+    setMsaViewPreferences((preferences) => ({ ...preferences, displayMode: 'trace' }));
+    setAlignmentNavigationRequest({ alignmentId: alignment.id, column: target.column, rowId: target.rowId, token });
+    openAlignmentWindow();
+  }, [openAlignmentWindow, saveAlignment]);
+  const finishAlignmentNavigation = useCallback((token: number) => {
+    setAlignmentNavigationRequest((current) => (current?.token === token ? null : current));
+  }, []);
 
   useEffect(() => {
     if (toolsPinned) return undefined;
@@ -11296,65 +12546,42 @@ function App() {
   }, [closeOpenToolDetails, mapFrameRef]);
 
   /**
-   * Where the reader was before Export took the pane over.
+   * Export and copy opens as a popover anchored to the title-row Export button.
    *
-   * The panel is the last child of the sequence column, so revealing it scrolls
-   * the column almost to its end: measured at 1440x1000, opening Export from a
-   * reading position of scrollTop 300 lands at 1947 of 1966 and leaves 0 of the
-   * sequence's 1778px on screen. Closing it again used to leave the reader at
-   * 1574 — the new bottom — 1274px from the line they were on, with nothing in
-   * the UI to say where that line went.
+   * It used to be revealed by scrolling the sequence column to the panel, the
+   * column's last child: 339px at 1024x768, 1280x720 and 1440x900, which took
+   * the record title, this Export button and every row of bases off screen,
+   * and Escape did not close it. The panel's summary row stays where it was
+   * and opens the same popover above itself.
    */
-  const exportReturnScrollRef = useRef<number | null>(null);
+  const exportTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const [exportPanelOpen, setExportPanelOpen] = useState(false);
+  const [exportOpenedFrom, setExportOpenedFrom] = useState<'header' | 'summary'>('summary');
   const revealExportPanel = useCallback(() => {
-    const column = sequenceColumnRef.current;
-    const panel = column?.querySelector<HTMLDetailsElement>('#motif-cs-export-panel');
-    if (!panel || !column) return;
-    // Only the first reveal records it. Pressing Export while the panel is
-    // already open must not overwrite the reading position with the panel's own.
-    if (!panel.open) exportReturnScrollRef.current = column.scrollTop;
+    const panel = sequenceColumnRef.current?.querySelector<HTMLDetailsElement>('#motif-cs-export-panel');
+    if (!panel) return;
+    // The button toggles its own popover, and re-anchors one the summary opened.
+    if (panel.open && exportOpenedFrom === 'header') {
+      panel.open = false;
+      return;
+    }
+    setExportOpenedFrom('header');
     panel.open = true;
-    window.requestAnimationFrame(() => {
-      panel.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'auto' });
-      panel.querySelector<HTMLElement>(':scope > summary')?.focus({ preventScroll: true });
-    });
-  }, []);
-
-  // `toggle` does not bubble, so this listens in the capture phase on the column
-  // rather than on the panel: the panel remounts with the record and a listener
-  // bound to the element itself would go stale. Opening the panel by its own
-  // summary records nothing and restores nothing — that reader scrolled here
-  // themselves and is already where they meant to be.
-  useEffect(() => {
-    const column = sequenceColumnRef.current;
-    if (!column) return undefined;
-    const onToggle = (event: Event) => {
-      const panel = event.target;
-      if (!(panel instanceof HTMLDetailsElement) || panel.id !== 'motif-cs-export-panel') return;
-      if (panel.open) return;
-      const target = exportReturnScrollRef.current;
-      exportReturnScrollRef.current = null;
-      if (target === null) return;
-      // After the commit that removes the panel body, so the column has already
-      // shrunk back and the browser will not clamp a valid position away.
-      window.requestAnimationFrame(() => { column.scrollTop = target; });
-    };
-    column.addEventListener('toggle', onToggle, true);
-    return () => column.removeEventListener('toggle', onToggle, true);
-  }, []);
+  }, [exportOpenedFrom]);
 
   useEffect(() => {
     saveWorkspaceLayoutPrefs({
       theme,
       paneWidths: preferredPaneWidths,
       stackedPaneHeights,
+      sideBySideSequenceShare,
       paneVisibility,
       paneOrder,
       toolsPinned,
       panePlacements,
       floatingPaneRects,
     });
-  }, [floatingPaneRects, paneOrder, panePlacements, paneVisibility, preferredPaneWidths, stackedPaneHeights, theme, toolsPinned]);
+  }, [floatingPaneRects, paneOrder, panePlacements, paneVisibility, preferredPaneWidths, sideBySideSequenceShare, stackedPaneHeights, theme, toolsPinned]);
 
   useEffect(() => {
     saveMsaViewPreferences(msaViewPreferences);
@@ -11365,6 +12592,7 @@ function App() {
     setPreferredPaneWidths({ ...DEFAULT_WORKSPACE_LAYOUT.paneWidths });
     setPaneWidths({ ...DEFAULT_WORKSPACE_LAYOUT.paneWidths });
     setStackedPaneHeights({ ...DEFAULT_WORKSPACE_LAYOUT.stackedPaneHeights });
+    setSideBySideSequenceShare(DEFAULT_WORKSPACE_LAYOUT.sideBySideSequenceShare);
     setPaneVisibility({ ...DEFAULT_WORKSPACE_LAYOUT.paneVisibility });
     setToolsPinned(DEFAULT_WORKSPACE_LAYOUT.toolsPinned);
     setPaneOrder([...DEFAULT_WORKSPACE_LAYOUT.paneOrder]);
@@ -11401,7 +12629,11 @@ function App() {
 
   const downloadWorkspaceBackup = useCallback(() => {
     const snapshot = createArtifactDatabaseSnapshot(payloadRef.current, artifactStateRef.current);
-    return downloadTextFile('motif-workspace-backup.json', JSON.stringify(snapshot, null, 2), 'application/json');
+    const receipt = downloadTextFile('motif-workspace-backup.json', JSON.stringify(snapshot, null, 2), 'application/json');
+    if (receipt.status === 'requested') {
+      setDownloadedDurableFingerprint(artifactDurableFingerprint(payloadRef.current, artifactStateRef.current));
+    }
+    return receipt;
   }, []);
 
   const restoreWorkspaceBackupFile = useCallback(async (file: File, returnFocus: HTMLElement | null = null) => {
@@ -11528,6 +12760,8 @@ function App() {
     return index >= 0 ? index : PANE_ORDER_FALLBACK[pane];
   }, [paneOrder]);
 
+  useKeepScrollAcrossPaneReorder(workspaceMainRef, paneOrder);
+
   const paneCssOrder = useCallback((pane: PaneKey, position: 'pane' | 'before' | 'after' = 'pane') => {
     const base = paneOrderIndex(pane) * 3;
     if (position === 'before') return base;
@@ -11625,18 +12859,29 @@ function App() {
       document.querySelector<HTMLButtonElement>(`[data-pane-toggle="${pane}"]`)?.focus({ preventScroll: true });
     });
   }, [paneReorderAvailable]);
-  const compactPinnedLayout = toolsDocked && stableCompactTopology;
+  const sequenceAndMapDocked = paneVisibility.sequence && panePlacements.sequence === 'docked'
+    && paneVisibility.map && panePlacements.map === 'docked';
+  // Which way the compact band arranges Sequence and Map. It only exists while both
+  // sit in the workspace: with either one hidden or floating, the panes left over
+  // share a single row in every arrangement. It is decided from the VIEWPORT (see
+  // COMPACT_SIDE_BY_SIDE_MIN_WIDTH), and it is also what the stylesheet keys on,
+  // through `data-workspace-arrangement`, so the row-height and width-clamp logic
+  // below can never disagree with the geometry the CSS draws.
+  const workspaceArrangement: CompactWorkspaceArrangement | undefined = stableCompactTopology && sequenceAndMapDocked
+    ? compactWorkspaceArrangement(floatingViewport.width, floatingViewport.height)
+    : undefined;
+  const compactSideBySide = workspaceArrangement === 'side-by-side';
+  const compactPinnedLayout = toolsDocked && stableCompactTopology && !compactSideBySide;
   const compactMapHiddenTwoRowLayout = compactPinnedLayout
     && workspaceMainSize.width <= 767
     && (!paneVisibility.map || panePlacements.map === 'floating');
   const compactRowResizeActive = compactPinnedLayout
     && paneVisibility.sequence && panePlacements.sequence === 'docked'
     && ((paneVisibility.map && panePlacements.map === 'docked') || compactMapHiddenTwoRowLayout);
-  const twoRowResizeActive = !toolsDocked
-    && stableCompactTopology
-    && visibleContentPanes.length === 3
-    && paneVisibility.sequence
-    && paneVisibility.map;
+  // Inventory is not part of this: hiding it used to drop the stacked workspace to
+  // one row with Map beside Sequence, so the Map jumped from the bottom row to the
+  // right column and back every time Inventory was toggled.
+  const twoRowResizeActive = !toolsDocked && workspaceArrangement === 'stacked';
   const workspaceRowResizeActive = compactRowResizeActive || twoRowResizeActive;
   const compactRowMinHeight = workspaceMainSize.height <= 360
     ? TWO_ROW_VERY_SHORT_MIN_HEIGHT
@@ -11650,7 +12895,7 @@ function App() {
   );
 
   const paneWidthLimitsForCurrentLayout = useCallback((pane: ResizablePaneKey) => {
-    if (compactPinnedLayout) return COMPACT_PINNED_PANE_WIDTH_LIMITS[pane] ?? PANE_WIDTH_LIMITS[pane];
+    if (compactPinnedLayout || compactSideBySide) return COMPACT_PINNED_PANE_WIDTH_LIMITS[pane] ?? PANE_WIDTH_LIMITS[pane];
     if (stableCompactTopology && visibleContentPanes.length === 3 && pane === 'inventory') {
       return {
         ...PANE_WIDTH_LIMITS.inventory,
@@ -11658,7 +12903,7 @@ function App() {
       };
     }
     return PANE_WIDTH_LIMITS[pane];
-  }, [compactPinnedLayout, stableCompactTopology, visibleContentPanes.length, workspaceMainSize.width]);
+  }, [compactPinnedLayout, compactSideBySide, stableCompactTopology, visibleContentPanes.length, workspaceMainSize.width]);
 
   const stackedPaneBoundsForCurrentLayout = useCallback((pane: StackedResizablePaneKey) => {
     if (pane === 'sequence' && workspaceRowResizeActive) {
@@ -11668,11 +12913,24 @@ function App() {
   }, [compactRowMinHeight, compactTopRowMaxHeight, workspaceRowResizeActive]);
 
   const clampPaneWidthsForViewport = useCallback((widths: PaneWidths): PaneWidths => {
-    if (compactPinnedLayout) {
+    // Side by side, Sequence and Map split what is left by share, so only the two
+    // fixed-width panes have a width to keep inside its limits.
+    if (compactPinnedLayout || compactSideBySide) {
       const next = { ...widths };
       for (const pane of ['inventory', 'tools'] as const) {
         const limits = paneWidthLimitsForCurrentLayout(pane);
         next[pane] = clamp(next[pane], limits.min, limits.max);
+      }
+      if (compactSideBySide) {
+        // Not drawn from (the CSS splits by share), but the divider reports
+        // paneWidths.sequence as its aria-valuenow, so keep it the width it gives.
+        const inventoryWidth = paneVisibility.inventory && panePlacements.inventory === 'docked' ? next.inventory + 7 : 0;
+        const toolsWidth = toolsDocked ? next.tools + 7 : TOOLS_RAIL_WIDTH;
+        const splitWidth = Math.max(0, workspaceMainSize.width - inventoryWidth - toolsWidth - 7);
+        next.sequence = Math.round(splitWidth * (sideBySideSequenceShare ?? SIDE_BY_SIDE_SEQUENCE_SHARE_DEFAULT));
+        next.map = splitWidth - next.sequence;
+        return next.inventory === widths.inventory && next.tools === widths.tools
+          && next.sequence === widths.sequence && next.map === widths.map ? widths : next;
       }
       return next.inventory === widths.inventory && next.tools === widths.tools ? widths : next;
     }
@@ -11682,9 +12940,7 @@ function App() {
       const inventory = clamp(widths.inventory, limits.min, limits.max);
       return inventory === widths.inventory ? widths : { ...widths, inventory };
     }
-    const twoRowLayout = typeof window !== 'undefined'
-      && window.matchMedia(TWO_ROW_LAYOUT_MEDIA).matches
-      && visibleContentPanes.length === 3;
+    const twoRowLayout = workspaceArrangement === 'stacked';
     const overlayTools = typeof window !== 'undefined' && window.matchMedia(OVERLAY_TOOLS_LAYOUT_MEDIA).matches;
     const fittedPanes = twoRowLayout
       ? visibleResizablePanes.filter((pane) => pane === 'inventory' || pane === 'sequence')
@@ -11724,7 +12980,7 @@ function App() {
       deficit -= consumed;
     }
     return next;
-  }, [compactPinnedLayout, paneWidthLimitsForCurrentLayout, resizeHandleCount, showToolsResizeHandle, stableCompactTopology, toolsRailWidth, visibleContentPanes.length, visibleResizablePanes, workspaceMainSize.width]);
+  }, [compactPinnedLayout, compactSideBySide, paneWidthLimitsForCurrentLayout, panePlacements.inventory, paneVisibility.inventory, resizeHandleCount, showToolsResizeHandle, sideBySideSequenceShare, stableCompactTopology, toolsDocked, toolsRailWidth, visibleResizablePanes, workspaceArrangement, workspaceMainSize.width]);
 
   useEffect(() => {
     const clampForCurrentViewport = () => {
@@ -11742,11 +12998,9 @@ function App() {
   }, [clampPaneWidthsForViewport, preferredPaneWidths]);
 
   const paneResizeNeighbor = useCallback((pane: ResizablePaneKey, edge: ResizeEdge) => {
-    if (compactPinnedLayout && (pane === 'inventory' || pane === 'tools')) return undefined;
+    if ((compactPinnedLayout || compactSideBySide) && (pane === 'inventory' || pane === 'tools')) return undefined;
     const overlayTools = typeof window !== 'undefined' && window.matchMedia(OVERLAY_TOOLS_LAYOUT_MEDIA).matches;
-    const twoRowLayout = typeof window !== 'undefined'
-      && window.matchMedia(TWO_ROW_LAYOUT_MEDIA).matches
-      && visibleContentPanes.length === 3;
+    const twoRowLayout = workspaceArrangement === 'stacked';
     if (twoRowLayout && pane === 'inventory') return 'sequence';
     const fittedPanes = visibleOrderedPanes.filter((key): key is ResizablePaneKey => (
       visibleResizablePanes.includes(key as ResizablePaneKey)
@@ -11755,7 +13009,7 @@ function App() {
     const index = fittedPanes.indexOf(pane);
     if (index < 0) return undefined;
     return fittedPanes[index + (edge === 'after' ? 1 : -1)];
-  }, [compactPinnedLayout, visibleContentPanes.length, visibleOrderedPanes, visibleResizablePanes]);
+  }, [compactPinnedLayout, compactSideBySide, visibleOrderedPanes, visibleResizablePanes, workspaceArrangement]);
 
   const resizePanePair = useCallback((
     pane: ResizablePaneKey,
@@ -11810,6 +13064,9 @@ function App() {
     // zero for the duration of the drag and the pane tracks the pointer one-to-one.
     const startWidths = measuredPaneWidths(paneWidths, panePlacements);
     const startPreferredWidths = { ...preferredPaneWidths };
+    // Side by side, the Sequence|Map divider moves a share rather than two widths,
+    // priced from the same rendered geometry so it still tracks the pointer 1:1.
+    const sideBySideSplitStart = compactSideBySide && pane === 'sequence' ? sideBySideSplitGeometry() : null;
     const neighbor = paneResizeNeighbor(pane, edge);
     const startWidth = startWidths[pane];
     const direction = pane === 'tools' || edge === 'before' ? -1 : 1;
@@ -11827,7 +13084,9 @@ function App() {
     const resizeHandleSpace = Math.max(0, effectiveHandleCount) * resizeHandleWidth;
     const mainWidth = Math.max(1, workspaceMainSize.width);
     const overlayTools = pane === 'tools' && overlayLayout;
-    const compactRowMaxWidth = compactPinnedLayout && pane === 'inventory'
+    const compactRowMaxWidth = compactSideBySide && (pane === 'inventory' || pane === 'tools')
+      ? limits.max
+      : compactPinnedLayout && pane === 'inventory'
       ? mainWidth - resizeHandleWidth - PANE_WIDTH_LIMITS.sequence.min
       : compactPinnedLayout && pane === 'tools'
         ? mainWidth - resizeHandleWidth - PANE_WIDTH_LIMITS.map.min
@@ -11848,6 +13107,10 @@ function App() {
       if (moveEvent.pointerId !== pointerId) return;
       moveEvent.preventDefault();
       const delta = (moveEvent.clientX - startX) * direction;
+      if (sideBySideSplitStart) {
+        setSideBySideSequenceShare(sideBySideSequenceShareAfterResize(sideBySideSplitStart, delta));
+        return;
+      }
       if (neighbor) {
         const nextWidths = resizePanePair(pane, neighbor, startWidths, delta);
         const appliedDelta = nextWidths[pane] - startWidths[pane];
@@ -11903,7 +13166,7 @@ function App() {
     } catch {
       /* Window listeners keep resizing active when capture is unavailable. */
     }
-  }, [clampPaneWidthsForViewport, compactPinnedLayout, paneResizeNeighbor, panePlacements, paneWidthLimitsForCurrentLayout, paneWidths, preferredPaneWidths, resizeHandleCount, resizePanePair, showToolsResizeHandle, stopPaneResize, toolsRailWidth, visibleResizablePanes, workspaceMainSize.width]);
+  }, [clampPaneWidthsForViewport, compactPinnedLayout, compactSideBySide, paneResizeNeighbor, panePlacements, paneWidthLimitsForCurrentLayout, paneWidths, preferredPaneWidths, resizeHandleCount, resizePanePair, showToolsResizeHandle, stopPaneResize, toolsRailWidth, visibleResizablePanes, workspaceMainSize.width]);
   const resizePaneFromKeyboard = useCallback((pane: ResizablePaneKey, event: ReactKeyboardEvent<HTMLDivElement>, edge: ResizeEdge = 'after') => {
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
     event.preventDefault();
@@ -11919,6 +13182,11 @@ function App() {
     const direction = pane === 'tools' || edge === 'before' ? -1 : 1;
     const screenDirection = event.key === 'ArrowRight' ? 1 : -1;
     const step = event.shiftKey ? 32 : 16;
+    const sideBySideSplit = compactSideBySide && pane === 'sequence' ? sideBySideSplitGeometry() : null;
+    if (sideBySideSplit) {
+      setSideBySideSequenceShare(sideBySideSequenceShareAfterResize(sideBySideSplit, screenDirection * direction * step));
+      return;
+    }
     const neighbor = paneResizeNeighbor(pane, edge);
     if (neighbor) {
       const nextWidths = resizePanePair(pane, neighbor, paneWidths, screenDirection * direction * step);
@@ -11936,7 +13204,7 @@ function App() {
     const nextPreferred = { ...preferredPaneWidths, [pane]: requested };
     setPreferredPaneWidths(nextPreferred);
     setPaneWidths(clampPaneWidthsForViewport(nextPreferred));
-  }, [clampPaneWidthsForViewport, paneResizeNeighbor, paneWidthLimitsForCurrentLayout, paneWidths, preferredPaneWidths, resizePanePair]);
+  }, [clampPaneWidthsForViewport, compactSideBySide, paneResizeNeighbor, paneWidthLimitsForCurrentLayout, paneWidths, preferredPaneWidths, resizePanePair]);
 
   const resizeStackedPaneTo = useCallback((pane: StackedResizablePaneKey, height: number) => {
     const bounds = stackedPaneBoundsForCurrentLayout(pane);
@@ -11948,9 +13216,9 @@ function App() {
 
   const startStackedPaneResize = useCallback((pane: StackedResizablePaneKey, event: ReactPointerEvent<HTMLDivElement>) => {
     if (!event.isPrimary || event.button !== 0) return;
-    const supportsRowResize = window.matchMedia(STACKED_LAYOUT_MEDIA).matches
+    const supportsRowResize = !compactSideBySide && (window.matchMedia(STACKED_LAYOUT_MEDIA).matches
       || window.matchMedia(TWO_ROW_LAYOUT_MEDIA).matches
-      || (toolsDocked && window.matchMedia(COMPACT_PINNED_LAYOUT_MEDIA).matches);
+      || (toolsDocked && window.matchMedia(COMPACT_PINNED_LAYOUT_MEDIA).matches));
     if (!supportsRowResize) return;
     const paneElement = pane === 'inventory' ? inventoryColumnRef.current : sequenceColumnRef.current;
     if (!paneElement) return;
@@ -12003,7 +13271,7 @@ function App() {
     } catch {
       /* Window listeners keep resizing active when capture is unavailable. */
     }
-  }, [resizeStackedPaneTo, stopStackedPaneResize, toolsDocked]);
+  }, [compactSideBySide, resizeStackedPaneTo, stopStackedPaneResize, toolsDocked]);
 
   const resizeStackedPaneFromKeyboard = useCallback((pane: StackedResizablePaneKey, event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
@@ -12058,8 +13326,121 @@ function App() {
   // own rather than compactRowMinHeight's 150. On a workspace too short to
   // reach even that, the floor gives way to whatever height exists.
   const defaultCompactTopRowFloor = Math.min(COMPACT_ROW_MIN_HEIGHT, compactTopRowMaxHeight);
+  // A block of bases was not enough, though. The column needs more than 240px to
+  // hold its own chrome: title, edit toolbar, selection bar and Export & Copy
+  // around the sequence's 160px minimum measured 389px at 1024x768. The 149px
+  // difference made the column scroll inside the row, so scrolling to the end
+  // of the bases carried on into the column and took the title and every
+  // editing control out of view until the whole sequence was scrolled back to
+  // the top. So the default row also starts at the column's measured content
+  // minimum, which follows whatever that chrome measures rather than a copy of
+  // it, within three limits, each measured:
+  // - The Map row keeps its own content minimum: its title, its frame's
+  //   min-height and its dock strip, 184px below 620px tall. Without that,
+  //   900x360 gave Sequence the whole 161px the row can take, which still left
+  //   its column 229px short, and cut 31px off the map frame and the whole
+  //   dock strip.
+  // - Where the row the Map leaves cannot keep the edit toolbar in view (the
+  //   column would still scroll past it), a taller row gains nothing, so the
+  //   proportional default stands. At 900x500 that keeps a 102px ring rather
+  //   than a 71px one beside a toolbar that scrolls away either way.
+  // - The chrome rewraps with the column's width, and toggling Tools or
+  //   Inventory changes that width: at 900x820 the selection bar is one line
+  //   beside a pinned Tools pane and two lines beside the rail, which moved the
+  //   row 12px. Each minimum is held at its largest for the current window
+  //   size, so a pane toggle leaves the row where it is.
+  const [stackedRowMinimums, setStackedRowMinimums] = useState<StackedRowMinimums>({ sequence: 0, toolbarKeep: 0, map: 0 });
+  useLayoutEffect(() => {
+    const column = sequenceColumnRef.current;
+    const mapColumn = mapColumnRef.current;
+    if (workspaceArrangement !== 'stacked' || !column || !mapColumn || typeof ResizeObserver === 'undefined') return undefined;
+    const px = (value: string) => Number.parseFloat(value) || 0;
+    // How far the element's content reaches below its top edge, scrolled or not.
+    const contentExtent = (element: HTMLElement) => {
+      const style = window.getComputedStyle(element);
+      const top = element.getBoundingClientRect().top;
+      const bottom = Array.from(element.children).reduce((lowest, child) => Math.max(
+        lowest,
+        child.getBoundingClientRect().bottom + px(window.getComputedStyle(child).marginBottom),
+      ), top);
+      return bottom - top + element.scrollTop + px(style.paddingBottom) + px(style.borderBottomWidth);
+    };
+    let held: StackedRowMinimums = { sequence: 0, toolbarKeep: 0, map: 0 };
+    const measure = () => {
+      const next = { ...held };
+      const panel = column.querySelector<HTMLElement>(':scope > .motif-cs-sequence-panel');
+      const scroller = panel?.querySelector<HTMLElement>(':scope > .motif-cs-sequence');
+      // Export opens inside the column and is meant to scroll it; its body is not
+      // part of the row's resting minimum.
+      if (panel && scroller && !column.querySelector(':scope > details[open]')) {
+        const panelStyle = window.getComputedStyle(panel);
+        const chrome = Array.from(panel.children).reduce(
+          (sum, child) => (child === scroller ? sum : sum + child.getBoundingClientRect().height),
+          px(panelStyle.paddingTop) + px(panelStyle.paddingBottom) + px(panelStyle.borderTopWidth) + px(panelStyle.borderBottomWidth),
+        );
+        const panelMin = Math.max(px(panelStyle.minHeight), chrome + px(window.getComputedStyle(scroller).minHeight));
+        // In a flex column, whatever the panel has grown past its minimum is slack
+        // the row can give up (negative when its children need more than its
+        // floor). A block column (below 768px) never stretches the panel.
+        const slack = window.getComputedStyle(column).display.includes('flex')
+          ? panel.getBoundingClientRect().height - panelMin
+          : 0;
+        const sequence = Math.ceil(contentExtent(column) - slack);
+        // The column scrolls by whatever it lacks, so the toolbar stays in view
+        // while that is no more than the height above the toolbar.
+        const toolbar = sequencePanelEditToolbar(panel);
+        const aboveToolbar = toolbar
+          ? toolbar.getBoundingClientRect().top - column.getBoundingClientRect().top + column.scrollTop
+          : 0;
+        next.sequence = Math.max(next.sequence, sequence);
+        next.toolbarKeep = Math.max(next.toolbarKeep, Math.ceil(sequence - aboveToolbar));
+      }
+      // An open dock panel shares the frame's height on purpose; measure the map
+      // at rest.
+      const frame = mapColumn.querySelector<HTMLElement>(':scope > .motif-cs-map-frame');
+      if (frame && !mapColumn.querySelector('.motif-cs-map-dock-strip > details[open]')) {
+        const map = contentExtent(mapColumn) - frame.getBoundingClientRect().height
+          + px(window.getComputedStyle(frame).minHeight);
+        next.map = Math.max(next.map, Math.ceil(map));
+      }
+      held = next;
+      setStackedRowMinimums((current) => (
+        current.sequence === next.sequence && current.toolbarKeep === next.toolbarKeep && current.map === next.map
+          ? current
+          : next
+      ));
+    };
+    const resizeObserver = new ResizeObserver(measure);
+    const observeParts = () => {
+      resizeObserver.disconnect();
+      for (const element of [column, mapColumn]) {
+        resizeObserver.observe(element);
+        for (const child of Array.from(element.children)) resizeObserver.observe(child);
+      }
+      const panel = column.querySelector(':scope > .motif-cs-sequence-panel');
+      for (const child of Array.from(panel?.children ?? [])) resizeObserver.observe(child);
+    };
+    const mutationObserver = new MutationObserver(() => {
+      observeParts();
+      measure();
+    });
+    mutationObserver.observe(column, { childList: true, subtree: false });
+    mutationObserver.observe(mapColumn, { childList: true, subtree: false });
+    const panel = column.querySelector(':scope > .motif-cs-sequence-panel');
+    if (panel) mutationObserver.observe(panel, { childList: true, subtree: false });
+    observeParts();
+    measure();
+    return () => {
+      resizeObserver.disconnect();
+      mutationObserver.disconnect();
+    };
+  }, [workspaceArrangement, floatingViewport.width, floatingViewport.height]);
+  const sequenceRowFloor = workspaceArrangement === 'stacked'
+    ? stackedSequenceRowFloor(stackedRowMinimums, workspaceMainSize.height, compactTopRowMaxHeight)
+    : 0;
   const defaultCompactTopRowMaxHeight = Math.max(
     defaultCompactTopRowFloor,
+    sequenceRowFloor,
     Math.min(
       compactTopRowMaxHeight,
       workspaceMainSize.height - COMPACT_ROW_DIVIDER_HEIGHT - COMPACT_MAP_ROW_DEFAULT_MIN_HEIGHT,
@@ -12071,7 +13452,7 @@ function App() {
         ? workspaceMainSize.width <= 900 ? 0.44 : 0.5
         : 0.46
     )),
-    compactRowMinHeight,
+    Math.max(compactRowMinHeight, sequenceRowFloor),
     defaultCompactTopRowMaxHeight,
   );
   const renderedStackedSequenceHeight = effectiveStackedSequenceHeight
@@ -12110,6 +13491,19 @@ function App() {
       zIndex: floatingPaneZIndex(pane) + 1,
     } as CSSProperties;
   };
+
+  // The Cloning launcher's restriction route: bring the map back if it was
+  // hidden, open Digest Preview under it, and hand the dock the same reveal
+  // its own head click gets.
+  const openDigestPreview = useCallback(() => {
+    ensurePaneVisible('map');
+    window.requestAnimationFrame(() => {
+      const panel = openMapDockPanel(mapColumnRef.current, 'Digest Preview');
+      if (!panel) return;
+      handleMapDockOpen();
+      panel.querySelector<HTMLElement>(':scope > summary')?.focus({ preventScroll: true });
+    });
+  }, [ensurePaneVisible, handleMapDockOpen]);
 
   const renderRestrictionSiteControls = (includeMapSummary = false): ReactNode => {
     if (!hasActiveRecord || !isDnaRecord) {
@@ -12177,13 +13571,11 @@ function App() {
             Site labels
           </button>
           {/* This count used to be muted text sitting between two buttons that act.
-              The map opens with every site the enabled sources find — 77 across 34
-              enzymes on pUC19, drawn as 99 ticks of which 20 carry labels — and the
-              view a cloning workflow actually wants was reachable only by unticking
-              11 enzymes by hand, with nothing on screen saying which 11. Measured
-              on pUC19: 99 ticks and 20 labels become 15 and 4, and the site
-              overflow chip disappears. The number was already computed; only the
-              press was missing. */}
+              The map opens with every site the enabled sources find — 76 on pUC19,
+              15 of them from single cutters — and the view a cloning workflow
+              actually wants was reachable only by unticking every other enzyme by
+              hand, with nothing on screen saying which. The number was already
+              computed; only the press was missing. */}
           <button
             type="button"
             className="motif-cs-mini-button"
@@ -12237,6 +13629,33 @@ function App() {
     );
   };
 
+  const recordStripHidden = paneVisibility.inventory && panePlacements.inventory === 'docked';
+  // Mounted in the Inventory, or in the record tab strip while the Inventory is hidden.
+  const importSequencePanel = (
+    <ImportSequencePanel
+      defaults={importDefaults}
+      open={importPanelOpen}
+      droppedOutcome={droppedImportOutcome}
+      confirmedRestoreCount={confirmedDatabaseRestoreCount}
+      onDefaultsChange={setImportDefaults}
+      onOpenChange={setImportPanelOpen}
+      onAddRecords={addRecords}
+      onImportFiles={importFiles}
+      onRestoreDatabase={(database) => requestArtifactDatabaseRestore(database)}
+    />
+  );
+  const sequenceMapResizeHandle = showSequenceMapResizeHandle ? (
+    <PaneResizeHandle
+      pane="sequence"
+      label="Resize sequence and map panes"
+      width={paneWidths.sequence}
+      edge={sequenceBeforeMap ? 'after' : 'before'}
+      onPointerDown={startPaneResize}
+      onKeyDown={resizePaneFromKeyboard}
+      style={{ order: sequenceBeforeMap ? paneCssOrder('sequence', 'after') : paneCssOrder('sequence', 'before') }}
+    />
+  ) : null;
+
   return (
     <div
       className="motif-cs-shell"
@@ -12275,6 +13694,13 @@ function App() {
           untranslated, so no new CSS is needed. The rail is the last pane in
           the DOM, so Tab from it continues straight into the tool summaries —
           measured after: 2 Tab + Enter + 2 Tab, then all fifteen in order. */}
+      {/* The sequence textbox came 25th at 1440x900, behind the inventory and
+          the record's toolbars. This one lands on the textbox itself, where
+          the arrow keys place and move the caret, and sits between the other
+          two in the order the panes are drawn. No record, no sequence: no link. */}
+      {paneVisibility.sequence && hasActiveRecord ? (
+        <a className="motif-cs-skip-link" href="#motif-cs-sequence-view">Skip to sequence</a>
+      ) : null}
       {paneVisibility.tools ? (
         <a className="motif-cs-skip-link" href="#motif-cs-tools-pane">Skip to tools</a>
       ) : null}
@@ -12294,6 +13720,24 @@ function App() {
           aria-live={workbenchNotice.tone === 'error' ? 'assertive' : 'polite'}
         >
           {workbenchNotice.message}
+          {workbenchNotice.action ? (
+            <button
+              className="motif-cs-mini-button motif-cs-workbench-notice-action"
+              type="button"
+              aria-label={workbenchNotice.action.accessibleLabel}
+              // Keep focus where the user was typing; the notice unmounts on click.
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => {
+                const { run } = workbenchNotice.action!;
+                if (workbenchNoticeTimerRef.current !== null) window.clearTimeout(workbenchNoticeTimerRef.current);
+                workbenchNoticeTimerRef.current = null;
+                setWorkbenchNotice(null);
+                run();
+              }}
+            >
+              {workbenchNotice.action.label}
+            </button>
+          ) : null}
         </div>
       ) : null}
       <header ref={topbarRef} className="motif-cs-topbar" aria-label="Motif workspace">
@@ -12310,7 +13754,7 @@ function App() {
             the topbar reserves 172px on the right for the host's Annotate pill
             and leaves an 8px gap, so there is nowhere to put them, and both facts
             are already on screen — the inventory badge carries the count and the
-            inventory row carries "dna · circular · 2,578 bp". */}
+            inventory row carries "dna · circular · 2,686 bp". */}
         <div className="motif-cs-topbar-meta">
           <div
             className="motif-cs-pane-switcher"
@@ -12392,12 +13836,34 @@ function App() {
         </div>
       </header>
 
+      {/* The strip lists the Inventory's records in the Inventory's order with the
+          same selection, so beside a docked Inventory it only cost 32px of
+          full-width height; the Inventory rows carry its arrow keys. It shows
+          while the Inventory is hidden or floating. Hidden, the Inventory takes
+          its Add entry control with it, so the strip carries one then, at its
+          left end: below 640px the Tools rail covers the right end. */}
+      <div className="motif-cs-record-strip" hidden={recordStripHidden || undefined}>
+      {paneVisibility.inventory ? null : (
+        <>
+          <button
+            className="motif-cs-mini-button motif-cs-add-entry-button"
+            type="button"
+            aria-label="Add entry"
+            aria-controls="motif-cs-add-entry"
+            aria-expanded={importPanelOpen}
+            title="Add or drop a sequence entry"
+            onClick={() => setImportPanelOpen((open) => !open)}
+          >
+            <Plus size={15} strokeWidth={2.3} aria-hidden="true" />
+          </button>
+          {importSequencePanel}
+        </>
+      )}
       <nav
         ref={recordTabsRef}
         className="motif-cs-record-tabs"
         role={payload.records.length > 0 ? 'tablist' : undefined}
         aria-label={payload.records.length > 0 ? 'Open sequence records' : 'Open sequence records; none open'}
-        data-inventory-visible={paneVisibility.inventory || undefined}
       >
         {payload.records.map((record, index) => {
           const active = record.id === recordId;
@@ -12426,17 +13892,23 @@ function App() {
           );
         })}
       </nav>
+      </div>
 
       <main
         ref={workspaceMainRef}
         id="motif-cs-workspace"
         className="motif-cs-main"
-        role={payload.records.length > 0 ? 'tabpanel' : 'region'}
-        aria-labelledby={payload.records.length > 0 ? `motif-cs-record-tab-${activeRecordTabIndex}` : undefined}
-        aria-label={payload.records.length === 0 ? 'Sequence workspace; no records open' : undefined}
+        // With the strip hidden there is no tab to name the panel, so it names
+        // the record itself.
+        role={payload.records.length > 0 && !recordStripHidden ? 'tabpanel' : 'region'}
+        aria-labelledby={payload.records.length > 0 && !recordStripHidden ? `motif-cs-record-tab-${activeRecordTabIndex}` : undefined}
+        aria-label={payload.records.length === 0
+          ? 'Sequence workspace; no records open'
+          : recordStripHidden ? `${vector.name} workspace` : undefined}
         tabIndex={-1}
         data-visible-pane-count={dockedPaneCount}
         data-content-pane-count={dockedContentPaneCount}
+        data-workspace-arrangement={workspaceArrangement}
         data-inventory-hidden={!paneVisibility.inventory || panePlacements.inventory === 'floating' || undefined}
         data-map-hidden={!paneVisibility.map || panePlacements.map === 'floating' || undefined}
         data-sequence-hidden={!paneVisibility.sequence || panePlacements.sequence === 'floating' || undefined}
@@ -12452,10 +13924,13 @@ function App() {
           '--motif-cs-compact-top-row-min': workspaceRowResizeActive ? `${compactRowMinHeight}px` : undefined,
           '--motif-cs-compact-top-row-max': workspaceRowResizeActive ? `${compactTopRowMaxHeight}px` : undefined,
           '--motif-cs-compact-bottom-row-min': workspaceRowResizeActive ? `${compactBottomRowMinHeight}px` : undefined,
+          '--motif-cs-side-by-side-sequence-grow': compactSideBySide ? sideBySideSequenceShare ?? SIDE_BY_SIDE_SEQUENCE_SHARE_DEFAULT : undefined,
+          '--motif-cs-side-by-side-map-grow': compactSideBySide ? 1 - (sideBySideSequenceShare ?? SIDE_BY_SIDE_SEQUENCE_SHARE_DEFAULT) : undefined,
         } as CSSProperties}
       >
-        {paneVisibility.inventory ? (
-          <>
+        {orderPaneSlots(paneOrder, {
+        inventory: paneVisibility.inventory ? (
+          <Fragment key="inventory">
             <aside
               key="inventory-pane"
               ref={inventoryColumnRef}
@@ -12521,16 +13996,7 @@ function App() {
                   )}
                 </button>
               </div>
-              <ImportSequencePanel
-                defaults={importDefaults}
-                open={importPanelOpen}
-                confirmedRestoreCount={confirmedDatabaseRestoreCount}
-                onDefaultsChange={setImportDefaults}
-                onOpenChange={setImportPanelOpen}
-                onAddRecords={addRecords}
-                onImportFiles={importFiles}
-                onRestoreDatabase={(database) => requestArtifactDatabaseRestore(database)}
-              />
+              {importSequencePanel}
               <InventoryList records={payload.records} selectedRecordId={recordId} onSelect={selectRecord} />
             </aside>
             {panePlacements.inventory === 'floating' ? (
@@ -12548,11 +14014,11 @@ function App() {
               onReset={(pane) => setStackedPaneHeights((current) => ({ ...current, [pane]: null }))}
               style={{ order: paneCssOrder('inventory', 'after') }}
             /> : null}
-          </>
-        ) : null}
+          </Fragment>
+        ) : null,
 
-        {paneVisibility.map ? (
-          <>
+        map: paneVisibility.map ? (
+          <Fragment key="map">
             <section
               key="map-pane"
               ref={mapColumnRef}
@@ -12594,52 +14060,24 @@ function App() {
                     : 'No active record'}</small>
                 </div>
                 {hasActiveRecord ? (
-                  <div className="motif-cs-map-toolbar" role="group" aria-label="Map view controls">
-                    <button className="motif-cs-map-button" type="button" onClick={handleZoomOut} disabled={!hasActiveRecord || mapViewport.k <= MIN_ZOOM + 0.0001} aria-label="Zoom out">-</button>
-                    <button
-                      className="motif-cs-map-button motif-cs-map-reset"
-                      type="button"
-                      onClick={handleZoomReset}
-                      disabled={!hasActiveRecord || (mapViewport.k <= MIN_ZOOM + 0.0001 && Math.abs(mapViewport.tx) < 0.5 && Math.abs(mapViewport.ty) < 0.5)}
-                      aria-label="Reset map view"
-                      title="Reset map view"
-                    >
-                      Fit
-                    </button>
-                    <button className="motif-cs-map-button" type="button" onClick={handleZoomIn} disabled={!hasActiveRecord || mapViewport.k >= MAX_ZOOM - 0.0001} aria-label="Zoom in">+</button>
-                    {isNucleotideRecord ? (
-                      <button
-                        className="motif-cs-map-button motif-cs-map-mode-toggle"
-                        type="button"
-                        data-current-mode={mapRenderMode}
-                        disabled={!canUseMapRenderModeTarget}
-                        aria-label={mapRenderModeTarget === 'linear' ? 'Draw map as line' : 'Draw map as circle'}
-                        title={canUseMapRenderModeTarget
-                          ? `Draw map as ${mapRenderModeTarget === 'linear' ? 'line' : 'circle'}`
-                          : 'A linear molecule has two ends and cannot be drawn as a circle'}
-                        onClick={() => setMapRenderMode(mapRenderModeTarget)}
-                      >
-                        {mapRenderModeTarget === 'linear' ? (
-                          <MoveHorizontal size={15} strokeWidth={2.2} aria-hidden="true" />
-                        ) : (
-                          <Circle size={14} strokeWidth={2.2} aria-hidden="true" />
-                        )}
-                      </button>
-                    ) : null}
-                    {isDnaRecord ? (
-                      <button
-                        className="motif-cs-map-button motif-cs-map-sites-toggle"
-                        type="button"
-                        data-active={restrictionLayerVisible || undefined}
-                        aria-pressed={restrictionLayerVisible}
-                        onClick={() => setAllEnzymesVisible(!restrictionLayerVisible)}
-                        aria-label={`${restrictionLayerVisible ? 'Hide' : 'Show'} restriction sites`}
-                        title={`${restrictionLayerVisible ? 'Hide' : 'Show'} restriction sites`}
-                      >
-                        <Scissors size={14} strokeWidth={2.1} aria-hidden="true" />
-                      </button>
-                    ) : null}
-                  </div>
+                  <MapViewToolbar
+                    canZoomOut={mapViewport.k > MIN_ZOOM + 0.0001}
+                    canFit={mapViewport.k > MIN_ZOOM + 0.0001 || Math.abs(mapViewport.tx) >= 0.5 || Math.abs(mapViewport.ty) >= 0.5}
+                    canZoomIn={mapViewport.k < MAX_ZOOM - 0.0001}
+                    onZoomOut={handleZoomOut}
+                    onFit={handleZoomReset}
+                    onZoomIn={handleZoomIn}
+                    renderMode={isNucleotideRecord ? {
+                      current: mapRenderMode,
+                      target: mapRenderModeTarget,
+                      canUseTarget: canUseMapRenderModeTarget,
+                      onChange: setMapRenderMode,
+                    } : undefined}
+                    restrictionSites={isDnaRecord ? {
+                      visible: restrictionLayerVisible,
+                      onChange: setAllEnzymesVisible,
+                    } : undefined}
+                  />
                 ) : null}
                 <PanePlacementControl
                   pane="map"
@@ -12677,7 +14115,7 @@ function App() {
                    to grab under [data-map-pointer-action="pan"] — so the words
                    only have to name what the cursor cannot: that a drag makes a
                    range, and which modifier zooms. */
-                title="Drag across the map to select a range. Wheel pans, Ctrl/Command-wheel zooms."
+                title="Drag across the map to select a range. Ctrl/Command-wheel zooms; the wheel pans a zoomed map."
               >
                 <div
                   className="motif-pm-container"
@@ -12700,6 +14138,7 @@ function App() {
                     viewport={mapViewport}
                     onFeatureClick={handleMapFeatureClick}
                     onRestrictionClick={handleMapRestrictionClick}
+                    onRestrictionMenu={handleMapRestrictionMenu}
                     onBackgroundClick={handleMapBackgroundClick}
                     onWheelZoom={handleMapWheel}
                   />
@@ -12713,10 +14152,72 @@ function App() {
                 {mapStatusHint ? (
                   <div className="motif-cs-map-hint">{mapStatusHint}</div>
                 ) : null}
+                {mapEnzymeMenu && mapEnzymeMenuCluster ? (
+                  <div
+                    ref={mapEnzymeMenuRef}
+                    className="motif-cs-map-enzyme-menu"
+                    role="menu"
+                    aria-label={`Enzymes cutting at ${(Math.trunc(mapEnzymeMenuCluster.anchorBp) + 1).toLocaleString()} bp`}
+                    style={{ left: mapEnzymeMenu.left, top: mapEnzymeMenu.top }}
+                    onKeyDown={handleMapEnzymeMenuKeyDown}
+                  >
+                    {mapEnzymeMenu.enzymes.map((entry) => (
+                      <button
+                        key={entry.enzyme}
+                        type="button"
+                        role="menuitem"
+                        tabIndex={-1}
+                        className="motif-cs-map-enzyme-menu-item"
+                        onClick={() => pickMapEnzymeMenuEntry(mapEnzymeMenu.clusterId, entry.tickIds, entry.enzyme)}
+                      >
+                        <span className="motif-cs-map-enzyme-menu-name">{entry.enzyme}</span>
+                        <span className="motif-cs-map-enzyme-menu-meta">
+                          {entry.tickIds.length} {entry.tickIds.length === 1 ? 'site' : 'sites'}
+                        </span>
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      role="menuitem"
+                      tabIndex={-1}
+                      className="motif-cs-map-enzyme-menu-item motif-cs-map-enzyme-menu-all"
+                      onClick={() => pickMapEnzymeMenuEntry(mapEnzymeMenu.clusterId, mapEnzymeMenuCluster.tickIds)}
+                    >
+                      <span className="motif-cs-map-enzyme-menu-name">All {mapEnzymeMenu.enzymes.length} enzymes</span>
+                      <span className="motif-cs-map-enzyme-menu-meta">
+                        {mapEnzymeMenuCluster.tickIds.length} {mapEnzymeMenuCluster.tickIds.length === 1 ? 'site' : 'sites'}
+                      </span>
+                    </button>
+                  </div>
+                ) : null}
+                {hasActiveRecord && layout.overflowSummaries?.length ? (
+                  // What the ring leaves unnamed, stated beside it rather than in its
+                  // centre, and each count opens the list it was counted from.
+                  <div className="motif-cs-map-overflow-actions" role="group" aria-label="Unnamed on the map">
+                    {layout.overflowSummaries.map((summary) => {
+                      const tool = summary.kind === 'feature-labels'
+                        ? 'annotations'
+                        : summary.kind === 'restriction-labels' ? 'restriction-sites' : null;
+                      if (!tool) return null;
+                      return (
+                        <button
+                          key={summary.id}
+                          type="button"
+                          className="motif-cs-map-overflow-button"
+                          data-kind={summary.kind}
+                          title={tool === 'annotations' ? summary.title : `${summary.title} Opens Restriction Sites.`}
+                          onClick={() => openRailToolFromMap(tool)}
+                        >
+                          {summary.text}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : null}
               </div>
 
               <div className="motif-cs-map-dock-strip">
-                <details className="motif-cs-panel motif-cs-map-visibility-panel" name="motif-cs-map-dock">
+                <details className="motif-cs-panel motif-cs-map-visibility-panel" name="motif-cs-map-dock" onKeyDown={closeMapDockPanelOnEscape}>
                   <summary className="motif-cs-panel-head" onClick={handleMapDockOpen}>
                     <span>
                       <span className="motif-cs-full-label">Map Visibility</span>
@@ -12733,9 +14234,8 @@ function App() {
                         {/* This used to read "◯ Circular | — Linear" and CONVERT the
                             molecule: it wrote topology into the record, cleared the
                             selection, caret and map range, and changed which
-                            restriction sites are FOUND — on pUC19, 325 against 324,
-                            the one lost being BtgZI at 2576, which straddles the
-                            origin — all from a panel called Map Visibility among
+                            restriction sites are FOUND — a site that straddles the
+                            origin was lost — all from a panel called Map Visibility among
                             controls that change only the picture. It now picks a
                             DRAWING. The record is untouched, so nothing is cleared,
                             and the signals that say what the molecule is stay put as
@@ -12805,22 +14305,13 @@ function App() {
             {panePlacements.map === 'floating' ? (
               <FloatingPaneResizeHandle pane="map" title="Map" style={floatingPaneResizeStyle('map')} onPointerDown={beginFloatingPaneInteraction} onKeyDown={resizeFloatingPaneFromKeyboard} />
             ) : null}
-            {showSequenceMapResizeHandle ? (
-              <PaneResizeHandle
-                pane="sequence"
-                label="Resize sequence and map panes"
-                width={paneWidths.sequence}
-                edge={sequenceBeforeMap ? 'after' : 'before'}
-                onPointerDown={startPaneResize}
-                onKeyDown={resizePaneFromKeyboard}
-                style={{ order: sequenceBeforeMap ? paneCssOrder('sequence', 'after') : paneCssOrder('sequence', 'before') }}
-              />
-            ) : null}
-          </>
-        ) : null}
+          </Fragment>
+        ) : null,
 
-        {paneVisibility.sequence ? (
-          <>
+        sequence: paneVisibility.sequence ? (
+          <Fragment key="sequence">
+            {/* The Sequence|Map separator sits on Sequence's map-side edge, in the DOM as on screen. */}
+            {mapBeforeSequence ? sequenceMapResizeHandle : null}
             <section
               key="sequence-pane"
               ref={sequenceColumnRef}
@@ -12858,14 +14349,17 @@ function App() {
                   `.motif-cs-sequence-title .motif-cs-title-actions .motif-cs-chip`
                   in the base block. Four dead chips in total, not the two filed.
                   Both facts survive in the inventory row's "dna · circular ·
-                  2,578 bp". */}
+                  2,686 bp". */}
               <div className="motif-cs-title-actions">
                 <button
+                  ref={exportTriggerRef}
                   className="motif-cs-mini-button"
                   type="button"
                   aria-controls="motif-cs-export-panel"
+                  aria-expanded={exportPanelOpen}
+                  data-open={exportPanelOpen || undefined}
                   onClick={revealExportPanel}
-                  title="Open export and copy"
+                  title="Export and copy this record"
                 >
                   Export
                 </button>
@@ -12895,14 +14389,19 @@ function App() {
             </div>
 
             <section className="motif-cs-panel motif-cs-sequence-panel">
-              <div className="motif-cs-panel-head">
-                <span>Sequence</span>
-                <span className="motif-cs-panel-meta">
-                  {!hasActiveRecord ? 'empty' : selectedFeature ? featureRangeLabel(selectedFeature) : selectedMapRange ? mapRangeLabel(selectedMapRange, sequence.length) : sequenceType === 'protein' ? 'amino acid' : '5′ → 3′'}
-                </span>
-              </div>
+              {/* No "SEQUENCE | 5′ → 3′" head any more. It spent a 38px row
+                  naming a pane the title row above already names, and its
+                  meta repeated the selection range the readout below shows,
+                  so at 1280x720 the pane stacked 152px of chrome over an 88px
+                  sequence area: one row of bases. The strand direction now
+                  sits in the resting readout, the range only in the readout. */}
               {hasActiveRecord ? (
               <>
+              {/* One wrapping strip: editing and display state on the left, the
+                  selection readout and what it can become on the right. Wide
+                  panes fit both on one 34px row; below that the selection dock
+                  wraps to a second row of its own, never a third. */}
+              <div className="motif-cs-sequence-chrome">
               <div className="motif-cs-edit-toolbar" role="group" aria-label={isSequenceEditable ? 'Sequence editing' : 'Sequence display'}>
                 <div className="motif-cs-edit-controls">
                   {isSequenceEditable ? (
@@ -12922,8 +14421,7 @@ function App() {
                         title="Replace the base at the caret when typing"
                         aria-label="Replace typing mode"
                       >
-                        <span className="motif-cs-label-full">Replace</span>
-                        <span className="motif-cs-label-short">Repl</span>
+                        Replace
                       </button>
                       <button
                         type="button"
@@ -12933,12 +14431,21 @@ function App() {
                         title="Insert typed bases at the caret"
                         aria-label="Insert typing mode"
                       >
-                        <span className="motif-cs-label-full">Insert</span>
-                        <span className="motif-cs-label-short">Ins</span>
+                        Insert
                       </button>
                     </div>
-                    {caret !== null ? (
-                      <span className="motif-cs-edit-hint">Caret {caret + 1}{canUndo ? ' · edited' : ''}</span>
+                    {/* The only standing sign that a keypress changed the record.
+                        It used to ride on the caret readout ("Caret 6 · edited"),
+                        which vanished with the caret and was display:none in any
+                        pane under 560px. It sits with the editing controls, near
+                        the Undo that reverts it, at every width. */}
+                    {canUndo ? (
+                      <span
+                        className="motif-cs-chip motif-cs-edit-state"
+                        title="This record's bases were edited in this session. Undo (Cmd/Ctrl+Z) reverts the last edit."
+                      >
+                        Edited
+                      </span>
                     ) : null}
                   </>
                 ) : null}
@@ -12961,8 +14468,7 @@ function App() {
                       ? `Detail view is available for records up to ${LARGE_SEQUENCE_DETAIL_THRESHOLD.toLocaleString()} residues`
                       : 'Draw feature bars, enzyme sites and translations under the sequence'}
                   >
-                    <span className="motif-cs-label-full">Detail</span>
-                    <span className="motif-cs-label-short">Det</span>
+                    <span>Detail</span>
                     <span className="motif-cs-switch-track" aria-hidden="true"><span /></span>
                   </button>
                   {isNucleotideRecord ? (
@@ -12976,8 +14482,7 @@ function App() {
                       onClick={() => setShowComplement((value) => !value)}
                       title={usesLargeSequenceViewer ? 'Complement display is unavailable in the large-record density view' : 'Show the complementary strand under each line (double-stranded view)'}
                     >
-                      <span className="motif-cs-label-full">Complement</span>
-                      <span className="motif-cs-label-short">Comp</span>
+                      <span>Complement</span>
                       <span className="motif-cs-switch-track" aria-hidden="true"><span /></span>
                     </button>
                   ) : null}
@@ -12992,91 +14497,111 @@ function App() {
                 data-empty={!(selectedFeature || selectedMapRange) || undefined}
               >
                 <span className="motif-cs-selection-label" title={selectionSummary?.label ?? (selectedRestriction ? 'Restriction tick selected; drag a sequence range for sequence actions.' : undefined)}>
-                  <span className="motif-cs-selection-name">{selectionBarLabel}</span>
+                  {!selectionSummary && !selectedRestriction && caret !== null ? (
+                    <span className="motif-cs-edit-hint">Caret {(caret + 1).toLocaleString()}</span>
+                  ) : (
+                    <>
+                      {!selectionSummary && !selectedRestriction && isNucleotideRecord ? (
+                        <span className="motif-cs-seq-orientation" title="The top strand reads 5′ to 3′, left to right">5′→3′</span>
+                      ) : null}
+                      <span className="motif-cs-selection-name">{selectionBarLabel}</span>
+                    </>
+                  )}
                   {inspectorSelectionSeq ? (
                     <span className="motif-cs-chip">{inspectorSelectionSeq.length} {sequenceUnitLabel(sequenceType)}</span>
                   ) : null}
                 </span>
+                {/* Three controls, not six. Copy and + Feature act on the
+                    selection in place and stay one press away; everything that
+                    makes something new from it sits behind Create, in full
+                    words. The six-button row needed 742px, so every side-by-side
+                    window from 1560 to 2150px wide and every pane under 715px
+                    painted "Add AA / Primers / + RC / + Prot", and with a
+                    feature selected New protein was cut off by up to 67px. */}
                 <div className="motif-cs-selection-actions">
-                  <button className="motif-cs-mini-button" type="button" disabled={!inspectorSelectionSeq} onClick={() => copyText('Selection', inspectorSelectionSeq)} title="Copy the selected sequence">Copy</button>
-                  <button
-                    className="motif-cs-mini-button"
-                    type="button"
-                    disabled={!selectedInlineTranslationTrack && (!selectionActionTranslation || !canPinPreviewTranslation)}
-                    onClick={() => {
-                      if (selectedInlineTranslationTrack) deleteTranslationLayer(selectedInlineTranslationTrack.id);
-                      else translateSelectionInline();
-                    }}
-                    title={selectedInlineTranslationTrack
-                      ? 'Remove the selected amino-acid translation track'
-                      : multipartTranslateFeature
-                        ? 'Multipart translation is available in the Translation panel, but cannot be pinned as one contiguous track'
-                        : 'Add this selection as an inline amino-acid translation track'}
-                    /* One action, one name. This button and the Translation
-                       panel's both call addTranslationLayer, and they were
-                       spelled "Add AA" and "Add AA track" — two names for the
-                       same thing, so neither one teaches the other. The panel's
-                       name wins because it says what gets added; the bar keeps
-                       the two-character form for the widths where the full name
-                       does not fit, the same full/short pair "New rev comp" and
-                       "+ RC" already use here. aria-label pins the accessible
-                       name to the full form at every width, so the control
-                       answers to one name whichever span is painted. */
-                    aria-label={selectedInlineTranslationTrack ? 'Remove AA track' : 'Add AA track'}
-                  >
-                    <span className="motif-cs-label-full">{selectedInlineTranslationTrack ? 'Remove AA track' : 'Add AA track'}</span>
-                    <span className="motif-cs-label-short">{selectedInlineTranslationTrack ? 'Del AA' : 'Add AA'}</span>
-                  </button>
+                  <SequenceCopyButton
+                    disabled={!hasMaterializableSequenceSelection}
+                    title={hasMaterializableSequenceSelection
+                      ? 'Copy the selected sequence'
+                      : selectionSummary
+                        ? 'This ordered location cannot be copied as one sequence'
+                        : 'Select a range or a feature to copy its sequence'}
+                    onCopy={() => copyText('Selection', inspectorSelectionSeq)}
+                  />
                   <button
                     className="motif-cs-mini-button"
                     type="button"
                     disabled={!canAnnotateSelectedMapRange}
                     onClick={handleAnnotateRange}
-                    title={selectedMapRange ? 'Annotate this range as a new feature' : 'Drag-select a range on the sequence to add a feature'}
+                    title={selectedMapRange
+                      ? 'Annotate this range as a new feature'
+                      : selectedFeature
+                        ? 'A feature is selected; drag a range on the sequence to add a new feature'
+                        : 'Drag a range on the sequence to add a feature'}
                   >
                     + Feature
                   </button>
-                  {/* Primer design already targets whatever is selected, but it
-                      opened only from a panel in the Tools rail, so nobody
-                      selecting a range ever met it. It belongs beside the other
-                      things a selection can become. */}
-                  <button
-                    className="motif-cs-mini-button"
-                    type="button"
-                    disabled={!isEditable}
-                    onClick={openPrimerWorkspace}
-                    aria-label="Design primers"
-                    title={guideScopeRange ? 'Design primers against this selection' : 'Design primers against the whole record'}
-                  >
-                    <span className="motif-cs-label-full">Design primers</span>
-                    <span className="motif-cs-label-short">Primers</span>
-                  </button>
-                  {/* Everything above acts on the record you are looking at;
-                      everything below adds a NEW one to the inventory. The two
-                      were spelled the same, so "Rev comp" read like the "Copy"
-                      beside it and quietly took the session from 13 records to
-                      14 with a new Derived group. Worse, with nothing selected
-                      it is the ONLY enabled control in this bar, so the one
-                      thing the resting state invites you to press was the
-                      heaviest thing in it. Both record-makers now carry the
-                      "New" the Export panel already uses to separate "Copy rev
-                      comp" from "New rev comp", and the rule marks where the
-                      weight changes. The behaviour is deliberately untouched:
-                      additive and non-destructive is the right semantics. */}
-                  <span className="motif-cs-selection-action-rule" aria-hidden="true" />
-                  <button className="motif-cs-mini-button" type="button" disabled={!isNucleotideRecord || (!!selectionSummary && !hasMaterializableSequenceSelection)} onClick={addContextReverseComplementRecord} aria-label="New rev comp record" title={selectionSummary ? hasMaterializableSequenceSelection ? 'Create a reverse-complement record from this selection' : 'This ordered location cannot be materialized as one sequence' : 'Create a reverse-complement record from the whole sequence'}>
-                    <span className="motif-cs-label-full">New rev comp</span>
-                    {/* Below a 360px pane the bar is already a scroller, and
-                        spelling "New" twice more pushed it 6px past its own
-                        clip. "+" is the same promise in one character and the
-                        "+ Feature" two buttons left already teaches it here. */}
-                    <span className="motif-cs-label-short">+ RC</span>
-                  </button>
-                  <button className="motif-cs-mini-button" type="button" disabled={!selectionActionTranslation} onClick={addSelectionTranslationRecord} aria-label="New protein record" title="Create a new protein record from this selection's translation">
-                    <span className="motif-cs-label-full">New protein</span>
-                    <span className="motif-cs-label-short">+ Prot</span>
-                  </button>
+                  {/* Every Create action is nucleotide-only, so a protein record
+                      gets no menu at all rather than four permanently greyed
+                      entries. */}
+                  {isNucleotideRecord ? (
+                    <SequenceActionMenu
+                      label="Create"
+                      menuLabel="Create from the sequence"
+                      items={[
+                        {
+                          id: 'aa-track',
+                          label: selectedInlineTranslationTrack ? 'Remove AA track' : 'Add AA track',
+                          disabled: !selectedInlineTranslationTrack && (!selectionActionTranslation || !canPinPreviewTranslation),
+                          note: selectedInlineTranslationTrack
+                            ? 'Remove the selected amino-acid translation track'
+                            : multipartTranslateFeature
+                              ? 'Multipart translations cannot be pinned as one track; use the Translation panel'
+                              : selectionActionTranslation && canPinPreviewTranslation
+                                ? 'Show this selection\'s translation under the sequence'
+                                : translationUnavailableReason ?? (selectionSummary
+                                  ? 'This selection has no complete codon to translate'
+                                  : 'Select a range or coding feature to translate it'),
+                          onSelect: () => {
+                            if (selectedInlineTranslationTrack) deleteTranslationLayer(selectedInlineTranslationTrack.id);
+                            else translateSelectionInline();
+                          },
+                        },
+                        {
+                          id: 'primers',
+                          label: 'Design primers',
+                          disabled: !isEditable,
+                          note: guideScopeRange ? 'Against this selection' : 'Against the whole record',
+                          onSelect: openPrimerWorkspace,
+                        },
+                        {
+                          id: 'rev-comp-record',
+                          label: 'New reverse complement record',
+                          separatorBefore: true,
+                          disabled: !!selectionSummary && !hasMaterializableSequenceSelection,
+                          note: selectionSummary
+                            ? hasMaterializableSequenceSelection
+                              ? 'Adds a record made from this selection'
+                              : 'This ordered location cannot be made into one sequence'
+                            : 'Adds a record made from the whole sequence',
+                          onSelect: addContextReverseComplementRecord,
+                        },
+                        {
+                          id: 'protein-record',
+                          label: 'New protein record',
+                          disabled: !selectionActionTranslation,
+                          note: selectionActionTranslation
+                            ? 'Adds a record made from this selection\'s translation'
+                            : translationUnavailableReason ?? (selectionSummary
+                              ? 'This selection has no complete codon to translate'
+                              : 'Select a range or coding feature to translate it'),
+                          onSelect: addSelectionTranslationRecord,
+                        },
+                      ]}
+                    />
+                  ) : null}
                 </div>
+              </div>
               </div>
               {selectedFeatureQuarantineStatus ? (
                 <ScientificStatus
@@ -13110,6 +14635,7 @@ function App() {
                   threshold={LARGE_SEQUENCE_DETAIL_THRESHOLD}
                   selectedRange={selectedFeatureSpans[0] ?? visibleMapRanges[0] ?? null}
                   focusRequest={sequenceFocusRequest}
+                  onSelectRange={selectSequenceRange}
                 />
               ) : (
                 <SequenceText
@@ -13130,6 +14656,7 @@ function App() {
                 detailMode={effectiveSequenceViewMode === 'detail'}
                 caret={caret}
                 editable={isSequenceEditable}
+                editFlash={activeSequenceEditFlash}
                 onFeatureSelect={handleMapFeatureClick}
                 onFeatureOpen={openFeatureEditor}
                 onRestrictionSelect={handleSequenceRestrictionClick}
@@ -13164,17 +14691,23 @@ function App() {
               selectedMapRange={selectedMapRange}
               copyStatus={copyStatus}
               hasUnsavedChanges={hasUnsavedChanges}
+              backupDownloaded={backupDownloaded}
               hasSessionCheckpoint={hasSessionCheckpoint}
               onCopy={copyText}
               onCopySummary={handleCopySummary}
               onAddReverseComplement={addContextReverseComplementRecord}
               onAnnotateRange={handleAnnotateRange}
               canAnnotateRange={canAnnotateSelectedMapRange}
+              exportTriggerRef={exportTriggerRef}
+              openedFrom={exportOpenedFrom}
+              onOpenFromSummary={() => setExportOpenedFrom('summary')}
+              onOpenChange={setExportPanelOpen}
             />
             </section>
             {panePlacements.sequence === 'floating' ? (
               <FloatingPaneResizeHandle pane="sequence" title="Sequence" style={floatingPaneResizeStyle('sequence')} onPointerDown={beginFloatingPaneInteraction} onKeyDown={resizeFloatingPaneFromKeyboard} />
             ) : null}
+            {sequenceBeforeMap ? sequenceMapResizeHandle : null}
             {panePlacements.sequence === 'docked' ? <StackedPaneResizeHandle
               pane="sequence"
               label="Sequence"
@@ -13186,11 +14719,11 @@ function App() {
               onReset={(pane) => setStackedPaneHeights((current) => ({ ...current, [pane]: null }))}
               style={{ order: paneCssOrder('sequence', 'after') }}
             /> : null}
-          </>
-        ) : null}
+          </Fragment>
+        ) : null,
 
-        {paneVisibility.tools ? (
-          <>
+        tools: paneVisibility.tools ? (
+          <Fragment key="tools">
             {showToolsResizeHandle ? <PaneResizeHandle pane="tools" label="Resize tools pane" width={paneWidths.tools} limits={paneWidthLimitsForCurrentLayout('tools')} edge="before" onPointerDown={startPaneResize} onKeyDown={resizePaneFromKeyboard} style={{ order: paneCssOrder('tools', 'before') }} /> : null}
             <aside
               key="tools-pane"
@@ -13209,6 +14742,9 @@ function App() {
               tabIndex={-1}
               onPointerDown={() => toolsFloating && bringFloatingPaneToFront('tools')}
               onFocusCapture={() => toolsFloating && bringFloatingPaneToFront('tools')}
+              onPointerOver={placeRailFlyout}
+              onFocus={placeRailFlyout}
+              onScroll={clearRailFlyouts}
               style={{
                 '--motif-cs-tools-pane-width': `${paneWidths.tools}px`,
                 flexBasis: paneWidths.tools,
@@ -13259,6 +14795,7 @@ function App() {
             onConvertTopology={convertRecordTopology}
             canConvertTopology={canToggleTopology}
             onDelete={deleteActiveRecord}
+            describeDeleteDependents={describeActiveRecordDeleteDependents}
           />
           <FeatureList
             recordId={recordId}
@@ -13364,7 +14901,7 @@ function App() {
               {selectedFeature ? (
                 <>
                   <strong>{selectedFeature.name}</strong>
-                  <span>{selectedFeature.type} · {featureRangeLabel(selectedFeature)} · {featureStrandLabel(selectedFeature)}</span>
+                  <span>{featureTypeDisplay(selectedFeature)} · {featureRangeLabel(selectedFeature)} · {featureStrandLabel(selectedFeature)}</span>
                   {isOrderedFeatureLocation(selectedFeature) ? (
                     <span>Ordered segments are not implicitly joined; export preserves the INSDC order(...) location.</span>
                   ) : null}
@@ -13375,7 +14912,7 @@ function App() {
                     <div className="motif-cs-inspector-stats">
                       <span>{inspectorSelectionSeq.length} {sequenceUnitLabel(sequenceType)}</span>
                       {inspectorGc !== null ? <span>GC {formatPercent(inspectorGc)}</span> : null}
-                      {inspectorTm != null ? <span>Tm {inspectorTm.toFixed(1)} C</span> : null}
+                      {inspectorTm != null ? <span>Tm {inspectorTm.toFixed(1)} °C</span> : null}
                     </div>
                   ) : null}
                 </>
@@ -13396,7 +14933,7 @@ function App() {
                     <div className="motif-cs-inspector-stats">
                       <span>{inspectorSelectionSeq.length} {sequenceUnitLabel(sequenceType)}</span>
                       {inspectorGc !== null ? <span>GC {formatPercent(inspectorGc)}</span> : null}
-                      {inspectorTm != null ? <span>Tm {inspectorTm.toFixed(1)} C</span> : null}
+                      {inspectorTm != null ? <span>Tm {inspectorTm.toFixed(1)} °C</span> : null}
                     </div>
                   ) : null}
                 </>
@@ -13407,14 +14944,16 @@ function App() {
           </details>
 
           <details className="motif-cs-panel" name="motif-cs-tools" data-rail-tool="restriction-sites">
-            <summary className="motif-cs-panel-head" data-rail-label="E" role="button" title="Restriction sites">
+            <summary className="motif-cs-panel-head" data-rail-label="E" role="button" title="Restriction Sites">
               <Scissors className="motif-cs-panel-icon" size={14} strokeWidth={2.2} aria-hidden="true" />
               <span>Restriction Sites</span>
-              <span className="motif-cs-chip">
-                {hasActiveRecord && isDnaRecord
-                  ? `${visibleRestrictionSites.length}/${restrictionSites.length}`
-                  : 'DNA'}
-              </span>
+              {hasActiveRecord ? (
+                <span className="motif-cs-chip">
+                  {isDnaRecord
+                    ? `${visibleRestrictionSites.length}/${restrictionSites.length}`
+                    : 'DNA'}
+                </span>
+              ) : null}
             </summary>
             <div className="motif-cs-tool-panel-body motif-cs-restriction-tool-body">
               {/* No count here. This header sat directly above the two section
@@ -13425,7 +14964,7 @@ function App() {
                   protein or RNA record it is the reason the panel is empty. */}
               <RailPopoverTitle
                 title="Restriction Sites"
-                meta={hasActiveRecord && isDnaRecord ? undefined : 'DNA only'}
+                meta={hasActiveRecord && !isDnaRecord ? 'DNA only' : undefined}
               />
               {renderRestrictionSiteControls(false)}
             </div>
@@ -13435,10 +14974,12 @@ function App() {
             <summary className="motif-cs-panel-head" data-rail-label="F" role="button" title="Pattern Search">
               <Search className="motif-cs-panel-icon" size={14} strokeWidth={2.2} aria-hidden="true" />
               <span>Pattern Search</span>
-              <span className="motif-cs-chip">{motifHits.length} hit{motifHits.length === 1 ? '' : 's'}</span>
+              {hasActiveRecord && cleanedMotifLength > 0 ? (
+                <span className="motif-cs-chip">{motifHits.length} hit{motifHits.length === 1 ? '' : 's'}</span>
+              ) : null}
             </summary>
             <div className="motif-cs-tool-panel-body motif-cs-motif-body">
-              <RailPopoverTitle title="Pattern Search" meta={`${motifHits.length} hit${motifHits.length === 1 ? '' : 's'}`} />
+              <RailPopoverTitle title="Pattern Search" meta={hasActiveRecord && cleanedMotifLength > 0 ? `${motifHits.length} hit${motifHits.length === 1 ? '' : 's'}` : undefined} />
               <input
                 className="motif-cs-input"
                 name="motif-search"
@@ -13480,7 +15021,7 @@ function App() {
                   ) : null}
                 </div>
               ) : (
-                <p className="motif-cs-muted">{motif.trim() ? 'No matches on either strand.' : 'Enter a sequence to find matches on both strands.'}</p>
+                <p className="motif-cs-muted">{!hasActiveRecord ? 'Add or select a record to search its sequence.' : motif.trim() ? 'No matches on either strand.' : 'Enter a sequence to find matches on both strands.'}</p>
               )}
             </div>
           </details>
@@ -13498,7 +15039,7 @@ function App() {
             <summary className="motif-cs-panel-head" data-rail-label="T" role="button" title="Translation">
               <Languages className="motif-cs-panel-icon" size={14} strokeWidth={2.2} aria-hidden="true" />
               <span>Translation</span>
-              <span className="motif-cs-chip">+{translateFrame + 1}</span>
+              {isEditable ? <span className="motif-cs-chip">+{translateFrame + 1}</span> : null}
             </summary>
             <div className="motif-cs-tool-panel-body motif-cs-translation-tool-body">
               {/* No frame here. The Reading frame control 169px below shows all
@@ -13509,6 +15050,7 @@ function App() {
               <RailPopoverTitle title="Translation" />
               <TranslationPanel
                 canTranslate={isEditable}
+                hasRecord={hasActiveRecord}
                 targetLabel={translateTarget.label}
                 isWhole={translateTarget.whole}
                 translationCode={translationCode}
@@ -13540,7 +15082,15 @@ function App() {
           </details>
 
           <details className="motif-cs-panel" name="motif-cs-tools" data-rail-tool="primer-design">
-            <summary ref={primerToggleRef} className="motif-cs-panel-head" data-rail-label="P" role="button" title="Primer design">
+            <summary
+              ref={primerToggleRef}
+              className="motif-cs-panel-head"
+              data-rail-label="P"
+              data-workspace-open={(showPrimerDesign && isEditable) || undefined}
+              role="button"
+              title={showPrimerDesign && isEditable ? 'Primer Design — workspace open' : 'Primer Design'}
+              onClick={railWorkspaceClick(showPrimerDesign && isEditable ? WORKSPACE_WINDOW_TITLES.primer : null)}
+            >
               <Dna className="motif-cs-panel-icon" size={14} strokeWidth={2.2} aria-hidden="true" />
               <span>Primer Design</span>
               {guideScopeRange ? (
@@ -13548,10 +15098,15 @@ function App() {
               ) : null}
             </summary>
             <div className="motif-cs-tool-panel-body motif-cs-cloning-launcher">
-              <RailPopoverTitle title="Primer Design" meta={guideScopeRange ? 'current target' : 'whole record'} />
+              {/* "whole record" was not what opened: with nothing selected the
+                  workspace targets a default 500 bp window (51–550 on pUC19),
+                  so the header said one thing and the window beside it another.
+                  Name the selection that will be used, or say there is none. */}
+              <RailPopoverTitle title="Primer Design" meta={primerLauncherTarget(guideScopeRange, sequence.length).meta} />
               <div className="motif-cs-cloning-launcher-copy">
                 <strong>Ranked primer workspace</strong>
                 <span>Set the target and conditions, review primer quality, then save the pair or send it to PCR or cloning.</span>
+                <span data-testid="primer-launcher-target">{primerLauncherTarget(guideScopeRange, sequence.length).detail}</span>
               </div>
               <button
                 className="motif-cs-mini-button motif-cs-mini-button-accent"
@@ -13566,14 +15121,17 @@ function App() {
           </details>
 
           <GuideSearchPanel
+            hasRecord={hasActiveRecord}
             sequence={sequence}
             sequenceType={sequenceType}
             topology={topology}
             scopeRange={guideScopeRange}
+            features={features}
             onSelectRange={selectSequenceRangeAndReveal}
             onCopy={async (label, value) => {
               await copyText(label, value);
             }}
+            onAddFeature={addFeature}
           />
 
           <AnalysisPanel
@@ -13587,7 +15145,17 @@ function App() {
           />
 
           <details className="motif-cs-panel" name="motif-cs-tools" data-rail-tool="cloning">
-            <summary ref={cloningToggleRef} className="motif-cs-panel-head" data-rail-label="C" role="button" title="Cloning workflows">
+            <summary
+              ref={cloningToggleRef}
+              className="motif-cs-panel-head"
+              data-rail-label="C"
+              data-workspace-open={showCloningDesign || showAssembly || showGel || undefined}
+              role="button"
+              title={showCloningDesign || showAssembly || showGel ? 'Cloning — workspace open' : 'Cloning'}
+              onClick={railWorkspaceClick(showCloningDesign
+                ? WORKSPACE_WINDOW_TITLES.cloningDesign
+                : showAssembly ? WORKSPACE_WINDOW_TITLES.assembly : showGel ? WORKSPACE_WINDOW_TITLES.gel : null)}
+            >
               <Workflow className="motif-cs-panel-icon" size={14} strokeWidth={2.2} aria-hidden="true" />
               <span>Cloning</span>
             </summary>
@@ -13605,6 +15173,23 @@ function App() {
                 data-testid="open-cloning-design-workspace"
               >
                 Open design workspace
+              </button>
+              {/* Restriction cloning starts in Digest Preview, a collapsed panel
+                  under the map, and nothing here named it: a scientist asked to
+                  clone with two enzymes found three launchers and no digest. */}
+              <div className="motif-cs-cloning-launcher-copy">
+                <strong>Restriction cloning</strong>
+                <span>Digest vector and insert under the map, save the fragments, then ligate them in quick assembly.</span>
+              </div>
+              <button
+                className="motif-cs-mini-button"
+                type="button"
+                onClick={openDigestPreview}
+                disabled={!isDnaRecord}
+                title={isDnaRecord ? undefined : 'Select a DNA record to digest'}
+                data-testid="open-digest-preview"
+              >
+                Open Digest Preview
               </button>
               <div className="motif-cs-cloning-launcher-copy">
                 <strong>Quick assembly</strong>
@@ -13650,10 +15235,14 @@ function App() {
               className="motif-cs-panel-head"
               data-rail-label="V"
               data-rail-count={constructVerificationReadCount || undefined}
+              data-workspace-open={showConstructVerification || undefined}
               role="button"
-              title={constructVerificationReadCount
-                ? `Construct verification — ${constructVerificationReadCount} eligible Sanger read${constructVerificationReadCount === 1 ? '' : 's'}`
-                : 'Construct verification'}
+              title={showConstructVerification
+                ? 'Construct Verification — workspace open'
+                : constructVerificationReadCount
+                  ? `Construct Verification — ${constructVerificationReadCount} eligible Sanger read${constructVerificationReadCount === 1 ? '' : 's'}`
+                  : 'Construct Verification'}
+              onClick={railWorkspaceClick(showConstructVerification ? WORKSPACE_WINDOW_TITLES.verification : null)}
             >
               <ShieldCheck className="motif-cs-panel-icon" size={14} strokeWidth={2.2} aria-hidden="true" />
               <span>Construct Verification</span>
@@ -13675,23 +15264,40 @@ function App() {
                 <strong>Sanger evidence review</strong>
                 <span>Compare trace-backed reads with a predicted construct, review coverage and variants, then save the report.</span>
               </div>
+              {/* With no reads this panel was a dead end: a disabled button with
+                  no reason and a count of 0 eligible reads, and nothing saying
+                  how a read gets in. The only AB1 inputs were the Inventory "+"
+                  (hidden with the Inventory) and a drop anywhere. Say it, offer
+                  the picker here, and give the locked button its reason, as the
+                  Gel launcher above already does. The workspace opens with no
+                  reads too: it has its own import and says what it is missing,
+                  so only a missing reference locks the button. */}
               <button
                 className="motif-cs-mini-button motif-cs-mini-button-accent"
                 type="button"
                 onClick={openConstructVerificationWorkspace}
-                disabled={constructVerificationReferenceCount === 0 || constructVerificationReadCount === 0}
+                disabled={constructVerificationReferenceCount === 0}
+                title={constructVerificationReferenceCount === 0
+                  ? 'Add the DNA record you expect the reads to match'
+                  : undefined}
                 data-testid="open-construct-verification"
               >
                 Open verification workspace
               </button>
-              <p className="motif-cs-form-note">
-                {constructVerificationReferenceCount} predicted reference{constructVerificationReferenceCount === 1 ? '' : 's'} · {constructVerificationReadCount} eligible Sanger read{constructVerificationReadCount === 1 ? '' : 's'}{constructVerificationExcludedCount > 0 ? ` · ${constructVerificationExcludedCount} excluded by verifier limits` : ''}. Verification only runs after explicit review.
+              <SangerTraceImportButton
+                onImportFiles={importFiles}
+                emphasis={constructVerificationReadCount === 0}
+              />
+              <p className="motif-cs-form-note" data-testid="construct-verification-source-note">
+                {constructVerificationReadCount === 0
+                  ? `${constructVerificationReferenceCount} predicted reference${constructVerificationReferenceCount === 1 ? '' : 's'} · no Sanger reads yet. Import .ab1 traces here, or drop them anywhere in the workspace.`
+                  : `${constructVerificationReferenceCount} predicted reference${constructVerificationReferenceCount === 1 ? '' : 's'} · ${constructVerificationReadCount} eligible Sanger read${constructVerificationReadCount === 1 ? '' : 's'}${constructVerificationExcludedCount > 0 ? ` · ${constructVerificationExcludedCount} excluded by verifier limits` : ''}. Verification only runs after explicit review.`}
               </p>
             </div>
           </details>
 
           <details className="motif-cs-panel" name="motif-cs-tools" data-rail-tool="analysis-results">
-            <summary className="motif-cs-panel-head" data-rail-label="R" role="button" title="Agent and analysis results">
+            <summary className="motif-cs-panel-head" data-rail-label="R" role="button" title="Results — primers, PCR, assembly plans, verification">
               <Beaker className="motif-cs-panel-icon" size={14} strokeWidth={2.2} aria-hidden="true" />
               <span>Results</span>
               {payload.analysisResults.length ? (
@@ -13700,6 +15306,14 @@ function App() {
             </summary>
             <div className="motif-cs-tool-panel-body motif-cs-workflow-tool-body">
               <RailPopoverTitle title="Results" meta={payload.analysisResults.length ? `${payload.analysisResults.length} saved` : undefined} />
+              {/* Two stores, two adjacent rail icons, and nothing said which
+                  save went where: a Golden Gate from the design workspace lands
+                  here, the same assembly from quick assembly lands in Workflow
+                  Results. Each panel names the other's contents and opens it. */}
+              <p className="motif-cs-results-elsewhere" data-testid="results-elsewhere">
+                Digests, gels and quick assemblies are in{' '}
+                <button type="button" aria-label="Open Workflow Results" onClick={() => openRailToolPanel('workflows')}>Workflow Results</button>.
+              </p>
               <ClaudeScienceAgentResultsPanel
                 results={payload.analysisResults}
                 assets={payload.analysisAssets}
@@ -13707,12 +15321,14 @@ function App() {
                 freshnessByResultId={analysisFreshnessByResultId}
                 onRevealRecord={revealWorkspaceRecord}
                 onRemove={removeWorkspaceAnalysisResult}
+                verificationRecords={constructVerificationRecords}
+                onInspectVerificationVariant={inspectConstructVerificationVariant}
               />
             </div>
           </details>
 
           <details className="motif-cs-panel" name="motif-cs-tools" data-rail-tool="workflows">
-            <summary className="motif-cs-panel-head" data-rail-label="W" role="button" title="Saved workflow results">
+            <summary className="motif-cs-panel-head" data-rail-label="W" role="button" title="Workflow Results — digests, gels, quick assemblies">
               <History className="motif-cs-panel-icon" size={14} strokeWidth={2.2} aria-hidden="true" />
               <span>Workflow Results</span>
               {payload.workflowResults.length ? (
@@ -13721,6 +15337,10 @@ function App() {
             </summary>
             <div className="motif-cs-tool-panel-body motif-cs-workflow-tool-body">
               <RailPopoverTitle title="Workflow Results" meta={payload.workflowResults.length ? `${payload.workflowResults.length} saved` : undefined} />
+              <p className="motif-cs-results-elsewhere" data-testid="workflow-results-elsewhere">
+                Primer designs, PCR, assembly plans and verification are in{' '}
+                <button type="button" aria-label="Open Results" onClick={() => openRailToolPanel('analysis-results')}>Results</button>.
+              </p>
               <ClaudeScienceWorkflowHistoryPanel
                 results={payload.workflowResults}
                 recordNames={recordNamesById}
@@ -13743,10 +15363,14 @@ function App() {
               className="motif-cs-panel-head"
               data-rail-label="M"
               data-rail-count={payload.alignments.length || undefined}
+              data-workspace-open={showAlignment || undefined}
               role="button"
-              title={payload.alignments.length
-                ? `Alignment and Sanger traces — ${payload.alignments.length} in session`
-                : 'Alignment and Sanger traces'}
+              title={showAlignment
+                ? 'Alignment — workspace open'
+                : payload.alignments.length
+                  ? `Alignment — ${payload.alignments.length} in session`
+                  : 'Alignment — sequences and Sanger traces'}
+              onClick={railWorkspaceClick(showAlignment ? WORKSPACE_WINDOW_TITLES.alignment : null)}
             >
               <AlignCenter className="motif-cs-panel-icon" size={14} strokeWidth={2.2} aria-hidden="true" />
               <span>Alignment</span>
@@ -13792,7 +15416,7 @@ function App() {
           </details>
 
           <details className="motif-cs-panel" name="motif-cs-tools" data-rail-tool="settings">
-            <summary className="motif-cs-panel-head" data-rail-label="S" role="button" title="Settings and about">
+            <summary className="motif-cs-panel-head" data-rail-label="S" role="button" title="Settings — theme, backup, about">
               <Settings className="motif-cs-panel-icon" size={14} strokeWidth={2.2} aria-hidden="true" />
               <span>Settings</span>
               <span className="motif-cs-chip">{activeThemeLabel}</span>
@@ -13845,6 +15469,7 @@ function App() {
                 analysisResultCount={payload.analysisResults.length}
                 sessionOnly
                 hasUnsavedChanges={hasUnsavedChanges}
+                backupDownloaded={backupDownloaded}
                 onDownloadBackup={downloadWorkspaceBackup}
                 onRestoreFile={restoreWorkspaceBackupFile}
                 onClearWorkspace={clearWorkspaceData}
@@ -13863,8 +15488,9 @@ function App() {
             {toolsFloating ? (
               <FloatingPaneResizeHandle pane="tools" title="Tools" style={floatingPaneResizeStyle('tools')} onPointerDown={beginFloatingPaneInteraction} onKeyDown={resizeFloatingPaneFromKeyboard} />
             ) : null}
-          </>
-        ) : null}
+          </Fragment>
+        ) : null,
+        })}
       </main>
 
       {showTranslations ? (
@@ -13880,6 +15506,7 @@ function App() {
         >
           <TranslationPanel
             canTranslate={isEditable}
+            hasRecord={hasActiveRecord}
             targetLabel={translateTarget.label}
             isWhole={translateTarget.whole}
             translationCode={translationCode}
@@ -13910,7 +15537,7 @@ function App() {
       ) : null}
       {showGel ? (
         <FloatingWindow
-          title="Gel Preview"
+          title={WORKSPACE_WINDOW_TITLES.gel}
           subtitle="qualitative agarose"
           initial={gelWin}
           resetSignal={windowResetSignal}
@@ -13954,7 +15581,7 @@ function App() {
       ) : null}
       {showPrimerDesign && isEditable ? (
         <FloatingWindow
-          title="Primer Design"
+          title={WORKSPACE_WINDOW_TITLES.primer}
           subtitle={cloningPrimerRequest ? `${vector.name} · cloning preparation` : vector.name}
           initial={primerWin}
           resetSignal={windowResetSignal}
@@ -14016,7 +15643,7 @@ function App() {
       ) : null}
       {showAssembly ? (
         <FloatingWindow
-          title="Cloning Workspace"
+          title={WORKSPACE_WINDOW_TITLES.assembly}
           subtitle="Golden Gate + ligation"
           initial={assemblyWin}
           resetSignal={windowResetSignal}
@@ -14037,7 +15664,7 @@ function App() {
       ) : null}
       {showCloningDesign ? (
         <FloatingWindow
-          title="Cloning Design"
+          title={WORKSPACE_WINDOW_TITLES.cloningDesign}
           subtitle="Golden Gate profiles + Gibson"
           initial={cloningDesignWin}
           resetSignal={windowResetSignal}
@@ -14061,7 +15688,7 @@ function App() {
       ) : null}
       {showConstructVerification ? (
         <FloatingWindow
-          title="Construct Verification"
+          title={WORKSPACE_WINDOW_TITLES.verification}
           subtitle={`${constructVerificationReadCount} eligible Sanger read${constructVerificationReadCount === 1 ? '' : 's'}`}
           initial={constructVerificationWin}
           resetSignal={windowResetSignal}
@@ -14078,12 +15705,16 @@ function App() {
             onVerify={runConstructVerification}
             onSave={saveConstructVerification}
             onClose={() => setShowConstructVerification(false)}
+            onImportReads={importFiles}
+            loadDraft={loadConstructVerificationDraft}
+            onDraftChange={keepConstructVerificationDraft}
+            onInspectVariant={inspectConstructVerificationVariant}
           />
         </FloatingWindow>
       ) : null}
       {showAlignment ? (
         <FloatingWindow
-          title="Multiple Sequence Alignment"
+          title={WORKSPACE_WINDOW_TITLES.alignment}
           subtitle={payload.alignments.length ? `${payload.alignments.length} in session` : 'local + imported'}
           initial={alignmentWin}
           resetSignal={windowResetSignal}
@@ -14105,8 +15736,10 @@ function App() {
             onUpdateAlignmentTemplate={updateAlignmentTemplate}
             onDeleteAlignment={deleteAlignment}
             onImportRecords={importMsaRecords}
-            onCopy={copyText}
+            onCopy={(label, value) => copyText(label, value, { notice: false })}
             onDownload={downloadAlignmentText}
+            navigationRequest={alignmentNavigationRequest}
+            onNavigationRequestHandled={finishAlignmentNavigation}
           />
         </FloatingWindow>
       ) : null}
@@ -14224,7 +15857,9 @@ function PanePlacementControl({
           ? 'Keep one content pane docked in the workspace'
           : `Open ${title} as a movable pane`}
     >
-      {floating ? <Minimize2 size={14} strokeWidth={2.1} aria-hidden="true" /> : <Maximize2 size={14} strokeWidth={2.1} aria-hidden="true" />}
+      {/* Maximize2 read as "maximize", and this opens a movable window over the
+          workspace instead: an arrow leaving its box, and one pointing back in. */}
+      {floating ? <SquareArrowDownLeft size={14} strokeWidth={2.1} aria-hidden="true" /> : <SquareArrowOutUpRight size={14} strokeWidth={2.1} aria-hidden="true" />}
     </button>
   );
 }
@@ -14341,6 +15976,9 @@ function inventorySystemGroupKey(record: ArtifactVector): InventorySystemGroupKe
   const operation = String(record.provenance?.operation ?? '').toLowerCase();
   if (source.includes('paste') || source.includes('import')) return 'imported';
   if (operation || source.includes('claude science artifact')) return 'derived';
+  // Only the importers stamp dateAdded. A GenBank record keeps its SOURCE line in
+  // `source`, so a file with one was listed with the bundled vectors.
+  if (record.dateAdded) return 'imported';
   if (record.type === 'protein') return 'protein';
   if (record.type === 'rna') return 'rna';
   return 'vectors';
@@ -14386,7 +16024,7 @@ function groupInventoryRecords(records: readonly ArtifactVector[]): InventoryGro
   return [...projectGroups, ...systemGroups];
 }
 
-function InventoryList({
+export function InventoryList({
   records,
   selectedRecordId,
   onSelect,
@@ -14398,6 +16036,8 @@ function InventoryList({
   const [query, setQuery] = useState('');
   const [collapsedGroups, setCollapsedGroups] = useState<Partial<Record<string, boolean>>>({});
   const previousSelectedRecordId = useRef(selectedRecordId);
+  const recordRowRefs = useRef(new Map<string, HTMLButtonElement>());
+  const focusRowOnSelectRef = useRef<string | null>(null);
   const normalizedQuery = query.trim().toLowerCase();
   const filteredRecords = useMemo(() => {
     if (!normalizedQuery) return records;
@@ -14437,6 +16077,63 @@ function InventoryList({
   const toggleGroup = useCallback((groupKey: string) => {
     setCollapsedGroups((current) => ({ ...current, [groupKey]: !current[groupKey] }));
   }, []);
+
+  // The rows are one Tab stop with arrow keys between them, as the record tabs
+  // are. Each row used to be its own stop, 13 of them for the bundled records,
+  // and no key moved between them, so hiding the tab strip beside the Inventory
+  // would have taken the only arrow-key record switcher with it. Focus follows
+  // the selection, as it does on the tabs.
+  const rowRecordIds = useMemo(() => groupedRecords.flatMap((group) => (
+    !normalizedQuery && collapsedGroups[group.key] ? [] : group.records.map((record) => record.id)
+  )), [collapsedGroups, groupedRecords, normalizedQuery]);
+  const tabStopRecordId = rowRecordIds.includes(selectedRecordId) ? selectedRecordId : rowRecordIds[0];
+
+  useEffect(() => {
+    const pending = focusRowOnSelectRef.current;
+    focusRowOnSelectRef.current = null;
+    if (pending === selectedRecordId) recordRowRefs.current.get(pending)?.focus();
+  }, [selectedRecordId]);
+
+  // A record selected from outside the list (a file pick, a record tab) kept
+  // whatever row the list was scrolled to: after a 13-record pick the new active
+  // record sat 180px below this list's bottom edge at 1440x900. Scroll this list
+  // only, and only as far as the row needs. The row may not exist until its group
+  // expands or the filter clears, so the request waits for it.
+  const revealRecordIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    revealRecordIdRef.current = selectedRecordId;
+  }, [selectedRecordId]);
+  useEffect(() => {
+    const recordId = revealRecordIdRef.current;
+    const row = recordId ? recordRowRefs.current.get(recordId) : undefined;
+    const list = row?.closest<HTMLElement>('.motif-cs-inventory-groups');
+    if (!row || !list) return;
+    revealRecordIdRef.current = null;
+    const rowBox = row.getBoundingClientRect();
+    const listBox = list.getBoundingClientRect();
+    if (rowBox.bottom > listBox.bottom) list.scrollTop += rowBox.bottom - listBox.bottom;
+    else if (rowBox.top < listBox.top) list.scrollTop -= listBox.top - rowBox.top;
+  });
+
+  const handleRowKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>, recordId: string) => {
+    const step = event.key === 'ArrowDown' || event.key === 'ArrowRight'
+      ? 1
+      : event.key === 'ArrowUp' || event.key === 'ArrowLeft' ? -1 : 0;
+    if (step === 0 && event.key !== 'Home' && event.key !== 'End') return;
+    event.preventDefault();
+    const count = rowRecordIds.length;
+    const index = rowRecordIds.indexOf(recordId);
+    const nextRecordId = rowRecordIds[
+      event.key === 'Home' ? 0 : event.key === 'End' ? count - 1 : (index + step + count) % count
+    ];
+    if (!nextRecordId) return;
+    if (nextRecordId === selectedRecordId) {
+      recordRowRefs.current.get(nextRecordId)?.focus();
+      return;
+    }
+    focusRowOnSelectRef.current = nextRecordId;
+    onSelect(nextRecordId);
+  };
 
   return (
     <section className="motif-cs-inventory-list-panel" aria-label="Inventory records">
@@ -14479,11 +16176,17 @@ function InventoryList({
               {!collapsed ? group.records.map((record) => (
                 <button
                   key={record.id}
+                  ref={(row) => {
+                    if (row) recordRowRefs.current.set(record.id, row);
+                    else recordRowRefs.current.delete(record.id);
+                  }}
                   className="motif-cs-row motif-cs-row-compact motif-cs-inventory-record-row"
                   data-active={record.id === selectedRecordId || undefined}
                   type="button"
                   aria-current={record.id === selectedRecordId ? 'true' : undefined}
+                  tabIndex={record.id === tabStopRecordId ? 0 : -1}
                   onClick={() => onSelect(record.id)}
+                  onKeyDown={(event) => handleRowKeyDown(event, record.id)}
                 >
                   <span className="motif-cs-row-main">
                     {/* Constructs are told apart by their suffix — _clone12_Rep2,
@@ -14512,9 +16215,10 @@ function InventoryList({
   );
 }
 
-function ImportSequencePanel({
+export function ImportSequencePanel({
   defaults,
   open,
+  droppedOutcome,
   confirmedRestoreCount,
   onDefaultsChange,
   onOpenChange,
@@ -14524,45 +16228,65 @@ function ImportSequencePanel({
 }: {
   defaults: ImportDefaults;
   open: boolean;
+  droppedOutcome: DroppedImportOutcome | null;
   confirmedRestoreCount: number;
   onDefaultsChange: (defaults: ImportDefaults) => void;
   onOpenChange: (open: boolean) => void;
   onAddRecords: (records: ArtifactRecordInput[]) => number;
-  onImportFiles: (files: FileList | File[]) => unknown;
+  onImportFiles: (files: FileList | File[]) => Promise<ArtifactFileImportResult>;
   onRestoreDatabase: (database: Record<string, unknown>) => number;
 }) {
   const detailsRef = useRef<HTMLDetailsElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const openerRef = useRef<HTMLElement | null>(null);
   const [input, setInput] = useState('');
   const [status, setStatus] = useState('');
   const [statusError, setStatusError] = useState(false);
+  // A file import's outcome is announced once, by the workbench notice. The copy
+  // shown here stays readable after the notice times out, but is not a second
+  // live region reading the same sentence again.
+  const [mirroredNotice, setMirroredNotice] = useState('');
+  const statusMirrorsNotice = status !== '' && status === mirroredNotice;
   const previewInput = useDeferredValue(input);
 
-  const inputPreview = useMemo(() => {
+  const inputPreview = useMemo((): { text: string; problem: boolean } | null => {
     if (!previewInput.trim()) return null;
     try {
       const database = parseArtifactDatabaseJson(previewInput);
       if (database) {
         const count = Array.isArray(database.records) ? database.records.length : 0;
-        return `${count.toLocaleString()} database record${count === 1 ? '' : 's'} detected · restore replaces this workspace`;
+        return { text: `${count.toLocaleString()} database record${count === 1 ? '' : 's'} detected · restore replaces this workspace`, problem: false };
       }
-      const records = parseImportedRecords(previewInput, defaults.name, defaults.type, defaults.topology);
-      if (records.length === 0) return null;
-      const lengths = records.map((record) => normalizeSequence(record.seq ?? record.sequence ?? '', record.molecule ?? record.type).length);
-      const types = Array.from(new Set(records.map((record) => (
-        normalizeSequenceType(record.molecule ?? record.type, normalizeSequence(record.seq ?? record.sequence ?? '', record.molecule ?? record.type))
-      ))));
-      const range = lengths.length > 0
-        ? Math.min(...lengths) === Math.max(...lengths)
-          ? `${lengths[0].toLocaleString()} ${types[0] === 'protein' ? 'aa' : 'bp'}`
-          : `${Math.min(...lengths).toLocaleString()}–${Math.max(...lengths).toLocaleString()} ${types.every((type) => type === 'protein') ? 'aa' : 'bp'}`
-        : '';
-      return `${records.length.toLocaleString()} record${records.length === 1 ? '' : 's'} detected · ${types.map((type) => type.toUpperCase()).join(' + ')}${range ? ` · ${range}` : ''}`;
-    } catch {
-      return null;
+      const prepared = stripOriginPositionNumbers(previewInput);
+      const skipped: ImportSkip[] = [];
+      const records = parseImportedRecords(prepared.text, defaults.name, defaults.type, defaults.topology, skipped);
+      if (records.length === 0) return { text: explainUnimportedPaste(prepared.text, skipped), problem: true };
+      const entries = records.map((record) => {
+        const seq = normalizeSequence(record.seq ?? record.sequence ?? '', record.molecule ?? record.type);
+        return { type: normalizeSequenceType(record.molecule ?? record.type, seq), length: seq.length };
+      });
+      return {
+        text: describeImportPreflight(entries, [
+          ...(prepared.numberedLines > 0 ? ['line numbers removed'] : []),
+          ...(skipped.length > 0 ? [`${skipped.length.toLocaleString()} skipped`] : []),
+        ]),
+        problem: false,
+      };
+    } catch (error) {
+      return { text: actionableImportError(error), problem: true };
     }
   }, [defaults.name, defaults.topology, defaults.type, previewInput]);
+  // After Add or restore, the error status carries the same reason; show it once.
+  const showPreflight = inputPreview !== null && !(inputPreview.problem && statusError);
+
+  // A dropped batch fills the status line as a pick does; its notice announced it.
+  useEffect(() => {
+    if (!droppedOutcome) return;
+    setMirroredNotice(droppedOutcome.text);
+    setStatus(droppedOutcome.text);
+    setStatusError(droppedOutcome.error);
+  }, [droppedOutcome]);
 
   useEffect(() => {
     if (confirmedRestoreCount === 0) return;
@@ -14570,6 +16294,20 @@ function ImportSequencePanel({
     setStatus('');
     setStatusError(false);
   }, [confirmedRestoreCount]);
+
+  // Opening the panel from any trigger puts focus in the paste box. Focus used to
+  // stay on the trigger: the box was 8 Tab stops past the inventory "+" and 12
+  // Shift+Tab stops back from the empty-workspace "Add entry" button. The trigger
+  // is remembered so Escape can return to it.
+  useEffect(() => {
+    if (!open) return;
+    const active = document.activeElement;
+    openerRef.current = active instanceof HTMLElement && active !== document.body && !detailsRef.current?.contains(active)
+      ? active
+      : null;
+    const frame = window.requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }));
+    return () => window.cancelAnimationFrame(frame);
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -14586,7 +16324,9 @@ function ImportSequencePanel({
       if (event.key !== 'Escape') return;
       event.preventDefault();
       onOpenChange(false);
-      document.querySelector<HTMLButtonElement>('.motif-cs-add-entry-button')?.focus();
+      const opener = openerRef.current;
+      if (opener?.isConnected && opener.getClientRects().length > 0) opener.focus();
+      else document.querySelector<HTMLButtonElement>('.motif-cs-add-entry-button')?.focus();
     };
 
     document.addEventListener('pointerdown', closeFromOutside, true);
@@ -14627,26 +16367,36 @@ function ImportSequencePanel({
     }
 
     let groupedRecords: ArtifactRecordInput[];
+    const prepared = stripOriginPositionNumbers(input);
+    const skipped: ImportSkip[] = [];
     try {
-      const records = parseImportedRecords(input, defaults.name, defaults.type, defaults.topology);
+      const records = parseImportedRecords(prepared.text, defaults.name, defaults.type, defaults.topology, skipped);
       groupedRecords = applyImportDefaults(records, defaults);
     } catch (error) {
       reportImportError(actionableImportError(error));
       return;
     }
     if (groupedRecords.length === 0) {
-      reportImportError('No usable sequence found. Choose the molecule type explicitly if this is a short or ambiguous protein sequence.');
+      reportImportError(explainUnimportedPaste(prepared.text, skipped));
       return;
     }
     const addedCount = onAddRecords(groupedRecords);
-    setStatus(`${addedCount} record${addedCount === 1 ? '' : 's'} added`);
-    setStatusError(addedCount === 0);
+    const skippedNote = addedCount > 0 && skipped.length > 0 ? ` · skipped ${explainUnimportedPaste(prepared.text, skipped)}` : '';
+    const relabelNote = addedCount > 0 ? genBankRelabelNote(groupedRecords) : null;
+    setStatus(`${addedCount} record${addedCount === 1 ? '' : 's'} added${skippedNote}${relabelNote ? ` · ${relabelNote}` : ''}`);
+    setStatusError(addedCount === 0 || skipped.length > 0);
     if (addedCount === 0) {
       window.requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }));
       return;
     }
     onDefaultsChange({ ...defaults, name: '' });
     setInput('');
+    if (skipped.length > 0) {
+      // The status line is the only place that names the skipped records, so the
+      // panel stays open on it instead of closing as a clean import does.
+      window.requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }));
+      return;
+    }
     onOpenChange(false);
     window.requestAnimationFrame(() => {
       document.querySelector<HTMLButtonElement>('.motif-cs-add-entry-button')?.focus();
@@ -14712,12 +16462,12 @@ function ImportSequencePanel({
               aria-label="Sequence import input"
               aria-invalid={statusError || undefined}
               aria-describedby={[
-                inputPreview ? 'motif-cs-import-preflight' : null,
+                showPreflight ? 'motif-cs-import-preflight' : null,
                 status ? 'motif-cs-import-status' : null,
               ].filter(Boolean).join(' ') || undefined}
             />
           </label>
-          {inputPreview ? <p id="motif-cs-import-preflight" className="motif-cs-form-note" data-testid="import-preflight-summary">{inputPreview}</p> : null}
+          {showPreflight ? <p id="motif-cs-import-preflight" className="motif-cs-form-note" data-testid="import-preflight-summary" data-problem={inputPreview.problem || undefined}>{inputPreview.text}</p> : null}
           <div className="motif-cs-layer-actions motif-cs-layer-actions-flush">
             <input
               ref={fileInputRef}
@@ -14728,7 +16478,24 @@ function ImportSequencePanel({
               aria-label="Choose sequence or workspace files"
               onChange={(event) => {
                 const files = event.target.files;
-                if (files?.length) void onImportFiles(files);
+                if (files?.length) {
+                  void onImportFiles(files).then((result) => {
+                    // The notice already announced the outcome; the panel keeps the full
+                    // list on screen without announcing it again.
+                    setMirroredNotice(result.detail ?? result.message);
+                    setStatus(result.detail ?? result.message);
+                    setStatusError(result.tone === 'error');
+                    // A clean pick closes the panel, as a clean paste does, so the new
+                    // records are not left under it. Anything skipped keeps it open,
+                    // because the status line is the lasting list of what was skipped.
+                    if (result.tone === 'status' && result.records.length > 0) {
+                      onOpenChange(false);
+                      window.requestAnimationFrame(() => {
+                        document.querySelector<HTMLButtonElement>('.motif-cs-add-entry-button')?.focus();
+                      });
+                    }
+                  });
+                }
                 event.target.value = '';
               }}
             />
@@ -14739,7 +16506,7 @@ function ImportSequencePanel({
             <button className="motif-cs-mini-button" type="button" onClick={() => { setInput(''); setStatus('Cleared'); setStatusError(false); }} disabled={!input}>Clear</button>
           </div>
           {status ? (
-            <p id="motif-cs-import-status" className="motif-cs-import-status" data-error={statusError || undefined} role={statusError ? 'alert' : 'status'} aria-live={statusError ? 'assertive' : 'polite'} aria-atomic="true">{status}</p>
+            <p id="motif-cs-import-status" className="motif-cs-import-status" data-error={statusError || undefined} role={statusMirrorsNotice ? undefined : statusError ? 'alert' : 'status'} aria-live={statusMirrorsNotice ? 'off' : statusError ? 'assertive' : 'polite'} aria-atomic="true">{status}</p>
           ) : null}
         </div>
       </details>
@@ -14986,6 +16753,8 @@ function cssPixelValue(value: string, fallback: number): number {
    values are read back off the element so the two cannot drift apart. */
 const RAIL_POPOVER_HOME_TOP_FALLBACK = 84;
 const RAIL_POPOVER_BOTTOM_GUTTER_FALLBACK = 22;
+/** How long after opening a panel's content may still raise the height it needs. */
+const RAIL_POPOVER_SETTLE_MS = 500;
 
 function RailPopoverTitle({ title, meta }: { title: string; meta?: string }) {
   const [size, setSize] = useState<RailPopoverSize | null>(null);
@@ -15043,7 +16812,16 @@ function RailPopoverTitle({ title, meta }: { title: string; meta?: string }) {
     const panel = panelBody.closest<HTMLDetailsElement>('details.motif-cs-panel');
     if (!panel) return undefined;
 
+    // What this open needs to show. It may only grow, and only while the panel
+    // settles: Guide RNA builds its list in the render after `toggle`, so the
+    // first solve saw a short panel and, at 1440x980, parked its 900px list in
+    // the 266px band between the sequence toolbar and the map title.
+    // After that it is fixed, so typing into a filter that grows or shrinks
+    // the content never makes the popover jump bands. Cleared on close.
+    let requiredHeight: number | null = null;
+    let settleUntil = 0;
     const clearPlacement = () => {
+      requiredHeight = null;
       panelBody.style.removeProperty('--rail-popover-fixed-top');
       panelBody.style.removeProperty('max-height');
       delete panelBody.dataset.railPopoverPlacement;
@@ -15087,19 +16865,26 @@ function RailPopoverTitle({ title, meta }: { title: string; meta?: string }) {
       }
       const { homeTop, bottomGutter } = cssMetrics();
       const rect = panelBody.getBoundingClientRect();
+      // Content height rather than rendered height, because the rendered height
+      // is what the cap below produces and feeding that back in would let the
+      // popover chase its own tail.
+      const contentHeight = Math.max(
+        panelBody.scrollHeight,
+        cssPixelValue(panelBody.style.getPropertyValue('--rail-popover-height'), 0),
+        RAIL_POPOVER_MIN_HEIGHT,
+      );
+      const now = performance.now();
+      if (requiredHeight === null) settleUntil = now + RAIL_POPOVER_SETTLE_MS;
+      if (requiredHeight === null || now <= settleUntil) {
+        requiredHeight = Math.max(requiredHeight ?? 0, Math.min(contentHeight, RAIL_POPOVER_FLOOR_HEIGHT));
+      }
       const placement = chooseRailPopoverPlacement({
         column: { left: rect.left, right: rect.right },
         homeTop,
         bottomGutter,
-        // Reported back as `hiddenHeight`; it does not move the panel. Content
-        // height rather than rendered height, because the rendered height is
-        // what the cap below produces and feeding that back in would let the
-        // popover chase its own tail.
-        desiredHeight: Math.max(
-          panelBody.scrollHeight,
-          cssPixelValue(panelBody.style.getPropertyValue('--rail-popover-height'), 0),
-          RAIL_POPOVER_MIN_HEIGHT,
-        ),
+        // Reported back as `hiddenHeight`; the live height never moves the panel.
+        desiredHeight: contentHeight,
+        requiredHeight,
         viewportHeight: window.innerHeight,
         obstacles: collectRailPopoverObstacles(document),
       });
@@ -15346,20 +17131,86 @@ function defaultFeatureEditorColor(type: FeatureType): string {
   return portableFallback;
 }
 
+type RecordRemovalWorkspace = Pick<LoadedPayload, 'records' | 'alignments' | 'notes' | 'workflowResults' | 'analysisResults' | 'analysisAssets'>;
+
+/**
+ * The workspace without these records and everything that depends on them:
+ * alignments with a row from one, notes on one, workflow results that read or
+ * wrote one, and analysis results that used one, with the results built on
+ * those and any report nothing else keeps.
+ */
+export function planRecordRemoval(current: RecordRemovalWorkspace, ids: readonly string[]): RecordRemovalWorkspace {
+  const removed = new Set(ids);
+  let analysisWorkspace = {
+    analysisResults: current.analysisResults,
+    analysisAssets: current.analysisAssets,
+  };
+  for (const id of removed) {
+    analysisWorkspace = removeArtifactAnalysisResultsForRecord(analysisWorkspace, id, { removeOrphanAssets: true });
+  }
+  return {
+    records: current.records.filter((record) => !removed.has(record.id)),
+    alignments: current.alignments.filter((alignment) => (
+      !alignment.rows.some((row) => row.sourceRecordId && removed.has(row.sourceRecordId))
+    )),
+    notes: current.notes.filter((note) => !note.recordId || !removed.has(note.recordId)),
+    workflowResults: current.workflowResults.filter((result) => (
+      !result.inputRecordIds.some((id) => removed.has(id))
+      && !result.outputRecordIds.some((id) => removed.has(id))
+    )),
+    ...analysisWorkspace,
+  };
+}
+
+/**
+ * What `larger` holds besides the records that `smaller` lacks, as a phrase:
+ * "2 saved verification results and 1 note". Null when it is records alone.
+ * A delete names what it took; an undo names what it put back.
+ */
+export function recordRemovalDependents(larger: RecordRemovalWorkspace, smaller: RecordRemovalWorkspace): string | null {
+  const keptResultIds = new Set(smaller.analysisResults.map((result) => result.id));
+  const results = larger.analysisResults.filter((result) => !keptResultIds.has(result.id));
+  const verifications = results.filter((result) => result.kind === 'construct_verification').length;
+  const otherResults = results.length - verifications
+    + Math.max(0, larger.workflowResults.length - smaller.workflowResults.length);
+  const counts: Array<[number, string]> = [
+    [verifications, 'saved verification result'],
+    [otherResults, verifications > 0 ? 'other saved result' : 'saved result'],
+    [Math.max(0, larger.alignments.length - smaller.alignments.length), 'alignment'],
+    [Math.max(0, larger.notes.length - smaller.notes.length), 'note'],
+  ];
+  const parts = counts
+    .filter(([count]) => count > 0)
+    .map(([count, noun]) => `${count.toLocaleString()} ${noun}${count === 1 ? '' : 's'}`);
+  if (parts.length === 0) return null;
+  if (parts.length <= 2) return parts.join(' and ');
+  return `${parts.slice(0, -1).join(', ')}, and ${parts[parts.length - 1]}`;
+}
+
 function EntryDetailsPanel({
   record,
   onUpdate,
   onConvertTopology,
   canConvertTopology,
   onDelete,
+  describeDeleteDependents,
 }: {
   record: ArtifactVector;
   onUpdate: (details: { name: string; description?: string; group?: string }) => void;
   onConvertTopology: (next: Topology) => void;
   canConvertTopology: boolean;
   onDelete: () => void;
+  /** What deleting this entry would also remove, as recordRemovalDependents words it. */
+  describeDeleteDependents: () => string | null;
 }) {
   const [name, setName] = useState(record.name);
+  // Read when the Delete button arms, not on every edit: working it out
+  // re-validates the saved results.
+  const [deleteDependents, setDeleteDependents] = useState<{ text: string | null } | null>(null);
+  const deleteNoteId = useId();
+  const onDeleteArmedChange = useCallback((armed: boolean) => {
+    setDeleteDependents(armed ? { text: describeDeleteDependents() } : null);
+  }, [describeDeleteDependents]);
   const [description, setDescription] = useState(record.description ?? '');
   const [group, setGroup] = useState(record.group ?? '');
 
@@ -15491,13 +17342,21 @@ function EntryDetailsPanel({
         <div className="motif-cs-entry-delete-row">
           <span>
             <strong>Delete entry</strong>
-            <small>Removes linked notes, alignments, and saved results.</small>
+            <small id={deleteNoteId}>
+              {!deleteDependents
+                ? 'Removes linked notes, alignments, and saved results.'
+                : deleteDependents.text
+                  ? `Also removes ${deleteDependents.text}.`
+                  : 'Removes this entry only.'}
+            </small>
           </span>
           <ConfirmDeleteButton
             noun={`entry ${record.name}`}
             idleLabel="Delete…"
             confirmLabel="Delete entry"
             className="motif-cs-danger-button"
+            describedBy={deleteNoteId}
+            onArmedChange={onDeleteArmedChange}
             onConfirm={onDelete}
           />
         </div>
@@ -15600,6 +17459,8 @@ function ConfirmDeleteButton({
   idleLabel = 'Delete',
   confirmLabel = 'Delete?',
   className = '',
+  describedBy,
+  onArmedChange,
   onConfirm,
 }: {
   noun: string;
@@ -15607,6 +17468,9 @@ function ConfirmDeleteButton({
   idleLabel?: string;
   confirmLabel?: string;
   className?: string;
+  /** Id of the text that says what the delete takes with it. */
+  describedBy?: string;
+  onArmedChange?: (armed: boolean) => void;
   onConfirm: () => void;
 }) {
   const [armed, setArmed] = useState(false);
@@ -15614,6 +17478,10 @@ function ConfirmDeleteButton({
   useEffect(() => {
     if (disabled) setArmed(false);
   }, [disabled]);
+
+  useEffect(() => {
+    onArmedChange?.(armed);
+  }, [armed, onArmedChange]);
 
   const activate = useCallback((event: ReactMouseEvent<HTMLButtonElement>) => {
     if (disabled) return;
@@ -15644,6 +17512,7 @@ function ConfirmDeleteButton({
         setArmed(false);
       }}
       aria-label={armed ? `Confirm delete ${noun}` : `Delete ${noun}`}
+      aria-describedby={describedBy}
       title={armed ? `Click again to delete ${noun}` : `Delete ${noun}`}
     >
       {armed ? confirmLabel : idleLabel}
@@ -15690,6 +17559,20 @@ export function FeatureColorPicker({
       aria-label="Feature color"
     />
   );
+}
+
+/**
+ * The Type menu's options: the types offered for a new feature, plus any of
+ * `current` the list lacks (an imported ncRNA, exon or mRNA), placed before
+ * `custom`. A select whose value matches no option shows its first option, so
+ * without this an ncRNA feature's menu read "cds".
+ */
+export function featureTypeMenuOptions(...current: readonly (FeatureType | undefined)[]): FeatureType[] {
+  const missing = [...new Set(current)]
+    .filter((type): type is FeatureType => type !== undefined && !featureTypeOptions.includes(type));
+  if (missing.length === 0) return featureTypeOptions;
+  const customIndex = featureTypeOptions.indexOf('custom');
+  return [...featureTypeOptions.slice(0, customIndex), ...missing, ...featureTypeOptions.slice(customIndex)];
 }
 
 export function QuickFeatureEditor({
@@ -15934,11 +17817,15 @@ export function QuickFeatureEditor({
     onUpdateFeature(selectedFeature.id, feature);
   }, [featureFromForm, onUpdateFeature, rangeValidation, selectedFeature]);
 
+  // Enter commits the form the way its primary button would: Update for a
+  // selected feature, Add otherwise (the "+ Feature" path lands here with the
+  // Name field focused, and Enter used to do nothing).
   const handleNameKeyDown = useCallback((event: ReactKeyboardEvent<HTMLInputElement>) => {
-    if (event.key !== 'Enter' || !selectedFeature) return;
+    if (event.key !== 'Enter' || event.nativeEvent.isComposing) return;
     event.preventDefault();
-    updateSelected();
-  }, [selectedFeature, updateSelected]);
+    if (selectedFeature) updateSelected();
+    else submit();
+  }, [selectedFeature, submit, updateSelected]);
 
   const deleteSelected = useCallback(() => {
     if (!selectedFeature) return;
@@ -15989,7 +17876,13 @@ export function QuickFeatureEditor({
           <label>
             <span>Type</span>
             <select className="motif-cs-field" name="feature-type" value={type} onChange={(event) => handleTypeChange(event.target.value as FeatureType)}>
-              {featureTypeOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+              {/* A custom feature read from an INSDC key Motif has no type for
+                  keeps and exports that key, so its option reads the key. */}
+              {featureTypeMenuOptions(selectedFeature?.type, type).map((option) => (
+                <option key={option} value={option}>
+                  {option === 'custom' && selectedFeature ? featureTypeLabel({ type: option, metadata: selectedFeature.metadata }) : option}
+                </option>
+              ))}
             </select>
           </label>
           <label>
@@ -16327,10 +18220,45 @@ function formatMass(value: number): string {
   return `${value.toFixed(2)} Da`;
 }
 
+/**
+ * Average mass of a DNA record as the duplex it is: both strands, each under
+ * the record's topology and the panel's end chemistry. Analysis used to show
+ * one strand as "Mass" — the synthetic pUC19 once bundled read 796.20 kDa where
+ * the duplex weighs 1.59 MDa, a two-fold error in any ng-to-pmol conversion.
+ * Null when either strand cannot be evaluated.
+ */
+export function dnaDuplexMolecularWeight(sequence: string, topology: Topology): number | null {
+  const options = { ambiguity: 'average', topology } as const;
+  const top = calculateDnaMolecularWeight(sequence, options).mass;
+  const bottom = calculateDnaMolecularWeight(reverseComplement(sequence), options).mass;
+  return top === null || bottom === null ? null : Math.round((top + bottom) * 100) / 100;
+}
+
 function orfRangeLabel(orf: ORF, sequenceLength: number): string {
   const wraps = orf.end > sequenceLength;
   const end = wraps ? ((orf.end - 1) % sequenceLength) + 1 : orf.end;
   return `${orf.start + 1}-${end}${wraps ? ' wrap' : ''}`;
+}
+
+/**
+ * One ORF per strand and stop codon, from its farthest in-frame start.
+ * findORFs emits one entry per START, so every start upstream of a stop was a
+ * row of its own: on the synthetic pUC19 once bundled four of the eight Analysis
+ * rows were one reverse-strand ORF, entered at four starts. A forward
+ * ORF stops at its high coordinate and a reverse one at its low coordinate;
+ * the stop is taken modulo the length so a wrapped stop matches an unwrapped
+ * one. Keeps the input order, so a list sorted longest-first keeps the
+ * longest entry for each stop.
+ */
+export function longestOrfPerStop(orfs: readonly ORF[], sequenceLength: number): ORF[] {
+  const seen = new Set<string>();
+  return orfs.filter((orf) => {
+    const stop = orf.strand === -1 ? orf.start : orf.end - 1;
+    const key = `${orf.strand}:${sequenceLength > 0 ? stop % sequenceLength : stop}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function AnalysisPanel({
@@ -16351,6 +18279,7 @@ function AnalysisPanel({
   onTranslationCodeChange: (translationTableId: number) => void;
 }) {
   const isNucleotide = isNucleotideType(sequenceType);
+  const hasRecord = record.id !== EMPTY_ARTIFACT_VECTOR.id;
   const translationCode = useMemo(
     () => resolveArtifactTranslationCode(record.translationTableId),
     [record.translationTableId],
@@ -16362,17 +18291,10 @@ function AnalysisPanel({
       : [],
     [isNucleotide, record.sequence, topology, translationCode],
   );
-  const visibleOrfs = useMemo(() => allOrfs.slice(0, 8), [allOrfs]);
-  // findORFs emits one entry per START codon, so every in-frame start upstream
-  // of the same stop is counted again. On pUC19 that is 221 entries over 159
-  // distinct (strand, stop) reading frames — and four of the eight rows this
-  // panel lists are the same reverse-strand frame entered at four different
-  // starts. Read off the SAME array the list renders from, so the note and the
-  // rows cannot drift into disagreeing about one quantity.
-  const orfReadingFrameCount = useMemo(
-    () => new Set(allOrfs.map((orf) => `${orf.strand}:${orf.end}`)).size,
-    [allOrfs],
-  );
+  // The chip, the note and the rows all count this one population, so they
+  // cannot disagree about one quantity: one ORF per strand and stop.
+  const stopOrfs = useMemo(() => longestOrfPerStop(allOrfs, record.sequence.length), [allOrfs, record.sequence.length]);
+  const visibleOrfs = useMemo(() => stopOrfs.slice(0, 8), [stopOrfs]);
   // Read the start codons off the table the scan actually used. This panel has
   // a "Record genetic code" select right below it, and the tables disagree —
   // the standard one initiates at ATG/TTG/CTG, vertebrate mitochondrial at
@@ -16388,13 +18310,19 @@ function AnalysisPanel({
       : null,
     [record.sequence, sequenceType, topology],
   );
+  const duplexMass = useMemo(
+    () => sequenceType === 'dna' ? dnaDuplexMolecularWeight(record.sequence, topology) : null,
+    [record.sequence, sequenceType, topology],
+  );
   const mw = sequenceType === 'protein'
     ? proteinMolecularWeight(record.sequence)
     : sequenceType === 'dna' ? nucleotideMass?.mass : null;
   const molecularWeightStatus = nucleotideMass?.status;
-  const massText = mw === null || mw === undefined
-    ? 'n/a'
-    : `${molecularWeightStatus === 'ambiguous' ? '≈ ' : ''}${formatMass(mw)}`;
+  const approx = molecularWeightStatus === 'ambiguous' ? '≈ ' : '';
+  const massText = mw === null || mw === undefined ? 'n/a' : `${approx}${formatMass(mw)}`;
+  const displayMassText = sequenceType === 'dna'
+    ? duplexMass === null ? 'n/a' : `${approx}${formatMass(duplexMass)}`
+    : massText;
   const tm = useMemo(() => isNucleotide ? meltingTemperature(record.sequence) : null, [isNucleotide, record.sequence]);
   const gc = useMemo(() => isNucleotide ? gcContent(record.sequence) : 0, [isNucleotide, record.sequence]);
   const statsText = useMemo(() => JSON.stringify({
@@ -16405,15 +18333,20 @@ function AnalysisPanel({
     length: record.sequence.length,
     gc: isNucleotide ? gc : undefined,
     tm,
+    // `molecularWeight` keeps its meaning (one strand for DNA) for anything
+    // already reading it; the duplex is a new field beside it.
     molecularWeight: mw ?? undefined,
+    molecularWeightDoubleStranded: duplexMass ?? undefined,
     molecularWeightStatus,
     molecularWeightAssumptions: sequenceType !== 'dna' ? undefined : {
       mode: 'average',
       topology,
       linearEnds: topology === 'linear' ? "5'-phosphate / 3'-hydroxyl" : undefined,
+      molecularWeight: 'single strand, as entered',
+      molecularWeightDoubleStranded: 'both strands',
     },
     composition,
-    orfCount: allOrfs.length,
+    orfCount: stopOrfs.length,
     translationTable: isNucleotide && translationCode.supported
       ? { id: translationCode.id, name: translationCode.name }
       : undefined,
@@ -16426,24 +18359,43 @@ function AnalysisPanel({
       status: orf.status ?? 'complete',
       warnings: orf.warnings ?? [],
     })),
-  }, null, 2), [allOrfs.length, composition, gc, isNucleotide, molecularWeightStatus, mw, record.id, record.name, record.sequence.length, sequenceType, tm, topology, translationCode, visibleOrfs]);
+  }, null, 2), [stopOrfs.length, composition, duplexMass, gc, isNucleotide, molecularWeightStatus, mw, record.id, record.name, record.sequence.length, sequenceType, tm, topology, translationCode, visibleOrfs]);
 
   return (
     <details className="motif-cs-panel" name="motif-cs-tools" data-rail-tool="analysis">
       <summary className="motif-cs-panel-head" data-rail-label="A" role="button" title="Analysis">
         <Activity className="motif-cs-panel-icon" size={14} strokeWidth={2.2} aria-hidden="true" />
         <span>Analysis</span>
-        <span className="motif-cs-chip">{isNucleotide ? `${allOrfs.length} ORFs ≥${ANALYSIS_ORF_MIN_AA} aa` : 'protein'}</span>
+        {hasRecord ? (
+          <span className="motif-cs-chip">{isNucleotide ? `${stopOrfs.length} ORFs ≥${ANALYSIS_ORF_MIN_AA} aa` : 'protein'}</span>
+        ) : null}
       </summary>
       <div className="motif-cs-tool-panel-body">
-        <RailPopoverTitle title="Analysis" meta={isNucleotide ? `${allOrfs.length} ORFs ≥${ANALYSIS_ORF_MIN_AA} aa` : 'protein'} />
+        <RailPopoverTitle title="Analysis" meta={!hasRecord ? undefined : isNucleotide ? `${stopOrfs.length} ORFs ≥${ANALYSIS_ORF_MIN_AA} aa` : 'protein'} />
+        {/* An empty workspace read "Length 0 bp · Mass 0.00 Da · GC 0.0%"
+            with Copy stats enabled, as if it had analysed a record. */}
+        {!hasRecord ? (
+          <p className="motif-cs-muted" data-testid="no-record-note">Add or select a record to see its length, mass and ORFs.</p>
+        ) : (
+        <>
         <div className="motif-cs-stat-grid">
           <div className="motif-cs-stat"><span>Length</span><strong>{sequenceLengthLabel(record.sequence.length, sequenceType)}</strong></div>
-          <div className="motif-cs-stat" title={sequenceType === 'rna' ? 'RNA mass is not evaluated by the DNA mass model.' : nucleotideMass === null ? undefined : "Average single-strand mass; linear records assume a 5'-phosphate and 3'-hydroxyl."}><span>Mass</span><strong>{massText}</strong></div>
+          {sequenceType === 'dna' ? (
+            <div
+              className="motif-cs-stat"
+              title={`Average mass of both strands${topology === 'linear' ? "; each strand assumes a 5'-phosphate and 3'-hydroxyl" : ''}. The single strand as entered is ${massText}.`}
+            >
+              <span>Mass, dsDNA</span>
+              <strong>{displayMassText}</strong>
+              <small>ss {massText}</small>
+            </div>
+          ) : (
+            <div className="motif-cs-stat" title={sequenceType === 'rna' ? 'RNA mass is not evaluated by the DNA mass model.' : undefined}><span>Mass</span><strong>{massText}</strong></div>
+          )}
           {isNucleotide ? (
             <>
               <div className="motif-cs-stat"><span>GC</span><strong>{formatPercent(gc)}</strong></div>
-              <div className="motif-cs-stat"><span>Tm</span><strong>{tm === null ? 'n/a' : `${tm.toFixed(1)} C`}</strong></div>
+              <div className="motif-cs-stat"><span>Tm</span><strong>{tm === null ? 'n/a' : `${tm.toFixed(1)} °C`}</strong></div>
             </>
           ) : null}
         </div>
@@ -16469,21 +18421,15 @@ function AnalysisPanel({
             </select>
           </label>
           <div className="motif-cs-list">
-            {allOrfs.length > visibleOrfs.length ? (
-              /* The chip can only carry the floor; this is where the count's
-                 definition fits, and it is the number's whole meaning. "221
-                 ORFs" on a 2.6 kb vector reads as a result about the molecule
-                 when it is a result about the scan: a 10 aa floor, six frames,
-                 and the standard table's near-cognate starts, of which only 76
-                 of the 221 are ATG. The reading-frame figure is the honest
-                 denominator — entering one stop from several in-frame starts
-                 makes several entries, which is why the eight rows below
-                 include the same reverse-strand frame four times. */
-              <p className="motif-cs-form-note">
-                Showing the 8 longest of {allOrfs.length} start-to-stop intervals ≥{ANALYSIS_ORF_MIN_AA} aa
-                across {orfReadingFrameCount} distinct reading frames — six frames, both strands,
-                starting at {orfStartCodons}, so one frame entered at several starts appears more
-                than once.
+            {stopOrfs.length > visibleOrfs.length ? (
+              /* The chip can only carry the floor; this line carries the rest
+                 of the count's definition. The start codons come from the
+                 table the scan used, and the title spells out the scan. */
+              <p
+                className="motif-cs-form-note"
+                title={`Six frames, both strands, ≥${ANALYSIS_ORF_MIN_AA} aa. Each ORF runs from the farthest in-frame start (${orfStartCodons}) to its stop.`}
+              >
+                {visibleOrfs.length} longest of {stopOrfs.length}, one per stop, from its farthest start.
               </p>
             ) : null}
             {visibleOrfs.length > 0 ? visibleOrfs.map((orf, index) => {
@@ -16538,6 +18484,8 @@ function AnalysisPanel({
           </>
         ) : (
           <p className="motif-cs-muted">Protein records show chain-level stats here; translation is available from nucleotide records.</p>
+        )}
+        </>
         )}
       </div>
     </details>
@@ -16771,7 +18719,95 @@ function printHtmlReport(html: string): void {
   }
 }
 
-function DigestPanel({
+/**
+ * Escape inside an open map dock panel (Map Visibility, Digest Preview) closes it and
+ * puts focus back on its heading, as Escape does for the rail's tool popovers. The key
+ * stops there, so it neither clears the map selection nor docks a floating map pane. A
+ * search field with text in it keeps Escape for itself and clears first.
+ */
+export function closeMapDockPanelOnEscape(event: ReactKeyboardEvent<HTMLDetailsElement>) {
+  const panel = event.currentTarget;
+  if (event.key !== 'Escape' || event.defaultPrevented || !panel.open) return;
+  const target = event.target;
+  if (target instanceof HTMLInputElement && target.type === 'search' && target.value !== '') return;
+  event.preventDefault();
+  event.stopPropagation();
+  panel.open = false;
+  panel.querySelector<HTMLElement>(':scope > summary')?.focus({ preventScroll: true });
+}
+
+/**
+ * The enzyme names in the collapsed Digest Preview heading: up to three, then "+N"
+ * for every name the heading does not show. The heading shares its row with Map
+ * Visibility, and it used to centre text wider than itself, so the FIRST enzyme was
+ * the one cut off: "DIGEST PRE… ·RI · BamHI · HindIII" at 1440x900, and no EcoRI at
+ * all at 1280x720. Now the names start at the left, and a name that does not fit
+ * whole is left out and counted into the "+N"; the title then lists every enzyme.
+ *
+ * Which names fit is measured, not estimated: the names are laid out in a one-line
+ * row that wraps, and a name on the hidden second line did not fit. With a name
+ * left out the "+N" takes room too, so that row is laid out once more with it in
+ * place. Then only the names that fit are drawn, so the row is as wide as they are.
+ * A new width for the heading, or opening and closing its panel, measures again.
+ */
+function DigestSummaryEnzymes({ names }: { names: readonly string[] }) {
+  const shown = names.slice(0, 3);
+  const shownKey = shown.join('\u0000');
+  const rowRef = useRef<HTMLSpanElement>(null);
+  // `pass` 0 lays out every name, 1 does so again with the "+N" in place, 2 draws.
+  const [fit, setFit] = useState({ key: shownKey, pass: 0, visible: shown.length });
+  const current = fit.key === shownKey ? fit : { key: shownKey, pass: 0, visible: shown.length };
+  useLayoutEffect(() => {
+    if (current.pass === 2) return;
+    const row = rowRef.current;
+    const items = Array.from(row?.children ?? []) as HTMLElement[];
+    const firstTop = items[0]?.offsetTop ?? 0;
+    // A first name wider than the row cannot wrap; it is cut, so it does not fit either.
+    const rowRight = (row?.offsetLeft ?? 0) + (row?.clientWidth ?? 0);
+    const visible = items.filter((item) => (
+      item.offsetTop <= firstTop && (row?.clientWidth === 0 || item.offsetLeft + item.offsetWidth <= rowRight + 1)
+    )).length;
+    setFit({ key: shownKey, pass: current.pass === 0 && visible < shown.length ? 1 : 2, visible });
+  }, [current.pass, shown.length, shownKey]);
+  useLayoutEffect(() => {
+    const row = rowRef.current;
+    const heading = row?.closest('summary');
+    const panel = heading?.parentElement;
+    if (!heading || !panel) return undefined;
+    const remeasure = () => setFit({ key: shownKey, pass: 0, visible: shown.length });
+    let width = heading.getBoundingClientRect().width;
+    let frame = 0;
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        const next = heading.getBoundingClientRect().width;
+        if (next === width) return;
+        width = next;
+        remeasure();
+      });
+    });
+    observer?.observe(heading);
+    panel.addEventListener('toggle', remeasure);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      observer?.disconnect();
+      panel.removeEventListener('toggle', remeasure);
+    };
+  }, [shown.length, shownKey]);
+  const drawn = current.pass === 2 ? shown.slice(0, current.visible) : shown;
+  const more = names.length - (current.pass === 0 ? shown.length : current.visible);
+  return (
+    <span className="motif-cs-digest-summary-enzymes" data-fit={current.pass === 2 ? 'drawn' : 'measuring'} title={current.visible < shown.length ? `Cut with ${names.join(', ')}` : undefined}>
+      <span className="motif-cs-digest-summary-names" ref={rowRef}>
+        {drawn.map((name, index) => <span key={`${index}:${name}`}>{index > 0 ? ` · ${name}` : name}</span>)}
+      </span>
+      {more > 0 ? <span className="motif-cs-digest-summary-more"> +{more}</span> : null}
+      {' — '}
+    </span>
+  );
+}
+
+export function DigestPanel({
   record,
   sequenceType,
   topology,
@@ -16911,7 +18947,7 @@ function DigestPanel({
   useEffect(() => {
     if (!savedRecipe) setSaveStatus('');
   }, [savedRecipe]);
-  const recipeMeta = !isDna
+  const recipeOutcome = !isDna
     ? { full: 'DNA only', compact: 'n/a' }
     : !recipe.isValid
       ? hardIssues.length > 0
@@ -16927,6 +18963,13 @@ function DigestPanel({
             full: `${recipe.cutCount} cut${recipe.cutCount === 1 ? '' : 's'} · ${fragments.length} fragments`,
             compact: `${fragments.length} frag`,
           };
+  // The collapsed heading names the enzymes, so the strip says which digest the
+  // count is for without opening it. Three names and then "+N": "Use visible
+  // cutters" puts twelve in the recipe, and the heading shares a row with Map
+  // Visibility. The title lists them all. An open panel shows the recipe itself,
+  // so its heading drops the names (motif-cs-digest-summary-enzymes).
+  const recipeEnzymeNames = isDna && recipe.isValid ? recipe.enzymes.map((entry) => entry.name) : [];
+
   const issueId = `motif-cs-digest-issue-${record.id}`;
   const saveLabel = recipeAlreadySaved
     ? 'Saved'
@@ -16937,6 +18980,14 @@ function DigestPanel({
       : recipe.outcome === 'linearized'
         ? 'Save linearized copy'
         : `Save ${fragments.length} fragments`;
+  // One press of the gel button saves before it opens the gel, so it names what it
+  // saves the way the Save button beside it does. It used to read only "Save and open
+  // gel" while that press added every fragment to Inventory as its own record.
+  const gelLabel = recipeAlreadySaved
+    ? 'Open gel'
+    : recipe.isValid && recipe.outcome !== 'uncut'
+      ? `${saveLabel} and open gel`
+      : 'Save and open gel';
   const saveCurrentRecipe = (): DigestSaveReceipt | null => {
     if (recipeAlreadySaved && savedRecipe) {
       return { workflowResultId: savedRecipe.id, recordCount: savedRecipe.outputRecordIds.length };
@@ -16945,20 +18996,23 @@ function DigestPanel({
     if (!receipt) return null;
     setSaveStatus(receipt.recordCount === 0
       ? 'Result saved in Workflow Results.'
-      : `Saved ${receipt.recordCount} fragment${receipt.recordCount === 1 ? '' : 's'} in Inventory and Workflow Results.`);
+      : `Saved ${receipt.recordCount} fragment${receipt.recordCount === 1 ? '' : 's'} in Inventory and Workflow Results.${receipt.leftOutNotice ? ` ${receipt.leftOutNotice}` : ''}`);
     return receipt;
   };
 
   return (
-    <details className="motif-cs-panel" name="motif-cs-map-dock">
-      <summary className="motif-cs-panel-head" onClick={onOpen}>
+    <details className="motif-cs-panel" name="motif-cs-map-dock" onKeyDown={closeMapDockPanelOnEscape}>
+      <summary className="motif-cs-panel-head motif-cs-digest-head" onClick={onOpen}>
         <span>
           <span className="motif-cs-full-label">Digest Preview</span>
           <span className="motif-cs-compact-label">Digest</span>
         </span>
-        <span className="motif-cs-chip">
-          <span className="motif-cs-full-label">{recipeMeta.full}</span>
-          <span className="motif-cs-compact-label">{recipeMeta.compact}</span>
+        <span className="motif-cs-chip motif-cs-digest-summary-chip" title={recipeEnzymeNames.length > 3 ? `Cut with ${recipeEnzymeNames.join(', ')}` : undefined}>
+          <span className="motif-cs-full-label">
+            {recipeEnzymeNames.length > 0 ? <DigestSummaryEnzymes names={recipeEnzymeNames} /> : null}
+            <span className="motif-cs-digest-summary-outcome">{recipeOutcome.full}</span>
+          </span>
+          <span className="motif-cs-compact-label">{recipeOutcome.compact}</span>
         </span>
         {recipeAlreadySaved ? (
           <span className="motif-cs-chip" data-testid="digest-saved-receipt" aria-label="Digest result saved">Saved</span>
@@ -17025,7 +19079,7 @@ function DigestPanel({
                 if (receipt) onOpenGel(receipt.workflowResultId);
               }}
             >
-              {recipeAlreadySaved ? 'Open gel' : 'Save and open gel'}
+              {gelLabel}
             </button>
           </div>
           {methylationControls.length > 0 ? (
@@ -17150,6 +19204,275 @@ function DigestPanel({
   );
 }
 
+/**
+ * The selection dock's Copy. The only other confirmation a copy got was the
+ * Export and copy chip, which sat 836px below this button at 1920x1080 and
+ * below the pane's bottom edge at 1440x900 and 1280x720. The label changes
+ * where the reader is looking; `copyText` still announces it for assistive
+ * technology. Both words share one grid cell so the swap cannot shift the
+ * buttons beside it.
+ */
+export function SequenceCopyButton({
+  disabled,
+  title,
+  onCopy,
+}: {
+  disabled: boolean;
+  title: string;
+  onCopy: () => Promise<boolean>;
+}) {
+  const [copied, setCopied] = useState(false);
+  const timerRef = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+  }, []);
+  return (
+    <button
+      className="motif-cs-mini-button motif-cs-copy-button"
+      type="button"
+      disabled={disabled}
+      title={title}
+      data-copied={copied || undefined}
+      onClick={async () => {
+        const ok = await onCopy();
+        if (!ok) return;
+        if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+        setCopied(true);
+        timerRef.current = window.setTimeout(() => {
+          timerRef.current = null;
+          setCopied(false);
+        }, 1500);
+      }}
+    >
+      <span aria-hidden={copied || undefined}>Copy</span>
+      <span aria-hidden={!copied || undefined}>Copied</span>
+    </button>
+  );
+}
+
+export type SequenceActionMenuItem = {
+  id: string;
+  label: string;
+  /** What the item does, or, when it is off, why and what to do instead. */
+  note?: string;
+  disabled?: boolean;
+  separatorBefore?: boolean;
+  onSelect: () => void;
+};
+
+/**
+ * A menu button in the WAI-ARIA pattern: Enter, Space or ArrowDown opens it on
+ * the first item and ArrowUp on the last; arrows, Home and End move; Escape and
+ * Tab close it and hand focus back to the button. Unavailable items stay
+ * focusable with aria-disabled so the reason under them can be read.
+ *
+ * The list is `position: fixed` because the dock it opens from scrolls
+ * horizontally and the pane clips, and either would cut a dropdown off. It
+ * stays mounted and `hidden` while closed so aria-controls always resolves.
+ */
+export function SequenceActionMenu({
+  label,
+  menuLabel,
+  items,
+}: {
+  label: string;
+  menuLabel: string;
+  items: readonly SequenceActionMenuItem[];
+}) {
+  const instanceId = useId();
+  const menuId = `${instanceId}-menu`;
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  const [initialFocus, setInitialFocus] = useState<'first' | 'last' | null>(null);
+
+  const menuItems = () => [...(menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') ?? [])];
+  const openMenu = (focus: 'first' | 'last') => {
+    setOpen(true);
+    setInitialFocus(focus);
+  };
+  const closeMenu = (returnFocus: boolean) => {
+    setOpen(false);
+    if (returnFocus) buttonRef.current?.focus({ preventScroll: true });
+  };
+
+  useLayoutEffect(() => {
+    if (!open) return undefined;
+    const place = () => {
+      const button = buttonRef.current;
+      const menu = menuRef.current;
+      if (!button || !menu) return;
+      menu.style.maxHeight = '';
+      const anchor = button.getBoundingClientRect();
+      const width = menu.offsetWidth;
+      const height = menu.offsetHeight;
+      const gap = 4;
+      const margin = 8;
+      const roomBelow = window.innerHeight - anchor.bottom - gap - margin;
+      const roomAbove = anchor.top - gap - margin;
+      const below = height <= roomBelow || roomBelow >= roomAbove;
+      const top = below ? anchor.bottom + gap : Math.max(margin, anchor.top - gap - height);
+      const left = clamp(anchor.right - width, margin, Math.max(margin, window.innerWidth - width - margin));
+      menu.style.top = `${Math.round(top)}px`;
+      menu.style.left = `${Math.round(left)}px`;
+      menu.style.maxHeight = `${Math.max(96, Math.floor(below ? roomBelow : roomAbove))}px`;
+    };
+    place();
+    let frame = 0;
+    const schedule = () => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(place);
+    };
+    window.addEventListener('resize', schedule);
+    window.addEventListener('scroll', schedule, true);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener('resize', schedule);
+      window.removeEventListener('scroll', schedule, true);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open || !initialFocus) return;
+    const list = menuItems();
+    (initialFocus === 'last' ? list[list.length - 1] : list[0])?.focus({ preventScroll: true });
+    setInitialFocus(null);
+  }, [initialFocus, open]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (target && (menuRef.current?.contains(target) || buttonRef.current?.contains(target))) return;
+      setOpen(false);
+    };
+    document.addEventListener('pointerdown', closeOnOutsidePointer, true);
+    return () => document.removeEventListener('pointerdown', closeOnOutsidePointer, true);
+  }, [open]);
+
+  const handleMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    const list = menuItems();
+    const index = list.indexOf(document.activeElement as HTMLButtonElement);
+    const focusAt = (next: number) => {
+      event.preventDefault();
+      list[(next + list.length) % list.length]?.focus({ preventScroll: true });
+    };
+    if (event.key === 'ArrowDown') focusAt(index + 1);
+    else if (event.key === 'ArrowUp') focusAt(index < 0 ? list.length - 1 : index - 1);
+    else if (event.key === 'Home') focusAt(0);
+    else if (event.key === 'End') focusAt(list.length - 1);
+    else if (event.key === 'Escape') {
+      // Stop here: the document handler would also clear the selection the
+      // menu was about to act on.
+      event.preventDefault();
+      event.stopPropagation();
+      closeMenu(true);
+    } else if (event.key === 'Tab') {
+      // Hand focus to the button first and let Tab continue from it, so the
+      // next stop is whatever follows the menu button in the page.
+      closeMenu(true);
+    }
+  };
+
+  return (
+    <span
+      className="motif-cs-action-menu"
+      onBlur={(event) => {
+        if (!open) return;
+        const next = event.relatedTarget as Node | null;
+        if (next && event.currentTarget.contains(next)) return;
+        setOpen(false);
+      }}
+    >
+      <button
+        ref={buttonRef}
+        className="motif-cs-mini-button motif-cs-action-menu-button"
+        type="button"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-controls={menuId}
+        data-open={open || undefined}
+        onClick={() => (open ? closeMenu(false) : openMenu('first'))}
+        onKeyDown={(event) => {
+          if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+            event.preventDefault();
+            openMenu(event.key === 'ArrowUp' ? 'last' : 'first');
+          }
+        }}
+      >
+        <span>{label}</span>
+        <ChevronDown size={13} strokeWidth={2.4} aria-hidden="true" />
+      </button>
+      <div
+        ref={menuRef}
+        id={menuId}
+        className="motif-cs-action-menu-list"
+        role="menu"
+        aria-label={menuLabel}
+        hidden={!open}
+        data-motif-cs-escape-scope={open ? 'true' : undefined}
+        onKeyDown={handleMenuKeyDown}
+      >
+        {items.flatMap((item) => {
+          const noteId = item.note ? `${menuId}-${item.id}-note` : undefined;
+          const entry = (
+            <button
+              key={item.id}
+              className="motif-cs-action-menu-item"
+              type="button"
+              role="menuitem"
+              tabIndex={-1}
+              aria-label={item.label}
+              aria-describedby={noteId}
+              aria-disabled={item.disabled || undefined}
+              onClick={() => {
+                if (item.disabled) return;
+                closeMenu(true);
+                item.onSelect();
+              }}
+            >
+              <span className="motif-cs-action-menu-label">{item.label}</span>
+              {item.note ? <span id={noteId} className="motif-cs-action-menu-note">{item.note}</span> : null}
+            </button>
+          );
+          return item.separatorBefore
+            ? [<div key={`${item.id}-separator`} className="motif-cs-action-menu-separator" role="separator" />, entry]
+            : [entry];
+        })}
+      </div>
+    </span>
+  );
+}
+
+/** Wide enough for the four Copy buttons beside their row label on one line. */
+const EXPORT_POPOVER_WIDTH = 460;
+/** Less room than this on the preferred side opens the popover on the other side, if that side has more. */
+const EXPORT_POPOVER_MIN_HEIGHT = 240;
+/** A right-aligned popover that leaves this much of the sequence column uncovered stays right-aligned. */
+const EXPORT_POPOVER_MIN_UNCOVERED = 160;
+
+/**
+ * Left edge of the Export popover. It right-aligns to its anchor, unless
+ * left-aligning leaves more of the sequence column uncovered: when Sequence
+ * sits beside Map, the column is about as narrow as the popover, and a
+ * right-aligned popover covers every base row.
+ */
+export function exportPopoverLeft(
+  anchor: { left: number; right: number },
+  column: { left: number; right: number } | null,
+  width: number,
+  viewportWidth: number,
+  margin = 8,
+): number {
+  const place = (left: number) => clamp(left, margin, Math.max(margin, viewportWidth - width - margin));
+  const rightAligned = place(anchor.right - width);
+  if (!column) return rightAligned;
+  const uncovered = (left: number) => Math.max(0, left - column.left) + Math.max(0, column.right - (left + width));
+  if (uncovered(rightAligned) >= EXPORT_POPOVER_MIN_UNCOVERED) return rightAligned;
+  const leftAligned = place(anchor.left);
+  return uncovered(leftAligned) > uncovered(rightAligned) ? leftAligned : rightAligned;
+}
+
 function SequenceToolsPanel({
   records,
   record,
@@ -17171,12 +19494,17 @@ function SequenceToolsPanel({
   selectedMapRange,
   copyStatus,
   hasUnsavedChanges,
+  backupDownloaded,
   hasSessionCheckpoint,
   onCopy,
   onCopySummary,
   onAddReverseComplement,
   onAnnotateRange,
   canAnnotateRange,
+  exportTriggerRef,
+  openedFrom,
+  onOpenFromSummary,
+  onOpenChange,
 }: {
   records: readonly ArtifactVector[];
   record: ArtifactVector;
@@ -17198,16 +19526,23 @@ function SequenceToolsPanel({
   selectedMapRange: MapSelectionRange | null;
   copyStatus: string | null;
   hasUnsavedChanges: boolean;
+  /** The session still matches the backup last handed to the browser. */
+  backupDownloaded: boolean;
   hasSessionCheckpoint: boolean;
   onCopy: (label: string, value: string) => void;
   onCopySummary: () => void;
   onAddReverseComplement: () => void;
   onAnnotateRange: () => void;
   canAnnotateRange: boolean;
+  /** The title-row Export button: the popover's anchor and focus return. */
+  exportTriggerRef: RefObject<HTMLButtonElement | null>;
+  openedFrom: 'header' | 'summary';
+  onOpenFromSummary: () => void;
+  onOpenChange: (open: boolean) => void;
 }) {
   const exportPanelRef = useRef<HTMLDetailsElement>(null);
+  const exportBodyRef = useRef<HTMLDivElement>(null);
   const [exportPanelOpen, setExportPanelOpen] = useState(false);
-  const [exportPanelHeight, setExportPanelHeight] = useState<number | null>(null);
   const [exportChoiceId, setExportChoiceId] = useState('record-sequence');
   const [downloadStatus, setDownloadStatus] = useState('');
   const hasActiveRecord = records.length > 0 && record.id !== EMPTY_ARTIFACT_VECTOR.id;
@@ -17215,140 +19550,94 @@ function SequenceToolsPanel({
   const needsZipExport = exportPanelOpen && exportChoiceId === 'inventory-zip';
   const needsInventoryJson = exportPanelOpen && (exportChoiceId === 'inventory-json' || needsZipExport);
 
-  const exportPanelHeightBounds = useCallback(() => {
-    const panel = exportPanelRef.current;
-    const column = panel?.closest<HTMLElement>('.motif-cs-sequence-column');
-    const sequencePanel = column?.querySelector<HTMLElement>('.motif-cs-sequence-panel');
-    const sequenceViewport = sequencePanel?.querySelector<HTMLElement>(
-      ':scope > .motif-cs-sequence, :scope > .motif-cs-large-sequence',
-    );
-    if (!column || !panel || !sequencePanel || !sequenceViewport) return { min: 180, max: 220 };
+  useEffect(() => {
+    onOpenChange(exportPanelOpen);
+  }, [exportPanelOpen, onOpenChange]);
+  useEffect(() => () => onOpenChange(false), [onOpenChange]);
 
-    const columnRect = column.getBoundingClientRect();
-    const panelRect = panel.getBoundingClientRect();
-    const sequencePanelRect = sequencePanel.getBoundingClientRect();
-    const sequenceViewportRect = sequenceViewport.getBoundingClientRect();
-    const topReserve = Math.max(0, sequencePanelRect.top - columnRect.top);
-    const bottomReserve = Math.max(0, columnRect.bottom - panelRect.bottom);
-    const sequenceChromeHeight = Math.max(0, sequenceViewportRect.top - sequencePanelRect.top);
-    // Reserve the real sequence toolbar/selection chrome plus a usable 160px
-    // canvas. This ceiling remains stable as the Export panel itself changes.
-    const available = columnRect.height - topReserve - bottomReserve - sequenceChromeHeight - 160;
-    const max = Math.max(180, Math.min(columnRect.height, available));
-    return { min: Math.min(220, max), max };
-  }, []);
-
-  const resizeExportPanelTo = useCallback((height: number) => {
-    const { min, max } = exportPanelHeightBounds();
-    setExportPanelHeight(clamp(height, min, max));
-  }, [exportPanelHeightBounds]);
-
+  // The body is a position: fixed popover, so opening it never changes the
+  // sequence column's scroll range. Opened from the title-row Export button it
+  // hangs below that button; opened from this panel's own summary row, at the
+  // bottom of the column, it rises above the summary. Either way it is capped to
+  // the room the viewport has and scrolls inside itself past that.
   useLayoutEffect(() => {
-    if (!exportPanelOpen) return;
-
-    const syncExportPanelHeight = () => {
-      const bounds = exportPanelHeightBounds();
-      setExportPanelHeight((current) => {
-        // Compact workspaces already give Sequence its own scroll owner. Let
-        // Export flow at its natural height there so a second 180px scroller
-        // cannot leave a partly visible, non-interactive action row. Wide
-        // desktop retains the independently resizable Export viewport.
-        if (window.matchMedia(OVERLAY_TOOLS_LAYOUT_MEDIA).matches) return null;
-        const next = clamp(current ?? 340, bounds.min, bounds.max);
-        return current === next ? current : next;
-      });
-    };
-
-    syncExportPanelHeight();
-    window.addEventListener('resize', syncExportPanelHeight);
-    return () => window.removeEventListener('resize', syncExportPanelHeight);
-  }, [exportPanelHeightBounds, exportPanelOpen]);
-
-  useLayoutEffect(() => {
-    if (!exportPanelOpen) return;
-    const revealExportActions = () => {
+    if (!exportPanelOpen) return undefined;
+    const place = () => {
       const panel = exportPanelRef.current;
-      const column = panel?.closest<HTMLElement>('.motif-cs-sequence-column');
-      if (!panel || !column) return;
-
-      const panelRect = panel.getBoundingClientRect();
-      const columnRect = column.getBoundingClientRect();
-      if (exportPanelHeight === null) {
-        // Natural-height compact panels use the Sequence pane as their only
-        // scroll owner. Native details scrolling may already have placed the
-        // heading at the pane's top while leaving the last immediate action row
-        // underneath the stacked Map. Move only far enough to keep both the
-        // heading and every Copy/Strand button pointer-reachable; the remaining
-        // formats and preview stay in ordinary document-order scrolling.
-        const actionBottom = [...panel.querySelectorAll<HTMLElement>('.motif-cs-export-row button')]
-          .reduce((bottom, button) => Math.max(bottom, button.getBoundingClientRect().bottom), panelRect.top);
-        const scrollDelta = Math.max(
-          panelRect.top - columnRect.top,
-          actionBottom - columnRect.bottom,
-          0,
-        );
-        column.scrollTo({
-          top: column.scrollTop + scrollDelta,
-          behavior: 'auto',
-        });
-        return;
+      const body = exportBodyRef.current;
+      const summary = panel?.querySelector<HTMLElement>(':scope > summary');
+      if (!panel || !body || !summary) return;
+      const trigger = exportTriggerRef.current;
+      const triggerRect = openedFrom === 'header' && trigger?.isConnected ? trigger.getBoundingClientRect() : null;
+      const triggerOnScreen = !!triggerRect && triggerRect.width > 0
+        && triggerRect.bottom > 0 && triggerRect.top < window.innerHeight;
+      const anchor = triggerOnScreen ? triggerRect : summary.getBoundingClientRect();
+      const margin = 8;
+      const gap = 4;
+      // Stay inside the workspace: the header above it keeps its pane switcher.
+      const ceiling = Math.max(margin, (panel.closest<HTMLElement>('.motif-cs-main')?.getBoundingClientRect().top ?? 0) + gap);
+      const width = Math.min(EXPORT_POPOVER_WIDTH, window.innerWidth - 2 * margin);
+      body.style.width = `${width}px`;
+      body.style.maxHeight = '';
+      const natural = body.scrollHeight;
+      const roomBelow = window.innerHeight - anchor.bottom - gap - margin;
+      const roomAbove = anchor.top - gap - ceiling;
+      const preferBelow = triggerOnScreen;
+      const below = preferBelow
+        ? roomBelow >= Math.min(natural, EXPORT_POPOVER_MIN_HEIGHT) || roomBelow >= roomAbove
+        : roomAbove < Math.min(natural, EXPORT_POPOVER_MIN_HEIGHT) && roomBelow > roomAbove;
+      const column = panel.closest<HTMLElement>('.motif-cs-sequence-column')?.getBoundingClientRect() ?? null;
+      body.style.left = `${Math.round(exportPopoverLeft(anchor, column, width, window.innerWidth, margin))}px`;
+      if (below) {
+        body.style.top = `${Math.round(anchor.bottom + gap)}px`;
+        body.style.bottom = '';
+      } else {
+        body.style.top = '';
+        body.style.bottom = `${Math.round(window.innerHeight - anchor.top + gap)}px`;
       }
-      const overflowBelow = panelRect.bottom - columnRect.bottom;
-      if (overflowBelow > 0) {
-        column.scrollTo({ top: column.scrollTop + overflowBelow, behavior: 'auto' });
-      }
+      body.style.maxHeight = `${Math.max(120, Math.floor(below ? roomBelow : roomAbove))}px`;
+      body.dataset.placement = below ? 'below' : 'above';
     };
-    // Run during layout so compact↔wide transitions cannot paint one frame with
-    // the Strand controls under the Map. Repeat after the resulting geometry
-    // settles: CSS media-query reflow and the browser's native <details> reveal
-    // can both adjust this scrollport after the React commit.
-    revealExportActions();
-    let frame = window.requestAnimationFrame(revealExportActions);
-    const observer = new ResizeObserver(() => {
+    place();
+    let frame = 0;
+    const schedule = () => {
       window.cancelAnimationFrame(frame);
-      frame = window.requestAnimationFrame(revealExportActions);
-    });
-    const panel = exportPanelRef.current;
-    const column = panel?.closest<HTMLElement>('.motif-cs-sequence-column');
-    if (panel) observer.observe(panel);
+      frame = window.requestAnimationFrame(place);
+    };
+    window.addEventListener('resize', schedule);
+    window.addEventListener('scroll', schedule, true);
+    const observer = new ResizeObserver(schedule);
+    const column = exportPanelRef.current?.closest<HTMLElement>('.motif-cs-sequence-column');
     if (column) observer.observe(column);
+    if (exportTriggerRef.current) observer.observe(exportTriggerRef.current);
     return () => {
-      observer.disconnect();
       window.cancelAnimationFrame(frame);
+      window.removeEventListener('resize', schedule);
+      window.removeEventListener('scroll', schedule, true);
+      observer.disconnect();
     };
-  }, [exportPanelHeight, exportPanelOpen]);
+  }, [exportPanelOpen, exportTriggerRef, openedFrom]);
 
-  const startExportPanelResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+  // From the Export button, focus moves into the popover so the keyboard is
+  // where the controls are. From the summary it stays on the summary, which
+  // already sits beside the popover.
+  useEffect(() => {
+    if (!exportPanelOpen || openedFrom !== 'header') return;
+    exportBodyRef.current
+      ?.querySelector<HTMLElement>('.motif-cs-export-row button:not(:disabled), select, textarea')
+      ?.focus({ preventScroll: true });
+  }, [exportPanelOpen, openedFrom]);
+
+  const closeExportPanel = useCallback(() => {
     const panel = exportPanelRef.current;
-    if (!panel) return;
-    event.preventDefault();
-    event.stopPropagation();
-    const startY = event.clientY;
-    const startHeight = panel.getBoundingClientRect().height;
-    document.body.dataset.motifCsExportResizing = 'true';
-
-    const handlePointerMove = (moveEvent: PointerEvent) => {
-      resizeExportPanelTo(startHeight + startY - moveEvent.clientY);
-    };
-    const stopResize = () => {
-      delete document.body.dataset.motifCsExportResizing;
-      window.removeEventListener('pointermove', handlePointerMove);
-      window.removeEventListener('pointerup', stopResize);
-      window.removeEventListener('pointercancel', stopResize);
-    };
-
-    window.addEventListener('pointermove', handlePointerMove);
-    window.addEventListener('pointerup', stopResize, { once: true });
-    window.addEventListener('pointercancel', stopResize, { once: true });
-  }, [resizeExportPanelTo]);
-
-  const resizeExportPanelFromKeyboard = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
-    event.preventDefault();
-    const current = exportPanelRef.current?.getBoundingClientRect().height ?? exportPanelHeight ?? 340;
-    const step = event.shiftKey ? 32 : 16;
-    resizeExportPanelTo(current + (event.key === 'ArrowUp' ? step : -step));
-  }, [exportPanelHeight, resizeExportPanelTo]);
+    if (!panel?.open) return;
+    panel.open = false;
+    const trigger = exportTriggerRef.current;
+    const returnTo = openedFrom === 'header' && trigger?.isConnected
+      ? trigger
+      : panel.querySelector<HTMLElement>(':scope > summary');
+    returnTo?.focus({ preventScroll: true });
+  }, [exportTriggerRef, openedFrom]);
 
   const exportRecords = useMemo(
     () => records.map((item) => (item.id === record.id && item.topology !== topology ? { ...item, topology } : item)),
@@ -17483,6 +19772,15 @@ function SequenceToolsPanel({
       ? buildArtifactExportLossReportForRecords(exportRecordsWithSites, format)
       : buildArtifactExportLossReport(record, format);
   }, [exportChoice?.group, exportChoice?.id, exportRecordsWithSites, hasActiveRecord, record]);
+  // The receipt counts preservation items; this names them, kind by kind.
+  const exportLossItems = useMemo(() => (
+    baseExportLossReport?.lossy
+      ? exportLossItemLines(
+        baseExportLossReport,
+        (exportChoice?.group === 'Whole inventory' ? exportRecordsWithSites : [record]).flatMap((item) => item.features),
+      )
+      : []
+  ), [baseExportLossReport, exportChoice?.group, exportRecordsWithSites, record]);
   const exportLossReport = useMemo(() => (
     baseExportLossReport && checkpointExportBlocked
       ? { ...baseExportLossReport, faithful: false, lossy: true, summary: checkpointExportMessage }
@@ -17523,34 +19821,42 @@ function SequenceToolsPanel({
     : selectedMapRange
       ? `Range ${mapRangeLabel(selectedMapRange, record.sequence.length)}`
       : null;
-  const durabilityStatus = hasUnsavedChanges
+  const durabilityStatus = backupDownloaded
+    ? 'backup downloaded'
+    : hasUnsavedChanges
     ? 'unsaved changes'
     : hasSessionCheckpoint
       ? 'restored checkpoint'
       : 'session only';
-
-  const exportPanelBounds = exportPanelHeightBounds();
 
   return (
     <details
       id="motif-cs-export-panel"
       ref={exportPanelRef}
       className="motif-cs-panel motif-cs-sequence-tools-panel"
-      data-resized={exportPanelHeight !== null || undefined}
-      style={exportPanelHeight !== null ? { '--motif-cs-export-panel-height': `${exportPanelHeight}px` } as CSSProperties : undefined}
       onToggle={(event) => {
         const panel = event.currentTarget;
         const open = panel.open;
         setExportPanelOpen(open);
       }}
+      onKeyDown={(event) => {
+        if (event.key !== 'Escape' || !exportPanelRef.current?.open) return;
+        // Stop here: the document handler would clear the selection the panel
+        // is exporting, and a floating Sequence pane would dock itself.
+        event.preventDefault();
+        event.stopPropagation();
+        closeExportPanel();
+      }}
     >
-      <summary className="motif-cs-panel-head">
+      <summary className="motif-cs-panel-head" onClick={onOpenFromSummary}>
         <span>Export and copy</span>
         <span
           className="motif-cs-chip"
           role="status"
           data-testid="session-durability-status"
-          title={hasUnsavedChanges
+          title={backupDownloaded
+            ? 'This session matches the workspace backup last handed to the browser. Open the file to confirm it saved.'
+            : hasUnsavedChanges
             ? 'This session changed since its last complete Database JSON or ZIP checkpoint.'
             : hasSessionCheckpoint
               ? 'The current session matches a complete JSON file restored from disk.'
@@ -17559,25 +19865,26 @@ function SequenceToolsPanel({
           {copyStatus ?? durabilityStatus}
         </span>
       </summary>
-      {exportPanelOpen && exportPanelBounds.max > 220 ? (
-        <div
-          className="motif-cs-export-resize-handle"
-          role="separator"
-          aria-label="Resize Export and Copy panel"
-          aria-orientation="horizontal"
-          aria-valuemin={Math.round(exportPanelBounds.min)}
-          aria-valuemax={Math.round(exportPanelBounds.max)}
-          aria-valuenow={Math.round(exportPanelHeight ?? exportPanelBounds.min)}
-          tabIndex={0}
-          title="Drag to resize; use Up and Down Arrow keys; double-click to fit"
-          onPointerDown={startExportPanelResize}
-          onKeyDown={resizeExportPanelFromKeyboard}
-          onDoubleClick={() => resizeExportPanelTo(340)}
-        />
-      ) : null}
       {exportPanelOpen ? (
-      <div className="motif-cs-export-body">
-        <p className="motif-cs-form-note">Session data is not durable across reloads. Database JSON restores directly; ZIP contains the same inventory.json plus interchange exports, so extract inventory.json before using Add entry. Basic GenBank preserves joined, ordered, and origin-spanning locations; ambiguous legacy reverse locations export conservatively as non-materializable order(...). GFF3 emits discontinuous rows with Motif part-order attributes. Use Database JSON for full Motif metadata.</p>
+      <div
+        ref={exportBodyRef}
+        className="motif-cs-export-body"
+        role="region"
+        aria-label="Export and copy"
+        data-motif-cs-escape-scope="true"
+      >
+        <div className="motif-cs-export-popover-head">
+          <strong>Export and copy</strong>
+          <button
+            className="motif-cs-window-icon"
+            type="button"
+            onClick={closeExportPanel}
+            aria-label="Close Export and copy"
+            title="Close (Esc)"
+          >
+            <X size={14} strokeWidth={2.2} aria-hidden="true" />
+          </button>
+        </div>
         <div className="motif-cs-export-row">
           <span className="motif-cs-export-label">Copy</span>
           <div className="motif-cs-export-actions">
@@ -17631,7 +19938,7 @@ function SequenceToolsPanel({
         <div className="motif-cs-export-row">
           <span className="motif-cs-export-label">Strand</span>
           <div className="motif-cs-export-actions">
-            <button className="motif-cs-mini-button" type="button" onClick={() => onCopy('Complement', complementSequence)} disabled={!hasActiveRecord || !isNucleotide || selectedFeatureCannotMaterialize} title={!isNucleotide ? 'Complementing needs a DNA or RNA record' : 'Copy the complement of the current target'}>Complement</button>
+            <button className="motif-cs-mini-button" type="button" onClick={() => onCopy('Complement', complementSequence)} disabled={!hasActiveRecord || !isNucleotide || selectedFeatureCannotMaterialize} title={!isNucleotide ? 'Complementing needs a DNA or RNA record' : 'Copy the complement of the current target, not reversed'}>Copy complement</button>
             <button
               className="motif-cs-mini-button"
               type="button"
@@ -17699,6 +20006,16 @@ function SequenceToolsPanel({
           {downloadStatus}
         </p>
         <textarea className="motif-cs-textarea motif-cs-sequence-preview" name="sequence-preview" autoComplete="off" readOnly value={exportPreview} aria-label="Selected export preview" />
+        {/* Below the preview, not under the sentence: there it pushed the
+            preview's centre out of the 329px popover at 640x700. */}
+        {exportLossItems.length > 0 && !checkpointExportBlocked ? (
+          <ul className="motif-cs-form-note motif-cs-export-loss-items" data-testid="export-loss-items" aria-label="Preservation items">
+            {exportLossItems.map((item) => <li key={item}>{item}</li>)}
+          </ul>
+        ) : null}
+        {/* Reference text, so it follows the controls rather than opening the
+            popover with five lines to read past. */}
+        <p className="motif-cs-form-note">Session data is not durable across reloads. Database JSON restores directly; ZIP contains the same inventory.json plus interchange exports, so extract inventory.json before using Add entry. Basic GenBank preserves joined, ordered, and origin-spanning locations; ambiguous legacy reverse locations export conservatively as non-materializable order(...). GFF3 emits discontinuous rows with Motif part-order attributes. Use Database JSON for full Motif metadata.</p>
       </div>
       ) : null}
     </details>
@@ -18122,6 +20439,7 @@ function FloatingWindow({
 // residue is clickable → selects its codon on the sequence.
 function TranslationPanel({
   canTranslate,
+  hasRecord = true,
   targetLabel,
   isWhole,
   translationCode,
@@ -18144,6 +20462,8 @@ function TranslationPanel({
   onOpenFloating,
 }: {
   canTranslate: boolean;
+  /** False in an empty workspace, where there is nothing to translate yet. */
+  hasRecord?: boolean;
   targetLabel: string;
   isWhole: boolean;
   translationCode: ArtifactTranslationCodeResolution;
@@ -18234,7 +20554,9 @@ function TranslationPanel({
   if (!canTranslate) {
     return (
       <div className="motif-cs-translation-body">
-        <p className="motif-cs-muted">Translations are available for DNA and RNA records.</p>
+        <p className="motif-cs-muted">
+          {hasRecord ? 'Translations are available for DNA and RNA records.' : 'Add or select a DNA or RNA record to translate it.'}
+        </p>
       </div>
     );
   }
@@ -18426,19 +20748,25 @@ function TranslationPanel({
 const GUIDE_GC_LOW = 0.4;
 const GUIDE_GC_HIGH = 0.8;
 function GuideSearchPanel({
+  hasRecord,
   sequence,
   sequenceType,
   topology,
   scopeRange,
+  features,
   onSelectRange,
   onCopy,
+  onAddFeature,
 }: {
+  hasRecord: boolean;
   sequence: string;
   sequenceType: SequenceType;
   topology: Topology;
   scopeRange: MapSelectionRange | null;
+  features: readonly Feature[];
   onSelectRange: (start: number, end: number) => void;
   onCopy: (label: string, value: string) => void;
+  onAddFeature: (feature: ArtifactFeatureInput) => void;
 }) {
   const [hasOpened, setHasOpened] = useState(false);
   const [nucleaseId, setNucleaseId] = useState<NucleaseId>('spcas9');
@@ -18458,15 +20786,21 @@ function GuideSearchPanel({
   const asGuide = (spacer: string) => (rnaCopy ? spacer.replace(/T/g, 'U') : spacer);
   // No count until there is one. Guides are computed on first open, so `guides`
   // is empty before that -- and the chip read that emptiness as an answer:
-  // pUC19 has 250 guide sites and the rail said 0, on first paint, in the
+  // pUC19 has guide sites and the rail said 0, on first paint, in the
   // default state, for every record. An absent chip says "not counted yet"; a
   // zero says "none", and only one of those was ever true. `n/a` stays, because
   // on a protein record it is the reason the panel is empty.
-  const guideChip = !isNucleotide
+  const guideChip = !hasRecord
+    ? undefined
+    : !isNucleotide
     ? 'n/a'
     : hasOpened
       ? `${guides.length}${guides.length >= 500 ? '+' : ''}`
       : undefined;
+  // The popover title had room to say what the bare "250" counted.
+  const guideMeta = isNucleotide && guideChip
+    ? `${guideChip} site${guides.length === 1 ? '' : 's'}`
+    : guideChip;
   const scopeLabel = activeScopeRange
     ? `${mapRangeLabel(activeScopeRange, sequence.length)} ${sequenceUnitLabel(sequenceType)}`
     : sequenceLengthLabel(sequence.length, sequenceType);
@@ -18484,6 +20818,18 @@ function GuideSearchPanel({
     previewSelectionRef.current = `${start}:${end}`;
     onSelectRange(start, end);
   }, [onSelectRange]);
+  // A guide already on the record reads Added rather than adding it twice.
+  const savedGuides = useMemo(
+    () => new Set(features.filter((feature) => feature.type === 'misc_feature').map(featureLocationCoordinateSignature)),
+    [features],
+  );
+  const addGuide = (feature: ReturnType<typeof guideFeatureInput>) => {
+    // Adding selects the new feature, and a selected feature scopes this list;
+    // keep the list the user is working through.
+    const key = feature.subRanges ? 'whole' : `${feature.start}:${feature.end}`;
+    if (key !== scopeKey) previewSelectionRef.current = key;
+    onAddFeature(feature);
+  };
 
   return (
     <details
@@ -18494,14 +20840,17 @@ function GuideSearchPanel({
         if ((event.target as HTMLDetailsElement).open) setHasOpened(true);
       }}
     >
-      <summary className="motif-cs-panel-head" data-rail-label="G" role="button" title="Guide RNA">
+      <summary className="motif-cs-panel-head" data-rail-label="G" role="button" title="Guide RNA (CRISPR)">
         <Crosshair className="motif-cs-panel-icon" size={14} strokeWidth={2.2} aria-hidden="true" />
         <span>Guide RNA<span aria-hidden="true"> (CRISPR)</span></span>
         {guideChip ? <span className="motif-cs-chip">{guideChip}</span> : null}
       </summary>
       <div className="motif-cs-tool-panel-body">
-        <RailPopoverTitle title="Guide RNA" meta={guideChip} />
-        {!isNucleotide ? (
+        <RailPopoverTitle title="Guide RNA (CRISPR)" meta={guideMeta} />
+        {!hasRecord ? (
+          /* An empty workspace showed the controls over "Whole record 0 bp". */
+          <p className="motif-cs-muted" data-testid="no-record-note">Add or select a DNA or RNA record to find guide sites.</p>
+        ) : !isNucleotide ? (
           <p className="motif-cs-muted">Guide design is available for DNA and RNA records.</p>
         ) : (
           <>
@@ -18517,9 +20866,12 @@ function GuideSearchPanel({
                   <option key={entry.id} value={entry.id}>{entry.name} · {entry.pam || 'no PAM'}</option>
                 ))}
               </select>
+              {/* "RNA" alone read as a display switch, but the list keeps
+                  showing T either way: it changes only what Copy puts on the
+                  clipboard. */}
               <label className="motif-cs-toggle-inline" title="Copy spacers as RNA (U) or DNA (T)">
                 <input type="checkbox" name="guide-rna-copy" checked={rnaCopy} onChange={(event) => setRnaCopy(event.target.checked)} />
-                <span>RNA</span>
+                <span>Copy as RNA (U)</span>
               </label>
             </div>
             <div className="motif-cs-guide-scope" data-scoped={!!activeScopeRange || undefined}>
@@ -18533,6 +20885,8 @@ function GuideSearchPanel({
                   {guides.slice(0, shown).map((guide) => {
                     const gcPct = Math.round(guide.gc * 100);
                     const gcOk = guide.gc >= GUIDE_GC_LOW && guide.gc <= GUIDE_GC_HIGH;
+                    const feature = guideFeatureInput(guide, nuclease.enzyme, sequence.length, topology);
+                    const added = savedGuides.has(featureLocationCoordinateSignature(feature));
                     return (
                       <div className="motif-cs-guide-row" key={guide.id}>
                         <button
@@ -18556,14 +20910,27 @@ function GuideSearchPanel({
                             GC {gcPct}%
                           </span>
                         </button>
-                        <button
-                          className="motif-cs-mini-button motif-cs-guide-copy"
-                          type="button"
-                          onClick={() => onCopy(`${nuclease.name} spacer`, asGuide(guide.spacer))}
-                          title="Copy spacer"
-                        >
-                          Copy
-                        </button>
+                        {/* Stacked, so the spacer keeps the width a 27 nt
+                            string needs on one line. */}
+                        <span className="motif-cs-guide-actions">
+                          <button
+                            className="motif-cs-mini-button"
+                            type="button"
+                            onClick={() => onCopy(`${nuclease.name} spacer`, asGuide(guide.spacer))}
+                            title="Copy spacer"
+                          >
+                            Copy
+                          </button>
+                          <button
+                            className="motif-cs-mini-button"
+                            type="button"
+                            aria-disabled={added || undefined}
+                            onClick={() => { if (!added) addGuide(feature); }}
+                            title={added ? 'This guide is a feature on the record' : 'Add guide as feature'}
+                          >
+                            {added ? 'Added' : 'Add'}
+                          </button>
+                        </span>
                       </div>
                     );
                   })}
@@ -18581,6 +20948,175 @@ function GuideSearchPanel({
         )}
       </div>
     </details>
+  );
+}
+
+/** The workspace windows' titles, which are also their dialogs' accessible names. */
+const WORKSPACE_WINDOW_TITLES = {
+  primer: 'Primer Design',
+  cloningDesign: 'Cloning Design',
+  assembly: 'Quick Assembly',
+  gel: 'Gel Preview',
+  verification: 'Construct Verification',
+  alignment: 'Multiple Sequence Alignment',
+} as const;
+
+/**
+ * A rail head whose workspace is already open brings that workspace forward
+ * instead of opening its launcher. Measured with the Primer workspace open, a
+ * click on the Primer icon laid the launcher over the workspace (34,791 px²,
+ * covering the ΔTm column) and offered "Open primer workspace" for a
+ * workspace already on screen. A launcher that is itself open still closes.
+ */
+export function railWorkspaceClick(openWindowTitle: string | null) {
+  return (event: Pick<ReactMouseEvent<HTMLElement>, 'currentTarget' | 'preventDefault'>) => {
+    if (!openWindowTitle) return;
+    // Only the collapsed rail opens launchers as popovers over the workspace.
+    if (!event.currentTarget.closest('.motif-cs-inspector[data-tools-pinned="false"]')) return;
+    const details = event.currentTarget.parentElement;
+    if (details instanceof HTMLDetailsElement && details.open) return;
+    const workspace = document.querySelector<HTMLElement>(`.motif-cs-window[role="dialog"][aria-label="${openWindowTitle}"]`);
+    if (!workspace || workspace.dataset.inactive) return;
+    event.preventDefault();
+    workspace.focus({ preventScroll: true });
+  };
+}
+
+/**
+ * Where a collapsed rail head's name flyout goes once the rail scrolls. Below
+ * 710px tall the rail is its own scroll area and clips the absolutely placed
+ * flyout, so on hover and focus this writes the head's measured centre and
+ * left edge into two custom properties and marks the head; CSS then fixes the
+ * flyout at that point. Taller windows ignore the mark and keep the absolute
+ * flyout. A head outside the rail's visible box gets no mark: its name would
+ * point at the top bar or past the window edge.
+ */
+export function placeRailFlyout(event: { target: EventTarget | null; currentTarget: HTMLElement }) {
+  const rail = event.currentTarget;
+  if (rail.dataset.toolsPinned !== 'false' || !(event.target instanceof Element)) return;
+  const head = event.target.closest<HTMLElement>('details[data-rail-tool] > summary, .motif-cs-pane-title > .motif-cs-pane-collapse');
+  if (!head || !rail.contains(head)) return;
+  const rect = head.getBoundingClientRect();
+  const railRect = rail.getBoundingClientRect();
+  if (rect.top < railRect.top - 1 || rect.bottom > railRect.bottom + 1) return;
+  head.style.setProperty('--motif-cs-rail-flyout-top', `${Math.round(rect.top + rect.height / 2)}px`);
+  head.style.setProperty('--motif-cs-rail-flyout-right', `${Math.round(document.documentElement.clientWidth - rect.left + 11)}px`);
+  head.dataset.railFlyout = 'placed';
+}
+
+/**
+ * A scroll moves every head, so every measured flyout position is stale. The
+ * focused and hovered heads are measured again: Tab to a head below the fold
+ * fires its focus event before the rail scrolls it into view, and a wheel
+ * scroll's last scroll event can follow the pointerover of the head that
+ * scrolled under the pointer.
+ */
+export function clearRailFlyouts(event: { currentTarget: HTMLElement }) {
+  const rail = event.currentTarget;
+  rail.querySelectorAll<HTMLElement>('[data-rail-flyout]').forEach((head) => {
+    delete head.dataset.railFlyout;
+  });
+  for (const target of [document.activeElement, rail.querySelector(':is(summary, .motif-cs-pane-collapse):hover')]) {
+    if (target && rail.contains(target)) placeRailFlyout({ target, currentTarget: rail });
+  }
+}
+
+/**
+ * What the Primer launcher says the workspace will target. Its header used to
+ * read "whole record" while the workspace, with nothing selected, opened on a
+ * default 500 bp window (51–550 on pUC19). A selection counts only when the
+ * workspace would use it: forward, inside the record, not wrapping the origin.
+ */
+export function primerLauncherTarget(
+  range: { start: number; end: number } | null,
+  sequenceLength: number,
+): { meta: string; detail: string } {
+  if (range && range.start >= 0 && range.end > range.start && range.end <= sequenceLength) {
+    return {
+      meta: `${(range.end - range.start).toLocaleString()} bp selected`,
+      detail: `Targets bases ${(range.start + 1).toLocaleString()}–${range.end.toLocaleString()}, the current selection.`,
+    };
+  }
+  if (range) {
+    return {
+      meta: 'selection wraps',
+      detail: 'The selection crosses the origin, which the workspace cannot target, so it opens on a default target near the start of the record.',
+    };
+  }
+  return {
+    meta: 'no selection',
+    detail: 'With nothing selected it opens on a default target near the start of the record. Select a region first to aim it there.',
+  };
+}
+
+/**
+ * Opens one of the panels docked under the map, found by the name on its head,
+ * and returns it (null when the map or the panel is not mounted). The dock
+ * panels share one `name`, so opening this one closes the other. Matching the
+ * visible name means a rename of the head breaks the launcher's e2e test
+ * instead of opening the wrong panel.
+ */
+export function openMapDockPanel(column: ParentNode | null | undefined, label: string): HTMLDetailsElement | null {
+  const panels = column ? Array.from(column.querySelectorAll<HTMLDetailsElement>('.motif-cs-map-dock-strip > details')) : [];
+  const panel = panels.find((candidate) => (
+    candidate.querySelector(':scope > summary .motif-cs-full-label')?.textContent?.trim() === label
+  ));
+  if (!panel) return null;
+  panel.open = true;
+  return panel;
+}
+
+/**
+ * Opens another rail tool's panel from inside a panel and moves focus to its
+ * head. The tool panels share one `name`, so the panel holding the link
+ * closes. Returns the opened panel, or null when that tool is not rendered.
+ */
+export function openRailToolPanel(tool: string): HTMLDetailsElement | null {
+  const panel = document.querySelector<HTMLDetailsElement>(`.motif-cs-inspector details[data-rail-tool="${tool}"]`);
+  if (!panel) return null;
+  panel.open = true;
+  panel.querySelector<HTMLElement>(':scope > summary')?.focus({ preventScroll: true });
+  return panel;
+}
+
+/**
+ * Opens a file picker for AB1 traces and hands the files to the same import the
+ * Inventory "+" and a workspace drop use, so a trace added here is added the
+ * same way — with the same size and sample limits and the same feedback.
+ */
+function SangerTraceImportButton({
+  onImportFiles,
+  emphasis,
+}: {
+  onImportFiles: (files: FileList | File[]) => unknown;
+  emphasis: boolean;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  return (
+    <>
+      <input
+        ref={inputRef}
+        className="motif-cs-visually-hidden"
+        type="file"
+        multiple
+        accept=".ab1,.abi"
+        tabIndex={-1}
+        aria-hidden="true"
+        onChange={(event) => {
+          const files = event.target.files;
+          if (files?.length) void onImportFiles(files);
+          event.target.value = '';
+        }}
+      />
+      <button
+        className={`motif-cs-mini-button${emphasis ? ' motif-cs-mini-button-accent' : ''}`}
+        type="button"
+        data-testid="import-sanger-traces"
+        onClick={() => inputRef.current?.click()}
+      >
+        Import Sanger traces (.ab1)…
+      </button>
+    </>
   );
 }
 
@@ -18626,7 +21162,9 @@ function AddEnzymeForm({
           maxLength={MAX_CUSTOM_ENZYME_NAME_LENGTH}
           value={name}
           onChange={(event) => { setName(event.target.value); setHasError(false); setStatus(''); }}
-          placeholder="Known enzyme (for example, EcoRV)…"
+          // Short enough for the 95px field in the rail popover; the long
+          // form ("Known enzyme (for example, EcoRV)…") showed "Known enzym".
+          placeholder="Name (EcoRV)"
           aria-label="Known or custom enzyme name"
           aria-invalid={hasError || undefined}
           aria-describedby={status ? statusId : undefined}
@@ -18643,7 +21181,7 @@ function AddEnzymeForm({
           value={recognition}
           onChange={(event) => { setRecognition(event.target.value); setHasError(false); setStatus(''); }}
           onKeyDown={(event) => { if (event.key === 'Enter') submit(); }}
-          placeholder="Custom motif (for example, GGTACC)…"
+          placeholder="Site (GGTACC)"
           aria-label="Custom enzyme recognition sequence"
           aria-invalid={hasError || undefined}
           aria-describedby={status ? statusId : undefined}
@@ -18670,6 +21208,11 @@ function RestrictionSourceControls({
   const fullList = RESTRICTION_SOURCE_OPTIONS.find((option) => option.id === 'all');
   const renderSource = (option: (typeof RESTRICTION_SOURCE_OPTIONS)[number]) => {
     const active = sources.includes(option.id);
+    // The badge used to read "On · 30 enz" at 8.5px, which pushed "Golden Gate"
+    // to "Golden …" in a 71px cell, and a screen reader heard the state twice
+    // ("Common On · 30 enz, pressed") and "enz" as a word. Pressed state is
+    // aria-pressed plus the filled badge and its check mark; the badge keeps
+    // only the count, and the name says what the count is.
     return (
       <button
         key={option.id}
@@ -18677,12 +21220,16 @@ function RestrictionSourceControls({
         type="button"
         data-active={active || undefined}
         aria-pressed={active}
+        aria-label={`${option.label}, ${option.enzymeCount} enzymes`}
         aria-describedby={relationshipNoteId}
         onClick={() => onToggle(option.id, !active)}
         title={option.description}
       >
         <span className="motif-cs-source-label">{option.label}</span>
-        <span className="motif-cs-source-state" data-state={active ? 'on' : 'off'}>{active ? 'On' : 'Off'} · {option.enzymeCount} enz</span>
+        <span className="motif-cs-source-state" data-state={active ? 'on' : 'off'} aria-hidden="true">
+          {active ? <span className="motif-cs-source-check">✓</span> : null}
+          {option.enzymeCount}
+        </span>
       </button>
     );
   };
@@ -18731,6 +21278,11 @@ function RestrictionList({
   onToggle: (enzyme: string, visible: boolean) => void;
 }) {
   const [query, setQuery] = useState('');
+  // Enzymes first. The per-enzyme checkboxes are the only way to hide one
+  // enzyme, and they used to render after every site row: on the synthetic pUC19
+  // once bundled the list started 3,007px down a 323px scroll box, 77 site rows
+  // and 28 wheel notches away. The site rows are one press away on the same switch.
+  const [view, setView] = useState<'enzymes' | 'sites'>('enzymes');
   const counts = new Map<string, number>();
   const enzymeByName = new Map(enzymes.map((enzyme) => [enzyme.name.toLowerCase(), enzyme]));
   for (const site of sites) counts.set(site.enzyme, (counts.get(site.enzyme) ?? 0) + 1);
@@ -18768,26 +21320,44 @@ function RestrictionList({
   const visibleEnzymeCount = filteredRows.filter(([enzyme]) => !hiddenEnzymes.has(enzyme)).length;
 
   return (
-    <div className="motif-cs-list motif-cs-restriction-list">
-      <label className="motif-cs-restriction-filter">
-        <span className="motif-cs-visually-hidden">Filter restriction sites and enzymes</span>
-        <input
-          className="motif-cs-field"
-          type="search"
-          name="restriction-filter"
-          autoComplete="off"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder="Filter enzyme, motif, or position…"
-          aria-label="Filter restriction sites and enzymes"
-        />
-      </label>
-      {shownSites.length > 0 ? (
+    <div className="motif-cs-list motif-cs-restriction-list" data-view={view}>
+      <div className="motif-cs-restriction-filter">
+        <label>
+          <span className="motif-cs-visually-hidden">Filter restriction sites and enzymes</span>
+          <input
+            className="motif-cs-field"
+            type="search"
+            name="restriction-filter"
+            autoComplete="off"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Filter enzyme, motif, or position…"
+            aria-label="Filter restriction sites and enzymes"
+          />
+        </label>
+        <div className="motif-cs-segmented motif-cs-restriction-view" role="group" aria-label="List restriction enzymes or sites">
+          <button
+            type="button"
+            data-active={view === 'enzymes' || undefined}
+            aria-pressed={view === 'enzymes'}
+            aria-label={`Enzymes, ${visibleEnzymeCount} of ${filteredRows.length} shown`}
+            onClick={() => setView('enzymes')}
+          >
+            Enzymes <small>{visibleEnzymeCount}/{filteredRows.length}</small>
+          </button>
+          <button
+            type="button"
+            data-active={view === 'sites' || undefined}
+            aria-pressed={view === 'sites'}
+            aria-label={`Sites, ${filteredVisibleSites.length}`}
+            onClick={() => setView('sites')}
+          >
+            Sites <small>{filteredVisibleSites.length}</small>
+          </button>
+        </div>
+      </div>
+      {view !== 'sites' ? null : shownSites.length > 0 ? (
         <div className="motif-cs-restriction-site-list" aria-label="Selectable restriction sites">
-          <div className="motif-cs-restriction-site-head" aria-label={`Sites ${shownSites.length}${filteredVisibleSites.length > shownSites.length ? ` of ${filteredVisibleSites.length}` : ''}`}>
-            <span>Sites </span>
-            <small>{shownSites.length}{filteredVisibleSites.length > shownSites.length ? ` of ${filteredVisibleSites.length}` : ''}</small>
-          </div>
           {shownSites.map((site) => {
             const tickId = restrictionSiteTickId(site);
             const layoutTickId = restrictionSiteLayoutTickId(site);
@@ -18832,11 +21402,8 @@ function RestrictionList({
           {normalizedQuery ? 'No visible sites match this filter.' : 'No visible sites. Enable an enzyme source or add a custom enzyme.'}
         </p>
       )}
+      {view !== 'enzymes' ? null : (
       <div className="motif-cs-restriction-enzyme-list" aria-label="Enzyme visibility controls">
-        <div className="motif-cs-restriction-enzyme-head" aria-label={`Enzymes ${visibleEnzymeCount} of ${filteredRows.length} visible`}>
-          <span>Enzymes </span>
-          <small>{visibleEnzymeCount}/{filteredRows.length} visible</small>
-        </div>
         {filteredRows.length > 0 ? filteredRows.map(([enzyme, count]) => {
           const cluster = clustersByName.get(enzyme);
           const visible = !hiddenEnzymes.has(enzyme);
@@ -18874,8 +21441,11 @@ function RestrictionList({
           <p className="motif-cs-muted">{normalizedQuery ? 'No enzymes match this filter.' : 'No sites for the selected enzyme sources.'}</p>
         )}
       </div>
-      {filteredRows.length > 0 ? (
-        <p className="motif-cs-muted motif-cs-restriction-note">Checkboxes show or hide all cuts from an enzyme. Site rows select one cut position.</p>
+      )}
+      {view === 'enzymes' && filteredRows.length > 0 ? (
+        <p className="motif-cs-muted motif-cs-restriction-note">Untick an enzyme to hide all of its cuts.</p>
+      ) : view === 'sites' && shownSites.length > 0 ? (
+        <p className="motif-cs-muted motif-cs-restriction-note">Choose a site to select that cut.</p>
       ) : null}
     </div>
   );
@@ -18898,19 +21468,138 @@ type InlineTranslationTrack = {
   completeCds?: boolean;
   featureId?: string;
   materializedProtein?: string;
+  /** A CDS's /transl_except codons, from cdsCodonOverrides, for a track that is not a CDS. */
+  codonOverrides?: ReadonlyMap<string, CodonOverride>;
+  /** A feature track's type as the Inspector shows it; a pinned layer has none. */
+  kind?: string;
 };
+
+// The gutter is 48px of 10px monospace behind a colour dot: about six characters.
+const TRACK_GUTTER_CHARACTERS = 6;
+const TRACK_GUTTER_TYPE_TAGS: Readonly<Record<string, string>> = {
+  resistance: 'resist',
+  sig_peptide: 'sig',
+  mat_peptide: 'mat',
+  transit_peptide: 'trans',
+};
+
+/** The type a translation track names: its feature's type, or "pinned" for a layer. */
+export function translationTrackKind(track: { kind?: string }): string {
+  return track.kind ?? 'pinned';
+}
+
+/**
+ * The text each translation track draws in the gutter. Tracks whose names
+ * draw the same first six characters, such as a CDS and its sig_peptide both
+ * named SELENOP, draw a short type instead ("cds", "sig", "pinned"), numbered
+ * when two of them share a type too. The label's title and name keep the full
+ * name and type.
+ */
+export function translationTrackGutterLabels(
+  tracks: readonly { id: string; label: string; kind?: string }[],
+): Map<string, string> {
+  const groups = new Map<string, { id: string; label: string; kind?: string }[]>();
+  for (const track of tracks) {
+    const drawn = track.label.slice(0, TRACK_GUTTER_CHARACTERS);
+    groups.set(drawn, [...(groups.get(drawn) ?? []), track]);
+  }
+  const labels = new Map<string, string>();
+  for (const group of groups.values()) {
+    if (group.length === 1) {
+      labels.set(group[0].id, group[0].label);
+      continue;
+    }
+    const tag = (track: { kind?: string }) => {
+      const kind = translationTrackKind(track);
+      return TRACK_GUTTER_TYPE_TAGS[kind] ?? kind.slice(0, TRACK_GUTTER_CHARACTERS);
+    };
+    const seen = new Map<string, number>();
+    for (const track of group) {
+      const base = tag(track);
+      const shared = group.filter((other) => tag(other) === base).length > 1;
+      const ordinal = (seen.get(base) ?? 0) + 1;
+      seen.set(base, ordinal);
+      labels.set(track.id, shared ? `${base}${ordinal}` : base);
+    }
+  }
+  return labels;
+}
+
+type CodonOverride = { end: number; residue: string };
+
+/**
+ * The codons each CDS's /transl_except recodes, keyed "strand:start" by the
+ * codon's first plus-strand base. An exon or gene track reads the same bases
+ * with the plain code, so over a selenoprotein it drew "*" where the CDS track
+ * draws U. The track shows the CDS's residue only where it reads the same three
+ * bases on the same strand, which is the codon in the CDS's own frame. Two CDSs
+ * that recode one codon differently leave it plain.
+ */
+export function cdsCodonOverrides(
+  features: readonly Feature[],
+  materialize: (feature: Feature) => ReturnType<typeof materializeTranslationExceptions> | null,
+): ReadonlyMap<string, CodonOverride> {
+  const overrides = new Map<string, CodonOverride>();
+  const conflicting = new Set<string>();
+  for (const feature of features) {
+    if (!TRANSLATION_CODE_FEATURE_TYPES.has(feature.type) || (feature.strand !== 1 && feature.strand !== -1)) continue;
+    if ((feature.metadata.transl_except ?? feature.metadata.translExcept) === undefined) continue;
+    const result = materialize(feature);
+    if (!result?.ok) continue;
+    for (const exception of result.exceptions) {
+      const key = `${feature.strand}:${exception.start - 1}`;
+      const previous = overrides.get(key);
+      if (previous && previous.residue !== exception.residue) conflicting.add(key);
+      overrides.set(key, { end: exception.end, residue: exception.residue });
+    }
+  }
+  for (const key of conflicting) overrides.delete(key);
+  return overrides;
+}
 
 // One residue placed in PLUS-STRAND codon coordinates so it aligns to the bases
 // and hit-tests as a normal range regardless of strand.
 type TrackResidue = { aa: string; start: number; end: number };
 
 // Coding feature types whose annotation already implies a translated product —
-// only these get an inline amino-acid track. A plain DNA entry therefore shows no
+// only these can get an inline amino-acid track (drawsDefaultTranslationTrack
+// narrows gene and exon further). A plain DNA entry therefore shows no
 // translation until the user selects a region (or a CDS/gene is annotated), which
 // is the point: no arbitrary whole-entry frame smeared under every line.
 const CODING_FEATURE_TYPES: ReadonlySet<FeatureType> = new Set<FeatureType>([
   'cds', 'gene', 'orf', 'resistance', 'mat_peptide', 'sig_peptide', 'transit_peptide', 'exon',
 ]);
+
+/**
+ * Whether a feature draws an inline amino-acid track by default. A gene or
+ * exon starts where its transcript does, often in a UTR, so reading it from its
+ * own first base put an mRNA's gene and exons out of the CDS's frame. The rule
+ * is stated where inlineTranslationTracks calls this; a gene or exon that
+ * fails it still translates on demand in the Translate window.
+ */
+export function drawsDefaultTranslationTrack(
+  feature: Feature,
+  sequence: string,
+  sequenceType: SequenceType,
+  topology: Topology,
+  table: { readonly stops: readonly string[] },
+): boolean {
+  if (!CODING_FEATURE_TYPES.has(feature.type)) return false;
+  if (feature.strand !== 1 && feature.strand !== -1) return false;
+  if (featureLocationLength(feature) < 3 || isMultipartFeature(feature)) return false;
+  if (feature.type !== 'gene' && feature.type !== 'exon') return true;
+  const originalLocation = feature.metadata.motifOriginalLocation;
+  if (feature.metadata.partial === true || (typeof originalLocation === 'string' && /[<>]/.test(originalLocation))) return false;
+  const region = normalizeSpan(feature.start, feature.end, sequence.length, topology)
+    .map((span) => sequence.slice(span.start, span.end)).join('');
+  const read = (feature.strand === -1 ? reverseComplement(region, sequenceType === 'rna') : region)
+    .slice(codonStartFrame(feature.metadata)).toUpperCase().replace(/U/g, 'T');
+  if (read.length < 3 || read.length % 3 !== 0 || !table.stops.includes(read.slice(-3))) return false;
+  for (let offset = 0; offset + 3 < read.length; offset += 3) {
+    if (table.stops.includes(read.slice(offset, offset + 3))) return false;
+  }
+  return true;
+}
 
 // INSDC /transl_table is meaningful for CDS-like annotations. Other feature
 // types can still display an amino-acid track, but they inherit the record code.
@@ -18949,7 +21638,7 @@ function isCompleteCodingFeature(feature: Feature): boolean {
 // Residues of one track in plus-strand codon coordinates. Reverse tracks read the
 // reverse-complement of the region from its 3' end; every returned codon is still
 // expressed in plus-strand coordinates.
-function inlineTrackResidues(
+export function inlineTrackResidues(
   sequence: string,
   sequenceType: SequenceType,
   track: InlineTranslationTrack,
@@ -18974,7 +21663,9 @@ function inlineTrackResidues(
     const off = track.frame + i * 3;
     if (off + 3 > region.length) break;
     const rangeOffset = track.strand === -1 ? region.length - off - 3 : off;
-    residues.push({ aa: renderedAminoAcids[i], ...codonRangeFromRangeOffset(spans, rangeOffset, sequence.length) });
+    const range = codonRangeFromRangeOffset(spans, rangeOffset, sequence.length);
+    const override = track.codonOverrides?.get(`${track.strand}:${range.start}`);
+    residues.push({ aa: override?.end === range.end ? override.residue : renderedAminoAcids[i], ...range });
   }
   return residues;
 }
@@ -19132,6 +21823,8 @@ type LineResidue = TrackResidue & { left: number };
 function TranslationTrackRow({
   trackId,
   label,
+  gutterLabel,
+  kind,
   color,
   residues,
   keyboardAnchorStart,
@@ -19141,6 +21834,8 @@ function TranslationTrackRow({
 }: {
   trackId: string;
   label: string;
+  gutterLabel: string;
+  kind: string;
   color?: string;
   residues: readonly LineResidue[];
   keyboardAnchorStart: number;
@@ -19190,8 +21885,8 @@ function TranslationTrackRow({
       <button
         type="button"
         className="motif-cs-seq-index motif-cs-aa-row-label"
-        title={`${label} · click to select amino acids for copy`}
-        aria-label={`${label} translation. Select amino acids for copy.`}
+        title={`${label} · ${kind} translation · click to select amino acids for copy`}
+        aria-label={`${label} · ${kind} translation. Select amino acids for copy.`}
         aria-pressed={selected}
         tabIndex={keyboardAnchorOnLine ? 0 : -1}
         onPointerDown={(event) => {
@@ -19201,7 +21896,7 @@ function TranslationTrackRow({
         onClick={selectTrackText}
       >
         {color ? <span className="motif-cs-aa-row-dot" style={{ background: color }} aria-hidden="true" /> : null}
-        {label}
+        {gutterLabel}
       </button>
       <div className="motif-cs-aa-track">
         {residues.map((residue) => (
@@ -19259,6 +21954,7 @@ const SequenceText = memo(function SequenceText({
   detailMode,
   caret,
   editable,
+  editFlash = null,
   onFeatureSelect,
   onFeatureOpen,
   onRestrictionSelect,
@@ -19286,6 +21982,7 @@ const SequenceText = memo(function SequenceText({
   detailMode: boolean;
   caret: number | null;
   editable: boolean;
+  editFlash?: SequenceEditFlash | null;
   onFeatureSelect: (featureId: string) => void;
   onFeatureOpen: (featureId: string) => void;
   onRestrictionSelect: (site: RestrictionSite) => void;
@@ -19330,6 +22027,12 @@ const SequenceText = memo(function SequenceText({
   const aaCopyBufferRef = useRef<HTMLSpanElement>(null);
   const keyboardSelectionAnchorRef = useRef<number | null>(null);
   const keyboardSelectionFocusRef = useRef<number | null>(null);
+  // A Shift+pointer drag extends from a caret-position anchor (between bases)
+  // rather than from the base under the first press.
+  const dragExtendAnchorRef = useRef<number | null>(null);
+  // Edge auto-scroll while a drag is held at or past the scroller's top/bottom.
+  const dragAutoScrollRef = useRef<{ frame: number | null; point: { x: number; y: number } | null }>({ frame: null, point: null });
+  const revealCaretAfterKeyRef = useRef(false);
   const [selectedAaTrackId, setSelectedAaTrackId] = useState<string | null>(null);
   const [selectedAaTrackText, setSelectedAaTrackText] = useState('');
   const [hoveredRestrictionTickIds, setHoveredRestrictionTickIds] = useState<readonly string[]>([]);
@@ -19602,21 +22305,153 @@ const SequenceText = memo(function SequenceText({
     return lineStart + offset;
   }, []);
 
+  // The selection's range while dragging: from a base anchor (plain drag) both
+  // ends are bases; from a caret-position anchor (Shift+drag) the anchor is a
+  // boundary between bases.
+  const dragRangeTo = useCallback((idx: number): [number, number] | null => {
+    const extendAnchor = dragExtendAnchorRef.current;
+    if (extendAnchor !== null) {
+      return idx >= extendAnchor ? [extendAnchor, idx + 1] : [idx, extendAnchor];
+    }
+    const anchor = dragAnchorRef.current;
+    return anchor === null ? null : [Math.min(anchor, idx), Math.max(anchor, idx) + 1];
+  }, []);
+
+  // While a drag runs, a pointer above or below the scroller reads as the
+  // nearest VISIBLE row, so the selection follows what auto-scroll reveals
+  // instead of jumping to a row that is still out of view.
+  const clampDragPointToScroller = useCallback((clientX: number, clientY: number) => {
+    const container = containerRef.current;
+    if (!container) return { x: clientX, y: clientY };
+    const rect = effectiveSequenceScroller(container).getBoundingClientRect();
+    return { x: clientX, y: clamp(clientY, rect.top + 1, rect.bottom - 1) };
+  }, []);
+
   const applyDragToPoint = useCallback((clientX: number, clientY: number) => {
     const anchor = dragAnchorRef.current;
     if (anchor === null) return;
-    const idx = baseIndexFromPoint(clientX, clientY);
+    const point = clampDragPointToScroller(clientX, clientY);
+    const idx = baseIndexFromPoint(point.x, point.y);
     if (idx === null || idx === lastIdxRef.current) return;
     lastIdxRef.current = idx;
     if (idx !== anchor) didDragRef.current = true;
-    if (didDragRef.current) selectLocalRange(Math.min(anchor, idx), Math.max(anchor, idx) + 1);
-  }, [baseIndexFromPoint, selectLocalRange]);
+    const range = dragRangeTo(idx);
+    if (didDragRef.current && range && range[1] > range[0]) selectLocalRange(range[0], range[1]);
+  }, [baseIndexFromPoint, clampDragPointToScroller, dragRangeTo, selectLocalRange]);
+
+  const stopDragAutoScroll = useCallback(() => {
+    const autoScroll = dragAutoScrollRef.current;
+    if (autoScroll.frame !== null) window.cancelAnimationFrame(autoScroll.frame);
+    autoScroll.frame = null;
+    autoScroll.point = null;
+  }, []);
+
+  // Holding a drag within 6px of the scroller's top or bottom edge, or past
+  // it, scrolls toward that edge at a speed that grows with the overshoot, and
+  // extends the selection to the newly revealed row every frame. Without it a
+  // selection could only grow past the visible rows with the wheel.
+  const runDragAutoScroll = useCallback(() => {
+    const autoScroll = dragAutoScrollRef.current;
+    const tick = () => {
+      autoScroll.frame = null;
+      const container = containerRef.current;
+      const point = autoScroll.point;
+      if (!container || !point || dragAnchorRef.current === null) return;
+      const scroller = effectiveSequenceScroller(container);
+      const rect = scroller.getBoundingClientRect();
+      const edge = 6;
+      const overshoot = point.y < rect.top + edge
+        ? point.y - (rect.top + edge)
+        : point.y > rect.bottom - edge
+          ? point.y - (rect.bottom - edge)
+          : 0;
+      if (overshoot === 0) return;
+      const before = scroller.scrollTop;
+      scroller.scrollTop = before + Math.sign(overshoot) * clamp(Math.abs(overshoot) / 4, 1, 24);
+      if (scroller.scrollTop === before) return;
+      applyDragToPoint(point.x, point.y);
+      autoScroll.frame = window.requestAnimationFrame(tick);
+    };
+    if (autoScroll.frame === null) autoScroll.frame = window.requestAnimationFrame(tick);
+  }, [applyDragToPoint]);
+
+  // Where a Shift-extension starts: the live keyboard anchor while it still
+  // describes the current selection, else the caret, else the selection start.
+  // A stale anchor (the selection changed elsewhere, e.g. on the map) is ignored.
+  const resolveSelectionExtent = useCallback((): { anchor: number; focus: number } | null => {
+    const anchor = keyboardSelectionAnchorRef.current;
+    const focus = keyboardSelectionFocusRef.current;
+    if (anchor !== null && focus !== null) {
+      const low = Math.min(anchor, focus);
+      const high = Math.max(anchor, focus);
+      const matchesRange = !!selectedMapRange && selectedMapRange.start === low && selectedMapRange.end === high;
+      const matchesCaret = low === high && caret === low;
+      const matchesReadOnlyBase = low === high && !!selectedMapRange
+        && selectedMapRange.end === low && selectedMapRange.start === low - 1;
+      if (matchesRange || matchesCaret || matchesReadOnlyBase) return { anchor, focus };
+    }
+    if (caret !== null) return { anchor: caret, focus: caret };
+    if (selectedMapRange && selectedMapRange.end <= sequence.length) {
+      return {
+        anchor: clamp(selectedMapRange.start, 0, sequence.length),
+        focus: clamp(selectedMapRange.end, 0, sequence.length),
+      };
+    }
+    return null;
+  }, [caret, selectedMapRange, sequence.length]);
+
+  // Keep the row a keyboard move lands on inside the scroller.
+  const revealSequencePosition = useCallback((position: number) => {
+    const container = containerRef.current;
+    if (!container || sequence.length === 0) return;
+    const base = clamp(position, 0, sequence.length - 1);
+    const row = Array.from(container.querySelectorAll<HTMLElement>('.motif-cs-seq-bases')).find((candidate) => {
+      const start = Number(candidate.dataset.lineStart);
+      const length = Number(candidate.dataset.lineLen);
+      return base >= start && base < start + length;
+    });
+    if (!row) return;
+    const scroller = effectiveSequenceScroller(container);
+    const scrollerRect = scroller.getBoundingClientRect();
+    const rowRect = row.getBoundingClientRect();
+    const margin = 8;
+    if (rowRect.top < scrollerRect.top + margin) {
+      scroller.scrollTop -= scrollerRect.top + margin - rowRect.top;
+    } else if (rowRect.bottom > scrollerRect.bottom - margin) {
+      scroller.scrollTop += rowRect.bottom - (scrollerRect.bottom - margin);
+    }
+  }, [sequence.length]);
+
+  // ArrowUp/ArrowDown move one line (basesPerLine); PageUp/PageDown move by
+  // the number of whole lines the scroller shows.
+  const verticalStep = useCallback((key: string): number => {
+    const line = basesPerLineRef.current;
+    if (key === 'ArrowUp') return -line;
+    if (key === 'ArrowDown') return line;
+    if (key !== 'PageUp' && key !== 'PageDown') return 0;
+    const container = containerRef.current;
+    let lines = 1;
+    if (container) {
+      const scrollerRect = effectiveSequenceScroller(container).getBoundingClientRect();
+      const visible = Array.from(container.querySelectorAll<HTMLElement>('.motif-cs-seq-block')).filter((block) => {
+        const rect = block.getBoundingClientRect();
+        return rect.top >= scrollerRect.top - 0.5 && rect.bottom <= scrollerRect.bottom + 0.5;
+      }).length;
+      lines = Math.max(1, visible);
+    }
+    return (key === 'PageUp' ? -1 : 1) * line * lines;
+  }, []);
 
   const handleBasesPointerDown = useCallback((event: ReactPointerEvent) => {
     if (!event.isPrimary || event.button !== 0) return;
     const idx = baseIndexFromPoint(event.clientX, event.clientY);
     if (idx === null) return;
+    // Shift+click extends the selection from its anchor (or the caret) to the
+    // clicked base; it used to move the caret and drop the selection instead.
+    const extent = event.shiftKey ? resolveSelectionExtent() : null;
+    revealCaretAfterKeyRef.current = false;
     dragAnchorRef.current = idx;
+    dragExtendAnchorRef.current = extent ? extent.anchor : null;
     dragPointerIdRef.current = event.pointerId;
     dragStartPointRef.current = { x: event.clientX, y: event.clientY };
     keyboardSelectionAnchorRef.current = null;
@@ -19624,15 +22459,29 @@ const SequenceText = memo(function SequenceText({
     lastIdxRef.current = idx;
     didDragRef.current = false;
     containerRef.current?.focus({ preventScroll: true });
+    if (extent) {
+      // No native text selection from the shift-press.
+      event.preventDefault();
+      didDragRef.current = true;
+      const range = dragRangeTo(idx);
+      if (range && range[1] > range[0]) selectLocalRange(range[0], range[1]);
+    }
     try {
       (event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId);
     } catch {
       /* capture is best-effort; pointermove still fires on the container */
     }
-  }, [baseIndexFromPoint]);
+  }, [baseIndexFromPoint, dragRangeTo, resolveSelectionExtent, selectLocalRange]);
 
   const handleBasesPointerMove = useCallback((event: ReactPointerEvent) => {
     if (dragAnchorRef.current === null || event.pointerId !== dragPointerIdRef.current) return;
+    // Only a real drag (past the same 3px a click tolerates) may auto-scroll,
+    // so a click on the last visible row never turns into a scrolling range.
+    const startPoint = dragStartPointRef.current;
+    if (startPoint && Math.hypot(event.clientX - startPoint.x, event.clientY - startPoint.y) > 3) {
+      dragAutoScrollRef.current.point = { x: event.clientX, y: event.clientY };
+      runDragAutoScroll();
+    }
     // Coalesce: remember the latest point, process once per frame.
     pendingPointRef.current = { x: event.clientX, y: event.clientY };
     if (rafRef.current !== null) return;
@@ -19641,7 +22490,7 @@ const SequenceText = memo(function SequenceText({
       const point = pendingPointRef.current;
       if (point) applyDragToPoint(point.x, point.y);
     });
-  }, [applyDragToPoint]);
+  }, [applyDragToPoint, runDragAutoScroll]);
 
   const handleBasesPointerUp = useCallback((event: ReactPointerEvent) => {
     const anchor = dragAnchorRef.current;
@@ -19650,37 +22499,55 @@ const SequenceText = memo(function SequenceText({
     if ((event.currentTarget as HTMLElement).hasPointerCapture?.(event.pointerId)) {
       (event.currentTarget as HTMLElement).releasePointerCapture?.(event.pointerId);
     }
-    dragAnchorRef.current = null;
-    dragPointerIdRef.current = null;
-    dragStartPointRef.current = null;
-    if (rafRef.current !== null) {
-      window.cancelAnimationFrame(rafRef.current);
-      rafRef.current = null;
-    }
-    pendingPointRef.current = null;
-    const idx = baseIndexFromPoint(event.clientX, event.clientY) ?? anchor;
+    stopDragAutoScroll();
+    const releasePoint = clampDragPointToScroller(event.clientX, event.clientY);
+    const idx = baseIndexFromPoint(releasePoint.x, releasePoint.y) ?? anchor;
     // Authoritative at release, but only when the pointer actually moved. On a
     // plain click, browser hit-testing can resolve pointerdown/up to neighboring
     // line boxes; treating that index mismatch as a drag makes editing impossible
     // because every click becomes a range selection.
     const moved = startPoint ? Math.hypot(event.clientX - startPoint.x, event.clientY - startPoint.y) > 3 : false;
     const dragged = didDragRef.current || (moved && idx !== anchor);
-    if (dragged && idx !== anchor) {
+    const extendAnchor = dragExtendAnchorRef.current;
+    // A Shift+click that did not move keeps the pressed base (same hit-test
+    // caveat as above); a Shift+drag ends where it was released.
+    const finalRange = dragRangeTo(moved ? idx : anchor);
+    dragAnchorRef.current = null;
+    dragExtendAnchorRef.current = null;
+    dragPointerIdRef.current = null;
+    dragStartPointRef.current = null;
+    if (rafRef.current !== null) {
+      window.cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    pendingPointRef.current = null;
+    if (extendAnchor !== null && finalRange) {
+      // Shift+click / Shift+drag: keep the anchor so further Shift+Arrow or
+      // Shift+click presses extend the same selection.
+      if (finalRange[1] > finalRange[0]) selectLocalRange(finalRange[0], finalRange[1]);
+      keyboardSelectionAnchorRef.current = extendAnchor;
+      keyboardSelectionFocusRef.current = finalRange[0] < extendAnchor ? finalRange[0] : finalRange[1];
+    } else if (dragged && idx !== anchor) {
       selectLocalRange(Math.min(anchor, idx), Math.max(anchor, idx) + 1);
+      // The press point stays the anchor for a later Shift+click or Shift+Arrow.
+      keyboardSelectionAnchorRef.current = idx > anchor ? anchor : anchor + 1;
+      keyboardSelectionFocusRef.current = idx > anchor ? idx + 1 : idx;
     } else if (editable) {
       onPlaceCaret(anchor);
     } else {
       selectLocalRange(anchor, anchor + 1);
     }
     didDragRef.current = false;
-  }, [baseIndexFromPoint, selectLocalRange, onPlaceCaret, editable]);
+  }, [baseIndexFromPoint, clampDragPointToScroller, dragRangeTo, selectLocalRange, stopDragAutoScroll, onPlaceCaret, editable]);
 
   const handleBasesPointerCancel = useCallback((event: ReactPointerEvent) => {
     if (event.pointerId !== dragPointerIdRef.current) return;
     if ((event.currentTarget as HTMLElement).hasPointerCapture?.(event.pointerId)) {
       (event.currentTarget as HTMLElement).releasePointerCapture?.(event.pointerId);
     }
+    stopDragAutoScroll();
     dragAnchorRef.current = null;
+    dragExtendAnchorRef.current = null;
     dragPointerIdRef.current = null;
     dragStartPointRef.current = null;
     pendingPointRef.current = null;
@@ -19689,31 +22556,22 @@ const SequenceText = memo(function SequenceText({
       window.cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
     }
-  }, []);
+  }, [stopDragAutoScroll]);
 
   const handleSequenceKeyDown = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (event.target !== event.currentTarget) return;
-    const selectionKeys = ['ArrowLeft', 'ArrowRight', 'Home', 'End'];
+    const selectionKeys = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'];
+    const plainModifiers = !event.metaKey && !event.ctrlKey && !event.altKey;
     if (event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey && selectionKeys.includes(event.key)) {
-      let anchor = keyboardSelectionAnchorRef.current;
-      let focus = keyboardSelectionFocusRef.current;
-      if (anchor === null || focus === null) {
-        if (caret !== null) {
-          anchor = caret;
-          focus = caret;
-        } else if (selectedMapRange) {
-          anchor = clamp(selectedMapRange.start, 0, sequence.length);
-          focus = clamp(selectedMapRange.end, 0, sequence.length);
-        } else {
-          anchor = 0;
-          focus = 0;
-        }
-      }
+      const extent = resolveSelectionExtent() ?? { anchor: 0, focus: 0 };
+      const { anchor, focus } = extent;
       const nextFocus = event.key === 'Home'
         ? 0
         : event.key === 'End'
           ? sequence.length
-          : clamp(focus + (event.key === 'ArrowRight' ? 1 : -1), 0, sequence.length);
+          : event.key === 'ArrowLeft' || event.key === 'ArrowRight'
+            ? clamp(focus + (event.key === 'ArrowRight' ? 1 : -1), 0, sequence.length)
+            : clamp(focus + verticalStep(event.key), 0, sequence.length);
       event.preventDefault();
       keyboardSelectionAnchorRef.current = anchor;
       keyboardSelectionFocusRef.current = nextFocus;
@@ -19723,17 +22581,43 @@ const SequenceText = memo(function SequenceText({
       } else {
         selectLocalRange(Math.min(anchor, nextFocus), Math.max(anchor, nextFocus));
       }
+      revealSequencePosition(nextFocus > anchor ? nextFocus - 1 : nextFocus);
       return;
     }
     if (selectionKeys.includes(event.key) && !event.shiftKey) {
       keyboardSelectionAnchorRef.current = null;
       keyboardSelectionFocusRef.current = null;
     }
+    const step = verticalStep(event.key);
+    if (step !== 0 && editable && plainModifiers && !event.shiftKey) {
+      // Up/Down and PageUp/PageDown move the caret by lines. From a selection
+      // they start at its near edge; with no caret yet they place one at 0.
+      event.preventDefault();
+      const from = caret ?? (selectedMapRange && selectedMapRange.end <= sequence.length
+        ? (step < 0 ? selectedMapRange.start : selectedMapRange.end)
+        : null);
+      const next = from === null ? 0 : clamp(from + step, 0, sequence.length);
+      onPlaceCaret(next);
+      revealSequencePosition(next);
+      return;
+    }
+    // Home/End in a long record move the caret out of view; reveal it once
+    // the edit handler's caret has rendered.
+    if (editable && plainModifiers && !event.shiftKey && ['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
+      revealCaretAfterKeyRef.current = true;
+    }
     onEditKeyDown(event);
-  }, [caret, editable, onEditKeyDown, onPlaceCaret, selectLocalRange, selectedMapRange, sequence.length]);
+  }, [caret, editable, onEditKeyDown, onPlaceCaret, resolveSelectionExtent, revealSequencePosition, selectLocalRange, selectedMapRange, sequence.length, verticalStep]);
+
+  useLayoutEffect(() => {
+    if (!revealCaretAfterKeyRef.current) return;
+    revealCaretAfterKeyRef.current = false;
+    if (caret !== null) revealSequencePosition(caret);
+  }, [caret, revealSequencePosition]);
 
   useEffect(() => () => {
     if (rafRef.current !== null) window.cancelAnimationFrame(rafRef.current);
+    if (dragAutoScrollRef.current.frame !== null) window.cancelAnimationFrame(dragAutoScrollRef.current.frame);
   }, []);
   const selectedRanges = selectedFeature
     ? featureSpans(selectedFeature, sequence.length, topology)
@@ -19901,6 +22785,7 @@ const SequenceText = memo(function SequenceText({
       protein: residues.map((residue) => residue.aa).join(''),
       keyboardAnchorStart: residues.reduce((minimum, residue) => Math.min(minimum, residue.start), Number.POSITIVE_INFINITY),
     }));
+    const gutterLabels = translationTrackGutterLabels(translationTracks);
     for (let lineStart = 0; lineStart < sequence.length; lineStart += basesPerLine) {
       const lineEnd = Math.min(sequence.length, lineStart + basesPerLine);
       const above: ReactNode[] = [];
@@ -19918,6 +22803,8 @@ const SequenceText = memo(function SequenceText({
             key={track.id}
             trackId={track.id}
             label={track.label}
+            gutterLabel={gutterLabels.get(track.id) ?? track.label}
+            kind={translationTrackKind(track)}
             color={track.color}
             residues={onLine}
             keyboardAnchorStart={keyboardAnchorStart}
@@ -20035,6 +22922,13 @@ const SequenceText = memo(function SequenceText({
     const caretInLine = editable && caret !== null
       && ((caret >= lineStart && caret < lineEnd) || (caret === sequence.length && lineEnd === sequence.length));
     const caretOffset = caretInLine && caret !== null ? Math.min(caret - lineStart, lineLen) : -1;
+    // The bases an edit, Undo or Redo just changed; a pure deletion is a seam.
+    const editFlashRect = editFlash && editFlash.end > editFlash.start
+      ? clipRangeToLine(editFlash, lineStart, lineEnd)
+      : null;
+    const editFlashSeamInLine = !!editFlash && editFlash.end === editFlash.start
+      && ((editFlash.start >= lineStart && editFlash.start < lineEnd)
+        || (editFlash.start === sequence.length && lineEnd === sequence.length));
 
     grouped.push(
       <div
@@ -20131,7 +23025,7 @@ const SequenceText = memo(function SequenceText({
                       className="motif-cs-feature-block"
                       data-selected={selectedFeature?.id === feature.id || undefined}
                       aria-pressed={selectedFeature?.id === feature.id}
-                      aria-label={`${feature.name}, ${feature.type}, full location ${featureRangeLabel(feature)}, segment ${formatRange(start, end)}, ${featureStrandLabel(feature)} strand`}
+                      aria-label={`${feature.name}, ${featureTypeDisplay(feature)}, full location ${featureRangeLabel(feature)}, segment ${formatRange(start, end)}, ${featureStrandLabel(feature)} strand`}
                       data-strand={feature.strand}
                       data-head={showHead || undefined}
                       type="button"
@@ -20150,7 +23044,7 @@ const SequenceText = memo(function SequenceText({
                         event.stopPropagation();
                         onFeatureOpen(feature.id);
                       }}
-                      title={`${feature.name} · ${feature.type} · ${featureRangeLabel(feature)} · Double-click to edit`}
+                      title={`${feature.name} · ${featureTypeDisplay(feature)} · ${featureRangeLabel(feature)} · Double-click to edit`}
                     >
                       <span translate="no">{feature.name}</span>
                     </button>
@@ -20229,6 +23123,12 @@ const SequenceText = memo(function SequenceText({
                 }
                 return markers;
               })}
+              {editFlashRect && editFlash ? (
+                <div key={`edit-${editFlash.key}`} className="motif-cs-seq-edit-flash" style={{ left: `${editFlashRect.left}ch`, width: `${editFlashRect.width}ch` }} />
+              ) : null}
+              {editFlashSeamInLine && editFlash ? (
+                <div key={`edit-${editFlash.key}`} className="motif-cs-seq-edit-flash" data-seam="true" style={{ left: `${editFlash.start - lineStart}ch` }} />
+              ) : null}
               {caretInLine ? <div className="motif-cs-seq-caret" style={{ left: `${caretOffset}ch` }} /> : null}
             </div>
             <span className="motif-cs-seq-glyphs">{lineSequence}</span>
@@ -20248,6 +23148,8 @@ const SequenceText = memo(function SequenceText({
   return (
     <div
       ref={containerRef}
+      // "Skip to sequence" lands here.
+      id="motif-cs-sequence-view"
       className="motif-cs-sequence"
       tabIndex={0}
       data-editable={editable || undefined}
@@ -20255,7 +23157,7 @@ const SequenceText = memo(function SequenceText({
       aria-label={`${editable ? 'Editable' : 'Read-only'} sequence. Use Shift plus Arrow keys to select residues.`}
       aria-multiline="true"
       aria-readonly={!editable}
-      aria-keyshortcuts="Shift+ArrowLeft Shift+ArrowRight Shift+Home Shift+End"
+      aria-keyshortcuts="Shift+ArrowLeft Shift+ArrowRight Shift+ArrowUp Shift+ArrowDown Shift+Home Shift+End Shift+PageUp Shift+PageDown"
       translate="no"
       spellCheck={false}
       onKeyDown={handleSequenceKeyDown}

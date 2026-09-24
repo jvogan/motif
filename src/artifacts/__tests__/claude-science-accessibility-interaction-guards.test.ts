@@ -40,9 +40,11 @@ describe('Claude Science accessibility and interaction guards', () => {
   it('connects record tabs to a keyboard-skippable tab panel', () => {
     expect(artifactSource).toContain('<a className="motif-cs-skip-link" href="#motif-cs-workspace">Skip to workspace</a>');
     expect(artifactSource).toContain('aria-controls="motif-cs-workspace"');
-    expect(artifactSource).toContain("role={payload.records.length > 0 ? 'tabpanel' : 'region'}");
-    expect(artifactSource).toContain('aria-labelledby={payload.records.length > 0 ? `motif-cs-record-tab-${activeRecordTabIndex}` : undefined}');
-    expect(artifactSource).toContain("aria-label={payload.records.length === 0 ? 'Sequence workspace; no records open' : undefined}");
+    // Beside a docked Inventory the strip is hidden, and a panel labelled by a
+    // hidden tab has no name, so the workspace names its record instead.
+    expect(artifactSource).toContain("role={payload.records.length > 0 && !recordStripHidden ? 'tabpanel' : 'region'}");
+    expect(artifactSource).toContain('aria-labelledby={payload.records.length > 0 && !recordStripHidden ? `motif-cs-record-tab-${activeRecordTabIndex}` : undefined}');
+    expect(artifactSource).toContain("? 'Sequence workspace; no records open'\n          : recordStripHidden ? `${vector.name} workspace` : undefined}");
     expect(artifactSource).toContain("role={payload.records.length > 0 ? 'tablist' : undefined}");
     expect(artifactCss).toContain('.motif-cs-skip-link:focus-visible');
   });
@@ -73,6 +75,33 @@ describe('Claude Science accessibility and interaction guards', () => {
     expect(railPane).toContain('tabIndex={-1}');
     expect(railPane, 'the landing target needs a name to announce on arrival')
       .toContain("aria-label={toolsFloating ? 'Tools pane' : 'Tools'}");
+  });
+
+  it('gives the sequence a skip link that lands where the arrow keys move the caret', () => {
+    // Measured at 1440x900 with real keys: the sequence textbox was Tab stop 25,
+    // behind the inventory and the record's toolbars. Via the link it is 2 Tab +
+    // Enter, and the next ArrowRight places the caret.
+    const skipHref = artifactSource.match(/className="motif-cs-skip-link" href="#([\w-]+)">Skip to sequence/)?.[1];
+    expect(skipHref, 'Skip to sequence link is missing').toBe('motif-cs-sequence-view');
+
+    // Between the other two, in the order the panes are drawn, and only while
+    // the pane is shown and holds a record: with no record there is no sequence.
+    const skipLinks = sliceBetween('href="#motif-cs-workspace">Skip to workspace', 'href="#motif-cs-tools-pane">Skip to tools');
+    expect(skipLinks).toContain('{paneVisibility.sequence && hasActiveRecord ? (');
+    expect(skipLinks).toContain(`href="#${skipHref}">Skip to sequence`);
+
+    // The landing element is the textbox that owns the arrow keys, not a wrapper
+    // around it: an href jump focuses its target only when it is focusable, and
+    // focus on a wrapper would leave the arrow keys scrolling the page.
+    expect(artifactSource.split(`id="${skipHref}"`)).toHaveLength(2);
+    const landing = sliceBetween(`id="${skipHref}"`, 'onKeyDown={handleSequenceKeyDown}');
+    expect(landing).toContain('className="motif-cs-sequence"');
+    expect(landing).toContain('tabIndex={0}');
+    expect(landing).toContain('role="textbox"');
+    // A record too long for the textbox is drawn by the density view instead;
+    // the link lands on its read-only field there.
+    const largeViewer = readFileSync(resolve(here, '..', 'LargeSequenceViewer.tsx'), 'utf8');
+    expect(largeViewer).toMatch(new RegExp(`id="${skipHref}"\\s+className="motif-cs-large-sequence-value"`));
   });
 
   it('keeps both pane splitters and map features visibly focusable', () => {
@@ -161,7 +190,7 @@ describe('Claude Science accessibility and interaction guards', () => {
     expect(sequenceText).toContain('role="textbox"');
     expect(sequenceText).toContain('aria-multiline="true"');
     expect(sequenceText).toContain('aria-readonly={!editable}');
-    expect(sequenceText).toContain('aria-keyshortcuts="Shift+ArrowLeft Shift+ArrowRight Shift+Home Shift+End"');
+    expect(sequenceText).toContain('aria-keyshortcuts="Shift+ArrowLeft Shift+ArrowRight Shift+ArrowUp Shift+ArrowDown Shift+Home Shift+End Shift+PageUp Shift+PageDown"');
   });
 
   it('filters pane, sequence, and floating-window drags by primary pointer identity', () => {
@@ -206,7 +235,9 @@ describe('Claude Science accessibility and interaction guards', () => {
   });
 
   it('keeps validation feedback inline and polite', () => {
-    expect(artifactSource).toContain('className="motif-cs-import-status" data-error={statusError || undefined} role={statusError ? \'alert\' : \'status\'} aria-live={statusError ? \'assertive\' : \'polite\'} aria-atomic="true"');
+    // A chosen file's outcome is announced by the workbench notice; the panel copy
+    // of that sentence is not a second live region. Every other status stays live.
+    expect(artifactSource).toContain('className="motif-cs-import-status" data-error={statusError || undefined} role={statusMirrorsNotice ? undefined : statusError ? \'alert\' : \'status\'} aria-live={statusMirrorsNotice ? \'off\' : statusError ? \'assertive\' : \'polite\'} aria-atomic="true"');
     expect(artifactSource).toContain('className="motif-cs-chip" role="status" aria-live="polite" aria-atomic="true"');
     expect(artifactCss).toMatch(/\.motif-cs-import-status\s*\{[\s\S]*?overflow-wrap:\s*anywhere/);
   });

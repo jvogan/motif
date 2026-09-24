@@ -86,6 +86,31 @@ export function featureSegments(
   }));
 }
 
+/**
+ * Segments for drawing a feature on the ring. A piece that ends at the origin and
+ * the piece that resumes at 0 are one stretch of DNA, so they join into one segment
+ * whose end runs past `length` (angles past 360 draw on round). Drawn apart, each
+ * band closes at 12 o'clock and strokes a seam across the feature. Selection and
+ * labels keep featureSegments' split spans.
+ */
+export function joinOriginSegments(
+  segs: readonly MapFeatureSegment[],
+  length: number,
+): MapFeatureSegment[] {
+  const out: MapFeatureSegment[] = [];
+  for (const seg of segs) {
+    const prev = out[out.length - 1];
+    if (prev && prev.end === length && seg.start === 0 && seg.end < prev.start) {
+      out[out.length - 1] = { ...prev, end: length + seg.end, isEnd: seg.isEnd };
+    } else if (prev && prev.start === 0 && seg.end === length && prev.end < seg.start) {
+      out[out.length - 1] = { ...seg, end: length + prev.end, isStart: prev.isStart };
+    } else {
+      out.push(seg);
+    }
+  }
+  return out;
+}
+
 /** Bare spans (no start/end flags) for a feature, biological/import order. */
 export function featureSpans(
   feature: MapFeatureLocation,

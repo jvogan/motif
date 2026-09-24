@@ -87,18 +87,34 @@ function scoreFor(left: string, right: string, molecule: AlignmentMolecule): num
   return alignmentResiduesMatch(left, right, molecule) ? MATCH_SCORE : MISMATCH_SCORE;
 }
 
+/**
+ * The score of every residue pair the two sequences contain, keyed by
+ * `code1 * 128 + code2`. Comparing IUPAC sets allocated in every cell of the
+ * O(n·m) fill; three plasmids took 4 s on a loaded machine and froze the page.
+ */
+function pairScores(seq1: string, seq2: string, molecule: AlignmentMolecule): Int8Array {
+  const table = new Int8Array(128 * 128);
+  const right = new Set(seq2);
+  for (const left of new Set(seq1)) {
+    for (const residue of right) table[left.charCodeAt(0) * 128 + residue.charCodeAt(0)] = scoreFor(left, residue, molecule);
+  }
+  return table;
+}
+
 function sequenceScoreRow(
   seq1: string,
   seq2: string,
   molecule: AlignmentMolecule,
 ): Int32Array {
+  const scores = pairScores(seq1, seq2, molecule);
   const previous = new Int32Array(seq2.length + 1);
   const current = new Int32Array(seq2.length + 1);
   for (let column = 0; column <= seq2.length; column += 1) previous[column] = column * GAP_SCORE;
   for (let row = 1; row <= seq1.length; row += 1) {
     current[0] = row * GAP_SCORE;
+    const rowCode = seq1.charCodeAt(row - 1) * 128;
     for (let column = 1; column <= seq2.length; column += 1) {
-      const diagonal = previous[column - 1] + scoreFor(seq1[row - 1], seq2[column - 1], molecule);
+      const diagonal = previous[column - 1] + scores[rowCode + seq2.charCodeAt(column - 1)];
       const up = previous[column] + GAP_SCORE;
       const left = current[column - 1] + GAP_SCORE;
       current[column] = Math.max(diagonal, up, left);
@@ -118,6 +134,8 @@ function needlemanWunsch(
   const cols = n + 1;
   const score = new Int32Array((m + 1) * cols);
   const index = (row: number, column: number) => row * cols + column;
+  const scores = pairScores(seq1, seq2, molecule);
+  const pairScore = (row: number, column: number) => scores[seq1.charCodeAt(row - 1) * 128 + seq2.charCodeAt(column - 1)];
 
   for (let row = 0; row <= m; row += 1) score[index(row, 0)] = row * GAP_SCORE;
   for (let column = 0; column <= n; column += 1) score[index(0, column)] = column * GAP_SCORE;
@@ -125,8 +143,7 @@ function needlemanWunsch(
   for (let row = 1; row <= m; row += 1) {
     for (let column = 1; column <= n; column += 1) {
       const current = index(row, column);
-      const diagonal = score[index(row - 1, column - 1)]
-        + scoreFor(seq1[row - 1], seq2[column - 1], molecule);
+      const diagonal = score[index(row - 1, column - 1)] + pairScore(row, column);
       const up = score[index(row - 1, column)] + GAP_SCORE;
       const left = score[index(row, column - 1)] + GAP_SCORE;
       score[current] = Math.max(diagonal, up, left);
@@ -137,15 +154,31 @@ function needlemanWunsch(
   const aligned2: string[] = [];
   let row = m;
   let column = n;
+  // Linear gap scoring ties one long indel with the same number of scattered
+  // one-base gaps. Once a gap is open, keep extending it while the matrix
+  // allows, so a 12-base deletion reads as one run of 12 gaps.
+  let previousMove: 'diagonal' | 'up' | 'left' = 'diagonal';
   while (row > 0 || column > 0) {
+    if (previousMove === 'up' && row > 0 && score[index(row, column)] === score[index(row - 1, column)] + GAP_SCORE) {
+      aligned1.push(seq1[row - 1]);
+      aligned2.push('-');
+      row -= 1;
+      continue;
+    }
+    if (previousMove === 'left' && column > 0 && score[index(row, column)] === score[index(row, column - 1)] + GAP_SCORE) {
+      aligned1.push('-');
+      aligned2.push(seq2[column - 1]);
+      column -= 1;
+      continue;
+    }
     if (row > 0 && column > 0) {
-      const diagonalScore = score[index(row - 1, column - 1)]
-        + scoreFor(seq1[row - 1], seq2[column - 1], molecule);
+      const diagonalScore = score[index(row - 1, column - 1)] + pairScore(row, column);
       if (score[index(row, column)] === diagonalScore) {
         aligned1.push(seq1[row - 1]);
         aligned2.push(seq2[column - 1]);
         row -= 1;
         column -= 1;
+        previousMove = 'diagonal';
         continue;
       }
     }
@@ -153,10 +186,12 @@ function needlemanWunsch(
       aligned1.push(seq1[row - 1]);
       aligned2.push('-');
       row -= 1;
+      previousMove = 'up';
     } else {
       aligned1.push('-');
       aligned2.push(seq2[column - 1]);
       column -= 1;
+      previousMove = 'left';
     }
   }
   return { aligned1: aligned1.reverse().join(''), aligned2: aligned2.reverse().join('') };

@@ -83,6 +83,12 @@ export function resolveIupacCodon(codon: string, table: CodonTable = STANDARD_CO
  * include non-initiators.
  */
 export function isDefiniteInitiatorCodon(codon: string, table: CodonTable = STANDARD_CODE): boolean {
+  // A concrete ACGT codon is a key of the table and its own only expansion, so
+  // the expansion below could only return this same answer. The ORF scan asks
+  // this of every codon in six frames, and the expansion's per-base flatMap was
+  // four fifths of the scan: 2,736ms for a 2.4 Mb record, 576ms without it.
+  // Lowercase, RNA and IUPAC codons are never keys and still expand.
+  if (table.codons[codon] !== undefined) return table.starts.includes(codon);
   const expansions = expandIupacCodon(codon);
   return expansions.length > 0 && expansions.every((concreteCodon) => table.starts.includes(concreteCodon));
 }

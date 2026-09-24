@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parsePastedSequence, sequenceLinesFromPaste } from '../claude-science-paste-sequence';
+import { parsePastedSequence, sequenceLinesFromPaste, stripOriginPositionNumbers } from '../claude-science-paste-sequence';
 
 const DNA = 'ACGTRYSWKMBDHVN';
 const PROTEIN = 'ACDEFGHIKLMNPQRSTVWYOUJBXZ*';
@@ -464,5 +464,44 @@ describe('sequenceLinesFromPaste', () => {
       '       5 gggg',
     ].join('\n'));
     expect(lines).toEqual(['        1 atgc', '       5 gggg']);
+  });
+});
+
+describe('stripOriginPositionNumbers', () => {
+  const rows = '        1 atggctagca aaggagaaga\n       21 acttttcact ggagttgtcc';
+
+  it('blanks each ORIGIN row counter without moving any other character', () => {
+    const prepared = stripOriginPositionNumbers(rows);
+    expect(prepared.numberedLines).toBe(2);
+    expect(prepared.text).toBe(`${' '.repeat(10)}atggctagca aaggagaaga\n${' '.repeat(10)}acttttcact ggagttgtcc`);
+    expect(prepared.text.split('\n').map((line) => line.length)).toEqual(rows.split('\n').map((line) => line.length));
+  });
+
+  it('blanks the ORIGIN header and // terminator only around numbered rows', () => {
+    const prepared = stripOriginPositionNumbers(`ORIGIN\n${rows}\n//`);
+    expect(prepared.text.replace(/\s/g, '')).toBe('atggctagcaaaggagaagaacttttcactggagttgtcc');
+    // Without numbered rows nothing is touched: "ORIGIN" is six protein letters.
+    expect(stripOriginPositionNumbers('ORIGIN\nMKTAY')).toEqual({ text: 'ORIGIN\nMKTAY', numberedLines: 0 });
+  });
+
+  it('keeps CRLF line endings', () => {
+    expect(stripOriginPositionNumbers('1 atgc\r\n5 gggg').text).toBe('  atgc\r\n  gggg');
+  });
+
+  it('leaves a complete GenBank record and JSON to their own parsers', () => {
+    const genbank = `LOCUS       DEMO 20 bp DNA linear\nJOURNAL   2006 Some Title\nORIGIN\n${rows}\n//`;
+    expect(stripOriginPositionNumbers(genbank)).toEqual({ text: genbank, numberedLines: 0 });
+    const json = '{"name": "x", "seq": "ATGC"}\n12 atgc';
+    expect(stripOriginPositionNumbers(json)).toEqual({ text: json, numberedLines: 0 });
+  });
+
+  it('keeps the number on a row with any character a sequence row cannot hold', () => {
+    for (const row of ['61 ggtgatgtta 70', '3 blind mice!', '12 atgc#']) {
+      expect(stripOriginPositionNumbers(row)).toEqual({ text: row, numberedLines: 0 });
+    }
+    // Stops and alignment gaps are sequence-row characters.
+    expect(stripOriginPositionNumbers('1 MKT* 5').numberedLines).toBe(0);
+    expect(stripOriginPositionNumbers('1 MKT*').numberedLines).toBe(1);
+    expect(stripOriginPositionNumbers('1 AT-GC').numberedLines).toBe(1);
   });
 });
