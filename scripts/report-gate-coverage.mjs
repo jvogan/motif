@@ -5,7 +5,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isDirectScriptExecution } from './lib/direct-script.mjs';
 import { assertCleanGateSource } from './lib/gate-source.mjs';
-import { GATE_FIXTURES, GATE_FIXTURE_SCHEMA } from './lib/gate-fixtures.mjs';
+import { GATE_FIXTURES, GATE_FIXTURE_SCHEMA, isOptionalFixture } from './lib/gate-fixtures.mjs';
 import { GATE_RECEIPT_SCHEMA, GATE_RUN_SCHEMA, GATE_STEPS } from './lib/gate-steps.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -18,7 +18,7 @@ function readJson(path, label) {
   }
 }
 
-export function reportGateCoverage(env = process.env, rootDirectory = root, steps = GATE_STEPS) {
+export function reportGateCoverage(env = process.env, rootDirectory = root, steps = GATE_STEPS, fixtures = GATE_FIXTURES) {
   const receiptDirectory = join(rootDirectory, 'test-results', 'gate-receipts');
   rmSync(join(rootDirectory, 'dist-motif', 'gate-coverage.json'), { force: true });
   const run = readJson(join(receiptDirectory, 'run.json'), 'Gate run receipt');
@@ -49,11 +49,12 @@ export function reportGateCoverage(env = process.env, rootDirectory = root, step
     || evidence.commit !== commit || evidence.step !== 'core-browser-workflows' || evidence.status !== 'passed') {
     throw new Error('Browser fixture evidence is stale or unsuccessful');
   }
-  if (JSON.stringify(evidence.checks?.map(({ id }) => id)) !== JSON.stringify(GATE_FIXTURES.map(({ id }) => id))) {
+  if (JSON.stringify(evidence.checks?.map(({ id }) => id)) !== JSON.stringify(fixtures.map(({ id }) => id))) {
     throw new Error('Browser fixture evidence does not match the declared checks');
   }
   const fixtureChecks = evidence.checks;
-  for (const check of fixtureChecks) {
+  fixtureChecks.forEach((check, index) => {
+    const optional = isOptionalFixture(fixtures[index]);
     const { passed, skipped, failed, missing } = check.counts ?? {};
     if (![passed, skipped, failed, missing].every(value => Number.isSafeInteger(value) && value >= 0)
       || failed || missing
@@ -63,7 +64,10 @@ export function reportGateCoverage(env = process.env, rootDirectory = root, step
       || (check.status === 'not-applicable' && (passed || skipped))) {
       throw new Error('Browser fixture evidence is incomplete or unsuccessful');
     }
-  }
+    if (!optional && check.status !== 'executed') {
+      throw new Error(`Browser fixture evidence shows required check ${check.id} as ${check.status}; it must execute and pass`);
+    }
+  });
   assertCleanGateSource(rootDirectory, commit);
   const report = {
     schema: 'motif.gate-coverage.v3',
@@ -78,7 +82,9 @@ export function reportGateCoverage(env = process.env, rootDirectory = root, step
   mkdirSync(join(rootDirectory, 'dist-motif'), { recursive: true });
   writeFileSync(join(rootDirectory, 'dist-motif', 'gate-coverage.json'), `${JSON.stringify(report, null, 2)}\n`);
   console.log(`Gate coverage recorded ${receipts.length} successful exact-commit steps for ${commit}.`);
-  for (const check of fixtureChecks) console.log(`  ${check.status}: ${check.name}`);
+  fixtureChecks.forEach((check, index) => {
+    console.log(`  ${check.status}: ${check.name}${isOptionalFixture(fixtures[index]) ? ' (optional)' : ''}`);
+  });
   return report;
 }
 

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { assertCleanGateSource } from '../lib/gate-source.mjs';
-import { GATE_FIXTURES, GATE_FIXTURE_SCHEMA } from '../lib/gate-fixtures.mjs';
+import { GATE_FIXTURES, GATE_FIXTURE_SCHEMA, isOptionalFixture } from '../lib/gate-fixtures.mjs';
 import { GATE_RECEIPT_SCHEMA, GATE_RUN_SCHEMA } from '../lib/gate-steps.mjs';
 import { fixtureOutcomes } from '../gate-fixture-reporter.mjs';
 import { runGate } from '../run-gate.mjs';
@@ -30,7 +30,11 @@ function workspace() {
   git(root, 'commit', '-qm', 'Test fixture');
   return root;
 }
-function evidence(root) {
+const executedCheck = { status: 'executed', counts: { passed: 1, skipped: 0, failed: 0, missing: 0 } };
+const skippedCheck = { status: 'skipped', counts: { passed: 0, skipped: 1, failed: 0, missing: 0 } };
+const notApplicableCheck = { status: 'not-applicable', counts: { passed: 0, skipped: 0, failed: 0, missing: 0 } };
+const missingCheck = { status: 'missing', counts: { passed: 0, skipped: 0, failed: 0, missing: 0 } };
+function evidence(root, definitions = GATE_FIXTURES) {
   const commit = git(root, 'rev-parse', 'HEAD');
   const runId = 'test-invocation';
   const steps = [{ id: 'core-browser-workflows', command: ['npm', 'run', 'test:e2e'], label: 'Browser tests' }];
@@ -42,8 +46,9 @@ function evidence(root) {
   });
   const fixtures = {
     schema: GATE_FIXTURE_SCHEMA, runId, commit, step: 'core-browser-workflows', status: 'passed',
-    checks: GATE_FIXTURES.map(({ id, name }) => ({
-      id, name, status: 'skipped', counts: { passed: 0, skipped: 1, failed: 0, missing: 0 },
+    checks: definitions.map((definition) => ({
+      id: definition.id, name: definition.name,
+      ...structuredClone(isOptionalFixture(definition) ? skippedCheck : executedCheck),
     })),
   };
   put(root, 'test-results/gate-receipts/fixtures.json', fixtures);
@@ -90,17 +95,24 @@ describe('committed gate source boundary', () => {
 
 describe('browser fixture outcomes', () => {
   const definition = { id: 'fixture', name: 'Fixture audit', file: 'fixture.spec.ts', title: 'fixture test' };
-  function outcome(root, statuses, expectedStatus = 'passed') {
+  function outcome(root, statuses, expectedStatus = 'passed', overrides = {}) {
     const tests = statuses.map(results => ({
       title: definition.title, location: { file: join(root, definition.file) }, expectedStatus,
       results: results.map(status => ({ status })),
     }));
-    return fixtureOutcomes({ allTests: () => tests }, root, [definition])[0];
+    return fixtureOutcomes({ allTests: () => tests }, root, [{ ...definition, ...overrides }])[0];
   }
+  it('reports an absent spec file as missing unless the fixture is optional', () => {
+    const root = workspace();
+    expect(outcome(root, []).status).toBe('missing');
+    expect(outcome(root, [], 'passed', { required: true }).status).toBe('missing');
+    expect(outcome(root, [], 'passed', { optional: true }).status).toBe('not-applicable');
+    expect(() => outcome(root, [], 'passed', { optional: true, required: true })).toThrow(/both required and optional/);
+  });
   it('requires observed successful results and distinguishes absent, missing and skipped tests', () => {
     const root = workspace();
-    expect(outcome(root, []).status).toBe('not-applicable');
     put(root, definition.file, '// fixture');
+    expect(outcome(root, [], 'passed', { optional: true }).status).toBe('missing');
     expect(outcome(root, []).status).toBe('missing');
     expect(outcome(root, [[]]).status).toBe('missing');
     expect(outcome(root, [['skipped']]).status).toBe('skipped');
@@ -112,11 +124,60 @@ describe('browser fixture outcomes', () => {
 });
 
 describe('coverage evidence verification', () => {
+  it('declares an always-executed fixture and keeps real-data fixtures optional', () => {
+    expect(GATE_FIXTURES.filter(definition => !isOptionalFixture(definition)).map(({ id }) => id)).toEqual(['synthetic-sanger']);
+    expect(GATE_FIXTURES.filter(isOptionalFixture).map(({ id }) => id)).toEqual(['real-sanger', 'external-msa']);
+    for (const { file } of GATE_FIXTURES) expect(existsSync(new URL(`../../${file}`, import.meta.url))).toBe(true);
+  });
   it('uses actual skip receipts even when fixture environment variables are set', () => {
     const root = workspace();
     const { env, steps } = evidence(root);
     const report = reportGateCoverage({ ...env, MOTIF_REAL_MSA_PAYLOADS: 'missing.json', MOTIF_DEMO_ARTIFACT_URL: 'http://example.invalid' }, root, steps);
-    expect(report.fixtureChecks.every(check => check.status === 'skipped')).toBe(true);
+    for (const check of report.fixtureChecks) {
+      const definition = GATE_FIXTURES.find(({ id }) => id === check.id);
+      expect(check.status).toBe(isOptionalFixture(definition) ? 'skipped' : 'executed');
+    }
+  });
+  describe('required and optional fixture statuses', () => {
+    const optionalDefinition = { id: 'optional-audit', name: 'Optional audit', file: 'optional.spec.ts', title: 'optional', optional: true };
+    const requiredDefinition = { id: 'required-audit', name: 'Required audit', file: 'required.spec.ts', title: 'required', required: true };
+    const definitions = [optionalDefinition, requiredDefinition];
+    function verify(optionalCheck, requiredCheck) {
+      const root = workspace();
+      const { env, steps, fixtures } = evidence(root, definitions);
+      Object.assign(fixtures.checks[0], structuredClone(optionalCheck));
+      Object.assign(fixtures.checks[1], structuredClone(requiredCheck));
+      put(root, 'test-results/gate-receipts/fixtures.json', fixtures);
+      return () => reportGateCoverage(env, root, steps, definitions);
+    }
+    it('accepts an optional fixture whose spec file is absent', () => {
+      expect(verify(notApplicableCheck, executedCheck)().fixtureChecks.map(({ status }) => status))
+        .toEqual(['not-applicable', 'executed']);
+    });
+    it('accepts a skipped optional fixture beside an executed required fixture', () => {
+      expect(verify(skippedCheck, executedCheck)().fixtureChecks.map(({ status }) => status))
+        .toEqual(['skipped', 'executed']);
+    });
+    it.each([
+      ['missing', missingCheck],
+      ['skipped', skippedCheck],
+      ['not-applicable', notApplicableCheck],
+    ])('rejects a required fixture reported as %s', (_label, requiredCheck) => {
+      expect(verify(skippedCheck, requiredCheck)).toThrow(/fixture evidence/);
+    });
+    it('rejects an optional fixture reported as missing', () => {
+      expect(verify(missingCheck, executedCheck)).toThrow(/fixture evidence/);
+    });
+    it('derives the required fixture status end to end when its spec file is deleted', () => {
+      const root = workspace();
+      const [optionalOutcome, requiredOutcome] = fixtureOutcomes({ allTests: () => [] }, root, definitions);
+      expect(optionalOutcome.status).toBe('not-applicable');
+      expect(requiredOutcome.status).toBe('missing');
+      const { env, steps, fixtures } = evidence(root, definitions);
+      fixtures.checks = [optionalOutcome, requiredOutcome];
+      put(root, 'test-results/gate-receipts/fixtures.json', fixtures);
+      expect(() => reportGateCoverage(env, root, steps, definitions)).toThrow(/fixture evidence/);
+    });
   });
   it('rejects edited source after a successful report and removes stale success output', () => {
     const root = workspace();
@@ -133,7 +194,7 @@ describe('coverage evidence verification', () => {
     if (mode === 'failed-run') fixtures.status = 'failed';
     if (mode === 'missing-test') fixtures.checks[0].status = 'missing';
     if (mode === 'failed-test') fixtures.checks[0].counts.failed = 1;
-    if (mode === 'false-pass') fixtures.checks[0].status = 'executed';
+    if (mode === 'false-pass') Object.assign(fixtures.checks[0], { status: 'executed', counts: { passed: 0, skipped: 1, failed: 0, missing: 0 } });
     if (mode === 'wrong-step') fixtures.step = 'msa-browser-workflows';
     put(root, 'test-results/gate-receipts/fixtures.json', fixtures);
     if (mode === 'absent') rmSync(join(root, 'test-results/gate-receipts/fixtures.json'));

@@ -1,12 +1,14 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { GATE_FIXTURES, GATE_FIXTURE_SCHEMA } from './lib/gate-fixtures.mjs';
+import { GATE_FIXTURES, GATE_FIXTURE_SCHEMA, isOptionalFixture } from './lib/gate-fixtures.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 export function fixtureOutcomes(suite, rootDirectory, definitions = GATE_FIXTURES) {
-  return definitions.map(({ id, name, file, title }) => {
+  return definitions.map((definition) => {
+    const { id, name, file, title } = definition;
+    const optional = isOptionalFixture(definition);
     const sourceExists = existsSync(resolve(rootDirectory, file));
     const tests = suite.allTests().filter(test => (
       resolve(test.location.file) === resolve(rootDirectory, file) && test.title === title
@@ -18,7 +20,10 @@ export function fixtureOutcomes(suite, rootDirectory, definitions = GATE_FIXTURE
       else if (test.expectedStatus === 'passed' && test.results.every(result => result.status === 'passed')) counts.passed++;
       else counts.failed++;
     }
-    const status = !sourceExists && !tests.length ? 'not-applicable'
+    // Only an optional fixture whose spec file is absent is not applicable. A
+    // required fixture with no spec file or no observed result is missing, so
+    // deleting or renaming its spec cannot turn the check green.
+    const status = optional && !sourceExists && !tests.length ? 'not-applicable'
       : !tests.length || counts.missing ? 'missing'
         : counts.failed ? 'failed'
           : counts.skipped ? 'skipped' : 'executed';
