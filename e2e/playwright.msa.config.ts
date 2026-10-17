@@ -1,6 +1,7 @@
 import { defineConfig } from '@playwright/test';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { browserLaunchOverride } from './browser-executable.ts';
 
 // Isolated Playwright config for the MSA interaction spec. It spins up its own
 // Vite dev server on a dedicated port so it never collides with the shared
@@ -28,6 +29,7 @@ export default defineConfig({
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
     launchOptions: {
+      ...browserLaunchOverride(),
       args: ['--disable-gpu', '--force-color-profile=srgb', '--force-raster-color-profile=srgb'],
     },
   },

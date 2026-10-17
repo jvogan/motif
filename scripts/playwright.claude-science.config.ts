@@ -1,6 +1,7 @@
 import { defineConfig } from '@playwright/test';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { browserLaunchOverride } from '../e2e/browser-executable.ts';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -26,6 +27,7 @@ export default defineConfig({
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
     launchOptions: {
+      ...browserLaunchOverride(),
       args: [
         '--disable-gpu',
         '--force-color-profile=srgb',

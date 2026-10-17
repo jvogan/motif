@@ -1,6 +1,7 @@
 import { defineConfig } from '@playwright/test';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { browserLaunchOverride } from './browser-executable.ts';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const port = Number(process.env.MOTIF_PANE_E2E_PORT ?? 5227);
@@ -22,6 +23,7 @@ export default defineConfig({
     contextOptions: { reducedMotion: 'reduce' },
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
+    launchOptions: browserLaunchOverride(),
   },
   webServer: {
     command: `node_modules/.bin/vite --config vite.claude-science.config.ts --port ${port} --strictPort --host 127.0.0.1`,
