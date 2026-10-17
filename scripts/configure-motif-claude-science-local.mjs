@@ -3,6 +3,7 @@
 import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isDirectScriptExecution } from './lib/direct-script.mjs';
 import {
   DEFAULT_CLAUDE_SCIENCE_CONFIG_PATH,
   MOTIF_LOCAL_CONNECTOR_NAME,
@@ -128,7 +129,7 @@ export function runConfigure(options) {
 
 const isMain = process.argv[1]
   && existsSync(process.argv[1])
-  && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+  && isDirectScriptExecution(process.argv[1], fileURLToPath(import.meta.url));
 
 if (isMain) {
   try {

@@ -45,6 +45,23 @@ describe('defensive bounds', () => {
     expect(() => renderGelASCII({ ...valid, bands: [{ ...valid.bands[0], migrationDistance: Number.NaN }] })).toThrow(/migrationDistance/);
   });
 
+  it('aligns ASCII lane labels with the lane columns drawn below them', () => {
+    const laneWidth = 8;
+    const gel = simulateGel(
+      ['A', 'B', 'C', 'D', 'E', 'F'].map((name) => ({ name, fragments: [1000] })),
+      { width: laneWidth, height: 4 },
+    );
+    const [header, topBorder] = gel.ascii.split('\n');
+    // Lane cells start at column 3 and repeat every laneWidth + 1 columns.
+    expect(topBorder.indexOf('┌')).toBe(2);
+    gel.lanes.forEach((label, index) => {
+      const laneStart = 3 + index * (laneWidth + 1);
+      const labelColumn = header.indexOf(label);
+      expect(labelColumn, label).toBeGreaterThanOrEqual(laneStart);
+      expect(labelColumn + label.length, label).toBeLessThanOrEqual(laneStart + laneWidth);
+    });
+  });
+
   it('bounds synthetic vector filler and validates its alphabet', () => {
     expect(() => buildSyntheticGoldenGateVector('ACGT', 'TGCA', {
       fillerLength: MAX_SYNTHETIC_VECTOR_FILLER_LENGTH + 1,

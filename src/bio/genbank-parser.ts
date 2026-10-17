@@ -1003,13 +1003,23 @@ function parseLocusLine(line: string): LocusFields {
 
   result.name = tokens[0];
 
+  // Index of the first token after the sequence length (and its unit, when
+  // present). Topology is read only from these trailing fields so that a
+  // locus name such as `pX-circular` cannot set it.
+  let fieldsStart = -1;
   for (let i = 1; i < tokens.length; i++) {
     const tok = tokens[i];
     const next = tokens[i + 1] ?? '';
     if (/^\d+$/.test(tok) && /^(bp|aa)$/i.test(next)) {
       result.length = parseInt(tok, 10);
+      if (fieldsStart < 0) fieldsStart = i + 2;
     }
   }
+  if (fieldsStart < 0) {
+    const lengthIndex = tokens.findIndex((tok, i) => i > 0 && /^\d+$/.test(tok));
+    fieldsStart = lengthIndex > 0 ? lengthIndex + 1 : 1;
+  }
+  const trailingFields = tokens.slice(fieldsStart);
 
   // Strandedness — `ss-`, `ds-`, `ms-` prefix on the molecule type field.
   // We strip the prefix from `moleculeType` so the rest of the codebase
@@ -1026,8 +1036,8 @@ function parseLocusLine(line: string): LocusFields {
 
   // Topology — explicit token only; the GenBank spec defaults linear when
   // omitted, but we record only what we observed.
-  if (/\bcircular\b/i.test(line)) result.topology = 'circular';
-  else if (/\blinear\b/i.test(line)) result.topology = 'linear';
+  if (trailingFields.some((tok) => /^circular$/i.test(tok))) result.topology = 'circular';
+  else if (trailingFields.some((tok) => /^linear$/i.test(tok))) result.topology = 'linear';
 
   // Date — DD-MMM-YYYY in trailing column.
   const dateMatch = line.match(/(\d{2}-[A-Z]{3}-\d{4})\s*$/);

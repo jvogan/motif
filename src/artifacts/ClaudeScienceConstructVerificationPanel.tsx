@@ -464,6 +464,7 @@ export function ClaudeScienceConstructVerificationPanel({
           <div
             className="motif-cs-construct-verification-table-scroll"
             tabIndex={0}
+            role="region"
             aria-label="Scrollable variant evidence table"
             data-testid="construct-verification-variant-table"
           >
@@ -537,7 +538,7 @@ export function ClaudeScienceConstructVerificationPanel({
             <span id={`${sectionId}-regions`}>Required &amp; junction coverage</span>
             <small>{result.coverage.requiredRegions.length.toLocaleString()} region{result.coverage.requiredRegions.length === 1 ? '' : 's'}</small>
           </div>
-          <div className="motif-cs-construct-verification-table-scroll" tabIndex={0} aria-label="Scrollable required region coverage table">
+          <div className="motif-cs-construct-verification-table-scroll" tabIndex={0} role="region" aria-label="Scrollable required region coverage table">
             <table className="motif-cs-construct-verification-table">
               <thead><tr><th>Region</th><th title="1-based, inclusive">Reference range</th><th>Coverage</th><th>Strands</th><th>Status</th></tr></thead>
               <tbody>

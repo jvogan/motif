@@ -763,9 +763,9 @@ function recordsFromGenBank(content: string, input: MotifWorkbenchInput): Record
   const parsed = parseGenBank(content);
   if (parsed.length === 0) throw new Error('No complete GenBank records were found.');
   const proteinRecordHints = content
-    .split(/^\s*\/\/\s*$/mu)
-    .filter(block => /^\s*LOCUS\b/mu.test(block))
-    .map(block => /^\s*LOCUS\b.*\b\d+\s+aa\b/imu.test(block));
+    .split(/^[ \t]*\/\/[ \t]*\r?$/mu)
+    .filter(block => /^[ \t]*LOCUS\b/mu.test(block))
+    .map(block => /^[ \t]*LOCUS\b.*\b\d+[ \t]+aa\b/imu.test(block));
   const usedIds = new Set<string>();
   return parsed.map((record, index) => {
     if (record.truncated || (record.length > 0 && record.length !== record.sequence.length)) {
@@ -820,7 +820,7 @@ function payloadFromContent(content: string, input: MotifWorkbenchInput): MotifW
       ? { ...validated.payload, inventory: { ...(isPlainObject(validated.payload.inventory) ? validated.payload.inventory : {}), title: input.title } }
       : validated.payload;
   }
-  const records = /^\s*LOCUS\s/mu.test(text)
+  const records = /^[ \t]*LOCUS[ \t]/mu.test(text)
     ? recordsFromGenBank(text, input)
     : text.includes('>')
       ? recordsFromFasta(text, input)

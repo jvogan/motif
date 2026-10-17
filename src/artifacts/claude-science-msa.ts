@@ -1427,12 +1427,19 @@ function normalizeMotifResidue(symbol: string, molecule: SequenceType): string {
 
 type MsaMotifMatchOrder = Pick<MsaMotifMatch, 'rowId' | 'rowName' | 'startColumn' | 'endColumn'>;
 
+/**
+ * Shared numeric-aware collator. Equivalent to
+ * `localeCompare(other, undefined, { numeric: true })`, but resolves the
+ * locale and options once instead of on every comparison.
+ */
+const compareNumericText = new Intl.Collator(undefined, { numeric: true }).compare;
+
 /** Total order over matches: earliest alignment column first, then row identity. */
 function compareMotifMatches(a: MsaMotifMatchOrder, b: MsaMotifMatchOrder): number {
   return a.startColumn - b.startColumn
     || a.endColumn - b.endColumn
-    || a.rowName.localeCompare(b.rowName, undefined, { numeric: true })
-    || a.rowId.localeCompare(b.rowId, undefined, { numeric: true });
+    || compareNumericText(a.rowName, b.rowName)
+    || compareNumericText(a.rowId, b.rowId);
 }
 
 /**

@@ -36,10 +36,12 @@ type DeleteFocusRestore = {
   mode: 'same' | 'next';
 };
 
+const RESULT_TIMESTAMP_FORMAT = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+
 function resultTimestamp(value: string): string {
   const timestamp = Date.parse(value);
   if (!Number.isFinite(timestamp)) return value;
-  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(timestamp));
+  return RESULT_TIMESTAMP_FORMAT.format(new Date(timestamp));
 }
 
 function recordList(
@@ -115,6 +117,18 @@ function structuredPreview(value: unknown): StructuredPreview {
   return { text, truncated };
 }
 
+type ResultPreviews = {
+  parameters: StructuredPreview;
+  result: StructuredPreview | null;
+};
+
+function resultPreviews(result: ArtifactWorkflowResult): ResultPreviews {
+  return {
+    parameters: structuredPreview(result.parameters),
+    result: result.result ? structuredPreview(result.result) : null,
+  };
+}
+
 function provenanceText(result: ArtifactWorkflowResult, names: Readonly<Record<string, string>>): string {
   const { provenance } = result;
   const parts = [`Source: ${provenance.source}`];
@@ -148,14 +162,20 @@ export function ClaudeScienceWorkflowHistoryPanel({
   const ordered = useMemo(() => [...results].sort((left, right) => (
     Date.parse(right.createdAt) - Date.parse(left.createdAt) || left.id.localeCompare(right.id)
   )), [results]);
-  const visibleResults = ordered.slice(0, visibleCount);
+  const visibleResults = useMemo(() => ordered.slice(0, visibleCount), [ordered, visibleCount]);
+  const previewsById = useMemo(() => new Map<string, ResultPreviews>(
+    visibleResults.map((result) => [result.id, resultPreviews(result)]),
+  ), [visibleResults]);
   const remainingCount = Math.max(0, ordered.length - visibleResults.length);
 
+  // Cancel takes focus when a confirmation opens, not on every later render
+  // while it stays open.
   useLayoutEffect(() => {
-    if (pendingDeleteId) {
-      cancelRef.current?.focus();
-      return;
-    }
+    if (pendingDeleteId) cancelRef.current?.focus();
+  }, [pendingDeleteId]);
+
+  useLayoutEffect(() => {
+    if (pendingDeleteId) return;
     const afterDelete = restoreAfterDeleteRef.current;
     restoreAfterDeleteRef.current = null;
     if (afterDelete) {
@@ -175,7 +195,7 @@ export function ClaudeScienceWorkflowHistoryPanel({
     const id = restoreFocusIdRef.current;
     restoreFocusIdRef.current = null;
     if (id) deleteRefs.current.get(id)?.focus();
-  }, [ordered.length, pendingDeleteId, visibleResults]);
+  }, [pendingDeleteId, visibleResults]);
 
   const cancelDelete = (resultId: string) => {
     restoreFocusIdRef.current = resultId;
@@ -205,8 +225,9 @@ export function ClaudeScienceWorkflowHistoryPanel({
             const engine = result.provenance.engine
               ? `${result.provenance.engine}${result.provenance.engineVersion ? ` ${result.provenance.engineVersion}` : ''}`
               : result.provenance.source;
-            const parametersPreview = structuredPreview(result.parameters);
-            const resultPreview = result.result ? structuredPreview(result.result) : null;
+            const previews = previewsById.get(result.id) ?? resultPreviews(result);
+            const parametersPreview = previews.parameters;
+            const resultPreview = previews.result;
             const freshness = freshnessByResultId?.get(result.id);
             return (
               <article className="motif-cs-workflow-row" key={result.id} data-testid={`workflow-result-${result.id}`}>

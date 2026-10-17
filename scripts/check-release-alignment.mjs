@@ -4,6 +4,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isDirectScriptExecution } from './lib/direct-script.mjs';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 
@@ -77,7 +78,7 @@ export function checkReleaseAlignment(cwd = root) {
     ['plugin CHANGELOG.md', read(workspace, 'src/artifacts/motif-for-claude-science-plugin/CHANGELOG.md')],
   ];
   for (const [label, contents] of changelogs) {
-    if (!new RegExp(`^## ${packageVersion}(?:\\s|$)`, 'mu').test(contents)) {
+    if (!new RegExp(`^## ${packageVersion.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}(?:\\s|$)`, 'mu').test(contents)) {
       throw new Error(`${label} has no release entry for ${packageVersion}`);
     }
   }
@@ -91,7 +92,7 @@ export function checkReleaseAlignment(cwd = root) {
   return { version: packageVersion, surfaces: surfaces.length + changelogs.length + requiredDocs.length };
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isDirectScriptExecution(process.argv[1], fileURLToPath(import.meta.url))) {
   try {
     const result = checkReleaseAlignment();
     console.log(`Release alignment passed: ${result.version} across ${result.surfaces} surfaces.`);

@@ -3,6 +3,7 @@
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isDirectScriptExecution } from './lib/direct-script.mjs';
 import { assertCleanGateSource } from './lib/gate-source.mjs';
 import { GATE_FIXTURES, GATE_FIXTURE_SCHEMA } from './lib/gate-fixtures.mjs';
 import { GATE_RECEIPT_SCHEMA, GATE_RUN_SCHEMA, GATE_STEPS } from './lib/gate-steps.mjs';
@@ -81,7 +82,7 @@ export function reportGateCoverage(env = process.env, rootDirectory = root, step
   return report;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isDirectScriptExecution(process.argv[1], fileURLToPath(import.meta.url))) {
   try {
     reportGateCoverage();
   } catch (error) {

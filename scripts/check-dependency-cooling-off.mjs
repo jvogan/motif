@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isDirectScriptExecution } from './lib/direct-script.mjs';
 import { loadDependencyPolicy } from './lib/supply-chain-policy.mjs';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -66,7 +67,7 @@ function readBaselineLockfile(workspace, options) {
     throw new Error('Cooling-off policy requires a valid nonzero baseline reference');
   }
   try {
-    const text = execFileSync('git', ['show', `${ref}:package-lock.json`], {
+    const text = execFileSync('git', ['show', '--end-of-options', `${ref}:package-lock.json`], {
       cwd: workspace,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -298,7 +299,7 @@ export async function checkDependencyCoolingOff(rootPath = root, options = {}) {
   };
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isDirectScriptExecution(process.argv[1], fileURLToPath(import.meta.url))) {
   try {
     const result = await checkDependencyCoolingOff();
     console.log(`Dependency cooling-off passed: ${result.changedPackageCount} changed package version${result.changedPackageCount === 1 ? '' : 's'} checked; ${result.coolingOffDays}-day window.`);

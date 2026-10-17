@@ -91,19 +91,56 @@ export function renderAlignmentImageSvg(
   }
 
   const labelFontSize = Math.max(8, Math.min(layout.fontSize || 11, Math.round(layout.cellHeight * 0.62)));
+  // Everything below except the residue symbol is constant per column or per
+  // row, so resolve fills once per symbol and format column geometry once,
+  // instead of repeating both for every cell.
+  const fillBySymbol = new Map<string, string | null>();
+  const fillFor = (activeScheme: MsaColorScheme, symbol: string): string | null => {
+    let fill = fillBySymbol.get(symbol);
+    if (fill === undefined) {
+      fill = resolveResidueCellColor(symbol, molecule, activeScheme, bg);
+      fillBySymbol.set(symbol, fill);
+    }
+    return fill;
+  };
+  const cellX: Array<string | null> = [];
+  const cellWidth: Array<string | null> = [];
+  const cellCenterX: Array<string | null> = [];
+  for (let index = 0; index < layout.columnCount; index += 1) {
+    const slot = layout.columns[index];
+    if (!slot || slot.kind === 'elision') {
+      cellX.push(null);
+      cellWidth.push(null);
+      cellCenterX.push(null);
+      continue;
+    }
+    const geometry = alignmentImageCellGeometry(layout, index);
+    const overdraw = Math.min(0.5, geometry.width * 0.05);
+    const paintWidth = Math.min(layout.contentWidth - geometry.x, geometry.width + overdraw);
+    cellX.push(imageSvgNumber(geometry.x));
+    cellWidth.push(imageSvgNumber(paintWidth));
+    cellCenterX.push(imageSvgNumber(geometry.centerX));
+  }
+  const cellHeight = imageSvgNumber(layout.cellHeight + Math.min(0.5, layout.cellHeight * 0.05));
+  const labelRowHeight = imageSvgNumber(layout.cellHeight);
+  const letterFill = escapeXml(palette.text);
+  const labelBackground = escapeXml(palette.labelBackground);
+  const templateLabelFill = escapeXml(palette.text);
+  const rowLabelFill = escapeXml(palette.muted);
   for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
     const row = rows[rowIndex];
     const y = layout.headerHeight + rowIndex * layout.cellHeight;
-    for (let index = 0; scheme && index < layout.columnCount; index += 1) {
-      const slot = layout.columns[index];
-      if (!slot || slot.kind === 'elision') continue;
-      const symbol = row.aligned[slot.column] ?? '-';
-      const fill = resolveResidueCellColor(symbol, molecule, scheme, bg);
-      if (!fill) continue;
-      const geometry = alignmentImageCellGeometry(layout, index);
-      const overdraw = Math.min(0.5, geometry.width * 0.05);
-      const paintWidth = Math.min(layout.contentWidth - geometry.x, geometry.width + overdraw);
-      parts.push(`<rect x="${imageSvgNumber(geometry.x)}" y="${imageSvgNumber(y)}" width="${imageSvgNumber(paintWidth)}" height="${imageSvgNumber(layout.cellHeight + Math.min(0.5, layout.cellHeight * 0.05))}" fill="${fill}"/>`);
+    const rowY = imageSvgNumber(y);
+    const rowCenterY = imageSvgNumber(y + layout.cellHeight / 2);
+    if (scheme) {
+      for (let index = 0; index < layout.columnCount; index += 1) {
+        const slot = layout.columns[index];
+        if (!slot || slot.kind === 'elision') continue;
+        const symbol = row.aligned[slot.column] ?? '-';
+        const fill = fillFor(scheme, symbol);
+        if (!fill) continue;
+        parts.push(`<rect x="${cellX[index]}" y="${rowY}" width="${cellWidth[index]}" height="${cellHeight}" fill="${fill}"/>`);
+      }
     }
     if (layout.drawLetters) {
       for (let index = 0; index < layout.columnCount; index += 1) {
@@ -111,12 +148,11 @@ export function renderAlignmentImageSvg(
         if (!slot || slot.kind === 'elision') continue;
         const symbol = row.aligned[slot.column] ?? '-';
         if (symbol === '-' || symbol === '.') continue;
-        const x = alignmentImageCellGeometry(layout, index).centerX;
-        parts.push(`<text x="${imageSvgNumber(x)}" y="${imageSvgNumber(y + layout.cellHeight / 2)}" fill="${escapeXml(palette.text)}" font-size="${layout.fontSize}" text-anchor="middle" dominant-baseline="middle">${escapeXml(symbol)}</text>`);
+        parts.push(`<text x="${cellCenterX[index]}" y="${rowCenterY}" fill="${letterFill}" font-size="${layout.fontSize}" text-anchor="middle" dominant-baseline="middle">${escapeXml(symbol)}</text>`);
       }
     }
-    parts.push(`<rect x="0" y="${imageSvgNumber(y)}" width="${layout.labelWidth}" height="${imageSvgNumber(layout.cellHeight)}" fill="${escapeXml(palette.labelBackground)}"/>`);
-    parts.push(`<text x="8" y="${imageSvgNumber(y + layout.cellHeight / 2)}" fill="${escapeXml(row.isTemplate ? palette.text : palette.muted)}" font-size="${labelFontSize}"${row.isTemplate ? ' font-weight="600"' : ''} dominant-baseline="middle">${escapeXml(fitImageLabel(row.name, layout.labelWidth, labelFontSize))}</text>`);
+    parts.push(`<rect x="0" y="${rowY}" width="${layout.labelWidth}" height="${labelRowHeight}" fill="${labelBackground}"/>`);
+    parts.push(`<text x="8" y="${rowCenterY}" fill="${row.isTemplate ? templateLabelFill : rowLabelFill}" font-size="${labelFontSize}"${row.isTemplate ? ' font-weight="600"' : ''} dominant-baseline="middle">${escapeXml(fitImageLabel(row.name, layout.labelWidth, labelFontSize))}</text>`);
   }
 
   parts.push('</svg>');

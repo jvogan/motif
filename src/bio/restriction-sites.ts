@@ -367,6 +367,7 @@ const IUPAC_BASES: Readonly<Record<string, ReadonlySet<string>>> = {
 };
 
 const IUPAC_SYMBOLS = new Set(Object.keys(IUPAC_BASES));
+const PLAIN_DNA_PATTERN = /^[ACGT]*$/;
 
 function hasControlCharacters(value: string): boolean {
   return [...value].some((character) => {
@@ -380,8 +381,20 @@ export function normalizeRestrictionSequence(seq: string): string {
   if (typeof seq !== 'string') {
     throw new RestrictionInputError('invalid_sequence', 'Restriction sequence must be a string.');
   }
+  const upperSeq = seq.toUpperCase();
+  // Fast path: a plain ACGT string needs no per-character filtering or
+  // RNA conversion, only the same length bound as the general path.
+  if (PLAIN_DNA_PATTERN.test(upperSeq)) {
+    if (upperSeq.length > MAX_RESTRICTION_SEQUENCE_LENGTH) {
+      throw new RestrictionInputError(
+        'invalid_sequence',
+        `Restriction sequence exceeds the ${MAX_RESTRICTION_SEQUENCE_LENGTH.toLocaleString()}-base safety limit.`,
+      );
+    }
+    return upperSeq;
+  }
   let normalized = '';
-  for (const raw of seq.toUpperCase()) {
+  for (const raw of upperSeq) {
     if (/\s/.test(raw) || /[0-9]/.test(raw)) continue;
     const ch = raw === 'U' ? 'T' : raw;
     if (!IUPAC_SYMBOLS.has(ch)) {
@@ -582,6 +595,16 @@ export function calculateRestrictionCleavageGeometry(
   strand: 1 | -1 = 1,
 ): RestrictionCleavageGeometry {
   const recognitionLength = normalizeRestrictionRecognitionSequence(enzyme.recognitionSequence).length;
+  return cleavageGeometryForRecognitionLength(enzyme, recognitionLength, sitePosition, strand);
+}
+
+/** Geometry for an enzyme whose recognition length is already validated. */
+function cleavageGeometryForRecognitionLength(
+  enzyme: RestrictionEnzyme,
+  recognitionLength: number,
+  sitePosition: number,
+  strand: 1 | -1,
+): RestrictionCleavageGeometry {
   const mode = enzyme.cleavageMode ?? 'double-strand';
   const forwardTop = strand === -1
     ? sitePosition + recognitionLength - enzyme.complementCutOffset
@@ -670,6 +693,7 @@ function issueForSite(
   topology: Topology,
   options: FindRestrictionSitesOptions | undefined,
   rawGeometry: RestrictionCleavageGeometry = geometry,
+  recognitionLength: number = normalizeRestrictionRecognitionSequence(enzyme.recognitionSequence).length,
 ): RestrictionScanIssue | null {
   if (!geometry.valid) {
     return {
@@ -684,7 +708,7 @@ function issueForSite(
   if (topology === 'circular') {
     const rawPositions = [rawGeometry.topCutPosition, rawGeometry.bottomCutPosition]
       .filter((value): value is number => value !== null);
-    const crossesMoreThanOneCircumference = normalizeRestrictionRecognitionSequence(enzyme.recognitionSequence).length > sequenceLength
+    const crossesMoreThanOneCircumference = recognitionLength > sequenceLength
       || geometry.overhangLength > sequenceLength
       || rawPositions.some((position) => Math.abs(position - sitePosition) > sequenceLength);
     if (crossesMoreThanOneCircumference) {
@@ -756,14 +780,36 @@ function issueForSite(
   return null;
 }
 
-function concreteIupacMatch(buffer: string, start: number, recognition: string): boolean {
-  if (start < 0 || start + recognition.length > buffer.length) return false;
+/**
+ * Per-pattern-position lookup tables over character codes 0-127. An entry is 1
+ * only when the sequence character is a concrete A/C/G/T base permitted by the
+ * recognition symbol at that position.
+ *
+ * A sequence ambiguity cannot prove a physical recognition site. It is
+ * accepted by normalization and reported by countAmbiguousBases, but is
+ * conservatively excluded from a cut assertion.
+ */
+const IUPAC_CODE_MASKS: ReadonlyMap<string, Uint8Array> = new Map(
+  Object.entries(IUPAC_BASES).map(([symbol, bases]) => {
+    const mask = new Uint8Array(128);
+    for (const base of bases) mask[base.charCodeAt(0)] = 1;
+    return [symbol, mask] as const;
+  }),
+);
+
+function buildRecognitionMasks(recognition: string): Uint8Array[] {
+  const masks = new Array<Uint8Array>(recognition.length);
   for (let offset = 0; offset < recognition.length; offset += 1) {
-    const sequenceBase = buffer[start + offset];
-    // A sequence ambiguity cannot prove a physical recognition site. It is
-    // accepted by normalization and reported by countAmbiguousBases, but is
-    // conservatively excluded from a cut assertion.
-    if (!('ACGT'.includes(sequenceBase) && IUPAC_BASES[recognition[offset]].has(sequenceBase))) return false;
+    masks[offset] = IUPAC_CODE_MASKS.get(recognition[offset]) as Uint8Array;
+  }
+  return masks;
+}
+
+function concreteIupacMatchMasks(buffer: string, start: number, masks: readonly Uint8Array[]): boolean {
+  if (start < 0 || start + masks.length > buffer.length) return false;
+  for (let offset = 0; offset < masks.length; offset += 1) {
+    const code = buffer.charCodeAt(start + offset);
+    if (code > 127 || masks[offset][code] !== 1) return false;
   }
   return true;
 }
@@ -1035,8 +1081,10 @@ export function scanRestrictionSites(
   };
 
   const addSite = (enzyme: RestrictionEnzyme, index: number, strand: 1 | -1): void => {
-    const recognition = normalizeRestrictionRecognitionSequence(enzyme.recognitionSequence);
-    const geometry = calculateRestrictionCleavageGeometry(enzyme, index, strand);
+    // Scan enzymes come from normalizeRestrictionEnzymes, so the recognition
+    // string is already normalized and validated.
+    const recognition = enzyme.recognitionSequence;
+    const geometry = cleavageGeometryForRecognitionLength(enzyme, recognition.length, index, strand);
     const circularGeometry = topology === 'circular'
       ? {
           ...geometry,
@@ -1047,7 +1095,7 @@ export function scanRestrictionSites(
           overhangEnd: modulo(geometry.overhangEnd),
         }
       : geometry;
-    const issue = issueForSite(enzyme, index, circularGeometry, upper.length, topology, options, geometry);
+    const issue = issueForSite(enzyme, index, circularGeometry, upper.length, topology, options, geometry, recognition.length);
     const status: RestrictionCleavageStatus = issue?.code === 'insufficient_flanking_bases'
       ? 'insufficient_flanking_bases'
       : issue?.code === 'methylation_unknown'
@@ -1116,10 +1164,27 @@ export function scanRestrictionSites(
     if (!isPalindrome) patterns.push([reverseRecognition, -1]);
     for (const [pattern, strand] of patterns) {
       if (!complete) break;
-      for (let index = 0; index <= scanBuffer.length - pattern.length; index += 1) {
-        if (!complete) break;
-        if (topology === 'circular' && index >= upper.length) continue;
-        if (concreteIupacMatch(scanBuffer, index, pattern)) addSite(enzyme, index, strand);
+      // Positions at or beyond the sequence length only exist in the circular
+      // wrap window and are never reported as site starts.
+      const lastStart = scanBuffer.length - pattern.length;
+      const startLimit = topology === 'circular' ? Math.min(lastStart, upper.length - 1) : lastStart;
+      if (PLAIN_DNA_PATTERN.test(pattern)) {
+        // Concrete patterns match exactly where the text matches, overlapping
+        // occurrences included.
+        let index = scanBuffer.indexOf(pattern);
+        while (index !== -1 && index <= startLimit) {
+          addSite(enzyme, index, strand);
+          if (!complete) break;
+          index = scanBuffer.indexOf(pattern, index + 1);
+        }
+      } else {
+        const masks = buildRecognitionMasks(pattern);
+        for (let index = 0; index <= startLimit; index += 1) {
+          if (concreteIupacMatchMasks(scanBuffer, index, masks)) {
+            addSite(enzyme, index, strand);
+            if (!complete) break;
+          }
+        }
       }
     }
   }

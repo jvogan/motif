@@ -3,6 +3,7 @@
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isDirectScriptExecution } from './lib/direct-script.mjs';
 import semver from 'semver';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -39,7 +40,7 @@ export function checkRuntimeCompatibility() {
   return { reviewedNode: REVIEWED_NODE, engineCount, rootEngine };
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isDirectScriptExecution(process.argv[1], fileURLToPath(import.meta.url))) {
   try {
     const result = checkRuntimeCompatibility();
     console.log(`Runtime compatibility passed: Node ${result.reviewedNode}; ${result.engineCount} locked package engine constraints checked.`);

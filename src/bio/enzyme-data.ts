@@ -383,10 +383,12 @@ export const RESTRICTION_ENZYMES_FULL: RestrictionEnzyme[] = [
 
   // ── Nicking enzymes ──────────────────────────────────────────────────────────
   // These enzymes nick only one strand. `Nb` denotes the bottom/antisense
-  // strand and `Nt` the top/sense strand. The legacy offsets are retained, but
-  // cleavageMode makes the one-strand geometry explicit and prevents a nick
-  // from being counted as an ordinary double-strand digest boundary.
-  { name: 'Nb.BbvCI',  recognitionSequence: 'CCTCAGC', cutOffset: 9, complementCutOffset: 9, overhang: 'blunt', cleavageMode: 'nick_bottom' },
+  // strand and `Nt` the top/sense strand. Offsets are the published nick
+  // positions, and cleavageMode makes the one-strand geometry explicit so a
+  // nick is not counted as an ordinary double-strand digest boundary.
+  // Nb.BbvCI: CCTCAGC(-5/-2) — the bottom-strand nick falls after base 5.
+  { name: 'Nb.BbvCI',  recognitionSequence: 'CCTCAGC', cutOffset: 5, complementCutOffset: 5, overhang: 'blunt', cleavageMode: 'nick_bottom' },
+  // Nt.BbvCI: CCTCAGC(-5/-2) — the top-strand nick falls after base 2.
   { name: 'Nt.BbvCI',  recognitionSequence: 'CCTCAGC', cutOffset: 2, complementCutOffset: 2, overhang: 'blunt', cleavageMode: 'nick_top' },
   { name: 'Nt.BstNBI', recognitionSequence: 'GAGTC',   cutOffset: 9, complementCutOffset: 9, overhang: 'blunt', cleavageMode: 'nick_top' },
 
@@ -426,9 +428,9 @@ export const RESTRICTION_ENZYMES_FULL: RestrictionEnzyme[] = [
   { name: 'BstZ17I', recognitionSequence: 'GTATAC',  cutOffset: 3, complementCutOffset: 3,  overhang: 'blunt'  },
   // BtgI: CCRYGG — cuts C|CRYGG → 5′ CRYG overhang
   { name: 'BtgI',    recognitionSequence: 'CCRYGG',  cutOffset: 1, complementCutOffset: 5,  overhang: '5prime' },
-  // DrdI: GACNNNNNNGTC — cuts GACNNNN|NNGTC → 3-nt 3′ overhang (NEB R0530);
-  // cutOffset=7, compCutOffset=4, not the former 7/5 blunt geometry.
-  { name: 'DrdI',    recognitionSequence: 'GACNNNNNNGTC', cutOffset: 7, complementCutOffset: 4, overhang: '3prime' },
+  // DrdI: GACNNNNNNGTC — cuts GACNNNN^NNGTC (NEB R0530) → 2-nt 3′ overhang;
+  // sense nick after base 7, antisense nick after base 5.
+  { name: 'DrdI',    recognitionSequence: 'GACNNNNNNGTC', cutOffset: 7, complementCutOffset: 5, overhang: '3prime' },
   // EarI: CTCTTC(1/4) — isoschizomer of SapI
   { name: 'EarI',    recognitionSequence: 'CTCTTC',  cutOffset: 7,  complementCutOffset: 10, overhang: '5prime' },
   // EcoNI: CCCNN|NNNNNNGGGG → 5prime overhang; actually CCCNN(6/5)NNNNNNNGGGG — skip complex form
@@ -447,8 +449,9 @@ export const RESTRICTION_ENZYMES_FULL: RestrictionEnzyme[] = [
   // StuI: already added
   // TaiI: ACGT — blunt? Actually TaiI cuts ACG|T? Let me use: cuts A|CGT → 5′ CGT
   // Actually TaiI: ACGT — cuts between A and CGT? Not well characterized; skip.
-  // XcmI: CCANNNNNNNNNTGG — cuts CCA(9/12)NNNNNNTGG → 3′ overhang
-  { name: 'XcmI',    recognitionSequence: 'CCANNNNNNNNNTGG', cutOffset: 12, complementCutOffset: 9, overhang: '3prime' },
+  // XcmI: CCANNNNNNNNNTGG — cuts CCANNNNN^NNNNTGG → 1-nt 3′ overhang;
+  // sense nick after base 8, antisense nick after base 7.
+  { name: 'XcmI',    recognitionSequence: 'CCANNNNNNNNNTGG', cutOffset: 8, complementCutOffset: 7, overhang: '3prime' },
   // ZraI: GACGTC — BLUNT neoschizomer of AatII; cuts GAC^GTC (NEB R0659);
   // 3/3 blunt, rather than AatII's 5/1 3prime geometry.
   { name: 'ZraI',    recognitionSequence: 'GACGTC',  cutOffset: 3, complementCutOffset: 3,  overhang: 'blunt' },

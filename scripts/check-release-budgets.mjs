@@ -3,6 +3,7 @@
 import { lstatSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isDirectScriptExecution } from './lib/direct-script.mjs';
 import { compareConnectorInventory, loadDependencyPolicy } from './lib/supply-chain-policy.mjs';
 import {
   RELEASE_ARCHIVE_FILENAME,
@@ -112,7 +113,7 @@ export function checkReleaseBudgets() {
   return report;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isDirectScriptExecution(process.argv[1], fileURLToPath(import.meta.url))) {
   try {
     const report = checkReleaseBudgets();
     console.log(`Release budgets passed: artifact ${report.components.artifactHtml.bytes} bytes; plugin ${report.components.pluginDirectory.bytes} bytes/${report.components.pluginDirectory.files} files; release ${report.components.releaseDirectory.bytes} bytes/${report.components.releaseDirectory.files} files; release ZIP ${report.components.releaseZip.bytes} bytes.`);

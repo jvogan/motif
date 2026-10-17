@@ -271,6 +271,19 @@ function clampDepth(value: number): number {
   return Math.max(MIN_DEPTH, Math.min(MAX_DEPTH, Math.round(value)));
 }
 
+// A blank or non-numeric draft has no depth to commit; the field keeps the
+// draft while the reader types and clamps on blur or Enter.
+function parseDepthDraft(text: string): number | null {
+  if (text.trim() === '') return null;
+  const value = Number(text);
+  return Number.isFinite(value) ? value : null;
+}
+
+function depthDraftMatches(text: string, depth: number): boolean {
+  const parsed = parseDepthDraft(text);
+  return parsed !== null && clampDepth(parsed) === depth;
+}
+
 function boundedErrorMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   const normalized = message.trim() || 'Construct verification could not be completed.';
@@ -349,6 +362,15 @@ export function ClaudeScienceConstructVerificationWorkspace({
   const onDraftChangeRef = useRef(onDraftChange);
   onDraftChangeRef.current = onDraftChange;
   const [errorMessage, setErrorMessage] = useState('');
+  // The depth field edits a text draft so that a cleared or partial entry can
+  // be retyped. The draft is resynced only when form.minDepth changes from
+  // somewhere other than this field, so it never overwrites what is typed.
+  const [minDepthDraft, setMinDepthDraft] = useState(() => String(form.minDepth));
+  const [syncedMinDepth, setSyncedMinDepth] = useState(form.minDepth);
+  if (form.minDepth !== syncedMinDepth) {
+    setSyncedMinDepth(form.minDepth);
+    if (!depthDraftMatches(minDepthDraft, form.minDepth)) setMinDepthDraft(String(form.minDepth));
+  }
 
   const recordById = useMemo(
     () => new Map(records.map((record) => [record.id, record])),
@@ -523,6 +545,16 @@ export function ClaudeScienceConstructVerificationWorkspace({
   const updateMinimumDepth = (value: number) => {
     setForm((current) => ({ ...current, minDepth: clampDepth(value) }));
     clearCompletedRun();
+  };
+
+  const changeMinimumDepthDraft = (text: string) => {
+    setMinDepthDraft(text);
+    const parsed = parseDepthDraft(text);
+    if (parsed !== null) updateMinimumDepth(parsed);
+  };
+
+  const commitMinimumDepthDraft = () => {
+    setMinDepthDraft(String(form.minDepth));
   };
 
   const updateStrandRequirement = (requireBothStrands: boolean) => {
@@ -704,7 +736,7 @@ export function ClaudeScienceConstructVerificationWorkspace({
                     {selectedCount.toLocaleString()} of {eligibleReads.length.toLocaleString()} reads selected · maximum {MAX_SELECTED_READS.toLocaleString()} per run
                   </span>
                 </div>
-                <div className="motif-cs-verification-read-actions" aria-label="Sanger read selection actions">
+                <div className="motif-cs-verification-read-actions" role="group" aria-label="Sanger read selection actions">
                   <button type="button" onClick={selectAllReads} disabled={!eligibleReads.length || allReadsSelected}>
                     {eligibleReads.length > MAX_SELECTED_READS ? `First ${MAX_SELECTED_READS.toLocaleString()}` : 'All'}
                   </button>
@@ -742,6 +774,7 @@ export function ClaudeScienceConstructVerificationWorkspace({
                 <div
                   className="motif-cs-verification-read-list"
                   data-testid="construct-verification-read-list"
+                  role="region"
                   aria-label="Available imported Sanger reads"
                 >
                   {readGroups.map((group) => (
@@ -813,8 +846,12 @@ export function ClaudeScienceConstructVerificationWorkspace({
                     inputMode="numeric"
                     min={MIN_DEPTH}
                     max={MAX_DEPTH}
-                    value={form.minDepth}
-                    onChange={(event) => updateMinimumDepth(Number(event.target.value))}
+                    value={minDepthDraft}
+                    onChange={(event) => changeMinimumDepthDraft(event.target.value)}
+                    onBlur={commitMinimumDepthDraft}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') commitMinimumDepthDraft();
+                    }}
                   />
                 </label>
                 <label className="motif-cs-verification-strand-toggle">

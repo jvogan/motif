@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isDirectScriptExecution } from './lib/direct-script.mjs';
 import { build } from 'esbuild';
 
 import { createDeterministicZipBuffer, listFilesRecursively } from './build-claude-science-artifact.mjs';
@@ -127,7 +128,7 @@ export async function buildMotifCodexSkillsPlugin() {
   return { outputDirectory, zipPath, checksumPath, checksums };
 }
 
-const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const isMain = isDirectScriptExecution(process.argv[1], fileURLToPath(import.meta.url));
 if (isMain) {
   try {
     const result = await buildMotifCodexSkillsPlugin();

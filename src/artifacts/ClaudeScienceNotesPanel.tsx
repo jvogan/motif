@@ -51,13 +51,15 @@ function defaultScope(
   return 'workspace';
 }
 
+const NOTE_TIMESTAMP_FORMAT = new Intl.DateTimeFormat(undefined, {
+  dateStyle: 'medium',
+  timeStyle: 'short',
+});
+
 function noteTimestamp(value: string): string {
   const timestamp = Date.parse(value);
   if (!Number.isFinite(timestamp)) return value;
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  }).format(new Date(timestamp));
+  return NOTE_TIMESTAMP_FORMAT.format(new Date(timestamp));
 }
 
 function recordLabel(

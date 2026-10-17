@@ -3,6 +3,7 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isDirectScriptExecution } from './lib/direct-script.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -75,7 +76,7 @@ export function checkProductLanguage(workspace = root) {
   return violations;
 }
 
-const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const isMain = isDirectScriptExecution(process.argv[1], fileURLToPath(import.meta.url));
 if (isMain) {
   const violations = checkProductLanguage();
   if (violations.length > 0) {

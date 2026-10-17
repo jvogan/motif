@@ -290,10 +290,10 @@ html .motif-cs-map-column > .motif-cs-pane-title .motif-cs-pane-collapse {
   font-size: 11px;
   line-height: 1.3;
   white-space: nowrap;
-  background: var(--bg-elevated, var(--bg-primary, #fff));
-  color: var(--text-primary, #16130f);
+  background: var(--bg-primary);
+  color: var(--text-primary);
   border: 1px solid var(--border, color-mix(in srgb, currentColor 18%, transparent));
-  box-shadow: 0 6px 20px color-mix(in srgb, var(--shadow-ink, #000) 22%, transparent);
+  box-shadow: 0 6px 20px color-mix(in srgb, var(--shadow-ink) 22%, transparent);
 }
 .motif-cs-msa-hover-readout b {
   font-size: 13px;
@@ -363,9 +363,9 @@ html .motif-cs-map-column > .motif-cs-pane-title .motif-cs-pane-collapse {
   flex-direction: column;
   padding: 4px;
   border-radius: 8px;
-  background: var(--bg-elevated, var(--bg-primary, #fff));
+  background: var(--bg-primary);
   border: 1px solid var(--border, color-mix(in srgb, currentColor 18%, transparent));
-  box-shadow: 0 10px 30px color-mix(in srgb, var(--shadow-ink, #000) 28%, transparent);
+  box-shadow: 0 10px 30px color-mix(in srgb, var(--shadow-ink) 28%, transparent);
 }
 .motif-cs-msa-context-menu button {
   appearance: none;
@@ -1233,7 +1233,7 @@ html:is([data-theme='dark'], [data-theme='claude-dark']) {
   background: var(--control-bg);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--shadow-ink) 22%, transparent);
 }
 .motif-cs-msa-workspace .motif-cs-msa-row-stats-scroll table {
   width: 100%;

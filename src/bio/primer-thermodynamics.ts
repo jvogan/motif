@@ -423,10 +423,11 @@ export function predictPrimerDimer(
   const b_rc = reverseComplement(b);
   const prefixes = nnPrefixSums(a);
 
-  // For each relative offset between [-len(b_rc)+1, len(a)-1], evaluate every
-  // maximal contiguous Watson-Crick run. A shorter GC-rich run at one offset
-  // can be more stable than a longer AT-rich run at the same offset.
-  for (let offset = -(b_rc.length - 1); offset < a.length; offset++) {
+  // b_rc[i + offset] pairs with a[i], so the overlap is non-empty for every
+  // offset in [-(len(a)-1), len(b_rc)-1]. Evaluate every maximal contiguous
+  // Watson-Crick run at each offset. A shorter GC-rich run at one offset can
+  // be more stable than a longer AT-rich run at the same offset.
+  for (let offset = -(a.length - 1); offset < b_rc.length; offset++) {
     let runStart = -1;
     const evaluateRun = (start: number, length: number): void => {
       if (start < 0 || length < 3) return;

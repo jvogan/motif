@@ -67,7 +67,7 @@ const ENGINE_CONFIG = Object.freeze({
 const ENGINE_BANNER_PATTERNS = Object.freeze({
   mafft: /^(?:mafft\s+)?v?7\.\d+(?:\.\d+)?(?:\s|\(|$)/iu,
   muscle: /^muscle\b.*\bv?5(?:\.\d+)+/iu,
-  'clustal-omega': /^(?:clustal\s+omega|clustalo|clustalomega)\b.*\b1\.\d+(?:\.\d+)?/iu,
+  'clustal-omega': /^(?:(?:clustal\s+omega|clustalo|clustalomega)\b[^\r\n]*?\s)?v?1\.\d+(?:\.\d+)?(?:\s|\(|$)/iu,
 });
 const WINDOWS_CHILD_ENVIRONMENT_KEYS = Object.freeze(['SystemRoot', 'SystemDrive', 'WINDIR']);
 const INVALID_CHILD_ENVIRONMENT_KEY = /(?:TOKEN|PASSWORD|PASSWD|SECRET|CREDENTIAL|AUTH|PROXY|AGENT|NODE_OPTIONS|LD_PRELOAD|DYLD_|AWS_|SSH_)/iu;

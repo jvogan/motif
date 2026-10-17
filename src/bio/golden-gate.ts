@@ -842,32 +842,13 @@ function createJunctionFeature(
   overhang: string,
   start: number,
   end: number,
-  options: { circular?: boolean; sequenceLength?: number; overhangLength?: number } = {},
+  options: { circular?: boolean } = {},
 ): Feature | null {
-  const overhangLength = options.overhangLength ?? overhang.length;
-  const circularRanges = options.circular && options.sequenceLength !== undefined
-    ? [
-      { start, end, strand: 1 },
-      { start: 0, end: Math.min(overhangLength, options.sequenceLength), strand: 1 },
-    ]
-      .filter((range) => range.end > range.start)
-      .filter((range, index, ranges) => ranges.findIndex((candidate) => (
-        candidate.start === range.start && candidate.end === range.end
-      )) === index)
-    : [];
-  const subRanges = circularRanges.length > 1 ? circularRanges : undefined;
-  const featureStart = subRanges
-    ? Math.min(...subRanges.map((range) => range.start))
-    : start;
-  const featureEnd = subRanges
-    ? Math.max(...subRanges.map((range) => range.end))
-    : end;
-
   return createProductFeature(
     `Junction ${leftPartName} -> ${rightPartName} (${overhang})`,
     'restriction_site',
-    featureStart,
-    featureEnd,
+    start,
+    end,
     PRODUCT_JUNCTION_COLOR,
     {
       source: 'golden_gate_assembly',
@@ -877,7 +858,6 @@ function createJunctionFeature(
       overhang,
       circular: options.circular === true,
     },
-    subRanges,
   );
 }
 
@@ -1736,7 +1716,7 @@ export function goldenGateAssemble(
     const offset = sequence.length;
     fillNextInsertMap(insertMaps[i], offset, overhangLength);
     const junctionStart = Math.max(0, offset - overhangLength);
-    const junctionFeature = createJunctionFeature(prev.name, curr.name, curr.oh5, junctionStart, offset, { overhangLength });
+    const junctionFeature = createJunctionFeature(prev.name, curr.name, curr.oh5, junctionStart, offset);
     if (junctionFeature) productFeatures.push(junctionFeature);
 
     sequence += trimmedInsert;
@@ -1810,9 +1790,11 @@ export function goldenGateAssemble(
     last.name,
     first.name,
     first.oh5,
-    Math.max(0, circularSequence.length - overhangLength),
-    circularSequence.length,
-    { circular: true, sequenceLength: circularSequence.length, overhangLength },
+    // The trailing copy of the closing overhang is trimmed, so the overhang
+    // sits exactly once at [0, overhangLength) of the circular product.
+    0,
+    Math.min(overhangLength, circularSequence.length),
+    { circular: true },
   );
   if (finalJunction) circularProductFeatures.push(finalJunction);
 
@@ -2425,7 +2407,9 @@ function mapDomesticationSites(
     if (covered.length !== site.motif.length) return [];
     const sourcePosition = Math.min(...covered);
     const sourceStrand = covered.length < 2 || covered[covered.length - 1] > covered[0] ? 1 : -1;
-    return [{ ...site, position: sourcePosition, strand: sourceStrand as 1 | -1 }];
+    // The site strand is relative to the oriented feature sequence; compose it
+    // with the feature orientation instead of replacing it.
+    return [{ ...site, position: sourcePosition, strand: (sourceStrand * site.strand) as 1 | -1 }];
   });
 }
 

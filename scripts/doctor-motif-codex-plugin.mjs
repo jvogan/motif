@@ -2,6 +2,7 @@
 
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { open, readFile, realpath, stat } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
@@ -637,7 +638,18 @@ export async function runDoctor(options) {
   return { ok: true, ...packageInfo, ...protocol };
 }
 
-const isMain = process.argv[1] && resolve(process.argv[1]) === SCRIPT_PATH;
+// This file ships standalone inside the plugin, so it cannot import the shared
+// helper. Compare real paths so a symlinked invocation still runs the CLI.
+function isDirectExecution() {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(resolve(process.argv[1])) === realpathSync(SCRIPT_PATH);
+  } catch {
+    return resolve(process.argv[1]) === SCRIPT_PATH;
+  }
+}
+
+const isMain = isDirectExecution();
 if (isMain) {
   try {
     await runDoctor(parseDoctorArgs(process.argv.slice(2)));

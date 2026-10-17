@@ -101,8 +101,39 @@ function residueSet(symbol: string, molecule: AlignmentMolecule): string {
   return IUPAC_NUCLEOTIDES[upper] ?? (upper === 'U' ? 'T' : upper);
 }
 
-/** Compatibility identity for one pair of non-gap residues. */
-export function alignmentResiduesMatch(
+/**
+ * Residue comparisons run once per cell pair in pairwise statistics, so
+ * single ASCII-character pairs are memoized per molecule. Each table holds
+ * 128 x 128 entries indexed by `(left << 7) | right`; -1 marks an entry that
+ * has not been computed yet. Entries are always filled from the uncached
+ * implementation, so cached and uncached results cannot diverge. Non-ASCII or
+ * multi-character input bypasses the tables.
+ */
+const ASCII_PAIR_TABLE_SIZE = 128 * 128;
+
+function emptyPairTables(): Record<AlignmentMolecule, Int8Array> {
+  return {
+    dna: new Int8Array(ASCII_PAIR_TABLE_SIZE).fill(-1),
+    rna: new Int8Array(ASCII_PAIR_TABLE_SIZE).fill(-1),
+    protein: new Int8Array(ASCII_PAIR_TABLE_SIZE).fill(-1),
+  };
+}
+
+const RESIDUE_MATCH_TABLES = emptyPairTables();
+const RESIDUE_CLASS_TABLES = emptyPairTables();
+const RESIDUE_CLASSES: readonly AlignmentResidueDifference[] = ['match', 'ambiguous', 'substitution'];
+
+/** Table index for a pair of single ASCII characters, or -1 when not cacheable. */
+function asciiPairKey(left: string, right: string): number {
+  if (left.length !== 1 || right.length !== 1) return -1;
+  const leftCode = left.charCodeAt(0);
+  const rightCode = right.charCodeAt(0);
+  if (leftCode >= 128 || rightCode >= 128) return -1;
+  return (leftCode << 7) | rightCode;
+}
+
+/** Uncached reference implementation of {@link alignmentResiduesMatch}. */
+export function alignmentResiduesMatchUncached(
   left: string,
   right: string,
   molecule: AlignmentMolecule,
@@ -113,12 +144,25 @@ export function alignmentResiduesMatch(
   return Array.from(leftSet).some((residue) => rightSet.includes(residue));
 }
 
-/**
- * Distinguish literal identity, compatible ambiguity, and a hard
- * substitution. X/B/Z/J and nucleotide IUPAC symbols are intentionally
- * compatible but not presented as literal matches.
- */
-export function classifyAlignmentResidues(
+/** Compatibility identity for one pair of non-gap residues. */
+export function alignmentResiduesMatch(
+  left: string,
+  right: string,
+  molecule: AlignmentMolecule,
+): boolean {
+  const key = asciiPairKey(left, right);
+  const table = RESIDUE_MATCH_TABLES[molecule];
+  if (key < 0 || !table) return alignmentResiduesMatchUncached(left, right, molecule);
+  let cached = table[key];
+  if (cached < 0) {
+    cached = alignmentResiduesMatchUncached(left, right, molecule) ? 1 : 0;
+    table[key] = cached;
+  }
+  return cached === 1;
+}
+
+/** Uncached reference implementation of {@link classifyAlignmentResidues}. */
+export function classifyAlignmentResiduesUncached(
   left: string,
   right: string,
   molecule: AlignmentMolecule,
@@ -131,8 +175,29 @@ export function classifyAlignmentResidues(
     : (right.toUpperCase() === 'U' ? 'T' : right.toUpperCase());
   const wildcard = molecule === 'protein' ? 'X?' : 'N?';
   if (normalizedLeft === normalizedRight && !wildcard.includes(normalizedLeft)) return 'match';
-  if (!alignmentResiduesMatch(normalizedLeft, normalizedRight, molecule)) return 'substitution';
+  if (!alignmentResiduesMatchUncached(normalizedLeft, normalizedRight, molecule)) return 'substitution';
   return 'ambiguous';
+}
+
+/**
+ * Distinguish literal identity, compatible ambiguity, and a hard
+ * substitution. X/B/Z/J and nucleotide IUPAC symbols are intentionally
+ * compatible but not presented as literal matches.
+ */
+export function classifyAlignmentResidues(
+  left: string,
+  right: string,
+  molecule: AlignmentMolecule,
+): AlignmentResidueDifference {
+  const key = asciiPairKey(left, right);
+  const table = RESIDUE_CLASS_TABLES[molecule];
+  if (key < 0 || !table) return classifyAlignmentResiduesUncached(left, right, molecule);
+  let cached = table[key];
+  if (cached < 0) {
+    cached = RESIDUE_CLASSES.indexOf(classifyAlignmentResiduesUncached(left, right, molecule));
+    table[key] = cached;
+  }
+  return RESIDUE_CLASSES[cached];
 }
 
 /** Convert the broad SequenceType used by artifacts to the strict alignment type. */

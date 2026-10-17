@@ -483,17 +483,17 @@ export function ClaudeScienceAssemblyWorkspace({
                         <small>{record.sequence.length.toLocaleString()} bp</small>
                       </label>
                       {mode === 'ligation' ? (
-                        <div className="motif-cs-assembly-end-pair" aria-label={`${record.name} end chemistry`}>
+                        <div className="motif-cs-assembly-end-pair" role="group" aria-label={`${record.name} end chemistry`}>
                           <span><small>Left</small>{endLabel(record.overhang5, record.overhang5Type)}</span>
                           <span><small>Right</small>{endLabel(record.overhang3, record.overhang3Type)}</span>
                         </div>
                       ) : (
-                        <div className="motif-cs-assembly-end-pair" aria-label={`${record.name} Type IIS boundaries`}>
+                        <div className="motif-cs-assembly-end-pair" role="group" aria-label={`${record.name} Type IIS boundaries`}>
                           <span><small>Left fusion</small>{goldenGatePart?.leftOverhang ?? '—'}</span>
                           <span><small>Right fusion</small>{goldenGatePart?.rightOverhang ?? '—'}</span>
                         </div>
                       )}
-                      <div className="motif-cs-assembly-part-actions" aria-label={`Reorder ${record.name}`}>
+                      <div className="motif-cs-assembly-part-actions" role="group" aria-label={`Reorder ${record.name}`}>
                         <button
                           type="button"
                           aria-label={`Move ${record.name} up`}

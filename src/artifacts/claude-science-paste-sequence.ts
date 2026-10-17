@@ -244,7 +244,7 @@ const ORIGIN_ROW = /^(\s*)(\d+)([ \t]+[A-Za-z*.-][A-Za-z*. \t-]*)$/;
 const ORIGIN_HEADER = /^\s*ORIGIN\s*$/i;
 const RECORD_JSON_START = /^\s*[[{]/;
 // Any LOCUS line marks a whole GenBank record, which the importer reads as it is.
-const GENBANK_RECORD_LOCUS = /^\s*LOCUS\s/m;
+const GENBANK_RECORD_LOCUS = /^[ \t]*LOCUS[ \t]/m;
 
 export interface ImportPastePreparation {
   /** The text to parse. Same line count and column positions as the paste. */

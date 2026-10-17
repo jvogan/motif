@@ -22,7 +22,7 @@
   white-space: nowrap;
 }
 
-.motif-cs-freshness-badge > span {
+.motif-cs-freshness-badge > span[aria-hidden="true"] {
   width: 5px;
   height: 5px;
   flex: 0 0 auto;

@@ -750,6 +750,10 @@ function simulatePCRInternal(
       };
       const wrapsOrigin = reverse.bindEnd <= forward.bindStart;
       if (wrapsOrigin && topology !== 'circular') continue;
+      // A non-wrapping amplicon runs from the forward 5′ end to the reverse
+      // 5′ end, so the reverse binding must not start or end upstream of the
+      // forward binding. Overlapping primers remain valid when ordered.
+      if (!wrapsOrigin && (reverse.bindStart < forward.bindStart || reverse.bindEnd < forward.bindEnd)) continue;
       const templateProduct = wrapsOrigin
         ? tmpl.slice(forward.bindStart) + tmpl.slice(0, reverse.bindEnd)
         : tmpl.slice(forward.bindStart, reverse.bindEnd);

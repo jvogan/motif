@@ -270,6 +270,17 @@ export function findORFs(
   return cloneORFs(orfs);
 }
 
+/**
+ * Frame of an ORF start on its own strand. A circular scan reads a doubled
+ * buffer and may keep an ORF from the second copy, so the start is reduced
+ * modulo the record length before taking the codon phase; otherwise the
+ * label would depend on the buffer copy whenever the length is not a
+ * multiple of three.
+ */
+function frameForStart(startPos: number, originalLength: number): 1 | 2 | 3 {
+  return (((startPos % originalLength) % 3) + 1) as 1 | 2 | 3;
+}
+
 function findORFsInFrame(
   seq: string,
   frameOffset: number,
@@ -307,7 +318,7 @@ function findORFsInFrame(
         orfs.push({
           start: startPos,
           end: stopPos + 3,
-          frame: ((frameOffset % 3) + 1) as 1 | 2 | 3,
+          frame: frameForStart(startPos, originalLength),
           strand,
           length: bpLength,
           aminoAcids: aaLength,
@@ -334,7 +345,7 @@ function findORFsInFrame(
       orfs.push({
         start: startPos,
         end: implicitEnd,
-        frame: ((frameOffset % 3) + 1) as 1 | 2 | 3,
+        frame: frameForStart(startPos, originalLength),
         strand,
         length: bpLength,
         aminoAcids: aaLength,
