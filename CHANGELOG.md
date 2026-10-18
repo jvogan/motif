@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+- Found PCR primer sites that cross the origin of a circular template, and
+  drew their markers on the plasmid map. A reverse primer bound upstream of
+  the forward primer no longer yields a product shorter than its primers,
+  and the primer-dimer check now scores every alignment of two primers of
+  different lengths.
+- Corrected the cut positions of Nb.BbvCI, DrdI, and XcmI, spanned a
+  circular Gibson or Golden Gate closing junction once instead of twice,
+  kept a domestication site's strand, labeled reverse-strand ORF frames the
+  same way in linear and circular scans, and read a GenBank LOCUS topology
+  only from the fields after the length.
+- Put pinned translation layers on the Undo history: pinning, editing,
+  re-coding, removing, and clearing a layer are reversible steps, and
+  undoing an earlier base edit no longer discards a layer pinned after it.
+  Accepting or dismissing a proposed annotation is also an Undo step.
+- Imported records with long CDS translations into reverse complement, PCR,
+  and digest, treated a malformed trace header field as a warning instead
+  of rejecting the trace, and lined up ASCII gel labels with their lanes.
+- Kept keyboard focus on an assembly part after moving or removing it,
+  named grouped controls and regions for assistive technology, stopped the
+  workflow history panel taking focus while a removal is pending, and let
+  the minimum read depth field be cleared and retyped. Escape closing a
+  tool popover no longer clears the map selection.
+- Stopping the alignment runner mid-run now ends the alignment engine and
+  removes its temporary files.
+- Sped up restriction scanning, reverse complement, nested-feature
+  detection on circular maps, alignment comparison, and MSA image export,
+  with identical results.
+
 - Replaced the bundled pUC19, pBR322, pACYC184, pBluescript SK(+), and
   pcDNA3.1(+) records with their published sequences; pUC19 is now the
   2,686 bp GenBank L09137.2 molecule. Stored the built-in vectors and the
