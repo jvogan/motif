@@ -1,8 +1,10 @@
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import {
   chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -11,6 +13,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
@@ -18,6 +21,10 @@ import {
   runExternalMsa,
 } from '../../src/artifacts/motif-for-claude-science-plugin/skills/motif-for-claude-science/scripts/run-msa.mjs';
 
+const RUNNER_PATH = fileURLToPath(new URL(
+  '../../src/artifacts/motif-for-claude-science-plugin/skills/motif-for-claude-science/scripts/run-msa.mjs',
+  import.meta.url,
+));
 const temporaryDirectories = [];
 const spawnedPids = [];
 
@@ -145,4 +152,118 @@ setInterval(() => {}, 1000);
     },
     10_000,
   );
+
+  describe.skipIf(process.platform === 'win32')('interruption cleanup', () => {
+    const FAKE_ENGINE = String.raw`
+import { spawn } from 'node:child_process';
+import { copyFileSync, existsSync, writeFileSync } from 'node:fs';
+
+const args = process.argv.slice(2);
+if (args.includes('-version')) {
+  process.stdout.write('MUSCLE v5.9.9\n');
+  process.exit(0);
+}
+if (existsSync(__HANG_FLAG__)) {
+  process.on('SIGTERM', () => {});
+  const grandchild = spawn(process.execPath, ['-e', 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000)'], {
+    stdio: 'ignore',
+  });
+  writeFileSync(__PIDS__, JSON.stringify({ engine: process.pid, grandchild: grandchild.pid }));
+  setInterval(() => {}, 1000);
+} else {
+  copyFileSync(args[args.indexOf('-align') + 1], args[args.indexOf('-output') + 1]);
+}
+`;
+
+    function prepareRunner(label, { hang = true } = {}) {
+      const directory = temporaryDirectory(label);
+      const tempRoot = join(directory, 'tmp');
+      mkdirSync(tempRoot);
+      const pidsPath = join(directory, 'pids.json');
+      const executable = join(directory, 'muscle');
+      const inputPath = join(directory, 'input.fasta');
+      const hangFlagPath = join(directory, 'hang.flag');
+      if (hang) writeFileSync(hangFlagPath, '');
+      const source = FAKE_ENGINE
+        .replace('__PIDS__', JSON.stringify(pidsPath))
+        .replace('__HANG_FLAG__', JSON.stringify(hangFlagPath));
+      writeFileSync(executable, `#!${process.execPath}\n${source}`);
+      chmodSync(executable, 0o755);
+      writeFileSync(inputPath, '>One\nATGC\n>Two\nATGG\n');
+      return { directory, tempRoot, pidsPath, executable, inputPath };
+    }
+
+    function startRunner(fixture) {
+      const child = spawn(process.execPath, [
+        RUNNER_PATH,
+        '--engine', 'muscle',
+        '--molecule', 'dna',
+        '--in', fixture.inputPath,
+        '--executable', fixture.executable,
+        '--timeout-ms', '60000',
+      ], {
+        env: { ...process.env, TMPDIR: fixture.tempRoot },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      spawnedPids.push(child.pid);
+      const result = { stdout: '', stderr: '' };
+      child.stdout.on('data', (chunk) => { result.stdout += chunk; });
+      child.stderr.on('data', (chunk) => { result.stderr += chunk; });
+      result.exited = new Promise((resolvePromise) => {
+        child.once('exit', (code, signal) => resolvePromise({ code, signal }));
+      });
+      return { child, result };
+    }
+
+    async function waitFor(predicate, description, timeoutMs = 10_000) {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        if (predicate()) return;
+        await new Promise(resolvePromise => setTimeout(resolvePromise, 25));
+      }
+      throw new Error(`Timed out waiting for ${description}`);
+    }
+
+    const runnerTemporaryEntries = (tempRoot) => readdirSync(tempRoot)
+      .filter(name => name.startsWith('motif-msa-'));
+
+    it.each([
+      ['SIGINT', 130],
+      ['SIGTERM', 143],
+    ])(
+      'removes the engine tree and temporary directory when %s interrupts the runner',
+      async (signal, conventionalStatus) => {
+        const fixture = prepareRunner('motif-msa-interrupt-');
+        const { child, result } = startRunner(fixture);
+        await waitFor(() => existsSync(fixture.pidsPath), 'the engine to start');
+        const pids = JSON.parse(readFileSync(fixture.pidsPath, 'utf8'));
+        spawnedPids.push(pids.engine, pids.grandchild);
+        expect(runnerTemporaryEntries(fixture.tempRoot)).toHaveLength(1);
+
+        const startedAt = Date.now();
+        child.kill(signal);
+        const exit = await result.exited;
+
+        expect(Date.now() - startedAt).toBeLessThan(5_000);
+        expect(exit.signal === signal || exit.code === conventionalStatus, JSON.stringify(exit)).toBe(true);
+        await waitFor(
+          () => !processIsAlive(pids.engine) && !processIsAlive(pids.grandchild),
+          'the engine process tree to exit',
+          3_000,
+        );
+        expect(runnerTemporaryEntries(fixture.tempRoot)).toEqual([]);
+        expect(result.stdout).toBe('');
+      },
+      20_000,
+    );
+
+    it('keeps the normal run output and leaves no temporary directory behind', async () => {
+      const fixture = prepareRunner('motif-msa-normal-', { hang: false });
+      const { result } = startRunner(fixture);
+      const exit = await result.exited;
+      expect(exit, result.stderr).toEqual({ code: 0, signal: null });
+      expect(JSON.parse(result.stdout).alignments[0].engine.id).toBe('muscle');
+      expect(runnerTemporaryEntries(fixture.tempRoot)).toEqual([]);
+    }, 20_000);
+  });
 });

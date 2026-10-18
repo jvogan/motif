@@ -166,6 +166,83 @@ describe('ClaudeScienceAssemblyWorkspace', () => {
     expect(screen.getByRole('status').textContent).toContain('removed');
   });
 
+  describe('keyboard focus after reordering', () => {
+    function threeParts() {
+      render(<ClaudeScienceAssemblyWorkspace {...props({
+        initialRecordIds: ['left', 'right', 'blunt'],
+        createId: idFactory('row-1', 'row-2', 'row-3'),
+      })} />);
+    }
+
+    it('keeps focus on the same-direction button of the moved part', async () => {
+      const user = userEvent.setup();
+      threeParts();
+
+      await user.click(screen.getByRole('button', { name: 'Move Left fragment down' }));
+      expect(partNames()).toEqual(['Right fragment', 'Left fragment', 'Blunt fragment']);
+      expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Move Left fragment down' }));
+      expect((document.activeElement as HTMLButtonElement).disabled).toBe(false);
+      expect(screen.getByTestId('assembly-part-row-1').contains(document.activeElement)).toBe(true);
+
+      await user.click(screen.getByRole('button', { name: 'Move Blunt fragment up' }));
+      await user.click(screen.getByRole('button', { name: 'Move Blunt fragment up' }));
+      expect(partNames()).toEqual(['Blunt fragment', 'Right fragment', 'Left fragment']);
+      // The part reached the first position, so its up button is disabled.
+      expect((screen.getByRole('button', { name: 'Move Blunt fragment up' }) as HTMLButtonElement).disabled).toBe(true);
+      expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Move Blunt fragment down' }));
+    });
+
+    it('falls back to the opposite button when the moved part reaches an end', async () => {
+      const user = userEvent.setup();
+      threeParts();
+
+      await user.click(screen.getByRole('button', { name: 'Move Left fragment down' }));
+      await user.click(screen.getByRole('button', { name: 'Move Left fragment down' }));
+      expect(partNames()).toEqual(['Right fragment', 'Blunt fragment', 'Left fragment']);
+      const lastDown = screen.getByRole('button', { name: 'Move Left fragment down' }) as HTMLButtonElement;
+      expect(lastDown.disabled).toBe(true);
+      expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Move Left fragment up' }));
+
+      await user.click(screen.getByRole('button', { name: 'Move Left fragment up' }));
+      await user.click(screen.getByRole('button', { name: 'Move Left fragment up' }));
+      expect(partNames()).toEqual(['Left fragment', 'Right fragment', 'Blunt fragment']);
+      expect((screen.getByRole('button', { name: 'Move Left fragment up' }) as HTMLButtonElement).disabled).toBe(true);
+      expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Move Left fragment down' }));
+    });
+
+    it('keeps focus inside the moved row after an Alt+Arrow move', async () => {
+      const user = userEvent.setup();
+      threeParts();
+
+      screen.getByLabelText('Part 2').focus();
+      await user.keyboard('{Alt>}{ArrowUp}{/Alt}');
+      expect(partNames()).toEqual(['Right fragment', 'Left fragment', 'Blunt fragment']);
+      expect(document.activeElement).toBe(screen.getByLabelText('Part 1'));
+      expect(screen.getByTestId('assembly-part-row-0').contains(document.activeElement)).toBe(true);
+
+      await user.keyboard('{Alt>}{ArrowDown}{/Alt}');
+      expect(partNames()).toEqual(['Left fragment', 'Right fragment', 'Blunt fragment']);
+      expect(document.activeElement).toBe(screen.getByLabelText('Part 2'));
+    });
+
+    it('moves focus to a neighbouring row, then the add control, after removal', async () => {
+      const user = userEvent.setup();
+      threeParts();
+
+      await user.click(screen.getByRole('button', { name: 'Remove Right fragment' }));
+      expect(partNames()).toEqual(['Left fragment', 'Blunt fragment']);
+      expect(document.activeElement).toBe(screen.getByLabelText('Part 2'));
+
+      await user.click(screen.getByRole('button', { name: 'Remove Blunt fragment' }));
+      expect(partNames()).toEqual(['Left fragment']);
+      expect(document.activeElement).toBe(screen.getByLabelText('Part 1'));
+
+      await user.click(screen.getByRole('button', { name: 'Remove Left fragment' }));
+      expect(screen.queryAllByTestId(/assembly-part-row-/)).toHaveLength(0);
+      expect(document.activeElement).toBe(screen.getByTestId('assembly-add-record'));
+    });
+  });
+
   it('atomically hands a ready Golden Gate product and workflow result to the host', async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);

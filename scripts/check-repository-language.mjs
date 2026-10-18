@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { lstatSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isDirectScriptExecution } from './lib/direct-script.mjs';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const DISALLOWED_STEM = String.fromCharCode(119, 101, 116);
@@ -267,7 +268,7 @@ export function checkRepositoryLanguage(workspace = root, environment = process.
   return { trackedFiles: trackedPaths(resolved).length, metadataFields: metadata.fields };
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isDirectScriptExecution(process.argv[1], fileURLToPath(import.meta.url))) {
   try {
     const result = checkRepositoryLanguage();
     console.log(`Repository-language policy passed: ${result.trackedFiles} tracked files and ${result.metadataFields} metadata fields checked.`);

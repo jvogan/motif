@@ -12,6 +12,7 @@ import {
 import { arch, endianness, platform } from 'node:os';
 import { join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isDirectScriptExecution } from './lib/direct-script.mjs';
 import { checkLockfilePolicy, loadDependencyPolicy } from './lib/supply-chain-policy.mjs';
 
 const ESBUILD_NAME = 'esbuild';
@@ -276,7 +277,7 @@ export function prepareEsbuild(rootPath = process.cwd(), ...unexpectedArguments)
 export const runReviewedLifecycle = prepareEsbuild;
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isDirectScriptExecution(process.argv[1], fileURLToPath(import.meta.url))) {
   try {
     if (process.argv.length !== 2) throw new Error('The Motif-owned preparation helper accepts no command arguments');
     const result = prepareEsbuild(root);

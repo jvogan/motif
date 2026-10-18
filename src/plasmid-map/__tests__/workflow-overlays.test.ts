@@ -227,6 +227,44 @@ describe('workflow overlay adapters', () => {
     ]);
   });
 
+  it('draws primer markers whose binding crosses the origin of a circular template', () => {
+    const layout = circularLayout();
+    const result = {
+      productLength: 140,
+      forward: {
+        bindStart: 990,
+        bindEnd: 12,
+        bindingSequence: 'A'.repeat(22),
+        tail: '',
+        tm: 61,
+        gcPercent: 50,
+      },
+      reverse: {
+        bindStart: 108,
+        bindEnd: 130,
+        bindingSequence: 'T'.repeat(22),
+        tail: '',
+        tm: 60,
+        gcPercent: 50,
+      },
+    } satisfies Pick<PCRResult, 'productLength' | 'forward' | 'reverse'>;
+
+    const inputs = pcrResultRangeOverlayInputs(result, layout.length, 'circular');
+    const forward = inputs.find((input) => input.variant === 'primer-forward');
+    expect(forward?.ranges).toEqual([{ start: 990, end: 1012 }]);
+    expect(inputs.find((input) => input.variant === 'primer-reverse')?.ranges).toEqual([{ start: 108, end: 130 }]);
+    expect(inputs.find((input) => input.variant === 'amplicon')?.ranges).toEqual([{ start: 990, end: 1130 }]);
+
+    const overlay = projectRangeOverlays(layout, forward ? [forward] : [])[0];
+    expect(overlay.focusedRanges).toEqual([
+      { start: 990, end: 1000 },
+      { start: 0, end: 12 },
+    ]);
+
+    // A linear template never reports a crossing binding; the marker is skipped rather than inverted.
+    expect(pcrResultRangeOverlayInputs(result, layout.length, 'linear').some((input) => input.variant === 'primer-forward')).toBe(false);
+  });
+
   it('projects compare diff segments and keeps insertions selectable as anchors', () => {
     const layout = linearLayout();
     const segments: DiffSegment[] = [

@@ -38,14 +38,50 @@ export function complementBase(base: string, isRna = false): string {
   return table[base] ?? base;
 }
 
-/** Get complement of a sequence (without reversing) */
-export function complement(seq: string, isRna = false): string {
-  const table = isRna ? RNA_COMPLEMENT : DNA_COMPLEMENT;
+/**
+ * Byte lookup tables mirroring the complement maps. Every code maps to itself
+ * unless the map defines a complement, matching the string-based fallback.
+ */
+function buildComplementByteTable(map: Readonly<Record<string, string>>): Uint8Array {
+  const table = new Uint8Array(128);
+  for (let code = 0; code < 128; code += 1) table[code] = code;
+  for (const [from, to] of Object.entries(map)) table[from.charCodeAt(0)] = to.charCodeAt(0);
+  return table;
+}
+
+const DNA_COMPLEMENT_BYTES = buildComplementByteTable(DNA_COMPLEMENT);
+const RNA_COMPLEMENT_BYTES = buildComplementByteTable(RNA_COMPLEMENT);
+const asciiDecoder = new TextDecoder('utf-8');
+
+/**
+ * Complement an ASCII string through a byte table, optionally reversing it.
+ * Returns null when any character is outside ASCII so callers can use the
+ * general string path.
+ */
+function mapAsciiComplement(seq: string, table: Uint8Array, reversed: boolean): string | null {
+  const n = seq.length;
+  const out = new Uint8Array(n);
+  for (let i = 0; i < n; i += 1) {
+    const code = seq.charCodeAt(i);
+    if (code > 127) return null;
+    out[reversed ? n - 1 - i : i] = table[code];
+  }
+  return asciiDecoder.decode(out);
+}
+
+/** General path for strings containing non-ASCII code units. */
+function complementSlow(seq: string, table: Record<string, string>): string {
   const chars = new Array<string>(seq.length);
   for (let i = 0; i < seq.length; i++) {
     chars[i] = table[seq[i]] ?? seq[i];
   }
   return chars.join('');
+}
+
+/** Get complement of a sequence (without reversing) */
+export function complement(seq: string, isRna = false): string {
+  const fast = mapAsciiComplement(seq, isRna ? RNA_COMPLEMENT_BYTES : DNA_COMPLEMENT_BYTES, false);
+  return fast ?? complementSlow(seq, isRna ? RNA_COMPLEMENT : DNA_COMPLEMENT);
 }
 
 /** Reverse a string */
@@ -59,7 +95,8 @@ export function reverseString(s: string): string {
 
 /** Reverse complement of a DNA or RNA sequence */
 export function reverseComplement(seq: string, isRna = false): string {
-  return reverseString(complement(seq, isRna));
+  const fast = mapAsciiComplement(seq, isRna ? RNA_COMPLEMENT_BYTES : DNA_COMPLEMENT_BYTES, true);
+  return fast ?? reverseString(complementSlow(seq, isRna ? RNA_COMPLEMENT : DNA_COMPLEMENT));
 }
 
 /**

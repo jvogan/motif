@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isDirectScriptExecution } from './lib/direct-script.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const packageNameFromLockPath = lockPath => lockPath.replace(/^node_modules\//u, '').split('/node_modules/').at(-1);
@@ -81,7 +82,7 @@ export function writeDeterministicSbom(outputPath, rootPath = root) {
   return sbom;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isDirectScriptExecution(process.argv[1], fileURLToPath(import.meta.url))) {
   const output = process.argv[2] ? resolve(process.argv[2]) : join(root, 'dist-motif', 'motif-sbom.json');
   writeDeterministicSbom(output);
   console.log(`Wrote deterministic SBOM ${output}`);

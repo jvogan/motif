@@ -4,6 +4,7 @@ import { build } from 'esbuild';
 import { mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isDirectScriptExecution } from './lib/direct-script.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const entryPath = join(root, 'mcp', 'motif', 'stdio-server.ts');
@@ -28,7 +29,7 @@ export async function buildMotifMcpServer({ entry = entryPath, out = outputPath 
   return out;
 }
 
-const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const isMain = isDirectScriptExecution(process.argv[1], fileURLToPath(import.meta.url));
 if (isMain) {
   try {
     const out = await buildMotifMcpServer();

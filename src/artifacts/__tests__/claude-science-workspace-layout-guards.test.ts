@@ -824,7 +824,7 @@ describe('workspace layout guards', () => {
 
   it('copies reverse features in feature orientation from the keyboard path', () => {
     expect(artifactSource).toContain('text = sequenceForFeature(sequence, selectedFeature, sequenceType);');
-    expect(artifactSource).toContain('[copyText, handleZoomIn, handleZoomOut, handleZoomReset, pendingDatabaseRestore, recordId, selectedFeature, selectedMapRange, sequence, sequenceType, topology]');
+    expect(artifactSource).toContain('[copyText, handleZoomIn, handleZoomOut, handleZoomReset, pendingDatabaseRestore, recordId, selectedFeature, selectedMapRange, sequence, sequenceType, toolsPinned, topology]');
   });
 
   it('serializes native mouse-selected bases without embedded annotation text', () => {

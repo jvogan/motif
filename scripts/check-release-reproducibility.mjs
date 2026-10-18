@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isDirectScriptExecution } from './lib/direct-script.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const outputDirectory = join(root, 'dist-motif');
@@ -47,7 +48,7 @@ export function checkReleaseReproducibility() {
   return { fileCount: Object.keys(second).length, outputSha256: sha256(secondJson) };
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isDirectScriptExecution(process.argv[1], fileURLToPath(import.meta.url))) {
   try {
     if (!existsSync(join(root, 'node_modules'))) throw new Error('Maintainer reproducibility checks require installed build dependencies');
     const result = checkReleaseReproducibility();

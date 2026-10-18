@@ -21,10 +21,10 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { constants as osConstants, homedir, tmpdir } from 'node:os';
 import { basename, delimiter, dirname, extname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { isMainThread, Worker, workerData } from 'node:worker_threads';
+import { isMainThread, parentPort, Worker, workerData } from 'node:worker_threads';
 import { MAX_ALIGNMENT_COLUMNS, validatePayload } from './create-artifact.mjs';
 
 export const MAX_MSA_SEQUENCES = 100;
@@ -39,6 +39,15 @@ const MAX_HEADER_LENGTH = 1_024;
 const PROCESS_TERMINATION_GRACE_MS = 500;
 const PROCESS_GUARD_OVERHEAD_MS = 5_000;
 const PROCESS_GUARD_WORKER = 'motif-msa-process-guard-v1';
+const COMMAND_JOB_WORKER = 'motif-msa-command-job-v1';
+const INTERRUPT_POLL_MS = 25;
+const INTERRUPT_SIGNALS = Object.freeze(['SIGINT', 'SIGTERM']);
+
+// Set only inside the command-line job worker. The job runs off the main
+// thread because the runner blocks synchronously while an engine executes, and
+// a blocked main thread cannot deliver SIGINT/SIGTERM to JavaScript handlers.
+// The idle main thread owns the handlers and uses this shared state to clean up.
+let interruptCleanup = null;
 
 const ENGINE_CONFIG = Object.freeze({
   mafft: Object.freeze({
@@ -67,7 +76,7 @@ const ENGINE_CONFIG = Object.freeze({
 const ENGINE_BANNER_PATTERNS = Object.freeze({
   mafft: /^(?:mafft\s+)?v?7\.\d+(?:\.\d+)?(?:\s|\(|$)/iu,
   muscle: /^muscle\b.*\bv?5(?:\.\d+)+/iu,
-  'clustal-omega': /^(?:clustal\s+omega|clustalo|clustalomega)\b.*\b1\.\d+(?:\.\d+)?/iu,
+  'clustal-omega': /^(?:(?:clustal\s+omega|clustalo|clustalomega)\b[^\r\n]*?\s)?v?1\.\d+(?:\.\d+)?(?:\s|\(|$)/iu,
 });
 const WINDOWS_CHILD_ENVIRONMENT_KEYS = Object.freeze(['SystemRoot', 'SystemDrive', 'WINDIR']);
 const INVALID_CHILD_ENVIRONMENT_KEY = /(?:TOKEN|PASSWORD|PASSWD|SECRET|CREDENTIAL|AUTH|PROXY|AGENT|NODE_OPTIONS|LD_PRELOAD|DYLD_|AWS_|SSH_)/iu;
@@ -428,7 +437,7 @@ function terminateProcessTree(child, signal) {
   }
 }
 
-function superviseProcess(request) {
+function superviseProcess(request, enginePidSlot = null) {
   return new Promise((resolvePromise) => {
     const stdout = { chunks: [], bytes: 0, retainedBytes: 0 };
     const stderr = { chunks: [], bytes: 0, retainedBytes: 0 };
@@ -451,9 +460,14 @@ function superviseProcess(request) {
       detached: process.platform !== 'win32',
     });
 
+    if (enginePidSlot && Number.isSafeInteger(child.pid) && child.pid > 1) {
+      Atomics.store(enginePidSlot, 0, child.pid);
+    }
+
     const finish = (status, signal) => {
       if (finished) return;
       finished = true;
+      if (enginePidSlot) Atomics.store(enginePidSlot, 0, 0);
       clearTimeout(timeoutTimer);
       if (killTimer) clearTimeout(killTimer);
       if (forceFinishTimer) clearTimeout(forceFinishTimer);
@@ -581,7 +595,12 @@ function spawnChecked(executable, args, options) {
   const sharedResponse = new SharedArrayBuffer(8 + guardedMaxBuffer);
   const header = new Int32Array(sharedResponse, 0, 2);
   const worker = new Worker(new URL(import.meta.url), {
-    workerData: { type: PROCESS_GUARD_WORKER, request, sharedResponse },
+    workerData: {
+      type: PROCESS_GUARD_WORKER,
+      request,
+      sharedResponse,
+      enginePidBuffer: interruptCleanup?.enginePidBuffer,
+    },
   });
   const waitResult = Atomics.wait(
     header,
@@ -773,6 +792,7 @@ export function runExternalMsa(options) {
   const cwd = options.cwd ?? process.cwd();
   const temporaryRoot = options.temporaryRoot ?? tmpdir();
   const temporaryDirectory = mkdtempSync(join(temporaryRoot, 'motif-msa-'));
+  interruptCleanup?.trackDirectory(temporaryDirectory);
 
   try {
     const inputPath = join(temporaryDirectory, 'input.fasta');
@@ -861,6 +881,7 @@ export function runExternalMsa(options) {
     return payload;
   } finally {
     rmSync(temporaryDirectory, { recursive: true, force: true });
+    interruptCleanup?.untrackDirectory(temporaryDirectory);
   }
 }
 
@@ -942,6 +963,7 @@ export function writeMsaPayload(outputPath, payload, force = false) {
   mkdirSync(outputDirectory, { recursive: true });
   assertRealDirectoryChain(outputDirectory);
   const temporaryDirectory = mkdtempSync(join(outputDirectory, '.motif-msa-output-'));
+  interruptCleanup?.trackDirectory(temporaryDirectory);
   const temporaryPath = join(temporaryDirectory, 'payload.json');
   try {
     writeFileSync(temporaryPath, json, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
@@ -959,6 +981,7 @@ export function writeMsaPayload(outputPath, payload, force = false) {
     }
   } finally {
     rmSync(temporaryDirectory, { recursive: true, force: true });
+    interruptCleanup?.untrackDirectory(temporaryDirectory);
   }
   return resolved;
 }
@@ -1017,22 +1040,9 @@ function moduleIsMain() {
 
 const isMain = moduleIsMain();
 
-if (!isMainThread && workerData?.type === PROCESS_GUARD_WORKER) {
+function runCommandLine(argv) {
   try {
-    writeWorkerResponse(workerData.sharedResponse, await superviseProcess(workerData.request));
-  } catch (error) {
-    writeWorkerResponse(workerData.sharedResponse, {
-      status: null,
-      signal: null,
-      errorCode: error?.code ?? 'PROCESS_GUARD_ERROR',
-      errorMessage: error instanceof Error ? error.message : String(error),
-      stdoutBase64: '',
-      stderrBase64: '',
-    });
-  }
-} else if (isMain) {
-  try {
-    const options = parseRunMsaArgs(process.argv.slice(2));
+    const options = parseRunMsaArgs(argv);
     if (options.help) {
       process.stdout.write(usage());
     } else {
@@ -1057,4 +1067,158 @@ if (!isMainThread && workerData?.type === PROCESS_GUARD_WORKER) {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = 1;
   }
+}
+
+function signalExitStatus(signal) {
+  return 128 + (osConstants.signals[signal] ?? 0);
+}
+
+function signalProcessTree(pid, signal) {
+  // Mirrors terminateProcessTree: the engine leads its own process group on
+  // POSIX, so a negative pid reaches descendants as well. Returns whether the
+  // target still existed.
+  const target = process.platform === 'win32' ? pid : -pid;
+  try {
+    process.kill(target, signal);
+    return true;
+  } catch (error) {
+    if (error?.code === 'ESRCH') return false;
+    if (process.platform !== 'win32' && error?.code === 'EPERM') return true;
+  }
+  if (process.platform !== 'win32') {
+    try {
+      process.kill(pid, signal);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+// The main-thread side of the command-line runner. It owns the only
+// SIGINT/SIGTERM handlers in the process, installs them for the lifetime of the
+// one job, and removes them when the job ends or the interruption completes.
+function superviseCommandLine() {
+  const enginePidBuffer = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);
+  const enginePid = new Int32Array(enginePidBuffer);
+  const directories = new Set();
+  let interrupted = false;
+  const handlers = new Map();
+
+  const removeHandlers = () => {
+    for (const [signal, handler] of handlers) {
+      try {
+        process.removeListener(signal, handler);
+      } catch {
+        // Nothing to restore for a signal this platform never accepted.
+      }
+    }
+    handlers.clear();
+  };
+
+  const worker = new Worker(new URL(import.meta.url), {
+    workerData: {
+      type: COMMAND_JOB_WORKER,
+      argv: process.argv.slice(2),
+      enginePidBuffer,
+    },
+  });
+  worker.on('message', (message) => {
+    if (message?.type === 'track-directory' && typeof message.path === 'string') {
+      directories.add(message.path);
+    } else if (message?.type === 'untrack-directory' && typeof message.path === 'string') {
+      directories.delete(message.path);
+    }
+  });
+  worker.on('error', (error) => {
+    if (interrupted) return;
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.exitCode = 1;
+  });
+  worker.on('exit', (code) => {
+    if (interrupted) return;
+    removeHandlers();
+    process.exitCode = process.exitCode || code;
+  });
+
+  const interrupt = (signal) => {
+    if (interrupted) return;
+    interrupted = true;
+    // Stop the job first so it cannot start another engine or directory, then
+    // run the same TERM-then-KILL escalation as the timeout path.
+    void worker.terminate();
+    const pid = Atomics.load(enginePid, 0);
+    const hasEngine = Number.isSafeInteger(pid) && pid > 1;
+    if (hasEngine) signalProcessTree(pid, 'SIGTERM');
+    const deadline = Date.now() + PROCESS_TERMINATION_GRACE_MS;
+    const settle = () => {
+      if (hasEngine) {
+        if (signalProcessTree(pid, 0) && Date.now() < deadline) {
+          setTimeout(settle, INTERRUPT_POLL_MS);
+          return;
+        }
+        signalProcessTree(pid, 'SIGKILL');
+      }
+      for (const directory of directories) {
+        try {
+          rmSync(directory, { recursive: true, force: true });
+        } catch {
+          // Best effort: the interruption must still complete.
+        }
+      }
+      directories.clear();
+      removeHandlers();
+      const status = signalExitStatus(signal);
+      process.exitCode = status;
+      try {
+        // Re-raise so callers observe a signal exit rather than success.
+        process.kill(process.pid, signal);
+      } catch {
+        // Platforms without self-delivery fall through to the explicit exit.
+      }
+      setTimeout(() => process.exit(status), INTERRUPT_POLL_MS * 2);
+    };
+    setTimeout(settle, INTERRUPT_POLL_MS);
+  };
+
+  for (const signal of INTERRUPT_SIGNALS) {
+    const handler = () => interrupt(signal);
+    try {
+      process.on(signal, handler);
+      handlers.set(signal, handler);
+    } catch {
+      // A platform that cannot listen for this signal keeps default behavior.
+    }
+  }
+}
+
+if (!isMainThread && workerData?.type === PROCESS_GUARD_WORKER) {
+  try {
+    writeWorkerResponse(
+      workerData.sharedResponse,
+      await superviseProcess(
+        workerData.request,
+        workerData.enginePidBuffer ? new Int32Array(workerData.enginePidBuffer) : null,
+      ),
+    );
+  } catch (error) {
+    writeWorkerResponse(workerData.sharedResponse, {
+      status: null,
+      signal: null,
+      errorCode: error?.code ?? 'PROCESS_GUARD_ERROR',
+      errorMessage: error instanceof Error ? error.message : String(error),
+      stdoutBase64: '',
+      stderrBase64: '',
+    });
+  }
+} else if (!isMainThread && workerData?.type === COMMAND_JOB_WORKER) {
+  interruptCleanup = {
+    enginePidBuffer: workerData.enginePidBuffer,
+    trackDirectory: (path) => parentPort?.postMessage({ type: 'track-directory', path }),
+    untrackDirectory: (path) => parentPort?.postMessage({ type: 'untrack-directory', path }),
+  };
+  runCommandLine(workerData.argv);
+} else if (isMain) {
+  superviseCommandLine();
 }

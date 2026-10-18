@@ -3,6 +3,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isDirectScriptExecution } from './lib/direct-script.mjs';
 import { compareConnectorInventory, checkLockfilePolicy, loadDependencyPolicy } from './lib/supply-chain-policy.mjs';
 import {
   RELEASE_ARCHIVE_FILENAME,
@@ -47,7 +48,7 @@ export function checkSupplyChainPolicy(rootPath = root, { requireRelease = false
   return { ...summary, releaseChecked: releaseExists };
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isDirectScriptExecution(process.argv[1], fileURLToPath(import.meta.url))) {
   try {
     const allowedArguments = new Set(['--require-release']);
     const unknownArguments = process.argv.slice(2).filter((argument) => !allowedArguments.has(argument));

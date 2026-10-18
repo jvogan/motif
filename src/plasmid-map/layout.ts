@@ -2761,21 +2761,49 @@ function detectNestedCircularFeatureIds(
 ): Set<string> {
   const nested = new Set<string>();
   const entries = [...segByFeature.entries()];
+  const count = entries.length;
 
-  for (const [childId, childSegs] of entries) {
-    const childLane = laneById.get(childId);
+  // Per-entry values are loop-invariant, so compute them once. Segments are
+  // linear [start, end) pieces, so two entries whose overall extents are
+  // disjoint cannot share any covered length.
+  const lanes: (number | undefined)[] = new Array(count);
+  const totals = new Float64Array(count);
+  const minStarts = new Float64Array(count);
+  const maxEnds = new Float64Array(count);
+  for (let i = 0; i < count; i++) {
+    const segs = entries[i][1];
+    lanes[i] = laneById.get(entries[i][0]);
+    totals[i] = segmentTotalLength(segs);
+    let minStart = Infinity;
+    let maxEnd = -Infinity;
+    for (const seg of segs) {
+      if (seg.start < minStart) minStart = seg.start;
+      if (seg.end > maxEnd) maxEnd = seg.end;
+    }
+    minStarts[i] = minStart;
+    maxEnds[i] = maxEnd;
+  }
+
+  for (let c = 0; c < count; c++) {
+    const [childId, childSegs] = entries[c];
+    const childLane = lanes[c];
     if (childLane === undefined || childSegs.length === 0) continue;
-    const childTotal = segmentTotalLength(childSegs);
+    const childTotal = totals[c];
     if (!(childTotal > 0)) continue;
+    const childMin = minStarts[c];
+    const childMax = maxEnds[c];
 
-    for (const [parentId, parentSegs] of entries) {
-      if (parentId === childId || parentSegs.length === 0) continue;
-      const parentLane = laneById.get(parentId);
+    for (let p = 0; p < count; p++) {
+      if (p === c) continue;
+      const parentSegs = entries[p][1];
+      if (parentSegs.length === 0) continue;
+      const parentLane = lanes[p];
       if (parentLane === undefined || parentLane === childLane) continue;
 
-      const parentTotal = segmentTotalLength(parentSegs);
+      const parentTotal = totals[p];
       if (!(parentTotal > childTotal)) continue;
       if (childTotal / parentTotal > NESTED_FEATURE_MAX_CHILD_FRACTION) continue;
+      if (maxEnds[p] <= childMin || childMax <= minStarts[p]) continue;
 
       const covered = Math.min(childTotal, coveredSegmentLength(childSegs, parentSegs));
       if (covered / childTotal >= NESTED_FEATURE_CONTAINMENT_RATIO) {

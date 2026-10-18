@@ -114,8 +114,15 @@ export interface PCRSimulationOutcome {
 export interface PCRBindingCandidate {
   /** 0-indexed start position on the searched strand. */
   bindStart: number;
-  /** 0-indexed exclusive end position on the searched strand. */
+  /**
+   * 0-indexed exclusive end position on the searched strand. On a circular
+   * template a site that crosses the origin keeps both coordinates inside the
+   * template, so `bindEnd < bindStart` and the site length is
+   * `bindEnd + templateLength - bindStart`.
+   */
   bindEnd: number;
+  /** Present and true only for a circular-template site that crosses the origin. */
+  spansOrigin?: boolean;
   /** Primer suffix used as the binding region, in primer 5′→3′ order. */
   bindingSequence: string;
   /** 5′ prefix treated as an explicit tail for this candidate. */
@@ -133,8 +140,13 @@ export interface PCRBindingCandidate {
 export interface PCRPrimerBinding {
   /** 0-indexed start position on the original forward-strand template. */
   bindStart: number;
-  /** 0-indexed exclusive end position on the original forward-strand template. */
+  /**
+   * 0-indexed exclusive end position on the original forward-strand template.
+   * A circular-template site that crosses the origin has `bindEnd < bindStart`.
+   */
   bindEnd: number;
+  /** Present and true only for a circular-template site that crosses the origin. */
+  spansOrigin?: boolean;
   bindingSequence: string;
   tail: string;
   mismatchCount?: number;
@@ -194,7 +206,10 @@ export interface PCRResult {
   };
 }
 
-/** Optional exact primer binding coordinates selected by a primer-design UI. */
+/**
+ * Optional exact primer binding coordinates selected by a primer-design UI.
+ * On a circular template a range with `end < start` crosses the origin.
+ */
 export interface PCRBindingSelection {
   forward: { start: number; end: number };
   reverse: { start: number; end: number };
@@ -299,6 +314,78 @@ function bindingAt(
   };
 }
 
+/**
+ * Template text that lets one bounded window read across a circular origin:
+ * the template followed by at most `maxBindingLength - 1` leading bases, never
+ * a second full copy. Linear templates are returned unchanged.
+ */
+function bindingScanText(template: string, maxBindingLength: number, circular: boolean): string {
+  if (!circular) return template;
+  const overhang = Math.min(Math.max(0, maxBindingLength - 1), Math.max(0, template.length - 1));
+  return overhang > 0 ? template + template.slice(0, overhang) : template;
+}
+
+/** Window starts examined for one binding length; circular adds origin-crossing starts. */
+function bindingWindowCount(templateLength: number, bindingLength: number, circular: boolean): number {
+  if (circular && bindingLength < templateLength) return templateLength;
+  return Math.max(0, templateLength - bindingLength + 1);
+}
+
+/**
+ * Evaluate one window on a linear or circular template. An origin-crossing
+ * window is reported with coordinates inside `[0, templateLength]`, so its
+ * `bindEnd` is smaller than its `bindStart`.
+ */
+function bindingAtTopology(
+  scanText: string,
+  templateLength: number,
+  circular: boolean,
+  primer: string,
+  position: number,
+  bindingLength: number,
+  minMatched3PrimeLength: number,
+  maxMismatches: number,
+  allowImplicitTails: boolean,
+): PCRSearchCandidate | null {
+  if (position < 0 || position >= templateLength) return null;
+  const crossesOrigin = position + bindingLength > templateLength;
+  if (crossesOrigin && (!circular || bindingLength >= templateLength)) return null;
+  // Non-crossing windows end inside the template, so reading them from the
+  // extended scan text is identical to reading them from the template.
+  const candidate = bindingAt(
+    scanText,
+    primer,
+    position,
+    bindingLength,
+    minMatched3PrimeLength,
+    maxMismatches,
+    allowImplicitTails,
+  );
+  if (!candidate || !crossesOrigin) return candidate;
+  return { ...candidate, bindEnd: candidate.bindEnd - templateLength, spansOrigin: true };
+}
+
+/** Length of a normalized site, including one that crosses a circular origin. */
+function bindingRangeLength(start: number, end: number, templateLength: number): number {
+  return end > start ? end - start : end + templateLength - start;
+}
+
+/**
+ * Mirror a normalized site on the reverse-complement strand onto the
+ * forward strand. Both input and output keep coordinates inside the template.
+ */
+function mirrorBindingRange(
+  candidate: Pick<PCRBindingCandidate, 'bindStart' | 'bindingSequence'>,
+  templateLength: number,
+): { bindStart: number; bindEnd: number } {
+  const bindEnd = templateLength - candidate.bindStart;
+  const unwrappedStart = bindEnd - candidate.bindingSequence.length;
+  return {
+    bindStart: unwrappedStart < 0 ? unwrappedStart + templateLength : unwrappedStart,
+    bindEnd,
+  };
+}
+
 function boundedWorkUnits(value: number): number {
   if (!Number.isFinite(value) || value < 0) return Number.MAX_SAFE_INTEGER;
   return Math.min(Number.MAX_SAFE_INTEGER, Math.ceil(value));
@@ -322,10 +409,14 @@ function bindingLengthFloor(
 export function estimatePCRBindingScanWorkUnits(
   templateLength: number,
   primerLength: number,
-  options: Pick<PCRSimulationOptions, 'minMatched3PrimeLength' | 'allowImplicitTails'> = {},
+  options: Pick<PCRSimulationOptions, 'minMatched3PrimeLength' | 'allowImplicitTails'> & {
+    /** Circular templates also charge every origin-crossing window. */
+    topology?: Topology;
+  } = {},
 ): number {
   const minMatched3PrimeLength = options.minMatched3PrimeLength ?? DEFAULT_MIN_MATCHED_3_PRIME_LENGTH;
   const allowImplicitTails = options.allowImplicitTails ?? false;
+  const circular = options.topology === 'circular';
   if (
     !Number.isSafeInteger(templateLength)
     || templateLength < 0
@@ -346,7 +437,7 @@ export function estimatePCRBindingScanWorkUnits(
   );
   let workUnits = 0;
   for (let bindingLength = primerLength; bindingLength >= minimumBindingLength; bindingLength -= 1) {
-    const windows = Math.max(0, templateLength - bindingLength + 1);
+    const windows = bindingWindowCount(templateLength, bindingLength, circular);
     workUnits = boundedWorkUnits(workUnits + windows * bindingLength * 2);
     if (workUnits === Number.MAX_SAFE_INTEGER) return workUnits;
   }
@@ -376,11 +467,17 @@ function bindingCandidateLimitDiagnostic(maxBindingCandidates: number): PCRDiagn
  * Enumerate all compatible binding sites for one primer on one strand.
  * Results retain every coordinate/length alternative instead of returning the
  * first substring match and silently treating it as the intended site.
+ *
+ * With `topology: 'circular'`, windows may also cross the origin. Each start
+ * position is examined once per binding length, so an origin-crossing site is
+ * reported once, with `spansOrigin: true` and `bindEnd < bindStart`. Those
+ * extra windows are charged to the same work budget as every other window.
  */
 export function findPrimerBindingsWithDiagnostics(
   template: string,
   primer: string,
   options?: PCRSimulationOptions,
+  topology: Topology = 'linear',
 ): PCRBindingScanResult {
   const policy = normalizePolicy(options);
   if (!policy) return { candidates: [], diagnostics: [], workUnits: 0, complete: true };
@@ -405,6 +502,8 @@ export function findPrimerBindingsWithDiagnostics(
     policy.minMatched3PrimeLength,
     policy.allowImplicitTails,
   );
+  const circular = topology === 'circular';
+  const scanText = bindingScanText(tmpl, oligo.length, circular);
   let workUnits = 0;
   let workLimitReached = false;
   let candidateLimitReached = false;
@@ -413,15 +512,18 @@ export function findPrimerBindingsWithDiagnostics(
   // considered only after an explicit allowImplicitTails opt-in and must not
   // crowd out the strongest/full-length binding evidence.
   for (let bindingLength = oligo.length; bindingLength >= minBindingLength; bindingLength -= 1) {
-    for (let position = 0; position + bindingLength <= tmpl.length; position += 1) {
+    const windowCount = bindingWindowCount(tmpl.length, bindingLength, circular);
+    for (let position = 0; position < windowCount; position += 1) {
       const workForWindow = bindingLength * 2;
       if (workUnits + workForWindow > policy.maxBindingScanWorkUnits) {
         workLimitReached = true;
         break;
       }
       workUnits += workForWindow;
-      const candidate = bindingAt(
-        tmpl,
+      const candidate = bindingAtTopology(
+        scanText,
+        tmpl.length,
+        circular,
         oligo,
         position,
         bindingLength,
@@ -463,8 +565,9 @@ export function findPrimerBindings(
   template: string,
   primer: string,
   options?: PCRSimulationOptions,
+  topology: Topology = 'linear',
 ): PCRBindingCandidate[] {
-  const scan = findPrimerBindingsWithDiagnostics(template, primer, options);
+  const scan = findPrimerBindingsWithDiagnostics(template, primer, options, topology);
   // Preserve the historical array API without presenting a partial scan as
   // exhaustive evidence. Callers that need the typed limit diagnostic should
   // use `findPrimerBindingsWithDiagnostics`.
@@ -474,17 +577,21 @@ export function findPrimerBindings(
 function selectedBindingCandidate(
   template: string,
   primer: string,
-  range: { start: number; end: number },
+  range: { start: number; length: number },
   policy: NormalizedPCRPolicy,
+  circular: boolean,
 ): PCRBindingCandidate | null {
   const templateInspection = inspectNucleotideSequence(template);
   const primerInspection = inspectNucleotideSequence(primer);
   if (templateInspection.invalidCharacters.length > 0 || primerInspection.invalidCharacters.length > 0) return null;
-  const candidate = bindingAt(
-    templateInspection.sequence,
+  const tmpl = templateInspection.sequence;
+  const candidate = bindingAtTopology(
+    bindingScanText(tmpl, range.length, circular),
+    tmpl.length,
+    circular,
     primerInspection.sequence,
     range.start,
-    range.end - range.start,
+    range.length,
     policy.minMatched3PrimeLength,
     policy.maxMismatches,
     true,
@@ -499,12 +606,9 @@ function asReverseBinding(
   templateLength: number,
   candidateCount: number,
 ): PCRPrimerBinding {
-  const bindEnd = templateLength - candidate.bindStart;
-  const bindStart = bindEnd - (candidate.bindEnd - candidate.bindStart);
   return {
     ...candidate,
-    bindStart,
-    bindEnd,
+    ...mirrorBindingRange(candidate, templateLength),
     tm: primerBindingTm(candidate.bindingSequence),
     gcPercent: gcContent(candidate.bindingSequence) * 100,
     candidateCount,
@@ -623,12 +727,17 @@ function materializeTemplateProduct(
     }
   };
 
+  // Origin-crossing sites continue at coordinate 0; linear sites never reach
+  // the template length, so the wrap below is the identity for them.
+  const templatePositionAt = (start: number, offset: number): number => (
+    start + offset >= template.length ? start + offset - template.length : start + offset
+  );
   for (let offset = 0; offset < forward.bindingSequence.length; offset += 1) {
-    apply(forward.bindStart + offset, forward.bindingSequence[offset], 'forward');
+    apply(templatePositionAt(forward.bindStart, offset), forward.bindingSequence[offset], 'forward');
   }
   const reversePlus = reverseComplement(reverse.bindingSequence);
   for (let offset = 0; offset < reversePlus.length; offset += 1) {
-    apply(reverse.bindStart + offset, reversePlus[offset], 'reverse');
+    apply(templatePositionAt(reverse.bindStart, offset), reversePlus[offset], 'reverse');
   }
   return {
     templateProduct: chars.join(''),
@@ -690,32 +799,41 @@ function simulatePCRInternal(
   if (fwd.length > MAX_PCR_OLIGO_LENGTH || rev.length > MAX_PCR_OLIGO_LENGTH) return { result: null, diagnostics: [] };
   if (fwd.length < policy.minMatched3PrimeLength || rev.length < policy.minMatched3PrimeLength || tmpl.length === 0) return { result: null, diagnostics: [] };
 
+  const circular = topology === 'circular';
+  // A circular selection may cross the origin as `end < start`, with both
+  // coordinates inside the template and a length shorter than the template.
   const validRange = (range: { start: number; end: number }) => (
     Number.isInteger(range.start)
     && Number.isInteger(range.end)
     && range.start >= 0
-    && range.end > range.start
     && range.end <= tmpl.length
+    && (
+      range.end > range.start
+      || (circular && range.start < tmpl.length && range.end > 0 && range.end < range.start)
+    )
   );
   if (selectedBinding && (!validRange(selectedBinding.forward) || !validRange(selectedBinding.reverse))) return { result: null, diagnostics: [] };
 
   const rcTmpl = reverseComplement(tmpl);
   const forwardScan = selectedBinding
     ? {
-        candidates: [selectedBindingCandidate(tmpl, fwd, selectedBinding.forward, policy)]
+        candidates: [selectedBindingCandidate(tmpl, fwd, {
+          start: selectedBinding.forward.start,
+          length: bindingRangeLength(selectedBinding.forward.start, selectedBinding.forward.end, tmpl.length),
+        }, policy, circular)]
           .filter((candidate): candidate is PCRBindingCandidate => candidate !== null),
         diagnostics: [] as PCRDiagnostic[],
       }
-    : findPrimerBindingsWithDiagnostics(tmpl, fwd, policy);
+    : findPrimerBindingsWithDiagnostics(tmpl, fwd, policy, topology);
   const reverseScan = selectedBinding
     ? {
         candidates: [selectedBindingCandidate(rcTmpl, rev, {
-        start: tmpl.length - selectedBinding.reverse.end,
-        end: tmpl.length - selectedBinding.reverse.start,
-        }, policy)].filter((candidate): candidate is PCRBindingCandidate => candidate !== null),
+          start: tmpl.length - selectedBinding.reverse.end,
+          length: bindingRangeLength(selectedBinding.reverse.start, selectedBinding.reverse.end, tmpl.length),
+        }, policy, circular)].filter((candidate): candidate is PCRBindingCandidate => candidate !== null),
         diagnostics: [] as PCRDiagnostic[],
       }
-    : findPrimerBindingsWithDiagnostics(rcTmpl, rev, policy);
+    : findPrimerBindingsWithDiagnostics(rcTmpl, rev, policy, topology);
   const forwardCandidates = forwardScan.candidates;
   const reverseRcCandidates = reverseScan.candidates;
   const bindingScanDiagnostics: PCRDiagnostic[] = [
@@ -745,11 +863,36 @@ function simulatePCRInternal(
       }
       const reverse = {
         ...reverseRc,
-        bindStart: tmpl.length - reverseRc.bindEnd,
-        bindEnd: tmpl.length - reverseRc.bindStart,
+        ...mirrorBindingRange(reverseRc, tmpl.length),
       };
-      const wrapsOrigin = reverse.bindEnd <= forward.bindStart;
-      if (wrapsOrigin && topology !== 'circular') continue;
+      // The amplicon runs from the forward 5′ end to the reverse 5′ end, so
+      // the reverse binding must not start or end upstream of the forward
+      // binding. Overlapping primers remain valid when ordered. Ends are
+      // compared unwrapped so an origin-crossing site is ordered by where it
+      // actually finishes. On a circular template the reverse site may instead
+      // lie one turn later (past the origin), provided the amplicon is no
+      // longer than the template. At most one placement can satisfy these
+      // conditions, so a pair yields at most one product.
+      const forwardEnd = forward.bindStart + forward.bindingSequence.length;
+      const reverseEnd = reverse.bindStart + reverse.bindingSequence.length;
+      let wrapsOrigin: boolean;
+      if (
+        reverse.bindStart >= forward.bindStart
+        && reverseEnd >= forwardEnd
+        && reverseEnd - forward.bindStart <= tmpl.length
+      ) {
+        wrapsOrigin = reverseEnd > tmpl.length;
+      } else if (
+        circular
+        && reverseEnd <= forward.bindStart
+        && reverseEnd + tmpl.length >= forwardEnd
+      ) {
+        wrapsOrigin = true;
+      } else {
+        continue;
+      }
+      // With normalized ends, `reverse.bindEnd <= forward.bindStart` holds
+      // exactly when the amplicon wraps, so the slices below stay in range.
       const templateProduct = wrapsOrigin
         ? tmpl.slice(forward.bindStart) + tmpl.slice(0, reverse.bindEnd)
         : tmpl.slice(forward.bindStart, reverse.bindEnd);

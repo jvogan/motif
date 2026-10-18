@@ -122,9 +122,12 @@ export function ClaudeScienceFreshnessBadge({
   const summary = scientificFreshnessSummary(evaluation, recordNames);
   return (
     <span className="motif-cs-freshness" data-freshness={evaluation.state}>
-      <span className="motif-cs-freshness-badge" title={summary} aria-label={`${STATE_LABELS[evaluation.state]}: ${summary}`}>
+      <span className="motif-cs-freshness-badge" title={summary}>
         <span aria-hidden="true" />
         {STATE_LABELS[evaluation.state]}
+        {showReason && evaluation.state !== 'fresh' ? null : (
+          <span className="motif-cs-visually-hidden">{`: ${summary}`}</span>
+        )}
       </span>
       {showReason && evaluation.state !== 'fresh' ? (
         <span className="motif-cs-freshness-reason">{summary}</span>

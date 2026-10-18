@@ -8,7 +8,6 @@ import {
   linkSync,
   mkdirSync,
   openSync,
-  readFileSync,
   readSync,
   renameSync,
   rmSync,
@@ -92,18 +91,24 @@ export function parseArgs(args: string[]): Options {
   return options;
 }
 
-function readStdinBounded(maximumBytes: number): string {
+function readBoundedDescriptor(descriptor: number, maximumBytes: number): string {
   const chunks: Buffer[] = [];
   let total = 0;
   while (true) {
-    const chunk = Buffer.allocUnsafe(64 * 1024);
-    const bytes = readSync(0, chunk, 0, chunk.length, null);
+    // Read at most one byte past the limit so oversized input is detected
+    // without buffering more than limit + 1 bytes.
+    const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, maximumBytes + 1 - total));
+    const bytes = readSync(descriptor, chunk, 0, chunk.length, null);
     if (bytes === 0) break;
     total += bytes;
     if (total > maximumBytes) throw new Error(`Input exceeds the ${maximumBytes.toLocaleString()}-byte limit.`);
     chunks.push(chunk.subarray(0, bytes));
   }
   return Buffer.concat(chunks, total).toString('utf8');
+}
+
+function readStdinBounded(maximumBytes: number): string {
+  return readBoundedDescriptor(0, maximumBytes);
 }
 
 function readBoundedText(path: string, maximumBytes: number): string {
@@ -114,7 +119,7 @@ function readBoundedText(path: string, maximumBytes: number): string {
     const stat = fstatSync(descriptor);
     if (!stat.isFile()) throw new Error(`Input must be a regular file: ${resolvedPath}`);
     if (stat.size > maximumBytes) throw new Error(`Input exceeds the ${maximumBytes.toLocaleString()}-byte limit.`);
-    return readFileSync(descriptor, 'utf8');
+    return readBoundedDescriptor(descriptor, maximumBytes);
   } finally {
     closeSync(descriptor);
   }
@@ -128,11 +133,31 @@ function writeArtifact(path: string, html: string, force: boolean): void {
   if (existsSync(outPath) && !force) throw new Error(`Output already exists; pass --force to replace it: ${outPath}`);
   mkdirSync(dirname(outPath), { recursive: true });
   const temporaryPath = `${outPath}.tmp-${process.pid}`;
+  // Only remove the temporary file if this process created it; an exclusive
+  // open that fails with EEXIST must not delete someone else's file.
+  let createdTemporary = false;
   try {
-    writeFileSync(temporaryPath, html, { flag: 'wx', mode: 0o600 });
+    const descriptor = openSync(temporaryPath, 'wx', 0o600);
+    createdTemporary = true;
+    try {
+      writeFileSync(descriptor, html);
+    } finally {
+      closeSync(descriptor);
+    }
     if (force) {
-      rmSync(outPath, { force: true });
-      renameSync(temporaryPath, outPath);
+      try {
+        renameSync(temporaryPath, outPath);
+      } catch (error) {
+        // POSIX rename replaces atomically. Windows may refuse to replace an
+        // existing file, so remove-and-retry only there.
+        const code = (error as NodeJS.ErrnoException).code;
+        if (process.platform === 'win32' && (code === 'EPERM' || code === 'EEXIST')) {
+          rmSync(outPath, { force: true });
+          renameSync(temporaryPath, outPath);
+        } else {
+          throw error;
+        }
+      }
     } else {
       // A hard link makes the no-overwrite promise atomic: if another process
       // creates the destination after our earlier check, this operation fails
@@ -141,7 +166,7 @@ function writeArtifact(path: string, html: string, force: boolean): void {
       rmSync(temporaryPath);
     }
   } finally {
-    rmSync(temporaryPath, { force: true });
+    if (createdTemporary) rmSync(temporaryPath, { force: true });
   }
 }
 

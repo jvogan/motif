@@ -4,6 +4,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } fr
 import { createHash } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isDirectScriptExecution } from './lib/direct-script.mjs';
 
 import {
   createDeterministicZipBuffer,
@@ -211,7 +212,7 @@ export function buildMotifCodexPlugin({
   return { outputDirectory, zipPath, checksumPath, checksums };
 }
 
-const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const isMain = isDirectScriptExecution(process.argv[1], fileURLToPath(import.meta.url));
 if (isMain) {
   try {
     const result = buildMotifCodexPlugin();

@@ -142,10 +142,10 @@ describe('Golden Gate assembly feature locations', () => {
     const closingJunction = result.features.find((candidate) => (
       candidate.metadata.kind === 'junction_overhang' && candidate.metadata.circular === true
     ));
-    expect(closingJunction).toMatchObject({ start: 0, end: 24 });
-    expect(closingJunction?.subRanges).toEqual([
-      { start: 20, end: 24, strand: 1 },
-      { start: 0, end: 4, strand: 1 },
-    ]);
+    // The closing overhang is retained once at the origin of the circular
+    // product, so its junction is a single overhang-width span.
+    expect(closingJunction).toMatchObject({ start: 0, end: 4 });
+    expect(closingJunction?.subRanges).toBeUndefined();
+    expect(result.sequence.slice(0, 4)).toBe(closingJunction?.metadata.overhang);
   });
 });

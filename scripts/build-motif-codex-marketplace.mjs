@@ -3,6 +3,7 @@
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isDirectScriptExecution } from './lib/direct-script.mjs';
 
 import { buildMotifCodexPlugin } from './build-motif-codex-plugin.mjs';
 
@@ -70,7 +71,7 @@ export function buildMotifCodexMarketplace({
   };
 }
 
-const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const isMain = isDirectScriptExecution(process.argv[1], fileURLToPath(import.meta.url));
 if (isMain) {
   try {
     const result = buildMotifCodexMarketplace();

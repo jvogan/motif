@@ -6,6 +6,7 @@ import { homedir, tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
+import { isDirectScriptExecution } from './lib/direct-script.mjs';
 import {
   DEFAULT_CLAUDE_SCIENCE_CONFIG_PATH,
   MOTIF_LOCAL_CONNECTOR_NAME,
@@ -89,6 +90,9 @@ class StdioMcpClient {
     this.protocolError = null;
     this.lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
     this.lines.on('line', line => this.handleLine(line));
+    // A connector that exits between protocol steps closes its stdin; the exit
+    // handler below reports that, so a late write error must not crash the doctor.
+    child.stdin.on('error', () => {});
     child.once('error', error => this.failAll(`connector process failed to start (${error.code ?? 'unknown'})`));
     child.once('exit', (code, signal) => {
       if (this.pending.size > 0) {
@@ -363,7 +367,7 @@ export async function runDoctor(options) {
 
 const isMain = process.argv[1]
   && existsSync(process.argv[1])
-  && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+  && isDirectScriptExecution(process.argv[1], fileURLToPath(import.meta.url));
 
 if (isMain) {
   try {

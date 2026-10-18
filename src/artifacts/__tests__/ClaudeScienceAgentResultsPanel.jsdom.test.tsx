@@ -623,7 +623,7 @@ describe('ClaudeScienceAgentResultsPanel', () => {
     expect(screen.getAllByText('Stale')).toHaveLength(1);
     await user.click(screen.getByText('Provenance & Data'));
     expect(screen.getAllByText('Stale')).toHaveLength(2);
-    expect(screen.getByText(/pUC19's sequence has changed/)).toBeTruthy();
+    expect(document.querySelector('.motif-cs-freshness-reason')?.textContent).toContain("pUC19's sequence has changed");
   });
 
   it('reveals linked records and confirms removal with focus restoration', async () => {

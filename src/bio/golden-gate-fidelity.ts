@@ -497,9 +497,11 @@ export function assessGoldenGateAssemblyFidelity(input: {
     : 'empirical';
   const requestedJunctions = Array.isArray(input?.junctions) ? input.junctions : [];
   if (requestedMethod === 'hamming-heuristic') {
-    const length = requestedJunctions.find((junction) => typeof junction.leftOverhang === 'string' || typeof junction.rightOverhang === 'string')
-      ?.leftOverhang?.trim().length
-      ?? requestedJunctions.find((junction) => typeof junction.rightOverhang === 'string')?.rightOverhang?.trim().length
+    // Blank placeholder junctions must not pin the overhang length to 0.
+    const length = requestedJunctions
+      .flatMap((junction) => [junction.leftOverhang, junction.rightOverhang])
+      .map((value) => (typeof value === 'string' ? value.trim() : ''))
+      .find((value) => value.length > 0)?.length
       ?? 4;
     const competitors = uniqueOverhangs(requestedJunctions, length);
     const scores = requestedJunctions.map((junction, index) => heuristicJunctionScore(index, junction, competitors, length));

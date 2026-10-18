@@ -60,6 +60,8 @@ const tier = (warnings: readonly PrimerTailStructureWarning[] | undefined): numb
 describe('primer tail structure: veto on the annealing region, warn on the tail', () => {
   // Hashes of the complete result objects, recorded from the engine before the
   // tail rule existed. Any change to an untailed design changes one of them.
+  // The repeat-fixture hash was re-recorded when cross-dimer scoring began
+  // evaluating every overlap offset for primers of unequal length.
   it('returns byte-identical results for every untailed design', () => {
     const fixture = 'ATGCGTACGATCCGTAAGCTGACCTAGTCGATGCTACGGTCAATCG'.repeat(24);
     const cases: Array<[string, string, PrimerDesignParams, string]> = [
@@ -67,7 +69,7 @@ describe('primer tail structure: veto on the annealing region, warn on the tail'
       ['pET-28a standard', sequenceOf('pET-28a(+)'), workspaceParams({ targetStart: 50, targetEnd: 550 }), '765d29ba2111d029d6087ccfe372739d06110f7d4b8768649e7580a9975fb5cf'],
       ['pUC19 cloning', sequenceOf('pUC19'), workspaceParams({ ...lacZ, minLength: 20, maxLength: 32, targetTm: 62, tmTolerance: 4, flankingWindow: 75 }), '0c93fb3cb120b61ae7ba719838bb75c3bc2ee713df68018fc9a14f18e1f18395'],
       ['pUC19 touchdown', sequenceOf('pUC19'), workspaceParams({ ...lacZ, minLength: 22, maxLength: 30, targetTm: 65, tmTolerance: 3, minGC: 0.4 }), 'c0f541e0c949b74c29ad13b47f58b5e1cf0bb920ed3cb1a3d135dc7467ce6ecc'],
-      ['repeat fixture', fixture, workspaceParams({ targetStart: 350, targetEnd: 750 }), '8f5c4a1c7c8ec9dd11eccb9d15d849cdedc941ad099c1835a15f5b113555d22c'],
+      ['repeat fixture', fixture, workspaceParams({ targetStart: 350, targetEnd: 750 }), 'd4385dfb596c0653626495fa820e9900e1a882acad62078edbed09058d8727ee'],
       ['pBR322 wide scan', sequenceOf('pBR322'), workspaceParams({ targetStart: 1000, targetEnd: 1600, maxLength: 36, flankingWindow: 250, tmTolerance: 8, requireGcClamp: false }), 'f9f50ee42a4388736e13d52d3ff4f58d033310bbb044b42d11cea4e646d5f7f0'],
       ['pUC19 wide scan', sequenceOf('pUC19'), workspaceParams({ ...lacZ, maxLength: 36, flankingWindow: 250, tmTolerance: 8, requireGcClamp: false }), '2c52783946e2e010894d4f367493be5f0690760627a6451234840850f810de40'],
       ['engine defaults', 'ACGT'.repeat(80), { targetStart: 20, targetEnd: 80 }, '27d5a07671fa71ab129dc2efa1b9869faea310280fb695690e3d39cd119a5dcf'],
@@ -84,11 +86,13 @@ describe('primer tail structure: veto on the annealing region, warn on the tail'
     expect(sha256(designReversePrimerWithDiagnostics(puc, wide))).toBe('3fe9bb37ce86128e1980c9c763a644b35d8dcb85a9378ac1aa5e7622cd5b57a3');
   }, 120_000);
 
+  // The pUC19 ranking was re-recorded when cross-dimer scoring began
+  // evaluating every overlap offset for primers of unequal length.
   it('keeps the EcoRI/HindIII ranking that already returned pairs', () => {
     const tails = { forwardTail: tailOf('EcoRI'), reverseTail: tailOf('HindIII') };
     const puc = designPrimerPairWithDiagnostics(sequenceOf('pUC19'), workspaceParams({ ...lacZ, ...tails }));
     const pet = designPrimerPairWithDiagnostics(sequenceOf('pET-28a(+)'), workspaceParams({ targetStart: 50, targetEnd: 550, ...tails }));
-    expect(sha256(puc.pairs.map(pairKey))).toBe('35c793741e69e5ea013f8e4870557809d02eb73a6675e9e2dcc1ce5738b2ab54');
+    expect(sha256(puc.pairs.map(pairKey))).toBe('d18e2f9bcffaf12f745a0efb62abf02a3d87190f2c39c8f11074ad4def8a1a52');
     expect(sha256(pet.pairs.map(pairKey))).toBe('d574945aafd9bfa4b7f48d0d9e51f2dc39841c5d6944ffe05e1f5f11cf980a9e');
     expect([...puc.pairs, ...pet.pairs].every((pair) => primerPairTailStructureWarnings(pair).length === 0)).toBe(true);
   }, 120_000);

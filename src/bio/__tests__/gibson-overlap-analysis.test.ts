@@ -128,7 +128,9 @@ describe('Gibson overlap analysis', () => {
 
   it('bounds feature metadata as plain UTF-8 data before assembly', () => {
     const metadata = Object.fromEntries(
-      Array.from({ length: 9 }, (_, index) => [`label-${index}`, '😀'.repeat(2_048)]),
+      // 163,840 UTF-16 code units but 327,680 UTF-8 bytes: only a byte count
+      // exceeds the 262,144-byte per-feature metadata budget.
+      Array.from({ length: 5 }, (_, index) => [`label-${index}`, '😀'.repeat(16_384)]),
     );
     const validation = validateGibsonFragments([
       {

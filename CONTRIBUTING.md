@@ -35,6 +35,12 @@ npm run validate:plugin
 `npm run validate:plugin` requires the Claude CLI. If it is unavailable, say so
 in the pull request and report every other completed check.
 
+The browser suites launch the Chromium build Playwright downloads. Where a
+compatible Chromium is already installed and a download is unwanted, set
+`MOTIF_CHROMIUM_EXECUTABLE` to that binary's absolute path before running
+`npm run test:e2e` or `npm run test:e2e:msa`; the variable is ignored unless it
+names an existing file.
+
 For a visible change, also run `npm run preview:motif` and exercise wide,
 narrow, light, dark, resized-panel, mouse, and keyboard states in a real
 browser. DOM assertions alone do not show whether a control is legible or

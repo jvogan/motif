@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -63,6 +64,30 @@ export type ClaudeScienceAssemblyWorkspaceProps = {
 };
 
 type OrderedPart = { key: string; recordId: string };
+
+/** Controls inside a part row, in DOM order: record picker, move up, move down, remove. */
+const PART_CONTROL_PICKER = 0;
+const PART_CONTROL_UP = 1;
+const PART_CONTROL_DOWN = 2;
+const PART_CONTROL_SELECTOR = 'select, button';
+
+/** Where keyboard focus should land once a reorder or removal has rendered. */
+type PendingPartFocus =
+  | { kind: 'part'; key: string; control: number }
+  | { kind: 'removed'; index: number };
+
+function isDisabledControl(element: HTMLElement): boolean {
+  return (element as HTMLButtonElement | HTMLSelectElement).disabled === true;
+}
+
+/** Candidate controls in priority order: the same control, its opposite move button, then the picker. */
+function focusCandidates(controls: readonly HTMLElement[], control: number): HTMLElement[] {
+  const order = [control];
+  if (control === PART_CONTROL_UP) order.push(PART_CONTROL_DOWN);
+  if (control === PART_CONTROL_DOWN) order.push(PART_CONTROL_UP);
+  order.push(PART_CONTROL_PICKER);
+  return order.flatMap((position) => (controls[position] ? [controls[position]] : []));
+}
 
 const TYPE_IIS_ENZYMES = ['BsaI', 'BbsI', 'BsmBI', 'Esp3I', 'SapI', 'BspQI'] as const;
 const ASSEMBLY_MODES: readonly ClaudeScienceAssemblyMode[] = ['golden_gate', 'ligation'];
@@ -149,6 +174,7 @@ export function ClaudeScienceAssemblyWorkspace({
   const workspaceRef = useRef<HTMLElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const createIdRef = useRef(createId);
+  const pendingFocusRef = useRef<PendingPartFocus | null>(null);
   const [mode, setMode] = useState<ClaudeScienceAssemblyMode>(initialMode);
   const [orderedParts, setOrderedParts] = useState<OrderedPart[]>(() => (
     initialParts(records, initialRecordIds, createIdRef.current)
@@ -255,9 +281,42 @@ export function ClaudeScienceAssemblyWorkspace({
   const resultSaved = savedSignatures.has(resultSaveSignature);
   const productSaved = savedSignatures.has(productSaveSignature);
 
-  const movePart = useCallback((index: number, offset: -1 | 1) => {
+  // Rows are keyed, so a reorder moves DOM nodes; a disabled or removed control
+  // would otherwise drop focus to the document body. Restore it after the render.
+  useLayoutEffect(() => {
+    const pending = pendingFocusRef.current;
+    if (!pending) return;
+    pendingFocusRef.current = null;
+    const root = workspaceRef.current;
+    if (!root) return;
+    const rowAt = (position: number) => root.querySelector<HTMLElement>(
+      `[data-testid="assembly-part-row-${position}"]`,
+    );
+    const focusFirstEnabled = (candidates: readonly (HTMLElement | null)[]) => {
+      candidates.find((element) => element && !isDisabledControl(element))?.focus();
+    };
+    const controlsOf = (row: HTMLElement | null) => (
+      row ? [...row.querySelectorAll<HTMLElement>(PART_CONTROL_SELECTOR)] : []
+    );
+    if (pending.kind === 'part') {
+      const position = orderedParts.findIndex((part) => part.key === pending.key);
+      if (position < 0) return;
+      focusFirstEnabled(focusCandidates(controlsOf(rowAt(position)), pending.control));
+      return;
+    }
+    const target = Math.min(pending.index, orderedParts.length - 1);
+    focusFirstEnabled([
+      ...(target >= 0 ? focusCandidates(controlsOf(rowAt(target)), PART_CONTROL_PICKER) : []),
+      root.querySelector<HTMLElement>('[data-testid="assembly-add-record"]'),
+      root.querySelector<HTMLElement>('[data-testid="assembly-add-part"]'),
+    ]);
+  }, [orderedParts]);
+
+  const movePart = useCallback((index: number, offset: -1 | 1, control: number = offset < 0 ? PART_CONTROL_UP : PART_CONTROL_DOWN) => {
     const destination = index + offset;
     if (destination < 0 || destination >= orderedParts.length) return;
+    const movedKey = orderedParts[index]?.key;
+    if (movedKey !== undefined) pendingFocusRef.current = { kind: 'part', key: movedKey, control };
     const movedRecord = recordsById.get(orderedParts[index]?.recordId ?? '');
     setOrderedParts((current) => {
       if (index >= current.length || destination >= current.length) return current;
@@ -269,7 +328,9 @@ export function ClaudeScienceAssemblyWorkspace({
   }, [orderedParts, recordsById]);
 
   const removePart = useCallback((key: string) => {
-    const removed = recordsById.get(orderedParts.find((part) => part.key === key)?.recordId ?? '');
+    const removedIndex = orderedParts.findIndex((part) => part.key === key);
+    const removed = recordsById.get(orderedParts[removedIndex]?.recordId ?? '');
+    if (removedIndex >= 0) pendingFocusRef.current = { kind: 'removed', index: removedIndex };
     setOrderedParts((current) => current.filter((part) => part.key !== key));
     setStatus(`${removed?.name ?? 'Part'} removed from the assembly.`);
   }, [orderedParts, recordsById]);
@@ -288,7 +349,9 @@ export function ClaudeScienceAssemblyWorkspace({
   const handlePartKeyDown = useCallback((event: KeyboardEvent<HTMLDivElement>, index: number) => {
     if (!event.altKey || (event.key !== 'ArrowUp' && event.key !== 'ArrowDown')) return;
     event.preventDefault();
-    movePart(index, event.key === 'ArrowUp' ? -1 : 1);
+    const controls = [...event.currentTarget.querySelectorAll<HTMLElement>(PART_CONTROL_SELECTOR)];
+    const focused = controls.indexOf(event.target as HTMLElement);
+    movePart(index, event.key === 'ArrowUp' ? -1 : 1, focused < 0 ? PART_CONTROL_PICKER : focused);
   }, [movePart]);
 
   const handleModeTabKeyDown = useCallback((event: KeyboardEvent<HTMLButtonElement>, currentMode: ClaudeScienceAssemblyMode) => {
@@ -483,17 +546,17 @@ export function ClaudeScienceAssemblyWorkspace({
                         <small>{record.sequence.length.toLocaleString()} bp</small>
                       </label>
                       {mode === 'ligation' ? (
-                        <div className="motif-cs-assembly-end-pair" aria-label={`${record.name} end chemistry`}>
+                        <div className="motif-cs-assembly-end-pair" role="group" aria-label={`${record.name} end chemistry`}>
                           <span><small>Left</small>{endLabel(record.overhang5, record.overhang5Type)}</span>
                           <span><small>Right</small>{endLabel(record.overhang3, record.overhang3Type)}</span>
                         </div>
                       ) : (
-                        <div className="motif-cs-assembly-end-pair" aria-label={`${record.name} Type IIS boundaries`}>
+                        <div className="motif-cs-assembly-end-pair" role="group" aria-label={`${record.name} Type IIS boundaries`}>
                           <span><small>Left fusion</small>{goldenGatePart?.leftOverhang ?? '—'}</span>
                           <span><small>Right fusion</small>{goldenGatePart?.rightOverhang ?? '—'}</span>
                         </div>
                       )}
-                      <div className="motif-cs-assembly-part-actions" aria-label={`Reorder ${record.name}`}>
+                      <div className="motif-cs-assembly-part-actions" role="group" aria-label={`Reorder ${record.name}`}>
                         <button
                           type="button"
                           aria-label={`Move ${record.name} up`}

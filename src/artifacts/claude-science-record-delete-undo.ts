@@ -79,9 +79,15 @@ export function planRecordDeleteUndo<P extends RecordDeleteWorkspace, S extends 
   } as P;
   const artifactState = { ...currentState };
   for (const key of PER_RECORD_STATE_KEYS) {
-    const restored: Record<string, unknown> = { ...currentState[key] };
+    // Null-prototype map so a record id such as `__proto__` stays an ordinary
+    // data key instead of hitting the prototype setter.
+    const restored = Object.assign(
+      Object.create(null) as Record<string, unknown>,
+      currentState[key] as Record<string, unknown>,
+    );
+    const previous = beforeState[key] as Record<string, unknown>;
     for (const id of deletedRecordIds) {
-      const value = (beforeState[key] as Record<string, unknown>)[id];
+      const value = Object.hasOwn(previous, id) ? previous[id] : undefined;
       if (value !== undefined && restored[id] === undefined) restored[id] = value;
     }
     (artifactState as Record<string, unknown>)[key] = restored;

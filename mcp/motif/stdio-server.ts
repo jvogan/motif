@@ -52,6 +52,15 @@ async function main(): Promise<void> {
       trace: event => console.error(`[motif-mcp-trace] ${JSON.stringify(event)}`),
     } : {}),
   });
+  // Surface protocol-level failures (for example oversized or malformed
+  // frames) on stderr instead of dropping them silently. Only a bounded,
+  // sanitized message is logged; frame content is never included.
+  server.server.onerror = (error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    // eslint-disable-next-line no-control-regex
+    const bounded = message.replace(/[\u0000-\u001f\u007f-\u009f]+/gu, ' ').trim().slice(0, 256);
+    console.error(`[motif] protocol error: ${bounded}`);
+  };
   await server.connect(createMotifStdioServerTransport());
   console.error(`[motif] v${version} ready on stdio`);
 }

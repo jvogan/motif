@@ -117,4 +117,29 @@ describe('empirical Golden Gate fidelity', () => {
     expect(assessment.assembly.heuristicScore).not.toBeNull();
     expect(assessment.warnings.join(' ')).toMatch(/explicitly heuristic/i);
   });
+
+  it('ignores blank placeholder junctions when inferring the Hamming overhang length', () => {
+    const valid = [{ leftOverhang: 'GGAG', rightOverhang: 'CTCC' }, { leftOverhang: 'AATG', rightOverhang: 'CATT' }];
+    const withBlank = assessGoldenGateAssemblyFidelity({
+      condition: { ...BSAI, enzyme: 'BsaI' },
+      method: 'hamming',
+      junctions: [{ leftOverhang: '', rightOverhang: '' }, ...valid],
+    });
+    const withoutBlank = assessGoldenGateAssemblyFidelity({
+      condition: { ...BSAI, enzyme: 'BsaI' },
+      method: 'hamming',
+      junctions: valid,
+    });
+    expect(withBlank.junctions[0]).toMatchObject({ status: 'unknown', heuristicScore: null });
+    expect(withBlank.assembly).toMatchObject({ junctionCount: 3, knownJunctions: 2, unknownJunctions: 1 });
+    expect(withBlank.assembly.coverage).toBeCloseTo(2 / 3);
+    // Per-junction scores match apart from their position in the input array.
+    const withoutIndex = ({ index: _index, ...rest }: { index: number }) => rest;
+    expect(withBlank.junctions.slice(1).map(withoutIndex)).toEqual(withoutBlank.junctions.map(withoutIndex));
+    expect(withoutBlank.junctions.map((junction) => junction.heuristicScore)).toEqual([0.75, 0.5]);
+    expect(withBlank.junctions.slice(1).map((junction) => junction.nearestMismatchDistance)).toEqual([3, 2]);
+    expect(withoutBlank.assembly).toMatchObject({ knownJunctions: 2, unknownJunctions: 0, heuristicScore: 0.375 });
+    // Assembly-level heuristic product is withheld while any junction is unknown (existing policy).
+    expect(withBlank.assembly.heuristicScore).toBeNull();
+  });
 });

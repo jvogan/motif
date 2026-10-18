@@ -341,11 +341,20 @@ export function pcrResultRangeOverlayInputs(
   topology: Topology,
 ): MapRangeOverlayInput[] {
   const inputs: MapRangeOverlayInput[] = [];
+  // A circular binding that crosses the origin is reported with its end
+  // inside the template, so unwrap it the way the amplicon range is below.
+  const unwrappedEnd = (binding: { bindStart: number; bindEnd: number }) => (
+    topology === 'circular' && binding.bindEnd < binding.bindStart
+      ? binding.bindEnd + sequenceLength
+      : binding.bindEnd
+  );
+  const forwardEnd = unwrappedEnd(result.forward);
+  const reverseEnd = unwrappedEnd(result.reverse);
   const fwd = primerCandidateRangeOverlayInput({
     direction: 'forward',
     start: result.forward.bindStart,
-    end: result.forward.bindEnd,
-    length: result.forward.bindEnd - result.forward.bindStart,
+    end: forwardEnd,
+    length: forwardEnd - result.forward.bindStart,
     tm: result.forward.tm,
   }, 0, sequenceLength);
   if (fwd) {
@@ -356,8 +365,8 @@ export function pcrResultRangeOverlayInputs(
   const rev = primerCandidateRangeOverlayInput({
     direction: 'reverse',
     start: result.reverse.bindStart,
-    end: result.reverse.bindEnd,
-    length: result.reverse.bindEnd - result.reverse.bindStart,
+    end: reverseEnd,
+    length: reverseEnd - result.reverse.bindStart,
     tm: result.reverse.tm,
   }, 1, sequenceLength);
   if (rev) {

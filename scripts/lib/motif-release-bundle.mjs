@@ -392,8 +392,11 @@ export function verifyReleaseBundle(bundlePath, { expectedVersion = null, expect
   const traversalState = { directoryNodes: 0, entries: 0, totalBytes: 0 };
   const actualFiles = listFiles(root, root, [], traversalState);
   const metadataFiles = [RELEASE_MANIFEST_FILENAME, RELEASE_CHECKSUM_FILENAME];
-  const expectedAll = [...expectedFiles, ...metadataFiles].sort((left, right) => left.localeCompare(right));
-  if (JSON.stringify(actualFiles) !== JSON.stringify(expectedAll)) {
+  // The directory walk order and a full-path sort disagree when a directory
+  // name is a prefix of a sibling file, so normalize both sides identically.
+  const byCodeUnit = (left, right) => (left < right ? -1 : left > right ? 1 : 0);
+  const expectedAll = [...expectedFiles, ...metadataFiles].sort(byCodeUnit);
+  if (JSON.stringify([...actualFiles].sort(byCodeUnit)) !== JSON.stringify(expectedAll)) {
     throw new Error('Release bundle contains an unexpected or missing file');
   }
   for (const [relativePath, digest] of checksumEntries.sort(([left], [right]) => left.localeCompare(right))) {

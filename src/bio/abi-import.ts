@@ -515,7 +515,13 @@ export function parseAbiImport(
     warnings.push('One or more peak positions fall outside the decoded trace sample range.');
   }
 
-  const storedReverseComplement = parseStoredReverseComplement(view, entries);
+  // RevC1 is optional provenance metadata; a malformed tag must not reject the trace.
+  let storedReverseComplement: boolean | null = null;
+  try {
+    storedReverseComplement = parseStoredReverseComplement(view, entries);
+  } catch (error) {
+    warnings.push(`RevC1 source metadata was ignored: ${error instanceof Error ? error.message : String(error)}`);
+  }
   const sampleName = readOptionalString(view, entries, 'SMPL1', warnings);
   const sampleWell = readOptionalString(view, entries, 'TUBE1', warnings);
   const instrumentModel = readOptionalString(view, entries, 'MODL1', warnings);

@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isDirectScriptExecution } from './lib/direct-script.mjs';
 
 import {
   inspectProtocol,
@@ -14,6 +15,7 @@ const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const PLUGIN_NAME = 'motif-for-claude-science';
 const MCP_SERVER_NAME = 'motif';
 const MAX_CODEX_OUTPUT_BYTES = 4 * 1024 * 1024;
+const CODEX_COMMAND_TIMEOUT_MS = 30_000;
 const SEMVER_PATTERN = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u;
 const MARKETPLACE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
 
@@ -37,7 +39,12 @@ export function runCodexCommand(args, options = {}) {
     encoding: 'utf8',
     shell: false,
     maxBuffer: MAX_CODEX_OUTPUT_BYTES,
+    timeout: CODEX_COMMAND_TIMEOUT_MS,
+    killSignal: 'SIGKILL',
   });
+  if (result.error?.code === 'ETIMEDOUT') {
+    throw new Error(`Codex command timed out after ${CODEX_COMMAND_TIMEOUT_MS / 1000} seconds: codex ${args.join(' ')}`);
+  }
   if (result.error || result.status !== 0) {
     const detail = boundedDiagnostic(result.stderr || result.error?.message);
     throw new Error(`Codex command failed: codex ${args.join(' ')}${detail ? ` (${detail})` : ''}`);
@@ -125,7 +132,7 @@ export async function inspectInstalledCodexPlugin(options = {}) {
     marketplaceName: options.marketplaceName,
   });
   const mcpState = runCodex(['mcp', 'get', MCP_SERVER_NAME]);
-  if (!/^\s*enabled:\s*true\s*$/mu.test(mcpState)) {
+  if (!/^[ \t]*enabled:[ \t]*true[ \t]*\r?$/mu.test(mcpState)) {
     throw new Error('Motif is installed, but its MCP server is not enabled in the active Codex profile.');
   }
   const pluginRoot = installedPluginRoot(codexHome, plugin);
@@ -188,7 +195,7 @@ async function main() {
   process.stdout.write('  Start a new Codex thread after any install or upgrade.\n');
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === SCRIPT_PATH) {
+if (isDirectScriptExecution(process.argv[1], SCRIPT_PATH)) {
   main().catch(error => {
     process.stderr.write(`\u2717 Installed Motif Codex plugin doctor failed: ${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = 1;

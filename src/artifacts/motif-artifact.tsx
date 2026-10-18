@@ -29,7 +29,7 @@ import {
   type GenBankQualifier,
   type GenBankQualifierTruncation,
 } from '../bio/genbank-parser';
-import { calculateDnaMolecularWeight, gcContent, meltingTemperature, nucleotideComposition, proteinMolecularWeight } from '../bio/gc-content';
+import { calculateDnaMolecularWeight, gcContent, gcContentFromComposition, meltingTemperature, meltingTemperatureFromComposition, nucleotideComposition, proteinMolecularWeight } from '../bio/gc-content';
 import { findORFs } from '../bio/orf-detection';
 import type { DigestFragment } from '../bio/restriction-digest';
 import {
@@ -2346,12 +2346,15 @@ export function normalizeRecord(
   }
   const topology = normalizeTopology(record.topology, type);
   const rawId = normalizeOptionalText(record.id) ?? normalizeOptionalText(record.name) ?? `record-${index + 1}`;
-  const id = rawId || `record-${index + 1}`;
+  // Record and feature ids key plain per-record state maps throughout the
+  // runtime, so an id that names an object prototype property is replaced
+  // with a generated one. The visible name is kept as supplied.
+  const id = rawId && !UNSAFE_OBJECT_KEYS.has(rawId) ? rawId : `record-${index + 1}`;
   const rawFeatures = [
     ...(Array.isArray(record.features) ? record.features : []),
     ...(Array.isArray(record.annotations) ? record.annotations : []),
   ];
-  const usedFeatureIds = new Set<string>();
+  const usedFeatureIds = new Set<string>(UNSAFE_OBJECT_KEYS);
   const features = rawFeatures
     .map((feature, featureIndex) => normalizeFeature(feature, featureIndex, sequence.length))
     .filter((feature): feature is Feature => feature !== null)
@@ -2393,7 +2396,7 @@ function normalizeRecords(
   records: ArtifactRecordInput[],
   implicitProposals = true,
 ): ArtifactVector[] {
-  const usedIds = new Set<string>();
+  const usedIds = new Set<string>(UNSAFE_OBJECT_KEYS);
   const normalized: ArtifactVector[] = [];
 
   records.forEach((record, index) => {
@@ -2417,7 +2420,8 @@ function safeSlug(value: string): string {
 }
 
 function uniqueRecordId(base: string, records: readonly ArtifactVector[], preserveBase = false): string {
-  const used = new Set(records.map((record) => record.id));
+  // Prototype property names are never issued as ids; see normalizeRecord.
+  const used = new Set([...UNSAFE_OBJECT_KEYS, ...records.map((record) => record.id)]);
   if (preserveBase && base && !used.has(base)) return base;
   if (preserveBase && base) {
     for (let index = 2; index < 10000; index += 1) {
@@ -3157,7 +3161,7 @@ function assertArtifactCheckpointRecordsRestorable(records: readonly ArtifactVec
 }
 
 function scanRestrictionSitesForRecord(
-  record: ArtifactVector,
+  record: Pick<ArtifactVector, 'type' | 'sequence' | 'topology' | 'sites'>,
   scanEnzymes: readonly RestrictionEnzyme[],
 ): readonly RestrictionSite[] {
   // Nothing to scan is not the same as nothing to report: sites that arrived in
@@ -4245,7 +4249,7 @@ export function parseImportedRecords(
   const recordJson = parseArtifactRecordJson(text);
   if (recordJson) return [recordJson as ArtifactRecordInput];
 
-  if (/^\s*LOCUS\s/m.test(text)) {
+  if (/^[ \t]*LOCUS[ \t]/m.test(text)) {
     let records: ReturnType<typeof parseGenBank>;
     try {
       records = parseGenBank(text);
@@ -6142,28 +6146,33 @@ type SequenceEditFlash = { start: number; end: number; key: number };
 
 const EMPTY_SEQUENCE_EDIT_NOTICE = 'A record needs at least one base, so nothing was deleted. To remove the whole record, use Delete entry in Entry Details.';
 
+function portableTranslationLayer(layer: InlineTranslationTrack | PortableTranslationTrack): PortableTranslationTrack {
+  return {
+    id: layer.id,
+    label: layer.label,
+    start: layer.start,
+    end: layer.end,
+    strand: layer.strand,
+    frame: layer.frame,
+    translationTableId: layer.translationTableId,
+    source: 'layer' as const,
+    color: layer.color,
+    ...(layer.needsReview ? { needsReview: true } : {}),
+    ...(layer.completeCds ? { completeCds: true } : {}),
+    ...(layer.featureId ? { featureId: layer.featureId } : {}),
+  };
+}
+
 function portableTranslationLayersByRecord(
   value: Readonly<Record<string, readonly InlineTranslationTrack[]>>,
 ): Record<string, PortableTranslationTrack[]> {
   return Object.fromEntries(
-    Object.entries(value).map(([id, layers]) => [
-      id,
-      layers.map((layer) => ({
-        id: layer.id,
-        label: layer.label,
-        start: layer.start,
-        end: layer.end,
-        strand: layer.strand,
-        frame: layer.frame,
-        translationTableId: layer.translationTableId,
-        source: 'layer' as const,
-        color: layer.color,
-        ...(layer.needsReview ? { needsReview: true } : {}),
-        ...(layer.completeCds ? { completeCds: true } : {}),
-        ...(layer.featureId ? { featureId: layer.featureId } : {}),
-      })),
-    ]),
+    Object.entries(value).map(([id, layers]) => [id, layers.map(portableTranslationLayer)]),
   );
+}
+
+function translationLayerListSignature(layers: readonly PortableTranslationTrack[]): string {
+  return JSON.stringify(layers.map(portableTranslationLayer));
 }
 
 // Accepted keystrokes for base editing: canonical bases + IUPAC ambiguity codes.
@@ -6501,6 +6510,15 @@ function App() {
       workbenchNoticeTimerRef.current = null;
       setWorkbenchNotice(null);
     }, action ? 8_000 : tone === 'error' ? 5_000 : 2_800);
+  }, []);
+
+  // A workspace replacement takes the notice down with it: its action (such
+  // as Undo for a delete) belongs to the workspace that is gone.
+  const withdrawWorkbenchNotice = useCallback(() => {
+    if (workbenchNoticeTimerRef.current !== null) window.clearTimeout(workbenchNoticeTimerRef.current);
+    workbenchNoticeTimerRef.current = null;
+    workbenchNoticeActionRef.current = null;
+    setWorkbenchNotice(null);
   }, []);
 
   useEffect(() => () => {
@@ -6887,9 +6905,22 @@ function App() {
   const scanEnzymes = useMemo(() => {
     return restrictionEnzymesForSources(enzymeSources, customEnzymes);
   }, [customEnzymes, enzymeSources]);
+  // Keyed on the fields the scan reads, so a rename or feature edit does not
+  // rescan the whole sequence.
+  const {
+    type: scanRecordType,
+    sequence: scanRecordSequence,
+    topology: scanRecordTopology,
+    sites: scanRecordSites,
+  } = vector;
   const restrictionSites = useMemo(
-    () => scanRestrictionSitesForRecord(vector, scanEnzymes),
-    [vector, scanEnzymes],
+    () => scanRestrictionSitesForRecord({
+      type: scanRecordType,
+      sequence: scanRecordSequence,
+      topology: scanRecordTopology,
+      sites: scanRecordSites,
+    }, scanEnzymes),
+    [scanEnzymes, scanRecordSequence, scanRecordSites, scanRecordTopology, scanRecordType],
   );
   const enzymeNames = useMemo(() => {
     const names = new Set<string>();
@@ -7127,6 +7158,7 @@ function App() {
       analysisAssets: [],
     };
     resetRecordTransientState();
+    withdrawWorkbenchNotice();
     customEnzymesRef.current = [];
     artifactStateRef.current = normalizeArtifactDurableState(undefined, new Map());
     setCustomEnzymes([]);
@@ -7138,7 +7170,7 @@ function App() {
     setShowTranslations(false);
     resetWorkflowWindowState();
     setHasSessionCheckpoint(false);
-  }, [resetRecordTransientState, resetWorkflowWindowState]);
+  }, [resetRecordTransientState, resetWorkflowWindowState, withdrawWorkbenchNotice]);
 
   const applyArtifactDatabaseRestore = useCallback((
     restored: PreparedArtifactDatabaseRestore,
@@ -7436,6 +7468,7 @@ function App() {
         ?? DEFAULT_ENZYME_SOURCES;
       rememberActiveSequenceScroll();
       resetWorkspaceViewState();
+      withdrawWorkbenchNotice();
       payloadRef.current = nextPayload;
       selectedRecordIdRef.current = nextPayload.selectedRecordId;
       artifactStateRef.current = prepared.artifactState;
@@ -7851,7 +7884,7 @@ function App() {
       delete window.motifClearWorkspace;
       delete window.motifHelp;
     };
-  }, [applyArtifactDatabaseRestore, clearWorkspaceData, describeRuntimePayloadSnapshot, rememberActiveSequenceScroll, removeRecords, resetWorkflowWindowState, resetWorkspaceViewState, selectRecord]);
+  }, [applyArtifactDatabaseRestore, clearWorkspaceData, describeRuntimePayloadSnapshot, rememberActiveSequenceScroll, removeRecords, resetWorkflowWindowState, resetWorkspaceViewState, selectRecord, withdrawWorkbenchNotice]);
 
   useEffect(() => {
     setSelection((current) => {
@@ -8020,13 +8053,20 @@ function App() {
     ? visibleRestrictionSites.filter((site) => restrictionSelectionHasSite(selectedRestrictionTickSet, site))
     : [];
   // Live stats for the current selection (feature or range), shown in the inspector.
-  const inspectorSelectionSeq = selectedFeature
-    ? sequenceForFeature(sequence, selectedFeature, sequenceType)
-    : selectedMapRange
-      ? sequenceForRange(sequence, selectedMapRange, topology)
-      : '';
-  const inspectorGc = isEditable && inspectorSelectionSeq ? gcContent(inspectorSelectionSeq) : null;
-  const inspectorTm = isEditable && inspectorSelectionSeq ? meltingTemperature(inspectorSelectionSeq) : null;
+  const inspectorSelectionSeq = useMemo(() => (
+    selectedFeature
+      ? sequenceForFeature(sequence, selectedFeature, sequenceType)
+      : selectedMapRange
+        ? sequenceForRange(sequence, selectedMapRange, topology)
+        : ''
+  ), [selectedFeature, selectedMapRange, sequence, sequenceType, topology]);
+  // One composition pass gives both GC and Tm.
+  const inspectorComposition = useMemo(
+    () => isEditable && inspectorSelectionSeq ? nucleotideComposition(inspectorSelectionSeq) : null,
+    [inspectorSelectionSeq, isEditable],
+  );
+  const inspectorGc = inspectorComposition ? gcContentFromComposition(inspectorComposition) : null;
+  const inspectorTm = inspectorComposition ? meltingTemperatureFromComposition(inspectorComposition) : null;
   const canAnnotateSelectedMapRange = !!selectedMapRange;
   // Current selection distilled for the record summary (Claude-legible snapshot).
   const selectionSummary = useMemo(() => {
@@ -8970,6 +9010,12 @@ function App() {
 
       if (inForm || mod) return;
       if (event.key === 'Escape') {
+        // Escape that closes a rail tool popover or the Add entry panel stops
+        // there. Those panels listen on the document too, so whichever listener
+        // runs first, the selection, caret and locked translation survive.
+        if (event.defaultPrevented) return;
+        if (document.querySelector('#motif-cs-add-entry[open]')) return;
+        if (!toolsPinned && document.querySelector('.motif-cs-inspector details[name="motif-cs-tools"][open]')) return;
         setLockedTranslateTarget(null);
         setSelection(null);
         setCaret(null);
@@ -8987,7 +9033,7 @@ function App() {
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [copyText, handleZoomIn, handleZoomOut, handleZoomReset, pendingDatabaseRestore, recordId, selectedFeature, selectedMapRange, sequence, sequenceType, topology]);
+  }, [copyText, handleZoomIn, handleZoomOut, handleZoomReset, pendingDatabaseRestore, recordId, selectedFeature, selectedMapRange, sequence, sequenceType, toolsPinned, topology]);
 
   // ── Base editing ──────────────────────────────────────────────────────────
   // Mutations run through the real Motif mutate engine (feature/subRange
@@ -9104,7 +9150,11 @@ function App() {
       notes: collections.notes,
       workflowResults: collections.workflowResults,
     };
-    const nextTranslationLayersByRecord = { ...artifactStateRef.current.translationLayersByRecord };
+    // Null-prototype copy so a record id such as `__proto__` is an ordinary key.
+    const nextTranslationLayersByRecord: Record<string, PortableTranslationTrack[]> = Object.assign(
+      Object.create(null),
+      artifactStateRef.current.translationLayersByRecord,
+    );
     if (before.hadTranslationLayerEntry || anchors.translationLayers.length > 0) {
       nextTranslationLayersByRecord[recordId] = anchors.translationLayers;
     } else {
@@ -9293,9 +9343,11 @@ function App() {
       notes: collections.notes,
       workflowResults: collections.workflowResults,
     };
-    const restoredTranslationLayersByRecord = {
-      ...artifactStateRef.current.translationLayersByRecord,
-    };
+    // Null-prototype copy so a record id such as `__proto__` is an ordinary key.
+    const restoredTranslationLayersByRecord: Record<string, PortableTranslationTrack[]> = Object.assign(
+      Object.create(null),
+      artifactStateRef.current.translationLayersByRecord,
+    );
     if (snap.hadTranslationLayerEntry || snap.translationLayers.length > 0) {
       restoredTranslationLayersByRecord[recordId] = snap.translationLayers;
     } else {
@@ -9312,10 +9364,20 @@ function App() {
       showWorkbenchNotice(`That step could not be restored, so the record is unchanged. ${error.message}`, 'error');
       return false;
     }
+    const layersChanged = translationLayerListSignature(artifactStateRef.current.translationLayersByRecord[recordId] ?? [])
+      !== translationLayerListSignature(nextArtifactState.translationLayersByRecord[recordId] ?? []);
     payloadRef.current = nextPayload;
     artifactStateRef.current = nextArtifactState;
     setPayload(nextPayload);
     setTranslationLayersByRecord(nextArtifactState.translationLayersByRecord);
+    // A Translate target locked to a pinned layer describes the layer as it was
+    // before this step; withdraw it so the panel cannot preview a layer state
+    // that Undo or Redo has just replaced.
+    if (layersChanged) {
+      setLockedTranslateTarget((locked) => (
+        locked?.recordId === recordId && locked.target.translationSource === 'layer' ? null : locked
+      ));
+    }
     setSelectedTranslationLayerByRecord((selected) => ({
       ...selected,
       [recordId]: snap.selectedTranslationLayerId
@@ -9448,6 +9510,74 @@ function App() {
     bumpEditHistory();
     return true;
   }, [captureEditSnapshot, recordId]);
+
+  // Pinning, editing, re-coding, removing and clearing translation layers go on
+  // the same history as base and feature edits. Undo then reverses the most
+  // recent action whatever it was, and a base-edit Undo can no longer replace
+  // the layers with a snapshot taken before a layer was pinned. `buildLayers`
+  // returns null when there is nothing to change; an unchanged list records
+  // nothing either. The flag that marks a feature's layers for review is not a
+  // separate step: the feature edit that causes it already records it.
+  const commitTranslationLayerHistory = useCallback((
+    buildLayers: (layers: readonly PortableTranslationTrack[]) => readonly (InlineTranslationTrack | PortableTranslationTrack)[] | null,
+    // The layer selected after this step (null for none). When omitted, the
+    // current selection is kept if its layer survives the step.
+    selectedLayerIdAfter?: string | null,
+  ): boolean => {
+    const before = captureEditSnapshot();
+    if (!before) return false;
+    const built = buildLayers(before.translationLayers);
+    if (!built) return false;
+    const nextLayers = built.map(portableTranslationLayer);
+    if (
+      before.hadTranslationLayerEntry
+      && translationLayerListSignature(nextLayers) === translationLayerListSignature(before.translationLayers)
+    ) {
+      return false;
+    }
+    // Null-prototype copy so a record id such as `__proto__` is an ordinary key.
+    const nextTranslationLayersByRecord: Record<string, PortableTranslationTrack[]> = Object.assign(
+      Object.create(null),
+      artifactStateRef.current.translationLayersByRecord,
+    );
+    nextTranslationLayersByRecord[recordId] = nextLayers;
+    let nextArtifactState: ArtifactDurableState;
+    try {
+      // The same range and count validation every checkpoint applies, so a
+      // layer the record cannot hold is refused here rather than at save.
+      nextArtifactState = normalizeArtifactDurableState({
+        ...artifactStateRef.current,
+        translationLayersByRecord: nextTranslationLayersByRecord,
+      }, new Map(payloadRef.current.records.map((record) => [record.id, record.sequence.length])));
+    } catch (error) {
+      showWorkbenchNotice(`The translation layer change was not applied. ${errorMessage(error)}`, 'error');
+      return false;
+    }
+    const restoredLayers = nextArtifactState.translationLayersByRecord[recordId] ?? [];
+    const keptSelection = before.selectedTranslationLayerId
+      && restoredLayers.some((layer) => layer.id === before.selectedTranslationLayerId)
+      ? before.selectedTranslationLayerId
+      : null;
+    const selectedAfter = selectedLayerIdAfter === undefined ? keptSelection : selectedLayerIdAfter;
+    const after: EditSnapshot = {
+      ...before,
+      hadTranslationLayerEntry: true,
+      translationLayers: restoredLayers.map((layer) => ({ ...layer })),
+      selectedTranslationLayerId: selectedAfter
+        && restoredLayers.some((layer) => layer.id === selectedAfter)
+        ? selectedAfter
+        : null,
+    };
+    const store = editHistoryRef.current[recordId] ?? { undo: [], redo: [] };
+    editHistoryRef.current[recordId] = {
+      undo: [...store.undo, { before, after }].slice(-200),
+      redo: [],
+    };
+    artifactStateRef.current = nextArtifactState;
+    setTranslationLayersByRecord(nextArtifactState.translationLayersByRecord);
+    bumpEditHistory();
+    return true;
+  }, [captureEditSnapshot, recordId, showWorkbenchNotice]);
 
   const handlePlaceCaret = useCallback((index: number) => {
     setLockedTranslateTarget(null);
@@ -9898,6 +10028,19 @@ function App() {
       showWorkbenchNotice(plan.message, 'error');
       return;
     }
+    // Validate the whole workspace before publishing either half. The live
+    // workspace holds workflow results to every linked record (stricter than a
+    // checkpoint), so a result whose output record was deleted since cannot
+    // come back; refuse on screen instead of throwing from a render effect.
+    try {
+      createArtifactDatabaseSnapshot(plan.payload, plan.artifactState);
+      normalizeArtifactWorkspaceCollections(plan.payload, {
+        recordLengths: new Map(plan.payload.records.map((record) => [record.id, record.sequence.length])),
+      });
+    } catch (error) {
+      showWorkbenchNotice(`${snapshot.name} could not be restored, so the workspace is unchanged. ${errorMessage(error)}`, 'error');
+      return;
+    }
     const restoredDependents = recordRemovalDependents(plan.payload, payloadRef.current);
     const nextArtifactState = plan.artifactState;
     artifactStateRef.current = nextArtifactState;
@@ -10070,7 +10213,7 @@ function App() {
         // A file with several records names the one that failed, not just the file.
         const inFile = (name: string | undefined) => (parsed.length + fileSkips.length > 1 && name ? `${name} in ${file.name}` : file.name);
         for (const skip of fileSkips) skipped.push({ source: inFile(skip.record), reason: skip.reason });
-        const genBank = /^\s*LOCUS\s/m.test(text);
+        const genBank = /^[ \t]*LOCUS[ \t]/m.test(text);
         for (const record of applyImportDefaults(parsed, importDefaults)) {
           additions.push({ record, source: inFile(record.name), genBank });
         }
@@ -10257,14 +10400,11 @@ function App() {
     if (!isSupportedArtifactTranslationTableId(translationTableId)) return;
     if (translateTarget.translationTableId !== undefined) {
       if (selectedTranslationLayer) {
-        updateTranslationLayers((current) => ({
-          ...current,
-          [recordId]: (current[recordId] ?? []).map((layer) => (
-            layer.id === selectedTranslationLayer.id
-              ? { ...layer, translationTableId }
-              : layer
-          )),
-        }));
+        commitTranslationLayerHistory((layers) => layers.map((layer) => (
+          layer.id === selectedTranslationLayer.id
+            ? { ...layer, translationTableId }
+            : layer
+        )));
       }
       setLockedTranslateTarget((current) => current?.recordId === recordId
         ? { ...current, target: { ...current.target, translationTableId } }
@@ -10303,7 +10443,7 @@ function App() {
         },
       };
     });
-  }, [markFeatureTranslationLayersForReview, recordId, selectedTranslationLayer, translateTarget.translationTableId, translateTargetCodeFeature?.id, updateTranslationLayers]);
+  }, [commitTranslationLayerHistory, markFeatureTranslationLayersForReview, recordId, selectedTranslationLayer, translateTarget.translationTableId, translateTargetCodeFeature?.id]);
 
   const deleteFeature = useCallback((featureId: string) => {
     const currentRecord = payloadRef.current.records.find((record) => record.id === recordId);
@@ -10325,34 +10465,31 @@ function App() {
     ));
   }, [commitFeatureHistory, markFeatureTranslationLayersForReview, recordId]);
 
+  // Accepting or dismissing a proposal goes on the edit history like any
+  // other feature edit, so a later base-edit Undo cannot silently revert it.
   const acceptProposedFeature = useCallback((featureId: string) => {
-    setPayload((current) => ({
-      ...current,
-      records: current.records.map((record) => {
-        if (record.id !== recordId) return record;
-        const features = record.features.map((feature) => feature.id === featureId
-          ? acceptProposedAnnotation(feature)
-          : feature);
-        return { ...record, features, provenance: annotationReviewProvenance(record, features) };
-      }),
-    }));
+    const currentRecord = payloadRef.current.records.find((record) => record.id === recordId);
+    const proposed = currentRecord?.features.find((feature) => feature.id === featureId);
+    if (currentRecord && proposed && isProposedAnnotation(proposed)) {
+      const features = currentRecord.features.map((feature) => feature.id === featureId
+        ? acceptProposedAnnotation(feature)
+        : feature);
+      commitFeatureHistory(features, undefined, annotationReviewProvenance(currentRecord, features));
+    }
     setSelection({ kind: 'feature', id: featureId });
-  }, [recordId]);
+  }, [commitFeatureHistory, recordId]);
 
   const dismissProposedFeature = useCallback((featureId: string) => {
+    const currentRecord = payloadRef.current.records.find((record) => record.id === recordId);
+    const dismissed = currentRecord?.features.find((feature) => feature.id === featureId);
+    if (!currentRecord || !dismissed || !isProposedAnnotation(dismissed)) return;
+    const features = currentRecord.features.filter((feature) => feature.id !== featureId);
+    // History first, then the review flag: see updateFeature.
+    const committed = commitFeatureHistory(features, featureId, annotationReviewProvenance(currentRecord, features, 1));
     markFeatureTranslationLayersForReview(featureId);
-    setPayload((current) => ({
-      ...current,
-      records: current.records.map((record) => {
-        if (record.id !== recordId) return record;
-        const dismissed = record.features.find((feature) => feature.id === featureId);
-        if (!dismissed || !isProposedAnnotation(dismissed)) return record;
-        const features = record.features.filter((feature) => feature.id !== featureId);
-        return { ...record, features, provenance: annotationReviewProvenance(record, features, 1) };
-      }),
-    }));
+    if (!committed) return;
     setSelection((current) => current?.kind === 'feature' && current.id === featureId ? null : current);
-  }, [markFeatureTranslationLayersForReview, recordId]);
+  }, [commitFeatureHistory, markFeatureTranslationLayersForReview, recordId]);
 
   const addReverseComplementRecord = useCallback(() => {
     if (!isNucleotideType(sequenceType)) return;
@@ -10623,19 +10760,19 @@ function App() {
       source: 'layer',
       color: previewTrack.strand === -1 ? '#c6737b' : '#7e9bbf',
     };
-    updateTranslationLayers((current) => {
-      const existing = current[recordId] ?? [];
-      if (existing.some((entry) => entry.id === layer.id)) return current;
-      return { ...current, [recordId]: [...existing, layer] };
-    });
-    if (options?.select !== false) {
+    const select = options?.select !== false;
+    const committed = commitTranslationLayerHistory(
+      (existing) => (existing.some((entry) => entry.id === layer.id) ? null : [...existing, layer]),
+      select ? layer.id : undefined,
+    );
+    if (committed && select) {
       setSelectedTranslationLayerByRecord((current) => ({ ...current, [recordId]: layer.id }));
     }
-  }, [inlineTranslationTracks, previewTrack, recordId, showWorkbenchNotice, translateFrame, translateStrand, translateTarget, translationLayers.length, updateTranslationLayers]);
+  }, [commitTranslationLayerHistory, inlineTranslationTracks, previewTrack, recordId, showWorkbenchNotice, translateFrame, translateStrand, translateTarget, translationLayers.length]);
   const clearTranslationLayers = useCallback(() => {
-    updateTranslationLayers((current) => (current[recordId]?.length ? { ...current, [recordId]: [] } : current));
+    commitTranslationLayerHistory((layers) => (layers.length ? [] : null), null);
     setSelectedTranslationLayerByRecord((current) => (current[recordId] ? { ...current, [recordId]: null } : current));
-  }, [recordId, updateTranslationLayers]);
+  }, [commitTranslationLayerHistory, recordId]);
 
   const updateTranslationLayer = useCallback((layerId: string, patch: Partial<Omit<InlineTranslationTrack, 'id' | 'source'>>) => {
     const existingLayer = translationLayers.find((layer) => layer.id === layerId);
@@ -10646,16 +10783,11 @@ function App() {
       needsReview: false,
       source: 'layer',
     };
-    updateTranslationLayers((current) => {
-      const layers = current[recordId] ?? [];
-      if (!layers.some((layer) => layer.id === layerId)) return current;
-      return {
-        ...current,
-        [recordId]: layers.map((layer) => (
-          layer.id === layerId ? nextLayer : layer
-        )),
-      };
-    });
+    commitTranslationLayerHistory((layers) => (
+      layers.some((layer) => layer.id === layerId)
+        ? layers.map((layer) => (layer.id === layerId ? nextLayer : layer))
+        : null
+    ), layerId);
     setLockedTranslateTarget({
       recordId,
       target: {
@@ -10673,7 +10805,7 @@ function App() {
       },
     });
     setSelectedTranslationLayerByRecord((current) => ({ ...current, [recordId]: layerId }));
-  }, [recordId, translationLayers, updateTranslationLayers]);
+  }, [commitTranslationLayerHistory, recordId, translationLayers]);
 
   const deleteTranslationLayer = useCallback((layerId: string) => {
     if (layerId.startsWith('feat:')) {
@@ -10683,17 +10815,17 @@ function App() {
         return { ...current, [recordId]: [...hidden, layerId] };
       });
     } else {
-      updateTranslationLayers((current) => {
-        const layers = current[recordId] ?? [];
-        if (!layers.some((layer) => layer.id === layerId)) return current;
-        return { ...current, [recordId]: layers.filter((layer) => layer.id !== layerId) };
-      });
+      commitTranslationLayerHistory((layers) => (
+        layers.some((layer) => layer.id === layerId)
+          ? layers.filter((layer) => layer.id !== layerId)
+          : null
+      ));
     }
     setSelectedTranslationLayerByRecord((current) => (
       current[recordId] === layerId ? { ...current, [recordId]: null } : current
     ));
     setLockedTranslateTarget(null);
-  }, [recordId, updateTranslationLayers]);
+  }, [commitTranslationLayerHistory, recordId]);
 
   // Selection-bar "Translate": pin the translation inline (sense reads above the
   // selected bases, antisense below). The floating Translations window opens only
@@ -10752,18 +10884,19 @@ function App() {
     const rec = normalizedRecognition.sequence;
     if (!known && rec.length < 3) return 'Enter a known enzyme name or recognition sequence (≥3 bases, IUPAC ok)';
     const enzyme = known ?? createCenteredBluntEnzyme(cleanName || rec, rec);
+    // Decide from the current list before scheduling the update: a state
+    // updater can run later than this call, so it cannot report the outcome.
+    const current = customEnzymesRef.current;
     let outcome: string | null = null;
-    setCustomEnzymes((current) => {
-      if (current.some((entry) => entry.name.toLowerCase() === enzyme.name.toLowerCase())) {
-        outcome = `${enzyme.name} is already added`;
-        return current;
-      }
-      if (current.length >= MAX_CUSTOM_ENZYMES) {
-        outcome = `Custom enzymes are limited to ${MAX_CUSTOM_ENZYMES}`;
-        return current;
-      }
-      return [...current, enzyme];
-    });
+    if (current.some((entry) => entry.name.toLowerCase() === enzyme.name.toLowerCase())) {
+      outcome = `${enzyme.name} is already added`;
+    } else if (current.length >= MAX_CUSTOM_ENZYMES) {
+      outcome = `Custom enzymes are limited to ${MAX_CUSTOM_ENZYMES}`;
+    } else {
+      const next = [...current, enzyme];
+      customEnzymesRef.current = next;
+      setCustomEnzymes(next);
+    }
     // Adding an enzyme is an explicit request to see it. Remove any stale
     // per-record hidden override without re-enabling a broader source group.
     setHiddenEnzymesByRecord((current) => {
@@ -12484,6 +12617,7 @@ function App() {
       const panel = openPanel();
       if (!panel) return;
       event.preventDefault();
+      event.stopPropagation();
       closePanel(panel, true);
     };
     const closeFromOutsidePointer = (event: PointerEvent) => {
@@ -16323,6 +16457,7 @@ export function ImportSequencePanel({
     const closeFromEscape = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
       event.preventDefault();
+      event.stopPropagation();
       onOpenChange(false);
       const opener = openerRef.current;
       if (opener?.isConnected && opener.getClientRects().length > 0) opener.focus();
@@ -19656,21 +19791,50 @@ function SequenceToolsPanel({
     }) : [],
     [customEnzymes, enzymeSourcesByRecord, exportRecords, needsInventoryExport],
   );
-  const selectedSequence = exportPanelOpen ? sequenceForFeature(record.sequence, selectedFeature, sequenceType) : '';
-  const selectedRangeSequence = exportPanelOpen ? sequenceForRange(record.sequence, selectedMapRange, topology) : '';
+  // The export strings cover the whole record, so they are built once per
+  // record, selection and format rather than on every render of the open panel.
+  const selectedSequence = useMemo(
+    () => exportPanelOpen ? sequenceForFeature(record.sequence, selectedFeature, sequenceType) : '',
+    [exportPanelOpen, record.sequence, selectedFeature, sequenceType],
+  );
+  const selectedRangeSequence = useMemo(
+    () => exportPanelOpen ? sequenceForRange(record.sequence, selectedMapRange, topology) : '',
+    [exportPanelOpen, record.sequence, selectedMapRange, topology],
+  );
   const isNucleotide = isNucleotideType(sequenceType);
   const isRna = sequenceType === 'rna';
   const selectedFeatureIsReverse = Boolean(selectedFeature && selectedFeature.strand === -1 && isNucleotide);
   const selectedFeatureIsOrdered = Boolean(selectedFeature && isOrderedFeatureLocation(selectedFeature));
   const selectedFeatureCannotMaterialize = Boolean(selectedFeature && !isMaterializableFeatureLocation(selectedFeature));
   const targetSequence = !exportPanelOpen ? '' : selectedFeature ? selectedSequence : selectedMapRange ? selectedRangeSequence : record.sequence;
-  const reverseComplementSequence = exportPanelOpen && isNucleotide ? reverseComplement(targetSequence, isRna) : '';
-  const complementSequence = exportPanelOpen && isNucleotide ? complement(targetSequence, isRna) : '';
-  const fasta = exportPanelOpen ? toFasta(record.name, record.sequence) : '';
-  const exportRecord = record.topology === topology ? record : { ...record, topology };
-  const genbank = exportPanelOpen ? toGenBankLite(exportRecord, topology) : '';
-  const gff3 = exportPanelOpen && exportChoiceId === 'record-gff3' ? toGff3Lite(record) : '';
-  const recordJson = exportPanelOpen && exportChoiceId === 'record-json' ? JSON.stringify(serializeRecord(exportRecord), null, 2) : '';
+  const reverseComplementSequence = useMemo(
+    () => exportPanelOpen && isNucleotide ? reverseComplement(targetSequence, isRna) : '',
+    [exportPanelOpen, isNucleotide, isRna, targetSequence],
+  );
+  const complementSequence = useMemo(
+    () => exportPanelOpen && isNucleotide ? complement(targetSequence, isRna) : '',
+    [exportPanelOpen, isNucleotide, isRna, targetSequence],
+  );
+  const fasta = useMemo(
+    () => exportPanelOpen ? toFasta(record.name, record.sequence) : '',
+    [exportPanelOpen, record.name, record.sequence],
+  );
+  const exportRecord = useMemo(
+    () => record.topology === topology ? record : { ...record, topology },
+    [record, topology],
+  );
+  const genbank = useMemo(
+    () => exportPanelOpen ? toGenBankLite(exportRecord, topology) : '',
+    [exportPanelOpen, exportRecord, topology],
+  );
+  const gff3 = useMemo(
+    () => exportPanelOpen && exportChoiceId === 'record-gff3' ? toGff3Lite(record) : '',
+    [exportChoiceId, exportPanelOpen, record],
+  );
+  const recordJson = useMemo(
+    () => exportPanelOpen && exportChoiceId === 'record-json' ? JSON.stringify(serializeRecord(exportRecord), null, 2) : '',
+    [exportChoiceId, exportPanelOpen, exportRecord],
+  );
   const checkpointExportIssues = useMemo(
     () => needsInventoryJson ? getArtifactCheckpointExportIssues(exportRecordsWithSites) : [],
     [exportRecordsWithSites, needsInventoryJson],

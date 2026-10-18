@@ -881,8 +881,10 @@ test.describe('Motif MSA viewer interactions', () => {
     await page.mouse.move(rowNameBox.x + rowNameBox.width / 2, extendedY);
     await page.mouse.down();
     await page.mouse.up();
-    await page.mouse.down();
-    await page.mouse.up();
+    // Report the second press as a double-click, as a browser does, so the
+    // check does not depend on how long the first promotion took to render.
+    await page.mouse.down({ clickCount: 2 });
+    await page.mouse.up({ clickCount: 2 });
     await expect(page.locator('.motif-cs-msa-matrix-row').first()).toHaveAttribute('data-msa-row-id', intendedId);
     await expect(page.locator('.motif-cs-msa-matrix-row').first().locator('.motif-cs-msa-row-select')).toHaveAttribute('aria-pressed', 'true');
 

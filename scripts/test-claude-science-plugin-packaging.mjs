@@ -971,6 +971,19 @@ check('external MSA runner rejects malformed output and never falls back', () =>
         /version banner is not recognized/,
       );
     }
+    // Real Clustal Omega builds print a bare version number; named banners must keep working too.
+    for (const banner of ['1.2.4', 'v1.2.4', 'Clustal Omega 1.9.9', 'Clustal Omega - 1.2.4 (AndreaGiacomo)', 'clustalo 1.2.4']) {
+      const acceptedExecutable = writeFakeMsaExecutable(join(fixture, `clustal-omega-accepted-${banner.replace(/\W+/gu, '-')}`), 'clustalo');
+      assert.doesNotThrow(() => runExternalMsa({
+        engine: 'clustal-omega',
+        molecule: 'dna',
+        inputText: '>One\nATGC\n>Two\nATGGC\n',
+        executablePath: acceptedExecutable,
+        env: { ...process.env },
+        childEnv: { MOTIF_TEST_MSA_VERSION: banner },
+        temporaryRoot: fixture,
+      }), banner);
+    }
     const ambientExecutable = writeFakeMsaExecutable(join(fixture, 'ambient-check'), 'mafft');
     assert.doesNotThrow(() => runExternalMsa({
       engine: 'mafft',

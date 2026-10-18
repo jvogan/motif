@@ -211,6 +211,7 @@ export default function ClaudeScienceDataSettings({
             type="file"
             accept=".json,application/json"
             aria-label="Choose workspace backup JSON"
+            tabIndex={-1}
             disabled={isBusy}
             onChange={handleRestoreChange}
             data-testid="restore-workspace-file"

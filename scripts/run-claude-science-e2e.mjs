@@ -30,7 +30,14 @@ if (build.status !== 0) process.exit(build.status ?? 1);
 
 const artifact = readFileSync(artifactPath);
 const server = createServer((request, response) => {
-  const pathname = new URL(request.url ?? '/', 'http://localhost').pathname;
+  let pathname;
+  try {
+    pathname = new URL(request.url ?? '/', 'http://localhost').pathname;
+  } catch {
+    response.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' });
+    response.end('Bad request\n');
+    return;
+  }
   if (pathname === '/') {
     response.writeHead(302, { location: '/motif-artifact.html' });
     response.end();

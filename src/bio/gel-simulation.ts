@@ -253,14 +253,16 @@ export function renderGelASCII(
   const lines: string[] = [];
 
   // Header: lane labels
+  // Each lane occupies laneWidth cells plus one separator column, so the header
+  // pitch is laneWidth + 1. Body and border rows start at column 3 ('  ┌', '  │').
   const headerParts = result.lanes.map(name => {
     const boundedName = name.slice(0, laneWidth);
     const padded = boundedName
       .padStart(Math.floor(laneWidth / 2 + boundedName.length / 2))
-      .padEnd(laneWidth);
+      .padEnd(laneWidth + 1);
     return padded;
   });
-  lines.push('     ' + headerParts.join(''));
+  lines.push('   ' + headerParts.join(''));
 
   // Top border
   const topBorder =

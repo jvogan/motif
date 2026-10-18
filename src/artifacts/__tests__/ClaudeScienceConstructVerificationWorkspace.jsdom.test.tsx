@@ -279,6 +279,37 @@ describe('ClaudeScienceConstructVerificationWorkspace', () => {
     expect(capturedRequest?.reads.some((read) => read.id === 'read-097')).toBe(true);
   });
 
+  it('lets the minimum read depth be cleared and retyped, clamping only on blur', async () => {
+    const user = userEvent.setup();
+    const reference = referenceRecord();
+    const read = traceRecord('read-a');
+    const onVerify = vi.fn((request: ClaudeScienceConstructVerificationRequest) => verificationResult(request));
+    render(
+      <ClaudeScienceConstructVerificationWorkspace
+        records={[reference, read]}
+        initialReferenceId={reference.id}
+        onVerify={onVerify}
+        onSave={vi.fn()}
+        embedded
+      />,
+    );
+    const depth = screen.getByLabelText('Minimum read depth') as HTMLInputElement;
+    await user.clear(depth);
+    expect(depth.value).toBe('');
+    await user.keyboard('24');
+    expect(depth.value).toBe('24');
+    await user.click(screen.getByTestId('construct-verification-run'));
+    expect(onVerify).toHaveBeenLastCalledWith(expect.objectContaining({ minDepth: 24 }));
+
+    await user.clear(depth);
+    await user.keyboard('200');
+    expect(depth.value).toBe('200');
+    await user.tab();
+    expect(depth.value).toBe('96');
+    await user.click(screen.getByTestId('construct-verification-run'));
+    expect(onVerify).toHaveBeenLastCalledWith(expect.objectContaining({ minDepth: 96 }));
+  });
+
   it('passes the exact ordered request and a deeply frozen evidence snapshot', async () => {
     const user = userEvent.setup();
     const reference = referenceRecord();

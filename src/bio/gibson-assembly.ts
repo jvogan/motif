@@ -375,13 +375,15 @@ function closingJunctionFeature(
   productLength: number,
 ): Feature | null {
   if (overlap.length <= 0 || productLength <= 0) return null;
+  // The trailing copy of the closing overlap is trimmed, so the overlap sits
+  // exactly once at [0, overlap) of the circular product.
   const seamLength = Math.min(overlap.length, productLength);
   return {
     id: crypto.randomUUID(),
     name: `Junction: ${leftName}×${rightName} (${overlap.length} bp, closing)`,
     type: 'misc_feature',
     start: 0,
-    end: productLength,
+    end: seamLength,
     strand: 1,
     color: '#8F4842',
     metadata: {
@@ -391,10 +393,6 @@ function closingJunctionFeature(
       overlapSequence: overlap.sequence,
       closing: true,
     },
-    subRanges: [
-      { start: productLength - seamLength, end: productLength, strand: 1 },
-      { start: 0, end: seamLength, strand: 1 },
-    ],
   };
 }
 

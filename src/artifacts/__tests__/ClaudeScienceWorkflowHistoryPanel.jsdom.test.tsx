@@ -66,7 +66,7 @@ describe('ClaudeScienceWorkflowHistoryPanel', () => {
     );
     expect(screen.getAllByText('Unverified')).toHaveLength(2);
     await user.click(screen.getByText('Details'));
-    expect(screen.getByText(/Source was saved without a sequence fingerprint/)).toBeTruthy();
+    expect(document.querySelector('.motif-cs-freshness-reason')?.textContent).toContain('Source was saved without a sequence fingerprint');
   });
 
   it('summarizes large record sets and exposes bounded, inert workflow details', async () => {
@@ -163,6 +163,23 @@ describe('ClaudeScienceWorkflowHistoryPanel', () => {
     await user.click(within(row).getByRole('button', { name: 'Remove result' }));
     expect(onRemove).toHaveBeenCalledWith('digest-1');
     expect(screen.getByRole('status').textContent).toContain('Workflow result removed.');
+  });
+
+  it('keeps focus where the reader moved it while a removal stays pending', async () => {
+    const user = userEvent.setup();
+    const props = {
+      recordNames: { source: 'Source', fragment: 'Fragment 1' },
+      onRevealRecord: vi.fn(),
+      onRemove: vi.fn(),
+    };
+    const view = render(<ClaudeScienceWorkflowHistoryPanel results={[result]} {...props} />);
+    const row = screen.getByTestId('workflow-result-digest-1');
+    await user.click(within(row).getByRole('button', { name: 'Remove <Digest result>' }));
+    expect(document.activeElement).toBe(within(row).getByRole('button', { name: 'Cancel' }));
+    const confirm = within(row).getByRole('button', { name: 'Remove result' });
+    confirm.focus();
+    view.rerender(<ClaudeScienceWorkflowHistoryPanel results={[{ ...result }]} {...props} />);
+    expect(document.activeElement).toBe(confirm);
   });
 
   it('reports when a linked result prevents removal', async () => {

@@ -2,9 +2,13 @@
 
 import { createHash } from 'node:crypto';
 import {
+  closeSync,
   existsSync,
+  fstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
+  readSync,
   realpathSync,
   renameSync,
   rmSync,
@@ -1051,8 +1055,48 @@ export function readAndValidatePayload(source) {
   }
 }
 
-function readStdin() {
-  return readFileSync(0, 'utf8');
+function readBoundedDescriptor(descriptor, maximumBytes) {
+  const chunks = [];
+  let total = 0;
+  while (true) {
+    // Read at most one byte past the limit so an oversized input is detected
+    // without ever buffering more than limit + 1 bytes.
+    const chunk = Buffer.allocUnsafe(Math.min(65_536, maximumBytes + 1 - total));
+    const bytesRead = readSync(descriptor, chunk, 0, chunk.length, null);
+    if (bytesRead === 0) break;
+    total += bytesRead;
+    if (total > maximumBytes) {
+      throw new Error(`Invalid payload: serialized input exceeds the artifact maximum of ${maximumBytes / 1_048_576} MiB`);
+    }
+    chunks.push(chunk.subarray(0, bytesRead));
+  }
+  return Buffer.concat(chunks, total).toString('utf8');
+}
+
+function readBoundedPayloadSource(payloadPath) {
+  if (payloadPath === '-') return readBoundedDescriptor(0, MAX_PAYLOAD_JSON_BYTES);
+  const descriptor = openSync(resolve(payloadPath), 'r');
+  try {
+    if (!fstatSync(descriptor).isFile()) throw new Error(`Payload input must be a regular file: ${resolve(payloadPath)}`);
+    return readBoundedDescriptor(descriptor, MAX_PAYLOAD_JSON_BYTES);
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+function replaceFile(temporaryPath, outPath) {
+  try {
+    renameSync(temporaryPath, outPath);
+  } catch (error) {
+    // POSIX rename replaces atomically. Windows may refuse to replace an
+    // existing file, so fall back to remove-and-retry only there.
+    if (process.platform === 'win32' && (error?.code === 'EPERM' || error?.code === 'EEXIST')) {
+      rmSync(outPath, { force: true });
+      renameSync(temporaryPath, outPath);
+      return;
+    }
+    throw error;
+  }
 }
 
 export function main(args = process.argv.slice(2)) {
@@ -1073,21 +1117,28 @@ export function main(args = process.argv.slice(2)) {
 
   let html = readFileSync(bundledArtifactPath, 'utf8');
   if (options.payloadPath) {
-    const source = options.payloadPath === '-'
-      ? readStdin()
-      : readFileSync(resolve(options.payloadPath), 'utf8');
+    const source = readBoundedPayloadSource(options.payloadPath);
     const payload = readAndValidatePayload(source);
     html = injectPayload(html, payload);
   }
 
   mkdirSync(dirname(outPath), { recursive: true });
   const temporaryPath = `${outPath}.tmp-${process.pid}`;
+  // Only remove the temporary file if this process created it; an exclusive
+  // open that fails with EEXIST must not delete someone else's file.
+  let createdTemporary = false;
   try {
-    writeFileSync(temporaryPath, html, { flag: 'wx' });
-    if (options.force) rmSync(outPath, { force: true });
-    renameSync(temporaryPath, outPath);
+    const descriptor = openSync(temporaryPath, 'wx');
+    createdTemporary = true;
+    try {
+      writeFileSync(descriptor, html);
+    } finally {
+      closeSync(descriptor);
+    }
+    if (options.force) replaceFile(temporaryPath, outPath);
+    else renameSync(temporaryPath, outPath);
   } finally {
-    rmSync(temporaryPath, { force: true });
+    if (createdTemporary) rmSync(temporaryPath, { force: true });
   }
 
   const digest = createHash('sha256').update(html).digest('hex');

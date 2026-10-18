@@ -558,25 +558,43 @@ function renderAlignmentImageCanvas(
 
   const cellFont = layout.drawLetters ? `${layout.fontSize}px ${MSA_IMAGE_FONT_STACK}` : '';
   const labelFontSize = Math.max(8, Math.min(layout.fontSize || 11, Math.round(layout.cellHeight * 0.62)));
+  // Fills depend only on the symbol and column geometry only on the column,
+  // so resolve each once rather than once per cell.
+  const fillBySymbol = new Map<string, string | null>();
+  const cellX: number[] = [];
+  const cellWidth: number[] = [];
+  const cellCenterX: number[] = [];
+  for (let index = 0; index < layout.columnCount; index += 1) {
+    const geometry = alignmentImageCellGeometry(layout, index);
+    const overdraw = Math.min(0.5, geometry.width * 0.05);
+    cellX.push(geometry.x);
+    cellWidth.push(Math.min(layout.contentWidth - geometry.x, geometry.width + overdraw));
+    cellCenterX.push(geometry.centerX);
+  }
+  const cellHeight = layout.cellHeight + Math.min(0.5, layout.cellHeight * 0.05);
   for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
     const row = rows[rowIndex];
     const y = layout.headerHeight + rowIndex * layout.cellHeight;
     // Cell backgrounds (+0.5 overdraw removes hairline seams between tiles).
-    for (let index = 0; scheme && index < layout.columnCount; index += 1) {
-      const slot = layout.columns[index];
-      if (!slot || slot.kind === 'elision') continue;
-      const symbol = row.aligned[slot.column] ?? '-';
-      const fill = resolveResidueCellColor(symbol, molecule, scheme, bg);
-      if (!fill) continue;
-      ctx.fillStyle = fill;
-      const geometry = alignmentImageCellGeometry(layout, index);
-      const overdraw = Math.min(0.5, geometry.width * 0.05);
-      ctx.fillRect(
-        geometry.x,
-        y,
-        Math.min(layout.contentWidth - geometry.x, geometry.width + overdraw),
-        layout.cellHeight + Math.min(0.5, layout.cellHeight * 0.05),
-      );
+    if (scheme) {
+      // Adjacent cells usually share a fill; only touch the context on change.
+      let currentFill: string | null = null;
+      for (let index = 0; index < layout.columnCount; index += 1) {
+        const slot = layout.columns[index];
+        if (!slot || slot.kind === 'elision') continue;
+        const symbol = row.aligned[slot.column] ?? '-';
+        let fill = fillBySymbol.get(symbol);
+        if (fill === undefined) {
+          fill = resolveResidueCellColor(symbol, molecule, scheme, bg);
+          fillBySymbol.set(symbol, fill);
+        }
+        if (!fill) continue;
+        if (fill !== currentFill) {
+          ctx.fillStyle = fill;
+          currentFill = fill;
+        }
+        ctx.fillRect(cellX[index], y, cellWidth[index], cellHeight);
+      }
     }
     // Residue glyphs.
     if (layout.drawLetters) {
@@ -584,12 +602,13 @@ function renderAlignmentImageCanvas(
       ctx.font = cellFont;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
+      const letterY = y + layout.cellHeight / 2;
       for (let index = 0; index < layout.columnCount; index += 1) {
         const slot = layout.columns[index];
         if (!slot || slot.kind === 'elision') continue;
         const symbol = row.aligned[slot.column] ?? '-';
         if (symbol === '-' || symbol === '.') continue;
-        ctx.fillText(symbol, alignmentImageCellGeometry(layout, index).centerX, y + layout.cellHeight / 2);
+        ctx.fillText(symbol, cellCenterX[index], letterY);
       }
     }
     // Row label (drawn last so it sits above any coloured cells).
@@ -966,20 +985,41 @@ function sharedNamePrefix(allNames: readonly string[]): string {
   return prefix.trim().length >= 3 ? prefix : '';
 }
 
-function rowNameParts(name: string, allNames: readonly string[]): { leading: string; trailing: string } {
-  const tokens = Array.from(name.matchAll(/[^\s_./-]+/g));
-  if (tokens.length < 2) return { leading: name, trailing: '' };
+type RowNameSuffixCounter = (suffixLength: number, suffixKey: string) => number;
 
+/**
+ * Counts how many row names end in a given lowercased token suffix. Every
+ * name is tokenised once, and each suffix length is tallied on first use, so
+ * labelling all rows costs O(rows x tokens) rather than re-tokenising every
+ * name for every row.
+ */
+function rowNameSuffixCounter(allNames: readonly string[]): RowNameSuffixCounter {
   const allTokenLists = allNames.map((candidate) => (
     Array.from(candidate.matchAll(/[^\s_./-]+/g), (match) => match[0].toLocaleLowerCase())
   ));
+  const countsByLength = new Map<number, Map<string, number>>();
+  return (suffixLength, suffixKey) => {
+    let counts = countsByLength.get(suffixLength);
+    if (!counts) {
+      counts = new Map();
+      for (const candidateTokens of allTokenLists) {
+        const key = candidateTokens.slice(-suffixLength).join('\u0000');
+        counts.set(key, (counts.get(key) ?? 0) + 1);
+      }
+      countsByLength.set(suffixLength, counts);
+    }
+    return counts.get(suffixKey) ?? 0;
+  };
+}
+
+function rowNameParts(name: string, suffixCount: RowNameSuffixCounter): { leading: string; trailing: string } {
+  const tokens = Array.from(name.matchAll(/[^\s_./-]+/g));
+  if (tokens.length < 2) return { leading: name, trailing: '' };
+
   const ownTokens = tokens.map((match) => match[0].toLocaleLowerCase());
   for (let suffixLength = 1; suffixLength < tokens.length; suffixLength += 1) {
     const suffixKey = ownTokens.slice(-suffixLength).join('\u0000');
-    const matches = allTokenLists.filter((candidateTokens) => (
-      candidateTokens.slice(-suffixLength).join('\u0000') === suffixKey
-    ));
-    if (matches.length !== 1) continue;
+    if (suffixCount(suffixLength, suffixKey) !== 1) continue;
     const suffixStart = tokens[tokens.length - suffixLength].index ?? 0;
     const leading = name.slice(0, suffixStart).replace(/[\s_./-]+$/u, '');
     const trailing = name.slice(suffixStart);
@@ -1054,6 +1094,13 @@ function firstRowDifferenceColumn(
   return null;
 }
 
+/**
+ * Shared numeric-aware collator. Equivalent to
+ * `localeCompare(other, undefined, { numeric: true })`, but resolves the
+ * locale and options once instead of on every comparison.
+ */
+const compareNumericRowNames = new Intl.Collator(undefined, { numeric: true }).compare;
+
 function sortedMsaRows(
   rows: readonly ArtifactAlignmentRow[],
   template: ArtifactAlignmentRow | undefined,
@@ -1065,10 +1112,10 @@ function sortedMsaRows(
   nonTemplateRows.sort((left, right) => {
     const leftStats = statsByRow.get(left.id)!;
     const rightStats = statsByRow.get(right.id)!;
-    if (sortMode === 'name') return left.name.localeCompare(right.name, undefined, { numeric: true });
-    if (sortMode === 'identity') return rightStats.identity - leftStats.identity || left.name.localeCompare(right.name, undefined, { numeric: true });
-    if (sortMode === 'mismatches') return leftStats.mismatches - rightStats.mismatches || left.name.localeCompare(right.name, undefined, { numeric: true });
-    if (sortMode === 'length') return rightStats.ungappedLength - leftStats.ungappedLength || left.name.localeCompare(right.name, undefined, { numeric: true });
+    if (sortMode === 'name') return compareNumericRowNames(left.name, right.name);
+    if (sortMode === 'identity') return rightStats.identity - leftStats.identity || compareNumericRowNames(left.name, right.name);
+    if (sortMode === 'mismatches') return leftStats.mismatches - rightStats.mismatches || compareNumericRowNames(left.name, right.name);
+    if (sortMode === 'length') return rightStats.ungappedLength - leftStats.ungappedLength || compareNumericRowNames(left.name, right.name);
     return (originalIndex.get(left.id) ?? 0) - (originalIndex.get(right.id) ?? 0);
   });
   return template ? [template, ...nonTemplateRows] : nonTemplateRows;
@@ -1838,7 +1885,11 @@ function AlignmentMatrix({
   // the chosen font size when zooming in.
   const renderFontSize = blocks ? fontSize : Math.min(fontSize, Math.max(7, Math.round(cellWidth * 1.32)));
   const [expandedColumnRanges, setExpandedColumnRanges] = useState<MsaExpandedColumnRange[]>([]);
-  useEffect(() => { setExpandedColumnRanges([]); }, [alignment.id, columnFilter, columnFilterContext, referenceRowId]);
+  // Returning the current array when it is already empty lets React bail out
+  // instead of re-rendering the whole matrix for an identical state.
+  useEffect(() => {
+    setExpandedColumnRanges((current) => (current.length === 0 ? current : []));
+  }, [alignment.id, columnFilter, columnFilterContext, referenceRowId]);
   const columnView = useMemo(() => createMsaColumnView({
     alignmentLength: alignment.alignmentLength,
     columnFilter,
@@ -2039,8 +2090,9 @@ function AlignmentMatrix({
     // distinguishing text sits entirely in the tail ("Homo sapiens hemoglobin
     // alpha 1/2/3") never match and keep every shared character.
     const prefix = commonNamePrefix.trimEnd();
+    const suffixCount = rowNameSuffixCounter(allRowNames);
     return new Map(alignment.rows.map((row) => {
-      const parts = rowNameParts(row.name, allRowNames);
+      const parts = rowNameParts(row.name, suffixCount);
       if (!startsWithSharedPrefix(parts.leading, prefix)) return [row.id, parts];
       const leading = parts.leading.slice(prefix.length).replace(/^[\s_./-]+/u, '');
       // Never leave a row with nothing to render.
@@ -3100,11 +3152,13 @@ function AlignmentMatrix({
     const sameScreenPoint = previous !== null
       && Math.abs(event.clientX - previous.clientX) <= 4
       && Math.abs(event.clientY - previous.clientY) <= 4;
+    // The browser's own click count is authoritative for a double-click; the
+    // time window covers hosts that report every click with a count of one.
     const repeatedPointerClick = event.detail > 0
       && previous !== null
       && sameScreenPoint
-      && event.timeStamp >= previous.timeStamp
-      && event.timeStamp - previous.timeStamp <= 600;
+      && (event.detail >= 2
+        || (event.timeStamp >= previous.timeStamp && event.timeStamp - previous.timeStamp <= 600));
     if (!repeatedPointerClick) {
       rowTemplateClickRef.current = {
         rowId,
@@ -4592,12 +4646,17 @@ export function ClaudeScienceMsaViewer({
       : null),
     [activeNumberingReference, activeReferenceNumbering],
   );
-  const comparisonStats = activeTemplate
-    ? (activeAlignment?.rows ?? [])
-      .filter((row) => row.id !== activeTemplate.id)
-      .map((row) => pairwiseRowStats(row.aligned, activeTemplate.aligned, activeAlignment?.molecule ?? 'dna', strictDifferences))
-      .filter((stats) => stats.comparableColumns > 0)
-    : [];
+  // Pairwise stats scan every row against the template; memoize so unrelated
+  // re-renders (search keystrokes, menu toggles) do not repeat the scan.
+  const comparisonStats = useMemo(
+    () => (activeTemplate
+      ? (activeAlignment?.rows ?? [])
+        .filter((row) => row.id !== activeTemplate.id)
+        .map((row) => pairwiseRowStats(row.aligned, activeTemplate.aligned, activeAlignment?.molecule ?? 'dna', strictDifferences))
+        .filter((stats) => stats.comparableColumns > 0)
+      : []),
+    [activeAlignment, activeTemplate, strictDifferences],
+  );
   const hasComparableRows = comparisonStats.length > 0;
   const avgIdentity = hasComparableRows
     ? comparisonStats.reduce((sum, stats) => sum + stats.identity, 0) / comparisonStats.length
@@ -4617,7 +4676,10 @@ export function ClaudeScienceMsaViewer({
     'No comparable rows'.length,
     `Difference ${stops.length} of ${stops.length}`.length,
   );
-  const textContent = activeAlignment ? formatAlignment(activeAlignment, textFormat) : '';
+  const textContent = useMemo(
+    () => (activeAlignment ? formatAlignment(activeAlignment, textFormat) : ''),
+    [activeAlignment, textFormat],
+  );
   const selectedExport = formatExtension(textFormat);
   const pickerLabels = useMemo(() => alignmentPickerLabels(alignments), [alignments]);
   // The template picker is a narrow control listing rows that often differ only

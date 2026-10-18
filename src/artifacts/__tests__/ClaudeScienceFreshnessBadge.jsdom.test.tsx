@@ -14,7 +14,7 @@ describe('ClaudeScienceFreshnessBadge', () => {
   it('states freshness in text instead of relying on color', () => {
     render(<ClaudeScienceFreshnessBadge evaluation={{ state: 'fresh', reasons: [] }} />);
     const badge = screen.getByText('Fresh');
-    expect(badge.getAttribute('aria-label')).toContain('Saved inputs match');
+    expect(badge.textContent).toContain('Saved inputs match');
     expect(badge.closest('[data-freshness]')?.getAttribute('data-freshness')).toBe('fresh');
   });
 
@@ -32,8 +32,11 @@ describe('ClaudeScienceFreshnessBadge', () => {
         showReason
       />,
     );
-    expect(screen.getByText('Stale')).toBeTruthy();
-    expect(screen.getByText(/pUC19's sequence has changed/).textContent).toContain('1 more issue');
+    // With the visible reason line shown, the badge itself carries only the
+    // state label so assistive technology does not read the reason twice.
+    expect(screen.getByText('Stale').textContent).toBe('Stale');
+    const reason = screen.getByText(/pUC19's sequence has changed/);
+    expect(reason.textContent).toContain('1 more issue');
   });
 
   it('provides stable fallbacks for unverified and future reason codes', () => {

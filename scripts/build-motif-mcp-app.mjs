@@ -4,6 +4,7 @@ import { buildSync } from 'esbuild';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isDirectScriptExecution } from './lib/direct-script.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const templatePath = join(root, 'dist-motif', 'motif-template.html');
@@ -54,7 +55,7 @@ export function buildMotifMcpApp({ template = templatePath, entry = entryPath, o
   return out;
 }
 
-const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const isMain = isDirectScriptExecution(process.argv[1], fileURLToPath(import.meta.url));
 if (isMain) {
   try {
     const out = buildMotifMcpApp();
