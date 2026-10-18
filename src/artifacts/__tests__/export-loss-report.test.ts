@@ -87,6 +87,8 @@ describe('structured export-loss report', () => {
     expect(report.fuzzyLocations).toEqual([
       { featureId: 'feature-1', key: 'misc_feature', location: 'join(2..4,9..12)' },
     ]);
+    // A layout warning alone does not make a plain location unsupported.
+    expect(buildArtifactExportLossReport({ ...record, features: [{ ...record.features[0], subRanges: undefined, metadata: { motifImportDiagnostics: [{ severity: 'warning', code: 'unindented_feature_line', featureKey: 'misc_feature', location: '2..12', message: 'unindented' }] } }] }, 'genbank').unsupportedOrRawLocations).toEqual([]);
     expect(report.originalFeatureKeys).toEqual([
       { featureId: 'feature-1', key: 'misc_feature', exportedType: 'misc_feature' },
     ]);
@@ -248,7 +250,7 @@ describe('the export popover list of preservation items', () => {
 describe('the note and product of a feature built in Motif, in Basic GenBank', () => {
   // A bundled record's features carry their note and product as metadata, with
   // no imported qualifier list. One note has quotes and is longer than a line.
-  const note = `Promoter called "P3" in older maps; ${'x'.repeat(90)} ends here`;
+  const note = `Promoter called "P3" in older maps; ${'named after its source plasmid '.repeat(3)}ends here`;
   const record = normalizeRecord({
     id: 'notes',
     name: 'notes',
@@ -261,13 +263,15 @@ describe('the note and product of a feature built in Motif, in Basic GenBank', (
     ],
   }, 0)!;
 
-  it('writes each one after /label on one quoted line, and reads it back equal', () => {
+  it('writes each one after /label, wrapped at the GenBank line width, and reads it back equal', () => {
     const exported = toGenBankLite(record, 'linear');
     const lines = exported.split('\n');
     const label = lines.indexOf('                     /label="AmpR"');
-    expect(lines.slice(label, label + 3)).toEqual([
+    expect(lines.slice(label, label + 5)).toEqual([
       '                     /label="AmpR"',
-      `                     /note="Promoter called ""P3"" in older maps; ${'x'.repeat(90)} ends here"`,
+      '                     /note="Promoter called ""P3"" in older maps; named after',
+      '                     its source plasmid named after its source plasmid named',
+      '                     after its source plasmid ends here"',
       '                     /product="beta-lactamase"',
     ]);
     expect(lines).toContain('                     /note="origin"');

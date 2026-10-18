@@ -1,7 +1,7 @@
 import { getTranslationTable } from './codon-tables';
 import { resolveFeatureColor } from './feature-palette';
 import { findORFs } from './orf-detection';
-import type { Feature, SequenceType, Topology } from './types';
+import type { CodonTable, Feature, SequenceType, Topology } from './types';
 
 export const PROPOSED_ANNOTATION_CAPS = Object.freeze({
   maxAnnotations: 8,
@@ -9,6 +9,17 @@ export const PROPOSED_ANNOTATION_CAPS = Object.freeze({
   maxScanWorkUnits: 200_000,
   minOrfAminoAcids: 50,
 });
+
+/**
+ * Initiators that may open an unreviewed ORF proposal under `table`: ATG
+ * always, plus GTG when the table lists it as an initiator (for example the
+ * bacterial, archaeal and plastid code, Table 11, where GTG starts are
+ * common). TTG and CTG are never used here: they usually read as internal Leu
+ * codons and would extend proposals upstream of the real start.
+ */
+export function proposedAnnotationStartCodons(table: Pick<CodonTable, 'starts'>): readonly string[] {
+  return table.starts.includes('GTG') ? ['ATG', 'GTG'] : ['ATG'];
+}
 
 export const MOTIF_PROPOSAL_METADATA_KEY = 'motifProposal';
 
@@ -114,7 +125,7 @@ export function proposeDefaultAnnotations(record: ProposedAnnotationRecord): Pro
     record.sequence,
     PROPOSED_ANNOTATION_CAPS.minOrfAminoAcids,
     table,
-    { topology: record.topology },
+    { topology: record.topology, startCodons: proposedAnnotationStartCodons(table) },
   ).filter((orf) => (
     orf.status === 'complete'
     && orf.start >= 0

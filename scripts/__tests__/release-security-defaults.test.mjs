@@ -8,6 +8,33 @@ import { checkGithubReleaseAvailable, checkReleasePublish, parseReleasePublishAr
 
 const root = resolve(import.meta.dirname, '..', '..');
 
+function createReleaseFixture(version) {
+  const directory = mkdtempSync(join(tmpdir(), 'motif-release-alignment-'));
+  const files = {
+    'package.json': JSON.stringify({ version }) + '\n',
+    'package-lock.json': JSON.stringify({ version, packages: { '': { version } } }) + '\n',
+    'src/artifacts/motif-for-claude-science-plugin/.claude-plugin/plugin.json': JSON.stringify({ version }) + '\n',
+    'src/artifacts/motif-artifact.tsx': `const MOTIF_ARTIFACT_VERSION = '${version}';\n`,
+    'src/mcp-app/motif-workbench-bridge.ts': `name: 'Motif', version: '${version}'\n`,
+    'mcp/motif/stdio-bootstrap.ts': `export async function readMotifVersion(candidates = [], fallbackVersion = '${version}') { return fallbackVersion; }\n`,
+    'CHANGELOG.md': `## ${version}\n`,
+    'src/artifacts/motif-for-claude-science-plugin/CHANGELOG.md': `## ${version}\n`,
+    'AGENTS.md': `Current release version is \`${version}\`\n`,
+    'docs/CLAUDE_SCIENCE_INTEGRATION.md': `Connector version: \`${version}\`\n`,
+  };
+  for (const [relativePath, contents] of Object.entries(files)) {
+    const path = join(directory, relativePath);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, contents);
+  }
+  execFileSync('git', ['init', '--quiet'], { cwd: directory });
+  execFileSync('git', ['config', 'user.email', 'release-test@example.invalid'], { cwd: directory });
+  execFileSync('git', ['config', 'user.name', 'Release test'], { cwd: directory });
+  execFileSync('git', ['add', '.'], { cwd: directory });
+  execFileSync('git', ['commit', '--quiet', '--message', 'release source'], { cwd: directory });
+  return directory;
+}
+
 describe('release security defaults', () => {
   it('strictly parses publish arguments and keeps remote verification explicit', () => {
     expect(parseReleasePublishArgs([])).toEqual({ github: false, repository: null });
@@ -36,36 +63,28 @@ describe('release security defaults', () => {
   });
 
   it('allows a post-tag development commit in alignment but blocks it for publishing', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'motif-release-alignment-'));
+    const version = '1.2.3';
+    const directory = createReleaseFixture(version);
     try {
-      const version = '1.2.3';
-      const files = {
-        'package.json': JSON.stringify({ version }) + '\n',
-        'package-lock.json': JSON.stringify({ version, packages: { '': { version } } }) + '\n',
-        'src/artifacts/motif-for-claude-science-plugin/.claude-plugin/plugin.json': JSON.stringify({ version }) + '\n',
-        'src/artifacts/motif-artifact.tsx': `const MOTIF_ARTIFACT_VERSION = '${version}';\n`,
-        'src/mcp-app/motif-workbench-bridge.ts': `name: 'Motif', version: '${version}'\n`,
-        'mcp/motif/stdio-bootstrap.ts': `export async function readMotifVersion(candidates = [], fallbackVersion = '${version}') { return fallbackVersion; }\n`,
-        'CHANGELOG.md': `## ${version}\n`,
-        'src/artifacts/motif-for-claude-science-plugin/CHANGELOG.md': `## ${version}\n`,
-        'AGENTS.md': `Current release version is \`${version}\`\n`,
-        'docs/CLAUDE_SCIENCE_INTEGRATION.md': `Connector version: \`${version}\`\n`,
-      };
-      for (const [relativePath, contents] of Object.entries(files)) {
-        const path = join(directory, relativePath);
-        mkdirSync(dirname(path), { recursive: true });
-        writeFileSync(path, contents);
-      }
-      execFileSync('git', ['init', '--quiet'], { cwd: directory });
-      execFileSync('git', ['config', 'user.email', 'release-test@example.invalid'], { cwd: directory });
-      execFileSync('git', ['config', 'user.name', 'Release test'], { cwd: directory });
-      execFileSync('git', ['add', '.'], { cwd: directory });
-      execFileSync('git', ['commit', '--quiet', '--message', 'release source'], { cwd: directory });
       execFileSync('git', ['tag', `v${version}`], { cwd: directory });
       execFileSync('git', ['commit', '--quiet', '--allow-empty', '--message', 'post-tag development'], { cwd: directory });
 
       expect(checkReleaseAlignment(directory)).toMatchObject({ version, surfaces: 10 });
       expect(() => checkReleasePublish(directory)).toThrow(/Bump the release version before building/u);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('passes alignment for an untagged version but fails the publish check until the tag exists', () => {
+    const version = '1.2.3';
+    const directory = createReleaseFixture(version);
+    try {
+      expect(checkReleaseAlignment(directory)).toMatchObject({ version, surfaces: 10 });
+      expect(() => checkReleasePublish(directory)).toThrow(/v1\.2\.3 does not exist/u);
+      expect(checkReleasePublish(directory, { requireTag: false })).toMatchObject({ version, tagStatus: 'unpublished' });
+      execFileSync('git', ['tag', '--annotate', `v${version}`, '--message', 'release'], { cwd: directory });
+      expect(checkReleasePublish(directory)).toMatchObject({ version, tag: 'v1.2.3', tagStatus: 'current' });
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

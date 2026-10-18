@@ -90,11 +90,16 @@ file for every reviewed bundled connector dependency.
 
 ## 3. Tag and draft
 
-Before creating or publishing a tag, run the release-only checks. The ordinary
-alignment check intentionally permits later development commits after an old
-tag; the publish check is the collision guard:
+Create the annotated `vX.Y.Z` tag locally on the validated commit, then run
+the release-only checks before pushing the tag or publishing anything. The
+ordinary alignment check intentionally permits later development commits after
+an old tag and does not require the tag to exist, so it passes on every pull
+request. The publish check is the collision guard: it fails when the version
+has no `vX.Y.Z` tag, when the tag does not resolve to a commit, or when the tag
+names a different commit than the current checkout.
 
 ```bash
+git tag --annotate vX.Y.Z --message "Motif X.Y.Z"
 npm run check:release-publish
 ```
 
@@ -123,7 +128,7 @@ the Release review threads workflow with the pull request number if an event-
 driven status has not refreshed yet; the native conversation-resolution branch
 rule remains the authoritative merge control.
 
-Create and push an annotated `vX.Y.Z` tag that names the validated commit.
+Push the annotated `vX.Y.Z` tag that names the validated commit.
 Create the GitHub release as a draft with `--verify-tag`, and attach exactly:
 
 - `motif-artifact.html`

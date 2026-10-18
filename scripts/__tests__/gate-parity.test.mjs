@@ -17,9 +17,9 @@ const pkg = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'));
 describe('npm run gate matches CI', () => {
   it('keeps the required CI job distinct from metadata validation', () => {
     const metadata = readFileSync(resolve(root, '.github/workflows/metadata-policy.yml'), 'utf8');
-    expect(workflow).toMatch(/^  validate:$/m);
-    expect(metadata).toMatch(/^  validate-metadata:$/m);
-    expect(metadata).not.toMatch(/^  validate:$/m);
+    expect(workflow).toMatch(/^ {2}validate:$/m);
+    expect(metadata).toMatch(/^ {2}validate-metadata:$/m);
+    expect(metadata).not.toMatch(/^ {2}validate:$/m);
   });
 
   it('collects fixture results during the canonical browser invocation', () => {

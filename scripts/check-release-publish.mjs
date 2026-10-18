@@ -54,9 +54,20 @@ export function checkGithubReleaseAvailable(version, {
   return { version, repository, existingDraft: Boolean(release) };
 }
 
-export function checkReleasePublish(cwd = root, { github = false, environment = process.env, repository = null } = {}) {
+export function checkReleasePublish(cwd = root, {
+  github = false,
+  environment = process.env,
+  repository = null,
+  requireTag = true,
+} = {}) {
   const alignment = checkReleaseAlignment(cwd);
   const tag = assertVersionTagMatchesHead(alignment.version, cwd);
+  // Ordinary alignment tolerates a version with no tag yet, because every pull
+  // request runs before the tag exists. Publishing must not: the tag names the
+  // exact commit the release is built from.
+  if (requireTag && tag.status === 'unpublished') {
+    throw new Error(`${tag.tag} does not exist; create the annotated tag on the release commit before running the publish check`);
+  }
   const githubRelease = github
     ? checkGithubReleaseAvailable(alignment.version, { environment, repository: repository ?? environment.GITHUB_REPOSITORY })
     : null;

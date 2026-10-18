@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+- Choosing the full enzyme list on a long record no longer crashes the
+  workbench. A scan that would exceed its work or result limit now covers as
+  many of the selected enzymes as fit, says how many were scanned, and the
+  page API refuses an enzyme-source change before changing anything.
+- Adding a record marked inactive is refused up front instead of blocking
+  every later edit and export. Editing one record now validates that record
+  and the sidecars that reference it, not the whole workspace, so a
+  keystroke in a large multi-record workspace takes a fraction of the time.
+- Put genetic-code changes on the Undo history, for a record and for a
+  feature's translation table, so undoing an earlier base edit no longer
+  drops them. Restoring a workspace whose records propose annotations no
+  longer leaves it reading as unsaved.
+- Reported a nicking enzyme matched on the bottom strand as nicking the
+  bottom strand, treated a palindromic Golden Gate junction as an ambiguous
+  product rather than a ready one, stopped salt-correcting the GC-adjusted
+  melting temperature twice, removed the jump in the inspector's melting
+  temperature between 20-mers and 21-mers, and proposed open reading frames
+  only from an ATG start.
+- Read legacy GenBank files whose BASE COUNT, CONTIG, or WGS lines sit
+  between the feature table and ORIGIN without gluing them onto the last
+  qualifier. Basic GenBank export now wraps every line at the format's width
+  and writes KEYWORDS and ORGANISM.
+- The connector accepts a raw sequence without a molecule type by reading
+  its alphabet, and its summaries quote record names and filenames from the
+  input as untrusted labels. Release rollback restores only the Motif
+  connector entry and keeps other servers in the host configuration.
+- The quickstart clones the default branch, the publish check fails when
+  the release tag is missing, and the build scripts are linted.
+
 - Found PCR primer sites that cross the origin of a circular template, and
   drew their markers on the plasmid map. A reverse primer bound upstream of
   the forward primer no longer yields a product shorter than its primers,

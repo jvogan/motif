@@ -14,6 +14,12 @@ export interface FindORFsOptions {
   table?: CodonTable;
   /** Sequence topology. Defaults to `'linear'`. */
   topology?: Topology;
+  /**
+   * Initiator codons that may open an ORF. Defaults to every initiator the
+   * codon table lists, which for Table 1 includes the alternative TTG and CTG
+   * starts. Pass `['ATG']` to consider only the canonical initiator.
+   */
+  startCodons?: readonly string[];
 }
 
 function isDefiniteCodonMember(codon: string, accepted: ReadonlySet<string>): boolean {
@@ -175,10 +181,14 @@ export function findORFs(
   const effectiveMinAa = options?.minAminoAcids ?? minAminoAcids;
   const effectiveTable = options?.table ?? table;
   const topology: Topology = options?.topology ?? 'linear';
+  const startCodons = options?.startCodons === undefined
+    ? null
+    : new Set(options.startCodons.map((codon) => codon.toUpperCase().replaceAll('U', 'T')));
   const seqLen = upper.length;
   if (seqLen < 3) return [];
 
-  const cacheKey = `${codonTableVersion(effectiveTable)}|${topology}|${effectiveMinAa}|${upper}`;
+  const startKey = startCodons === null ? '*' : [...startCodons].sort().join(',');
+  const cacheKey = `${codonTableVersion(effectiveTable)}|${topology}|${effectiveMinAa}|${startKey}|${upper}`;
   const cacheableSequence = upper.length <= ORF_CACHE_MAX_CHARS;
   let tableCache = orfCache.get(effectiveTable);
   const cached = cacheableSequence ? tableCache?.get(cacheKey) : undefined;
@@ -199,6 +209,7 @@ export function findORFs(
       effectiveMinAa,
       seqLen,
       topology,
+      startCodons,
     );
     // Appended one at a time, not spread. `push(...found)` passes every ORF as
     // an argument, and a record long enough to yield tens of thousands of them
@@ -219,6 +230,7 @@ export function findORFs(
       effectiveMinAa,
       seqLen,
       topology,
+      startCodons,
     );
     for (const orf of found) {
       if (circular) {
@@ -289,6 +301,7 @@ function findORFsInFrame(
   minAminoAcids: number,
   originalLength: number,
   topology: Topology,
+  startCodons: ReadonlySet<string> | null,
 ): ORF[] {
   const orfs: ORF[] = [];
   const stops = new Set(table.stops);
@@ -298,7 +311,10 @@ function findORFsInFrame(
 
   for (let position = frameOffset; position + 2 < seq.length; position += 3) {
     const codon = seq.slice(position, position + 3);
-    if (isDefiniteInitiatorCodon(codon, table)) startPositions.push(position);
+    const initiator = startCodons === null
+      ? isDefiniteInitiatorCodon(codon, table)
+      : isDefiniteCodonMember(codon, startCodons);
+    if (initiator) startPositions.push(position);
     if (isDefiniteCodonMember(codon, stops)) stopPositions.push(position);
   }
 

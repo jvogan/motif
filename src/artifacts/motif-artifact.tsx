@@ -33,8 +33,11 @@ import { calculateDnaMolecularWeight, gcContent, gcContentFromComposition, melti
 import { findORFs } from '../bio/orf-detection';
 import type { DigestFragment } from '../bio/restriction-digest';
 import {
+  MAX_RESTRICTION_SCAN_WORK_UNITS,
   normalizeRestrictionRecognitionSequence,
   RESTRICTION_ENZYMES,
+  RestrictionInputError,
+  RestrictionScanResultLimitError,
   findRestrictionSites,
 } from '../bio/restriction-sites';
 import { RESTRICTION_ENZYMES_FULL } from '../bio/enzyme-data';
@@ -1569,7 +1572,7 @@ const DEFAULT_MAP_VIEWPORT: MapViewport = { k: 1, tx: 0, ty: 0 };
 const builtInRecords = JSON.parse(vectorsRaw) as ArtifactRecordInput[];
 
 const MOTIF_HELP_API: Record<string, string> = {
-  'motifAddRecords(recordOrRecords)': 'Append one record or an array; returns number added; focuses the first new record.',
+  'motifAddRecords(recordOrRecords)': 'Append one record or an array; returns number added; focuses the first new record. Records with active: false are rejected and nothing is added.',
   'motifRenderInventory(recordsOrPayload)': 'Replace records while preserving compatible alignments, notes, results, and durable settings. Workspace fields or orphaning replacements are rejected transactionally; use motifReplaceWorkspace for intentional full replacement.',
   'motifGetInventory()': 'Return all current records (serialized, round-trippable into motifAddRecords/motifRenderInventory).',
   'motifGetActiveRecord()': 'Return the selected record, or null.',
@@ -2849,11 +2852,14 @@ export function buildArtifactExportLossReport(
     if (typeof metadata.motifOriginalFeatureKey === 'string') {
       originalFeatureKeys.push({ featureId: feature.id, key, exportedType: exportedFeatureType(feature, format) });
     }
+    // Only location diagnostics say a location is unsupported; a warning about
+    // how the feature's lines were laid out leaves its location intact.
     const diagnostics = Array.isArray(metadata.motifImportDiagnostics)
       ? metadata.motifImportDiagnostics.filter((value): value is GenBankImportDiagnostic => (
         isPlainObject(value)
         && value.severity === 'warning'
         && typeof value.code === 'string'
+        && LOCATION_IMPORT_DIAGNOSTIC_CODES.has(value.code)
         && typeof value.featureKey === 'string'
         && typeof value.location === 'string'
         && typeof value.message === 'string'
@@ -3160,22 +3166,151 @@ function assertArtifactCheckpointRecordsRestorable(records: readonly ArtifactVec
   );
 }
 
-function scanRestrictionSitesForRecord(
+/**
+ * Why a restriction scan covered only part of the requested enzyme list. The
+ * scanner refuses a scan whose work exceeds its safety budget and truncates one
+ * whose results exceed its output budget; both are reachable from the UI (the
+ * full bundled list on a long record, or a low-complexity record with a short
+ * cutter), so they are reported here rather than thrown into a render.
+ */
+type RestrictionScanLimit = {
+  code: 'scan_work_limit' | 'result_limit';
+  scannedEnzymeCount: number;
+  requestedEnzymeCount: number;
+  message: string;
+};
+
+type RestrictionScanOutcome = {
+  sites: readonly RestrictionSite[];
+  limit: RestrictionScanLimit | null;
+};
+
+function isRestrictionScanLimitError(error: unknown): error is RestrictionInputError {
+  return error instanceof RestrictionInputError
+    && (error.code === 'scan_work_limit' || error.code === 'result_limit');
+}
+
+/** The longest leading run of `enzymes` whose scan fits the scanner's work budget. */
+function restrictionEnzymePrefixWithinScanWork(
+  sequenceLength: number,
+  topology: Topology,
+  enzymes: readonly RestrictionEnzyme[],
+): RestrictionEnzyme[] {
+  const kept: RestrictionEnzyme[] = [];
+  let recognitionWork = 0;
+  let maxRecognitionLength = 0;
+  for (const enzyme of enzymes) {
+    const recognition = normalizeRestrictionRecognitionSequence(enzyme.recognitionSequence);
+    const orientations = reverseComplement(recognition) === recognition ? 1 : 2;
+    const nextWork = recognitionWork + orientations * recognition.length;
+    const nextMax = Math.max(maxRecognitionLength, recognition.length);
+    const scanLength = sequenceLength + (topology === 'circular' ? Math.max(0, nextMax - 1) : 0);
+    if (scanLength * nextWork > MAX_RESTRICTION_SCAN_WORK_UNITS) break;
+    kept.push(enzyme);
+    recognitionWork = nextWork;
+    maxRecognitionLength = nextMax;
+  }
+  return kept;
+}
+
+/**
+ * The scanner enumerates enzymes in order and stops part-way through one when a
+ * result ceiling is reached. Every enzyme before the last one with a retained
+ * site was scanned completely; that one and everything after it were not.
+ */
+function completeRestrictionEnzymePrefix(
+  enzymes: readonly RestrictionEnzyme[],
+  retainedSites: readonly RestrictionSite[],
+): RestrictionEnzyme[] {
+  const order = new Map(enzymes.map((enzyme, index) => [enzyme.name.trim().toLowerCase(), index]));
+  let lastIndex = -1;
+  for (const site of retainedSites) {
+    lastIndex = Math.max(lastIndex, order.get(site.enzyme.trim().toLowerCase()) ?? -1);
+  }
+  return enzymes.slice(0, Math.max(0, lastIndex));
+}
+
+function restrictionScanLimitMessage(
+  code: RestrictionScanLimit['code'],
+  scannedEnzymeCount: number,
+  requestedEnzymeCount: number,
+): string {
+  const reason = code === 'scan_work_limit'
+    ? 'the record is too long to scan every selected enzyme within the scan safety limit'
+    : 'the selected enzymes produce more sites than the scan result limit';
+  return `Scanned ${scannedEnzymeCount.toLocaleString()} of ${requestedEnzymeCount.toLocaleString()} selected enzymes because ${reason}. Sites from the other ${(requestedEnzymeCount - scannedEnzymeCount).toLocaleString()} are not shown; select fewer source groups to scan them.`;
+}
+
+/**
+ * Scan as much of the requested enzyme list as the scanner's limits allow, in
+ * list order, and say how much that was. Only the scanner's limit refusals are
+ * absorbed; any other error is still a defect and still throws.
+ */
+function scanRestrictionSitesWithinLimits(
+  sequence: string,
+  enzymes: readonly RestrictionEnzyme[],
+  topology: Topology,
+): RestrictionScanOutcome {
+  const requestedEnzymeCount = enzymes.length;
+  let candidates = [...enzymes];
+  let limitCode: RestrictionScanLimit['code'] | null = null;
+  const limited = (sites: readonly RestrictionSite[], scannedEnzymeCount: number): RestrictionScanOutcome => ({
+    sites,
+    limit: limitCode === null ? null : {
+      code: limitCode,
+      scannedEnzymeCount,
+      requestedEnzymeCount,
+      message: restrictionScanLimitMessage(limitCode, scannedEnzymeCount, requestedEnzymeCount),
+    },
+  });
+  for (let attempt = 0; attempt < 3 && candidates.length > 0; attempt += 1) {
+    try {
+      return limited(findRestrictionSites(sequence, candidates, { topology }), candidates.length);
+    } catch (error) {
+      if (!isRestrictionScanLimitError(error)) throw error;
+      // The last limit reached is the one that bounded the result.
+      limitCode = error.code as RestrictionScanLimit['code'];
+      if (error instanceof RestrictionScanResultLimitError) {
+        // The retained sites of the completely scanned enzymes are already the
+        // full answer for them, so this does not scan again.
+        const kept = completeRestrictionEnzymePrefix(candidates, error.result.sites);
+        const keptNames = new Set(kept.map((enzyme) => enzyme.name.trim().toLowerCase()));
+        return limited(
+          error.result.sites.filter((site) => keptNames.has(site.enzyme.trim().toLowerCase())),
+          kept.length,
+        );
+      }
+      const prefix = restrictionEnzymePrefixWithinScanWork(sequence.length, topology, candidates);
+      candidates = prefix.length < candidates.length ? prefix : candidates.slice(0, Math.floor(candidates.length / 2));
+    }
+  }
+  return limited([], 0);
+}
+
+function mergeSuppliedRestrictionSites(
+  scanned: readonly RestrictionSite[],
+  supplied: readonly RestrictionSite[],
+): readonly RestrictionSite[] {
+  if (supplied.length === 0) return scanned;
+  const seen = new Set(scanned.map(restrictionSiteTickId));
+  const injectedOnly = supplied.filter((site) => !seen.has(restrictionSiteTickId(site)));
+  return injectedOnly.length > 0 ? [...scanned, ...injectedOnly] : scanned;
+}
+
+function scanRestrictionSitesForRecordDetailed(
   record: Pick<ArtifactVector, 'type' | 'sequence' | 'topology' | 'sites'>,
   scanEnzymes: readonly RestrictionEnzyme[],
-): readonly RestrictionSite[] {
+): RestrictionScanOutcome {
   // Nothing to scan is not the same as nothing to report: sites that arrived in
   // the payload belong to the record and are not this scan's to discard. This
   // returned `emptySites`, so a record carrying supplied sites summarised as
   // zero the moment no enzyme source was selected, while the export of the same
   // record still listed them. Same answer as recordSitesForExport now.
-  if (record.type !== 'dna' || scanEnzymes.length === 0) return record.sites;
-  const scanned = findRestrictionSites(record.sequence, [...scanEnzymes], { topology: record.topology });
-  if (record.sites.length === 0) return scanned;
-  const seen = new Set(scanned.map(restrictionSiteTickId));
-  const injectedOnly = record.sites.filter((site) => !seen.has(restrictionSiteTickId(site)));
-  return injectedOnly.length > 0 ? [...scanned, ...injectedOnly] : scanned;
+  if (record.type !== 'dna' || scanEnzymes.length === 0) return { sites: record.sites, limit: null };
+  const scan = scanRestrictionSitesWithinLimits(record.sequence, scanEnzymes, record.topology);
+  return { sites: mergeSuppliedRestrictionSites(scan.sites, record.sites), limit: scan.limit };
 }
+
 
 // Plain-language + structured snapshot of the active record, built from the
 // same pure Motif engines the UI uses. This is what the Claude Science
@@ -3187,6 +3322,7 @@ function buildRecordSummary(
   topology: Topology,
   sites: readonly RestrictionSite[],
   selection: { label: string; sequence: string } | null,
+  restrictionScanLimit: RestrictionScanLimit | null = null,
 ): RecordSummary {
   const molecule = record.type;
   const isDna = molecule === 'dna';
@@ -3293,7 +3429,9 @@ function buildRecordSummary(
     gcPercent: gc == null ? null : Number((gc * 100).toFixed(1)),
     tmCelsius: nullableFixed(tm, 1),
     features: featureList,
-    restriction: isDna ? { enzymesThatCut, singleCutters } : null,
+    restriction: isDna
+      ? { enzymesThatCut, singleCutters, ...(restrictionScanLimit ? { scanLimit: { ...restrictionScanLimit } } : {}) }
+      : null,
     ends,
     translationTable: isNucleotide && translationCode.supported
       ? { id: translationCode.id, name: translationCode.name, source: translationCode.source }
@@ -3342,6 +3480,7 @@ function buildRecordSummary(
         `${shownCutters ? ` (${shownCutters}${singleCutters.length > 10 ? ', …' : ''})` : ''}; ` +
         `${enzymesThatCut} enzyme${enzymesThatCut === 1 ? '' : 's'} cut`,
     );
+    if (restrictionScanLimit) lines.push(`Restriction scan limit: ${restrictionScanLimit.message}`);
     if (longestOrf) {
       // The empty case has always named its floor; the non-empty one did not,
       // which is how this line came to report 96 while the Analysis chip
@@ -3374,7 +3513,8 @@ export function describePayloadSnapshot(
   const record = payload.records.find((item) => item.id === selectedRecordId) ?? payload.records[0];
   if (!record) return null;
   const scanEnzymes = restrictionEnzymesForSources(restrictionSources, customEnzymes);
-  return buildRecordSummary(record, record.topology, scanRestrictionSitesForRecord(record, scanEnzymes), null);
+  const scan = scanRestrictionSitesForRecordDetailed(record, scanEnzymes);
+  return buildRecordSummary(record, record.topology, scan.sites, null, scan.limit);
 }
 
 function nullableFixed(value: number | null, digits: number): number | null {
@@ -3422,10 +3562,113 @@ function genBankLocation(feature: Feature): string {
   return featureGenBankLocation(feature);
 }
 
+// The GenBank import diagnostics that describe a feature location.
+const LOCATION_IMPORT_DIAGNOSTIC_CODES: ReadonlySet<string> = new Set([
+  'between_base_location',
+  'remote_location',
+  'ambiguous_location',
+]);
+
 // INSDC writes these location-valued qualifiers without quotes, as in
 // /transl_except=(pos:158..160,aa:Sec). A value with a space or a quote in it
 // keeps its quotes, so that it still reads back as one value.
 const UNQUOTED_GENBANK_QUALIFIERS = new Set(['transl_except', 'anticodon', 'rpt_unit_range', 'tag_peptide']);
+
+// GenBank lines stop at column 79; strict readers reject longer ones.
+const GENBANK_LINE_WIDTH = 79;
+
+// Qualifiers whose line breaks a reader removes rather than turning into a
+// space, so their values split anywhere. Every other quoted value is free text:
+// it splits at a space, which the reader puts back when it rejoins the lines.
+const CONTINUOUS_GENBANK_QUALIFIERS = new Set(['translation']);
+
+/**
+ * Wrap `text` into lines of at most GENBANK_LINE_WIDTH columns. `words` breaks
+ * only at a space (dropped, since readers rejoin free text with one). A token
+ * longer than a line is never split, because the reader would rejoin its
+ * halves with a space; it goes on a line of its own, which is then overlong.
+ * `continuous` splits at the width. A break never falls inside a `""` escaped
+ * quote, and never within the first `minFirstBreak` characters, so a
+ * qualifier's first line keeps some of its value.
+ */
+function wrapGenBankText(
+  text: string,
+  firstPrefix: string,
+  continuationPrefix: string,
+  mode: 'words' | 'continuous',
+  minFirstBreak = 0,
+): string[] {
+  const lines: string[] = [];
+  let remaining = text;
+  let prefix = firstPrefix;
+  let minBreak = minFirstBreak;
+  while (prefix.length + remaining.length > GENBANK_LINE_WIDTH) {
+    const width = GENBANK_LINE_WIDTH - prefix.length;
+    let split = -1;
+    let skip = 0;
+    if (mode === 'words') {
+      for (let index = width; index > minBreak; index -= 1) {
+        if (remaining[index] === ' ') {
+          split = index;
+          skip = 1;
+          break;
+        }
+      }
+      if (split < 0) {
+        // The token at the start of the line is longer than a line.
+        const nextSpace = remaining.indexOf(' ', Math.max(width, minBreak + 1));
+        if (nextSpace < 0) break;
+        split = nextSpace;
+        skip = 1;
+      }
+    }
+    if (split < 0) {
+      for (let index = width; index > minBreak; index -= 1) {
+        if (!(remaining[index - 1] === '"' && remaining[index] === '"')) {
+          split = index;
+          break;
+        }
+      }
+    }
+    if (split < 0) break;
+    lines.push(`${prefix}${remaining.slice(0, split)}`);
+    remaining = remaining.slice(split + skip);
+    prefix = continuationPrefix;
+    minBreak = 0;
+  }
+  lines.push(`${prefix}${remaining}`);
+  return lines;
+}
+
+const GENBANK_HEADER_CONTINUATION = ' '.repeat(12);
+
+function genBankHeaderLines(label: string, text: string): string[] {
+  return wrapGenBankText(text, label.padEnd(12, ' '), GENBANK_HEADER_CONTINUATION, 'words');
+}
+
+/**
+ * A reader keeps ORGANISM's first line as the organism name and the lines under
+ * it as the lineage, then joins them into one string. Written back, the name
+ * goes alone on the ORGANISM line and the lineage, from its first `;`-bearing
+ * rank, on the indented lines below.
+ */
+function genBankOrganismLines(organism: string, knownLineage = ''): string[] {
+  // An imported record remembers where its lineage began, so the split is
+  // exact even when the first lineage rank carries no `;` of its own.
+  if (knownLineage && organism.endsWith(` ${knownLineage}`)) {
+    return [
+      ...genBankHeaderLines('  ORGANISM', organism.slice(0, organism.length - knownLineage.length).trim()),
+      ...wrapGenBankText(knownLineage, GENBANK_HEADER_CONTINUATION, GENBANK_HEADER_CONTINUATION, 'words'),
+    ];
+  }
+  const tokens = organism.split(' ');
+  const lineageStart = tokens.findIndex((token, index) => index > 0 && token.includes(';'));
+  if (lineageStart < 0) return genBankHeaderLines('  ORGANISM', organism);
+  return [
+    ...genBankHeaderLines('  ORGANISM', tokens.slice(0, lineageStart).join(' ')),
+    ...wrapGenBankText(tokens.slice(lineageStart).join(' '), GENBANK_HEADER_CONTINUATION, GENBANK_HEADER_CONTINUATION, 'words'),
+  ];
+}
 
 function genBankQualifierLines(
   qualifier: GenBankQualifier,
@@ -3435,13 +3678,18 @@ function genBankQualifierLines(
   if (UNQUOTED_GENBANK_QUALIFIERS.has(qualifier.key.toLowerCase()) && /^[^\s"]+$/.test(qualifier.value)) {
     return [`${continuationPrefix}/${qualifier.key}=${qualifier.value}`];
   }
+  const mode = CONTINUOUS_GENBANK_QUALIFIERS.has(qualifier.key.toLowerCase()) ? 'continuous' : 'words';
+  const head = `/${qualifier.key}="`;
+  const wrap = (text: string, minFirstBreak = 0) => (
+    wrapGenBankText(text, continuationPrefix, continuationPrefix, mode, minFirstBreak)
+  );
   const escaped = qualifier.value.replace(/"/g, '""');
   const lines = escaped.split(/\r?\n/u);
-  if (lines.length === 1) return [`${continuationPrefix}/${qualifier.key}="${lines[0]}"`];
+  if (lines.length === 1) return wrap(`${head}${lines[0]}"`, head.length);
   return [
-    `${continuationPrefix}/${qualifier.key}="${lines[0]}`,
-    ...lines.slice(1, -1).map((line) => `${continuationPrefix}${line}`),
-    `${continuationPrefix}${lines[lines.length - 1]}"`,
+    ...wrap(`${head}${lines[0]}`, head.length),
+    ...lines.slice(1, -1).flatMap((line) => wrap(line)),
+    ...wrap(`${lines[lines.length - 1]}"`),
   ];
 }
 
@@ -3515,7 +3763,7 @@ function preservedGenBankQualifierLines(
       lines.push(...qualifierLines({ key: normalizedKey.replace('apeinfo', 'ApEinfo').replace('ncrna', 'ncRNA'), value }));
     }
   }
-  if (!keys.has('label')) lines.push(`${continuationPrefix}/label="${feature.name.replace(/"/g, '""')}"`);
+  if (!keys.has('label')) lines.push(...genBankQualifierLines({ key: 'label', value: feature.name }, continuationPrefix));
   return lines;
 }
 
@@ -3524,7 +3772,7 @@ function genBankFeatureLines(feature: Feature, recordTranslationTableId?: number
   const [featureKey, regulatoryClass, motifType] = insdcFeatureKey(feature.type, feature.metadata.motifOriginalFeatureKey);
   const firstPrefix = `     ${featureKey.padEnd(15, ' ')} `;
   const continuationPrefix = ' '.repeat(firstPrefix.length);
-  const chunkWidth = 80 - firstPrefix.length;
+  const chunkWidth = GENBANK_LINE_WIDTH - firstPrefix.length;
   const chunks: string[] = [];
   let remaining = location;
   while (remaining.length > chunkWidth) {
@@ -3662,12 +3910,15 @@ function genBankFeatureLines(feature: Feature, recordTranslationTableId?: number
   ));
   const preservedQualifierLines = preservedGenBankQualifierLines(feature, continuationPrefix, qualifierOverrides);
   const diagnosticLines = isQuarantinedFeatureLocation(feature)
-    ? [`                     /note="Motif import diagnostic: this valid INSDC location was retained but quarantined because it cannot be projected onto the local sequence."`]
+    ? genBankQualifierLines({
+      key: 'note',
+      value: 'Motif import diagnostic: this valid INSDC location was retained but quarantined because it cannot be projected onto the local sequence.',
+    }, continuationPrefix)
     : [];
   return [
     ...locationLines,
     ...(preservedQualifierLines ?? [
-      `                     /label="${feature.name.replace(/"/g, "'")}"`,
+      ...wrapGenBankText(`/label="${feature.name.replace(/"/g, "'")}"`, continuationPrefix, continuationPrefix, 'words', '/label="'.length),
       ...genBankMetadataQualifiers(feature).flatMap((qualifier) => genBankQualifierLines(qualifier, continuationPrefix)),
       ...codonStartLine,
       ...translationTableLine,
@@ -3717,11 +3968,14 @@ function genBankAccessionLines(record: ArtifactVector): string[] {
   const kept = record.provenance?.genbankAccession;
   const version = record.provenance?.genbankVersion;
   if (typeof kept !== 'string' || !/^[ !-~]+$/.test(kept) || !kept.trim()) {
-    return [`ACCESSION   ${record.id.trim().replace(/\s+/g, '_').replace(/[^!-~]/g, '') || 'unknown'}`];
+    return genBankHeaderLines('ACCESSION', record.id.trim().replace(/\s+/g, '_').replace(/[^!-~]/g, '') || 'unknown');
   }
   const writesVersion = typeof version === 'string' && /^[!-~]+$/.test(version)
     && record.provenance?.genbankVersionCrc32 === genBankSequenceCrc32(record.sequence);
-  return [`ACCESSION   ${kept.trim().split(/ +/).join(' ')}`, ...(writesVersion ? [`VERSION     ${version}`] : [])];
+  return [
+    ...genBankHeaderLines('ACCESSION', kept.trim().split(/ +/).join(' ')),
+    ...(writesVersion ? genBankHeaderLines('VERSION', version) : []),
+  ];
 }
 
 export function toGenBankLite(record: ArtifactVector, topology: Topology): string {
@@ -3746,11 +4000,17 @@ export function toGenBankLite(record: ArtifactVector, topology: Topology): strin
     .join('\n');
   const quarantinedCount = record.features.filter(isQuarantinedFeatureLocation).length;
   const exportComments = [
-    'COMMENT     Motif Basic GenBank export is intentionally lossy; use Database JSON or ZIP for a complete Motif checkpoint.',
+    ...genBankHeaderLines('COMMENT', 'Motif Basic GenBank export is intentionally lossy; use Database JSON or ZIP for a complete Motif checkpoint.'),
     ...(quarantinedCount > 0
-      ? [`COMMENT     ${quarantinedCount} feature location${quarantinedCount === 1 ? '' : 's'} retained raw INSDC syntax and remain quarantined because local projection is unavailable.`]
+      ? genBankHeaderLines('COMMENT', `${quarantinedCount} feature location${quarantinedCount === 1 ? '' : 's'} retained raw INSDC syntax and remain quarantined because local projection is unavailable.`)
       : []),
   ];
+  // KEYWORDS is a required header line; "." alone is GenBank's empty list.
+  const rawKeywords = record.provenance?.genbankKeywords;
+  const keywords = typeof rawKeywords === 'string' ? rawKeywords.replace(/\s+/g, ' ').trim().replace(/\.+$/, '') : '';
+  const organism = record.organism?.replace(/\s+/g, ' ').trim();
+  const rawLineage = record.provenance?.genbankLineage;
+  const knownLineage = typeof rawLineage === 'string' ? rawLineage.replace(/\s+/g, ' ').trim() : '';
 
   // A DEFINITION ends with one period. Descriptions that already end with one
   // (including every DEFINITION read back from a GenBank file) keep it, so an
@@ -3758,9 +4018,11 @@ export function toGenBankLite(record: ArtifactVector, topology: Topology): strin
   const definition = (record.description || record.name).trim();
   return [
     locus,
-    `DEFINITION  ${definition.endsWith('.') ? definition : `${definition}.`}`,
+    ...genBankHeaderLines('DEFINITION', definition.endsWith('.') ? definition : `${definition}.`),
     ...genBankAccessionLines(record),
-    `SOURCE      ${record.source || 'Motif'}`,
+    ...genBankHeaderLines('KEYWORDS', `${keywords}.`),
+    ...genBankHeaderLines('SOURCE', record.source || 'Motif'),
+    ...(organism ? genBankOrganismLines(organism, knownLineage) : []),
     ...exportComments,
     'FEATURES             Location/Qualifiers',
     // A record with no features leaves the table empty. A placeholder
@@ -3919,11 +4181,11 @@ function recordSitesForExport(record: ArtifactVector, scanEnzymes: readonly Rest
   if (!isNucleotideType(record.type)) return record.sites;
   if (scanEnzymes.length === 0) return record.sites;
   const scanSequence = record.type === 'rna' ? record.sequence.replace(/U/gi, 'T') : record.sequence;
-  const scanned = findRestrictionSites(scanSequence, [...scanEnzymes], { topology: record.topology });
-  if (record.sites.length === 0) return scanned;
-  const seen = new Set(scanned.map(restrictionSiteTickId));
-  const injectedOnly = record.sites.filter((site) => !seen.has(restrictionSiteTickId(site)));
-  return injectedOnly.length > 0 ? [...scanned, ...injectedOnly] : scanned;
+  // Bounded the same way as the on-screen scan, so a record too long for the
+  // selected enzyme list exports the sites the workbench shows instead of
+  // throwing from the export panel's render.
+  const scanned = scanRestrictionSitesWithinLimits(scanSequence, scanEnzymes, record.topology).sites;
+  return [...mergeSuppliedRestrictionSites(scanned, record.sites)];
 }
 
 function toMultiFasta(records: readonly ArtifactVector[]): string {
@@ -4164,6 +4426,8 @@ function recordInputFromGenBank(record: ReturnType<typeof parseGenBank>[number],
     // Basic GenBank writes these back (see toGenBankLite). The checksum names
     // the bases the VERSION was read with.
     ...(record.accession ? { genbankAccession: record.accession } : {}),
+    ...(record.keywords ? { genbankKeywords: record.keywords } : {}),
+    ...(record.organismLineage ? { genbankLineage: record.organismLineage } : {}),
     ...(record.accession && record.version
       ? { genbankVersion: record.version, genbankVersionCrc32: genBankSequenceCrc32(record.sequence) }
       : {}),
@@ -4878,6 +5142,17 @@ type RuntimeRecordIssue = {
   path?: string;
 };
 
+/** Trace channel samples one raw record contributes to the workspace total. */
+function runtimeRecordTraceSampleEntries(record: unknown): number {
+  if (!isPlainObject(record) || !isPlainObject(record.sangerTrace) || !isPlainObject(record.sangerTrace.channels)) return 0;
+  let total = 0;
+  for (const base of ['A', 'C', 'G', 'T']) {
+    const channel = record.sangerTrace.channels[base];
+    if (Array.isArray(channel)) total += channel.length;
+  }
+  return total;
+}
+
 function omitTraceArraysForGenericJsonValidation(value: unknown): unknown {
   const stripRecord = (record: unknown): unknown => {
     if (!isPlainObject(record) || record.sangerTrace === undefined) return record;
@@ -5239,13 +5514,7 @@ export function validateRuntimeRecordInputs(
 ): void {
   const issues: RuntimeRecordIssue[] = [];
   let traceSampleEntries = 0;
-  for (const record of rawRecords) {
-    if (!isPlainObject(record) || !isPlainObject(record.sangerTrace) || !isPlainObject(record.sangerTrace.channels)) continue;
-    for (const base of ['A', 'C', 'G', 'T']) {
-      const channel = record.sangerTrace.channels[base];
-      if (Array.isArray(channel)) traceSampleEntries += channel.length;
-    }
-  }
+  for (const record of rawRecords) traceSampleEntries += runtimeRecordTraceSampleEntries(record);
   const traceWorkspaceExceeded = traceSampleEntries > ARTIFACT_SANGER_MAX_WORKSPACE_SAMPLE_ENTRIES;
   if (traceWorkspaceExceeded) {
     issues.push({
@@ -5360,6 +5629,33 @@ export function validateRuntimeRecordInputs(
           ? `${operation} rejected input that exceeds the artifact's bounded resource limits. Split the inventory or reduce annotations and metadata, then retry. ${preservedMessage}`
       : `${operation} rejected ${issues.length} invalid record${issues.length === 1 ? '' : 's'}. ${preservedMessage}`,
     { operation, inputCount: rawRecords.length, issues, mutated: false },
+  );
+}
+
+/**
+ * An inactive record has no place in a live workspace: inventory replacement
+ * and restore both omit it, and a durable checkpoint cannot contain one. Added
+ * anyway, it made every later checkpoint-validated edit, to any record, fail.
+ */
+function assertNoInactiveRecordAdditions(rawRecords: readonly unknown[]): void {
+  const inactiveIndexes = rawRecords.flatMap((record, index) => (
+    isPlainObject(record) && record.active === false ? [index] : []
+  ));
+  if (inactiveIndexes.length === 0) return;
+  throw new MotifArtifactRuntimeError(
+    'MOTIF_INVALID_RECORD_INPUT',
+    `motifAddRecords rejected ${inactiveIndexes.length} inactive record${inactiveIndexes.length === 1 ? '' : 's'}. Inactive records cannot be kept in the workspace or a durable checkpoint; omit them or remove active: false. No records were added.`,
+    {
+      operation: 'motifAddRecords',
+      inputCount: rawRecords.length,
+      issues: inactiveIndexes.map((index) => ({
+        index,
+        code: 'inactive_record',
+        path: `records[${index}].active`,
+        message: 'Inactive records are omitted from the workspace and cannot be added.',
+      })),
+      mutated: false,
+    },
   );
 }
 
@@ -5775,6 +6071,100 @@ export function createArtifactDatabaseSnapshot(
   });
 }
 
+/**
+ * The part of checkpoint validation that an edit to one record can change: the
+ * edited record itself, the limits that span records (trace samples, record
+ * count, serialized size), and every sidecar whose coordinates are checked
+ * against record lengths (notes, workflow and analysis results, durable state).
+ * Other records' own contents are untouched by the edit, so revalidating them
+ * on every keystroke only made the cost of an edit grow with the size of the
+ * workspace; Database JSON and ZIP export still validate the complete checkpoint.
+ */
+type CheckpointRecordTotals = {
+  traceSampleEntries: number;
+  jsonNodes: number;
+  jsonBytes: number;
+  jsonIssue: boolean;
+};
+
+// Records are replaced, never mutated, so an unchanged record keeps its totals.
+const checkpointRecordTotalsCache = new WeakMap<ArtifactVector, CheckpointRecordTotals>();
+
+/**
+ * What one record contributes to the checkpoint's cross-record totals, measured
+ * on the same serialized form, with the same trace projection and JSON walk,
+ * that the full records check applies to the whole array.
+ */
+function checkpointRecordTotals(record: ArtifactVector): CheckpointRecordTotals {
+  const cached = checkpointRecordTotalsCache.get(record);
+  if (cached) return cached;
+  const rawRecord = omitUndefinedObjectProperties(serializeRecord(record));
+  const [projected] = omitTraceArraysForGenericJsonValidation([rawRecord]) as unknown[];
+  const budget: JsonInspectionBudget = { nodes: 0, bytes: 0 };
+  // Depth 1: the full check walks each record as an element of the array.
+  const issue = jsonCompatibilityIssue(projected, 'records', PAYLOAD_JSON_LIMITS, new WeakSet(), 1, budget);
+  const totals = {
+    traceSampleEntries: runtimeRecordTraceSampleEntries(rawRecord),
+    jsonNodes: budget.nodes,
+    jsonBytes: budget.bytes,
+    jsonIssue: issue !== null,
+  };
+  checkpointRecordTotalsCache.set(record, totals);
+  return totals;
+}
+
+/**
+ * The checkpoint limits that span records: record count, workspace trace
+ * samples, and the serialized size of the records array. They are summed from
+ * cached per-record totals; only when a total is over its limit does the full
+ * records check run, which then refuses with its own error.
+ */
+function assertArtifactCheckpointRecordTotals(records: readonly ArtifactVector[]): void {
+  let traceSampleEntries = 0;
+  // The array itself: one node, its brackets, and a comma between elements.
+  let jsonNodes = 1;
+  let jsonBytes = 2 + Math.max(0, records.length - 1);
+  let jsonIssue = false;
+  for (const record of records) {
+    const totals = checkpointRecordTotals(record);
+    traceSampleEntries += totals.traceSampleEntries;
+    jsonNodes += totals.jsonNodes;
+    jsonBytes += totals.jsonBytes;
+    jsonIssue ||= totals.jsonIssue;
+  }
+  if (
+    records.length > MOTIF_MAX_RECORDS
+    || traceSampleEntries > ARTIFACT_SANGER_MAX_WORKSPACE_SAMPLE_ENTRIES
+    || jsonNodes > PAYLOAD_JSON_LIMITS.maxNodes
+    || jsonBytes > PAYLOAD_JSON_LIMITS.maxBytes
+    || jsonIssue
+  ) {
+    assertArtifactCheckpointRecordsRestorable(records);
+  }
+}
+
+export function assertArtifactRecordEditCheckpoint(
+  payload: LoadedPayload,
+  artifactState: ArtifactDurableState,
+  editedRecordId: string,
+): void {
+  assertArtifactCheckpointRecordsRestorable(payload.records.filter((record) => record.id === editedRecordId));
+  assertArtifactCheckpointRecordTotals(payload.records);
+  const recordLengths = new Map(payload.records.map((record) => [record.id, record.sequence.length]));
+  serializeArtifactWorkspaceCollections({
+    notes: payload.notes,
+    workflowResults: payload.workflowResults,
+  }, {
+    recordLengths,
+    allowMissingWorkflowOutputRecords: true,
+  });
+  serializeArtifactAnalysisWorkspace({
+    analysisResults: payload.analysisResults,
+    analysisAssets: payload.analysisAssets,
+  }, { recordLengths });
+  normalizeArtifactDurableState(artifactState, recordLengths);
+}
+
 function cleanMotif(motif: string, sequenceType: SequenceType): string {
   if (sequenceType === 'protein') return motif.toUpperCase().replace(/[^A-Z*]/g, '');
   if (sequenceType === 'rna') return motif.toUpperCase().replace(/[^ACGU]/g, '');
@@ -6099,6 +6489,9 @@ type ArtifactRecordEditSnapshot = {
   sites: readonly RestrictionSite[];
   sangerTrace?: SangerTraceData;
   provenance?: Record<string, unknown>;
+  // The record genetic code is on the history too, so Undo of a code change
+  // restores the previous code and a step recorded before it keeps it.
+  translationTableId?: number;
 };
 
 export function captureArtifactRecordEditSnapshot(record: ArtifactVector): ArtifactRecordEditSnapshot {
@@ -6108,6 +6501,7 @@ export function captureArtifactRecordEditSnapshot(record: ArtifactVector): Artif
     sites: record.sites.map((site) => ({ ...site })),
     sangerTrace: record.sangerTrace,
     provenance: record.provenance ? normalizeJsonObject(record.provenance) : undefined,
+    translationTableId: record.translationTableId,
   };
 }
 
@@ -6122,6 +6516,7 @@ export function restoreArtifactRecordEditSnapshot(
     sites: snapshot.sites.map((site) => ({ ...site })),
     sangerTrace: snapshot.sangerTrace,
     provenance: snapshot.provenance ? normalizeJsonObject(snapshot.provenance) : undefined,
+    translationTableId: snapshot.translationTableId,
   };
 }
 
@@ -6487,6 +6882,20 @@ function App() {
   const savedDurableFingerprintRef = useRef(savedDurableFingerprint);
   const [hasSessionCheckpoint, setHasSessionCheckpoint] = useState(false);
   const hasUnsavedChanges = currentDurableFingerprint !== savedDurableFingerprint;
+  // The payload an annotation-proposal pass produced from a clean session. The
+  // pass is deterministic over the records it reads, so running it on a just
+  // restored or hydrated workspace is not an edit: reopening the same checkpoint
+  // reruns it and reaches the same records. Its result becomes the baseline once
+  // it renders, compared through the same fingerprint the unsaved check uses.
+  const proposalBaselinePayloadRef = useRef<LoadedPayload | null>(null);
+  useEffect(() => {
+    const adopted = proposalBaselinePayloadRef.current;
+    if (!adopted) return;
+    proposalBaselinePayloadRef.current = null;
+    if (adopted !== payload) return;
+    savedDurableFingerprintRef.current = currentDurableFingerprint;
+    setSavedDurableFingerprint(currentDurableFingerprint);
+  }, [currentDurableFingerprint, payload]);
   // The session a Download backup last wrote. The browser is handed the file
   // but never confirms it saved, so the chips say "backup downloaded" while the
   // close-tab warning and the replace guard stay on.
@@ -6913,8 +7322,11 @@ function App() {
     topology: scanRecordTopology,
     sites: scanRecordSites,
   } = vector;
-  const restrictionSites = useMemo(
-    () => scanRestrictionSitesForRecord({
+  // The scan is bounded rather than throwing: the full bundled list on a long
+  // record exceeds the scanner's work budget, and a throw here would unmount the
+  // whole workbench. `restrictionScanLimit` says what was left unscanned.
+  const { sites: restrictionSites, limit: restrictionScanLimit } = useMemo(
+    () => scanRestrictionSitesForRecordDetailed({
       type: scanRecordType,
       sequence: scanRecordSequence,
       topology: scanRecordTopology,
@@ -7079,11 +7491,19 @@ function App() {
   const restrictionVisibilityMeta = isDnaRecord
     ? restrictionSites.length === 0
       ? {
-        full: scanEnzymes.length > 0 ? `${scanEnzymes.length} enzymes · no sites` : 'No sites',
+        full: scanEnzymes.length > 0
+          ? restrictionScanLimit
+            ? `${restrictionScanLimit.scannedEnzymeCount}/${scanEnzymes.length} enzymes scanned · no sites`
+            : `${scanEnzymes.length} enzymes · no sites`
+          : 'No sites',
         compact: 'No sites',
       }
       : {
-        full: `${visibleRestrictionSites.length}/${restrictionSites.length} sites${scanEnzymes.length > 0 ? ` · ${scanEnzymes.length} enzymes` : ''}`,
+        full: `${visibleRestrictionSites.length}/${restrictionSites.length} sites${scanEnzymes.length > 0
+          ? restrictionScanLimit
+            ? ` · ${restrictionScanLimit.scannedEnzymeCount}/${scanEnzymes.length} enzymes scanned`
+            : ` · ${scanEnzymes.length} enzymes`
+          : ''}`,
         compact: `${visibleRestrictionSites.length}/${restrictionSites.length} sites`,
       }
     : hasActiveRecord
@@ -7389,11 +7809,18 @@ function App() {
             },
           },
         };
+        // Clean means the state this pass reads is the saved baseline, by the
+        // comparison the unsaved check makes. It is decided here, against the
+        // state the pass is applied to, so an edit queued just before it is
+        // never folded into the baseline.
+        const startedClean = artifactDurableFingerprint(current, artifactStateRef.current)
+          === savedDurableFingerprintRef.current;
         const nextPayload = {
           ...current,
           records: current.records.map((candidate) => candidate.id === record.id ? nextRecord : candidate),
         };
         payloadRef.current = nextPayload;
+        proposalBaselinePayloadRef.current = startedClean ? nextPayload : null;
         return nextPayload;
       });
     };
@@ -7492,6 +7919,7 @@ function App() {
       const raw = Array.isArray(recordOrRecords) ? recordOrRecords : [recordOrRecords];
       if (raw.length === 0) return 0;
       validateRuntimeRecordInputs(raw, 'motifAddRecords');
+      assertNoInactiveRecordAdditions(raw);
       const currentPayload = payloadRef.current;
       if (currentPayload.records.length + raw.length > MOTIF_MAX_RECORDS) {
         throw new MotifArtifactRuntimeError(
@@ -7921,6 +8349,10 @@ function App() {
     window.motifSetRestrictionSources = (sources) => {
       const next = normalizeRestrictionSources(sources, activeEnzymeSourcesRef.current);
       const targetRecordId = selectedRecordIdRef.current ?? recordId;
+      // Everything that can fail runs before any ref or state changes, so a
+      // refused selection leaves the record's sources as they were instead of
+      // committing a selection the next render cannot draw.
+      const nextDescribeSnapshot = describeRuntimePayloadSnapshot(payloadRef.current, targetRecordId, next);
       activeEnzymeSourcesRef.current = next;
       enzymeSourcesByRecordRef.current = { ...enzymeSourcesByRecordRef.current, [targetRecordId]: next };
       artifactStateRef.current = {
@@ -7931,7 +8363,7 @@ function App() {
       };
       setEnzymeSourcesByRecord((current) => ({ ...current, [targetRecordId]: next }));
       unhideRestrictionSourceEnzymes(next, targetRecordId);
-      describeSnapshotRef.current = describeRuntimePayloadSnapshot(payloadRef.current, targetRecordId, next);
+      describeSnapshotRef.current = nextDescribeSnapshot;
       return next;
     };
     return () => {
@@ -8958,13 +9390,13 @@ function App() {
   // Copy a plain-language snapshot of the current record + selection so the user
   // (or Claude reading the artifact) can drop it straight into the conversation.
   const handleCopySummary = useCallback(() => {
-    const summary = buildRecordSummary(vector, topology, restrictionSites, selectionSummary);
+    const summary = buildRecordSummary(vector, topology, restrictionSites, selectionSummary, restrictionScanLimit);
     void copyText('Summary', summary.text);
-  }, [vector, topology, restrictionSites, selectionSummary, copyText]);
+  }, [vector, topology, restrictionSites, restrictionScanLimit, selectionSummary, copyText]);
 
   useEffect(() => {
-    describeSnapshotRef.current = buildRecordSummary(vector, topology, restrictionSites, selectionSummary);
-  }, [vector, topology, restrictionSites, selectionSummary]);
+    describeSnapshotRef.current = buildRecordSummary(vector, topology, restrictionSites, selectionSummary, restrictionScanLimit);
+  }, [vector, topology, restrictionSites, restrictionScanLimit, selectionSummary]);
 
   // Plain-language + structured snapshot of the active view, for the Claude
   // Science coordinating agent to read. The function itself stays stable and
@@ -9165,10 +9597,10 @@ function App() {
       translationLayersByRecord: nextTranslationLayersByRecord,
     }, recordLengths);
 
-    // Validate the complete checkpoint shape before publishing either half of
-    // the transaction. This prevents recovery effects from observing sidecars
-    // against a sequence length they no longer satisfy.
-    createArtifactDatabaseSnapshot(nextPayload, nextArtifactState);
+    // Validate the edited record and every length-checked sidecar before
+    // publishing either half of the transaction. This prevents recovery effects
+    // from observing sidecars against a sequence length they no longer satisfy.
+    assertArtifactRecordEditCheckpoint(nextPayload, nextArtifactState, recordId);
     const after: EditSnapshot = {
       ...captureArtifactRecordEditSnapshot(nextRecord),
       noteAnchors: snapshotNoteAnchors(nextPayload.notes, recordId),
@@ -9358,7 +9790,7 @@ function App() {
       translationLayersByRecord: restoredTranslationLayersByRecord,
     }, recordLengths);
     try {
-      createArtifactDatabaseSnapshot(nextPayload, nextArtifactState);
+      assertArtifactRecordEditCheckpoint(nextPayload, nextArtifactState, recordId);
     } catch (error) {
       if (!(error instanceof MotifArtifactRuntimeError)) throw error;
       showWorkbenchNotice(`That step could not be restored, so the record is unchanged. ${error.message}`, 'error');
@@ -9499,6 +9931,35 @@ function App() {
           ? { ...layer, needsReview: true }
           : { ...layer }
       )),
+    };
+    const store = editHistoryRef.current[recordId] ?? { undo: [], redo: [] };
+    editHistoryRef.current[recordId] = {
+      undo: [...store.undo, { before, after }].slice(-200),
+      redo: [],
+    };
+    payloadRef.current = nextPayload;
+    setPayload(nextPayload);
+    bumpEditHistory();
+    return true;
+  }, [captureEditSnapshot, recordId]);
+
+  // A record genetic-code change is a step on the same history, so Undo
+  // reverses it like any other edit and never skips over it to an older step.
+  const commitRecordTranslationTableHistory = useCallback((translationTableId: number): boolean => {
+    const current = payloadRef.current;
+    const recordIndex = current.records.findIndex((record) => record.id === recordId);
+    const currentRecord = current.records[recordIndex];
+    if (!currentRecord || currentRecord.translationTableId === translationTableId) return false;
+    const before = captureEditSnapshot();
+    if (!before) return false;
+    const records = [...current.records];
+    records[recordIndex] = { ...currentRecord, translationTableId };
+    const nextPayload: LoadedPayload = { ...current, records };
+    const after: EditSnapshot = {
+      ...before,
+      features: before.features.map((feature) => ({ ...feature })),
+      translationLayers: before.translationLayers.map((layer) => ({ ...layer })),
+      translationTableId,
     };
     const store = editHistoryRef.current[recordId] ?? { undo: [], redo: [] };
     editHistoryRef.current[recordId] = {
@@ -9812,6 +10273,7 @@ function App() {
       // object properties before enforcing the complete runtime contract. The
       // public window.motifAddRecords path remains deliberately strict.
       validateRuntimeRecordInputs(sanitizedRecordInputs, 'motifAddRecords');
+      assertNoInactiveRecordAdditions(sanitizedRecordInputs);
     } catch (error) {
       reportFailure(actionableImportError(error));
       return 0;
@@ -9997,13 +10459,8 @@ function App() {
 
   const updateRecordTranslationTableId = useCallback((translationTableId: number) => {
     if (!isSupportedArtifactTranslationTableId(translationTableId)) return;
-    setPayload((current) => ({
-      ...current,
-      records: current.records.map((record) => (
-        record.id === recordId ? { ...record, translationTableId } : record
-      )),
-    }));
-  }, [recordId]);
+    commitRecordTranslationTableHistory(translationTableId);
+  }, [commitRecordTranslationTableHistory]);
 
   // Undo for a delete puts back the record, its linked notes, alignments and
   // results, and its view state, each at its old place. Anything done between
@@ -10412,27 +10869,34 @@ function App() {
       return;
     }
     const featureId = translateTargetCodeFeature?.id;
-    if (featureId) markFeatureTranslationLayersForReview(featureId);
-    setPayload((current) => ({
-      ...current,
-      records: current.records.map((record) => {
-        if (record.id !== recordId) return record;
-        if (!featureId) return { ...record, translationTableId };
-        return {
-          ...record,
-          features: record.features.map((feature) => {
-            if (feature.id !== featureId) return feature;
-            const metadata: Record<string, unknown> = {
-              ...feature.metadata,
-              transl_table: translationTableId,
-            };
-            delete metadata.translTable;
-            delete metadata.translationTableId;
-            return { ...feature, metadata };
-          }),
+    if (featureId) {
+      const currentRecord = payloadRef.current.records.find((record) => record.id === recordId);
+      const currentFeature = currentRecord?.features.find((feature) => feature.id === featureId);
+      if (!currentRecord || !currentFeature) return;
+      const metadataKeys = Object.keys(currentFeature.metadata);
+      if (
+        currentFeature.metadata.transl_table === translationTableId
+        && !metadataKeys.includes('translTable')
+        && !metadataKeys.includes('translationTableId')
+      ) return;
+      // Through the feature history, then the review flag (see updateFeature):
+      // the code lives in the feature's metadata, which every history snapshot
+      // carries, so a change made outside the history was rolled back by the
+      // Undo of any earlier step.
+      const committed = commitFeatureHistory(currentRecord.features.map((feature) => {
+        if (feature.id !== featureId) return feature;
+        const metadata: Record<string, unknown> = {
+          ...feature.metadata,
+          transl_table: translationTableId,
         };
-      }),
-    }));
+        delete metadata.translTable;
+        delete metadata.translationTableId;
+        return { ...feature, metadata };
+      }), featureId);
+      if (committed) markFeatureTranslationLayersForReview(featureId);
+    } else {
+      commitRecordTranslationTableHistory(translationTableId);
+    }
     setLockedTranslateTarget((current) => {
       if (!current || current.recordId !== recordId) return current;
       return {
@@ -10443,7 +10907,7 @@ function App() {
         },
       };
     });
-  }, [commitTranslationLayerHistory, markFeatureTranslationLayersForReview, recordId, selectedTranslationLayer, translateTarget.translationTableId, translateTargetCodeFeature?.id]);
+  }, [commitFeatureHistory, commitRecordTranslationTableHistory, commitTranslationLayerHistory, markFeatureTranslationLayersForReview, recordId, selectedTranslationLayer, translateTarget.translationTableId, translateTargetCodeFeature?.id]);
 
   const deleteFeature = useCallback((featureId: string) => {
     const currentRecord = payloadRef.current.records.find((record) => record.id === recordId);
@@ -13741,6 +14205,11 @@ function App() {
             </span>
           ) : null}
         </div>
+        {restrictionScanLimit ? (
+          <p className="motif-cs-muted">
+            {restrictionScanLimit.message}
+          </p>
+        ) : null}
         <RestrictionSourceControls
           sources={enzymeSources}
           enzymeCount={scanEnzymes.length}
@@ -18745,6 +19214,8 @@ function quarantineStatusForFeature(feature: Feature): {
     : [];
   const diagnostic = diagnostics.find((value): value is Record<string, unknown> => (
     value !== null && typeof value === 'object' && !Array.isArray(value)
+    && typeof (value as Record<string, unknown>).code === 'string'
+    && LOCATION_IMPORT_DIAGNOSTIC_CODES.has((value as Record<string, unknown>).code as string)
   ));
   const diagnosticCode = diagnostic?.code;
   const qualifierCount = Array.isArray(feature.metadata.motifQualifiers)

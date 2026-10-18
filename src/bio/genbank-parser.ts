@@ -178,7 +178,7 @@ export interface GenBankQualifierTruncation {
 
 export interface GenBankImportDiagnostic {
   severity: 'warning';
-  code: 'between_base_location' | 'remote_location' | 'ambiguous_location';
+  code: 'between_base_location' | 'remote_location' | 'ambiguous_location' | 'unindented_feature_line';
   featureKey: string;
   location: string;
   message: string;
@@ -214,6 +214,13 @@ export interface GenBankRecord {
    * the original layout.
    */
   organism?: string;
+  /**
+   * The lineage lines under ORGANISM, joined with single spaces, without the
+   * organism name. Lets a writer put the name back on its own line when the
+   * name itself carries no `;`-free boundary (for example `synthetic construct`
+   * followed by `other sequences; artificial sequences`).
+   */
+  organismLineage?: string;
   /** KEYWORDS line, semicolon-separated, period-terminated upstream. */
   keywords?: string;
   /**
@@ -658,6 +665,10 @@ export function parseFeatures(featuresText: string): Feature[] {
   // Split into individual feature entries. Features start with a type at column 5
   // (i.e. 5 spaces followed by a non-space character).
   const featureBlocks: string[] = [];
+  // Blocks that absorbed a line starting at column 0. Such a line is not valid
+  // feature-table syntax; it is kept with the preceding feature (so no later
+  // feature is lost) and reported on that feature as an import diagnostic.
+  const unindentedBlocks = new Set<number>();
   const lines = featuresText.split(/\r?\n/);
   let current = '';
 
@@ -667,12 +678,13 @@ export function parseFeatures(featuresText: string): Feature[] {
       if (current) featureBlocks.push(current);
       current = line + '\n';
     } else if (current) {
+      if (/^\S/.test(line)) unindentedBlocks.add(featureBlocks.length);
       current += line + '\n';
     }
   }
   if (current) featureBlocks.push(current);
 
-  for (const block of featureBlocks) {
+  for (const [blockIndex, block] of featureBlocks.entries()) {
     const blockLines = block.split('\n');
     const firstLine = blockLines[0];
 
@@ -893,6 +905,16 @@ export function parseFeatures(featuresText: string): Feature[] {
     const { start, end, strand, subRanges, locationOperator } = locationResult;
     const parsedLocationFeature = { start, end, strand, subRanges };
     const fuzzyLocation = /[<>]/.test(locationStr);
+    const importDiagnostics: GenBankImportDiagnostic[] = [
+      ...(locationDiagnostic ? [locationDiagnostic] : []),
+      ...(unindentedBlocks.has(blockIndex) ? [{
+        severity: 'warning' as const,
+        code: 'unindented_feature_line' as const,
+        featureKey,
+        location: locationStr,
+        message: `GenBank feature ${featureKey} contains a line that starts at column 1 instead of the feature-table indentation; its text was kept with this feature and may be malformed.`,
+      }] : []),
+    ];
 
     features.push({
       id: crypto.randomUUID(),
@@ -922,10 +944,8 @@ export function parseFeatures(featuresText: string): Feature[] {
         ...(locationDiagnostic?.code === 'ambiguous_location' ? {
           motifLocationAmbiguous: true,
         } : {}),
-        ...(locationDiagnostic ? {
-          motifLocationQuarantined: true,
-          motifImportDiagnostics: [locationDiagnostic],
-        } : {}),
+        ...(locationDiagnostic ? { motifLocationQuarantined: true } : {}),
+        ...(importDiagnostics.length > 0 ? { motifImportDiagnostics: importDiagnostics } : {}),
       },
     });
   }
@@ -1055,6 +1075,9 @@ function parseLocusLine(line: string): LocusFields {
   return result;
 }
 
+/** A top-level GenBank keyword line: an uppercase keyword of 3+ characters at column 0. */
+const TOP_LEVEL_KEYWORD_LINE = /^[A-Z][A-Z_]{2,}(?:\s|$)/;
+
 function parseSingleGenBankRecord(raw: string): GenBankRecord | null {
   if (raw.trim().length === 0) {
     return null;
@@ -1073,11 +1096,12 @@ function parseSingleGenBankRecord(raw: string): GenBankRecord | null {
   let keywords = '';
   let source = '';
   let organism = '';
+  let organismLineage = '';
   let comment = '';
   let featuresText = '';
   let sequence = '';
 
-  let section: 'header' | 'features' | 'origin' | 'none' = 'header';
+  let section: 'header' | 'features' | 'contig' | 'origin' | 'none' = 'header';
   let definitionLines: string[] = [];
   let inDefinition = false;
   let commentLines: string[] = [];
@@ -1114,6 +1138,7 @@ function parseSingleGenBankRecord(raw: string): GenBankRecord | null {
       // Join with ' ' but keep them retrievable; we store the full block
       // with a single space between lines (the canonical NCBI rendering).
       organism = organismLines.join(' ').replace(/\s+/g, ' ').trim();
+      organismLineage = organismLines.slice(1).join(' ').replace(/\s+/g, ' ').trim();
       inOrganism = false;
     }
   };
@@ -1146,6 +1171,33 @@ function parseSingleGenBankRecord(raw: string): GenBankRecord | null {
     // Continuation lines (>=12 leading spaces) belong to the most recent
     // header section. We check the section flags first to route them.
     const isContinuation = /^ {12,}\S/.test(line);
+
+    // Feature-table lines are always indented (keys at column 6, qualifiers
+    // at column 22). An uppercase keyword at column 0 (legacy BASE COUNT,
+    // CONTIG, WGS, WGS_SCAFLD, TSA, TLS, ...) ends the feature table, so it
+    // is never appended to the last qualifier. CONTIG may continue on
+    // indented lines, which are skipped until the next top-level keyword.
+    // Any other column-0 line stays in the feature text, where parseFeatures
+    // keeps it with the preceding feature and reports a diagnostic.
+    if (section === 'contig') {
+      if (/^\s/.test(line) || line === '') continue;
+      section = 'header';
+    }
+    if (
+      section === 'features'
+      && !line.startsWith('ORIGIN')
+      && (line.startsWith('//') || TOP_LEVEL_KEYWORD_LINE.test(line))
+    ) {
+      if (line.startsWith('CONTIG')) {
+        section = 'contig';
+        continue;
+      }
+      if (line.startsWith('BASE COUNT') || line.startsWith('//')) {
+        section = 'header';
+        continue;
+      }
+      section = 'header';
+    }
 
     if (inDefinition) {
       if (isContinuation) { definitionLines.push(line.trim()); continue; }
@@ -1331,6 +1383,7 @@ function parseSingleGenBankRecord(raw: string): GenBankRecord | null {
     keywords: keywords || undefined,
     source: source || undefined,
     organism: organism || undefined,
+    organismLineage: organismLineage || undefined,
     comment: comment || undefined,
     strandedness: locus.strandedness,
     division: locus.division,

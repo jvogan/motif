@@ -47,6 +47,34 @@ export default defineConfig([
     },
   },
   {
+    // Node ES-module tooling (build, release, and gate scripts), MCP modules,
+    // and the plugin's bundled skill scripts. Recommended JavaScript rules
+    // only; no type-aware rules. Generated bundles are regenerated from their
+    // TypeScript sources, which are linted, so they are skipped here.
+    files: ['scripts/**/*.mjs', 'mcp/**/*.mjs', 'src/**/*.mjs'],
+    ignores: ['src/**/workspace-validator.mjs'],
+    extends: [js.configs.recommended],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'module',
+      globals: globals.node,
+    },
+    rules: {
+      // Same public-safe error policy as the TypeScript sources.
+      'preserve-caught-error': 'off',
+      // Diagnostic sanitizers strip control characters on purpose.
+      'no-control-regex': 'off',
+      'no-unused-vars': [
+        'error',
+        {
+          varsIgnorePattern: '^_',
+          argsIgnorePattern: '^_',
+          caughtErrorsIgnorePattern: '^_',
+        },
+      ],
+    },
+  },
+  {
     files: ['src/**/*.{ts,tsx}'],
     extends: [
       reactHooks.configs.flat.recommended,

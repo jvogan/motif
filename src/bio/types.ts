@@ -102,6 +102,8 @@ export interface RestrictionSite {
   /**
    * The strand-level cleavage model. Missing values are treated as the
    * historical double-strand cutter for callers that construct legacy sites.
+   * For nicking enzymes the mode names the molecule strand that is nicked,
+   * so a reverse-strand match of a `nick_top` enzyme reports `nick_bottom`.
    */
   cleavageMode?: RestrictionCleavageMode;
   /** Physical cut coordinate on the forward/top strand, when applicable. */

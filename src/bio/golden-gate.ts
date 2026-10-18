@@ -1683,6 +1683,37 @@ export function goldenGateAssemble(
     };
   }
 
+  // A palindromic fusion overhang is its own reverse complement, so the end
+  // that carries it pairs with an identical end as readily as with its
+  // designed partner: the part on either side can ligate in either
+  // orientation (and self-ligate). The designed order is unique, but the
+  // ligation product is not, so this is reported through the ambiguity status
+  // rather than as a ready product.
+  const palindromicJunctions = [...new Set(ordered.map((part) => part.oh5))]
+    .filter((oh) => oh === reverseComplement(oh).toUpperCase());
+  if (palindromicJunctions.length > 0) {
+    for (const oh of palindromicJunctions) {
+      errors.push(
+        `Overhang ${oh} is palindromic — the parts at this junction can ligate in either orientation, so the product is ambiguous.`,
+      );
+    }
+    return {
+      sequence: '',
+      features: [],
+      parts: ordered.map((p) => p.name),
+      ...(orderedPartIds ? { partIds: orderedPartIds } : {}),
+      overhangs: ordered.map((p) => p.oh5),
+      enzyme: enz.name,
+      topology: 'linear',
+      status: 'ambiguous',
+      success: false,
+      errors,
+      warnings,
+      normalizationDiagnostics,
+      provenance: normalizationProvenance,
+    };
+  }
+
   // --- Step 3: Assemble by ligating inserts, joining at matching overhangs ---
   // Each insert starts with oh5 and ends with the complement of oh3.
   // Adjacent inserts share one overhang sequence so trim the duplicate. Keep

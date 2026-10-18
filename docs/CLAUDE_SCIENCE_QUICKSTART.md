@@ -53,7 +53,8 @@ node doctor-motif-claude-science-release.mjs --bundle . \
 
 The installer registers exactly `motif-local`, preserves unrelated entries,
 and creates a private same-directory configuration backup before a change.
-To restore the previous configuration, use the backup named in the installer
+To restore the previous `motif-local` entry while keeping every other server and
+setting you have added since, use the backup named in the installer
 output (or the newest `.before-motif-local-*` backup):
 
 ```bash
@@ -72,12 +73,23 @@ backup with `--backup`.
 ## 2. Obtain a source checkout (maintainer/developer fallback)
 
 Use the latest published [Motif release](https://github.com/jvogan/motif/releases)
-or clone its tagged source into a fixed local folder:
+or clone the source into a fixed local folder:
 
 ```bash
-git clone --branch v0.4.0 --depth 1 https://github.com/jvogan/motif.git
+git clone --depth 1 https://github.com/jvogan/motif.git
 cd motif
 ```
+
+This clones the default branch, which can be ahead of the newest published
+release. For a stable, reviewed source tree, clone a published tag instead
+(replace `vX.Y.Z` with the newest tag listed on the releases page):
+
+```bash
+git clone --branch vX.Y.Z --depth 1 https://github.com/jvogan/motif.git
+```
+
+A tagged release is the stable path; use the default branch only when you need
+changes that have not been released yet.
 
 Verify release checksums before using downloaded assets. The connector is
 built from this source checkout; the Claude plugin ZIP alone does not register

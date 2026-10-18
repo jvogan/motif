@@ -172,7 +172,7 @@ async function verifyStagedMcp(mcpManifest) {
 
 try {
   verifyRequiredSourcesAreTracked();
-  const first = buildMotifCodexPlugin({
+  buildMotifCodexPlugin({
     rootDirectory: root,
     outputDirectory,
     zipPath,

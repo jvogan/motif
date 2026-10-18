@@ -627,9 +627,9 @@ function parseAlignedFasta(value, path) {
 }
 
 function validAlignmentAlphabet(sequence, molecule) {
-  if (molecule === 'dna') return /^[ACGTRYSWKMBDHVN?\-]+$/.test(sequence);
-  if (molecule === 'rna') return /^[ACGURYSWKMBDHVN?\-]+$/.test(sequence);
-  return /^[A-Z*?\-]+$/.test(sequence);
+  if (molecule === 'dna') return /^[ACGTRYSWKMBDHVN?-]+$/.test(sequence);
+  if (molecule === 'rna') return /^[ACGURYSWKMBDHVN?-]+$/.test(sequence);
+  return /^[A-Z*?-]+$/.test(sequence);
 }
 
 function validateAlignmentEngine(engine, path) {

@@ -70,8 +70,32 @@ var SHA256_ROUND_CONSTANTS = new Uint32Array([
 function rotateRight(value, amount) {
   return value >>> amount | value << 32 - amount;
 }
+var SHA256_MEMO_MIN_LENGTH = 1024;
+var SHA256_MEMO_MAX_ENTRIES = 256;
+var SHA256_MEMO_MAX_CHARS = 32 * 1024 * 1024;
+var sha256Memo = /* @__PURE__ */ new Map();
+var sha256MemoChars = 0;
 function sha256HexSync(value) {
   if (typeof value !== "string") throw new TypeError("SHA-256 input must be a string.");
+  if (value.length < SHA256_MEMO_MIN_LENGTH || value.length > SHA256_MEMO_MAX_CHARS) return computeSha256Hex(value);
+  const remembered = sha256Memo.get(value);
+  if (remembered !== void 0) {
+    sha256Memo.delete(value);
+    sha256Memo.set(value, remembered);
+    return remembered;
+  }
+  const digest = computeSha256Hex(value);
+  sha256Memo.set(value, digest);
+  sha256MemoChars += value.length;
+  while (sha256Memo.size > SHA256_MEMO_MAX_ENTRIES || sha256MemoChars > SHA256_MEMO_MAX_CHARS) {
+    const oldest = sha256Memo.keys().next();
+    if (oldest.done) break;
+    sha256Memo.delete(oldest.value);
+    sha256MemoChars -= oldest.value.length;
+  }
+  return digest;
+}
+function computeSha256Hex(value) {
   const bytes = new TextEncoder().encode(value);
   const paddingBytes = (64 + 56 - (bytes.length + 1) % 64) % 64;
   const padded = new Uint8Array(bytes.length + 1 + paddingBytes + 8);

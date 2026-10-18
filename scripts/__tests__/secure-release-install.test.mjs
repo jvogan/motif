@@ -437,6 +437,46 @@ describe('checksum-verified Motif release installation', () => {
     expect(readFileSync(rollback.backupPath, 'utf8')).toContain('motif-local');
   });
 
+  it('rollback restores only the Motif entry and keeps servers and keys added after the backup', () => {
+    const bundle = writeFixture();
+    const { configPath } = temporaryConfig({
+      theme: 'dark',
+      servers: [{ name: 'unrelated', command: '/private/unrelated', args: [] }],
+    });
+    const installed = installRelease(['--bundle', bundle, ...trustedManifestArgs(bundle), '--config', configPath, '--node', process.execPath]);
+
+    const afterInstall = JSON.parse(readFileSync(configPath, 'utf8'));
+    afterInstall.servers.push({ name: 'added-later', command: '/private/added-later', args: ['--flag'] });
+    afterInstall.extra = { kept: true };
+    writeFileSync(configPath, `${JSON.stringify(afterInstall, null, 2)}\n`);
+
+    const dry = rollbackRelease(['--bundle', bundle, ...trustedManifestArgs(bundle), '--config', configPath, '--backup', installed.backupPath, '--dry-run']);
+    expect(dry.changed).toBe(true);
+    expect(JSON.parse(readFileSync(configPath, 'utf8')).servers.map(server => server.name)).toContain('motif-local');
+
+    rollbackRelease(['--bundle', bundle, ...trustedManifestArgs(bundle), '--config', configPath, '--backup', installed.backupPath]);
+    const restored = JSON.parse(readFileSync(configPath, 'utf8'));
+    expect(restored.servers.map(server => server.name)).toEqual(['unrelated', 'added-later']);
+    expect(restored.servers[1]).toEqual({ name: 'added-later', command: '/private/added-later', args: ['--flag'] });
+    expect(restored.theme).toBe('dark');
+    expect(restored.extra).toEqual({ kept: true });
+  });
+
+  it('rollback restores the backed-up Motif entry in place when the backup already had one', () => {
+    const bundle = writeFixture();
+    const previous = { name: 'motif-local', command: '/previous/node', args: ['/previous/stdio.mjs'], env: { MOTIF_ROOT: '/previous' } };
+    const { configPath } = temporaryConfig({ servers: [previous, { name: 'unrelated', command: '/private/unrelated', args: [] }] });
+    const installed = installRelease(['--bundle', bundle, ...trustedManifestArgs(bundle), '--config', configPath, '--node', process.execPath]);
+    const afterInstall = JSON.parse(readFileSync(configPath, 'utf8'));
+    afterInstall.servers.push({ name: 'added-later', command: '/private/added-later', args: [] });
+    writeFileSync(configPath, `${JSON.stringify(afterInstall, null, 2)}\n`);
+
+    rollbackRelease(['--bundle', bundle, ...trustedManifestArgs(bundle), '--config', configPath, '--backup', installed.backupPath]);
+    const restored = JSON.parse(readFileSync(configPath, 'utf8'));
+    expect(restored.servers.map(server => server.name)).toEqual(['motif-local', 'unrelated', 'added-later']);
+    expect(restored.servers[0]).toEqual(previous);
+  });
+
   it('recovers through a separately verified bundle when the installed bundle is damaged', () => {
     const installedBundle = writeFixture();
     const recoveryBundle = writeFixture();

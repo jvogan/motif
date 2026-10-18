@@ -277,12 +277,6 @@ export function molecularWeight(
   return result.mass;
 }
 
-/**
- * Estimate melting temperature (Tm) of a DNA oligo.
- * - For sequences <= 20 bp: Wallace rule Tm = 2*(A+T) + 4*(G+C)
- * - For longer sequences: basic salt-adjusted formula
- *   Tm = 64.9 + 41*(G+C - 16.4) / (A+T+G+C)
- */
 // ── AA residue masses ────────────────────────────────────────────────────────
 //
 // The table is split into average and monoisotopic residue masses because the
@@ -358,6 +352,17 @@ export function getAminoAcidMassTable(mode: 'average' | 'monoisotopic' = 'averag
   return mode === 'monoisotopic' ? { ...AA_MW_MONOISOTOPIC } : { ...AA_MW_AVERAGE };
 }
 
+/** Longest oligo for which the composition Tm uses the Wallace rule alone. */
+const COMPOSITION_TM_WALLACE_MAX_LENGTH = 13;
+/** Shortest oligo for which the composition Tm uses the basic formula alone. */
+const COMPOSITION_TM_BASIC_MIN_LENGTH = 20;
+
+/**
+ * Estimate melting temperature (Tm) of a DNA oligo from its composition.
+ * - Up to 13 nt: Wallace rule, Tm = 2*(A+T) + 4*(G+C)
+ * - 14-19 nt: linear blend from the Wallace rule to the basic formula
+ * - 20 nt and longer: basic formula, Tm = 64.9 + 41*(G+C - 16.4) / (A+T+G+C)
+ */
 export function meltingTemperature(seq: string): number | null {
   const comp = nucleotideComposition(seq);
   return meltingTemperatureFromComposition(comp);
@@ -372,11 +377,17 @@ export function meltingTemperatureFromComposition(comp: NucleotideComposition): 
   const total = comp.A + comp.T + (comp.U ?? 0) + comp.G + comp.C;
   if (total === 0) return null;
 
-  if (total <= 20) {
-    // Wallace rule (short oligos)
-    return 2 * (comp.A + comp.T + (comp.U ?? 0)) + 4 * (comp.G + comp.C);
-  }
+  // Wallace rule (short oligos) and the basic GC formula (longer oligos).
+  const wallace = 2 * (comp.A + comp.T + (comp.U ?? 0)) + 4 * (comp.G + comp.C);
+  const basic = 64.9 + 41 * (comp.G + comp.C - 16.4) / total;
+  if (total <= COMPOSITION_TM_WALLACE_MAX_LENGTH) return wallace;
+  if (total >= COMPOSITION_TM_BASIC_MIN_LENGTH) return basic;
 
-  // Basic Tm formula for longer oligos
-  return 64.9 + 41 * (comp.G + comp.C - 16.4) / total;
+  // The two rules differ by several degrees where their ranges meet, so a
+  // hard switch makes one added base change the estimate abruptly. Blend
+  // linearly across the transition band so each added base moves the value
+  // by about one ordinary base step.
+  const weight = (total - COMPOSITION_TM_WALLACE_MAX_LENGTH)
+    / (COMPOSITION_TM_BASIC_MIN_LENGTH - COMPOSITION_TM_WALLACE_MAX_LENGTH);
+  return (1 - weight) * wallace + weight * basic;
 }

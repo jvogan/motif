@@ -25,14 +25,6 @@ function declaredDependencyNames(packageJson) {
   return names;
 }
 
-function packageManifest(lockPath) {
-  const path = join(root, lockPath, 'package.json');
-  if (!existsSync(path)) return {};
-  const stat = lstatSync(path);
-  if (stat.isSymbolicLink() || !stat.isFile()) throw new Error(`Package manifest is not a regular file: ${path}`);
-  return readJson(path);
-}
-
 function licenseFile(workspace, lockPath, manifest) {
   const directory = join(workspace, lockPath);
   if (!existsSync(directory)) return null;

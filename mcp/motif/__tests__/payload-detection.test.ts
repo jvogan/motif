@@ -25,4 +25,37 @@ describe('Motif payload format detection', () => {
     const result = prepareMotifWorkbench({ content });
     expect(JSON.stringify(result.payload)).toContain('"molecule":"dna"');
   });
+  describe('raw sequence content without a molecule hint', () => {
+    const recordsOf = (result: ReturnType<typeof prepareMotifWorkbench>) =>
+      (result.payload as { records: Array<{ molecule: string; sequence: string }> }).records;
+
+    it('infers DNA for a nucleotide-only sequence', () => {
+      const result = prepareMotifWorkbench({ content: 'ATGCATGCATGCNN' });
+      expect(recordsOf(result)[0]).toMatchObject({ molecule: 'dna', sequence: 'ATGCATGCATGCNN' });
+    });
+
+    it('infers DNA for a .seq filename with wrapped lines', () => {
+      const result = prepareMotifWorkbench({ content: 'ATGCATGC\nATGCATGC\n', filename: 'insert.seq' });
+      const [record] = recordsOf(result);
+      expect(record?.molecule).toBe('dna');
+      expect(record?.sequence.replace(/\s+/gu, '')).toBe('ATGCATGCATGCATGC');
+    });
+
+    it('infers RNA when only uracil is present', () => {
+      expect(recordsOf(prepareMotifWorkbench({ content: 'AUGCUAUG' }))[0]?.molecule).toBe('rna');
+    });
+
+    it('infers protein for an amino-acid alphabet', () => {
+      expect(recordsOf(prepareMotifWorkbench({ content: 'MKTAYIAKQRQISFVKSHFSRQ' }))[0]?.molecule).toBe('protein');
+    });
+
+    it('still honors an explicit molecule', () => {
+      expect(recordsOf(prepareMotifWorkbench({ content: 'ACGT', molecule: 'protein' }))[0]?.molecule).toBe('protein');
+    });
+
+    it('rejects text that is not a sequence with a clear error', () => {
+      expect(() => prepareMotifWorkbench({ content: 'hello world, this is prose.' }))
+        .toThrow(/not a recognizable sequence/iu);
+    });
+  });
 });

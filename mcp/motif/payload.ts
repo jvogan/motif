@@ -698,6 +698,23 @@ function inferredMolecule(sequence: string, hint?: 'dna' | 'rna' | 'protein'): '
   return 'protein';
 }
 
+/**
+ * Resolve the molecule for unframed sequence text. An explicit hint wins;
+ * otherwise the residue alphabet decides. Text outside every sequence
+ * alphabet is rejected here so the failure names the cause instead of
+ * surfacing as a downstream record-shape error.
+ */
+function moleculeForRawSequence(text: string, hint: 'dna' | 'rna' | 'protein' | undefined): 'dna' | 'rna' | 'protein' {
+  if (hint) return hint;
+  const residues = text.replace(/[ \t\r\n]+/gu, '').toUpperCase();
+  if (!residues || !PROTEIN_ALPHABET.test(residues)) {
+    throw new Error(
+      'Artifact content is not a recognizable sequence. Provide FASTA, GenBank, Motif JSON, or residues using a DNA, RNA, or protein alphabet.',
+    );
+  }
+  return inferredMolecule(residues);
+}
+
 function moleculeHintFromInput(input: MotifWorkbenchInput): 'dna' | 'rna' | 'protein' | undefined {
   if (input.molecule) return input.molecule;
   const filename = input.filename?.toLowerCase() ?? '';
@@ -828,7 +845,7 @@ function payloadFromContent(content: string, input: MotifWorkbenchInput): MotifW
         id: uniqueId(sourceName?.replace(/\.[^.]+$/u, '') || 'pasted-sequence', new Set()),
         name: sourceName?.replace(/\.[^.]+$/u, '') || 'Pasted sequence',
         sequence: text,
-        molecule: moleculeHintFromInput(input),
+        molecule: moleculeForRawSequence(text, moleculeHintFromInput(input)),
         topology: input.topology ?? 'linear',
         proposeAnnotations: input.proposeAnnotations !== false,
         source: sourceName ? `Raw sequence from ${sourceName}` : 'Raw sequence opened in Motif',

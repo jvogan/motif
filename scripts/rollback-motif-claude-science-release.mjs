@@ -8,7 +8,10 @@ import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   DEFAULT_CLAUDE_SCIENCE_CONFIG_PATH,
+  MOTIF_LOCAL_CONNECTOR_NAME,
   readLocalMcpConfig,
+  removeMotifLocalServer,
+  validateLocalMcpConfig,
   writeLocalMcpConfigAtomically,
 } from './lib/motif-local-mcp-config.mjs';
 import { readTrustedManifestDigest, resolveReleaseBundleRoot, verifyReleaseBundle } from './lib/motif-release-bundle.mjs';
@@ -72,6 +75,30 @@ function selectBackup(configPath, requested) {
   return backup;
 }
 
+function isMotifEntry(server) {
+  return server !== null && typeof server === 'object' && !Array.isArray(server)
+    && server.name === MOTIF_LOCAL_CONNECTOR_NAME;
+}
+
+/**
+ * Build the rolled-back configuration from the current document. Only the
+ * Motif entry is taken from the backup: it replaces the current entry in
+ * place, is appended when the current document has none, or is removed when
+ * the backup has none. Every other server and top-level key stays as it is
+ * now, including anything added after the backup was taken.
+ */
+function rolledBackConfig(current, backup) {
+  validateLocalMcpConfig(current);
+  validateLocalMcpConfig(backup);
+  const backedUp = backup.servers.find(isMotifEntry);
+  if (!backedUp) return removeMotifLocalServer(current).config;
+  const index = current.servers.findIndex(isMotifEntry);
+  const servers = [...current.servers];
+  if (index < 0) servers.push(backedUp);
+  else servers[index] = backedUp;
+  return { ...current, servers };
+}
+
 export function rollbackRelease(args = process.argv.slice(2)) {
   const options = parseArgs(args);
   if (options.help) return {
@@ -82,16 +109,17 @@ export function rollbackRelease(args = process.argv.slice(2)) {
   const current = readLocalMcpConfig(options.config);
   const backup = readLocalMcpConfig(backupPath);
   if (!backup.originalBytes) throw new Error('Rollback backup is empty');
+  const rolledBack = rolledBackConfig(current.config, backup.config);
   if (options.dryRun) {
     return {
-      changed: !current.originalBytes || !current.originalBytes.equals(backup.originalBytes),
+      changed: JSON.stringify(current.config) !== JSON.stringify(rolledBack),
       backupPath,
       dryRun: true,
       manifestSha256: verified.manifestSha256,
       externalManifestDigestMatched: verified.externalManifestDigestMatched,
     };
   }
-  const result = writeLocalMcpConfigAtomically(options.config, backup.config, current);
+  const result = writeLocalMcpConfigAtomically(options.config, rolledBack, current);
   return {
     changed: true,
     restoredFrom: backupPath,

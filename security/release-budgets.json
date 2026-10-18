@@ -3,11 +3,11 @@
   "limits": {
     "artifactHtmlBytes": 2175000,
     "pluginDirectoryBytes": 8000000,
-    "pluginDirectoryFiles": 64,
+    "pluginDirectoryFiles": 40,
     "pluginZipBytes": 8000000,
     "releaseZipBytes": 6100000,
     "connectorDirectoryBytes": 4000000,
     "releaseDirectoryBytes": 6100000,
-    "releaseDirectoryFiles": 32
+    "releaseDirectoryFiles": 30
   }
 }

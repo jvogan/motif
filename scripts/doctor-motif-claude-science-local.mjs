@@ -270,7 +270,7 @@ async function inspectProtocol(paths, timeoutMs) {
     assert(opened?.structuredContent?.residueCount === PRIVACY_SENTINEL.length, 'opened FASTA residue count is incorrect');
     const openedSummary = opened?.content?.find(item => item?.type === 'text')?.text;
     assert(
-      typeof openedSummary === 'string' && openedSummary.includes('Records: motif-doctor [motif-doctor].'),
+      typeof openedSummary === 'string' && openedSummary.includes('"motif-doctor" (id "motif-doctor")'),
       'open-workbench summary does not expose the bounded record name and ID',
     );
     const workbenchLink = opened?.content?.find(
@@ -302,7 +302,7 @@ async function inspectProtocol(paths, timeoutMs) {
     );
     const artifactSummary = artifactResult?.content?.find(item => item?.type === 'text')?.text;
     assert(
-      typeof artifactSummary === 'string' && artifactSummary.includes('Records: motif-doctor [motif-doctor].'),
+      typeof artifactSummary === 'string' && artifactSummary.includes('"motif-doctor" (id "motif-doctor")'),
       'standalone artifact summary does not expose the bounded record name and ID',
     );
     const embeddedArtifact = artifactResult?.content?.find(

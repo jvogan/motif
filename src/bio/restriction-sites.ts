@@ -605,7 +605,16 @@ function cleavageGeometryForRecognitionLength(
   sitePosition: number,
   strand: 1 | -1,
 ): RestrictionCleavageGeometry {
-  const mode = enzyme.cleavageMode ?? 'double-strand';
+  // A nicking enzyme's mode names the strand relative to its recognition
+  // sequence as written. When the recognition sequence is matched on the
+  // molecule's bottom strand, the nicked strand flips with it, so the
+  // reported mode and coordinates always describe the molecule's strands.
+  const enzymeMode = enzyme.cleavageMode ?? 'double-strand';
+  const mode: RestrictionCleavageMode = strand === -1 && enzymeMode === 'nick_top'
+    ? 'nick_bottom'
+    : strand === -1 && enzymeMode === 'nick_bottom'
+      ? 'nick_top'
+      : enzymeMode;
   const forwardTop = strand === -1
     ? sitePosition + recognitionLength - enzyme.complementCutOffset
     : sitePosition + enzyme.cutOffset;
@@ -1130,7 +1139,7 @@ export function scanRestrictionSites(
       cutPosition: circularGeometry.cutPosition,
       recognitionSequence: recognition,
       overhang: enzyme.overhang,
-      cleavageMode: enzyme.cleavageMode ?? 'double-strand',
+      cleavageMode: circularGeometry.mode,
       topCutPosition: circularGeometry.topCutPosition,
       bottomCutPosition: circularGeometry.bottomCutPosition,
       cleavageStatus: status,

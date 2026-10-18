@@ -101,11 +101,14 @@ describe('restriction-site scanning', () => {
         recognitionSequence: candidate.recognitionSequence,
         overhang: candidate.overhang,
         strand: -1,
-        cleavageMode: candidate.cleavageMode ?? 'double-strand',
-        topCutPosition: candidate.cleavageMode === 'nick_bottom'
+        // A reverse-strand match nicks the opposite molecule strand.
+        cleavageMode: candidate.cleavageMode === 'nick_top'
+          ? 'nick_bottom'
+          : candidate.cleavageMode === 'nick_bottom' ? 'nick_top' : candidate.cleavageMode ?? 'double-strand',
+        topCutPosition: candidate.cleavageMode === 'nick_top'
           ? null
           : candidate.recognitionSequence.length - candidate.complementCutOffset,
-        bottomCutPosition: candidate.cleavageMode === 'nick_top'
+        bottomCutPosition: candidate.cleavageMode === 'nick_bottom'
           ? null
           : candidate.recognitionSequence.length - candidate.cutOffset,
       }));

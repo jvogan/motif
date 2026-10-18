@@ -455,6 +455,11 @@ function gcFraction(seq: string): number {
 
 // ─── Wallace rule ──────────────────────────────────────────────────────────
 
+/**
+ * Wallace rule, Tm = 2 * (A + T) + 4 * (G + C). It was derived from
+ * hybridization in high-salt buffer (~1 M Na+), so salt corrections that start
+ * from a 1 M Na+ Tm apply to it directly.
+ */
 function wallaceTm(seq: string): number {
   const upper = seq.toUpperCase();
   const A = (upper.match(/A/g) ?? []).length;
@@ -465,6 +470,14 @@ function wallaceTm(seq: string): number {
 }
 
 // ─── GC-adjusted Tm ───────────────────────────────────────────────────────
+
+/**
+ * Basic GC-content estimate, Tm = 64.9 + 41 * (G + C - 16.4) / N.
+ * The constants were fitted for a standard condition of 50 mM Na+ with no
+ * Mg2+ (and ~50 nM oligo), so the value is already a 50 mM Na+ estimate, not
+ * a 1 M Na+ one. Buffer corrections must be taken relative to that condition.
+ */
+const GC_ADJUSTED_REFERENCE_NA_MILLIMOLAR = 50;
 
 function gcAdjustedTm(seq: string): number {
   const upper = seq.toUpperCase();
@@ -564,9 +577,15 @@ export function calculateTm(seq: string, options?: TmOptions): TmResult {
 
   if (method === 'gc-adjusted') {
     const tm = gcAdjustedTm(upper);
+    // The formula already describes its 50 mM Na+ reference condition. Apply
+    // only the difference between the requested buffer and that reference,
+    // so the 1 M -> 50 mM salt shift is not subtracted a second time.
     let correctedTm = tm;
-    if (naConc !== 1000 || mgConc > 0) {
-      correctedTm = saltCorrectedTm(tm + 273.15, naConc, mgConc, fGC, upper.length, saltCorrMethod, undefined, dntpConc);
+    if (naConc !== GC_ADJUSTED_REFERENCE_NA_MILLIMOLAR || mgConc > 0) {
+      const tmK = tm + 273.15;
+      const requested = saltCorrectedTm(tmK, naConc, mgConc, fGC, upper.length, saltCorrMethod, undefined, dntpConc);
+      const reference = saltCorrectedTm(tmK, GC_ADJUSTED_REFERENCE_NA_MILLIMOLAR, 0, fGC, upper.length, saltCorrMethod, undefined, 0);
+      correctedTm = tm + (requested - reference);
     }
     return {
       tm: Math.round(correctedTm * 10) / 10,

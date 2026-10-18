@@ -39,9 +39,39 @@ export function normalizeSha256Hex(value: unknown, path = 'sha256'): string {
   return value.toLowerCase();
 }
 
+// Workspace views hash every record's sequence whenever any record changes, so
+// an edit to one record rehashed every other one too. A digest is a pure
+// function of the string, so long inputs are remembered, bounded by entry count
+// and by retained characters, least recently used first out.
+const SHA256_MEMO_MIN_LENGTH = 1_024;
+const SHA256_MEMO_MAX_ENTRIES = 256;
+const SHA256_MEMO_MAX_CHARS = 32 * 1024 * 1024;
+const sha256Memo = new Map<string, string>();
+let sha256MemoChars = 0;
+
 /** Return the lowercase SHA-256 digest of the exact UTF-8 string. */
 export function sha256HexSync(value: string): string {
   if (typeof value !== 'string') throw new TypeError('SHA-256 input must be a string.');
+  if (value.length < SHA256_MEMO_MIN_LENGTH || value.length > SHA256_MEMO_MAX_CHARS) return computeSha256Hex(value);
+  const remembered = sha256Memo.get(value);
+  if (remembered !== undefined) {
+    sha256Memo.delete(value);
+    sha256Memo.set(value, remembered);
+    return remembered;
+  }
+  const digest = computeSha256Hex(value);
+  sha256Memo.set(value, digest);
+  sha256MemoChars += value.length;
+  while (sha256Memo.size > SHA256_MEMO_MAX_ENTRIES || sha256MemoChars > SHA256_MEMO_MAX_CHARS) {
+    const oldest = sha256Memo.keys().next();
+    if (oldest.done) break;
+    sha256Memo.delete(oldest.value);
+    sha256MemoChars -= oldest.value.length;
+  }
+  return digest;
+}
+
+function computeSha256Hex(value: string): string {
 
   const bytes = new TextEncoder().encode(value);
   const paddingBytes = (64 + 56 - ((bytes.length + 1) % 64)) % 64;
