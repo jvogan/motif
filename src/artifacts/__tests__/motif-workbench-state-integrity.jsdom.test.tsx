@@ -202,6 +202,27 @@ function deleteActiveEntry(name: string) {
   return undo!;
 }
 
+describe('a record whose id names a prototype property', () => {
+  it('is loaded under a generated id, keeps its name, and edits and undoes normally', async () => {
+    await act(async () => {
+      runtime().motifRenderInventory([{ id: '__proto__', name: '__proto__', molecule: 'dna', topology: 'linear', seq: BASE_SEQUENCE }]);
+    });
+    await waitFor(() => expect(runtime().motifGetInventory()).toHaveLength(1));
+    const [record] = runtime().motifGetInventory() as Array<RuntimeRecord & { name?: string }>;
+    expect(record.id).toBe('record-1');
+    expect(record.name).toBe('__proto__');
+
+    const field = sequenceField();
+    act(() => field.focus());
+    await press(field, 'ArrowRight');
+    await press(field, 'g');
+    expect(activeSeq().slice(0, 3)).toBe('GCG');
+    await press(field, 'z', { ctrlKey: true });
+    expect(activeSeq()).toBe(BASE_SEQUENCE);
+    expect(document.querySelector('[data-testid="artifact-runtime-error-shell"]')).toBeNull();
+  });
+});
+
 describe('the Undo of a record delete', () => {
   it('is withdrawn when the workspace is cleared', async () => {
     await loadRecords([recordInput('undo-clear-a'), recordInput('undo-clear-b')]);

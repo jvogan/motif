@@ -2346,12 +2346,15 @@ export function normalizeRecord(
   }
   const topology = normalizeTopology(record.topology, type);
   const rawId = normalizeOptionalText(record.id) ?? normalizeOptionalText(record.name) ?? `record-${index + 1}`;
-  const id = rawId || `record-${index + 1}`;
+  // Record and feature ids key plain per-record state maps throughout the
+  // runtime, so an id that names an object prototype property is replaced
+  // with a generated one. The visible name is kept as supplied.
+  const id = rawId && !UNSAFE_OBJECT_KEYS.has(rawId) ? rawId : `record-${index + 1}`;
   const rawFeatures = [
     ...(Array.isArray(record.features) ? record.features : []),
     ...(Array.isArray(record.annotations) ? record.annotations : []),
   ];
-  const usedFeatureIds = new Set<string>();
+  const usedFeatureIds = new Set<string>(UNSAFE_OBJECT_KEYS);
   const features = rawFeatures
     .map((feature, featureIndex) => normalizeFeature(feature, featureIndex, sequence.length))
     .filter((feature): feature is Feature => feature !== null)
@@ -2393,7 +2396,7 @@ function normalizeRecords(
   records: ArtifactRecordInput[],
   implicitProposals = true,
 ): ArtifactVector[] {
-  const usedIds = new Set<string>();
+  const usedIds = new Set<string>(UNSAFE_OBJECT_KEYS);
   const normalized: ArtifactVector[] = [];
 
   records.forEach((record, index) => {
@@ -2417,7 +2420,8 @@ function safeSlug(value: string): string {
 }
 
 function uniqueRecordId(base: string, records: readonly ArtifactVector[], preserveBase = false): string {
-  const used = new Set(records.map((record) => record.id));
+  // Prototype property names are never issued as ids; see normalizeRecord.
+  const used = new Set([...UNSAFE_OBJECT_KEYS, ...records.map((record) => record.id)]);
   if (preserveBase && base && !used.has(base)) return base;
   if (preserveBase && base) {
     for (let index = 2; index < 10000; index += 1) {
