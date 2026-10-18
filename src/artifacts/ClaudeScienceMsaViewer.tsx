@@ -3152,11 +3152,13 @@ function AlignmentMatrix({
     const sameScreenPoint = previous !== null
       && Math.abs(event.clientX - previous.clientX) <= 4
       && Math.abs(event.clientY - previous.clientY) <= 4;
+    // The browser's own click count is authoritative for a double-click; the
+    // time window covers hosts that report every click with a count of one.
     const repeatedPointerClick = event.detail > 0
       && previous !== null
       && sameScreenPoint
-      && event.timeStamp >= previous.timeStamp
-      && event.timeStamp - previous.timeStamp <= 600;
+      && (event.detail >= 2
+        || (event.timeStamp >= previous.timeStamp && event.timeStamp - previous.timeStamp <= 600));
     if (!repeatedPointerClick) {
       rowTemplateClickRef.current = {
         rowId,

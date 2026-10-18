@@ -318,6 +318,31 @@ describe('ClaudeScienceMsaViewer comparison correctness', () => {
     clickAt('Use Reference as template', 2, 1_100);
     await waitFor(() => expect(document.querySelector('.motif-cs-msa-matrix-row')?.getAttribute('data-msa-row-id')).toBe('variant'));
   });
+
+  it('trusts the browser click count when a slow render pushes the second click past the window', async () => {
+    renderViewer(alignmentWithRows('row-slow-double-click', [
+      { id: 'reference', name: 'Reference', aligned: 'AAAA' },
+      { id: 'variant', name: 'Variant', aligned: 'TAAA' },
+      { id: 'other', name: 'Other', aligned: 'AATA' },
+    ]));
+    const clickAt = (label: string, detail: number, timeStamp: number) => {
+      const target = screen.getByLabelText(label);
+      const event = createEvent.click(target, { detail, clientX: 120, clientY: 240 });
+      Object.defineProperty(event, 'timeStamp', { value: timeStamp });
+      fireEvent(target, event);
+    };
+    clickAt('Use Variant as template', 1, 1_000);
+    await waitFor(() => expect(document.querySelector('.motif-cs-msa-matrix-row')?.getAttribute('data-msa-row-id')).toBe('variant'));
+
+    // The browser reported a double-click, so the first target is retained
+    // even though more than 600 ms of event time passed between the clicks.
+    clickAt('Use Reference as template', 2, 2_500);
+    await waitFor(() => expect(document.querySelector('.motif-cs-msa-matrix-row')?.getAttribute('data-msa-row-id')).toBe('variant'));
+
+    // Two separate single clicks that far apart still switch the template.
+    clickAt('Use Reference as template', 1, 4_000);
+    await waitFor(() => expect(document.querySelector('.motif-cs-msa-matrix-row')?.getAttribute('data-msa-row-id')).toBe('reference'));
+  });
 });
 
 describe('ClaudeScienceMsaViewer IUPAC-aware differences', () => {
