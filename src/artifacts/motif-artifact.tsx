@@ -6142,28 +6142,33 @@ type SequenceEditFlash = { start: number; end: number; key: number };
 
 const EMPTY_SEQUENCE_EDIT_NOTICE = 'A record needs at least one base, so nothing was deleted. To remove the whole record, use Delete entry in Entry Details.';
 
+function portableTranslationLayer(layer: InlineTranslationTrack | PortableTranslationTrack): PortableTranslationTrack {
+  return {
+    id: layer.id,
+    label: layer.label,
+    start: layer.start,
+    end: layer.end,
+    strand: layer.strand,
+    frame: layer.frame,
+    translationTableId: layer.translationTableId,
+    source: 'layer' as const,
+    color: layer.color,
+    ...(layer.needsReview ? { needsReview: true } : {}),
+    ...(layer.completeCds ? { completeCds: true } : {}),
+    ...(layer.featureId ? { featureId: layer.featureId } : {}),
+  };
+}
+
 function portableTranslationLayersByRecord(
   value: Readonly<Record<string, readonly InlineTranslationTrack[]>>,
 ): Record<string, PortableTranslationTrack[]> {
   return Object.fromEntries(
-    Object.entries(value).map(([id, layers]) => [
-      id,
-      layers.map((layer) => ({
-        id: layer.id,
-        label: layer.label,
-        start: layer.start,
-        end: layer.end,
-        strand: layer.strand,
-        frame: layer.frame,
-        translationTableId: layer.translationTableId,
-        source: 'layer' as const,
-        color: layer.color,
-        ...(layer.needsReview ? { needsReview: true } : {}),
-        ...(layer.completeCds ? { completeCds: true } : {}),
-        ...(layer.featureId ? { featureId: layer.featureId } : {}),
-      })),
-    ]),
+    Object.entries(value).map(([id, layers]) => [id, layers.map(portableTranslationLayer)]),
   );
+}
+
+function translationLayerListSignature(layers: readonly PortableTranslationTrack[]): string {
+  return JSON.stringify(layers.map(portableTranslationLayer));
 }
 
 // Accepted keystrokes for base editing: canonical bases + IUPAC ambiguity codes.
@@ -9355,10 +9360,20 @@ function App() {
       showWorkbenchNotice(`That step could not be restored, so the record is unchanged. ${error.message}`, 'error');
       return false;
     }
+    const layersChanged = translationLayerListSignature(artifactStateRef.current.translationLayersByRecord[recordId] ?? [])
+      !== translationLayerListSignature(nextArtifactState.translationLayersByRecord[recordId] ?? []);
     payloadRef.current = nextPayload;
     artifactStateRef.current = nextArtifactState;
     setPayload(nextPayload);
     setTranslationLayersByRecord(nextArtifactState.translationLayersByRecord);
+    // A Translate target locked to a pinned layer describes the layer as it was
+    // before this step; withdraw it so the panel cannot preview a layer state
+    // that Undo or Redo has just replaced.
+    if (layersChanged) {
+      setLockedTranslateTarget((locked) => (
+        locked?.recordId === recordId && locked.target.translationSource === 'layer' ? null : locked
+      ));
+    }
     setSelectedTranslationLayerByRecord((selected) => ({
       ...selected,
       [recordId]: snap.selectedTranslationLayerId
@@ -9491,6 +9506,74 @@ function App() {
     bumpEditHistory();
     return true;
   }, [captureEditSnapshot, recordId]);
+
+  // Pinning, editing, re-coding, removing and clearing translation layers go on
+  // the same history as base and feature edits. Undo then reverses the most
+  // recent action whatever it was, and a base-edit Undo can no longer replace
+  // the layers with a snapshot taken before a layer was pinned. `buildLayers`
+  // returns null when there is nothing to change; an unchanged list records
+  // nothing either. The flag that marks a feature's layers for review is not a
+  // separate step: the feature edit that causes it already records it.
+  const commitTranslationLayerHistory = useCallback((
+    buildLayers: (layers: readonly PortableTranslationTrack[]) => readonly (InlineTranslationTrack | PortableTranslationTrack)[] | null,
+    // The layer selected after this step (null for none). When omitted, the
+    // current selection is kept if its layer survives the step.
+    selectedLayerIdAfter?: string | null,
+  ): boolean => {
+    const before = captureEditSnapshot();
+    if (!before) return false;
+    const built = buildLayers(before.translationLayers);
+    if (!built) return false;
+    const nextLayers = built.map(portableTranslationLayer);
+    if (
+      before.hadTranslationLayerEntry
+      && translationLayerListSignature(nextLayers) === translationLayerListSignature(before.translationLayers)
+    ) {
+      return false;
+    }
+    // Null-prototype copy so a record id such as `__proto__` is an ordinary key.
+    const nextTranslationLayersByRecord: Record<string, PortableTranslationTrack[]> = Object.assign(
+      Object.create(null),
+      artifactStateRef.current.translationLayersByRecord,
+    );
+    nextTranslationLayersByRecord[recordId] = nextLayers;
+    let nextArtifactState: ArtifactDurableState;
+    try {
+      // The same range and count validation every checkpoint applies, so a
+      // layer the record cannot hold is refused here rather than at save.
+      nextArtifactState = normalizeArtifactDurableState({
+        ...artifactStateRef.current,
+        translationLayersByRecord: nextTranslationLayersByRecord,
+      }, new Map(payloadRef.current.records.map((record) => [record.id, record.sequence.length])));
+    } catch (error) {
+      showWorkbenchNotice(`The translation layer change was not applied. ${errorMessage(error)}`, 'error');
+      return false;
+    }
+    const restoredLayers = nextArtifactState.translationLayersByRecord[recordId] ?? [];
+    const keptSelection = before.selectedTranslationLayerId
+      && restoredLayers.some((layer) => layer.id === before.selectedTranslationLayerId)
+      ? before.selectedTranslationLayerId
+      : null;
+    const selectedAfter = selectedLayerIdAfter === undefined ? keptSelection : selectedLayerIdAfter;
+    const after: EditSnapshot = {
+      ...before,
+      hadTranslationLayerEntry: true,
+      translationLayers: restoredLayers.map((layer) => ({ ...layer })),
+      selectedTranslationLayerId: selectedAfter
+        && restoredLayers.some((layer) => layer.id === selectedAfter)
+        ? selectedAfter
+        : null,
+    };
+    const store = editHistoryRef.current[recordId] ?? { undo: [], redo: [] };
+    editHistoryRef.current[recordId] = {
+      undo: [...store.undo, { before, after }].slice(-200),
+      redo: [],
+    };
+    artifactStateRef.current = nextArtifactState;
+    setTranslationLayersByRecord(nextArtifactState.translationLayersByRecord);
+    bumpEditHistory();
+    return true;
+  }, [captureEditSnapshot, recordId, showWorkbenchNotice]);
 
   const handlePlaceCaret = useCallback((index: number) => {
     setLockedTranslateTarget(null);
@@ -10313,14 +10396,11 @@ function App() {
     if (!isSupportedArtifactTranslationTableId(translationTableId)) return;
     if (translateTarget.translationTableId !== undefined) {
       if (selectedTranslationLayer) {
-        updateTranslationLayers((current) => ({
-          ...current,
-          [recordId]: (current[recordId] ?? []).map((layer) => (
-            layer.id === selectedTranslationLayer.id
-              ? { ...layer, translationTableId }
-              : layer
-          )),
-        }));
+        commitTranslationLayerHistory((layers) => layers.map((layer) => (
+          layer.id === selectedTranslationLayer.id
+            ? { ...layer, translationTableId }
+            : layer
+        )));
       }
       setLockedTranslateTarget((current) => current?.recordId === recordId
         ? { ...current, target: { ...current.target, translationTableId } }
@@ -10359,7 +10439,7 @@ function App() {
         },
       };
     });
-  }, [markFeatureTranslationLayersForReview, recordId, selectedTranslationLayer, translateTarget.translationTableId, translateTargetCodeFeature?.id, updateTranslationLayers]);
+  }, [commitTranslationLayerHistory, markFeatureTranslationLayersForReview, recordId, selectedTranslationLayer, translateTarget.translationTableId, translateTargetCodeFeature?.id]);
 
   const deleteFeature = useCallback((featureId: string) => {
     const currentRecord = payloadRef.current.records.find((record) => record.id === recordId);
@@ -10676,19 +10756,19 @@ function App() {
       source: 'layer',
       color: previewTrack.strand === -1 ? '#c6737b' : '#7e9bbf',
     };
-    updateTranslationLayers((current) => {
-      const existing = current[recordId] ?? [];
-      if (existing.some((entry) => entry.id === layer.id)) return current;
-      return { ...current, [recordId]: [...existing, layer] };
-    });
-    if (options?.select !== false) {
+    const select = options?.select !== false;
+    const committed = commitTranslationLayerHistory(
+      (existing) => (existing.some((entry) => entry.id === layer.id) ? null : [...existing, layer]),
+      select ? layer.id : undefined,
+    );
+    if (committed && select) {
       setSelectedTranslationLayerByRecord((current) => ({ ...current, [recordId]: layer.id }));
     }
-  }, [inlineTranslationTracks, previewTrack, recordId, showWorkbenchNotice, translateFrame, translateStrand, translateTarget, translationLayers.length, updateTranslationLayers]);
+  }, [commitTranslationLayerHistory, inlineTranslationTracks, previewTrack, recordId, showWorkbenchNotice, translateFrame, translateStrand, translateTarget, translationLayers.length]);
   const clearTranslationLayers = useCallback(() => {
-    updateTranslationLayers((current) => (current[recordId]?.length ? { ...current, [recordId]: [] } : current));
+    commitTranslationLayerHistory((layers) => (layers.length ? [] : null), null);
     setSelectedTranslationLayerByRecord((current) => (current[recordId] ? { ...current, [recordId]: null } : current));
-  }, [recordId, updateTranslationLayers]);
+  }, [commitTranslationLayerHistory, recordId]);
 
   const updateTranslationLayer = useCallback((layerId: string, patch: Partial<Omit<InlineTranslationTrack, 'id' | 'source'>>) => {
     const existingLayer = translationLayers.find((layer) => layer.id === layerId);
@@ -10699,16 +10779,11 @@ function App() {
       needsReview: false,
       source: 'layer',
     };
-    updateTranslationLayers((current) => {
-      const layers = current[recordId] ?? [];
-      if (!layers.some((layer) => layer.id === layerId)) return current;
-      return {
-        ...current,
-        [recordId]: layers.map((layer) => (
-          layer.id === layerId ? nextLayer : layer
-        )),
-      };
-    });
+    commitTranslationLayerHistory((layers) => (
+      layers.some((layer) => layer.id === layerId)
+        ? layers.map((layer) => (layer.id === layerId ? nextLayer : layer))
+        : null
+    ), layerId);
     setLockedTranslateTarget({
       recordId,
       target: {
@@ -10726,7 +10801,7 @@ function App() {
       },
     });
     setSelectedTranslationLayerByRecord((current) => ({ ...current, [recordId]: layerId }));
-  }, [recordId, translationLayers, updateTranslationLayers]);
+  }, [commitTranslationLayerHistory, recordId, translationLayers]);
 
   const deleteTranslationLayer = useCallback((layerId: string) => {
     if (layerId.startsWith('feat:')) {
@@ -10736,17 +10811,17 @@ function App() {
         return { ...current, [recordId]: [...hidden, layerId] };
       });
     } else {
-      updateTranslationLayers((current) => {
-        const layers = current[recordId] ?? [];
-        if (!layers.some((layer) => layer.id === layerId)) return current;
-        return { ...current, [recordId]: layers.filter((layer) => layer.id !== layerId) };
-      });
+      commitTranslationLayerHistory((layers) => (
+        layers.some((layer) => layer.id === layerId)
+          ? layers.filter((layer) => layer.id !== layerId)
+          : null
+      ));
     }
     setSelectedTranslationLayerByRecord((current) => (
       current[recordId] === layerId ? { ...current, [recordId]: null } : current
     ));
     setLockedTranslateTarget(null);
-  }, [recordId, updateTranslationLayers]);
+  }, [commitTranslationLayerHistory, recordId]);
 
   // Selection-bar "Translate": pin the translation inline (sense reads above the
   // selected bases, antisense below). The floating Translations window opens only
