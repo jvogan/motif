@@ -167,6 +167,10 @@ describe('editable sequence range transactions', () => {
       'const commitEdit = useCallback',
       'const commitMutation = useCallback',
     );
+    const clearSequenceSelection = sliceBetween(
+      'const clearSequenceSelection = useCallback',
+      'const clearLargeSequenceSelection = useCallback',
+    );
 
     expect(selectedRangeCommit.match(/commitMutation\(/g)).toHaveLength(1);
     expect(selectedRangeCommit).toContain('range.start + replacement.length');
@@ -177,8 +181,9 @@ describe('editable sequence range transactions', () => {
     );
     expect(commitEdit).toContain('const transaction: EditTransaction = { before, after, edit };');
     expect(commitEdit).toContain('undo: [...store.undo, transaction]');
-    expect(commitEdit).toContain('setMapRangesByRecord');
-    expect(commitEdit).toContain('[recordId]: null');
+    expect(commitEdit).toContain('clearSequenceSelection();');
+    expect(clearSequenceSelection).toContain('setMapRangesByRecord');
+    expect(clearSequenceSelection).toContain('[recordId]: null');
     expect(commitEdit).toContain('setCaret(clamp(caretAfter, 0, result.raw.length));');
   });
 
@@ -338,13 +343,14 @@ describe('sequence editor affordances', () => {
   it('keeps Undo and Redo mounted with their shortcuts and disabled state', () => {
     const toolbar = sliceBetween(
       '<div className="motif-cs-edit-controls">',
-      '<div className="motif-cs-segmented motif-cs-edit-mode-toggle"',
+      'className="motif-cs-mini-button motif-cs-edit-mode-toggle"',
     );
 
     expect(toolbar).toContain('disabled={!canUndo}');
-    expect(toolbar).toContain('title="Undo (Cmd/Ctrl+Z)" aria-label="Undo"');
+    // Disabled, the title says why instead of naming a shortcut that does nothing.
+    expect(toolbar).toContain("title={!canUndo ? 'Nothing to undo' : 'Undo (Cmd/Ctrl+Z)'} aria-label=\"Undo\"");
     expect(toolbar).toContain('disabled={!canRedo}');
-    expect(toolbar).toContain('title="Redo (Cmd/Ctrl+Shift+Z)" aria-label="Redo"');
+    expect(toolbar).toContain("title={!canRedo ? 'Nothing to redo' : 'Redo (Cmd/Ctrl+Shift+Z)'} aria-label=\"Redo\"");
     expect(toolbar).not.toContain('{canUndo ?');
     expect(toolbar).not.toContain('{canRedo ?');
     expect(artifactCss).toContain('.motif-cs-edit-toolbar .motif-cs-icon-mini:disabled');

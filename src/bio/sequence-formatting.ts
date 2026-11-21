@@ -630,7 +630,7 @@ export function iupacPatternToRegexSource(
 ): string | null {
   const trimmed = pattern.replace(/\s+/g, '');
   if (!trimmed) return null;
-  // Advanced motif syntax: a PROSITE pattern ([..], {..}, x(n), <, >, -) is
+  // Advanced motif syntax: a PROSITE pattern ([..], {..}, x(n), <, >, -, .) is
   // parsed by the PROSITE engine; a plain IUPAC/literal string (ATGN) keeps the
   // per-character IUPAC expansion below.
   if (isPrositePattern(trimmed)) {
@@ -671,6 +671,9 @@ export function findDegenerateMotifMatches(
   const alphabet = alphabetForRule(rule, sequenceType);
   const source = iupacPatternToRegexSource(rule.pattern, alphabet);
   if (!source) return [];
+  // Regex anchors must see the sequence ends even when scanning a line window.
+  if ((source.startsWith('^') && searchStart > 0)
+    || (source.endsWith('$') && !source.endsWith('\\$') && searchEnd < sequence.length)) return [];
   const matches: SequenceMotifMatch[] = [];
   const regex = new RegExp(`(?=(${source}))`, 'gi');
   const normalizedSequence = sequence.slice(searchStart, searchEnd).toUpperCase();

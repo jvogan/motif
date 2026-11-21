@@ -41,6 +41,7 @@ export type ClaudeScienceCloningDesignRecord = {
   name: string;
   sequence: string;
   molecule: 'dna';
+  topology?: ArtifactCloningInput['topology'];
   sha256?: string;
   group?: string;
   tags?: readonly string[];
@@ -124,22 +125,22 @@ const SETUP_ROUTES: Array<{
   {
     value: 'custom',
     label: 'Custom / Other Standard',
-    detail: 'Choose a compatibility profile and reaction enzyme for a custom ordered assembly.',
+    detail: 'Choose a profile and enzyme.',
   },
   {
     value: 'golden_braid_tu_alpha',
     label: 'GoldenBraid · Build TU → α',
-    detail: 'Assemble ordered entry parts into an explicitly selected level α destination with BsaI.',
+    detail: 'Entry parts → level α vector.',
   },
   {
     value: 'golden_braid_alpha_omega',
     label: 'GoldenBraid · Stack α → Ω',
-    detail: 'Join complementary α1/α2 modules in a level Ω destination with BsmBI (Esp3I compatible).',
+    detail: 'α1 + α2 → level Ω vector.',
   },
   {
     value: 'golden_braid_omega_alpha',
     label: 'GoldenBraid · Stack Ω → α',
-    detail: 'Join complementary Ω1/Ω2 modules in a level α destination with BsaI.',
+    detail: 'Ω1 + Ω2 → level α vector.',
   },
 ];
 
@@ -176,6 +177,7 @@ function toCloningInput(
     sequence: record.sequence,
     molecule: 'dna',
     orientation,
+    ...(record.topology === undefined ? {} : { topology: record.topology }),
     ...(record.sha256 === undefined ? {} : { sha256: record.sha256 }),
   };
 }
@@ -205,13 +207,20 @@ function goldenBraidLevelLabel(level: string | null | undefined): string {
   return 'GB';
 }
 
+/**
+ * Saves and primer hand-offs are results the reader needs to see. Every other
+ * status is a note on a choice just made, so it is announced to assistive
+ * technology and not drawn.
+ */
+const RESULT_STATUS = /\b(saved|replaced|opened|started)\b/;
+
 function methodLabel(method: ClaudeScienceCloningDesignMethod): string {
   return method === 'golden_gate' ? 'Golden Gate' : 'Gibson';
 }
 
 function stateLabel(state: ClaudeScienceCloningDesignPlan['status']): string {
-  if (state === 'ready') return 'Ready to Save';
-  if (state === 'needs_preparation') return 'Preparation Needed';
+  if (state === 'ready') return 'Ready to save';
+  if (state === 'needs_preparation') return 'Needs preparation';
   return 'Blocked';
 }
 
@@ -430,6 +439,13 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
       : all;
   }, [goldenGateShortfall, plan]);
   const shownErrorCount = shownIssues.filter((entry) => entry.severity === 'error').length;
+  // A design still waiting for its parts is not an error: it says what it needs,
+  // in the muted tone. Red "Blocked" stays for inputs that are actually wrong.
+  const awaitingParts = goldenGateShortfall === 'count' && shownErrorCount === 0;
+  const planState = awaitingParts ? 'incomplete' : plan.status;
+  const planStateText = awaitingParts
+    ? (missingPartCount === 1 ? 'Needs a second part' : 'Needs 2 parts')
+    : stateLabel(plan.status);
 
   useImperativeHandle(forwardedRef, () => ({
     replacePreparedPart(replacement) {
@@ -723,11 +739,7 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
       >
         {embedded ? null : (
           <header className="motif-cs-cloning-design-header">
-            <div>
-              <span className="motif-cs-cloning-design-kicker">Cloning Design</span>
-              <h2 id={titleId}>Design Workspace</h2>
-              <p>Order source records, resolve preparation work, and save a provenance-linked design.</p>
-            </div>
+            <h2 id={titleId}>Cloning design</h2>
             <button
               ref={closeRef}
               className="motif-cs-cloning-design-close"
@@ -757,7 +769,6 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
               onKeyDown={(event) => handleMethodTabKeyDown(event, value)}
             >
               <strong>{methodLabel(value)}</strong>
-              <small>{value === 'golden_gate' ? 'Type IIS & modular standards' : 'Overlap assembly'}</small>
             </button>
           ))}
         </div>
@@ -772,19 +783,16 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
             <section className="motif-cs-cloning-design-setup" aria-labelledby={`${titleId}-setup`}>
               <div className="motif-cs-cloning-design-section-head">
                 <div>
-                  <span>01</span>
-                  <h3 id={`${titleId}-setup`}>{method === 'golden_gate' ? 'Assembly Setup' : 'Assembly Conditions'}</h3>
+                  <h3 id={`${titleId}-setup`}>{method === 'golden_gate' ? 'Assembly setup' : 'Assembly conditions'}</h3>
                 </div>
-                <small>{method === 'golden_gate'
-                  ? 'Choose the task first; only relevant chemistry and identity fields appear.'
-                  : 'Set the range used to detect exact overlaps. Missing overlaps can be supplied as editable 5′ primer tails in the primer workspace; source records are not rewritten here.'}</small>
+                {method === 'golden_gate' ? null : <small>Set the exact overlap range. Add missing overlaps as editable 5′ tails in Primer design. Source records stay intact.</small>}
               </div>
 
               {method === 'golden_gate' ? (
                 <>
                   <div className="motif-cs-cloning-design-field-grid" data-guided={guidedGoldenBraid || undefined}>
                     <label>
-                      <span>Assembly Route</span>
+                      <span>Assembly route</span>
                       <select
                         aria-label="Assembly route"
                         name="golden-gate-setup"
@@ -797,7 +805,7 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
                     </label>
                     {!guidedGoldenBraid ? <>
                       <label>
-                        <span>Compatibility Profile</span>
+                        <span>Compatibility profile</span>
                         <select
                           aria-label="Golden Gate profile"
                           name="golden-gate-profile"
@@ -810,7 +818,7 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
                         </select>
                       </label>
                       {availableEnzymes.length > 1 ? <label>
-                        <span>Type IIS Enzyme</span>
+                        <span>Type IIS enzyme</span>
                         <select
                           aria-label="Type IIS enzyme"
                           name="type-iis-enzyme"
@@ -827,7 +835,7 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
                       </label> : null}
                     </> : <>
                       <label>
-                        <span>Destination Vector</span>
+                        <span>Destination vector</span>
                         <select
                           aria-label="GoldenBraid destination vector"
                           name="golden-braid-destination"
@@ -840,7 +848,7 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
                         </select>
                       </label>
                       <label>
-                        <span>Destination Type</span>
+                        <span>Destination type</span>
                         <select
                           aria-label="GoldenBraid destination type"
                           name="golden-braid-destination-type"
@@ -855,7 +863,7 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
                     </>}
                   </div>
                   <p className="motif-cs-cloning-design-organization-help" data-testid="cloning-design-organization-help">
-                    <strong>{setupOption.label}.</strong> {setupOption.detail}
+                    {setupOption.detail}
                     {' '}<span className="motif-cs-cloning-design-reaction">Reaction: {effectiveEnzyme}{setupRoute === 'golden_braid_alpha_omega' ? effectiveEnzyme === 'Esp3I' ? ' · BsmBI-equivalent' : ' · Esp3I compatible' : ''}</span>
                   </p>
                   {setupRoute === 'golden_braid_alpha_omega' ? (
@@ -878,7 +886,7 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
               ) : (
                 <div className="motif-cs-cloning-design-field-grid" data-method="gibson">
                   <fieldset className="motif-cs-cloning-design-segmented">
-                    <legend>Product Topology</legend>
+                    <legend>Topology</legend>
                     {(['linear', 'circular'] as const).map((value) => (
                       <label key={value} data-selected={gibsonTopology === value || undefined}>
                         <input
@@ -893,7 +901,7 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
                     ))}
                   </fieldset>
                   <label>
-                    <span>Minimum Overlap</span>
+                    <span>Minimum overlap</span>
                     <span className="motif-cs-cloning-design-number-field">
                       <input
                         aria-label="Minimum overlap"
@@ -910,7 +918,7 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
                     </span>
                   </label>
                   <label>
-                    <span>Maximum Overlap</span>
+                    <span>Maximum overlap</span>
                     <span className="motif-cs-cloning-design-number-field">
                       <input
                         aria-label="Maximum overlap"
@@ -933,14 +941,14 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
                       checked={autoInferHomologyTails}
                       onChange={(event) => setAutoInferHomologyTails(event.target.checked)}
                     />
-                    <span>Preload exact overlaps as editable 5′ tails <small>(opt in)</small></span>
+                    <span>Preload overlaps as 5′ tails</span>
                   </label>
                 </div>
               )}
 
               {selectedProfile ? (
                 <details className="motif-cs-cloning-design-profile-note">
-                  <summary>{selectedProfile.name} Reference</summary>
+                  <summary>{selectedProfile.name} reference</summary>
                   <p>{selectedProfile.description}</p>
                   {selectedProfile.fusionSites.length > 0 ? (
                     <div className="motif-cs-cloning-design-fusion-strip" aria-label="Canonical fusion sites">
@@ -955,8 +963,7 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
             <section className="motif-cs-cloning-design-parts" aria-labelledby={`${titleId}-parts`}>
               <div className="motif-cs-cloning-design-section-head">
                 <div>
-                  <span>02</span>
-                  <h3 id={`${titleId}-parts`}>{organizationMode === 'golden_braid_binary' ? 'Source Modules' : organizationMode === 'golden_braid_tu' ? 'Entry Parts' : 'Ordered Parts'}</h3>
+                  <h3 id={`${titleId}-parts`}>{organizationMode === 'golden_braid_binary' ? 'Source modules' : organizationMode === 'golden_braid_tu' ? 'Entry parts' : 'Parts'}</h3>
                   {/* Parts in the design against the most it can hold. As "3/10" in
                       9px mono, its slashed zero read as "3/18" beside the real 3/10. */}
                   <em>{parts.length} of {partLimit} parts</em>
@@ -976,14 +983,14 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
               </div>
               <p id={partHelpId} className="motif-cs-cloning-design-help">
                 {organizationMode === 'golden_braid_binary' ? 'Choose exactly two complementary source modules. ' : ''}
-                Drag rows or use the arrow buttons. With a row focused, Option/Alt + ↑/↓ also reorders it.
+                Order sets junctions. Drag rows, use Up and Down, or press Alt+↑/↓.
               </p>
 
               <div className="motif-cs-cloning-design-part-list" data-testid="cloning-design-part-list">
                 {parts.length === 0 ? (
                   <div className="motif-cs-cloning-design-empty">
-                    <strong>No Parts Selected</strong>
-                    <span>Search the DNA inventory below.</span>
+                    <strong>No parts selected</strong>
+                    <span>Search records below.</span>
                   </div>
                 ) : parts.map((part, index) => {
                   const record = recordsById.get(part.recordId);
@@ -1067,14 +1074,14 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
                             ))}
                           </fieldset>
                         </div>
-                        <small>{record.group ?? 'DNA inventory'} · {record.sequence.length.toLocaleString()} bp</small>
+                        <small>{record.group ? `${record.group} · ` : ''}{record.sequence.length.toLocaleString()} bp</small>
                       </div>
 
                       {plan.kind === 'golden_gate_design' ? (
                         <div className="motif-cs-cloning-design-part-metrics">
                           {organizationMode === 'golden_braid_binary' ? (
                             <label className="motif-cs-cloning-design-source-identity">
-                              <small>Source Type</small>
+                              <small>Source type</small>
                               <select
                                 aria-label={`GoldenBraid source type for ${record.name}`}
                                 value={part.goldenBraidSlot}
@@ -1111,15 +1118,15 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
                         </div>
                       ) : (
                         <div className="motif-cs-cloning-design-part-metrics" data-method="gibson">
-                          <span><small>5′ Neighbor</small><strong>{index === 0 && gibsonTopology === 'linear' ? 'Open end' : 'Junction'}</strong></span>
-                          <span><small>3′ Neighbor</small><strong>{index === parts.length - 1 && gibsonTopology === 'linear' ? 'Open end' : 'Junction'}</strong></span>
+                          <span><small>5′ neighbor</small><strong>{index === 0 && gibsonTopology === 'linear' ? 'Open end' : 'Junction'}</strong></span>
+                          <span><small>3′ neighbor</small><strong>{index === parts.length - 1 && gibsonTopology === 'linear' ? 'Open end' : 'Junction'}</strong></span>
                         </div>
                       )}
 
                       <div className="motif-cs-cloning-design-part-actions">
-                        <button type="button" aria-label={`Move ${record.name} up`} disabled={index === 0} onClick={() => movePart(index, index - 1)}>↑</button>
-                        <button type="button" aria-label={`Move ${record.name} down`} disabled={index === parts.length - 1} onClick={() => movePart(index, index + 1)}>↓</button>
-                        <button type="button" aria-label={`Remove ${record.name}`} onClick={() => removePart(part.key, record.name)}>×</button>
+                        <button type="button" aria-label={`Move ${record.name} up`} disabled={index === 0} title={index === 0 ? 'Already the first part' : undefined} onClick={() => movePart(index, index - 1)}>Up</button>
+                        <button type="button" aria-label={`Move ${record.name} down`} disabled={index === parts.length - 1} title={index === parts.length - 1 ? 'Already the last part' : undefined} onClick={() => movePart(index, index + 1)}>Down</button>
+                        <button type="button" aria-label={`Remove ${record.name}`} onClick={() => removePart(part.key, record.name)}>Remove</button>
                       </div>
                       {hasFusionEditor ? (
                         <details
@@ -1154,7 +1161,7 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
                               />
                             </label>
                           </div>
-                          <small>Planning only. These boundaries seed the primer-preparation brief; the source record remains unchanged until a prepared product is created and validated.</small>
+                          <small>Planning only. The record stays unchanged until primers add the flanks.</small>
                         </details>
                       ) : null}
                     </article>
@@ -1178,7 +1185,7 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
                 ) : null}
                 <div className="motif-cs-cloning-design-add">
                 <label>
-                  <span>Search Inventory</span>
+                  <span>Search records</span>
                   <input
                     type="search"
                     name="cloning-record-search"
@@ -1194,7 +1201,7 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
                   />
                 </label>
                 <label>
-                  <span>{organizationMode === 'golden_braid_binary' ? 'Source to Add' : 'Record to Add'}</span>
+                  <span>{organizationMode === 'golden_braid_binary' ? 'Source to add' : 'Record to add'}</span>
                   <select
                     aria-label="Record to add"
                     name="cloning-record-to-add"
@@ -1224,11 +1231,11 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
             {plan.kind === 'gibson_design' ? (
               <section className="motif-cs-cloning-design-junctions" aria-labelledby={`${titleId}-junctions`}>
                 <div className="motif-cs-cloning-design-section-head">
-                  <div><span>03</span><h3 id={`${titleId}-junctions`}>Junction Lanes</h3></div>
+                  <div><h3 id={`${titleId}-junctions`}>Junctions</h3></div>
                   <small>{plan.junctions.length} checked</small>
                 </div>
                 <div className="motif-cs-cloning-design-lanes" data-testid="gibson-junction-lanes">
-                  {plan.junctions.length === 0 ? <p>Add 2 valid fragments to inspect exact overlaps. Missing overlaps can then be supplied as 5′ tails in the primer workspace.</p> : plan.junctions.map((junction) => (
+                  {plan.junctions.length === 0 ? <p>Add 2 parts to check overlaps.</p> : plan.junctions.map((junction) => (
                     <div key={junction.index} className="motif-cs-cloning-design-lane" data-state={junction.status}>
                       <div>
                         <strong>{recordsById.get(junction.leftRecordId)?.name ?? junction.leftRecordId}</strong>
@@ -1246,8 +1253,8 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
 
             <section className="motif-cs-cloning-design-preview" aria-labelledby={`${titleId}-preview`}>
               <div className="motif-cs-cloning-design-section-head">
-                <div><span>{plan.kind === 'gibson_design' ? '04' : '03'}</span><h3 id={`${titleId}-preview`}>Product Preview</h3></div>
-                <span className="motif-cs-cloning-design-plan-badge" data-state={plan.status} data-testid="cloning-design-plan-status">{stateLabel(plan.status)}</span>
+                <div><h3 id={`${titleId}-preview`}>Product preview</h3></div>
+                <span className="motif-cs-cloning-design-plan-badge" data-state={planState} data-testid="cloning-design-plan-status">{planStateText}</span>
               </div>
               {plan.product ? (
                 <div className="motif-cs-cloning-design-product" data-testid="cloning-design-product-preview">
@@ -1269,20 +1276,20 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
                 </div>
               ) : goldenGateNeedsAnotherInput ? (
                 <div className="motif-cs-cloning-design-empty" data-testid="cloning-design-product-empty">
-                  <strong>{goldenGateShortfall === 'unusable' ? 'Two Usable Parts Needed' : 'Two Parts Needed'}</strong>
+                  <strong>{goldenGateShortfall === 'unusable' ? 'Two usable parts needed' : 'Two parts needed'}</strong>
                   <span>{goldenGateShortfall === 'unusable'
-                    ? `${unusablePartCount} of ${parts.length} parts cannot be read as DNA. See Issues & Warnings.`
-                    : `Add ${missingPartCount === 1 ? 'a second part' : '2 parts'} in step 02.`}</span>
+                    ? `${unusablePartCount} of ${parts.length} parts cannot be read as DNA. See Issues and warnings.`
+                    : `Add ${missingPartCount === 1 ? 'a second part' : '2 parts'} in Parts.`}</span>
                 </div>
               ) : plan.preparation.length === 0 ? (
                 <div className="motif-cs-cloning-design-empty" data-testid="cloning-design-product-empty">
-                  <strong>Review Blocking Issues</strong>
+                  <strong>Preview blocked</strong>
                   <span>No preparation step can fix these inputs.</span>
                 </div>
               ) : (
                 <div className="motif-cs-cloning-design-empty" data-testid="cloning-design-product-empty">
-                  <strong>Preview Waits for Preparation</strong>
-                  <span>Resolve the required checklist items; no product sequence is invented while junctions remain unresolved.</span>
+                  <strong>Preview waits for preparation</strong>
+                  <span>Finish the checklist. No product is shown until junctions resolve.</span>
                 </div>
               )}
             </section>
@@ -1291,8 +1298,8 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
           <aside className="motif-cs-cloning-design-review" aria-label="Design review">
             <section>
               <div className="motif-cs-cloning-design-review-head">
-                <span>Design Review</span>
-                <strong data-state={plan.status}>{stateLabel(plan.status)}</strong>
+                <span>Design review</span>
+                <strong data-state={planState}>{planStateText}</strong>
               </div>
               <dl className="motif-cs-cloning-design-summary">
                 <div><dt>Method</dt><dd>{methodLabel(method)}</dd></div>
@@ -1307,7 +1314,7 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
 
             <section>
               <div className="motif-cs-cloning-design-review-head">
-                <span>Preparation Checklist</span>
+                <span>Preparation checklist</span>
                 <small>{goldenGateNeedsAnotherInput ? 'Not checked' : plan.preparation.length}</small>
               </div>
               <div className="motif-cs-cloning-design-checklist">
@@ -1327,12 +1334,12 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
                 ) : plan.preparation.length === 0 && plan.product ? (
                   <div className="motif-cs-cloning-design-check" data-state="complete">
                     <span aria-hidden="true">✓</span>
-                    <div><strong>Preparation Complete</strong><small>All modeled boundaries and junctions are ready.</small></div>
+                    <div><strong>Preparation complete</strong><small>All modeled boundaries and junctions are ready.</small></div>
                   </div>
                 ) : plan.preparation.length === 0 ? (
                   <div className="motif-cs-cloning-design-check" data-state="required">
                     <span aria-hidden="true">!</span>
-                    <div><strong>Review blocking issues</strong><small>See Issues &amp; Warnings.</small></div>
+                    <div><strong>Review blocking issues</strong><small>See Issues and warnings.</small></div>
                     <em>Review</em>
                   </div>
                 ) : plan.preparation.map((action) => {
@@ -1382,7 +1389,7 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
 
             {shownIssues.length > 0 ? (
               <details className="motif-cs-cloning-design-issues" open={shownErrorCount > 0}>
-                <summary>Issues & Warnings ({shownIssues.length})</summary>
+                <summary>Issues and warnings ({shownIssues.length})</summary>
                 <ul>
                   {shownIssues.map((issue, index) => (
                     <li key={`${issue.code}-${issue.recordId ?? ''}-${index}`} data-level={issue.severity}>{issue.message}</li>
@@ -1395,7 +1402,7 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
 
         <footer className="motif-cs-cloning-design-footer">
           <label>
-            <span>Design Name</span>
+            <span>Design name</span>
             <input
               type="text"
               name="cloning-design-name"
@@ -1409,13 +1416,15 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
           </label>
           <div className="motif-cs-cloning-design-feedback">
             <p role="alert" data-empty={!error || undefined}>{error}</p>
-            <p role="status" aria-live="polite" data-empty={!status || undefined}>{status}</p>
+            <p role="status" aria-live="polite" data-empty={!status || undefined} data-quiet={!RESULT_STATUS.test(status) || undefined}>{status}</p>
           </div>
           <div className="motif-cs-cloning-design-save-actions">
             <button
               type="button"
               className="motif-cs-cloning-design-secondary-button"
+              data-label-reserve="Saving plan…"
               disabled={!currentName.trim() || busy !== null || plan.provenance === null || savedSignatures.plan === currentSignature}
+              title={!currentName.trim() ? 'Name the design first' : plan.provenance === null ? 'Add parts that make a valid plan first' : savedSignatures.plan === currentSignature ? 'This plan is already saved' : undefined}
               onClick={() => void save('plan')}
             >
               {busy === 'plan' ? 'Saving plan…' : savedSignatures.plan === currentSignature ? 'Plan saved' : 'Save plan'}
@@ -1423,7 +1432,9 @@ export const ClaudeScienceCloningDesignWorkspace = forwardRef<
             <button
               type="button"
               className="motif-cs-cloning-design-primary-button"
+              data-label-reserve="Saving product…"
               disabled={!currentName.trim() || busy !== null || plan.provenance === null || plan.product === null || savedSignatures.product === currentSignature}
+              title={!currentName.trim() ? 'Name the design first' : plan.provenance === null || plan.product === null ? 'This plan does not make a product yet' : savedSignatures.product === currentSignature ? 'This product is already saved' : undefined}
               onClick={() => void save('product')}
             >
               {busy === 'product' ? 'Saving product…' : savedSignatures.product === currentSignature ? 'Product saved' : 'Save product'}

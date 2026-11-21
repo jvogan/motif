@@ -102,7 +102,7 @@ describe('structured export-loss report', () => {
       { code: 'gaps_removed', count: 2, detail: '2 alignment gap characters were removed during import.' },
       { code: 'sequence_normalization', detail: 'alignment gaps removed before import' },
     ]);
-    expect(report.summary).toMatch(/lossy/i);
+    expect(report.summary).toMatch(/has limits\. Review \d+ export notes?\./);
   });
 
   it('marks the structured Motif checkpoints faithful while keeping interchange claims narrow', () => {
@@ -110,9 +110,9 @@ describe('structured export-loss report', () => {
     expect(record).not.toBeNull();
     if (!record) throw new Error('fixture did not normalize');
 
-    expect(buildArtifactExportLossReport(record, 'record-json')).toMatchObject({ faithful: true, lossy: false, summary: expect.stringMatching(/active record only/i) });
+    expect(buildArtifactExportLossReport(record, 'record-json')).toMatchObject({ faithful: true, lossy: false, summary: expect.stringMatching(/saves one record/i) });
     expect(buildArtifactExportLossReport(record, 'zip')).toMatchObject({ faithful: true, lossy: false });
-    expect(buildArtifactExportLossReport(record, 'genbank').summary).toMatch(/does not claim full INSDC round-trip|lossy/i);
+    expect(buildArtifactExportLossReport(record, 'genbank').summary).toMatch(/Keeps the exported content|has limits/);
   });
 
   it('describes raw sequence exports separately from FASTA exports', () => {
@@ -134,9 +134,9 @@ describe('structured export-loss report', () => {
 
     const rawSequenceReport = buildArtifactExportLossReport(record, 'raw-sequence');
     expect(rawSequenceReport).toMatchObject({ format: 'raw-sequence', faithful: false, lossy: true });
-    expect(rawSequenceReport.summary).toMatch(/raw sequence export contains sequence text only/i);
+    expect(rawSequenceReport.summary).toMatch(/^Sequence only\. Review \d+ export notes?\./);
     expect(rawSequenceReport.summary).not.toMatch(/FASTA/i);
-    expect(buildArtifactExportLossReport(record, 'fasta').summary).toMatch(/FASTA export/i);
+    expect(buildArtifactExportLossReport(record, 'fasta').summary).toMatch(/^FASTA has limits\./);
 
     const sequenceOnlyRecord = normalizeRecord({ id: 'sequence-only', molecule: 'dna', seq: 'ACGT' }, 0);
     expect(sequenceOnlyRecord).not.toBeNull();
@@ -144,7 +144,7 @@ describe('structured export-loss report', () => {
     expect(buildArtifactExportLossReport(sequenceOnlyRecord, 'raw-sequence')).toMatchObject({
       faithful: true,
       lossy: false,
-      summary: expect.stringMatching(/raw sequence export contains the record sequence only/i),
+      summary: 'Sequence only.',
     });
   });
 
@@ -187,7 +187,7 @@ describe('the export popover list of preservation items', () => {
     'LOCUS       QATEST                    60 bp    DNA     linear   SYN 23-SEP-2026',
     'ACCESSION   QATEST',
     'FEATURES             Location/Qualifiers',
-    '     source          1..60',
+    '     source          1..59',
     '                     /organism="synthetic DNA construct"',
     '     promoter        2..30',
     '                     /label="Ptest"',
@@ -212,11 +212,11 @@ describe('the export popover list of preservation items', () => {
     // Five features: five imported keys and five raw locations, one repeated
     // /db_xref on the CDS and one partial location, 12 items in all.
     const report = buildArtifactExportLossReport(record, 'genbank');
-    expect(report.summary).toContain('lossy; 12 preservation items require review.');
+    expect(report.summary).toContain('Review 12 export notes.');
     const lines = exportLossItemLines(report, record.features);
     expect(lines).toEqual([
       '5 imported feature keys: promoter → regulatory, -35_signal → regulatory, source and 2 more',
-      '5 locations kept as written: source 1..60, Ptest 2..30, m35 5..10 and 2 more',
+      '5 locations kept as written: source 1..59, Ptest 2..30, m35 5..10 and 2 more',
       '1 repeated qualifier: /db_xref ×2 on orf',
       '1 partial location: partial <40..>50',
     ]);
@@ -239,11 +239,11 @@ describe('the export popover list of preservation items', () => {
   it('counts one item as one, and names the fields an export leaves out', () => {
     const one = [feature('only', 'only', { motifOriginalFeatureKey: 'exon' })];
     const report = buildArtifactExportLossReport({ ...record, features: one }, 'genbank');
-    expect(report.summary).toContain('lossy; 1 preservation item requires review.');
+    expect(report.summary).toContain('Review 1 export note.');
     expect(exportLossItemLines(report, one)).toEqual(['1 imported feature key: exon']);
-    const noted = [feature('n', 'noted exon', { note: 'kept in JSON only' })];
+    const noted = [feature('n', 'noted exon', { note: 'written as Note', product: 'kept in JSON only' })];
     expect(exportLossItemLines(buildArtifactExportLossReport({ ...record, features: noted }, 'gff3'), noted))
-      .toEqual(['1 feature with fields this GFF3 export leaves out: noted exon (note)']);
+      .toEqual(['1 feature with fields this GFF3 export leaves out: noted exon (product)']);
   });
 });
 
@@ -287,7 +287,7 @@ describe('the note and product of a feature built in Motif, in Basic GenBank', (
     expect(exportLossItemLines(buildArtifactExportLossReport(record, 'genbank'), record.features))
       .toEqual(['1 feature with fields this GenBank export leaves out: AmpR (resistance)']);
     expect(exportLossItemLines(buildArtifactExportLossReport(record, 'gff3'), record.features))
-      .toEqual(['2 features with fields this GFF3 export leaves out: AmpR (note, product, resistance), ori (note)']);
+      .toEqual(['1 feature with fields this GFF3 export leaves out: AmpR (product, resistance)']);
     // An imported feature writes its own qualifier list, so a note beside it is still left out.
     const imported = { ...record.features[1], metadata: { note: 'origin', motifQualifiers: [{ key: 'label', value: 'ori' }] } };
     expect(buildArtifactExportLossReport({ ...record, features: [imported] }, 'genbank').unrepresentableMetadata)

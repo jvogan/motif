@@ -77,7 +77,9 @@ describe('ClaudeScienceNotesPanel', () => {
     // do about it. A "0 shown" beside the filter buttons would only repeat it.
     render(<ClaudeScienceNotesPanel {...props({ notes: [] })} />);
     expect(screen.queryByText(/shown$/)).toBeNull();
-    expect(screen.getByText(/No notes yet/)).toBeTruthy();
+    expect(screen.getByText('Add your first note.')).toBeTruthy();
+    // Nor is there a filter: each of its views of no notes is empty.
+    expect(screen.queryByRole('group', { name: 'Filter notes' })).toBeNull();
     cleanup();
 
     // Notes exist but the filter hides all of them: still no zero, because the
@@ -85,12 +87,31 @@ describe('ClaudeScienceNotesPanel', () => {
     render(<ClaudeScienceNotesPanel {...props({ activeRecordId: 'pGEX', activeRecordName: 'pGEX' })} />);
     await user.click(screen.getByRole('button', { name: 'Record' }));
     expect(screen.queryByText(/shown$/)).toBeNull();
-    expect(screen.getByText('No notes for pGEX yet.')).toBeTruthy();
+    expect(screen.getByText('Add a note for pGEX.')).toBeTruthy();
     cleanup();
 
-    // Something to count, so the count appears.
+    // Every note is visible, so there is nothing to count.
     render(<ClaudeScienceNotesPanel {...props()} />);
-    expect(screen.getByText(/^\d+ shown$/)).toBeTruthy();
+    expect(screen.queryByText(/shown$/)).toBeNull();
+    // A filter that hides some notes says how many remain.
+    await user.click(screen.getByRole('button', { name: 'Workspace' }));
+    expect(screen.getByText(/^\d+ of \d+ shown$/)).toBeTruthy();
+  });
+
+  it('hides the filter with the last note and brings it back on All', async () => {
+    const user = userEvent.setup();
+    const view = render(<ClaudeScienceNotesPanel {...props()} />);
+    await user.click(screen.getByRole('button', { name: 'Workspace' }));
+    expect(screen.getByRole('button', { name: 'Workspace' }).getAttribute('aria-pressed')).toBe('true');
+
+    view.rerender(<ClaudeScienceNotesPanel {...props({ notes: [] })} />);
+    expect(screen.queryByRole('group', { name: 'Filter notes' })).toBeNull();
+    expect(screen.getByText('Add your first note.')).toBeTruthy();
+
+    // The next note is not filtered out by a choice that is not on screen.
+    view.rerender(<ClaudeScienceNotesPanel {...props({ notes: [notes[1]] })} />);
+    expect(screen.getByRole('button', { name: 'All' }).getAttribute('aria-pressed')).toBe('true');
+    expect(within(screen.getByTestId('notes-list')).getByText('Record QC')).toBeTruthy();
   });
 
   it('filters workspace and active-record notes and renders HTML-looking content as inert text', async () => {
@@ -169,7 +190,7 @@ describe('ClaudeScienceNotesPanel', () => {
     const user = userEvent.setup();
     const onAdd = vi.fn();
     render(<ClaudeScienceNotesPanel {...props({
-      notes: [],
+      notes: [notes[0]],
       activeRecordId: null,
       activeRecordName: null,
       selectedRange: null,
@@ -180,7 +201,7 @@ describe('ClaudeScienceNotesPanel', () => {
     await user.click(screen.getByText('Add note', { selector: 'summary span' }));
     expect((screen.getByLabelText('Scope') as HTMLSelectElement).value).toBe('workspace');
     await user.click(screen.getByRole('button', { name: 'Add note' }));
-    expect(screen.getByRole('alert').textContent).toContain('Note body is required.');
+    expect(screen.getByRole('alert').textContent).toContain('Enter note text.');
     expect(onAdd).not.toHaveBeenCalled();
   });
 
@@ -199,13 +220,13 @@ describe('ClaudeScienceNotesPanel', () => {
     await user.type(title, 'Updated QC');
     const body = within(note).getByLabelText('Note');
     await user.clear(body);
-    await user.click(within(note).getByRole('button', { name: 'Update' }));
+    await user.click(within(note).getByRole('button', { name: 'Save note' }));
     const editError = within(note).getByRole('alert');
     expect(body.getAttribute('aria-invalid')).toBe('true');
     expect(body.getAttribute('aria-describedby')).toBe(editError.id);
     expect(editError.id).toMatch(/-error$/);
     await user.type(body, 'Orientation confirmed.');
-    await user.click(within(note).getByRole('button', { name: 'Update' }));
+    await user.click(within(note).getByRole('button', { name: 'Save note' }));
     expect(onUpdate).toHaveBeenCalledWith('record-note', {
       title: 'Updated QC',
       body: 'Orientation confirmed.',
@@ -247,9 +268,9 @@ describe('ClaudeScienceNotesPanel', () => {
     };
 
     render(<ClaudeScienceNotesPanel {...props({ notes: [reviewNote], onConfirmAnchor })} />);
-    expect(screen.getByText('Review range anchor.')).toBeTruthy();
-    await user.click(screen.getByRole('button', { name: 'Confirm anchor' }));
+    expect(screen.getByText('Review note range.')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Confirm range' }));
     expect(onConfirmAnchor).toHaveBeenCalledWith(reviewNote.id);
-    expect(screen.getByRole('status').textContent).toContain('Range anchor confirmed.');
+    expect(screen.getByRole('status').textContent).toContain('Range confirmed.');
   });
 });

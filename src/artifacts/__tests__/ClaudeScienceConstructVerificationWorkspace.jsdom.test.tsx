@@ -179,7 +179,7 @@ describe('ClaudeScienceConstructVerificationWorkspace', () => {
       />,
     );
 
-    expect(screen.getByText(/No trace-backed DNA records are available/)).toBeTruthy();
+    expect(screen.getByText(/Import AB1 reads to verify this reference/)).toBeTruthy();
     expect((screen.getByTestId('construct-verification-run') as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByTestId('construct-verification-save') as HTMLButtonElement).disabled).toBe(true);
     expect(onVerify).not.toHaveBeenCalled();
@@ -227,7 +227,7 @@ describe('ClaudeScienceConstructVerificationWorkspace', () => {
     const referenceSelect = screen.getByTestId('construct-verification-reference') as HTMLSelectElement;
     expect(referenceSelect.disabled).toBe(true);
     expect(Array.from(referenceSelect.options).map((option) => option.textContent)).toEqual([
-      'No predicted DNA references',
+      'No reference DNA',
     ]);
     expect((screen.getByTestId('construct-verification-run') as HTMLButtonElement).disabled).toBe(true);
   });
@@ -257,8 +257,8 @@ describe('ClaudeScienceConstructVerificationWorkspace', () => {
     expect(checkboxes.filter((checkbox) => checkbox.checked)).toHaveLength(
       ARTIFACT_CONSTRUCT_VERIFICATION_LIMITS.maxReads,
     );
-    expect(screen.getByText(/96 of 97 reads selected · maximum 96 per run/)).toBeTruthy();
-    expect((screen.getByRole('button', { name: 'First 96' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(/96\/97 reads · max 96/)).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Select first 96' }) as HTMLButtonElement).disabled).toBe(true);
 
     const firstRead = within(readList).getByLabelText(/Sanger read-001/) as HTMLInputElement;
     const alternativeRead = within(readList).getByLabelText(/Sanger read-097/) as HTMLInputElement;
@@ -421,7 +421,7 @@ describe('ClaudeScienceConstructVerificationWorkspace', () => {
     expect(onSave.mock.calls[0][0].result).toBe(result);
     expect(onSave.mock.calls[0][0].snapshot.reads.map((read: { id: string }) => read.id)).toEqual(['read-a']);
     expect((screen.getByTestId('construct-verification-save') as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByText(/Verification saved to Results/)).toBeTruthy();
+    expect(screen.getByText(/Verification and evidence saved to Results/)).toBeTruthy();
   });
 
   it('says a failed save did not save before the reason, and leaves Save available', async () => {
@@ -441,8 +441,8 @@ describe('ClaudeScienceConstructVerificationWorkspace', () => {
     await user.click(screen.getByTestId('construct-verification-save'));
 
     expect(onSave).toHaveBeenCalledTimes(1);
-    expect(screen.getByTestId('construct-verification-error').textContent).toBe(`Verification not saved. ${reason}`);
-    expect(screen.queryByText(/Verification saved to Results/)).toBeNull();
+    expect(screen.getByTestId('construct-verification-error').textContent).toBe(`Save failed. ${reason}`);
+    expect(screen.queryByText(/Verification and evidence saved to Results/)).toBeNull();
     expect((screen.getByTestId('construct-verification-save') as HTMLButtonElement).disabled).toBe(false);
   });
 
@@ -519,8 +519,8 @@ describe('ClaudeScienceConstructVerificationWorkspace', () => {
       />,
     );
 
-    await user.click(screen.getByRole('button', { name: 'Clear' }));
-    await user.click(screen.getByRole('button', { name: 'All' }));
+    await user.click(screen.getByRole('button', { name: 'Clear reads' }));
+    await user.click(screen.getByRole('button', { name: 'Select all' }));
     await user.click(screen.getByTestId('construct-verification-run'));
     expect(JSON.stringify(records)).toBe(before);
     expect(Object.isFrozen(qualityScores)).toBe(true);

@@ -1,10 +1,10 @@
 # False positives: the generic-api-key rule interprets the standard
 # aria-keyshortcuts accessibility attribute as a credential assignment.
-src/artifacts/__tests__/claude-science-accessibility-interaction-guards.test.ts:generic-api-key:193
-src/artifacts/motif-artifact.tsx:generic-api-key:23160
+src/artifacts/__tests__/claude-science-accessibility-interaction-guards.test.ts:generic-api-key:197
+src/artifacts/motif-artifact.tsx:generic-api-key:28944
 # False positive: a published Golden Gate fidelity matrix paired with the
 # SHA-256 of its decoded contents, which the test recomputes with createHash.
-src/bio/__tests__/golden-gate-fidelity-data.test.ts:generic-api-key:17
+src/bio/__tests__/golden-gate-fidelity-data.test.ts:generic-api-key:21
 # False positive: the SHA-256 digest of a rendered alignment image that the
 # stability test recomputes from the SVG markup.
 src/artifacts/__tests__/claude-science-msa-image-svg-stability.test.ts:generic-api-key:99

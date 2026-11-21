@@ -19,6 +19,12 @@ import {
   normalizeSha256Hex,
   sha256HexSync,
 } from './claude-science-sha256';
+import {
+  gelBandFragmentIndexes,
+  nextGelBandFragment,
+  selectedGelBandFragment,
+  type BaseRange,
+} from './claude-science-linked-selection';
 import type {
   ArtifactJsonObject,
   ArtifactProvenance,
@@ -46,6 +52,11 @@ export type ClaudeScienceGelLaneCandidate = {
   detail: string;
   sourceKind: 'digest' | 'linear-record';
   lane: ArtifactGelLaneInput;
+  /**
+   * Where each fragment lies in the source record, in the saved digest's order.
+   * Lets a band select its fragment; never saved with the gel.
+   */
+  fragmentRanges?: readonly BaseRange[];
 };
 
 export type ClaudeScienceGelResultIdentity = {
@@ -75,6 +86,11 @@ export type ClaudeScienceGelWorkspaceProps = {
   errorMessage?: string;
   /** Hide the redundant internal title bar when hosted in the artifact's draggable window. */
   embedded?: boolean;
+  /** The record open in the workbench. A band of one of its saved digests selects its fragment there. */
+  linkedRecordId?: string | null;
+  /** That record's selected range, so the band of a selected fragment shows as selected. */
+  linkedRange?: BaseRange | null;
+  onSelectFragment?: (range: BaseRange) => void;
 };
 
 type GelBandStyle = CSSProperties & {
@@ -133,6 +149,23 @@ function digestFragmentLengths(result: ArtifactWorkflowResult): number[] | null 
     lengths.push(value as number);
   }
   return lengths;
+}
+
+/** The saved fragments' places in the source record, when every one is recorded and agrees with its length. */
+function digestFragmentRanges(result: ArtifactWorkflowResult, lengths: readonly number[]): BaseRange[] | undefined {
+  if (!isJsonObject(result.result) || !Array.isArray(result.result.fragments)) return undefined;
+  const fragments = result.result.fragments;
+  if (fragments.length !== lengths.length) return undefined;
+  const ranges: BaseRange[] = [];
+  for (const [index, fragment] of fragments.entries()) {
+    if (!isJsonObject(fragment)) return undefined;
+    const start = fragment.startInOriginal;
+    const end = fragment.endInOriginal;
+    if (typeof start !== 'number' || typeof end !== 'number' || !Number.isInteger(start) || !Number.isInteger(end)) return undefined;
+    if (start < 0 || end - start !== lengths[index]) return undefined;
+    ranges.push({ start, end });
+  }
+  return ranges;
 }
 
 function digestOutcome(result: ArtifactWorkflowResult): string | null {
@@ -208,11 +241,13 @@ export function createClaudeScienceGelLaneCandidates(
     if (sourceTopology === 'circular' && fragmentLengthsBp.length === 1 && outcome !== 'linearized') continue;
     const sourceName = sourceRecord?.name.trim() || recordId;
     const label = result.name.trim() || `Digest of ${sourceName}`;
+    const fragmentRanges = digestFragmentRanges(result, fragmentLengthsBp);
     candidates.push({
       id: `digest:${result.id}`,
       label,
       detail: `${fragmentLengthsBp.length.toLocaleString()} fragment${fragmentLengthsBp.length === 1 ? '' : 's'} · ${sourceLengthBp.toLocaleString()} bp`,
       sourceKind: 'digest',
+      ...(fragmentRanges ? { fragmentRanges } : {}),
       lane: {
         id: boundedLaneId('digest', result.id),
         label: boundedLaneLabel(label, `Digest of ${sourceName}`),
@@ -321,8 +356,24 @@ export function visibleLadderLabelIndexes(bands: readonly ArtifactGelBand[], tra
   return visible;
 }
 
-function GelLaneView({ lane, onReadBand }: { lane: ArtifactGelLane; onReadBand: (label: string) => void }) {
+type GelLaneLink = {
+  fragmentRanges: readonly BaseRange[];
+  selected: BaseRange | null;
+  onSelect: (range: BaseRange) => void;
+};
+
+function GelLaneView({ lane, link, onReadBand }: {
+  lane: ArtifactGelLane;
+  /** Present for a digest of the open record: its bands select their fragments there. */
+  link?: GelLaneLink;
+  onReadBand: (label: string) => void;
+}) {
   const isLadder = lane.sourceKind === 'ladder';
+  const linkedRanges = link?.fragmentRanges;
+  const fragmentsByBand = useMemo(
+    () => (linkedRanges ? gelBandFragmentIndexes(linkedRanges.map((range) => range.end - range.start), lane.bands) : null),
+    [lane.bands, linkedRanges],
+  );
   const trackRef = useRef<HTMLDivElement>(null);
   const [trackHeight, setTrackHeight] = useState(GEL_TRACK_MIN_HEIGHT_PX);
   useLayoutEffect(() => {
@@ -362,6 +413,38 @@ function GelLaneView({ lane, onReadBand }: { lane: ArtifactGelLane; onReadBand: 
             '--motif-cs-gel-band-y': `${Math.round(band.normalizedY * 10000) / 100}%`,
             '--motif-cs-gel-band-intensity': `${band.relativeIntensity}`,
           };
+          const fragments = fragmentsByBand?.get(band.bandIndex) ?? [];
+          if (link && fragments.length > 0) {
+            // A band of the open record's digest is a button: it selects its
+            // fragment in the record, and the next one of the same band on the
+            // next press. It is pressed while one of its fragments is selected.
+            const selected = selectedGelBandFragment(fragments, link.fragmentRanges, link.selected) >= 0;
+            return (
+              <button
+                key={band.bandIndex}
+                type="button"
+                className="motif-cs-gel-band"
+                data-linked="true"
+                data-co-migrating={band.coMigrating || undefined}
+                data-clipped={band.clippedAtBoundary || undefined}
+                data-selected={selected || undefined}
+                data-testid={`gel-band-${lane.id}-${band.bandIndex}`}
+                tabIndex={band.bandIndex === 0 ? 0 : -1}
+                aria-label={label}
+                aria-pressed={selected}
+                title={label}
+                style={style}
+                onKeyDown={moveBandFocus}
+                onMouseEnter={() => onReadBand(label)}
+                onFocus={() => onReadBand(label)}
+                onClick={() => {
+                  const next = nextGelBandFragment(fragments, link.fragmentRanges, link.selected);
+                  const range = next === null ? undefined : link.fragmentRanges[next];
+                  if (range) link.onSelect(range);
+                }}
+              />
+            );
+          }
           return (
             <span
               key={band.bandIndex}
@@ -411,8 +494,10 @@ export function ClaudeScienceGelWorkspace({
   statusMessage = '',
   errorMessage = '',
   embedded = false,
+  linkedRecordId = null,
+  linkedRange = null,
+  onSelectFragment,
 }: ClaudeScienceGelWorkspaceProps) {
-  const previewRef = useRef<HTMLDivElement>(null);
   const candidateById = useMemo(() => {
     const index = new Map<string, ClaudeScienceGelLaneCandidate>();
     for (const candidate of candidates) {
@@ -444,6 +529,17 @@ export function ClaudeScienceGelWorkspace({
   const renderWorkflowName = workflowNameError ? 'Unsaved gel preview' : workflowName;
   const selectedLanes = useMemo(() => effectiveSelection.map((id) => candidateById.get(id)?.lane)
     .filter((lane): lane is ArtifactGelLaneInput => lane !== undefined), [candidateById, effectiveSelection]);
+  // Lanes of the open record's saved digests, by lane id, with where each fragment lies.
+  const linkedFragmentRanges = useMemo(() => {
+    const byLane = new Map<string, readonly BaseRange[]>();
+    if (!linkedRecordId || !onSelectFragment) return byLane;
+    for (const id of effectiveSelection) {
+      const candidate = candidateById.get(id);
+      if (candidate?.sourceKind !== 'digest' || candidate.lane.recordId !== linkedRecordId || !candidate.fragmentRanges) continue;
+      byLane.set(candidate.lane.id, candidate.fragmentRanges);
+    }
+    return byLane;
+  }, [candidateById, effectiveSelection, linkedRecordId, onSelectFragment]);
 
   const built = useMemo((): { preview: ArtifactGelPreview | null; error: string } => {
     if (selectedLanes.length === 0) return { preview: null, error: '' };
@@ -488,9 +584,8 @@ export function ClaudeScienceGelWorkspace({
   const plateStyle: GelPlateStyle = {
     '--motif-cs-gel-lane-count': `${(built.preview?.lanes.length ?? 1)}`,
   };
-  // Band sizes used to reach the reader only through the native title tooltip,
-  // one band at a time after the OS delay. The last band pointed at or focused
-  // is printed under the plate instead.
+  // The native title tooltip shows band sizes one band at a time after the OS
+  // delay, so the last band pointed at or focused is also printed under the plate.
   const [reading, setReading] = useState<{ preview: ArtifactGelPreview | null; label: string }>({ preview: null, label: '' });
   // A reading belongs to the preview it was taken from; a rebuilt preview starts blank.
   const bandReading = reading.preview === built.preview ? reading.label : '';
@@ -505,11 +600,7 @@ export function ClaudeScienceGelWorkspace({
       onKeyDown={embedded ? undefined : handleKeyDown}
     >
       {embedded ? null : <header className="motif-cs-gel-workspace-head">
-        <div>
-          <span className="motif-cs-kicker">Qualitative agarose preview</span>
-          <h2>Gel workspace</h2>
-          <p>Compare saved restriction digests with linear DNA records before exporting or recording the result.</p>
-        </div>
+        <h2>Gel preview</h2>
         <button className="motif-cs-window-icon motif-cs-window-close" type="button" onClick={onClose} aria-label="Close gel workspace">
           <span aria-hidden="true">×</span>
         </button>
@@ -522,24 +613,18 @@ export function ClaudeScienceGelWorkspace({
             <div className="motif-cs-gel-source-summary">
               <span>{effectiveSelection.length} of {MAX_ARTIFACT_GEL_SAMPLE_LANES} lanes</span>
               <span className="motif-cs-gel-source-actions">
-                {effectiveSelection.length > 0 ? (
-                  <button className="motif-cs-text-button" type="button" onClick={() => onSelectedCandidateIdsChange([])}>Clear</button>
-                ) : null}
                 <button
-                  className="motif-cs-text-button motif-cs-gel-mobile-preview-link"
+                  className="motif-cs-text-button"
                   type="button"
-                  onClick={() => {
-                    previewRef.current?.scrollIntoView({ block: 'start' });
-                    previewRef.current?.focus({ preventScroll: true });
-                  }}
-                >
-                  View preview ↓
-                </button>
+                  disabled={effectiveSelection.length === 0}
+                  title={effectiveSelection.length === 0 ? 'No lanes are selected' : 'Deselect every lane'}
+                  onClick={() => onSelectedCandidateIdsChange([])}
+                >Clear</button>
               </span>
             </div>
             {normalizedCandidates.length === 0 ? (
               <p className="motif-cs-gel-empty-source" data-testid="gel-no-sources">
-                Save a restriction digest or add a linear DNA record to create a sample lane.
+                Save a digest or add linear DNA.
               </p>
             ) : null}
             {digestCandidates.length > 0 ? (
@@ -625,12 +710,11 @@ export function ClaudeScienceGelWorkspace({
               aria-valuetext={`${normalizedAgarose.toFixed(1)} percent agarose`}
               onChange={(event) => onAgarosePercentChange(normalizedAgarosePercent(Number(event.currentTarget.value)))}
             />
-            <small>Higher percentages separate smaller fragments more strongly in this qualitative model.</small>
+            <small>Higher percentages resolve smaller fragments.</small>
           </label>
         </aside>
 
         <div
-          ref={previewRef}
           className="motif-cs-gel-preview-column"
           tabIndex={-1}
           role="region"
@@ -638,7 +722,6 @@ export function ClaudeScienceGelWorkspace({
         >
           <div className="motif-cs-gel-preview-head">
             <div>
-              <span className="motif-cs-kicker">Preview</span>
               <strong>{built.preview ? `${built.preview.sampleLaneCount} sample lane${built.preview.sampleLaneCount === 1 ? '' : 's'}` : 'No sample lanes'}</strong>
             </div>
             {built.preview ? <span>{built.preview.sampleBandCount} sample band{built.preview.sampleBandCount === 1 ? '' : 's'}</span> : null}
@@ -647,13 +730,25 @@ export function ClaudeScienceGelWorkspace({
           {built.preview ? (
             <div className="motif-cs-gel-plate" data-testid="gel-plate" style={plateStyle}>
               <div className="motif-cs-gel-lanes" role="list" aria-label="Qualitative gel lanes">
-                {built.preview.lanes.map((lane) => <GelLaneView key={lane.id} lane={lane} onReadBand={readBand} />)}
+                {built.preview.lanes.map((lane) => {
+                  const fragmentRanges = linkedFragmentRanges.get(lane.id);
+                  return (
+                    <GelLaneView
+                      key={lane.id}
+                      lane={lane}
+                      link={fragmentRanges && onSelectFragment
+                        ? { fragmentRanges, selected: linkedRange, onSelect: onSelectFragment }
+                        : undefined}
+                      onReadBand={readBand}
+                    />
+                  );
+                })}
               </div>
             </div>
           ) : (
             <div className="motif-cs-gel-empty-preview" data-testid="gel-empty-preview">
-              <strong>Choose at least one sample lane</strong>
-              <span>The marker lane is added automatically.</span>
+              <strong>Select a sample lane</strong>
+              <span>Ladder added automatically.</span>
             </div>
           )}
 
@@ -663,7 +758,7 @@ export function ClaudeScienceGelWorkspace({
             </p>
           ) : null}
           <p className="motif-cs-gel-caveat" id="motif-cs-gel-caveat" role="note">
-            <strong>Interpretation limit.</strong> {ARTIFACT_GEL_QUALITATIVE_CAVEAT}
+            {ARTIFACT_GEL_QUALITATIVE_CAVEAT}
           </p>
           {built.error || workflowNameError || errorMessage ? (
             <p className="motif-cs-gel-error" role="alert">{built.error || workflowNameError || errorMessage}</p>
@@ -684,9 +779,9 @@ export function ClaudeScienceGelWorkspace({
         </label>
         <p className="motif-cs-gel-status" data-empty={!statusMessage || undefined} role="status" aria-live="polite">{statusMessage}</p>
         <div className="motif-cs-gel-footer-actions">
-          <button className="motif-cs-mini-button" type="button" onClick={onClose}>Close</button>
+          {embedded ? null : <button className="motif-cs-mini-button" type="button" onClick={onClose}>Close</button>}
           <button
-            className="motif-cs-mini-button motif-cs-mini-button-accent"
+            className="motif-cs-mini-button motif-cs-mini-button-accent motif-cs-gel-save"
             data-testid="gel-save-result"
             type="button"
             disabled={!built.preview || !!built.error || !!workflowNameError || isSaving || isSaved}
@@ -694,7 +789,7 @@ export function ClaudeScienceGelWorkspace({
               if (built.preview) onSaveResult(built.preview);
             }}
           >
-            {isSaving ? 'Saving…' : isSaved ? 'Saved' : 'Save Result'}
+            {isSaving ? 'Saving…' : isSaved ? 'Saved' : 'Save result'}
           </button>
         </div>
       </footer>

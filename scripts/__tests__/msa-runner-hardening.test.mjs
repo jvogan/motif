@@ -58,6 +58,35 @@ afterEach(() => {
 });
 
 describe('external MSA runner hardening', () => {
+  it.skipIf(process.platform === 'win32')('accepts the bare Clustal Omega 1.2.4 banner', () => {
+    const directory = temporaryDirectory('motif-msa-clustalo-');
+    const executable = join(directory, 'clustalo');
+    writeFileSync(executable, `#!${process.execPath}\n${String.raw`
+import { copyFileSync } from 'node:fs';
+const args = process.argv.slice(2);
+if (args.includes('--version')) {
+  process.stdout.write('1.2.4\n');
+} else {
+  const pathFor = flag => args.find(arg => arg.startsWith(flag)).slice(flag.length);
+  copyFileSync(pathFor('--infile='), pathFor('--outfile='));
+}
+`}`);
+    chmodSync(executable, 0o755);
+    const demoGenBank = readFileSync(new URL('../../examples/motif-demo.gb', import.meta.url), 'utf8');
+    const sequence = demoGenBank.split('\nORIGIN')[1].replace(/[^A-Za-z]/gu, '').toUpperCase().slice(0, 12);
+    const payload = runExternalMsa({
+      engine: 'clustal-omega',
+      molecule: 'dna',
+      inputText: ['One', 'Two'].map(name => `>${name}\n${sequence}`).join('\n'),
+      executablePath: executable,
+      env: {},
+      homeDir: directory,
+      temporaryRoot: directory,
+    });
+    expect(payload.alignments[0].engine).toMatchObject({ id: 'clustal-omega', version: '1.2.4' });
+    expect(payload.alignments[0].provenance.executableSha256).toMatch(/^[a-f0-9]{64}$/u);
+  });
+
   it('rejects symlinked and non-regular file input without following or blocking', () => {
     const directory = temporaryDirectory('motif-msa-input-types-');
     const target = join(directory, 'target.fasta');

@@ -2,7 +2,9 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { RESTRICTION_ENZYMES_FULL } from '../../bio/enzyme-data';
 import {
+  createRecordMap,
   MAX_ARTIFACT_DATABASE_JSON_CHARACTERS,
   parseArtifactDatabaseJson,
 } from '../claude-science-session';
@@ -17,10 +19,12 @@ import {
   MOTIF_MAX_RECORD_LENGTH,
   MOTIF_MAX_SHORT_TEXT_LENGTH,
   MOTIF_MAX_SITES_PER_RECORD,
+  MOTIF_MAX_SUBRANGES_PER_FEATURE,
   MOTIF_MAX_TAGS_PER_RECORD,
   MotifArtifactRuntimeError,
   createCenteredBluntEnzyme,
   createArtifactDatabaseSnapshot,
+  createValidatedArtifactDatabaseJson,
   createArtifactWorkspaceZipBlob,
   createDefensiveRuntimeSnapshot,
   describePayloadSnapshot,
@@ -32,8 +36,10 @@ import {
   omitUndefinedObjectProperties,
   parseImportedRecords,
   prepareArtifactDatabaseRestore,
+  prepareArtifactRestoreCommit,
   prepareInventoryReplacement,
   prepareRecordsOnlyWorkspaceReplacement,
+  scanRestrictionSitesForRecord,
   toGenBankLite,
   validateRuntimeRecordInputs,
 } from '../motif-artifact';
@@ -42,7 +48,102 @@ const here = dirname(fileURLToPath(import.meta.url));
 const artifactSource = readFileSync(resolve(here, '..', 'motif-artifact.tsx'), 'utf8');
 
 describe('Claude Science runtime data-integrity behavior', () => {
-  it('round-trips Unicode Database JSON within the character/UTF-8 transport contract', () => {
+  it('restores and exports inherited-property record IDs with absent or populated record settings', () => {
+    // `constructor`, `__proto__` and `prototype` are replaced with generated ids
+    // on import; other inherited names such as `toString` stay as given.
+    const ids = ['constructor', '__proto__', 'toString', 'valueOf'];
+    const records = ids.map((id) => ({ id, type: 'dna', sequence: 'A'.repeat(12) }));
+    const empty = prepareArtifactDatabaseRestore({ records });
+    const restoredIds = empty.payload.records.map((record) => record.id);
+    expect(restoredIds).toEqual(['record-1', 'record-2', 'toString', 'valueOf']);
+    for (const id of restoredIds) {
+      const payload = { ...empty.payload, selectedRecordId: id };
+      expect(prepareArtifactRestoreCommit({ ...empty, payload }).summary).not.toBeNull();
+      expect(empty.artifactState.hiddenEnzymesByRecord[id]).toBeUndefined();
+      expect(empty.artifactState.translationLayersByRecord[id]).toBeUndefined();
+      expect(empty.artifactState.enzymeSourcesByRecord[id]).toBeUndefined();
+    }
+
+    const inherited: Record<string, string[]> = JSON.parse('{"toString":["common"],"valueOf":[]}');
+    const copied = createRecordMap(inherited, { 'record-1': ['common'] });
+    const prepared = prepareArtifactDatabaseRestore({ records, artifactState: { enzymeSourcesByRecord: copied } });
+    const snapshot = createArtifactDatabaseSnapshot(prepared.payload, prepared.artifactState);
+    const restored = prepareArtifactDatabaseRestore(JSON.parse(JSON.stringify(snapshot)));
+    expect(restored.payload.records.map((record) => record.id)).toEqual(restoredIds);
+    expect(restored.artifactState.enzymeSourcesByRecord).toEqual(copied);
+    for (const id of ['record-1', 'toString', 'valueOf']) {
+      const payload = { ...restored.payload, selectedRecordId: id };
+      expect(prepareArtifactRestoreCommit({ ...restored, payload }).sources).toEqual(copied[id]);
+    }
+
+    // Settings keyed by a replaced id name no record, so the restore refuses
+    // them instead of attaching them to another record.
+    for (const reserved of ['constructor', '__proto__']) {
+      const state = JSON.parse(`{"enzymeSourcesByRecord":{"${reserved}":["common"]}}`);
+      expect(() => prepareArtifactDatabaseRestore({ records, artifactState: state }))
+        .toThrow(`enzymeSourcesByRecord references unknown record id: ${reserved}`);
+    }
+  });
+
+  it('rejects malformed or deeply nested Record JSON before preparing import candidates', () => {
+    const record = { sequence: 'A'.repeat(12), type: 'dna' };
+    const parse = (value: unknown) => parseImportedRecords(JSON.stringify(value), '', 'auto', 'linear');
+    expect(parse({ ...record, name: 'Valid' })).toHaveLength(1);
+    expect(() => parse({ ...record, name: 42 })).toThrowError(expect.objectContaining({
+      code: 'MOTIF_INVALID_RECORD_INPUT',
+      details: expect.objectContaining({ issues: expect.arrayContaining([expect.objectContaining({ path: 'records[0].name' })]) }),
+    }));
+    let nested: unknown = {};
+    for (let depth = 0; depth < 100; depth += 1) nested = { nested };
+    expect(() => parse({ ...record, provenance: nested })).toThrowError(expect.objectContaining({
+      code: 'MOTIF_INPUT_LIMIT_EXCEEDED',
+    }));
+  });
+
+  it('bounds validation diagnostics for a checkpoint full of malformed subranges', () => {
+    const workspace = prepareArtifactDatabaseRestore({ records: [{ id: 'open', type: 'dna', sequence: 'A'.repeat(12) }] });
+    const before = prepareArtifactRestoreCommit(workspace).fingerprint;
+    const candidate = {
+      records: [{
+        type: 'dna', sequence: 'A'.repeat(12),
+        features: Array.from({ length: 65 }, () => ({
+          start: 0, end: 12, subRanges: Array(MOTIF_MAX_SUBRANGES_PER_FEATURE).fill(null),
+        })),
+      }],
+    };
+    expect(() => prepareArtifactDatabaseRestore(candidate)).toThrowError(expect.objectContaining({
+      code: 'MOTIF_INPUT_LIMIT_EXCEEDED',
+      details: expect.objectContaining({
+        mutated: false,
+        diagnosticsTruncated: true,
+        issues: expect.objectContaining({ length: 50 }),
+      }),
+    }));
+    expect(prepareArtifactRestoreCommit(workspace).fingerprint).toBe(before);
+  });
+
+  it('prepares a large All-enzymes checkpoint and retains its supplied sites when scanning is unavailable', () => {
+    const workspace = prepareArtifactDatabaseRestore({
+      records: [{
+        id: 'large', name: 'Large', type: 'dna', topology: 'linear',
+        sequence: 'A'.repeat(92_000),
+        sites: [{ enzyme: 'Imported', hits: [{ position: 2, cutPosition: 3 }] }],
+      }],
+      artifactState: { enzymeSourcesByRecord: { large: ['all'] } },
+    });
+    const prepared = prepareArtifactRestoreCommit(workspace);
+    expect(prepared.selectedLength).toBe(92_000);
+    expect(prepared.fingerprint).toContain('"id":"large"');
+    expect(prepared.summary?.data.restriction).toMatchObject({
+      issue: { ok: false, code: 'scan_work_limit' },
+    });
+    expect(describePayloadSnapshot(workspace.payload, 'large', ['all'])).toEqual(prepared.summary);
+    expect(scanRestrictionSitesForRecord(workspace.payload.records[0], RESTRICTION_ENZYMES_FULL, true)).toMatchObject({
+      sites: [{ enzyme: 'Imported' }],
+      issue: { ok: false, code: 'scan_work_limit' },
+    });
+  });
+  it('round-trips Unicode Workspace JSON within the character/UTF-8 transport contract', () => {
     const database = {
       schema: 'motif.claude-science.inventory.v2',
       records: [{ id: 'unicode', name: '🧬 checkpoint', molecule: 'dna', topology: 'linear', seq: 'ACGT', description: '😀'.repeat(1_024) }],
@@ -53,8 +154,8 @@ describe('Claude Science runtime data-integrity behavior', () => {
     expect(bytes).toBeLessThanOrEqual(MOTIF_MAX_DATABASE_IMPORT_FILE_BYTES);
     expect(MOTIF_MAX_DATABASE_IMPORT_FILE_BYTES).toBe(MAX_ARTIFACT_DATABASE_JSON_CHARACTERS * 3);
     // An astral Unicode string uses two JavaScript characters but four UTF-8
-    // bytes. This boundary calculation demonstrates why the old 1:1 file
-    // gate could reject a character-legal checkpoint before parsing it.
+    // bytes. This boundary calculation demonstrates why a 1:1 file gate would
+    // reject a character-legal checkpoint before parsing it.
     const legalAstralCodeUnitCount = Math.floor(MAX_ARTIFACT_DATABASE_JSON_CHARACTERS / 2) * 2;
     const astralUtf8Bytes = legalAstralCodeUnitCount * 2;
     expect(legalAstralCodeUnitCount).toBeLessThanOrEqual(MAX_ARTIFACT_DATABASE_JSON_CHARACTERS);
@@ -148,7 +249,7 @@ describe('Claude Science runtime data-integrity behavior', () => {
     expect(new Set(payload.records[0].features.map((feature) => feature.id))).toHaveLength(3);
   });
 
-  it('prepares complete Database JSON restores transactionally', () => {
+  it('prepares complete Workspace JSON restores transactionally', () => {
     const restored = prepareArtifactDatabaseRestore({
       schema: 'motif.claude-science.inventory.v1',
       records: [{ id: 'restored', name: 'Restored', type: 'dna', sequence: 'ATGGAATTCTAA' }],
@@ -571,7 +672,7 @@ describe('Claude Science runtime data-integrity behavior', () => {
     expect(prepareArtifactDatabaseRestore(snapshot).payload.analysisResults).toEqual([]);
   });
 
-  it('round-trips the same accepted checkpoint through Database JSON and ZIP', async () => {
+  it('round-trips the same accepted checkpoint through Workspace JSON and ZIP', async () => {
     const payload = prepareInventoryReplacement([{
       id: 'zip-roundtrip',
       name: 'ZIP roundtrip',
@@ -608,10 +709,53 @@ describe('Claude Science runtime data-integrity behavior', () => {
     const entryName = new TextDecoder().decode(bytes.slice(30, 30 + nameLength));
     const entryText = new TextDecoder().decode(bytes.slice(30 + nameLength, 30 + nameLength + dataLength));
     expect(entryName).toBe('inventory.json');
+    expect(entryText).toBe(JSON.stringify(snapshot));
     expect(prepareArtifactDatabaseRestore(JSON.parse(entryText)).payload.records[0].id).toBe('zip-roundtrip');
+    for (const space of [undefined, 2]) {
+      const json = createValidatedArtifactDatabaseJson({ payload, artifactState }, space);
+      expect(json).toBe(JSON.stringify({ ...snapshot, exportedAt: JSON.parse(json).exportedAt }, null, space));
+      expect(prepareArtifactDatabaseRestore(parseArtifactDatabaseJson(json), undefined, false).payload.records[0].id)
+        .toBe('zip-roundtrip');
+    }
   });
 
-  it('blocks Database JSON and ZIP checkpoint creation instead of truncating a 12,000-hit EcoRI repeat', () => {
+  it('rejects unresolved workflow output references across the two JSON forms and ZIP', () => {
+    const workspace = prepareArtifactDatabaseRestore({ records: [{ id: 'template', type: 'dna', sequence: 'ACGT' }] });
+    const before = prepareArtifactRestoreCommit(workspace).fingerprint;
+    const payload = {
+      ...workspace.payload,
+      workflowResults: [{
+        id: 'digest', kind: 'digest' as const, name: 'Digest', inputRecordIds: ['template'],
+        outputRecordIds: ['removed-output'], parameters: {}, createdAt: '2026-01-01T00:00:00Z',
+        provenance: { source: 'workbench' },
+      }],
+    };
+    const snapshot = {
+      ...createArtifactDatabaseSnapshot(workspace.payload, workspace.artifactState),
+      workflowResults: payload.workflowResults,
+    };
+    expect(() => createArtifactDatabaseSnapshot(payload, workspace.artifactState)).toThrow(/outputRecordIds.*workspace record/i);
+    for (const space of [undefined, 2]) {
+      expect(() => createValidatedArtifactDatabaseJson({ ...workspace, payload }, space)).toThrow(/outputRecordIds.*workspace record/i);
+    }
+    expect(() => createArtifactWorkspaceZipBlob([{ name: 'inventory.json', content: JSON.stringify(snapshot) }]))
+      .toThrow(/outputRecordIds.*workspace record/i);
+    expect(prepareArtifactRestoreCommit(workspace).fingerprint).toBe(before);
+    expect(payload.workflowResults[0].outputRecordIds).toEqual(['removed-output']);
+  });
+
+  it('rejects an otherwise valid inventory when its serialized sidecars exceed the restore budget', () => {
+    const workspace = prepareArtifactDatabaseRestore({ records: [{ id: 'template', type: 'dna', sequence: 'ACGT' }] });
+    const analysisAssets = Array.from({ length: 4 }, (_, index) => ({
+      id: `report-${index}`, name: `report-${index}.txt`, mediaType: 'text/plain' as const,
+      content: '\u0001'.repeat(1_500_000), createdAt: '2026-01-01T00:00:00Z', provenance: { source: 'workbench' },
+    }));
+    const payload = { ...workspace.payload, analysisAssets };
+    expect(getArtifactCheckpointExportIssues(payload.records)).toEqual([]);
+    expect(() => createValidatedArtifactDatabaseJson({ ...workspace, payload })).toThrow(/32 MiB/i);
+  });
+
+  it('blocks Workspace JSON and ZIP checkpoint creation instead of truncating a 12,000-hit EcoRI repeat', () => {
     const repeatCount = 12_000;
     const sequence = 'GAATTC'.repeat(repeatCount);
     const record = normalizeRecord({
@@ -740,7 +884,7 @@ describe('Claude Science runtime data-integrity behavior', () => {
     expect(html).toContain('&lt;script&gt;window.__motifReportPwned=true&lt;/script&gt;');
     expect(html).toContain('&lt;img src=x onerror=&quot;window.__motifReportPwned=true&quot;&gt;');
 
-    const printStart = artifactSource.indexOf('function printHtmlReport(html: string): void {');
+    const printStart = artifactSource.indexOf('function printHtmlReport(html: string, onFallback: (receipt: BrowserDownloadReceipt) => void): void {');
     const printEnd = artifactSource.indexOf('function AnalysisPanel(', printStart);
     const printHandler = artifactSource.slice(printStart, printEnd);
     expect(printHandler).toContain("frame.setAttribute('sandbox', 'allow-modals allow-same-origin');");
@@ -987,7 +1131,8 @@ describe('Claude Science runtime data-integrity behavior', () => {
     );
 
     expect(record).toMatchObject({
-      name: 'Wave3 Enzyme Probe',
+      name: 'Wave3',
+      description: 'Enzyme Probe',
       molecule: 'dna',
       seq: 'AAAACCGGTCTCAAAATTTTCGTCTCGGGGAAAACCGAGACCAAAA',
     });
@@ -1002,6 +1147,24 @@ describe('Claude Science runtime data-integrity behavior', () => {
       'auto',
       'linear',
     )).toThrow(/FASTA sequence contains invalid character "\?" at line 2, column 5/i);
+  });
+
+  it('keeps original file coordinates for rejected FASTA and accounts for empty headers', () => {
+    const residues = 'A'.repeat(12);
+    const badFile = ['','  >bad', residues, '$$', residues].join('\r\n');
+    expect(() => parseImportedRecords(badFile, '', 'auto', 'linear', [], 'file')).toThrowError(
+      expect.objectContaining({ line: 4, column: 1, offset: badFile.indexOf('$') }),
+    );
+    const skipped: { record?: string; reason: string }[] = [];
+    const file = ['>first one', residues, '>blank', '>second two', residues, '>gaps', '--.'].join('\n');
+    const records = parseImportedRecords(file, '', 'auto', 'linear', skipped, 'file');
+    expect(records.map(({ name, seq }) => ({ name, length: seq?.length }))).toEqual([
+      { name: 'first', length: 12 }, { name: 'second', length: 12 },
+    ]);
+    expect(skipped).toEqual([
+      { record: 'blank', reason: expect.stringContaining('at line 3') },
+      { record: 'gaps', reason: expect.stringContaining('at line 6') },
+    ]);
   });
 
   it('reimports the bare object emitted by Record JSON export', () => {
@@ -1192,6 +1355,9 @@ describe('Claude Science runtime data-integrity behavior', () => {
     expect(renderHandler.indexOf('prepareRecordsOnlyWorkspaceReplacement(')).toBeLessThan(renderHandler.indexOf('resetWorkspaceViewState();'));
     expect(renderHandler).not.toContain('resetRecordTransientState();');
     expect(renderHandler).toContain('describeRuntimePayloadSnapshot(');
+    expect(artifactSource).toContain('return () => describePayloadSnapshot(nextPayload, activeRecord.id, sources, enzymes);');
+    expect(artifactSource).toContain('describeSnapshotRef.current = () => buildRecordSummary(vector, topology, restrictionSites, selectionSummary, restrictionIssue);');
+    expect(artifactSource).toContain('window.motifDescribe = () => describeSnapshotRef.current?.() ?? null;');
     expect(renderHandler).toContain('nextPayload.selectedRecordId');
     expect(addHandler).toContain("validateRuntimeRecordInputs(raw, 'motifAddRecords');");
     expect(addHandler).toContain('const traceSampleEntries = [...currentPayload.records, ...additions].reduce');
@@ -1231,18 +1397,22 @@ describe('Claude Science runtime data-integrity behavior', () => {
     const analysisEnd = artifactSource.indexOf('function digestFragmentRangeLabel', analysisStart);
     const analysisPanel = artifactSource.slice(analysisStart, analysisEnd);
 
-    expect(analysisPanel).toContain('const allOrfs = useMemo(');
-    expect(analysisPanel).toContain('const visibleOrfs = useMemo(() => stopOrfs.slice(0, 8), [stopOrfs]);');
+    expect(analysisPanel).toContain('const orfs = useIdleAnalysis(computeOrfs, open);');
+    expect(analysisPanel).toContain('findORFs(record.sequence, ANALYSIS_ORF_MIN_AA, translationCode.table, { topology })');
+    expect(analysisPanel).toContain('const visibleOrfs = useMemo(() => stopOrfs.slice(0, shownOrfCount), [stopOrfs, shownOrfCount]);');
+    // A page at a time, with a button for the rest: every counted ORF is reachable.
+    expect(analysisPanel).toContain('Show {Math.min(ANNOTATION_LIST_PAGE_SIZE, stopOrfs.length - visibleOrfs.length)} more ORFs');
     expect(analysisPanel).toContain('orfCount: stopOrfs.length');
-    // Both readouts still publish the COMPLETE total while only eight rows
-    // render, which is what this guard exists for. The total is now one ORF
-    // per strand and stop rather than one per start codon, so the eight rows
-    // no longer repeat one reading frame. Each count names its own floor, so
+    // Both readouts still publish the COMPLETE total while only one page of
+    // rows renders, which is what this guard exists for. The total is one
+    // ORF per strand and stop rather than one per start codon, so the rows do not
+    // repeat one reading frame. Each count names its own floor, so
     // assert the floor travels WITH the number rather than pinning the prose.
-    expect(analysisPanel).toContain('{visibleOrfs.length} longest of {stopOrfs.length}, one per stop');
+    expect(analysisPanel).toContain('Showing {visibleOrfs.length} of {stopOrfs.length}: the longest ORF per stop');
+    expect(analysisPanel).toContain('All {stopOrfs.length}: the longest ORF per stop');
     expect(analysisPanel).toContain('≥${ANALYSIS_ORF_MIN_AA} aa');
     expect(analysisPanel).toContain('`${stopOrfs.length} ORFs ≥${ANALYSIS_ORF_MIN_AA} aa`');
-    // A bare count with no floor beside it is the defect this replaced.
+    // A bare count with no floor beside it is the defect this guards against.
     expect(analysisPanel).not.toContain('`${stopOrfs.length} ORFs`');
   });
 
@@ -1251,21 +1421,36 @@ describe('Claude Science runtime data-integrity behavior', () => {
     expect(artifactSource).toContain("label: 'Basic GFF3 features'");
     expect(artifactSource).toContain('{copyStatus ?? durabilityStatus}');
     expect(artifactSource).toContain("? 'unsaved changes'");
-    expect(artifactSource).toContain('Session data is not durable across reloads.');
-    expect(artifactSource).toContain('Database JSON restores directly; ZIP contains the same inventory.json plus interchange exports');
+    expect(artifactSource).toContain('Records are lost on reload.');
+    expect(artifactSource).toContain('To restore a ZIP, extract inventory.json.');
     expect(artifactSource).toContain('artifactState,');
     expect(artifactSource).toContain('data-testid="export-loss-receipt"');
-    expect(artifactSource).toContain("<strong>{exportLossReport.faithful ? 'Faithful export' : 'Lossy export'}</strong>");
-    expect(artifactSource).toContain('Use Database JSON or ZIP for the complete Motif checkpoint.');
+    expect(artifactSource).toContain("<strong>{exportLossReport.faithful ? 'Complete export' : 'Export limits'}</strong>");
+    expect(artifactSource).toContain('Use Workspace JSON or ZIP for all data.');
     expect(artifactSource).toContain('MOTIF_MAX_DATABASE_IMPORT_FILE_BYTES');
-    expect(artifactSource).toContain('isDatabaseJsonFile(file)');
-    const importSizeCheck = artifactSource.indexOf('const maxImportBytes = isDatabaseJsonFile(file)');
-    const importTextRead = artifactSource.indexOf('const text = await file.text();', importSizeCheck);
+    const importSizeCheck = artifactSource.indexOf('stageArtifactFileImport(files, async (file, maxImportBytes) => {');
+    const importTextRead = artifactSource.indexOf('const { text, encoding } = await readArtifactImportText(file);', importSizeCheck);
     expect(importSizeCheck).toBeGreaterThanOrEqual(0);
     expect(importSizeCheck).toBeLessThan(importTextRead);
+    // A binary file is named as one before any encoding verdict is reached;
+    // only a Workspace JSON restore insists on UTF-8 that early.
+    const binaryCheck = artifactSource.indexOf('unreadableFileReason(file, text, encoding)', importTextRead);
+    expect(binaryCheck).toBeGreaterThan(importTextRead);
+    const beforeBinaryCheck = artifactSource.slice(importTextRead, binaryCheck);
+    expect(beforeBinaryCheck.match(/INVALID_UTF8_FILE_MESSAGE/g)).toHaveLength(1);
+    expect(beforeBinaryCheck).toMatch(/if \(json\.kind === 'database'\) \{\s+if \(encoding !== 'utf-8'\) throw new Error\(INVALID_UTF8_FILE_MESSAGE\);/);
+    // Legacy-encoded text imports, and the outcome names the files read that way.
+    const importOutcome = artifactSource.indexOf('const outcome = describeFileImportOutcome(added, skipped);', binaryCheck);
+    expect(artifactSource.slice(binaryCheck, importOutcome)).not.toContain('INVALID_UTF8_FILE_MESSAGE');
+    expect(artifactSource.slice(binaryCheck, importOutcome)).toContain("if (encoding !== 'utf-8' && parsed.length > 0) legacyEncodedFiles.push(file.name);");
+    expect(artifactSource.slice(importOutcome, importOutcome + 600)).toContain('legacyEncodingNote(legacyEncodedFiles)');
     const restoreSizeCheck = artifactSource.indexOf('if (file.size > MOTIF_MAX_DATABASE_IMPORT_FILE_BYTES)', importSizeCheck + 1);
-    const restoreTextRead = artifactSource.indexOf('parseArtifactDatabaseJson(await file.text())', restoreSizeCheck);
+    const restoreTextRead = artifactSource.indexOf('const text = await readArtifactUtf8Text(file);', restoreSizeCheck);
+    const restoreGenerationCheck = artifactSource.indexOf('if (generation !== workspaceGenerationRef.current)', restoreTextRead);
+    const restoreParse = artifactSource.indexOf('parseArtifactDatabaseJson(text)', restoreGenerationCheck);
     expect(restoreSizeCheck).toBeGreaterThan(importSizeCheck);
     expect(restoreSizeCheck).toBeLessThan(restoreTextRead);
+    expect(restoreTextRead).toBeLessThan(restoreGenerationCheck);
+    expect(restoreGenerationCheck).toBeLessThan(restoreParse);
   });
 });

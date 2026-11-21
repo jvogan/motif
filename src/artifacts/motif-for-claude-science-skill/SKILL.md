@@ -16,7 +16,7 @@ The supported standalone workflow is:
 
 1. Build or receive the self-contained HTML file.
 2. Open it in a modern browser.
-3. Interact through its visible Inventory, Sequence, Map, and Tools controls.
+3. Interact through its visible Library, Sequence, Map, and Tools controls.
 
 The HTML defines `window.motif*` functions inside its own page. A skill does not
 turn those browser globals into Cowork or Claude Code tools. Do not claim to
@@ -141,7 +141,7 @@ bounded Motif local preview; do not present that preview as an external
 engine result or a silent fallback.
 
 With a verified page bridge, use `window.motifAddAlignments(...)` to append
-validated alignments and `window.motifGetAlignments()` to read them. Database JSON
+validated alignments and `window.motifGetAlignments()` to read them. Workspace JSON
 and ZIP preserve saved alignments; ZIP also includes aligned FASTA and CLUSTAL
 files. Call `window.motifHelp()` first for current limits and the complete schema.
 
@@ -150,7 +150,7 @@ Do not hand-edit bundled JavaScript or claim an in-page change succeeded without
 observing it in the rendered artifact.
 
 Records edited in the browser are session-only until an exported file is
-verified on disk. Database JSON and ZIP preserve the complete artifact record;
+verified on disk. Workspace JSON and ZIP preserve the complete artifact record;
 GenBank and GFF3 are intentionally basic interchange exports. A browser
 download request is not itself proof that a checkpoint was saved.
 
@@ -159,4 +159,4 @@ feature-specific diagnostics. Fuzzy bounds remain guarded when their
 coordinates are still representable; valid between-base and remote-accession
 locations are retained but quarantined because Motif cannot project them onto
 the local sequence. Do not describe the Basic GenBank export as full INSDC
-support; use Database JSON or ZIP for a complete checkpoint.
+support; use Workspace JSON or ZIP for a complete checkpoint.

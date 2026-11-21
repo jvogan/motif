@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { openTool, openToolsDrawer, toolDetails } from './tool-panel-aliases';
 
 const artifactUrl = process.env.MOTIF_ARTIFACT_URL ?? '/motif.html';
 test.use({ trace: 'retain-on-failure' });
@@ -32,6 +33,18 @@ async function openArtifact(page: Page, width: number, height: number) {
   await page.goto(artifactUrl);
   await expect(page.locator('.motif-cs-shell')).toBeVisible();
 }
+
+// Below 900px the Records pane starts hidden, and from 1536px the Tools toggle
+// pins the pane (below that it opens a drawer, which has no pop-out). This turns
+// a pane on through its top-bar toggle when it is off.
+async function showPane(page: Page, pane: string) {
+  const toggle = page.locator(`[data-pane-toggle="${pane}"]`);
+  if ((await toggle.getAttribute('aria-pressed')) !== 'true') await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+}
+
+// Tools pops out only while it is pinned, which takes a viewport of 1536px or more.
+const TOOLS_PLACEMENT_VIEWPORT = { width: 1600, height: 900 } as const;
 
 async function installPaneDraftAudit(page: Page) {
   await page.evaluate(() => {
@@ -142,9 +155,8 @@ test.describe('state-preserving pane placement', () => {
   test.describe.configure({ retries: 0 });
 
   test('Tools keeps its open workflow draft through pop out, move, resize, and dock', async ({ page }, testInfo) => {
-    await openArtifact(page, 1180, 900);
-    const toolsToggle = page.locator('[data-pane-toggle="tools"]');
-    if ((await toolsToggle.getAttribute('aria-pressed')) !== 'true') await toolsToggle.click();
+    await openArtifact(page, TOOLS_PLACEMENT_VIEWPORT.width, TOOLS_PLACEMENT_VIEWPORT.height);
+    await showPane(page, 'tools');
 
     const tools = page.locator('[data-pane-key="tools"]');
     const notes = tools.locator('details[data-rail-tool="notes"]');
@@ -237,63 +249,66 @@ test.describe('state-preserving pane placement', () => {
   });
 
   test('floating resize grips remain the trusted hit target across viewport layouts', async ({ page }) => {
-    const panes = [
-      { key: 'inventory', label: 'Inventory' },
+    const contentPanes = [
+      { key: 'inventory', label: 'Library' },
       { key: 'map', label: 'Map' },
       { key: 'sequence', label: 'Sequence' },
-      { key: 'tools', label: 'Tools' },
     ] as const;
+    const toolsPane = { key: 'tools', label: 'Tools' } as const;
+    // Tools has no pop-out below 1536px, where it is a drawer, so its grip is
+    // checked at a wide viewport and the content panes at the two narrow ones.
+    const cases = [
+      ...[{ width: 1440, height: 900 }, { width: 820, height: 900 }]
+        .flatMap((viewport) => contentPanes.map((pane) => ({ viewport, pane }))),
+      { viewport: TOOLS_PLACEMENT_VIEWPORT, pane: toolsPane },
+    ];
 
-    for (const viewport of [{ width: 1440, height: 900 }, { width: 820, height: 900 }]) {
-      for (const pane of panes) {
-        await openArtifact(page, viewport.width, viewport.height);
-        if (pane.key === 'tools') {
-          const railToggle = page.getByRole('button', { name: 'Tools rail' });
-          if (await railToggle.getAttribute('aria-pressed') !== 'true') await railToggle.click();
-        }
+    for (const { viewport, pane } of cases) {
+      await openArtifact(page, viewport.width, viewport.height);
+      await showPane(page, pane.key);
 
-        const paneElement = page.locator(`[data-pane-key="${pane.key}"]`);
-        const docked = (await paneElement.boundingBox())!;
-        await paneElement.getByRole('button', { name: `Pop out ${pane.label} pane` }).click();
-        const resize = page.getByTestId(`floating-pane-resize-${pane.key}`);
-        await expect(resize).toBeVisible();
-        const before = await paneElement.boundingBox();
-        const resizeBox = await resize.boundingBox();
-        expect(before).not.toBeNull();
-        // Popping out never shrinks the pane much below its docked area.
-        expect(before!.width * before!.height).toBeGreaterThanOrEqual(0.9 * docked.width * docked.height);
-        expect(resizeBox).not.toBeNull();
+      const paneElement = page.locator(`[data-pane-key="${pane.key}"]`);
+      const docked = (await paneElement.boundingBox())!;
+      await paneElement.getByRole('button', { name: `Pop out ${pane.label} pane` }).click();
+      const resize = page.getByTestId(`floating-pane-resize-${pane.key}`);
+      await expect(resize).toBeVisible();
+      const before = await paneElement.boundingBox();
+      const resizeBox = await resize.boundingBox();
+      expect(before).not.toBeNull();
+      // Popping out never shrinks the pane much below its docked area.
+      expect(before!.width * before!.height).toBeGreaterThanOrEqual(0.9 * docked.width * docked.height);
+      expect(resizeBox).not.toBeNull();
 
-        await page.evaluate(() => {
-          window.addEventListener('pointerdown', (event) => {
-            const target = event.target instanceof Element
-              ? event.target.closest<HTMLElement>('.motif-cs-floating-pane-resize')
-              : null;
-            if (!target) return;
-            const state = window as Window & { __motifFloatingGripTrusted?: boolean[] };
-            (state.__motifFloatingGripTrusted ??= []).push(event.isTrusted);
-          }, true);
-        });
-        await page.mouse.move(resizeBox!.x + resizeBox!.width / 2, resizeBox!.y + resizeBox!.height / 2);
-        expect(await page.evaluate(({ x, y }) => (
-          document.elementFromPoint(x, y)?.closest('.motif-cs-floating-pane-resize')?.getAttribute('data-testid')
-        ), { x: resizeBox!.x + resizeBox!.width / 2, y: resizeBox!.y + resizeBox!.height / 2 })).toBe(`floating-pane-resize-${pane.key}`);
-        await page.mouse.down();
-        // A pane pops out no smaller than it was docked, which can fill the
-        // window, so the grip is dragged inward.
-        await page.mouse.move(resizeBox!.x - 76, resizeBox!.y - 60, { steps: 5 });
-        await page.mouse.up();
-        const after = await paneElement.boundingBox();
-        const trusted = await page.evaluate(() => (window as Window & { __motifFloatingGripTrusted?: boolean[] }).__motifFloatingGripTrusted ?? []);
-        expect(trusted).toContain(true);
-        expect(after).not.toBeNull();
-        expect(after!.width < before!.width - 1 || after!.height < before!.height - 1).toBe(true);
-      }
+      await page.evaluate(() => {
+        window.addEventListener('pointerdown', (event) => {
+          const target = event.target instanceof Element
+            ? event.target.closest<HTMLElement>('.motif-cs-floating-pane-resize')
+            : null;
+          if (!target) return;
+          const state = window as Window & { __motifFloatingGripTrusted?: boolean[] };
+          (state.__motifFloatingGripTrusted ??= []).push(event.isTrusted);
+        }, true);
+      });
+      await page.mouse.move(resizeBox!.x + resizeBox!.width / 2, resizeBox!.y + resizeBox!.height / 2);
+      expect(await page.evaluate(({ x, y }) => (
+        document.elementFromPoint(x, y)?.closest('.motif-cs-floating-pane-resize')?.getAttribute('data-testid')
+      ), { x: resizeBox!.x + resizeBox!.width / 2, y: resizeBox!.y + resizeBox!.height / 2 })).toBe(`floating-pane-resize-${pane.key}`);
+      await page.mouse.down();
+      // A pane pops out no smaller than it was docked, which can fill the
+      // window, so the grip is dragged inward.
+      await page.mouse.move(resizeBox!.x - 76, resizeBox!.y - 60, { steps: 5 });
+      await page.mouse.up();
+      const after = await paneElement.boundingBox();
+      const trusted = await page.evaluate(() => (window as Window & { __motifFloatingGripTrusted?: boolean[] }).__motifFloatingGripTrusted ?? []);
+      expect(trusted).toContain(true);
+      expect(after).not.toBeNull();
+      expect(after!.width < before!.width - 1 || after!.height < before!.height - 1).toBe(true);
     }
 
     await openArtifact(page, 390, 760);
-    const rail = page.locator('[data-pane-key="tools"]');
-    const notes = rail.locator('details[data-rail-tool="notes"]');
+    // At phone width the Tools list is a drawer that covers the page once open.
+    await openToolsDrawer(page);
+    const notes = toolDetails(page, 'notes');
     const summary = notes.locator(':scope > summary');
     const summaryBox = await summary.boundingBox();
     expect(summaryBox).not.toBeNull();
@@ -303,8 +318,10 @@ test.describe('state-preserving pane placement', () => {
     await summary.click();
     await expect(notes).toHaveAttribute('open', '');
 
+    // Records starts hidden below 900px; the top-bar toggle brings it back.
+    await showPane(page, 'inventory');
     const inventory = page.locator('[data-pane-key="inventory"]');
-    await inventory.getByRole('button', { name: 'Pop out Inventory pane' }).click();
+    await inventory.getByRole('button', { name: 'Pop out Library pane' }).click();
     await expect(page.getByTestId('floating-pane-resize-inventory')).toBeHidden();
     const sheet = await inventory.boundingBox();
     expect(sheet).not.toBeNull();
@@ -314,10 +331,9 @@ test.describe('state-preserving pane placement', () => {
   });
 
   test('Notes retains one controlled draft owner through repeated pointer and keyboard placement changes', async ({ page }, testInfo) => {
-    await openArtifact(page, 1180, 900);
+    await openArtifact(page, TOOLS_PLACEMENT_VIEWPORT.width, TOOLS_PLACEMENT_VIEWPORT.height);
     const tools = page.locator('[data-pane-key="tools"]');
-    const toolsToggle = page.locator('[data-pane-toggle="tools"]');
-    if ((await toolsToggle.getAttribute('aria-pressed')) !== 'true') await toolsToggle.click();
+    await showPane(page, 'tools');
     const notes = tools.locator('details[data-rail-tool="notes"]');
     const noteCountBefore = await notes.locator('.motif-cs-analysis-row').count();
     const notesSummary = notes.locator(':scope > summary');
@@ -385,8 +401,10 @@ test.describe('state-preserving pane placement', () => {
 
   test('Escape docks a floating pane and the phone layout uses a bounded sheet', async ({ page }) => {
     await openArtifact(page, 390, 760);
+    // Records starts hidden below 900px; the top-bar toggle brings it back.
+    await showPane(page, 'inventory');
     const inventory = page.locator('[data-pane-key="inventory"]');
-    await inventory.getByRole('button', { name: 'Pop out Inventory pane' }).click();
+    await inventory.getByRole('button', { name: 'Pop out Library pane' }).click();
     await expect(inventory).toHaveAttribute('data-pane-placement', 'floating');
 
     const sheet = await inventory.boundingBox();
@@ -397,7 +415,7 @@ test.describe('state-preserving pane placement', () => {
     expect(sheet!.y + sheet!.height).toBeLessThanOrEqual(753);
     await expect(page.getByTestId('floating-pane-resize-inventory')).toBeHidden();
 
-    await inventory.getByRole('button', { name: 'Add entry' }).click();
+    await inventory.getByRole('button', { name: 'Import records' }).click();
     const addEntry = inventory.locator('#motif-cs-add-entry');
     await expect(addEntry).toBeVisible();
     const addEntryBox = await addEntry.boundingBox();
@@ -405,12 +423,14 @@ test.describe('state-preserving pane placement', () => {
     expect(addEntryBox!.x).toBeGreaterThanOrEqual(sheet!.x);
     expect(addEntryBox!.x + addEntryBox!.width).toBeLessThanOrEqual(sheet!.x + sheet!.width);
 
-    await inventory.getByRole('button', { name: 'Add entry' }).click();
+    // The open panel carries its own "Import records" button; the toggle that
+    // opened it comes first.
+    await inventory.getByRole('button', { name: 'Import records' }).first().click();
     await expect(addEntry).toBeHidden();
-    await inventory.getByRole('button', { name: 'Dock Inventory pane' }).focus();
+    await inventory.getByRole('button', { name: 'Dock Library pane' }).focus();
     await page.keyboard.press('Escape');
     await expect(inventory).toHaveAttribute('data-pane-placement', 'docked');
-    await expect(inventory.getByRole('button', { name: 'Pop out Inventory pane' })).toBeFocused();
+    await expect(inventory.getByRole('button', { name: 'Pop out Library pane' })).toBeFocused();
   });
 
   test('visibility controls keep one content pane docked while other panes float', async ({ page }) => {
@@ -490,48 +510,63 @@ test.describe('state-preserving pane placement', () => {
     // at rest is a nuisance, but a label hidden at every scroll position of every
     // scrollable ancestor is unreachable, and only the sweep tells those apart.
     for (const width of [640, 660, 700, 767, 768, 900, 1100, 1280, 1440]) {
-      await openArtifact(page, width, 900);
-      await expect(page.locator('.motif-cs-map-frame[data-map-mode="circular"]')).toBeVisible();
+      // The map draws unique cutters by default, which leaves fewer labels
+      // (16 at 640px) than a dense map of every cutter. Both are swept: the
+      // default is what a user sees, every cutter is the worst case.
+      for (const sites of ['unique', 'all'] as const) {
+        await openArtifact(page, width, 900);
+        await expect(page.locator('.motif-cs-map-frame[data-map-mode="circular"]')).toBeVisible();
+        if (sites === 'all') await page.getByRole('combobox', { name: 'Restriction sites' }).selectOption('all');
 
-      const reach = await page.evaluate(async () => {
-        const svg = document.querySelector('.motif-cs-map-frame svg.motif-plasmid-map')!;
-        const column = document.querySelector('.motif-cs-map-column')!;
-        const main = document.querySelector('.motif-cs-main')!;
-        const strip = document.querySelector('.motif-cs-map-dock-strip');
-        const labels = () => [...svg.querySelectorAll(
-          '.motif-pm-restriction-label, .motif-pm-feature-label, .motif-pm-coord-label',
-        )];
-        const hidden = () => {
-          const box = column.getBoundingClientRect();
-          const floor = strip ? Math.min(box.bottom, strip.getBoundingClientRect().top) : box.bottom;
-          return labels().filter((node) => {
-            const rect = node.getBoundingClientRect();
-            return rect.bottom > floor + 0.5 || rect.top < box.top - 0.5;
-          }).length;
-        };
-        const columnRange = column.scrollHeight - column.clientHeight;
-        const mainRange = main.scrollHeight - main.clientHeight;
-        let best = Infinity;
-        for (let i = 0; i <= 8; i += 1) {
-          for (let j = 0; j <= 8; j += 1) {
-            column.scrollTop = Math.round((columnRange * i) / 8);
-            main.scrollTop = Math.round((mainRange * j) / 8);
-            await new Promise((settle) => requestAnimationFrame(() => settle(null)));
-            best = Math.min(best, hidden());
+        const reach = await page.evaluate(async () => {
+          const svg = document.querySelector('.motif-cs-map-frame svg.motif-plasmid-map')!;
+          const column = document.querySelector('.motif-cs-map-column')!;
+          const main = document.querySelector('.motif-cs-main')!;
+          const strip = document.querySelector('.motif-cs-map-dock-strip');
+          const labels = () => [...svg.querySelectorAll(
+            '.motif-pm-restriction-label, .motif-pm-feature-label, .motif-pm-coord-label',
+          )];
+          const hidden = () => {
+            const box = column.getBoundingClientRect();
+            const floor = strip ? Math.min(box.bottom, strip.getBoundingClientRect().top) : box.bottom;
+            return labels().filter((node) => {
+              const rect = node.getBoundingClientRect();
+              return rect.bottom > floor + 0.5 || rect.top < box.top - 0.5;
+            }).length;
+          };
+          const columnRange = column.scrollHeight - column.clientHeight;
+          const mainRange = main.scrollHeight - main.clientHeight;
+          let best = Infinity;
+          for (let i = 0; i <= 8; i += 1) {
+            for (let j = 0; j <= 8; j += 1) {
+              column.scrollTop = Math.round((columnRange * i) / 8);
+              main.scrollTop = Math.round((mainRange * j) / 8);
+              await new Promise((settle) => requestAnimationFrame(() => settle(null)));
+              best = Math.min(best, hidden());
+            }
           }
-        }
-        column.scrollTop = 0;
-        main.scrollTop = 0;
-        await new Promise((settle) => requestAnimationFrame(() => settle(null)));
-        return { placed: labels().length, atRest: hidden(), best, columnRange };
-      });
+          column.scrollTop = 0;
+          main.scrollTop = 0;
+          await new Promise((settle) => requestAnimationFrame(() => settle(null)));
+          return {
+            placed: labels().length,
+            atRest: hidden(),
+            best,
+            columnRange,
+            miniature: svg.getAttribute('data-miniature') === 'true',
+          };
+        });
 
-      // Guards the guard: a map with no labels would pass everything below.
-      expect(reach.placed, `no map labels to measure at ${width}px`).toBeGreaterThan(20);
-      expect(reach.best, `map labels unreachable at any scroll position at ${width}px`).toBe(0);
-      // The frame fits, so there is nothing to scroll to in the first place.
-      expect(reach.atRest, `map labels below the fold on load at ${width}px`).toBe(0);
-      expect(reach.columnRange, `the map column overflows again at ${width}px`).toBe(0);
+        // Guards the guard: a map with no labels would pass everything below. The
+        // miniature a short frame draws (880x355 at 900px) names fewer things and no
+        // ruler numbers: 10 labels there with unique cutters, 9 with every cutter.
+        const floor = reach.miniature ? 8 : sites === 'all' ? 20 : 10;
+        expect(reach.placed, `no map labels to measure at ${width}px (${sites} sites)`).toBeGreaterThan(floor);
+        expect(reach.best, `map labels unreachable at any scroll position at ${width}px (${sites} sites)`).toBe(0);
+        // The frame fits, so there is nothing to scroll to in the first place.
+        expect(reach.atRest, `map labels below the fold on load at ${width}px (${sites} sites)`).toBe(0);
+        expect(reach.columnRange, `the map column overflows again at ${width}px (${sites} sites)`).toBe(0);
+      }
     }
   });
 
@@ -614,7 +649,10 @@ test.describe('state-preserving pane placement', () => {
         const hit = document.elementFromPoint(box.left + 30, box.top + box.height / 2);
         return !!hit && summary.contains(hit);
       });
-      return { ring: Math.round(ring.width), visibleRing: Math.round(visibleRing), heads, columnHides: column.scrollHeight - column.clientHeight };
+      // The ring's bounding box is a hair wider than it is tall (454.5 by 454.3 at
+      // 1920x1080), so its width and its visible height round apart by a pixel with
+      // nothing clipped. The overlap above is vertical; compare it with the height.
+      return { ring: Math.round(ring.height), visibleRing: Math.round(visibleRing), heads, columnHides: column.scrollHeight - column.clientHeight };
     });
 
     for (const [width, height] of [[1024, 768], [1280, 720], [1440, 900], [1920, 1080]] as const) {
@@ -634,7 +672,7 @@ test.describe('state-preserving pane placement', () => {
     }
   });
 
-  test('the annotations list reaches every feature in all three Tools placements', async ({ page }) => {
+  test('the annotations list reaches every feature in all four Tools placements', async ({ page }) => {
     // Regression, and a SCOPING one rather than a plain miss. `max-height: min(24vh,
     // 190px)` resolves to a flat 190px at every viewport height above 792px. It was
     // fixed once, but as an addition under
@@ -645,16 +683,15 @@ test.describe('state-preserving pane placement', () => {
     // unreachable, identically at 900, 980, 1080 and 1400 tall — constant across
     // viewport height, which is the signature of the constant winning.
     //
-    // All three placements are exercised, because the bug was exactly that one of
-    // them was checked and the other two were not.
+    // Every placement is exercised: checking one of them says nothing about the
+    // others. Below 1536px the unpinned Tools are a
+    // drawer; from 1536px they are a rail popover, which can be pinned into a
+    // docked column or popped out into a floating pane.
     await openArtifact(page, 1440, 980);
 
-    const annotations = page.locator('details[data-rail-tool="annotations"]');
     const list = page.locator('.motif-cs-feature-annotation-list');
     const openPanel = async () => {
-      if ((await annotations.getAttribute('open')) === null) {
-        await annotations.locator(':scope > summary').click();
-      }
+      await openTool(page, 'annotations');
       await expect(list).toBeVisible();
     };
 
@@ -679,6 +716,10 @@ test.describe('state-preserving pane placement', () => {
     };
 
     await openPanel();
+    await reachable('Tools drawer');
+
+    await openArtifact(page, TOOLS_PLACEMENT_VIEWPORT.width, 980);
+    await openPanel();
     await reachable('unpinned rail popover');
 
     await page.locator('[data-pane-toggle="tools"]').click();
@@ -691,4 +732,116 @@ test.describe('state-preserving pane placement', () => {
     await openPanel();
     await reachable('floated Tools pane');
   });
+
+  test('a side panel opens with the map whole and the sequence in view, and 1040px gives 40 bases a line', async ({ page }) => {
+    // At 700x860 the map frame takes half the window less 95px and the sequence the
+    // rest, so at least three whole lines of sequence are in view; the status line shares the
+    // Sites and Digest row.
+    // At 1040x860 the Sequence is wide enough for 40 bases a line (with the Records
+    // list it would be 330px, 25 bases a line, beside a 328px ring).
+    const read = () => page.evaluate(() => {
+      const viewHeight = window.innerHeight;
+      const scroller = document.querySelector('.motif-cs-sequence')!.getBoundingClientRect();
+      const lines = [...document.querySelectorAll<HTMLElement>('.motif-cs-sequence .motif-cs-seq-bases[data-line-start]')];
+      const whole = lines.filter((line) => {
+        const box = line.getBoundingClientRect();
+        return box.top >= Math.max(scroller.top, 0) - 1 && box.bottom <= Math.min(scroller.bottom, viewHeight) + 1;
+      }).length;
+      const frame = document.querySelector('.motif-cs-map-frame')!.getBoundingClientRect();
+      const ring = document.querySelector('.motif-cs-map-frame .motif-pm-backbone')!.getBoundingClientRect();
+      const labels = [...document.querySelectorAll<SVGTextElement>('.motif-cs-map-frame .motif-pm-feature-label, .motif-cs-map-frame .motif-pm-restriction-label')]
+        .filter((label) => {
+          const box = label.getBoundingClientRect();
+          return box.width > 0 && box.top >= frame.top - 1 && box.bottom <= frame.bottom + 1 && box.left >= frame.left - 1 && box.right <= frame.right + 1;
+        });
+      const status = document.querySelector('.motif-cs-map-selection-line')?.getBoundingClientRect() ?? null;
+      const heads = [...document.querySelectorAll('.motif-cs-map-dock-strip > details > summary')].map((head) => head.getBoundingClientRect());
+      return {
+        whole,
+        basesPerLine: Number(lines[0]?.dataset.lineLen ?? 0),
+        ring: Math.round(Math.max(ring.width, ring.height)),
+        labels: labels.length,
+        sideways: document.scrollingElement!.scrollWidth - document.scrollingElement!.clientWidth,
+        statusTop: status ? Math.round(status.top + status.height / 2) : null,
+        statusBottom: status ? Math.round(status.bottom) : null,
+        frameBottom: Math.round(frame.bottom),
+        headTops: heads.map((head) => Math.round(head.top)),
+        headBottoms: heads.map((head) => Math.round(head.bottom)),
+        miniature: document.querySelector('.motif-cs-map-frame svg.motif-plasmid-map')?.getAttribute('data-miniature') === 'true',
+        recordsShown: Boolean(document.querySelector('[data-pane-key="inventory"]')?.getBoundingClientRect().width),
+      };
+    });
+
+    await openArtifact(page, 700, 860);
+    await expect(page.locator('.motif-cs-map-frame .motif-pm-backbone')).toBeVisible();
+    await expect.poll(async () => (await read()).whole).toBeGreaterThanOrEqual(3);
+    let geometry = await read();
+    expect(geometry.ring).toBeGreaterThanOrEqual(240);
+    // All 11 map labels a 377px ring draws are drawn at this smaller ring (one, "BspQI,
+    // SapI", reads "BspQI +1" at every frame under 400px).
+    expect(geometry.labels).toBeGreaterThanOrEqual(11);
+    expect(geometry.sideways).toBeLessThanOrEqual(0);
+    // One row under the drawing: the status line sits beside the Sites and Digest
+    // heads, below the frame, not in a row of its own.
+    expect(geometry.headTops).toHaveLength(2);
+    expect(geometry.statusBottom!).toBeLessThanOrEqual(geometry.headBottoms[0] + 1);
+    expect(geometry.statusTop!).toBeGreaterThan(geometry.headTops[0]);
+    expect(geometry.statusTop!).toBeGreaterThan(geometry.frameBottom);
+
+    // A short side panel keeps three lines and a 200px ring. Its 680x298 frame draws
+    // the miniature, which names fewer things (small-ring-miniature.test.ts): eight here.
+    await openArtifact(page, 700, 700);
+    await expect(page.locator('.motif-cs-map-frame .motif-pm-backbone')).toBeVisible();
+    await expect.poll(async () => (await read()).whole).toBeGreaterThanOrEqual(3);
+    geometry = await read();
+    expect(geometry.ring).toBeGreaterThanOrEqual(200);
+    expect(geometry.miniature).toBe(true);
+    expect(geometry.labels).toBeGreaterThanOrEqual(8);
+
+    await openArtifact(page, 1040, 860);
+    await expect(page.locator('.motif-cs-map-frame .motif-pm-backbone')).toBeVisible();
+    await expect.poll(async () => (await read()).basesPerLine).toBeGreaterThanOrEqual(40);
+    geometry = await read();
+    // 85% of the 328px ring the 40:60 split gives beside an open Records list.
+    expect(geometry.ring).toBeGreaterThanOrEqual(279);
+    expect(geometry.labels).toBeGreaterThanOrEqual(11);
+    expect(geometry.recordsShown).toBe(false);
+    // The list is one press away, and opening it gives the side-by-side arrangement.
+    await showPane(page, 'inventory');
+    await expect.poll(async () => (await read()).recordsShown).toBe(true);
+  });
+});
+
+test.describe('Collapse chevrons follow the way the panes stand', () => {
+  // Below 900px the panes stand one above another, and each Collapse chevron
+  // points up or down along the stack, not sideways.
+  const chevrons = (page: Page) => page.evaluate(() => Object.fromEntries(
+    [...document.querySelectorAll<HTMLElement>('[data-pane-key]')]
+      .filter((pane) => pane.getBoundingClientRect().width > 0)
+      .map((pane) => {
+        const icon = pane.querySelector(':scope > .motif-cs-pane-title .motif-cs-pane-collapse svg, :scope > .motif-cs-title-row .motif-cs-pane-collapse svg');
+        return [pane.dataset.paneKey, icon ? [...icon.classList].find((name) => name.startsWith('lucide-chevron-')) ?? null : null];
+      })
+      .filter(([, icon]) => icon !== null),
+  ));
+
+  for (const { width, height, expected } of [
+    { width: 400, height: 700, expected: { inventory: 'lucide-chevron-up', map: 'lucide-chevron-up', sequence: 'lucide-chevron-down' } },
+    { width: 700, height: 860, expected: { inventory: 'lucide-chevron-up', map: 'lucide-chevron-up', sequence: 'lucide-chevron-down' } },
+    // Two rows: Records beside Sequence, Map under both.
+    { width: 1000, height: 1000, expected: { inventory: 'lucide-chevron-left', map: 'lucide-chevron-down', sequence: 'lucide-chevron-up' } },
+    // Side by side keeps its sideways chevrons.
+    { width: 1440, height: 900, expected: { inventory: 'lucide-chevron-left', map: 'lucide-chevron-right', sequence: 'lucide-chevron-left' } },
+  ]) {
+    test(`at ${width}x${height} each Collapse chevron points to the edge its pane gives up`, async ({ page }) => {
+      await openArtifact(page, width, height);
+      await showPane(page, 'inventory');
+      await expect.poll(() => chevrons(page)).toEqual(expected);
+      // Map and Sequence alone in one column: the upper points up, the lower down.
+      if (width < 900) {
+        await page.locator('[data-pane-toggle="inventory"]').click();
+        await expect.poll(() => chevrons(page)).toEqual({ map: 'lucide-chevron-up', sequence: 'lucide-chevron-down' });
+      }
+    });
+  }
 });

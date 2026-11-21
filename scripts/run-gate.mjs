@@ -16,8 +16,8 @@ function writeJson(path, value) {
 }
 
 export function runGate({ env = process.env, rootDirectory = root, steps = GATE_STEPS } = {}) {
-  rmSync(join(rootDirectory, 'dist-motif', 'gate-coverage.json'), { force: true });
   const commit = assertCleanGateSource(rootDirectory);
+  rmSync(join(rootDirectory, 'dist-motif', 'gate-coverage.json'), { force: true });
   const receiptDirectory = join(rootDirectory, 'test-results', 'gate-receipts');
   const runId = randomUUID();
   rmSync(receiptDirectory, { recursive: true, force: true });

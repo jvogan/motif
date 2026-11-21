@@ -1,4 +1,4 @@
-import { isMaterializableFeatureLocation } from './feature-location';
+import { expandCircularFeatureLocation, isMaterializableFeatureLocation } from './feature-location';
 import type { Feature } from './types';
 import {
   FeatureCollectionInputError,
@@ -374,9 +374,10 @@ export function mapFeaturesThroughSourceCoordinates(
       skippedFeatureCount += 1;
       continue;
     }
-    const hasSubRanges = feature.subRanges !== undefined;
+    const location = expandCircularFeatureLocation(feature, mapSnapshot.sourceLength);
+    const hasSubRanges = location.subRanges !== undefined;
     const sourceRanges = hasSubRanges
-      ? feature.subRanges!
+      ? location.subRanges!
       : [{ start: feature.start, end: feature.end, strand: feature.strand }];
     if (sourceRanges.length === 0) {
       skippedFeatureCount += 1;
@@ -449,7 +450,9 @@ export function mapFeaturesThroughSourceCoordinates(
           issues,
         };
       }
-      const biologicalPieces = range.strand === -1 ? [...mapped.pieces].reverse() : mapped.pieces;
+      const biologicalPieces = (range.strand ?? feature.strand) === -1
+        ? mapped.pieces.reverse()
+        : mapped.pieces;
       for (const piece of biologicalPieces) {
         mappedRanges.push({ ...range, start: piece.start, end: piece.end });
       }

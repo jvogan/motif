@@ -32,22 +32,22 @@ describe('Claude Science record lifecycle guards', () => {
       '// Append helper',
     );
 
-    expect(resetViewState).toContain('setMapRangesByRecord({});');
-    expect(resetViewState).toContain('setMapViewportsByRecord({});');
-    expect(resetViewState).toContain('sequenceScrollByRecordRef.current = {};');
-    expect(resetViewState).toContain('editHistoryRef.current = {};');
-    expect(resetViewState).not.toContain('setTranslationLayersByRecord({});');
-    expect(resetViewState).not.toContain('setHiddenFeatureTranslationsByRecord({});');
-    expect(resetAllRecordState).toContain('setTranslationLayersByRecord({});');
-    expect(resetAllRecordState).toContain('setHiddenFeatureTranslationsByRecord({});');
+    expect(resetViewState).toContain('setMapRangesByRecord(createRecordMap());');
+    expect(resetViewState).toContain('setMapViewportsByRecord(createRecordMap());');
+    expect(resetViewState).toContain('sequenceScrollByRecordRef.current = createRecordMap();');
+    expect(resetViewState).toContain('editHistoryRef.current = createRecordMap();');
+    expect(resetViewState).not.toContain('setTranslationLayersByRecord(createRecordMap());');
+    expect(resetViewState).not.toContain('setHiddenFeatureTranslationsByRecord(createRecordMap());');
+    expect(resetAllRecordState).toContain('setTranslationLayersByRecord(createRecordMap());');
+    expect(resetAllRecordState).toContain('setHiddenFeatureTranslationsByRecord(createRecordMap());');
     expect(renderInventory).toContain('resetWorkspaceViewState();');
     expect(renderInventory).not.toContain('resetRecordTransientState();');
   });
 
   it('stores topology on the record so the UI, API, and exports agree', () => {
-    // Conversion now takes a target rather than flipping because the two
-    // Entry Details buttons name the state they set. The invariant this guard
-    // exists for is unchanged — topology lives on the record, one copy.
+    // Conversion takes a target rather than flipping, because the two
+    // Entry Details buttons name the state they set. Topology lives on the
+    // record, one copy.
     const convertTopology = sliceBetween(
       artifactSource,
       'const convertRecordTopology = useCallback',
@@ -75,16 +75,17 @@ describe('Claude Science record lifecycle guards', () => {
     // a density track and a "+N more sites" chip — so the tick count is the
     // wrong instrument for a claim about the data.
     //
-    // This is NOT the banned per-view topology override. That was shadow state
-    // that could make the map and an export disagree about the molecule; this
+    // This is NOT a per-view topology override, which is banned: shadow state
+    // could make the map and an export disagree about the molecule. This
     // decides a DRAWING and never reaches the record, which is why the ban
-    // above still stands and must keep standing.
-    expect(artifactSource).toContain('const [mapRenderModeByRecord, setMapRenderModeByRecord] = useState<Record<string, MapMode>>({});');
+    // above stands.
+    expect(artifactSource).toContain('const [mapRenderModeByRecord, setMapRenderModeByRecord] = useState<Record<string, MapMode>>(createRecordMap());');
 
-    // The seam: computeMapLayout takes the render mode, not a mode derived from
+    // The seam: the layout takes the render mode, not a mode derived from
     // topology on the spot. `topology` still travels into the layout so feature
-    // segmentation stays true to the molecule.
-    const layoutCall = sliceBetween(artifactSource, '() => computeMapLayout({', 'useEffect(');
+    // segmentation stays true to the molecule. computeReadableMapLayout passes
+    // the same input to computeMapLayout, at a smaller size on a narrow pane.
+    const layoutCall = sliceBetween(artifactSource, '() => tryMapLayout(() => computeReadableMapLayout({', 'useEffect(');
     expect(layoutCall).toContain('mode: mapRenderMode,');
     expect(layoutCall).toContain('topology,');
     expect(layoutCall).not.toContain('mode: mapModeForBlock(topology, sequenceType)');
@@ -108,16 +109,16 @@ describe('Claude Science record lifecycle guards', () => {
     );
     expect(convertTopology).toContain('setMapRenderModeByRecord');
 
-    // Conversion is reachable from Entry Details — the panel that already edits
+    // Conversion is reachable from Entry Details — the panel that edits
     // record fields — and NOT from the map panel.
     expect(artifactSource).toContain('onConvertTopology={convertRecordTopology}');
     expect(artifactSource).toContain('aria-label="Convert molecule topology"');
-    const mapShapeToggle = sliceBetween(
-      artifactSource,
-      'className="motif-cs-segmented motif-cs-shape-toggle"',
-      '</div>',
-    );
-    expect(mapShapeToggle).toContain('setMapRenderMode(');
+    // The map header's Circle | Line pair is the one drawing control: the Tools
+    // drawer has no second "Draw as" row.
+    const mapShapeToggle = sliceBetween(artifactSource, 'renderMode={isNucleotideRecord ? {', '} : undefined}');
+    expect(mapShapeToggle).toContain('onChange: setMapRenderMode,');
+    expect(mapShapeToggle).toContain('canUseTarget: canUseMapRenderModeTarget,');
     expect(mapShapeToggle).not.toContain('convertRecordTopology');
+    expect(artifactSource).not.toContain('motif-cs-shape-toggle');
   });
 });

@@ -21,6 +21,7 @@ import {
   findPcrMaterializationDuplicate,
   materializePcrAmplicon,
   PcrMaterializationError,
+  simulateSelectedPrimerPair,
   type PcrMaterializationSelection,
   type PcrMaterializationSourceRecord,
 } from '../claude-science-pcr-materialization';
@@ -105,6 +106,17 @@ function source(
 }
 
 describe('PCR engine selected-pair semantics', () => {
+  it('uses the selected primer design Tm conditions in PCR', () => {
+    const template = 'ACGTTGCAACCTGATCGTCCCCATGCCGTAGATCTACGGC';
+    const selected: PcrMaterializationSelection = {
+      ...selection(pairFor(template, 0, 18, 22, 40, 'AA', 'GC')),
+      parameters: {
+        targetStart: 0, targetEnd: 40,
+        tmOptions: { naConcentration: 1000, mgConcentration: 0 },
+      },
+    };
+    expect(simulateSelectedPrimerPair(source(template), selected).forward.tm).toBe(68.9);
+  });
   it('uses the selected repeat occurrence and incorporates both 5′ tails with correct reverse-primer semantics', () => {
     const template = 'AACCGGTTAA' + 'GGGGGGGGGG' + 'AACCGGTTAA' + 'CCCCCCCCCC' + 'TTGCAACGTA' + 'AAAAAAAAAA';
     const pair = pairFor(template, 20, 30, 40, 50, 'GGATCC', 'CATATG');

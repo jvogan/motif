@@ -1,0 +1,1 @@
+export const MAX_MOTIF_PRELOAD_BYTES = 32 * 1024 * 1024;

@@ -88,7 +88,7 @@ describe('the "N unnamed sites" chip can be reached without stealing the backgro
     expect(group.firstElementChild?.tagName.toLowerCase()).toBe('title');
     expect(group.firstElementChild?.textContent).toContain('without an enzyme name');
     expect(group.firstElementChild?.textContent).toContain('Every site keeps its density tick.');
-    expect(chip.textContent).toContain('unnamed sites');
+    expect(chip.textContent).toMatch(/^\+\d+ sites?$/);
     expect(chip.querySelector('title')).toBeNull();
   });
 
@@ -104,7 +104,7 @@ describe('the "N unnamed sites" chip can be reached without stealing the backgro
     expect(Number(rect!.getAttribute('height'))).toBe(expected.height);
     // Fixture geometry, absolute — a rect that quietly collapsed to zero would still
     // satisfy the equality above.
-    expect(expected).toEqual({ x: 847.26, y: 64.34, width: 132.74, height: 18 });
+    expect(expected).toEqual({ x: 898.334, y: 64.34, width: 81.666, height: 18 });
   });
 
   it('paints the rect under the glyphs so it never hides the count it explains', () => {
@@ -148,7 +148,12 @@ describe('the "N unnamed sites" chip can be reached without stealing the backgro
     expect(chipStart).toBeGreaterThan(-1);
     expect(chipJsx).toContain('motif-pm-overflow-hit');
     expect(chipJsx).toContain('onPointerDown={(e) => e.stopPropagation()}');
-    expect(chipJsx).not.toMatch(/onClick|onMouseDown|onMouseUp|onPointerUp/);
+    expect(chipJsx).not.toMatch(/onMouseDown|onMouseUp|onPointerUp/);
+    // A click is bound only when the host makes the count a button (the Line map's
+    // "+N sites" opens the list it counts, as the ring's counts do); a help chip
+    // still lets the click through to the background's clear.
+    const clicks = chipJsx.match(/onClick=\{[^\n]*/g) ?? [];
+    expect(clicks).toEqual(['onClick={onOverflowClick ? (e) => { e.stopPropagation(); onOverflowClick(overflow.kind); } : undefined}']);
   });
 
   it('paints below interactive annotations so their real hit shapes win overlaps', () => {

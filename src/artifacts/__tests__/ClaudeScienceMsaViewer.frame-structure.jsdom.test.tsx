@@ -1,13 +1,13 @@
 // @vitest-environment jsdom
 
 /**
- * The matrix frame clips (`overflow: hidden`) and the window body no longer
- * overflows, so anything squeezed out of the frame used to be unreachable — there
- * was no scrollbar anywhere that led to it. On a 300px-tall panel that was the pan
- * slider, the zoom line and the selection readout: present in the DOM, drawn at a
- * real size, and impossible to get to.
+ * The matrix frame clips (`overflow: hidden`) and the window body does not
+ * overflow, so anything squeezed out of the frame would be unreachable — there
+ * is no scrollbar anywhere that leads to it. On a 300px-tall panel that would be
+ * the pan slider, the zoom line and the selection readout: present in the DOM,
+ * drawn at a real size, and impossible to get to.
  *
- * The fix is structural, so the guard has to be structural too: only the overview
+ * The remedy is structural, so the guard has to be structural too: only the overview
  * and the residue viewport may live inside the clipped box. Everything that does not
  * scroll is a sibling, held by a shell that can grow and push the body into
  * scrolling. jsdom has no layout, so these tests pin the STRUCTURE and the token
@@ -34,8 +34,8 @@ const msaCss = readFileSync(resolve(here, '..', 'claude-science-msa.css'), 'utf8
 /**
  * BOTH stylesheets that style the frame. motif-artifact.css carries its own bare
  * `.motif-cs-msa-matrix-frame` rule, and a guard that reads only the file it was
- * written beside is the failure this branch has already hit once — a value declared
- * twice, one copy fixed, the guard watching the fixed copy.
+ * written beside misses a value declared twice: one copy is fixed and the guard
+ * watches the fixed copy.
  */
 const hostCss = readFileSync(resolve(here, '..', 'motif-artifact.css'), 'utf8');
 const stripComments = (css: string) => css.replace(/\/\*[\s\S]*?\*\//g, '');
@@ -106,8 +106,7 @@ function stubChromeHeight(container: HTMLElement, height: number): void {
 /**
  * Records its callbacks instead of firing on observe. The viewer runs more than one
  * ResizeObserver, and another reads `entry.contentRect` — a stub that fires with an
- * empty entry list crashes THAT one, which is how the first version of this helper
- * broke two unrelated tests.
+ * empty entry list crashes THAT one.
  */
 const resizeCallbacks: ResizeObserverCallback[] = [];
 class StubResizeObserver {
@@ -149,22 +148,24 @@ describe('only scrolling content lives inside the clipped matrix frame', () => {
 
     // The statusbar always mounts, and every row moved out of the frame shares the
     // frame's single closing tag — so this one assertion is what catches the boundary
-    // moving back. The pan slider only mounts when there is something to scroll,
-    // which needs real layout; its position is measured on the live app instead.
+    // moving back. The pan slider is always mounted (idle and disabled when there is
+    // nothing to scroll) so the status line below it never changes row.
     const statusbar = shell!.querySelector('.motif-cs-msa-statusbar');
     expect(statusbar, 'statusbar is missing entirely').not.toBeNull();
     expect(frame.contains(statusbar), 'statusbar is still inside the clipped frame').toBe(false);
 
     const panRow = shell!.querySelector('[data-testid="msa-horizontal-scroll-row"]');
-    if (panRow) expect(frame.contains(panRow), 'pan row is still inside the frame').toBe(false);
+    expect(panRow, 'the pan row must stay mounted so Fit and filters do not move the status line').not.toBeNull();
+    expect(frame.contains(panRow), 'pan row is still inside the frame').toBe(false);
+    expect(panRow!.querySelector('input')!.disabled, 'with nothing to scroll the lane is idle').toBe(true);
   });
 
   it('floats the readout on BOTH drag paths, not just the grid', () => {
-    // The ruler drag is a second, independent route into a selection, and it used to
-    // set only its own ref — never `isSelecting` — so the readout mounted as a row
-    // mid-gesture and took 46px out of the residue viewport. Measured at 1100x640:
-    // scroller 195 -> 149 with the pointer still down and one row lost, where the grid
-    // path held at 195. A ruler drag selects EVERY row, so it is the worst case.
+    // The ruler drag is a second, independent route into a selection. If it set only
+    // its own ref — never `isSelecting` — the readout would mount as a row
+    // mid-gesture and take 46px out of the residue viewport, losing a row while the
+    // pointer is still down. The grid path holds its height. A ruler drag selects EVERY
+    // row, so it is the worst case.
     vi.stubGlobal('ResizeObserver', StubResizeObserver);
     const { container } = renderViewer();
     stubChromeHeight(container, 60);   // pan row + status line: room for the float
@@ -214,7 +215,7 @@ describe('only scrolling content lives inside the clipped matrix frame', () => {
     const shell = frame.closest('.motif-cs-msa-matrix-shell')!;
 
     // The selection readout only exists once there is a selection; it is the child
-    // whose arrival used to shrink the residue viewport mid-drag.
+    // whose arrival would shrink the residue viewport mid-drag.
     fireEvent.keyDown(screen.getByTestId('msa-alignment-view'), { key: 'ArrowRight' });
     const grid = shell.querySelector('.motif-cs-msa-matrix-scroll') ?? shell;
     fireEvent.keyDown(grid, { key: ' ' });
@@ -266,8 +267,8 @@ describe('only scrolling content lives inside the clipped matrix frame', () => {
     expect(viewerSource).toContain("'--motif-cs-msa-frame-min-height': `${MSA_MATRIX_FRAME_MIN_HEIGHT}px`");
 
     // The shell's floor is COMPUTED from what is mounted, not constant: three of its
-    // four rows are conditional, and a constant left it 45px short once a selection
-    // settled and 77px short with the order note too.
+    // four rows are conditional, and a constant would leave it 45px short once a selection
+    // settles and 77px short with the order note too.
     expect(viewerSource).toContain('function msaMatrixShellMinHeight(');
     // The chrome strip is MEASURED, not summed from constants — it wraps at narrow
     // widths, and an existing e2e expectation already has the zoom row past 40px.
@@ -276,12 +277,15 @@ describe('only scrolling content lives inside the clipped matrix frame', () => {
       '(rows.readoutInFlow ? MSA_SELECTION_READOUT_HEIGHT : 0)',
       'new ResizeObserver(sync)',
     ]) expect(viewerSource).toContain(term);
-    // ...and the readout counts only in flow — floating, it takes no layout height.
-    expect(viewerSource).toContain("readoutInFlow: readoutPlacement === 'flow'");
+    // ...and the status row is ALWAYS in flow: the hint holds its 46px when nothing is
+    // selected and the readout replaces it in the same box, so a selection (or clearing
+    // one) moves nothing above or below the row.
+    expect(viewerSource).toContain('readoutInFlow: true,');
+    expect(viewerSource).toContain('data-testid="msa-selection-hint"');
   });
 
   it('keeps the enclosure on the shell, so the two sheets cannot both draw it', () => {
-    // motif-artifact.css still declares the old border/background on the bare
+    // motif-artifact.css declares a border and background on the bare
     // selector as the unwrapped fallback. What must hold is that the shell-scoped
     // rule cancels them, or the frame paints a second border inside the shell's.
     const shellScoped = frameRules().find((r) => r.selector.includes('.motif-cs-msa-matrix-shell >'))!;

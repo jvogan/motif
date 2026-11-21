@@ -11,6 +11,8 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { closeMapDockPanelOnEscape, DigestPanel } from '../motif-artifact';
 import { RESTRICTION_ENZYMES_FULL } from '../../bio/enzyme-data';
+import { findRestrictionSites } from '../../bio/restriction-sites';
+import type { RestrictionEnzyme } from '../../bio/types';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -39,6 +41,7 @@ function render(overrides: Partial<DigestProps> = {}) {
     topology: 'circular',
     enzymeCatalog: RESTRICTION_ENZYMES_FULL,
     visibleMapEnzymes: [],
+    visibleMapSites: [],
     workflowResults: [],
     onCopy: vi.fn(),
     onSave: vi.fn(() => ({ workflowResultId: 'result-1', recordCount: 3 })),
@@ -78,6 +81,23 @@ afterEach(() => {
 });
 
 describe('Digest Preview dock', () => {
+  it('uses every cutter drawn on the map in site order', () => {
+    const visibleMapEnzymes = Array.from({ length: 16 }, (_, index): RestrictionEnzyme => ({
+      name: `Enzyme${String(16 - index).padStart(2, '0')}`,
+      recognitionSequence: index < 2 ? 'CCCCCC' : 'GAATTC',
+      cutOffset: 3,
+      complementCutOffset: 3,
+      overhang: 'blunt',
+    }));
+    const expected = visibleMapEnzymes.slice(2).reverse();
+    const visibleMapSites = findRestrictionSites(SEQUENCE, visibleMapEnzymes, { topology: 'circular' });
+    render({ enzymeCatalog: visibleMapEnzymes, visibleMapEnzymes, visibleMapSites });
+    const button = [...details().querySelectorAll('button')].find((item) => item.textContent === 'Use visible cutters')!;
+    act(() => button.click());
+    expect(details().querySelector<HTMLInputElement>('input[name="digest-enzymes"]')?.value)
+      .toBe(expected.map((enzyme) => enzyme.name).join(', '));
+  });
+
   it('names the enzymes in its heading, three and then a count', () => {
     render();
     const full = headingMeta().querySelector('.motif-cs-full-label')!;
@@ -93,8 +113,8 @@ describe('Digest Preview dock', () => {
   });
 
   it('counts a name that does not fit on the heading line into its "+N"', () => {
-    // Measured before: the heading centred text wider than itself, and at 1280x720
-    // EcoRI, the first enzyme, was cut off with nothing to say it was there. jsdom lays
+    // A heading that centres text wider than itself cuts off the first enzyme (EcoRI at
+    // 1280x720) with nothing to say it is there. jsdom lays
     // nothing out, so stand in for a heading line with room for EcoRI and BamHI: any
     // later name wraps to the line below.
     const offsetTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetTop')!;
@@ -120,6 +140,20 @@ describe('Digest Preview dock', () => {
     }
   });
 
+  it('marks the fragment row that matches the record\'s selected range, as the gel band of that fragment is', () => {
+    const props = render();
+    const rows = () => [...details().querySelectorAll<HTMLButtonElement>('.motif-cs-digest-fragment-list .motif-cs-analysis-row-button')];
+    expect(rows()).toHaveLength(3);
+    expect(rows().map((row) => row.getAttribute('aria-pressed'))).toEqual(['false', 'false', 'false']);
+    act(() => rows()[1].click());
+    const [start, end] = vi.mocked(props.onSelectRange).mock.calls[0];
+    act(() => root!.render(<DigestPanel {...props} selectedRange={{ start, end }} />));
+    expect(rows().map((row) => row.getAttribute('aria-pressed'))).toEqual(['false', 'true', 'false']);
+    expect(rows()[1].dataset.active).toBe('true');
+    act(() => root!.render(<DigestPanel {...props} selectedRange={{ start, end: end + 1 }} />));
+    expect(rows().some((row) => row.dataset.active)).toBe(false);
+  });
+
   it('leaves a recipe that does not resolve unnamed', () => {
     render();
     setEnzymes('NotAnEnzymeI');
@@ -133,11 +167,11 @@ describe('Digest Preview dock', () => {
     const save = host!.querySelector<HTMLButtonElement>('[data-testid="digest-save"]')!;
     const gel = host!.querySelector<HTMLButtonElement>('[data-testid="digest-open-gel"]')!;
     expect(save.textContent).toBe('Save 3 fragments');
-    expect(gel.textContent).toBe('Save 3 fragments and open gel');
+    expect(gel.textContent).toBe('Save 3 fragments, open gel');
 
     setEnzymes('EcoRI');
     expect(save.textContent).toBe('Save linearized copy');
-    expect(gel.textContent).toBe('Save linearized copy and open gel');
+    expect(gel.textContent).toBe('Save linearized copy, open gel');
 
     setEnzymes('EcoRI, BamHI, HindIII');
     act(() => gel.dispatchEvent(new MouseEvent('click', { bubbles: true })));

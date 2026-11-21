@@ -10,6 +10,15 @@ const here = dirname(fileURLToPath(import.meta.url));
 const artifactSource = readFileSync(resolve(here, '..', 'motif-artifact.tsx'), 'utf8');
 const artifactCss = readFileSync(resolve(here, '..', 'motif-artifact.css'), 'utf8');
 
+/** The --fs-* type scale from motif-artifact.css, in px. */
+const FONT_SIZE_TOKENS: Record<string, number> = {
+  '--fs-xs': 12,
+  '--fs-sm': 13,
+  '--fs-md': 14,
+  '--fs-lg': 16,
+  '--fs-xl': 18,
+};
+
 /** The source of one top-level function, from its signature to its closing brace. */
 function functionSource(name: string): string {
   const start = artifactSource.indexOf(`function ${name}(`);
@@ -51,14 +60,26 @@ describe('Analysis mass for a DNA record', () => {
     expect(dnaDuplexMolecularWeight('ACGTT', 'linear')).toBeCloseTo(top + bottom, 1);
   });
 
+  it('rounds only after summing both DNA strand masses', () => {
+    // 957.6348 + 930.5949 = 1888.2297 Da before display rounding.
+    expect(dnaDuplexMolecularWeight('AAA', 'linear')).toBe(1888.23);
+  });
+
   it('labels the duplex, keeps the single strand beside it, and writes Tm in degrees Celsius', () => {
     const panel = functionSource('AnalysisPanel');
     expect(panel).toContain('<span>Mass, dsDNA</span>');
     expect(panel).toContain('<small>ss {massText}</small>');
     expect(panel).toContain("`${tm.toFixed(1)} °C`");
-    // Copy stats keeps `molecularWeight` as it was and adds the duplex beside it.
+    // Copy stats carries `molecularWeight` and adds the duplex beside it.
     expect(panel).toContain('molecularWeight: mw ?? undefined,');
     expect(panel).toContain('molecularWeightDoubleStranded: duplexMass ?? undefined,');
+  });
+
+  it('names the fourth base U in an RNA record composition and T otherwise', () => {
+    // The count adds T and U, and the base is named for the sequence type: U in RNA, T otherwise.
+    const panel = functionSource('AnalysisPanel');
+    expect(panel).toContain("· {sequenceType === 'rna' ? 'U' : 'T'} {composition.T + (composition.U ?? 0)} ·");
+    expect(panel).not.toContain('· T {composition.T + (composition.U ?? 0)} ·');
   });
 });
 
@@ -72,9 +93,9 @@ describe('Construct Verification with no reads', () => {
     expect(panel).not.toContain('constructVerificationReadCount === 0 ||');
     expect(panel).not.toContain('|| constructVerificationReadCount === 0');
     expect(panel).not.toContain("'Import a Sanger trace (.ab1) first'");
-    expect(panel).toContain('no Sanger reads yet. Import .ab1 traces here, or drop them anywhere in the workspace.');
+    expect(panel).toContain('no Sanger reads yet. Import .ab1 or .abi traces, or drop them in the workspace.');
     // The same import the Inventory "+" and a workspace drop use.
-    expect(panel).toMatch(/<SangerTraceImportButton\s+onImportFiles=\{importFiles\}/);
+    expect(panel).toMatch(/<SangerTraceImportButton\s+onImportFiles=\{\(files\) => importFiles\(files\)\.catch\(\(\) => showWorkbenchNotice\(FILE_IMPORT_FAILED_MESSAGE, 'error'\)\)\}/);
     const button = functionSource('SangerTraceImportButton');
     expect(button).toContain('accept=".ab1,.abi"');
     expect(button).toContain('data-testid="import-sanger-traces"');
@@ -83,40 +104,69 @@ describe('Construct Verification with no reads', () => {
 
 describe('Restriction Sites panel', () => {
   it('opens its list on the enzymes, with the sites one press away', () => {
-    // The per-enzyme checkboxes are the only way to hide one enzyme. They used
-    // to render after all 77 pUC19 site rows, 3,007px down a 323px scroll box.
+    // The per-enzyme checkboxes are the only way to hide one enzyme. After all 77
+    // pUC19 site rows they would sit 3,007px down a 323px scroll box.
     const list = functionSource('RestrictionList');
     expect(list).toContain("useState<'enzymes' | 'sites'>('enzymes')");
-    expect(list).toContain('aria-label={`Enzymes, ${visibleEnzymeCount} of ${filteredRows.length} shown`}');
-    expect(list).toContain('aria-label={`Sites, ${filteredVisibleSites.length}`}');
+    // The switch says how the list is ordered, with no counts: the tab head gives
+    // the sites shown and the Enzyme sets heading the enzymes searched.
+    expect(list).toMatch(/>\s*By enzyme\s*</);
+    expect(list).toMatch(/>\s*By position\s*</);
+    expect(list).not.toContain('visibleEnzymeCount');
     expect(list).toMatch(/view !== 'sites' \? null : shownSites\.length > 0/);
     expect(list).toMatch(/view !== 'enzymes' \? null : \(/);
   });
 
-  it('names each enzyme source once, with its count, and leaves the state to aria-pressed', () => {
+  it('makes each enzyme set a checkbox that names the set once, with its size in the title', () => {
     const sources = functionSource('RestrictionSourceControls');
-    expect(sources).toContain('aria-pressed={active}');
-    expect(sources).toContain('aria-label={`${option.label}, ${option.enzymeCount} enzymes`}');
-    // The badge is decoration for sighted users; its old "On · 30 enz" was read
-    // aloud after the name, so the state was said twice and "enz" as a word.
-    expect(sources).toMatch(/className="motif-cs-source-state"[^>]*aria-hidden="true"/);
-    expect(sources).not.toMatch(/'On' : 'Off'/);
-    expect(sources).not.toMatch(/ enz</);
+    // A box carries on and off; a count chip with a check mark would read off
+    // only by a 12px badge, and its count (the set's size) would sum past the
+    // heading's total.
+    expect(sources).toContain('type="checkbox"');
+    expect(sources).toContain('checked={sources.includes(option.id)}');
+    expect(sources).toContain('title={`${option.description} ${option.enzymeCount} enzymes.`}');
+    expect(sources).toContain("option.id === 'all' ? `All ${option.enzymeCount}` : option.label");
+    expect(sources).not.toContain('aria-pressed');
+    expect(sources).not.toContain('motif-cs-source-state');
+    expect(sources).not.toContain('Combine groups');
+    // One total, after the heading, and the map-names box at the end of that row.
+    expect(sources).toMatch(/>Enzyme sets<\/span>\s*<span className="motif-cs-panel-meta">\{enzymeCount\} enzymes<\/span>/);
+    expect(sources).toContain('<span>Names on map</span>');
+    expect(sources).toContain("title={names.disabled ? 'Show sites first' : \"Write each enzyme's name beside its site\"}");
   });
 
-  it('draws the source badge at 10px or larger, without the width that cut "Golden Gate"', () => {
-    const badge = cssRule('.motif-cs-source-state');
-    const size = Number(badge.match(/font-size:\s*([\d.]+)px/)?.[1]);
-    expect(size).toBeGreaterThanOrEqual(10);
-    const minWidth = Number(badge.match(/min-width:\s*([\d.]+)px/)?.[1] ?? 0);
-    expect(minWidth, 'a 62px floor squeezed the name to 71px').toBeLessThanOrEqual(40);
+  it('gives the Tools copy the Sites menu only while the map pane is hidden', () => {
+    const start = artifactSource.indexOf('const renderRestrictionSiteControls = ');
+    const controls = artifactSource.slice(start, artifactSource.indexOf('\n  };\n', start));
+    // One home at a time: the map header's menu while the map shows, this one
+    // while it is hidden, wired to the same handler and state.
+    expect(controls).toContain('const sitesMenu = !includeMapSummary && !paneVisibility.map ? (');
+    expect(controls).toContain('className="motif-cs-map-sites-toggle"');
+    expect(controls).toContain('aria-label="Restriction sites"');
+    expect(controls).toContain('value={mapSiteMode}');
+    expect(controls).toContain('setMapSiteMode(next)');
+    expect(controls).toContain('sitesMenu={sitesMenu}');
+    // The map's own Sites tab never carries it.
+    expect(artifactSource).toContain('{isDnaRecord ? renderRestrictionSiteControls(true) : null}');
+    const sources = functionSource('RestrictionSourceControls');
+    expect(sources).toContain('{sitesMenu ? null : namesBox}');
+  });
+
+  it('writes the set names at 12px or larger on one line, so "Golden Gate" is never cut', () => {
+    const check = cssRule('.motif-cs-restriction-check');
+    const token = check.match(/font-size:\s*var\((--fs-[a-z]+)\)/)?.[1] ?? '';
+    const size = FONT_SIZE_TOKENS[token] ?? Number(check.match(/font-size:\s*([\d.]+)px/)?.[1]);
+    expect(size).toBeGreaterThanOrEqual(12);
+    expect(check).toMatch(/white-space:\s*nowrap/);
+    expect(check).not.toMatch(/text-overflow/);
   });
 
   it('keeps the Add enzyme placeholders short enough for the popover fields', () => {
     const form = functionSource('AddEnzymeForm');
     const placeholders = [...form.matchAll(/placeholder="([^"]*)"/g)].map((match) => match[1]);
-    expect(placeholders).toEqual(['Name (EcoRV)', 'Site (GGTACC)']);
-    expect(cssRule('.motif-cs-add-enzyme-row')).toMatch(/grid-template-columns:\s*minmax\(0, 1fr\) minmax\(0, 1fr\) auto;/);
+    expect(placeholders).toEqual(['Enzyme name', 'Sequence']);
+    expect(cssRule('.motif-cs-add-enzyme-row')).toMatch(/grid-template-columns:\s*minmax\(0, 1fr\) minmax\(0, 1fr\);/);
+    expect(cssRule('.motif-cs-add-enzyme-row .motif-cs-mini-button')).toContain('grid-column: 1 / -1;');
   });
 });
 
@@ -143,17 +193,17 @@ describe('Results and Workflow Results', () => {
   it('each names where the other kind of save went and opens that panel', () => {
     const results = panel('analysis-results');
     expect(results).toContain('Digests, gels and quick assemblies are in');
-    expect(results).toContain("onClick={() => openRailToolPanel('workflows')}>Workflow Results</button>");
+    expect(results).toContain("onClick={() => openRailToolPanel('workflows')}>Workflow results</button>");
     const workflows = panel('workflows');
     expect(workflows).toContain('Primer designs, PCR, assembly plans and verification are in');
-    expect(workflows).toContain("onClick={() => openRailToolPanel('analysis-results')}>Results</button>");
+    expect(workflows).toContain("onClick={() => openRailToolPanel('analysis-results')}>Analysis results</button>");
   });
 
   it('titles each rail head with the name its panel shows', () => {
-    expect(panel('analysis-results')).toContain('title="Results — primers, PCR, assembly plans, verification"');
-    expect(panel('workflows')).toContain('title="Workflow Results — digests, gels, quick assemblies"');
-    // "Open quick assembly" used to open a window titled "Cloning Workspace".
-    expect(artifactSource).toContain("assembly: 'Quick Assembly',");
+    expect(panel('analysis-results')).toContain('title="Analysis results — primers, PCR, assembly plans, verification"');
+    expect(panel('workflows')).toContain('title="Workflow results — digests, gels, quick assemblies"');
+    // "Open quick assembly" opens a window titled "Quick assembly", not "Cloning Workspace".
+    expect(artifactSource).toContain("assembly: 'Quick assembly',");
     expect(artifactSource).not.toContain("'Cloning Workspace'");
   });
 });
@@ -187,14 +237,15 @@ describe('Analysis ORF rows', () => {
   it('counts the chip, the note, the rows and Copy stats from the same per-stop list', () => {
     const panel = functionSource('AnalysisPanel');
     expect(panel).toContain('const stopOrfs = useMemo(() => longestOrfPerStop(allOrfs, record.sequence.length)');
-    expect(panel).toContain('const visibleOrfs = useMemo(() => stopOrfs.slice(0, 8), [stopOrfs]);');
+    expect(panel).toContain('const visibleOrfs = useMemo(() => stopOrfs.slice(0, shownOrfCount), [stopOrfs, shownOrfCount]);');
     expect(panel.match(/\$\{stopOrfs\.length\} ORFs ≥\$\{ANALYSIS_ORF_MIN_AA\} aa/g)).toHaveLength(2);
     expect(panel).toContain('orfCount: stopOrfs.length,');
-    expect(panel).toContain('{visibleOrfs.length} longest of {stopOrfs.length}, one per stop, from its farthest start.');
+    expect(panel).toContain('Showing {visibleOrfs.length} of {stopOrfs.length}: the longest ORF per stop.');
+    expect(panel).toContain('All {stopOrfs.length}: the longest ORF per stop.');
   });
 });
 
-describe('Pattern Search on first load', () => {
+describe('Sequence search on first load', () => {
   it('starts with no query, so nothing is underlined before anyone searches', () => {
     // A prefilled GAATTC underlined pUC19's EcoRI site on first load.
     const restored = prepareArtifactDatabaseRestore({ records: [{ id: 'a', type: 'dna', sequence: 'ATGGAATTCTAA' }] });
@@ -205,28 +256,34 @@ describe('Pattern Search on first load', () => {
   });
 
   it('shows a hit count only once there is a query', () => {
-    const start = artifactSource.indexOf('name="motif-cs-tools" data-rail-tool="pattern-search"');
+    const start = artifactSource.indexOf('data-rail-tool="pattern-search"');
+    expect(start).toBeGreaterThan(0);
     const panel = artifactSource.slice(start, artifactSource.indexOf('</details>', start));
-    expect(panel).toMatch(/\{hasActiveRecord && cleanedMotifLength > 0 \? \(\s*<span className="motif-cs-chip">\{motifHits\.length\} hit/);
-    expect(panel).toContain('meta={hasActiveRecord && cleanedMotifLength > 0 ? `${motifHits.length} hit');
+    expect(panel).toMatch(/\{hasActiveRecord && cleanedMotifLength > 0 \? \(\s*<span className="motif-cs-chip">\{formatFindTotal\(findResult\)\} hit/);
+    expect(panel).toContain('meta={hasActiveRecord && cleanedMotifLength > 0 ? `${formatFindTotal(findResult)} hit');
   });
 });
 
 describe('Guide RNA rows', () => {
-  it('gives the spacer the width the GC column took, so it stays on one line', () => {
-    // A 54px fourth column for "GC 60%" left the spacer 122px for a string
-    // that needs 152-185px: all 30 rows wrapped mid-sequence.
+  it('puts the whole spacer on its own line, with the actions over the first line', () => {
+    // A 54px fourth column and a 52px action column would leave the spacer 122-185px
+    // for a string that needs 152-190px, and rows would wrap mid-sequence.
     const select = cssRule('.motif-cs-guide-select');
     const columns = select.match(/grid-template-columns:\s*([^;]+);/)?.[1].trim().split(/\s+(?![^(]*\))/);
-    expect(columns).toEqual(['10px', '40px', 'minmax(0, 1fr)']);
-    expect(select).toMatch(/grid-template-areas:\s*"strand pos spacer"\s*". gc spacer";/);
+    expect(columns).toEqual(['14px', 'max-content', 'minmax(0, 1fr)']);
+    expect(select).toMatch(/grid-template-areas:\s*"strand pos gc"\s*"spacer spacer spacer";/);
     expect(cssRule('.motif-cs-guide-gc')).toContain('grid-area: gc;');
     expect(cssRule('.motif-cs-guide-spacer')).toContain('grid-area: spacer;');
+    const actions = cssRule('.motif-cs-guide-actions');
+    expect(actions).toContain('position: absolute;');
+    expect(actions).toContain('height: var(--control-h);');
+    expect(cssRule('.motif-cs-guide-actions .motif-cs-mini-button')).toContain('min-height: var(--control-h-sm);');
+    expect(artifactCss).not.toContain('[data-tools-pinned="true"] .motif-cs-guide-row');
   });
 
   it('says what the count counts and what the checkbox changes', () => {
     const panel = functionSource('GuideSearchPanel');
-    expect(panel).toContain('<RailPopoverTitle title="Guide RNA (CRISPR)" meta={guideMeta} />');
+    expect(panel).toContain('<RailPopoverTitle title="Guide RNA" meta={guideMeta} />');
     expect(panel).toContain("`${guideChip} site${guides.length === 1 ? '' : 's'}`");
     expect(panel).toContain('<span>Copy as RNA (U)</span>');
     expect(panel).not.toContain('<span>RNA</span>');
@@ -234,20 +291,20 @@ describe('Guide RNA rows', () => {
 });
 
 describe('record tools in an empty workspace', () => {
-  // Pattern Search said "0 hits", Analysis "Length 0 bp · Mass 0.00 Da · GC
-  // 0.0%" with Copy stats enabled, and Guide RNA "Whole record 0 bp".
+  // With no record, Sequence search shows no "0 hits", Analysis shows no zero length,
+  // mass or GC (and Copy stats stays disabled), and Guide RNA shows no "Whole record 0 bp".
   it('show one no-record line and no count instead of zeros', () => {
     const analysis = functionSource('AnalysisPanel');
     expect(analysis).toContain('const hasRecord = record.id !== EMPTY_ARTIFACT_VECTOR.id;');
     expect(analysis).toMatch(/\{!hasRecord \? \(\s*<p className="motif-cs-muted" data-testid="no-record-note">Add or select a record to see its length, mass and ORFs\.<\/p>/);
-    expect(analysis).toMatch(/\{hasRecord \? \(\s*<span className="motif-cs-chip">/);
+    expect(analysis).toMatch(/\{hasRecord && !orfsPending \? \(\s*<span className="motif-cs-chip">/);
 
     const guide = functionSource('GuideSearchPanel');
     expect(guide).toMatch(/const guideChip = !hasRecord\s*\?\s*undefined/);
     expect(guide).toContain('Add or select a DNA or RNA record to find guide sites.');
     expect(artifactSource).toMatch(/<GuideSearchPanel\s+hasRecord=\{hasActiveRecord\}/);
 
-    expect(artifactSource).toContain("{!hasActiveRecord ? 'Add or select a record to search its sequence.'");
+    expect(artifactSource).toMatch(/\{!hasActiveRecord\s*\? 'Add or select a record to search its sequence\.'/);
     expect(functionSource('TranslationPanel')).toContain("'Add or select a DNA or RNA record to translate it.'");
   });
 });

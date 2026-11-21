@@ -16,8 +16,8 @@ import { describe, expect, it } from 'vitest';
  *     toward ink spends surplus (band vs backdrop) to buy a shortage (band vs
  *     cursor) backwards.
  *
- *  2. The Template badge drifts below WCAG AA. It clears 4.50 by roughly 0.04 in
- *     claude-dark, so any nudge to `--accent`, to `--bg-primary`, or to the
+ *  2. The Template badge drifts below WCAG AA. It clears 4.50 by a thin margin in
+ *     Dark, so any nudge to `--accent`, to `--bg-primary`, or to the
  *     badge's own mix ratio breaks it with no visible symptom.
  *
  * Everything below is derived from the stylesheets on disk, so a token edit is
@@ -36,8 +36,8 @@ const AA_NORMAL_TEXT = 4.5;
 const NON_TEXT_UI = 3;
 /**
  * WCAG "large text" starts at 18.66px when bold (14pt) or 24px otherwise, and
- * only large text may fall back to the 3.00 floor. The Template badge is 8px at
- * weight 760 — nowhere near it — so 4.50 is the floor that applies, and dropping
+ * only large text may fall back to the 3.00 floor. The Template badge is 12px at
+ * weight 600 — nowhere near it — so 4.50 is the floor that applies, and dropping
  * this guard to 3.00 would not be a fix, it would be an exemption the badge does
  * not qualify for. `badgeIsLargeText` below re-checks that premise from the
  * stylesheet rather than trusting this comment.
@@ -46,13 +46,27 @@ const LARGE_TEXT_MIN_PX_BOLD = 18.66; // 14pt
 const LARGE_TEXT_MIN_PX = 24; // 18pt
 const BOLD_THRESHOLD = 700;
 
+/** The --fs-* type scale from motif-artifact.css, in px. */
+const FONT_SIZE_TOKENS: Record<string, number> = {
+  '--fs-xs': 12,
+  '--fs-sm': 13,
+  '--fs-md': 14,
+  '--fs-lg': 16,
+  '--fs-xl': 18,
+};
+
+/** The first size in a `font` shorthand, as a literal px value or a --fs-* token. */
+function fontSizePx(font: string): number {
+  const token = /var\((--fs-[a-z]+)\)/.exec(font)?.[1];
+  if (token) return FONT_SIZE_TOKENS[token] ?? Number.NaN;
+  return Number(/(\d+(?:\.\d+)?)px/.exec(font)?.[1]);
+}
+
 type Rgb = readonly [number, number, number];
 
 const THEME_SELECTORS: Record<string, string> = {
   light: 'html\\[data-theme="light"\\]',
   dark: 'html\\[data-theme="dark"\\]',
-  'claude-light': 'html\\[data-theme="claude-light"\\]',
-  'claude-dark': 'html\\[data-theme="claude-dark"\\]',
 };
 
 function stripComments(css: string): string {
@@ -188,8 +202,8 @@ function resolveColour(declaration: string, tokens: Record<string, string>): Rgb
     const weight = Number(mix[2]) / 100;
     // Chrome interpolates in gamma-encoded sRGB for `in srgb` and does NOT
     // quantise the result to 8 bits, so this stays in continuous space too.
-    // That is also the stricter reading: the 8-bit-rounded claude-dark badge
-    // measures 4.553 where the continuous value measures 4.544.
+    // That is also the stricter reading: the 8-bit-rounded dark badge
+    // measures a little higher than the continuous value.
     return [0, 1, 2].map((i) => a[i] * weight + b[i] * (1 - weight)) as unknown as Rgb;
   }
 
@@ -239,8 +253,8 @@ describe('MSA selection band stays undiluted accent', () => {
     );
     const backdrop = resolveColour('var(--bg-primary)', tokens);
     // The band is a region boundary, not text, so 1.4.11's 3.00 is the correct
-    // floor here. Measured in Chrome after the de-mix: 5.29-5.76 in the four
-    // themes, so this has real headroom and is not a rubber stamp.
+    // floor here. Measured in Chrome with the band undiluted: at least 5.29 in each
+    // theme, so this has real headroom and is not a rubber stamp.
     expect(contrastRatio(band, backdrop)).toBeGreaterThanOrEqual(NON_TEXT_UI);
   });
 });
@@ -254,7 +268,7 @@ describe('Template badge holds WCAG AA', () => {
     // deliberately, do not delete this test.
     const font = declaredValue(ARTIFACT_RULES, badgeSelector, 'font') ?? '';
     const weightDecl = declaredValue(ARTIFACT_RULES, badgeSelector, 'font-weight') ?? '';
-    const sizePx = Number(/(\d+(?:\.\d+)?)px/.exec(font)?.[1]);
+    const sizePx = fontSizePx(font);
     const weight = Number(/(\d+)/.exec(weightDecl)?.[1]);
     expect(Number.isFinite(sizePx)).toBe(true);
     expect(Number.isFinite(weight)).toBe(true);
@@ -273,7 +287,7 @@ describe('Template badge holds WCAG AA', () => {
       ratio,
       `Template badge in ${theme} measures ${ratio.toFixed(3)}:1 against a ${AA_NORMAL_TEXT} floor. ` +
         'Darken --accent (or deepen the badge background) until it clears; do NOT lower the floor — ' +
-        '8px at weight 760 does not qualify for the 3.00 large-text exemption.',
+        '12px at weight 600 does not qualify for the 3.00 large-text exemption.',
     ).toBeGreaterThanOrEqual(AA_NORMAL_TEXT);
   });
 

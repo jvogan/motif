@@ -17,8 +17,6 @@ type Rgb = [number, number, number];
 const THEMES = {
   light: 'html[data-theme="light"]',
   dark: 'html[data-theme="dark"]',
-  'claude-light': 'html[data-theme="claude-light"]',
-  'claude-dark': 'html[data-theme="claude-dark"]',
 } as const;
 type ThemeName = keyof typeof THEMES;
 const THEME_NAMES = Object.keys(THEMES) as ThemeName[];
@@ -114,8 +112,7 @@ describe('accent foreground tokens', () => {
   // --accent-fill-contrast is the foreground for an --accent fill. The dark
   // themes lighten --accent so that accent TEXT clears AA on a dark surface,
   // which is exactly why the near-white --accent-contrast cannot go on it: it
-  // read 2.86 in dark and 2.33 in claude-dark on the two primary buttons that
-  // did, before this token existed.
+  // would read 2.86 in Dark on a primary button.
   it.each(THEME_NAMES)('%s reads --accent-fill-contrast on an --accent fill above AA', (theme) => {
     const ratio = contrast(rgb(token(theme, '--accent-fill-contrast')), rgb(token(theme, '--accent')));
     expect(ratio, `${theme} --accent-fill-contrast on --accent is ${ratio.toFixed(2)}`).toBeGreaterThanOrEqual(AA_TEXT);
@@ -169,8 +166,8 @@ describe('accent foreground tokens', () => {
     }
   });
 
-  // --accent-hover was referenced once here and defined nowhere, so the hover
-  // declaration was invalid at computed-value time and the button lost its fill.
+  // A reference to an undefined token such as --accent-hover makes the hover
+  // declaration invalid at computed-value time, and the button loses its fill.
   // The whole accent family is a static palette with no runtime writer, so every
   // reference to one must resolve inside these stylesheets.
   it('defines every accent token the artifact stylesheets reference', () => {

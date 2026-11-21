@@ -5,10 +5,10 @@ import {
   type ChangeEvent,
   type KeyboardEvent,
 } from 'react';
-import type { BrowserDownloadReceipt } from './claude-science-download';
+import type { BrowserDownloadReceipt, HostDownloadReceipt } from './claude-science-download';
 
 type MaybePromise = void | Promise<void>;
-type MaybeDownloadPromise = BrowserDownloadReceipt | Promise<BrowserDownloadReceipt>;
+type MaybeDownloadPromise = BrowserDownloadReceipt | Promise<BrowserDownloadReceipt | HostDownloadReceipt>;
 
 export interface ClaudeScienceDataSettingsProps {
   recordCount: number;
@@ -18,8 +18,7 @@ export interface ClaudeScienceDataSettingsProps {
   analysisResultCount?: number;
   sessionOnly: boolean;
   hasUnsavedChanges: boolean;
-  /** The session still matches the backup last handed to the browser. */
-  backupDownloaded?: boolean;
+  backupStatus?: 'saved' | 'requested' | null;
   onDownloadBackup: () => MaybeDownloadPromise;
   onRestoreFile: (file: File, returnFocus: HTMLElement | null) => MaybePromise;
   onClearWorkspace: () => MaybePromise;
@@ -57,7 +56,7 @@ export default function ClaudeScienceDataSettings({
   analysisResultCount = 0,
   sessionOnly,
   hasUnsavedChanges,
-  backupDownloaded = false,
+  backupStatus = null,
   onDownloadBackup,
   onRestoreFile,
   onClearWorkspace,
@@ -99,12 +98,12 @@ export default function ClaudeScienceDataSettings({
 
   const handleBackup = async () => {
     setPendingAction('backup');
-    setStatus('Preparing workspace backup…');
+    setStatus('Preparing backup…');
     try {
       const receipt = await onDownloadBackup();
       setStatus(receipt.message);
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : 'Workspace backup could not be downloaded.');
+      setStatus(error instanceof Error ? error.message : 'Backup download failed. Retry.');
     } finally {
       setPendingAction(null);
     }
@@ -116,12 +115,12 @@ export default function ClaudeScienceDataSettings({
     if (!file) return;
 
     setPendingAction('restore');
-    setStatus(`Restoring ${file.name}…`);
+    setStatus(`Checking ${file.name}…`);
     try {
       await onRestoreFile(file, restoreTriggerRef.current);
-      setStatus(`${file.name} is valid. Review the confirmation to restore it.`);
+      setStatus(`${file.name} is valid. Review and confirm restore.`);
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : 'The workspace backup could not be restored.');
+      setStatus(error instanceof Error ? error.message : 'Restore failed. Choose a workspace backup JSON.');
     } finally {
       input.value = '';
       setPendingAction(null);
@@ -136,7 +135,7 @@ export default function ClaudeScienceDataSettings({
       setStatus('Workspace cleared.');
       closeClearConfirmation();
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : 'The workspace could not be cleared.');
+      setStatus(error instanceof Error ? error.message : 'Workspace clear failed. Retry.');
     } finally {
       setPendingAction(null);
     }
@@ -144,12 +143,12 @@ export default function ClaudeScienceDataSettings({
 
   const handleResetDisplay = async () => {
     setPendingAction('reset');
-    setStatus('Resetting display preferences…');
+    setStatus('Resetting display…');
     try {
       await onResetDisplayPreferences();
-      setStatus('Display preferences reset.');
+      setStatus('Display reset.');
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : 'Display preferences could not be reset.');
+      setStatus(error instanceof Error ? error.message : 'Display reset failed. Retry.');
     } finally {
       setPendingAction(null);
       window.requestAnimationFrame(() => resetTriggerRef.current?.focus());
@@ -171,19 +170,22 @@ export default function ClaudeScienceDataSettings({
     >
       <div className="motif-cs-settings-section-heading">
         <h3 id="motif-cs-data-settings-title">Data &amp; recovery</h3>
-        <span
-          className="motif-cs-chip"
-          data-testid="data-backup-status"
-          title={backupDownloaded ? 'This session matches the backup last handed to the browser. Open the file to confirm it saved.' : undefined}
-        >
-          {backupDownloaded ? 'Backup downloaded' : hasUnsavedChanges ? 'Unsaved changes' : 'Backup current'}
-        </span>
+        {backupStatus || hasUnsavedChanges ? (
+          <span
+            className="motif-cs-chip"
+            data-testid="data-backup-status"
+            title={backupStatus === 'requested' ? 'This session matches the backup last handed to the browser. Open the file to confirm it saved.' : undefined}
+          >
+            {backupStatus === 'saved' ? 'Backup saved' : backupStatus === 'requested' ? 'Backup requested' : 'Unsaved changes'}
+          </span>
+        ) : null}
       </div>
 
       <div className="motif-cs-settings-row">
         <div className="motif-cs-settings-row-copy">
           <strong>Workspace backup</strong>
-          <small>{countSummary}. Download a complete JSON backup before closing or reloading.</small>
+          {/* The counts are given once, under Clear workspace, where they say what goes. */}
+          <small>Back up before closing or reloading.</small>
         </div>
         <div className="motif-cs-settings-row-actions">
           <button
@@ -205,13 +207,15 @@ export default function ClaudeScienceDataSettings({
           >
             Restore backup
           </button>
+          {/* Restore backup opens this picker. It is not a Tab stop of its own:
+              it is a 1px box that would take focus and show no ring. */}
           <input
             ref={fileInputRef}
             className="motif-cs-visually-hidden"
             type="file"
             accept=".json,application/json"
-            aria-label="Choose workspace backup JSON"
             tabIndex={-1}
+            aria-label="Choose backup JSON"
             disabled={isBusy}
             onChange={handleRestoreChange}
             data-testid="restore-workspace-file"
@@ -220,30 +224,13 @@ export default function ClaudeScienceDataSettings({
       </div>
 
       <p className="motif-cs-settings-privacy-note" role="note">
-        <strong>{sessionOnly ? 'Session workspace.' : 'Local workspace.'}</strong>{' '}
-        {sessionOnly
-          ? 'Changes remain in this browser session until you export them. '
-          : 'Changes remain on this device until you remove them. '}
-        Nothing is uploaded automatically. Backups are plaintext JSON, not an encrypted vault.
+        {sessionOnly ? 'Kept in this browser session.' : 'Kept on this device.'} Nothing is uploaded. Backups are unencrypted JSON.
       </p>
-
-      <div className="motif-cs-settings-row" data-testid="library-mode-status">
-        <div className="motif-cs-settings-row-copy">
-          <strong>Growing library</strong>
-          <small>
-            Use this artifact for portable review and design. Move a reviewed backup into an appropriate managed local system
-            when you need a durable library, projects, and a linked research notebook.
-          </small>
-        </div>
-        <div className="motif-cs-settings-row-actions">
-          <span className="motif-cs-chip">Portable session</span>
-        </div>
-      </div>
 
       <div className="motif-cs-settings-row">
         <div className="motif-cs-settings-row-copy">
-          <strong>Display preferences</strong>
-          <small>Restore default pane sizes and reset alignment, trace, and viewer controls.</small>
+          <strong>Display</strong>
+          <small>Reset pane sizes and alignment, trace, and viewer controls.</small>
         </div>
         <div className="motif-cs-settings-row-actions">
           <button
@@ -262,7 +249,7 @@ export default function ClaudeScienceDataSettings({
       <div className="motif-cs-settings-row motif-cs-settings-danger-row">
         <div className="motif-cs-settings-row-copy">
           <strong>Clear workspace</strong>
-          <small>Remove all {countSummary} from this workspace.</small>
+          <small id="motif-cs-clear-workspace-counts">{countSummary} will be removed.</small>
         </div>
         {!confirmingClear ? (
           <div className="motif-cs-settings-row-actions">
@@ -287,15 +274,17 @@ export default function ClaudeScienceDataSettings({
             className="motif-cs-settings-clear-confirmation"
             role="group"
             aria-labelledby="motif-cs-clear-confirmation-title"
-            aria-describedby="motif-cs-clear-confirmation-description"
+            aria-describedby="motif-cs-clear-workspace-counts motif-cs-clear-confirmation-description"
             onKeyDown={handleConfirmationKeyDown}
             data-testid="clear-workspace-confirmation"
           >
             <div className="motif-cs-settings-row-copy">
-              <strong id="motif-cs-clear-confirmation-title">Clear everything?</strong>
+              <strong id="motif-cs-clear-confirmation-title">Clear workspace?</strong>
+              {/* The counts are the line above; the group still reads them,
+                  through aria-describedby, before what this one adds. */}
               <small id="motif-cs-clear-confirmation-description">
-                {countSummary}. {hasUnsavedChanges ? 'Unsaved changes will be lost. ' : ''}
-                This cannot be undone unless you downloaded a backup.
+                {hasUnsavedChanges ? 'Unsaved changes will be lost. ' : ''}
+                Recovery requires a backup.
               </small>
             </div>
             <div className="motif-cs-settings-row-actions">
@@ -316,7 +305,7 @@ export default function ClaudeScienceDataSettings({
                 onClick={handleClear}
                 data-testid="clear-workspace-confirm"
               >
-                {pendingAction === 'clear' ? 'Clearing…' : 'Clear all data'}
+                {pendingAction === 'clear' ? 'Clearing…' : 'Clear workspace'}
               </button>
             </div>
           </div>

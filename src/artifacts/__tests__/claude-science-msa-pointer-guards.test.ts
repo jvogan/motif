@@ -8,8 +8,11 @@ const viewerSource = readFileSync(resolve(here, '..', 'ClaudeScienceMsaViewer.ts
 const msaCss = readFileSync(resolve(here, '..', 'claude-science-msa.css'), 'utf8');
 
 describe('Claude Science MSA pointer interaction guards', () => {
+  it('keeps the map header collapse button at the 28px control floor beside the MSA window', () => {
+    expect(msaCss).toMatch(/html \.motif-cs-map-column[^{}]+\.motif-cs-pane-collapse\s*\{[^}]*width:\s*var\(--control-h-sm\);[^}]*height:\s*var\(--control-h-sm\);/s);
+  });
+
   it('keeps compact and indirect pointer targets at the 24px floor', () => {
-    expect(msaCss).toMatch(/html \.motif-cs-map-column[^{}]+\.motif-cs-pane-collapse\s*\{[^}]*width:\s*24px;[^}]*height:\s*24px;/s);
     expect(msaCss).toMatch(/\.motif-cs-msa-workspace \.motif-cs-msa-overview\s*\{[^}]*height:\s*24px;/s);
     expect(msaCss).toMatch(/\.motif-cs-msa-workspace \.motif-cs-msa-zoom-range\s*\{[^}]*min-height:\s*24px;/s);
     expect(msaCss).toMatch(/\.motif-cs-msa-row-select::before\s*\{[^}]*height:\s*24px;/s);

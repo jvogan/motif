@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { getTranslationTable, STANDARD_CODE } from '../codon-tables';
-import { findORFs } from '../orf-detection';
+import { findORFs, rememberOrfScan } from '../orf-detection';
 import { reverseComplement } from '../reverse-complement';
+import { resolveIupacCodon } from '../translate';
 import type { CodonTable, ORF } from '../types';
 
 // Every scan that walks a record reverse-complements it exactly once, and a
@@ -14,11 +15,25 @@ vi.mock('../reverse-complement', async (importOriginal) => {
 });
 const scans = vi.mocked(reverseComplement);
 
+vi.mock('../translate', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../translate')>();
+  return { ...actual, resolveIupacCodon: vi.fn(actual.resolveIupacCodon) };
+});
+
 function forwardOrfAtOrigin(sequence: string, table: CodonTable): ORF | undefined {
   return findORFs(sequence, 1, table).find((orf) => orf.strand === 1 && orf.start === 0);
 }
 
 describe('translation-table-aware ORF detection', () => {
+  it('resolves each distinct ambiguous codon once per frame across overlapping ORFs', () => {
+    const resolve = vi.mocked(resolveIupacCodon);
+    resolve.mockClear();
+    const orfs = findORFs('ATGGCN'.repeat(200) + 'TAA', 1);
+    expect(orfs.filter((orf) => orf.strand === 1 && orf.frame === 1)).toHaveLength(200);
+    expect(orfs[0].warnings?.[0]).toBe('Ambiguous codon GCN resolves deterministically to A');
+    expect(resolve.mock.calls.length).toBeLessThan(20);
+  });
+
   it('uses each table\'s alternative initiator set', () => {
     const sequence = 'GTGAAATAA';
 
@@ -264,6 +279,37 @@ describe('ORF scan memoisation', () => {
   });
 
   it('drops old scans rather than holding an unbounded amount of sequence', () => {
+    const cache = new Map<string, ORF[]>();
+    const older = 'o'.repeat(150);
+    const ordinary = 'm'.repeat(20);
+    const newer = 'n'.repeat(900);
+    const answer: ORF[] = [];
+    const held = () => [...cache.keys()].map((key) => `${key[0]}${key.length}`);
+
+    rememberOrfScan(cache, older, [], 1_000);
+    rememberOrfScan(cache, ordinary, [], 1_000);
+    expect(held()).toEqual(['o150', 'm20']);
+
+    rememberOrfScan(cache, newer, answer, 1_000);
+    expect(held()).toEqual(['m20', 'n900']);
+    expect(cache.get(newer)).toBe(answer);
+
+    const huge = 'h'.repeat(1_500);
+    rememberOrfScan(cache, huge, answer, 1_000);
+    expect(held()).toEqual(['h1500']);
+    expect(cache.get(huge)).toBe(answer);
+  });
+
+  it('bounds the real cache at four million characters', () => {
+    const cache = new Map<string, ORF[]>();
+    rememberOrfScan(cache, 'a'.repeat(2_000_000), []);
+    rememberOrfScan(cache, 'b'.repeat(2_000_000), []);
+    expect(cache.size).toBe(2);
+    rememberOrfScan(cache, 'c', []);
+    expect([...cache.keys()].map((key) => key[0])).toEqual(['b', 'c']);
+  });
+
+  it('evicts a prior scan when two sequences exceed the cache character budget', () => {
     // The count cap alone cannot bound memory: one 5 Mb record is a 5 Mb key.
     // A verification run confirmed the character bound never binds on a normal
     // inventory of thirteen plasmids, so this is the only exercise the branch

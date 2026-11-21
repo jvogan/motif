@@ -186,7 +186,7 @@ This first connector is intentionally ephemeral:
 - it does not make the HTML an encrypted or regulated-data vault; and
 - it does not bind binary AB1/ABI files to the text viewer route.
 
-AB1/ABI remains supported through the standalone workbench's Add Entry and
+AB1/ABI remains supported through the standalone workbench's Import records and
 drag-and-drop flows. A future connected binary artifact viewer needs a separate
 bounded base64/binary contract and host acceptance pass.
 

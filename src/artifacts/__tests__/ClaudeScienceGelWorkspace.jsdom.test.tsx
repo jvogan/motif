@@ -317,8 +317,8 @@ describe('ClaudeScienceGelWorkspace', () => {
       selectedCandidateIds: [],
       onClose,
     })} />);
-    expect(screen.getByTestId('gel-no-sources').textContent).toMatch(/Save a restriction digest/);
-    expect(screen.getByTestId('gel-empty-preview').textContent).toMatch(/Choose at least one sample lane/);
+    expect(screen.getByTestId('gel-no-sources').textContent).toMatch(/Save a digest or add linear DNA/);
+    expect(screen.getByTestId('gel-empty-preview').textContent).toMatch(/Select a sample lane/);
     expect((screen.getByTestId('gel-save-result') as HTMLButtonElement).disabled).toBe(true);
     await user.click(screen.getByRole('button', { name: 'Close gel workspace' }));
     expect(onClose).toHaveBeenCalledTimes(1);
@@ -384,8 +384,8 @@ describe('ClaudeScienceGelWorkspace', () => {
     const marker = screen.getByTestId('gel-lane-ladder:1kb');
     expect([...marker.querySelectorAll('.motif-cs-gel-ladder-size')].map((label) => label.textContent))
       .toEqual(['10 kb', '5 kb', '2 kb', '1 kb', '500 bp', '250 bp']);
-    // Sizes used to reach the reader only through the native title; the bands'
-    // data-tooltip attribute had no rule that displayed it.
+    // Sizes reach the reader through the readout below, not a native title; the
+    // bands carry no data-tooltip attribute that no rule would display.
     expect(view.container.querySelector('[data-tooltip]')).toBeNull();
 
     const readout = screen.getByTestId('gel-band-readout');
@@ -401,5 +401,88 @@ describe('ClaudeScienceGelWorkspace', () => {
     // A new ladder moves every band, so the old reading is cleared.
     view.rerender(<ClaudeScienceGelWorkspace {...baseProps(candidates, { ladderPreset: '100bp' })} />);
     expect(screen.getByTestId('gel-band-readout').textContent).toBe('Point at or focus a band to read its size.');
+  });
+});
+
+describe('gel bands of the open record lead back to their fragments', () => {
+  const SOURCE = 'A'.repeat(2_000);
+  // Fragments 1 and 3 have the same length, so they share one band.
+  const linkedDigest = digestResult('digest-linked', {
+    name: 'Linked digest',
+    inputSha256s: [sha256HexSync(SOURCE)],
+    parameters: { topology: 'linear', outcome: 'fragmented', enzymes: ['EcoRI'] },
+    result: {
+      outcome: 'fragmented',
+      fragments: [
+        { length: 400, startInOriginal: 0, endInOriginal: 400 },
+        { length: 1_200, startInOriginal: 400, endInOriginal: 1_600 },
+        { length: 400, startInOriginal: 1_600, endInOriginal: 2_000 },
+      ],
+    },
+  });
+  const candidates = createClaudeScienceGelLaneCandidates(
+    [record('source-plasmid', { name: 'Source plasmid', sequence: SOURCE })],
+    [linkedDigest],
+  );
+  const laneId = 'digest:digest-linked';
+  const bandOf = (sizeBp: number) => screen.getAllByTestId(new RegExp(`^gel-band-${laneId}-\\d+$`))
+    .find((band) => band.getAttribute('aria-label')?.includes(`${sizeBp.toLocaleString()} bp`))!;
+
+  it('keeps where each saved fragment lies, and nothing when the saved fragments do not say', () => {
+    expect(candidates[0].fragmentRanges).toEqual([
+      { start: 0, end: 400 }, { start: 400, end: 1_600 }, { start: 1_600, end: 2_000 },
+    ]);
+    expect(createClaudeScienceGelLaneCandidates(
+      [record('source-plasmid', { sequence: 'A'.repeat(4_500), topology: 'circular' })],
+      [digestResult()],
+    )[0].fragmentRanges).toBeUndefined();
+    // The places are never written into the lane the gel result saves.
+    expect(candidates[0].lane).not.toHaveProperty('fragmentRanges');
+  });
+
+  it('selects a band\'s fragment on click, Enter or Space, and the next same-length fragment on the next press', async () => {
+    const user = userEvent.setup();
+    const onSelectFragment = vi.fn();
+    const props = baseProps(candidates, { selectedCandidateIds: [candidates[0].id], linkedRecordId: 'source-plasmid', onSelectFragment });
+    const view = render(<ClaudeScienceGelWorkspace {...props} />);
+
+    const single = bandOf(1_200);
+    expect(single.tagName).toBe('BUTTON');
+    expect(single.getAttribute('aria-pressed')).toBe('false');
+    await user.click(single);
+    expect(onSelectFragment).toHaveBeenLastCalledWith({ start: 400, end: 1_600 });
+
+    const shared = bandOf(400);
+    expect(shared.getAttribute('aria-label')).toContain('2 co-migrating fragments');
+    act(() => shared.focus());
+    await user.keyboard('{Enter}');
+    expect(onSelectFragment).toHaveBeenLastCalledWith({ start: 0, end: 400 });
+
+    // With fragment 1 selected, the band is pressed and moves to fragment 3.
+    view.rerender(<ClaudeScienceGelWorkspace {...props} linkedRange={{ start: 0, end: 400 }} />);
+    expect(bandOf(400).getAttribute('aria-pressed')).toBe('true');
+    expect(bandOf(1_200).getAttribute('aria-pressed')).toBe('false');
+    act(() => bandOf(400).focus());
+    await user.keyboard(' ');
+    expect(onSelectFragment).toHaveBeenLastCalledWith({ start: 1_600, end: 2_000 });
+
+    view.rerender(<ClaudeScienceGelWorkspace {...props} linkedRange={{ start: 1_600, end: 2_000 }} />);
+    await user.click(bandOf(400));
+    expect(onSelectFragment).toHaveBeenLastCalledWith({ start: 0, end: 400 });
+  });
+
+  it('keeps ladder bands and other records\' digests inert', () => {
+    const onSelectFragment = vi.fn();
+    render(<ClaudeScienceGelWorkspace {...baseProps(candidates, {
+      selectedCandidateIds: [candidates[0].id], linkedRecordId: 'another-record', onSelectFragment,
+    })} />);
+    expect(bandOf(1_200).tagName).toBe('SPAN');
+    expect(bandOf(1_200).getAttribute('role')).toBe('img');
+    const ladder = screen.getByTestId('gel-band-ladder:1kb-0');
+    expect(ladder.tagName).toBe('SPAN');
+    expect(ladder.getAttribute('role')).toBe('img');
+    fireEvent.click(ladder);
+    fireEvent.click(bandOf(1_200));
+    expect(onSelectFragment).not.toHaveBeenCalled();
   });
 });

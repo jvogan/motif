@@ -1,4 +1,4 @@
-import type { CodonTable, Feature, RestrictionEnzyme } from './types';
+import type { CodonTable, Feature, RestrictionEnzyme, Topology } from './types';
 import { RESTRICTION_ENZYMES } from './restriction-sites';
 import { reverseComplement } from './reverse-complement';
 import { getAminoAcidToCodons, resolveTranslationTable } from './codon-tables';
@@ -78,11 +78,12 @@ export interface GoldenGateSite {
   strand: 1 | -1;
   /** Position where the cut occurs */
   cutPosition: number;
-  /** 4 bp overhang produced by this cut */
+  /** Overhang produced by this cut, in the recognition strand's direction. */
   overhang: string;
 }
 
 export interface FindGoldenGateSitesOptions {
+  topology?: Topology;
   /**
    * Report recognition sites even when the Type IIS overhang window is outside
    * the provided sequence. Internal-site checks and CDS domestication care
@@ -586,6 +587,13 @@ function findGoldenGateSitesInNormalizedSequence(
   const recogRC = reverseComplement(recog).toUpperCase();
   const overhangLength = overhangLengthFor(enz);
   const includeOutOfBounds = options.includeOutOfBounds === true;
+  const circular = options.topology === 'circular';
+  const scanSequence = circular && upper.length >= recog.length
+    ? upper + upper.slice(0, recog.length - 1)
+    : upper;
+  const cutCoordinate = (position: number): number => circular
+    ? ((position % upper.length) + upper.length) % upper.length
+    : position;
   const sites: GoldenGateSite[] = [];
   let complete = true;
   const appendSite = (site: GoldenGateSite): boolean => {
@@ -598,13 +606,13 @@ function findGoldenGateSitesInNormalizedSequence(
   };
 
   // Sense strand sites
-  let idx = upper.indexOf(recog);
+  let idx = scanSequence.indexOf(recog);
   while (idx !== -1) {
     // cutOffset is relative to the start of the recognition sequence on sense strand
-    const cutPos = idx + enz.cutOffset;
-    const hasWindow = hasOverhangWindow(upper, cutPos, overhangLength);
+    const cutPos = cutCoordinate(idx + enz.cutOffset);
+    const hasWindow = hasOverhangWindow(scanSequence, cutPos, overhangLength);
     if (hasWindow || includeOutOfBounds) {
-      const overhangSeq = hasWindow ? upper.slice(cutPos, cutPos + overhangLength) : '';
+      const overhangSeq = hasWindow ? scanSequence.slice(cutPos, cutPos + overhangLength) : '';
       if (!appendSite({
         position: idx,
         enzyme: enz.name,
@@ -613,23 +621,23 @@ function findGoldenGateSitesInNormalizedSequence(
         overhang: overhangSeq,
       })) break;
     }
-    idx = upper.indexOf(recog, idx + 1);
+    idx = scanSequence.indexOf(recog, idx + 1);
   }
 
   // Antisense strand sites (recognition sequence appears as its RC on the sense strand)
   if (recogRC !== recog) {
-    let ridx = upper.indexOf(recogRC);
+    let ridx = scanSequence.indexOf(recogRC);
     while (ridx !== -1) {
       // On the antisense strand the enzyme reads 5'→3' in the reverse direction.
       // complementCutOffset is the distance from the END of the recognition sequence
       // to the cut point on the sense strand (NEB convention).
       // Position on sense strand: end of RC recognition site minus complementCutOffset
       const recogEnd = ridx + recogRC.length;
-      const cutPos = recogEnd - enz.complementCutOffset;
+      const cutPos = cutCoordinate(recogEnd - enz.complementCutOffset);
       // The overhang is upstream of the cut on the sense strand (downstream on antisense)
-      const hasWindow = hasOverhangWindow(upper, cutPos, overhangLength);
+      const hasWindow = hasOverhangWindow(scanSequence, cutPos, overhangLength);
       if (hasWindow || includeOutOfBounds) {
-        const overhangSense = hasWindow ? upper.slice(cutPos, cutPos + overhangLength) : '';
+        const overhangSense = hasWindow ? scanSequence.slice(cutPos, cutPos + overhangLength) : '';
         const overhangSeq = hasWindow ? reverseComplement(overhangSense) : '';
         if (!appendSite({
           position: ridx,
@@ -639,7 +647,7 @@ function findGoldenGateSitesInNormalizedSequence(
           overhang: overhangSeq,
         })) break;
       }
-      ridx = upper.indexOf(recogRC, ridx + 1);
+      ridx = scanSequence.indexOf(recogRC, ridx + 1);
     }
   }
 
@@ -796,7 +804,6 @@ function createProductFeature(
   end: number,
   color: string,
   metadata: Record<string, unknown>,
-  subRanges?: Feature['subRanges'],
 ): Feature | null {
   if (end <= start) return null;
   return {
@@ -808,7 +815,6 @@ function createProductFeature(
     strand: 1,
     color,
     metadata,
-    ...(subRanges && subRanges.length > 0 ? { subRanges } : {}),
   };
 }
 
@@ -1170,8 +1176,10 @@ function findDuplicateOverhangs(digested: DigestedAssemblyPart[]): string[] {
 function findInternalGoldenGateSites(
   seq: string,
   enzyme = DEFAULT_ENZYME,
+  topology: Topology = 'linear',
 ): GoldenGateSite[] {
-  return selectInternalGoldenGateSites(findGoldenGateSites(seq, enzyme, { includeOutOfBounds: true }));
+  const sites = findGoldenGateSites(seq, enzyme, { includeOutOfBounds: true, topology });
+  return topology === 'circular' ? sites : selectInternalGoldenGateSites(sites);
 }
 
 function selectInternalGoldenGateSites(sites: GoldenGateSite[]): GoldenGateSite[] {
@@ -1774,6 +1782,13 @@ export function goldenGateAssemble(
   const preClosureLength = sequence.length;
   const productLength = Math.max(0, sequence.length - overhangLength);
   const circularSequence = sequence.slice(0, productLength);
+  const productScan = findGoldenGateSitesInNormalizedSequence(circularSequence, enz, {
+    topology: 'circular', includeOutOfBounds: true,
+  });
+  if (productScan.sites.length > 0) {
+    const count = productScan.sites.length;
+    warnings.push(`Circular product contains ${productScan.complete ? '' : 'at least '}${count} ${enz.name} recognition site${count === 1 ? '' : 's'} and can be cut again.`);
+  }
   aliasRemovedProductCoordinates(insertMaps, productLength, preClosureLength);
   const finalProductMap = finalProductMapForAssembly(preClosureLength, overhangLength);
   const circularFeatures: Feature[] = [];
@@ -1853,8 +1868,9 @@ export function goldenGateAssemble(
 export function checkInternalSites(
   seq: string,
   enzyme = DEFAULT_ENZYME,
+  topology: Topology = 'linear',
 ): Array<{ position: number; strand: 1 | -1 }> {
-  return findInternalGoldenGateSites(seq, enzyme).map(({ position, strand }) => ({ position, strand }));
+  return findInternalGoldenGateSites(seq, enzyme, topology).map(({ position, strand }) => ({ position, strand }));
 }
 
 const DEFAULT_VECTOR_FILLER_LENGTH = 50;

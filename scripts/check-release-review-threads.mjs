@@ -146,6 +146,7 @@ function parseArgs(args) {
     if (arg === '--help' || arg === '-h') options.help = true;
     else if (arg === '--github') options.github = true;
     else if (arg === '--require-release') options.requireRelease = true;
+    else if (arg === '--if-release') options.ifRelease = true;
     else if (arg === '--threads-file' || arg === '--repo' || arg === '--pr') {
       const value = args[++index];
       if (!value || value.startsWith('--')) throw new Error(`${arg} requires a value`);
@@ -158,6 +159,7 @@ function parseArgs(args) {
       }
     } else throw new Error(`Unknown option: ${arg}`);
   }
+  if (options.ifRelease && options.requireRelease) throw new Error('Choose only one release check mode');
   if (options.input && options.github) throw new Error('Choose either --threads-file or --github, not both');
   if (!options.input && !options.github && !options.help) throw new Error('Provide --threads-file for an offline check or --github for the release workflow');
   return options;
@@ -180,8 +182,13 @@ if (isDirectScriptExecution(process.argv[1], fileURLToPath(import.meta.url))) {
       const input = options.github
         ? readGithubThreads(options)
         : readJsonFile(options.input);
-      const result = checkReleaseReviewThreads(input, { requireRelease: options.requireRelease });
-      console.log(`Release review-thread check passed: ${result.threadCount} current thread${result.threadCount === 1 ? '' : 's'} inspected.`);
+      const pr = pullRequestFromDocument(input);
+      if (options.ifRelease && !isReleasePullRequest(pr, labelsFromPullRequest(pr))) {
+        console.log('Review-thread check skipped for a non-release pull request.');
+      } else {
+        const result = checkReleaseReviewThreads(input, { requireRelease: options.requireRelease });
+        console.log(`Release review-thread check passed: ${result.threadCount} current thread${result.threadCount === 1 ? '' : 's'} inspected.`);
+      }
     }
   } catch (error) {
     console.error(`Release review-thread check failed: ${error instanceof Error ? error.message : String(error)}`);

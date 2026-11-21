@@ -14,7 +14,7 @@ import {
   type ArtifactLigationPartInput,
 } from '../claude-science-assembly-workflows';
 import { sha256HexSync } from '../claude-science-sha256';
-import { GOLDEN_GATE_FIDELITY_CONDITIONS } from '../../bio/golden-gate-fidelity';
+import { getGoldenGateFidelityConditions } from '../../bio/golden-gate-fidelity';
 import { reverseComplement } from '../../bio/reverse-complement';
 import { materializeTranslationExceptions } from '../../bio/transl-except';
 
@@ -355,6 +355,15 @@ describe('planArtifactLigation', () => {
 });
 
 describe('planArtifactGoldenGateAssembly', () => {
+  it('flags an origin-spanning site in ordered Golden Gate assembly', () => {
+    const plan = planArtifactGoldenGateAssembly({
+      parts: [bsaIPart('first', 'GTCT', 'CA', 'TCTT'), bsaIPart('second', 'TCTT', 'GCGGAAGG', 'GTCT')],
+      enzyme: 'BsaI',
+      topology: 'circular',
+    });
+    expect(plan.productSequence).toBe('GTCTCATCTTGCGGAAGG');
+    expect(plan.warnings).toContainEqual(expect.objectContaining({ code: 'product_type_iis_site' }));
+  });
   it('rejects a well-formed hash that does not match the Type IIS source sequence', () => {
     const promoter = bsaIPart('promoter', 'AAAA', 'CCCC', 'GATG');
     const backbone = bsaIPart('backbone', 'GATG', 'GGGG', 'AAAA');
@@ -543,7 +552,7 @@ describe('planArtifactGoldenGateAssembly', () => {
   it('records exact empirical condition provenance without borrowing across enzymes', () => {
     const first = bsaIPart('first', 'AAAA', 'CCCC', 'GATG');
     const second = bsaIPart('second', 'GATG', 'GGGG', 'AAAA');
-    const condition = GOLDEN_GATE_FIDELITY_CONDITIONS['pryor-2020-bsai-hfv2'];
+    const condition = getGoldenGateFidelityConditions()['pryor-2020-bsai-hfv2'];
     const supported = planArtifactGoldenGateAssembly({
       parts: [first, second],
       enzyme: 'BsaI',
@@ -669,7 +678,7 @@ describe('createArtifactAssemblyArtifacts', () => {
       ],
       enzyme: 'BsaI',
       topology: 'circular',
-      fidelityCondition: GOLDEN_GATE_FIDELITY_CONDITIONS['pryor-2020-bsai-hfv2'],
+      fidelityCondition: getGoldenGateFidelityConditions()['pryor-2020-bsai-hfv2'],
     });
     const artifacts = createArtifactAssemblyArtifacts(plan, {
       workflowResultId: 'fidelity-workflow',
@@ -852,6 +861,22 @@ describe('carryOverlapPartFeatures', () => {
   const partOne = { sequence: product.slice(0, 16), features: [{ id: 'one', name: 'Left marker', start: 2, end: 8, strand: 1 }] };
   const partTwo = { sequence: product.slice(12), features: [{ id: 'two', name: 'Right marker', start: 3, end: 9, strand: -1 }] };
 
+  it('carries a reversed closing part across the Gibson product origin', () => {
+    const circularProduct = 'ACGTTGCATTGCTAAGTCGG';
+    const source = reverseComplement('GCTAAGTCGGACGTTGCA');
+    const features = [{ id: 'seam', start: 6, end: 10, strand: 1 }];
+    const carried = carryOverlapPartFeatures(
+      [{ sequence: source, features, orientation: 'reverse' }],
+      circularProduct,
+      undefined,
+      'circular',
+    );
+    expect(carried).toEqual([{
+      id: 'seam', start: 0, end: 20, strand: -1,
+      subRanges: [{ start: 0, end: 2 }, { start: 18, end: 20 }],
+    }]);
+  });
+
   it('shifts each part by where its own bases sit in the product', () => {
     expect(carryOverlapPartFeatures([partOne, partTwo], product)
       .map((feature) => [feature.name, feature.start, feature.end])).toEqual([
@@ -970,7 +995,7 @@ describe('carryGoldenGatePartFeatures', () => {
       .map((feature) => feature.name)).toEqual(['Body 1', 'Body 3']);
   });
 
-  it('drops a feature that crosses a trim boundary or the closed circle', () => {
+  it('omits a cut feature and preserves the retained closing overhang', () => {
     const withFlank = parts.map((part, index) => ({
       ...part,
       features: [
@@ -979,8 +1004,13 @@ describe('carryGoldenGatePartFeatures', () => {
         ...(index === 2 ? [{ id: 'tail', name: 'Trailing overhang', start: 40, end: 45, strand: 1 }] : []),
       ],
     }));
-    expect(carryGoldenGatePartFeatures(withFlank, 4, circularProduct, 'circular')
-      .map((feature) => feature.name)).toEqual(['Body 1', 'Body 2', 'Body 3']);
+    const leftOut: TestFeature[] = [];
+    const carried = carryGoldenGatePartFeatures(withFlank, 4, circularProduct, 'circular', leftOut);
+    expect(carried.map((feature) => feature.name)).toEqual(['Body 1', 'Body 2', 'Body 3', 'Trailing overhang']);
+    expect(carried[3]).toMatchObject({
+      start: 0, end: 102, subRanges: [{ start: 101, end: 102 }, { start: 0, end: 4 }],
+    });
+    expect(leftOut.map((feature) => feature.name)).toEqual(['Crosses the cut']);
   });
 
   it('carries nothing when the product does not hold the parts where the geometry says', () => {

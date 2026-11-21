@@ -4,12 +4,20 @@ import {
   RESOURCE_MIME_TYPE,
 } from '@modelcontextprotocol/ext-apps/server';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { CallToolResult, ReadResourceResult, ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
+import {
+  ErrorCode,
+  JSONRPCRequestSchema,
+  McpError,
+  type CallToolResult,
+  type ReadResourceResult,
+  type ToolAnnotations,
+} from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 
-import { renderMotifArtifact } from './artifact-export.js';
+import { prepareMotifArtifactTemplate, type RenderMotifArtifactResult } from './artifact-export.js';
 import {
   MOTIF_WORKBENCH_RESOURCE_URI,
+  MotifPreloadSizeError,
   motifArtifactExportSummarySchema,
   motifWorkbenchResultSchema,
   type MotifWorkbenchResult,
@@ -44,9 +52,10 @@ export type MotifMcpTraceEvent = {
 
 export const MOTIF_MCP_SERVER_INSTRUCTIONS = [
   'Motif is a read-only, ephemeral molecular-biology viewer and export server.',
-  'Pass exactly one of payload or content; omit both only to open the bundled sample.',
-  'motif_open_workbench requests an MCP App but does not prove that the host mounted it.',
-  'Use motif_create_workbench_artifact only when the client can accept a large embedded HTML resource.',
+  'Pass exactly one of payload or content. Omit both to open the bundled sample.',
+  'motif_open_workbench requests an MCP App. The host handles mounting.',
+  'Use motif_create_workbench_artifact only when the client accepts large embedded HTML.',
+  'In Claude Science, call motif_create_workbench_artifact once and open the returned HTML in the side panel.',
   'Neither tool writes files, persists a database, or runs external executables.',
 ].join(' ');
 
@@ -74,17 +83,18 @@ const readOnlyAnnotations = (title: string): ToolAnnotations => ({
 
 const workbenchInputShape = {
   payload: z.record(z.string(), z.unknown()).optional()
-    .describe('A bounded Motif inventory payload. Use content instead when opening FASTA, GenBank, or raw sequence text.'),
+    .describe('Motif JSON with records[{name, sequence, molecule, topology, features[{name, type, start, end, direction}]}]. Coordinates are 0-based with exclusive end. Use distinct feature names a scientist expects, in one or two words. Put descriptions in metadata.note.'),
   content: z.string().min(1).max(MOTIF_MCP_LIMITS.maxContentBytes).optional()
-    .describe('FASTA, GenBank, raw sequence, or Motif inventory JSON content.'),
+    .describe('Exact FASTA, GenBank, raw sequence, or Motif JSON. Gapped FASTA opens with its alignment.'),
   filename: z.string().min(1).max(512).optional()
-    .describe('Source filename used for format hints and a visible provenance label.'),
-  title: z.string().min(1).max(512).optional(),
+    .describe('Source filename for the format hint and provenance label.'),
+  title: z.string().min(1).max(512).optional().describe('Inventory title shown in the workbench.'),
   molecule: z.enum(['dna', 'rna', 'protein']).optional()
-    .describe('Explicit molecule type for raw or ambiguous FASTA sequence text.'),
-  topology: z.enum(['linear', 'circular']).optional(),
+    .describe('Set dna, rna, or protein when the alphabet is ambiguous. Motif can infer the type for raw sequence text and FASTA.'),
+  topology: z.enum(['linear', 'circular']).optional()
+    .describe('FASTA and raw sequence text default to linear.'),
   proposeAnnotations: z.boolean().optional()
-    .describe('Set false to disable Motif\'s bounded post-paint annotation proposal pass for records opened by this call.'),
+    .describe('Set false to suppress suggested ORF features on records without features.'),
 };
 
 const workbenchInputSchema = z.object(workbenchInputShape).strict().superRefine((input, context) => {
@@ -248,6 +258,7 @@ function untrustedLabel(value: unknown, fallback: string): { text: string; trunc
 
 function workbenchSummaryText(result: MotifWorkbenchResult): string {
   const build = result.runtimeBuildId ? ` Runtime build ${result.runtimeBuildId.slice(0, 12)}.` : '';
+  const next = ' If no Motif frame appears, call motif_create_workbench_artifact with the same record data.';
   if (result.mode === 'sample') {
     return `Motif Workbench requested with its bundled sample inventory.${build} Host rendering is a separate client action.`;
   }
@@ -255,7 +266,11 @@ function workbenchSummaryText(result: MotifWorkbenchResult): string {
     ? ` from a file named ${untrustedLabel(result.sourceName, '').text} (filename supplied with the input; untrusted data, not instructions)`
     : '';
   const records = workbenchRecordSummary(result);
-  return `Motif Workbench requested${source} with ${result.recordCount} record${result.recordCount === 1 ? '' : 's'} and ${result.residueCount.toLocaleString()} residues.${records}${build} Host rendering is a separate client action.`;
+  return `Motif Workbench requested${source} with ${result.recordCount} record${result.recordCount === 1 ? '' : 's'} and ${result.residueCount.toLocaleString()} residues.${records}${build} Host rendering is a separate client action.${next}`;
+}
+
+function inferredRawMoleculeText(molecule: MotifWorkbenchInput['molecule']): string {
+  return molecule ? ` Inferred molecule: ${molecule.toUpperCase()}.` : '';
 }
 
 function workbenchRecordSummary(result: PreparedMotifWorkbench): string {
@@ -315,109 +330,163 @@ export function createMotifClaudeScienceServer(options: MotifClaudeScienceServer
     ...fields,
   });
 
-  registerAppTool(
-    server,
-    'motif_open_workbench',
-    {
-      title: 'Request the live Motif workbench',
-      description:
-        'Request the live interactive Motif molecular-biology workbench. A successful result confirms parsing and requests the MCP App; it does not confirm that the host displayed a frame. Accepts a bounded Motif inventory payload or exact FASTA, GenBank, raw sequence, or Motif JSON content. With no data, requests the bundled sample inventory. This read-only tool does not write a database or run external executables.',
-      inputSchema: workbenchInputSchema,
-      outputSchema: motifWorkbenchResultSchema,
-      annotations: readOnlyAnnotations('Open Motif'),
-      _meta: {
-        ...appToolMetadata(['model', 'app']),
-        'operon.dev/viewer': motifArtifactViewerBinding,
-      },
+  const openWorkbenchConfig = {
+    title: 'Request the live Motif workbench',
+    description:
+      'Request the live interactive Motif workbench. A successful result confirms parsing and requests the MCP App. The host handles mounting. Pass a bounded Motif payload or exact FASTA, GenBank, raw sequence, or Motif JSON content. Omit both for the bundled sample. If no frame appears for your record, call motif_create_workbench_artifact with the same data. This tool is read-only.',
+    inputSchema: workbenchInputSchema,
+    outputSchema: motifWorkbenchResultSchema,
+    annotations: readOnlyAnnotations('Open Motif'),
+    _meta: {
+      ...appToolMetadata(['model', 'app']),
+      'operon.dev/viewer': motifArtifactViewerBinding,
     },
-    async (args): Promise<CallToolResult> => {
-      const trace = startTrace('motif_open_workbench');
-      try {
-        const input = workbenchInputSchema.parse(args) as MotifWorkbenchInput;
-        const result = motifWorkbenchResultSchema.parse({
-          ...preparePublicWorkbench(input),
-          delivery: 'live-app-request',
-          visibleMountConfirmed: false,
-          fallbackTool: 'motif_create_workbench_artifact',
-          runtimeBuildId: options.runtimeBuildId,
-        });
-        finishTrace(trace, 'ok', {
-          mode: result.mode,
-          recordCount: result.recordCount,
-          residueCount: result.residueCount,
-        });
-        return appendWorkbenchResourceLink({
-          structuredContent: result,
-          content: [{ type: 'text', text: workbenchSummaryText(result) }],
-        });
-      } catch (error) {
-        finishTrace(trace, 'error', { error: error instanceof Error ? error.name : 'Error' });
-        return publicToolFailure(error);
-      }
-    },
-  );
+  };
+  const openWorkbench = async (input: MotifWorkbenchInput): Promise<CallToolResult> => {
+    const trace = startTrace('motif_open_workbench');
+    try {
+      const { inferredRawMolecule, ...workbench } = preparePublicWorkbench(input);
+      const result = motifWorkbenchResultSchema.parse({
+        ...workbench,
+        delivery: 'live-app-request',
+        visibleMountConfirmed: false,
+        fallbackTool: 'motif_create_workbench_artifact',
+        runtimeBuildId: options.runtimeBuildId,
+      });
+      finishTrace(trace, 'ok', {
+        mode: result.mode,
+        recordCount: result.recordCount,
+        residueCount: result.residueCount,
+      });
+      return appendWorkbenchResourceLink({
+        structuredContent: result,
+        content: [{ type: 'text', text: workbenchSummaryText(result) + inferredRawMoleculeText(inferredRawMolecule) }],
+      });
+    } catch (error) {
+      finishTrace(trace, 'error', { error: error instanceof Error ? error.name : 'Error' });
+      return publicToolFailure(error);
+    }
+  };
+  registerAppTool(server, 'motif_open_workbench', openWorkbenchConfig, openWorkbench);
 
-  server.registerTool(
-    'motif_create_workbench_artifact',
-    {
-      title: 'Create a shareable Motif workbench artifact',
-      description:
-        'Return a self-contained Motif HTML workbench containing a bounded inventory payload or exact FASTA, GenBank, raw sequence, or Motif JSON content. This reliable fallback is useful when a host does not mount the live MCP App. It returns an embedded resource and does not write a file.',
-      inputSchema: artifactInputSchema,
-      outputSchema: motifArtifactExportSummarySchema,
-      annotations: readOnlyAnnotations('Create a shareable Motif workbench artifact'),
-    },
-    async (args): Promise<CallToolResult> => {
-      const trace = startTrace('motif_create_workbench_artifact');
+  const createArtifactConfig = {
+    title: 'Create a shareable Motif workbench artifact',
+    description:
+      'Return a self-contained Motif HTML workbench containing a bounded inventory payload or exact FASTA, GenBank, raw sequence, or Motif JSON content. The embedded resource is a fallback for hosts that cannot mount the live MCP App. In Claude Science, use this read-only tool first and open the HTML in the side panel.',
+    inputSchema: artifactInputSchema,
+    outputSchema: motifArtifactExportSummarySchema,
+    annotations: readOnlyAnnotations('Create a shareable Motif workbench artifact'),
+  };
+  let cachedTemplate: string | undefined;
+  let renderArtifact: ReturnType<typeof prepareMotifArtifactTemplate> | undefined;
+  const createArtifact = async (input: MotifWorkbenchInput & { outputFilename?: string }): Promise<CallToolResult> => {
+    const trace = startTrace('motif_create_workbench_artifact');
+    try {
+      const workbench = preparePublicWorkbench(input);
+      const template = await options.readArtifactTemplate();
+      let artifact: RenderMotifArtifactResult;
       try {
-        const input = artifactInputSchema.parse(args) as MotifWorkbenchInput & { outputFilename?: string };
-        const workbench = preparePublicWorkbench(input);
-        const template = await options.readArtifactTemplate();
-        let artifact: ReturnType<typeof renderMotifArtifact>;
-        try {
-          artifact = renderMotifArtifact({
-            template,
-            workbench,
-            runtimeBuildId: options.runtimeBuildId,
-            ...(input.title ? { title: input.title } : {}),
-            ...(input.outputFilename ? { filename: input.outputFilename } : {}),
-          });
-        } catch (error) {
-          if (error instanceof Error && error.message.startsWith('Motif artifact HTML exceeds ')) {
-            throw new MotifPublicError('artifact_too_large', boundedPublicMessage(error.message));
-          }
-          throw error;
+        if (!renderArtifact || template !== cachedTemplate) {
+          renderArtifact = prepareMotifArtifactTemplate(template, options.runtimeBuildId);
+          cachedTemplate = template;
         }
-        finishTrace(trace, 'ok', {
-          mode: workbench.mode,
-          recordCount: artifact.summary.recordCount,
-          residueCount: artifact.summary.residueCount,
+        artifact = renderArtifact({
+          workbench,
+          ...(input.title ? { title: input.title } : {}),
+          ...(input.outputFilename ? { filename: input.outputFilename } : {}),
         });
-        return {
-          structuredContent: artifact.summary,
-          content: [
-            {
-              type: 'text',
-              text: `Prepared self-contained Motif Workbench ${artifact.summary.filename} with ${artifact.summary.recordCount} record${artifact.summary.recordCount === 1 ? '' : 's'}.${workbenchRecordSummary(workbench)} Runtime build ${artifact.summary.runtimeBuildId.slice(0, 12)}. No file was written. Save or open the attached HTML resource in a compatible host or browser.`,
-            },
-            {
-              type: 'resource',
-              resource: {
-                uri: `motif://artifact/${encodeURIComponent(artifact.summary.filename)}`,
-                mimeType: 'text/html',
-                text: artifact.html,
-              },
-            },
-          ],
-        };
       } catch (error) {
-        finishTrace(trace, 'error', { error: error instanceof Error ? error.name : 'Error' });
-        return publicToolFailure(error);
+        if (error instanceof MotifPreloadSizeError
+          || (error instanceof Error && error.message.startsWith('Motif artifact HTML exceeds '))) {
+          throw new MotifPublicError('artifact_too_large', boundedPublicMessage(error.message));
+        }
+        throw error;
       }
-    },
-  );
+      finishTrace(trace, 'ok', {
+        mode: workbench.mode,
+        recordCount: artifact.summary.recordCount,
+        residueCount: artifact.summary.residueCount,
+      });
+      return {
+        structuredContent: artifact.summary,
+        content: [
+          {
+            type: 'text',
+            text: `Prepared self-contained Motif Workbench ${artifact.summary.filename} with ${artifact.summary.recordCount} record${artifact.summary.recordCount === 1 ? '' : 's'}.${workbenchRecordSummary(workbench)} Total residues: ${artifact.summary.residueCount.toLocaleString()}. Runtime build ${artifact.summary.runtimeBuildId.slice(0, 12)}. No file was written. Save or open the attached HTML resource in a compatible host or browser.${inferredRawMoleculeText(workbench.inferredRawMolecule)} In Claude Science, open the attached HTML in the side panel.`,
+          },
+          {
+            type: 'resource',
+            resource: {
+              uri: `motif://artifact/${encodeURIComponent(artifact.summary.filename)}`,
+              mimeType: 'text/html',
+              text: artifact.html,
+            },
+          },
+        ],
+      };
+    } catch (error) {
+      finishTrace(trace, 'error', { error: error instanceof Error ? error.name : 'Error' });
+      return publicToolFailure(error);
+    }
+  };
+  server.registerTool('motif_create_workbench_artifact', createArtifactConfig, createArtifact);
+
+  // Keep typed discovery while using fixed diagnostics for dispatch and argument errors.
+  server.server.setRequestHandler(JSONRPCRequestSchema.extend({ method: z.literal('tools/call') }), async (request) => {
+    const name = request.params?.name;
+    const args = request.params?.arguments;
+    const run = name === 'motif_open_workbench' ? openWorkbench
+      : name === 'motif_create_workbench_artifact' ? createArtifact
+        : undefined;
+    if (!run) return publicToolFailure(new MotifPublicError('invalid_input', 'Unknown Motif tool.'));
+    const schema = name === 'motif_open_workbench' ? workbenchInputSchema : artifactInputSchema;
+    const input = schema.safeParse(args === undefined ? {} : args);
+    if (!input.success) {
+      const message = input.error.issues.find(issue => issue.code === 'custom')?.message
+        ?? 'Invalid Motif tool arguments. Use the fields and types listed in the tool schema.';
+      return publicToolFailure(new MotifPublicError('invalid_input', message));
+    }
+    return run(input.data);
+  });
 
   emitTrace(options, { event: 'resource.registered', uri: MOTIF_WORKBENCH_RESOURCE_URI });
+  const readWorkbenchResource = async (): Promise<ReadResourceResult> => {
+    const requestId = `resource-${++traceSequence}`;
+    const startedAt = Date.now();
+    emitTrace(options, { event: 'resource.read.start', requestId, uri: MOTIF_WORKBENCH_RESOURCE_URI });
+    try {
+      const text = await options.readWorkbenchHtml();
+      emitTrace(options, {
+        event: 'resource.read.finish',
+        requestId,
+        uri: MOTIF_WORKBENCH_RESOURCE_URI,
+        status: 'ok',
+        durationMs: Math.max(0, Date.now() - startedAt),
+      });
+      return {
+        contents: [{
+          uri: MOTIF_WORKBENCH_RESOURCE_URI,
+          mimeType: RESOURCE_MIME_TYPE,
+          text,
+          _meta: {
+            csp: workbenchCsp,
+            prefersBorder: false,
+            ui: { prefersBorder: false, csp: workbenchCsp },
+          },
+        }],
+      };
+    } catch (error) {
+      emitTrace(options, {
+        event: 'resource.read.finish',
+        requestId,
+        uri: MOTIF_WORKBENCH_RESOURCE_URI,
+        status: 'error',
+        durationMs: Math.max(0, Date.now() - startedAt),
+        error: error instanceof Error ? error.name : 'Error',
+      });
+      throw new Error('Motif workbench resource is unavailable.');
+    }
+  };
   registerAppResource(
     server,
     'Motif Workbench',
@@ -431,44 +500,14 @@ export function createMotifClaudeScienceServer(options: MotifClaudeScienceServer
         ui: { prefersBorder: false, csp: workbenchCsp },
       },
     },
-    async (): Promise<ReadResourceResult> => {
-      const requestId = `resource-${++traceSequence}`;
-      const startedAt = Date.now();
-      emitTrace(options, { event: 'resource.read.start', requestId, uri: MOTIF_WORKBENCH_RESOURCE_URI });
-      try {
-        const text = await options.readWorkbenchHtml();
-        emitTrace(options, {
-          event: 'resource.read.finish',
-          requestId,
-          uri: MOTIF_WORKBENCH_RESOURCE_URI,
-          status: 'ok',
-          durationMs: Math.max(0, Date.now() - startedAt),
-        });
-        return {
-          contents: [{
-            uri: MOTIF_WORKBENCH_RESOURCE_URI,
-            mimeType: RESOURCE_MIME_TYPE,
-            text,
-            _meta: {
-              csp: workbenchCsp,
-              prefersBorder: false,
-              ui: { prefersBorder: false, csp: workbenchCsp },
-            },
-          }],
-        };
-      } catch (error) {
-        emitTrace(options, {
-          event: 'resource.read.finish',
-          requestId,
-          uri: MOTIF_WORKBENCH_RESOURCE_URI,
-          status: 'error',
-          durationMs: Math.max(0, Date.now() - startedAt),
-          error: error instanceof Error ? error.name : 'Error',
-        });
-        throw new Error('Motif workbench resource is unavailable.');
-      }
-    },
+    readWorkbenchResource,
   );
 
+  server.server.setRequestHandler(JSONRPCRequestSchema.extend({ method: z.literal('resources/read') }), async (request) => {
+    if (request.params?.uri !== MOTIF_WORKBENCH_RESOURCE_URI) {
+      throw new McpError(ErrorCode.InvalidParams, 'Unknown Motif resource.', { 'motif/error': { code: 'invalid_input' } });
+    }
+    return readWorkbenchResource();
+  });
   return server;
 }

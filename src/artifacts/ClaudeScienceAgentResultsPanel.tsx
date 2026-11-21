@@ -846,7 +846,7 @@ function AnalysisResultRow({
       ) : null}
 
       <details className="motif-cs-agent-result-details" onToggle={(event) => setDetailsOpen(event.currentTarget.open)}>
-        <summary>Provenance &amp; Data</summary>
+        <summary>Provenance &amp; data</summary>
         {detailsOpen ? (
           <div>
             <dl>
@@ -901,7 +901,7 @@ function AnalysisResultRow({
               onClick={() => setEvidenceOpen((open) => !open)}
             >{evidenceOpen ? 'Hide evidence' : 'Open evidence'}</button>
           ) : null}
-          {revealId ? <button className="motif-cs-mini-button" type="button" onClick={() => onRevealRecord(revealId)}>Reveal Input</button> : null}
+          {revealId ? <button className="motif-cs-mini-button" type="button" onClick={() => onRevealRecord(revealId)}>Reveal input</button> : null}
           <button
             ref={setDeleteRef}
             className="motif-cs-mini-button"
@@ -1046,44 +1046,46 @@ export function ClaudeScienceAgentResultsPanel({
 
   return (
     <section ref={resultsPanelRef} className="motif-cs-agent-results" aria-label="Agent and analysis results" tabIndex={-1}>
-      <div className="motif-cs-agent-results-toolbar">
-        <label>
-          <span>Show</span>
-          <select
-            name="analysis-result-filter"
-            autoComplete="off"
-            value={filter}
-            onChange={(event) => {
-              setFilter(event.target.value as ResultFilter);
-              setVisibleCount(RESULT_PAGE_SIZE);
-              setPendingDeleteId(null);
-            }}
-          >
-            <option value="all">All Results</option>
-            <option value="design">Design &amp; PCR</option>
-            <option value="sequence">Sequence &amp; Structure</option>
-            <option value="evidence">Reports &amp; Tables</option>
-          </select>
-        </label>
-        {/* Both empty cases below already explain themselves - "No analysis
-            results yet" and "No results in this view" - and each says more than
-            a zero would. */}
-        {ordered.length ? (
-          <span>{visibleResults.length < ordered.length
-            ? `${visibleResults.length.toLocaleString()} of ${ordered.length.toLocaleString()} shown`
-            : `${ordered.length.toLocaleString()} shown`}</span>
-        ) : null}
-      </div>
+      {/* No filter until there is something to filter: over an empty list it
+          would offer four views of nothing. */}
+      {results.length > 0 ? (
+        <div className="motif-cs-agent-results-toolbar">
+          <label>
+            <span>Show</span>
+            <select
+              name="analysis-result-filter"
+              autoComplete="off"
+              value={filter}
+              onChange={(event) => {
+                setFilter(event.target.value as ResultFilter);
+                setVisibleCount(RESULT_PAGE_SIZE);
+                setPendingDeleteId(null);
+              }}
+            >
+              <option value="all">All results</option>
+              <option value="design">Design &amp; PCR</option>
+              <option value="sequence">Sequence &amp; structure</option>
+              <option value="evidence">Reports &amp; tables</option>
+            </select>
+          </label>
+          {/* A count appears only when something is hidden: by the filter or by
+              paging. "3 shown" of 3 saved says nothing. Both empty cases below
+              explain themselves and say more than a zero would. */}
+          {visibleResults.length > 0 && visibleResults.length < results.length ? (
+            <span>{`${visibleResults.length.toLocaleString()} of ${results.length.toLocaleString()} shown`}</span>
+          ) : null}
+        </div>
+      ) : null}
 
       {results.length === 0 ? (
         <div className="motif-cs-agent-results-empty">
           <strong>No analysis results yet</strong>
-          <span>Primer designs, assembly plans, construct checks, BLAST hits, structures, reports, and tables will appear here with their provenance.</span>
+          <span>Saved analyses appear here.</span>
         </div>
       ) : ordered.length === 0 ? (
         <div className="motif-cs-agent-results-empty">
           <strong>No results in this view</strong>
-          <span>Choose All Results to see the complete saved analysis history.</span>
+          <span>Choose All results.</span>
         </div>
       ) : (
         <div className="motif-cs-agent-result-list" data-testid="analysis-result-list">

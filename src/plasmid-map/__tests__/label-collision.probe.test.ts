@@ -6,7 +6,7 @@
  * internal label-placement changes.
  */
 import { describe, it, expect } from 'vitest';
-import { computeMapLayout } from '../layout';
+import { computeMapLayout, RESTRICTION_LABEL_FONT_MODE } from '../layout';
 import type { MapInput, MapLabelRender, MapLayout } from '../types';
 import type { Feature, RestrictionSite } from '../../bio/types';
 import { approxTextWidth, LABEL_LINE_HEIGHT_PX } from '../geometry/labels';
@@ -57,7 +57,7 @@ interface Tagged { fam: string; key: string; box: Box; text: string; label: MapL
 function visibleLabels(layout: MapLayout, fontMode: LabelFontMode = 'proportional'): Tagged[] {
   const out: Tagged[] = [];
   for (const f of layout.features) if (f.label) out.push({ fam: 'feat', key: f.id, box: labelBox(f.label, fontMode), text: f.label.text, label: f.label });
-  for (const r of layout.restrictions) if (r.label) out.push({ fam: 'rest', key: r.clusterId, box: labelBox(r.label, 'monospace'), text: r.label.text, label: r.label });
+  for (const r of layout.restrictions) if (r.label) out.push({ fam: 'rest', key: r.clusterId, box: labelBox(r.label, RESTRICTION_LABEL_FONT_MODE), text: r.label.text, label: r.label });
   for (const c of layout.coordinates) if (c.label) {
     const label = { ...c.label, leader: [], inside: true } as MapLabelRender;
     out.push({ fam: 'coord', key: `c${c.bp}`, box: labelBox(label, fontMode), text: c.label.text, label });

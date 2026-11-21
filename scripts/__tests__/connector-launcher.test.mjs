@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
+import { stampConnectorBinding } from '../build-claude-science-artifact.mjs';
+import { buildMotifMcpServer } from '../build-motif-mcp-server.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const temporaryDirectories = [];
@@ -13,7 +15,7 @@ afterEach(() => {
 });
 
 describe('connector launcher', () => {
-  function runConfiguredLauncher(launcher, bundle, nodeBinary, environment) {
+  function runConfiguredLauncher(launcher, bundle, nodeBinary, environment, input) {
     return spawnSync('/usr/bin/env', [
       '-i',
       `MOTIF_NODE_BIN=${nodeBinary}`,
@@ -27,10 +29,12 @@ describe('connector launcher', () => {
     ], {
       encoding: 'utf8',
       env: environment,
+      input,
+      timeout: 10_000,
     });
   }
 
-  it('quotes an absolute Node.js path during both version probing and execution', () => {
+  it('quotes the absolute Node.js path and invokes it exactly once', () => {
     const bundle = mkdtempSync(join(tmpdir(), 'motif connector launcher '));
     temporaryDirectories.push(bundle);
     mkdirSync(join(bundle, 'scripts'), { recursive: true });
@@ -43,7 +47,8 @@ describe('connector launcher', () => {
     writeFileSync(server, 'server fixture\n');
     writeFileSync(join(bundle, 'dist-motif', 'claude-science', 'motif-mcp-app.html'), 'app fixture\n');
     writeFileSync(join(bundle, 'dist-motif', 'motif-template.html'), 'template fixture\n');
-    writeFileSync(nodeBinary, '#!/usr/bin/env bash\nif [[ "$1" == "-p" ]]; then printf "1\\n"; else printf "%s\\n" "$1"; fi\n');
+    const invocations = join(bundle, 'node-invocations');
+    writeFileSync(nodeBinary, `#!/bin/bash\nprintf '%s\\n' "$1" >> ${JSON.stringify(invocations)}\nprintf '%s\\n' "$1"\n`);
     chmodSync(launcher, 0o755);
     chmodSync(nodeBinary, 0o755);
 
@@ -53,10 +58,53 @@ describe('connector launcher', () => {
       MOTIF_ROOT: '/tmp/untrusted-root',
     });
     expect(result.status).toBe(0);
-    expect(result.stdout.trim()).toBe(join(realpathSync(bundle), 'dist-motif', 'claude-science', 'motif-mcp-server.mjs'));
+    const canonicalServer = join(realpathSync(bundle), 'dist-motif', 'claude-science', 'motif-mcp-server.mjs');
+    expect(result.stdout.trim()).toBe(canonicalServer);
+    expect(readFileSync(invocations, 'utf8')).toBe(`${canonicalServer}\n`);
   });
 
-  it('clears injected Node, proxy, agent, and credential variables before probing and execution', () => {
+  it('checks the Node version inside the bundled server before initialization', async () => {
+    const bundle = mkdtempSync(join(tmpdir(), 'motif connector version '));
+    temporaryDirectories.push(bundle);
+    mkdirSync(join(bundle, 'scripts'));
+    const launcher = join(bundle, 'scripts', 'run-motif-claude-science-mcp.sh');
+    cpSync(join(root, 'scripts', 'run-motif-claude-science-mcp.sh'), launcher);
+    const out = join(bundle, 'dist-motif', 'claude-science', 'motif-mcp-server.mjs');
+    await buildMotifMcpServer({ out });
+    const meta = `<meta name="motif-build-id" content="${'a'.repeat(64)}">`;
+    const body = meta + '<body><script type="application/json" id="motif-artifact-data">{}</script>';
+    const ending = '</body></html>';
+    const version = '1.0.0';
+    const app = body + '<script data-motif-mcp-app-bridge>void 0;</script>' + ending;
+    writeFileSync(join(bundle, 'package.json'), JSON.stringify({ version }));
+    writeFileSync(join(bundle, 'dist-motif', 'claude-science', 'motif-mcp-app.html'),
+      stampConnectorBinding(app, readFileSync(out, 'utf8'), version));
+    writeFileSync(join(bundle, 'dist-motif', 'motif-template.html'), body + ending);
+    const spoof = join(bundle, 'old-version.mjs');
+    writeFileSync(spoof, "Object.defineProperty(process.versions, 'node', { value: '22.12.0' });\n");
+    const nodeBinary = join(bundle, 'node');
+    writeFileSync(nodeBinary,
+      `#!/bin/bash\nexec ${JSON.stringify(process.execPath)} --import ${JSON.stringify(spoof)} "$@"\n`,
+      { mode: 0o755 });
+    const input = JSON.stringify({
+      jsonrpc: '2.0', id: 1, method: 'initialize',
+      params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'launcher-test', version: '1' } },
+    }) + '\n';
+
+    const rejected = runConfiguredLauncher(launcher, bundle, nodeBinary, {}, input);
+    expect(rejected.status).toBe(1);
+    expect(rejected.stdout).toBe('');
+    expect(rejected.stderr).toBe('[motif-claude-science] Node.js 22.13 or newer (22.x) or 24 or newer is required.\n');
+
+    const accepted = runConfiguredLauncher(launcher, bundle, process.execPath, {}, input);
+    expect(accepted.status).toBe(0);
+    expect(JSON.parse(accepted.stdout)).toMatchObject({
+      id: 1,
+      result: { serverInfo: { name: 'motif-claude-science' } },
+    });
+  });
+
+  it('clears injected Node, proxy, agent, and credential variables before execution', () => {
     const bundle = mkdtempSync(join(tmpdir(), 'motif connector env '));
     temporaryDirectories.push(bundle);
     mkdirSync(join(bundle, 'scripts'), { recursive: true });

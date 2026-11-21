@@ -154,6 +154,26 @@ export class RestrictionScanResultLimitError extends RestrictionInputError {
   }
 }
 
+export type RecoverableRestrictionScan =
+  | { ok: true; sites: RestrictionSite[] }
+  | { ok: false; code: 'scan_work_limit' | 'result_limit'; message: string };
+
+/** `findRestrictionSites` that reports a work or result limit as a value instead of throwing. */
+export function tryFindRestrictionSites(
+  sequence: string,
+  enzymes: RestrictionEnzyme[],
+  options?: Parameters<typeof findRestrictionSites>[2],
+): RecoverableRestrictionScan {
+  try {
+    return { ok: true, sites: findRestrictionSites(sequence, enzymes, options) };
+  } catch (error) {
+    if (error instanceof RestrictionInputError && (error.code === 'scan_work_limit' || error.code === 'result_limit')) {
+      return { ok: false, code: error.code, message: error.message };
+    }
+    throw error;
+  }
+}
+
 const RESTRICTION_METHYLATION_TARGETS = new Set<RestrictionMethylationTarget>([
   'dam',
   'dcm',
@@ -368,6 +388,7 @@ const IUPAC_BASES: Readonly<Record<string, ReadonlySet<string>>> = {
 
 const IUPAC_SYMBOLS = new Set(Object.keys(IUPAC_BASES));
 const PLAIN_DNA_PATTERN = /^[ACGT]*$/;
+const IUPAC_DNA_PATTERN = /^[ACGTRYSWKMBDHVN]*$/;
 
 function hasControlCharacters(value: string): boolean {
   return [...value].some((character) => {
@@ -382,9 +403,8 @@ export function normalizeRestrictionSequence(seq: string): string {
     throw new RestrictionInputError('invalid_sequence', 'Restriction sequence must be a string.');
   }
   const upperSeq = seq.toUpperCase();
-  // Fast path: a plain ACGT string needs no per-character filtering or
-  // RNA conversion, only the same length bound as the general path.
-  if (PLAIN_DNA_PATTERN.test(upperSeq)) {
+  // An unformatted DNA string needs only the length check.
+  if (IUPAC_DNA_PATTERN.test(upperSeq)) {
     if (upperSeq.length > MAX_RESTRICTION_SEQUENCE_LENGTH) {
       throw new RestrictionInputError(
         'invalid_sequence',
@@ -629,11 +649,13 @@ function cleavageGeometryForRecognitionLength(
   const overhangStart = finite ? Math.min(...positions) : Number.NaN;
   const overhangEnd = finite ? Math.max(...positions) : Number.NaN;
   const overhangLength = finite ? overhangEnd - overhangStart : Number.NaN;
+  const overhang = mode !== 'double-strand' || forwardTop === forwardBottom
+    ? 'blunt'
+    : forwardTop < forwardBottom ? '5prime' : '3prime';
   const valid = finite
     && Number.isInteger(overhangStart)
     && Number.isInteger(overhangEnd)
-    && (mode === 'double-strand' || enzyme.overhang === 'blunt')
-    && (mode !== 'double-strand' || (enzyme.overhang === 'blunt' ? overhangLength === 0 : overhangLength > 0));
+    && enzyme.overhang === overhang;
   return {
     mode,
     topCutPosition,
@@ -923,11 +945,14 @@ const RESTRICTION_CACHE_MAX_RESULTS = 50_000;
 const RESTRICTION_CACHE_MAX_RESULTS_PER_ENTRY = 25_000;
 
 type RestrictionSiteCacheEntry = {
+  sequence: string;
+  parameters: string;
   sites: RestrictionSite[];
-  keyChars: number;
 };
 
-const restrictionSiteCache = new Map<string, RestrictionSiteCacheEntry>();
+const restrictionSiteCache: RestrictionSiteCacheEntry[] = [];
+let restrictionSiteCacheChars = 0;
+let restrictionSiteCacheResults = 0;
 
 function restrictionMethylationKey(options: FindRestrictionSitesOptions | undefined): string {
   const assumptions = options?.methylationAssumptions ?? options?.methylation ?? options?.methylationState;
@@ -947,78 +972,35 @@ export function findRestrictionSites(
   enzymes: RestrictionEnzyme[] = RESTRICTION_ENZYMES,
   options?: FindRestrictionSitesOptions,
 ): RestrictionSite[] {
-  // Landing on a record you had already opened rescanned it from scratch. The
-  // rail shows "76/76 sites" for pUC19, and switching away and back recomputed
-  // every one of them: 7.4-9.6ms per switch on the synthetic pUC19 once bundled,
-  // which became the
-  // largest named JS cost in a record switch once the ORF scan was memoised. A
-  // scan of a 5,420 bp record against the shipped catalog costs 6.1ms; the
-  // three normalisations that build this key cost 0.23ms of that, and they run
-  // in the scanner's own order so a call with both a bad sequence and a bad
-  // enzyme still reports the sequence first.
-  //
-  // The key is built from the only four things the scan reads - the normalized
-  // sequence, the normalized enzymes, the topology, and the methylation state -
-  // so it cannot answer for inputs it was not computed from. Enzymes are
-  // serialized whole rather than by a hand-picked list of fields, because the
-  // enzyme list is user-editable: a custom enzyme can differ from a catalog one
-  // of the same name by a single cut offset, and a key naming fields by hand
-  // would silently stop covering a field added later. Order is in the key
-  // because order is in the output. Showing a wrong cut position in a cloning
-  // tool is worse than any latency this saves, so the key is deliberately
-  // larger than it needs to be rather than cleverer.
-  //
-  // This wraps the compatibility entry point rather than `scanRestrictionSites`
-  // because that is what the workspace calls, and because a memo underneath the
-  // scanner would hide a second scan from the call-counting guard in
-  // `findNonCutters`.
   const upper = normalizeRestrictionSequence(seq);
   const topology = normalizeRestrictionTopology(options?.topology);
   const normalizedEnzymes = normalizeRestrictionEnzymes(enzymes);
-  const cacheKey = `${topology}|${restrictionMethylationKey(options)}|${JSON.stringify(normalizedEnzymes)}|${upper}`;
-  // Every return is a copy. A caller that sorted the array it was handed, or
-  // annotated a site in place, would otherwise rewrite the stored answer for
-  // everyone after it.
-  const cached = restrictionSiteCache.get(cacheKey);
+  // Compare the sequence separately so a lookup needs no combined sequence
+  // key. Serialize every normalized enzyme field, including list order.
+  const parameters = `${topology}|${restrictionMethylationKey(options)}|${JSON.stringify(normalizedEnzymes)}`;
+  const cached = restrictionSiteCache.find((entry) => entry.parameters === parameters && entry.sequence === upper);
   if (cached) return cached.sites.map((site) => ({ ...site }));
 
-  const result = scanRestrictionSites(seq, enzymes, options);
-  // A truncated result is not stored. It only arises when a work or result
-  // ceiling stopped enumeration, so the entry would be both the largest and the
-  // least useful thing in the map - and this call throws rather than returns.
+  const result = scanRestrictionSites(upper, enzymes, options);
   if (!result.complete) throw new RestrictionScanResultLimitError(result);
 
-  // A short record scanned with a short recognition sequence can produce one
-  // retained object per base. Return the complete answer, but do not keep an
-  // oversized array alive in the compatibility cache.
+  const entryChars = upper.length + parameters.length;
   if (
-    cacheKey.length > RESTRICTION_CACHE_MAX_CHARS
+    entryChars > RESTRICTION_CACHE_MAX_CHARS
     || result.sites.length > RESTRICTION_CACHE_MAX_RESULTS_PER_ENTRY
   ) return result.sites;
 
-  restrictionSiteCache.set(cacheKey, { sites: result.sites, keyChars: cacheKey.length });
-  // Bound entry count, serialized inputs, and retained result objects. The
-  // per-entry ceiling ensures the newly inserted entry can fit by itself.
-  let cachedChars = 0;
-  let cachedResults = 0;
-  for (const entry of restrictionSiteCache.values()) {
-    cachedChars += entry.keyChars;
-    cachedResults += entry.sites.length;
-  }
+  restrictionSiteCache.push({ sequence: upper, parameters, sites: result.sites });
+  restrictionSiteCacheChars += entryChars;
+  restrictionSiteCacheResults += result.sites.length;
   while (
-    restrictionSiteCache.size > 0
-    && (
-      restrictionSiteCache.size > RESTRICTION_CACHE_LIMIT
-      || cachedChars > RESTRICTION_CACHE_MAX_CHARS
-      || cachedResults > RESTRICTION_CACHE_MAX_RESULTS
-    )
+    restrictionSiteCache.length > RESTRICTION_CACHE_LIMIT
+    || restrictionSiteCacheChars > RESTRICTION_CACHE_MAX_CHARS
+    || restrictionSiteCacheResults > RESTRICTION_CACHE_MAX_RESULTS
   ) {
-    const oldest = restrictionSiteCache.keys().next();
-    if (oldest.done) break;
-    const evicted = restrictionSiteCache.get(oldest.value);
-    cachedChars -= evicted?.keyChars ?? 0;
-    cachedResults -= evicted?.sites.length ?? 0;
-    restrictionSiteCache.delete(oldest.value);
+    const evicted = restrictionSiteCache.shift()!;
+    restrictionSiteCacheChars -= evicted.sequence.length + evicted.parameters.length;
+    restrictionSiteCacheResults -= evicted.sites.length;
   }
   return result.sites.map((site) => ({ ...site }));
 }

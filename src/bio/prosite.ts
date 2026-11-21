@@ -13,6 +13,7 @@
  *   - `e(n,m)`       n to m of element e        e.g.  x(2,4)
  *   - `<`            anchor to the sequence start (N-terminus)
  *   - `>`            anchor to the sequence end   (C-terminus)
+ *   - `.`            optional terminator
  *
  * Example — the canonical N-glycosylation site:  N-{P}-[ST]-{P}
  * Example — a C2H2 zinc finger core:  C-x(2,4)-C-x(3)-[LIVMFYWC]-x(8)-H-x(3,5)-H
@@ -29,7 +30,7 @@ export type PrositeAlphabet = 'dna' | 'rna' | 'protein';
 // Any of these characters means the user is writing a PROSITE pattern rather
 // than a plain IUPAC string (ATGN). Lowercase `x` is the PROSITE "any residue"
 // token — detection runs on the RAW pattern (before upper-casing) so it survives.
-const PROSITE_SYNTAX = /[-[\]{}()<>]|x/;
+const PROSITE_SYNTAX = /[-[\]{}()<>]|x|\.$/;
 
 /** True when `pattern` uses PROSITE syntax (and should be parsed as such). */
 export function isPrositePattern(pattern: string): boolean {
@@ -37,19 +38,22 @@ export function isPrositePattern(pattern: string): boolean {
 }
 
 const REPEAT_LIMIT = 5000; // guard against `x(999999)` blowing up the regex
+const RESIDUE_LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+
+function prositeBody(pattern: string): string {
+  return pattern.replace(/\s+/g, '').replace(/\.$/, '');
+}
 
 /**
  * Translate a PROSITE pattern to a regex source string (no flags, no wrapping
  * group). Returns null for an empty or syntactically invalid pattern — callers
  * surface that as "invalid pattern" rather than "0 matches".
  *
- * `[set]`/`{set}` keep their explicit residues; `x` and `{set}` use `[A-Z]` /
- * `[^set]`, which is correct for clean letter-only sequences regardless of
- * alphabet. `alphabet` is accepted for symmetry with the IUPAC path and future
- * use but is not needed for the explicit-set PROSITE semantics.
+ * `x` and `{set}` match only letters. The regex uses the same letter set for
+ * every alphabet. `alphabet` keeps the signature consistent with the IUPAC path.
  */
 export function prositeToRegexSource(pattern: string, _alphabet: PrositeAlphabet = 'protein'): string | null {
-  const raw = pattern.replace(/\s+/g, '');
+  const raw = prositeBody(pattern);
   if (!raw) return null;
 
   let i = 0;
@@ -77,7 +81,8 @@ export function prositeToRegexSource(pattern: string, _alphabet: PrositeAlphabet
       if (close === -1) return null;
       const set = raw.slice(i + 1, close).toUpperCase();
       if (!/^[A-Z]+$/.test(set)) return null;
-      cls = ch === '[' ? `[${set}]` : `[^${set}]`;
+      const allowed = ch === '[' ? set : [...RESIDUE_LETTERS].filter((letter) => !set.includes(letter)).join('');
+      cls = `[${allowed}]`;
       i = close + 1;
     } else if (ch === 'x' || ch === 'X') {
       cls = '[A-Z]';
@@ -122,9 +127,8 @@ export function prositeToRegexSource(pattern: string, _alphabet: PrositeAlphabet
  * The residue alphabets PROSITE classes are intersected against when a pattern
  * is turned into per-position allowed-sets for CONSTRAINED generation (below).
  * `[ST]` keeps S,T; `{P}` becomes "every alphabet residue except P"; `x` is the
- * free wildcard (null set). The regex path above doesn't need these — `[^P]`
- * etc. are alphabet-agnostic there — but the generator must emit a concrete
- * residue, so it needs the explicit allowed set per position.
+ * free wildcard (null set). The regex scans letters in existing sequences.
+ * The structural parser uses the alphabet-specific allowed set per position.
  */
 export const PROSITE_ALPHABETS: Record<PrositeAlphabet, string> = {
   dna: 'ACGT',
@@ -162,7 +166,7 @@ export function parsePrositePattern(
   pattern: string,
   alphabet: PrositeAlphabet = 'protein',
 ): ParsedPrositePattern | null {
-  const raw = pattern.replace(/\s+/g, '');
+  const raw = prositeBody(pattern);
   if (!raw) return null;
   const ALPHA = [...PROSITE_ALPHABETS[alphabet]];
 
@@ -312,7 +316,7 @@ export function findPrositeMatches(
  * length, so we compute the real max here.
  */
 export function prositeMaxMatchLength(pattern: string): number {
-  const raw = pattern.replace(/\s+/g, '');
+  const raw = prositeBody(pattern);
   let i = 0;
   let total = 0;
   while (i < raw.length) {

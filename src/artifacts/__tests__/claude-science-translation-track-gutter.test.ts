@@ -22,6 +22,28 @@ describe('translation track gutter labels', () => {
     expect(Object.fromEntries(labels)).toEqual({ a: 'cds1', b: 'cds2', c: 'trans' });
   });
 
+  it('draws the feature name, not its type, for a name longer than the gutter', () => {
+    // Every row is named for its feature, whatever the feature's type. The view hides a name
+    // that does not fit the gutter and keeps the full name as the row's accessible text.
+    const labels = translationTrackGutterLabels([
+      { id: 'demo', label: 'demo_cds', kind: 'cds' },
+      { id: 'lac', label: 'lacZ-alpha', kind: 'resistance' },
+      { id: 'amp', label: 'AmpR', kind: 'resistance' },
+    ]);
+    expect(Object.fromEntries(labels)).toEqual({ demo: 'demo_cds', lac: 'lacZ-alpha', amp: 'AmpR' });
+  });
+
+  it('keeps long names that start apart, and numbers long names that start alike', () => {
+    expect(Object.fromEntries(translationTrackGutterLabels([
+      { id: 'a', label: 'alpha_subunit', kind: 'cds' },
+      { id: 'b', label: 'beta_subunit', kind: 'cds' },
+    ]))).toEqual({ a: 'alpha_subunit', b: 'beta_subunit' });
+    expect(Object.fromEntries(translationTrackGutterLabels([
+      { id: 'a', label: 'subunit_alpha', kind: 'cds' },
+      { id: 'b', label: 'subunit_beta', kind: 'cds' },
+    ]))).toEqual({ a: 'cds1', b: 'cds2' });
+  });
+
   it('keeps names that already draw apart', () => {
     const labels = translationTrackGutterLabels([
       { id: 'tet', label: 'TetR', kind: 'resistance' },

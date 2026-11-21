@@ -1,50 +1,42 @@
 ---
 name: motif-for-claude-science
-description: Creates a self-contained Motif for Claude Science workbench, optionally preloaded with records, alignments, traces, and typed results.
+description: "Shows GenBank, FASTA, or raw DNA, RNA, and protein in the Motif workbench: plasmid maps, features, primers, alignments, and Sanger traces. Use to show, open, or view sequences."
 ---
 
 # Motif for Claude Science
 
-Create a user-owned self-contained HTML workbench from the connected Motif
-resource. Use the live MCP App when the current host is known to mount it.
+## Show a sequence
 
-## Connected Claude Science path
+For a dependable visual result, call `motif_create_workbench_artifact` once
+with `content` (exact FASTA, GenBank, raw sequence, or Motif JSON) or `payload`
+(Motif JSON). Include the source `filename` when available. Set `molecule`
+to `dna`, `rna`, or `protein` when the alphabet is ambiguous. Gapped FASTA
+opens with its alignment.
 
-For a dependable visual result, call `motif_create_workbench_artifact` with
-one bounded Motif payload or exact FASTA, GenBank, raw-sequence, or Motif JSON
-content. Pass either `payload` or `content`, never both. Include `filename`
-when it carries a useful format/provenance hint and include an explicit
-`molecule` for ambiguous raw sequence text. The tool returns status text and a
-separate HTML resource: preserve `content[].resource.text` exactly, save it as
-the suggested filename, and open it in Claude Science's right pane. Do not
-prepend the status text or strip text from the HTML resource.
-
+Open the returned HTML in the side panel. Preserve `content[].resource.text`
+exactly. Report the record names, lengths, and supplied feature counts.
 Use `motif_open_workbench` first only when the current host is already known to
-mount the live MCP App. Otherwise, use it after the portable artifact as an
-optional live-App check.
-
-Verify the returned `motif.mcp.workbench.v1` schema, mode, source name, record
-count, and residue count against the intended input. A successful tool call
-does not prove a frame mounted: confirm the visible Motif identity and exact
-records in the rendered UI. Current Claude Science local/custom connector
-builds may not register Motif as an artifact viewer. Use the viewer chooser
-only when Motif is actually listed. The host message
-`Sequence viewer unavailable—showing as text` is a generic fallback, not a
-Motif parse error.
-
-The artifact result includes filename, byte count, SHA-256 metadata, and the
-runtime build ID; it does not write a file. Verify the visible workbench after
-opening it. The file is interactive, but it is an immutable snapshot rather
-than a live MCP App.
+mount the live MCP App.
 
 A request to open, show, reload, or retry an existing construct is a display
 request. Reuse the exact latest sequence, annotations, colors, and provenance.
-Do not add or remove biological content unless the user explicitly requests
-that change.
+Add or remove biological content only at the user's request.
 
-These connector tools are ephemeral viewer/export operations. They do not
-write a sequence database, run external executables, or make AB1 binary data a
-text artifact.
+## Build a record
+
+Send `payload` when you add features, primers, alignments, or results. See
+**Payload shape** for the record format. Set `topology` to `linear` for a
+linear DNA record. Set `selectedRecordId` to choose the initial record.
+
+### Feature labels
+
+Use the names a scientist expects, in one or two words. Examples include
+`AmpR`, `ori`, `lac promoter`, and `His tag`. Number repeats, such as
+`lacO 1` and `lacO 2`. Put descriptions in `metadata.note` and reserve
+`name` for the label. Use `primer_bind` for primers and name them `F1`, `R1`,
+or with the gene and direction, such as `lacZ F`. For records you build,
+omit whole-record `source` features and leave colors to Motif unless
+the user specifies them.
 
 ## Runtime boundary
 
@@ -54,12 +46,8 @@ unless the current session has a verified browser bridge. The bundled MCP App
 uses a narrow workspace adapter; it does not expose those globals as general
 model tools.
 
-Without the connector or another verified bridge, the proven path is:
-
-1. Generate an HTML file with the bundled helper.
-2. Ask the user to open it in a browser.
-3. Let the user interact through the visible Inventory, Sequence, Map, and
-   Tools controls.
+Without the connector, generate an HTML file with the bundled helper and give
+the user its path.
 
 The HTML cannot launch native executables. It includes a bounded in-browser
 star-alignment preview, but MAFFT, MUSCLE, and Clustal Omega run outside the
@@ -338,7 +326,7 @@ successful result insertion. Without a browser bridge, preload the same fields
 through `create-artifact.mjs`; never claim a page global was called.
 
 The artifact is a portable workspace rather than a secure growing database.
-Database JSON and ZIP preserve analysis results and assets across reloads, but
+Workspace JSON and ZIP preserve analysis results and assets across reloads, but
 they are ordinary user-owned files and are not encrypted vaults. For a shared
 or long-lived sequence library, use an independently reviewed durable storage
 system with transactional writes, access controls, and tested backups instead
@@ -348,7 +336,7 @@ include a native connector or durable database.
 ## Review Sanger sequencing results
 
 The generated workbench accepts Applied Biosystems `.ab1` and `.abi` files in
-**Add Entry → Choose files** and by file drop. AB1 is binary, so never read it
+**Import records → Choose files** and by file drop. AB1 is binary, so never read it
 as UTF-8 or paste its bytes into the sequence field. Let the workbench's
 bounded ABIF parser read the base calls, Phred quality, called-peak positions,
 four dye channels, and safe source metadata.
@@ -369,7 +357,7 @@ To compare a read with a reference:
    reverse-primer reads before supplying their FASTA.
 3. Choose the correct **Template** row, then open **Traces**. Inspect mismatch
    navigation, quality, forward/reverse orientation, and the chromatogram.
-4. Export Database JSON or ZIP before closing to preserve channels and quality.
+4. Export Workspace JSON or ZIP before closing to preserve channels and quality.
 
 The viewer reads calls already stored by the instrument; it is not a basecaller
 and does not infer missing channels. Missing optional quality/peak/channel
@@ -398,16 +386,16 @@ globals were called.
 
 ## After generation
 
-- Tell the user where the HTML was written.
-- State that the file is self-contained and opens locally in a modern browser.
+- Connector route. Open the returned HTML in the side panel.
+- Script route. Give the user the path to the self-contained HTML file.
 - Do not report browser-side mutations or successful UI interaction unless the
   session actually opened the file and verified those rendered results.
 - For external MSA output, report which executable/version actually ran and
   whether its result was preloaded at generation time or imported by the user.
   Do not report success unless `run-msa.mjs` completed and its payload passed
   artifact validation.
-- If the user later changes the inventory in the UI, tell them that records are
-  session-only until an exported file is verified on disk. Database JSON and
+- If the user later changes the library in the UI, tell them that records are
+  session-only until an exported file is verified on disk. Workspace JSON and
   ZIP retain the complete artifact record; FASTA, basic GenBank/GFF3, CSV, and
   reports are also available for interchange. A browser download request is
   not itself proof that a checkpoint was saved.
@@ -415,7 +403,7 @@ globals were called.
   feature-specific diagnostics. Fuzzy bounds remain guarded when their
   coordinates are representable; valid between-base and remote-accession
   locations are retained but quarantined because Motif cannot project them onto
-  the local sequence. Basic GenBank is not full INSDC support; use Database JSON
+  the local sequence. Basic GenBank is not full INSDC support; use Workspace JSON
   or ZIP for a complete checkpoint.
 - For Sanger review, report that AB1 calls were imported and visually checked;
   do not claim the artifact re-base-called the raw electropherogram. State

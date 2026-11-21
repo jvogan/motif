@@ -44,6 +44,22 @@ Element.prototype.scrollTo = function scrollTo() {};
 Element.prototype.scrollIntoView = function scrollIntoView() {};
 document.elementFromPoint = () => null;
 
+// The sequence waits for its first width measurement before building rows.
+// Give the layout-free fixture a 60-base content width and a 7px character.
+const clientWidth = Object.getOwnPropertyDescriptor(Element.prototype, 'clientWidth')!;
+Object.defineProperty(Element.prototype, 'clientWidth', {
+  ...clientWidth,
+  get(this: Element) {
+    return this.classList.contains('motif-cs-sequence') ? 48 + 10 + 10 + 60 * 7 : clientWidth.get!.call(this);
+  },
+});
+const getBoundingClientRect = Element.prototype.getBoundingClientRect;
+Element.prototype.getBoundingClientRect = function measureFixtureElement(this: Element) {
+  return this.classList.contains('motif-cs-seq-ruler')
+    ? new DOMRect(0, 0, 700, 16)
+    : getBoundingClientRect.call(this);
+};
+
 const root = document.createElement('div');
 root.id = 'root';
 document.body.appendChild(root);

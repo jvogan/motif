@@ -2,7 +2,7 @@ import { basename } from 'node:path';
 
 import { VALID_NCBI_TABLE_IDS } from '../../src/bio/codon-tables.js';
 import { parseFasta } from '../../src/bio/fasta-parser.js';
-import { parseGenBank } from '../../src/bio/genbank-parser.js';
+import { hasGenBankLocus, parseGenBank } from '../../src/bio/genbank-parser.js';
 import { resolveFeatureColor } from '../../src/bio/feature-palette.js';
 import { normalizeSequenceStrict } from '../../src/bio/sequence-normalization.js';
 import type { Feature, SequenceType, Topology } from '../../src/bio/types.js';
@@ -14,6 +14,7 @@ import {
   normalizeArtifactSangerTrace,
 } from '../../src/artifacts/claude-science-sanger.js';
 import { normalizeArtifactWorkspaceEnvelope } from '../../src/artifacts/claude-science-workspace-envelope.js';
+import { MAX_MOTIF_PRELOAD_BYTES } from '../../src/artifacts/motif-preload-limits.js';
 
 import {
   MOTIF_WORKBENCH_RESULT_SCHEMA,
@@ -24,7 +25,7 @@ import {
 
 export const MOTIF_MCP_LIMITS = Object.freeze({
   maxContentBytes: 4 * 1024 * 1024,
-  maxPayloadBytes: 32 * 1024 * 1024,
+  maxPayloadBytes: MAX_MOTIF_PRELOAD_BYTES,
   maxJsonDepth: 21,
   maxJsonNodes: 250_000,
   maxMetadataJsonDepth: 16,
@@ -56,6 +57,7 @@ const RNA_ALPHABET = /^[ACGUNRYSWKMBDHV]+$/u;
 const PROTEIN_ALPHABET = /^[ACDEFGHIKLMNPQRSTVWYOUJBXZ*]+$/u;
 type JsonBudget = { nodes: number };
 type RecordLike = Record<string, unknown>;
+type InputMolecule = NonNullable<MotifWorkbenchInput['molecule']>;
 
 export type MotifWorkbenchInput = {
   payload?: unknown;
@@ -418,7 +420,7 @@ function validateSites(sites: unknown, path: string): void {
   }
 }
 
-function validateRecord(record: unknown, index: number): { length: number; sangerTraceSamples: number } {
+function validateRecord(record: unknown, index: number): { length: number; circular: boolean; sangerTraceSamples: number } {
   const path = `payload.records[${index}]`;
   if (!isPlainObject(record)) throw new Error(`${path} must be a plain object.`);
   const molecule = record.molecule ?? record.type;
@@ -491,7 +493,9 @@ function validateRecord(record: unknown, index: number): { length: number; sange
       throw new Error(`${path}.sangerTrace is invalid: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  return { length: sequence.length, sangerTraceSamples };
+  // The workbench reads a DNA record with no stated topology as circular.
+  const circular = record.topology === 'circular' || (record.topology === undefined && recordType === 'dna');
+  return { length: sequence.length, circular, sangerTraceSamples };
 }
 
 function coercePayload(value: unknown): MotifWorkbenchPayload {
@@ -558,29 +562,25 @@ function applyProposalPreference(value: unknown, preference: boolean | undefined
   return next;
 }
 
-function omitTraceArraysForGenericJsonValidation(
-  payload: MotifWorkbenchPayload,
-  stripTopLevelBareTrace: boolean,
-): MotifWorkbenchPayload {
+function omitTraceArraysForGenericJsonValidation(payload: MotifWorkbenchPayload): MotifWorkbenchPayload {
   const stripRecord = (record: unknown): unknown => {
-    if (!isPlainObject(record) || record.sangerTrace === undefined) return record;
-    return {
-      ...record,
-      sangerTrace: isPlainObject(record.sangerTrace)
-        ? { schema: record.sangerTrace.schema, version: record.sangerTrace.version }
-        : record.sangerTrace,
-    };
+    if (!isPlainObject(record) || !isPlainObject(record.sangerTrace)) return record;
+    const trace = { ...record.sangerTrace };
+    for (const key of ['qualityScores', 'peakPositions'] as const) {
+      if (Array.isArray(trace[key])) trace[key] = [];
+    }
+    if (isPlainObject(trace.channels)) {
+      trace.channels = Object.fromEntries(Object.entries(trace.channels).map(([key, value]) => [
+        key, ['A', 'C', 'G', 'T'].includes(key) && Array.isArray(value) ? [] : value,
+      ]));
+    }
+    return { ...record, sangerTrace: trace };
   };
   const projected: MotifWorkbenchPayload = { ...payload };
   for (const field of ['records', 'entries', 'vectors'] as const) {
     if (Array.isArray(projected[field])) projected[field] = projected[field].map(stripRecord);
   }
   if (projected.record !== undefined) projected.record = stripRecord(projected.record);
-  if (stripTopLevelBareTrace && projected.sangerTrace !== undefined) {
-    projected.sangerTrace = isPlainObject(projected.sangerTrace)
-      ? { schema: projected.sangerTrace.schema, version: projected.sangerTrace.version }
-      : projected.sangerTrace;
-  }
   return projected;
 }
 
@@ -589,11 +589,6 @@ export function validateMotifPayload(value: unknown): {
   recordCount: number;
   residueCount: number;
 } {
-  const isBareRecord = isPlainObject(value)
-    && !['records', 'entries', 'vectors', 'record'].some((field) => (
-      Object.prototype.hasOwnProperty.call(value, field)
-    ))
-    && (typeof value.seq === 'string' || typeof value.sequence === 'string');
   const payload = coercePayload(value);
   // Reject an oversized record collection before creating any projected copy
   // for generic JSON validation. Callers may set a proposal preference, which
@@ -605,7 +600,7 @@ export function validateMotifPayload(value: unknown): {
     throw new Error(`Payload cannot contain more than ${MOTIF_MCP_LIMITS.maxRecords} records.`);
   }
   validateJsonValue(
-    omitTraceArraysForGenericJsonValidation(payload, isBareRecord),
+    omitTraceArraysForGenericJsonValidation(payload),
     'payload',
     { nodes: 0 },
     new WeakSet(),
@@ -620,6 +615,7 @@ export function validateMotifPayload(value: unknown): {
   const explicitIds = new Set<string>();
   const usedIds = new Set<string>();
   const recordLengths = new Map<string, number>();
+  const circularRecordIds = new Set<string>();
   let activeRecords = 0;
   let totalSangerTraceSamples = 0;
   const residueCount = records.reduce<number>((total, record, index) => {
@@ -641,6 +637,7 @@ export function validateMotifPayload(value: unknown): {
         usedIds,
       );
       if (record.active !== false) recordLengths.set(id, length);
+      if (record.active !== false && validatedRecord.circular) circularRecordIds.add(id);
     }
     return total + length;
   }, 0);
@@ -656,7 +653,7 @@ export function validateMotifPayload(value: unknown): {
     throw new Error(`Payload alignment workspace is invalid: ${error instanceof Error ? error.message : String(error)}`);
   }
   try {
-    normalizeArtifactWorkspaceEnvelope(payload, recordLengths);
+    normalizeArtifactWorkspaceEnvelope(payload, recordLengths, circularRecordIds);
   } catch (error) {
     throw new Error(`Payload workspace is invalid: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -675,7 +672,7 @@ export function validateMotifPayload(value: unknown): {
   // have their own workspace-wide sample-entry bound.
   const preparedPayload = applyFeaturePalette(JSON.parse(serialized) as MotifWorkbenchPayload);
   validateJsonValue(
-    omitTraceArraysForGenericJsonValidation(preparedPayload, isBareRecord),
+    omitTraceArraysForGenericJsonValidation(preparedPayload),
     'payload',
     { nodes: 0 },
     new WeakSet(),
@@ -740,26 +737,43 @@ function uniqueId(name: string, used: Set<string>): string {
   throw new Error('Could not create a unique record identifier.');
 }
 
-function recordsFromFasta(content: string, input: MotifWorkbenchInput): RecordLike[] {
-  const parsed = parseFasta(content);
+function inventoryFromFasta(content: string, input: MotifWorkbenchInput): MotifWorkbenchPayload {
+  const parsed = parseFasta(content, { preserveGaps: true, maxRecords: MOTIF_MCP_LIMITS.maxRecords });
   if (parsed.length === 0) throw new Error('No complete FASTA records were found.');
   const usedIds = new Set<string>();
-  return parsed.map((record, index) => {
+  const hint = moleculeHintFromInput(input);
+  const hasGaps = parsed.some(record => /[-.]/u.test(record.sequence));
+  const sequences = parsed.map(record => record.sequence.replace(/[-.]/gu, '').toUpperCase());
+  const alignmentMolecule = hasGaps ? inferredMolecule(sequences.join(''), hint) : undefined;
+  const records = parsed.map((record, index) => {
     const name = (record.rawHeader || record.header || `FASTA record ${index + 1}`).trim().slice(0, 1_024);
-    const molecule = inferredMolecule(record.sequence, moleculeHintFromInput(input));
+    const sequence = sequences[index];
     return {
       id: uniqueId(name, usedIds),
       name,
-      sequence: record.sequence.toUpperCase(),
-      molecule,
+      sequence,
+      molecule: alignmentMolecule ?? inferredMolecule(sequence, hint),
       topology: input.topology ?? 'linear',
       proposeAnnotations: input.proposeAnnotations !== false,
       ...(record.description ? { description: record.description.slice(0, MOTIF_MCP_LIMITS.maxTextLength) } : {}),
       source: 'FASTA opened in Motif',
-      ...(record.gapsRemoved ? { provenance: { gapsRemoved: record.gapsRemoved } } : {}),
+      ...(record.sequence.length > sequence.length
+        ? { provenance: { gapsRemoved: record.sequence.length - sequence.length } }
+        : {}),
       active: true,
     };
   });
+  if (!alignmentMolecule) return { records };
+  const rows = records.map(({ id, name }, index) => ({
+    id,
+    name,
+    aligned: parsed[index].sequence.toUpperCase().replace(/\./gu, '-'),
+    sourceRecordId: id,
+  }));
+  return {
+    records: records.filter(record => record.sequence.length > 0),
+    alignments: [{ name: 'Imported FASTA alignment', molecule: alignmentMolecule, rows }],
+  };
 }
 
 function serializableFeatures(features: Feature[]): Array<Record<string, unknown>> {
@@ -777,19 +791,15 @@ function serializableFeatures(features: Feature[]): Array<Record<string, unknown
 }
 
 function recordsFromGenBank(content: string, input: MotifWorkbenchInput): RecordLike[] {
-  const parsed = parseGenBank(content);
+  const parsed = parseGenBank(content, { maxRecords: MOTIF_MCP_LIMITS.maxRecords });
   if (parsed.length === 0) throw new Error('No complete GenBank records were found.');
-  const proteinRecordHints = content
-    .split(/^[ \t]*\/\/[ \t]*\r?$/mu)
-    .filter(block => /^[ \t]*LOCUS\b/mu.test(block))
-    .map(block => /^[ \t]*LOCUS\b.*\b\d+[ \t]+aa\b/imu.test(block));
   const usedIds = new Set<string>();
   return parsed.map((record, index) => {
     if (record.truncated || (record.length > 0 && record.length !== record.sequence.length)) {
       throw new Error(`GenBank record ${record.name || index + 1} is incomplete; include the full ORIGIN sequence.`);
     }
     const name = (record.name || record.accession || `GenBank record ${index + 1}`).slice(0, 1_024);
-    const molecule = proteinRecordHints[index]
+    const molecule = record.moleculeType === 'protein'
       ? 'protein'
       : record.moleculeType.toLowerCase().includes('rna')
       ? 'rna'
@@ -811,7 +821,10 @@ function recordsFromGenBank(content: string, input: MotifWorkbenchInput): Record
   });
 }
 
-function payloadFromContent(content: string, input: MotifWorkbenchInput): MotifWorkbenchPayload {
+function payloadFromContent(content: string, input: MotifWorkbenchInput): {
+  payload: MotifWorkbenchPayload;
+  inferredRawMolecule?: InputMolecule;
+} {
   if (utf8Bytes(content) > MOTIF_MCP_LIMITS.maxContentBytes) {
     throw new Error(`Artifact content cannot exceed ${Math.floor(MOTIF_MCP_LIMITS.maxContentBytes / 1_048_576)} MiB.`);
   }
@@ -833,32 +846,41 @@ function payloadFromContent(content: string, input: MotifWorkbenchInput): MotifW
       throw new Error('JSON artifact content is malformed.');
     }
     const validated = validateMotifPayload(parsed);
-    return input.title
+    const payload = input.title
       ? { ...validated.payload, inventory: { ...(isPlainObject(validated.payload.inventory) ? validated.payload.inventory : {}), title: input.title } }
       : validated.payload;
+    return { payload };
   }
-  const records = /^[ \t]*LOCUS[ \t]/mu.test(text)
-    ? recordsFromGenBank(text, input)
-    : text.includes('>')
-      ? recordsFromFasta(text, input)
-      : [{
+  const envelope = { schema: 'motif.claude-science.inventory.v2', inventory };
+  if (hasGenBankLocus(text)) {
+    return { payload: { ...envelope, records: recordsFromGenBank(content, input) } };
+  }
+  if (text.includes('>')) {
+    return { payload: { ...envelope, ...inventoryFromFasta(text, input) } };
+  }
+  const hint = moleculeHintFromInput(input);
+  const molecule = moleculeForRawSequence(text, hint);
+  return {
+    payload: {
+      ...envelope,
+      records: [{
         id: uniqueId(sourceName?.replace(/\.[^.]+$/u, '') || 'pasted-sequence', new Set()),
         name: sourceName?.replace(/\.[^.]+$/u, '') || 'Pasted sequence',
         sequence: text,
-        molecule: moleculeForRawSequence(text, moleculeHintFromInput(input)),
+        molecule,
         topology: input.topology ?? 'linear',
         proposeAnnotations: input.proposeAnnotations !== false,
         source: sourceName ? `Raw sequence from ${sourceName}` : 'Raw sequence opened in Motif',
         active: true,
-      }];
-  return {
-    schema: 'motif.claude-science.inventory.v2',
-    inventory,
-    records,
+      }],
+    },
+    ...(hint ? {} : { inferredRawMolecule: molecule }),
   };
 }
 
-export function prepareMotifWorkbench(input: MotifWorkbenchInput): PreparedMotifWorkbench {
+export function prepareMotifWorkbench(input: MotifWorkbenchInput): PreparedMotifWorkbench & {
+  inferredRawMolecule?: InputMolecule;
+} {
   if (input.payload !== undefined && input.content !== undefined) {
     throw new Error('Provide either payload or content, not both.');
   }
@@ -872,7 +894,9 @@ export function prepareMotifWorkbench(input: MotifWorkbenchInput): PreparedMotif
       residueCount: 0,
     });
   }
-  const source = input.content !== undefined ? payloadFromContent(input.content, input) : input.payload;
+  const { payload: source, inferredRawMolecule } = input.content !== undefined
+    ? payloadFromContent(input.content, input)
+    : { payload: input.payload };
   // Validate the caller-owned input before mapping every record to apply an
   // optional proposal preference. The transformed payload is validated again
   // below because the preference changes the delivered JSON. This preserves
@@ -896,7 +920,7 @@ export function prepareMotifWorkbench(input: MotifWorkbenchInput): PreparedMotif
   const delivered = payloadWithTitle === validated.payload
     ? validated
     : validateMotifPayload(payloadWithTitle);
-  return preparedMotifWorkbenchSchema.parse({
+  const workbench = preparedMotifWorkbenchSchema.parse({
     schema: MOTIF_WORKBENCH_RESULT_SCHEMA,
     mode: input.content === undefined ? 'payload' : 'artifact',
     ...(sourceName ? { sourceName } : {}),
@@ -904,4 +928,5 @@ export function prepareMotifWorkbench(input: MotifWorkbenchInput): PreparedMotif
     recordCount: delivered.recordCount,
     residueCount: delivered.residueCount,
   });
+  return inferredRawMolecule ? { ...workbench, inferredRawMolecule } : workbench;
 }

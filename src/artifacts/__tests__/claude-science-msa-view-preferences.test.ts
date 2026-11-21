@@ -76,7 +76,9 @@ describe('Claude Science MSA view preferences', () => {
       showConservationHistogram: 'nope',
     });
     expect(normalized.displayMode).toBe('viewer');
-    expect(normalized.fontSize).toBe(16);
+    expect(normalized.fontSize).toBe(18);
+    expect(normalizeClaudeScienceMsaViewPreferences({ fontSize: 9 }).fontSize).toBe(12);
+    expect(normalizeClaudeScienceMsaViewPreferences({}).fontSize).toBe(13);
     expect(normalized.showOverview).toBe(true);
     expect(normalized.showConsensus).toBe(true);
     expect(normalized.showConservationHistogram).toBe(true);

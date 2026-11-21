@@ -1,9 +1,10 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { createHash } from 'node:crypto';
 import { resolveFeatureColor } from '../../bio/feature-palette.js';
-import { renderMotifArtifact } from '../../../mcp/motif/artifact-export.js';
+import { prepareMotifArtifactTemplate, renderMotifArtifact } from '../../../mcp/motif/artifact-export.js';
 import { MOTIF_WORKBENCH_RESOURCE_URI } from '../../../mcp/motif/contracts.js';
 import {
   MOTIF_MCP_LIMITS,
@@ -14,6 +15,7 @@ import {
   createMotifClaudeScienceServer,
   type MotifMcpTraceEvent,
 } from '../../../mcp/motif/server.js';
+import * as genBankParser from '../../bio/genbank-parser.js';
 import { isMotifWorkbenchResult } from '../motif-workbench-bridge.js';
 
 const runtimeBuildId = 'a'.repeat(64);
@@ -52,6 +54,25 @@ describe('Motif MCP payload boundary', () => {
       residueCount: 0,
     });
     expect(result.payload).toBeUndefined();
+  });
+
+  it('applies the record limit before mapping FASTA and GenBank inputs', () => {
+    const fasta = '>same\nA\n'.repeat(MOTIF_MCP_LIMITS.maxRecords) + '>same\n';
+    expect(() => prepareMotifWorkbench({ content: fasta })).toThrow(/FASTA input exceeds the 100-record limit/u);
+    const genbank = 'LOCUS       sample    1 bp    DNA     linear\n//\n'.repeat(MOTIF_MCP_LIMITS.maxRecords + 1);
+    expect(() => prepareMotifWorkbench({ content: genbank })).toThrow(/GenBank input exceeds the 100-record limit/u);
+  });
+
+  it('recognizes GenBank across CRLF and whitespace-only lines', () => {
+    const block = 'LOCUS       sample    1 bp    DNA     linear\r\nORIGIN\r\n        1 a\r\n   //  \r\n';
+    const content = block + '   \r\n'.repeat(128) + block;
+    const detector = vi.spyOn(genBankParser, 'hasGenBankLocus');
+    try {
+      expect(prepareMotifWorkbench({ content })).toMatchObject({ recordCount: 2, residueCount: 2 });
+      expect(detector).toHaveBeenCalledExactlyOnceWith(content.trim());
+    } finally {
+      detector.mockRestore();
+    }
   });
 
   it('parses bounded FASTA and honors protein filename hints', () => {
@@ -163,7 +184,7 @@ describe('Motif MCP payload boundary', () => {
       { length: MOTIF_MCP_LIMITS.maxRecords + 1 },
       (_, index) => ({ id: `tiny-${index}`, sequence: 'A' }),
     );
-    // A proposal preference used to call Array#map before validation. This
+    // Applying a proposal preference calls Array#map on the records. This
     // non-enumerable tripwire is invisible to JSON sizing, but proves an
     // oversized collection is rejected before any preference-wide mapping.
     Object.defineProperty(records, 'map', {
@@ -208,7 +229,7 @@ describe('Motif MCP payload boundary', () => {
     expect(inputBytes).toBe(MOTIF_MCP_LIMITS.maxPayloadBytes - 1);
     expect(inputBytes + paletteBytesPerFeature * features.length).toBeGreaterThan(MOTIF_MCP_LIMITS.maxPayloadBytes);
 
-    expect(() => validateMotifPayload(payload)).toThrow(/Payload cannot exceed 32 MiB\./);
+    expect(() => validateMotifPayload(payload)).toThrow('Payload cannot exceed 32 MiB.');
   });
 
   it('keeps the JSON-node budget transactional after adding palette defaults', () => {
@@ -274,7 +295,7 @@ describe('Motif MCP payload boundary', () => {
     }), 'utf8')).toBe(MOTIF_MCP_LIMITS.maxPayloadBytes + 1);
 
     expect(() => prepareMotifWorkbench({ payload: boundary, title }))
-      .toThrow(/Payload cannot exceed 32 MiB\./);
+      .toThrow('Payload cannot exceed 32 MiB.');
     expect(boundary.inventory.title).toBe('Original');
   });
 
@@ -417,6 +438,19 @@ describe('Motif MCP payload boundary', () => {
         channelTags: {},
       },
     };
+    const extension = Array.from({ length: 25 }).reduce<object>(nested => ({ nested }), {});
+    for (const trace of [
+      { ...sangerTrace, extension },
+      { ...sangerTrace, metadata: { ...sangerTrace.metadata, extension } },
+      { ...sangerTrace, channels: { ...sangerTrace.channels, extension } },
+    ]) {
+      expect(() => validateMotifPayload({ type: 'dna', sequence: 'A', sangerTrace: trace })).toThrow(/nesting/u);
+    }
+    const sampleCount = MOTIF_MCP_LIMITS.maxJsonNodes;
+    const samples = Array<number>(sampleCount).fill(0);
+    const longTrace = { ...sangerTrace, channels: { ...sangerTrace.channels, A: samples }, sampleCount };
+    expect(validateMotifPayload({ type: 'dna', sequence: 'A', sangerTrace: longTrace }).recordCount).toBe(1);
+
     const bareTrace = validateMotifPayload({ id: 'bare-trace', type: 'dna', sequence: 'A', sangerTrace });
     expect(bareTrace.payload.sangerTrace).toBeUndefined();
     expect(bareTrace.payload.records).toEqual([
@@ -552,6 +586,21 @@ describe('Motif MCP payload boundary', () => {
     expect(validateMotifPayload({
       records: [{ id: 'dual-sequence', molecule: 'dna', seq: 'AT', sequence: 'ATGCGC' }],
     }).residueCount).toBe(2);
+
+    // A layer across the origin ends past the record length: accepted on a
+    // circular record (stated, or DNA with no topology), refused on a linear one.
+    const acrossOrigin = (record: Record<string, unknown>) => ({
+      records: [{ id: 'ring', molecule: 'dna', sequence: 'ATGGCTAGCAAAGGA', ...record }],
+      artifactState: {
+        translationLayersByRecord: {
+          ring: [{ id: 'across', label: 'Across the origin', start: 12, end: 18, strand: 1, frame: 0 }],
+        },
+      },
+    });
+    expect(validateMotifPayload(acrossOrigin({ topology: 'circular' })).residueCount).toBe(15);
+    expect(validateMotifPayload(acrossOrigin({})).residueCount).toBe(15);
+    expect(() => validateMotifPayload(acrossOrigin({ topology: 'linear' })))
+      .toThrow(/payload workspace is invalid.*linear record/i);
   });
 
   it('rejects unsupported future schemas instead of silently downgrading', () => {
@@ -568,15 +617,27 @@ describe('Motif embedded artifact export', () => {
       payload: {
         schema: 'motif.claude-science.inventory.v2',
         records: [{ id: 'demo', name: 'Demo', sequence: 'ATGCGT', molecule: 'dna' }],
-        hostileText: '<'.repeat(7_000_000),
+        hostileText: '<'.repeat(5_000_000),
       },
     });
     expect(() => renderMotifArtifact({
-      template: artifactTemplate,
+      template: artifactTemplate + ' '.repeat(12 * 1024 * 1024),
       workbench,
       runtimeBuildId,
       filename: 'expanded.html',
     })).toThrow(/exceeds .* after safe payload escaping/i);
+  });
+
+  it('reuses a template layout and hashes the exact escaped UTF-8 output', () => {
+    const render = prepareMotifArtifactTemplate(artifactTemplate + 'é', runtimeBuildId);
+    for (const title of ['α<&>\u2028\u2029', '$&💡']) {
+      const workbench = prepareMotifWorkbench({ payload: { records: [], title } });
+      const artifact = render({ workbench });
+      const payload = artifact.html.match(/id="motif-artifact-data">([^<]*)<\/script>/u)?.[1];
+      expect(JSON.parse(payload ?? '')).toEqual(workbench.payload);
+      expect(artifact.summary.bytes).toBe(Buffer.byteLength(artifact.html));
+      expect(artifact.summary.htmlSha256).toBe(createHash('sha256').update(artifact.html).digest('hex'));
+    }
   });
 
   it('injects escaped JSON, creates a safe filename, and hashes exact HTML', () => {

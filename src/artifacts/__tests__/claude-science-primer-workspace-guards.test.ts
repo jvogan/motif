@@ -29,9 +29,9 @@ describe('Claude Science primer workspace source guards', () => {
     expect(component).toContain('aria-label="Cloning preparation context"');
     expect(component).toContain('Save primer plan only');
     expect(component).toContain('Create & use amplicon');
-    expect(component).toContain('Simulate PCR saves a result only');
-    expect(component).toContain('keeps the source record unchanged');
-    expect(component).toContain('No homology tail was inferred');
+    expect(component).toContain('Simulate PCR: saves a PCR result.');
+    expect(component).toContain('Keeps the original record.');
+    expect(component).toContain('Enter the 5′ tail under Advanced constraints before saving.');
     expect(component).toContain("if (preferFullRecord) return { start: 1, end: sequenceLength };");
   });
 
@@ -59,7 +59,10 @@ describe('Claude Science primer workspace source guards', () => {
     expect(css).toContain('var(--text-primary)');
     expect(css).toContain('.motif-cs-primer-pair-row[data-selected]');
     expect(css).toContain('.motif-cs-primer-preparation-context');
-    expect(css).not.toMatch(/box-shadow:\s*0\s+0\s+\d/);
+    // No glow: a blurred shadow is banned. The chosen purpose is the one "on" fill with no
+    // ring, inside the group's field edge, like every segmented control.
+    expect(css).not.toMatch(/box-shadow:\s*0\s+0\s+[1-9]/);
+    expect(css).toMatch(/\.motif-cs-primer-intent label\[data-checked\] \{[^}]*background: var\(--bg-active\);[^}]*box-shadow: none;/);
     expect(css).not.toMatch(/border-left:\s*[2-9]px/);
     expect(css).not.toContain('linear-gradient');
   });
@@ -67,9 +70,29 @@ describe('Claude Science primer workspace source guards', () => {
   it('bounds both workspace axes and adapts at narrow widths', () => {
     expect(css).toContain('max-width: calc(100vw - 16px)');
     expect(css).toContain('max-height: calc(100dvh - 16px)');
-    expect(css).toContain('@media (max-width: 840px)');
-    expect(css).toMatch(/\.motif-cs-primer-footer-actions\s*\{[^}]*flex-wrap:\s*wrap;[^}]*width:\s*100%;[^}]*overflow:\s*visible;/s);
-    expect(css).toMatch(/\.motif-cs-primer-footer-actions button\s*\{[^}]*flex:\s*1\s+1\s+140px;/s);
+    // The window stacks on its own width, not the viewport's, so a window
+    // narrower than the panel still gets the narrow layout.
+    expect(css).toContain('container-type: inline-size');
+    expect(css).toContain('@container (max-width: 760px)');
+    expect(css).toContain('@container (max-width: 520px)');
+    expect(css).not.toContain('@media (max-width: 840px)');
+    expect(css).toMatch(/@container \(max-width: 520px\)[\s\S]*\.motif-cs-primer-footer-actions\s*\{[^}]*width:\s*100%;[^}]*grid-template-columns:\s*repeat\(2,/);
+    expect(css).toMatch(/\.motif-cs-primer-footer-actions\s*\{[^}]*flex-wrap:\s*wrap;/s);
     expect(css).toContain('scrollbar-gutter: stable');
+  });
+
+  it('keeps one header, no kicker lines, and no sub-12px or hardcoded type', () => {
+    expect(component).not.toContain('motif-cs-primer-eyebrow');
+    expect(component).not.toContain('motif-cs-primer-result-badge');
+    expect(css).not.toMatch(/font-size:\s*(?:[0-9]|1[01])(?:\.\d+)?px/);
+    expect(css).not.toMatch(/font:\s*(?:[0-9]|1[01])(?:\.\d+)?px/);
+    expect(css).not.toMatch(/text-transform:\s*uppercase|letter-spacing:\s*[0-9.]/);
+  });
+
+  it('shows the window before the design runs', () => {
+    expect(component).toContain('useDeferredValue<PrimerDesignParams | null>(parameters, null)');
+    expect(component).toContain('Finding pairs…');
+    // No action may carry a pair that belongs to the previous settings.
+    expect(component).toContain('selectedPair && designParameters && !designPending');
   });
 });

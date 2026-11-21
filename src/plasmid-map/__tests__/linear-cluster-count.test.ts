@@ -11,7 +11,7 @@
  * label that grows takes room from a neighbour and can push it off the map entirely.
  */
 import { describe, it, expect } from 'vitest';
-import { computeMapLayout, LINEAR_REC_LABEL_FONT_PX } from '../layout';
+import { computeMapLayout, LINEAR_REC_LABEL_FONT_PX, RESTRICTION_LABEL_FONT_MODE } from '../layout';
 import { approxTextWidth } from '../geometry/labels';
 import type { MapInput, MapRestrictionRender } from '../types';
 import type { RestrictionSite } from '../../bio/types';
@@ -80,9 +80,9 @@ describe('a linear cluster label never drops the count that says it is a summary
       const text = cluster.label?.text ?? '';
       expect(text, `+${extra} lost its count`).toMatch(new RegExp(` \\+${extra}$`));
       expect(
-        approxTextWidth(text, undefined, 'monospace'),
+        approxTextWidth(text, undefined, RESTRICTION_LABEL_FONT_MODE),
         `+${extra} label is wider than the bare name it replaces`,
-      ).toBeLessThanOrEqual(approxTextWidth(LEAD, undefined, 'monospace'));
+      ).toBeLessThanOrEqual(approxTextWidth(LEAD, undefined, RESTRICTION_LABEL_FONT_MODE));
     }
   });
 
@@ -130,7 +130,7 @@ describe('a linear cluster label never drops the count that says it is a summary
     // budgets enzyme names at LINEAR_REC_LABEL_FONT_PX, so the same 88px of row buys
     // two more characters of the name — the count is still what survives the trade.
     expect(text).toBe('MyVer… +40');
-    expect(approxTextWidth(text, LINEAR_REC_LABEL_FONT_PX, 'monospace')).toBeLessThanOrEqual(88);
+    expect(approxTextWidth(text, LINEAR_REC_LABEL_FONT_PX, RESTRICTION_LABEL_FONT_MODE)).toBeLessThanOrEqual(88);
   });
 
   it('documents what the stem floor does when it finally binds', () => {
@@ -148,15 +148,15 @@ describe('a linear cluster label never drops the count that says it is a summary
           .label?.text ?? ''
       );
     };
-    const nameWidth = approxTextWidth(LEAD, undefined, 'monospace');
+    const nameWidth = approxTextWidth(LEAD, undefined, RESTRICTION_LABEL_FONT_MODE);
 
     // 3 digits: floor exactly met, and still no wider than the name it replaces.
     expect(build(999)).toBe('Nt.… +999');
-    expect(approxTextWidth('Nt.… +999', undefined, 'monospace')).toBeLessThanOrEqual(nameWidth);
+    expect(approxTextWidth('Nt.… +999', undefined, RESTRICTION_LABEL_FONT_MODE)).toBeLessThanOrEqual(nameWidth);
 
     // 4 digits: the floor wins over the width budget — wider than the name, inside the cap.
     expect(build(1200)).toBe('Nt.… +1200');
-    expect(approxTextWidth('Nt.… +1200', undefined, 'monospace')).toBeGreaterThan(nameWidth);
+    expect(approxTextWidth('Nt.… +1200', undefined, RESTRICTION_LABEL_FONT_MODE)).toBeGreaterThan(nameWidth);
     expect(approxTextWidth('Nt.… +1200', undefined, 'monospace')).toBeGreaterThan(88);
 
     // 5 digits: the stem floor wins again. Nothing clips — placement uses actual widths.

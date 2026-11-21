@@ -188,6 +188,24 @@ describe('primer, PCR, and Tm integrity', () => {
     )).toBeNull();
   });
 
+  it('counts rejected product pairs against the enumeration budget', () => {
+    const result = simulatePCRWithDiagnostics('C'.repeat(450) + 'A'.repeat(450), 'AAAAAA', 'GGGGGG',
+      [], 'linear', undefined, { minMatched3PrimeLength: 6 });
+    expect(result.result).toBeNull();
+    expect(result.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'product_pair_work_limit', workUnits: 100_000, maxWorkUnits: 100_000,
+    }));
+  });
+
+  it('blocks materialization of products from an incomplete pair search', () => {
+    const result = simulatePCRWithDiagnostics('A'.repeat(460), 'AAAAAA', 'TTTTTT',
+      [], 'linear', undefined, { minMatched3PrimeLength: 6 });
+    expect(result.result).toMatchObject({
+      status: 'ambiguous', materializable: false,
+      diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'product_pair_work_limit' })]),
+    });
+  });
+
   it('blocks materialization when a partial automatic scan happens to find a product', () => {
     const forward = binding;
     const reverse = reverseComplement(binding);

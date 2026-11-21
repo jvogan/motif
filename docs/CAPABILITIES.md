@@ -9,7 +9,7 @@ backs it, so the list stays honest.
   Markdown/HTML/print reports, and a workspace ZIP.
 - Source: `src/bio/fasta-parser.ts`, `src/bio/genbank-parser.ts`, `src/artifacts/motif-artifact.tsx`.
 
-## Records and inventory
+## Records and the Library
 - Create, group, tag, edit, and delete annotated records with features and notes.
 - Substitutions, insertions, deletions, reverse complement, and undo/redo, with
   a session workflow history.
@@ -72,11 +72,11 @@ backs it, so the list stays honest.
   provenance, inputs, dependencies, and inert assets. Codex and other analysis
   tools can produce BLAST and structure-model results for Motif to organize and
   display.
-- Database JSON restores directly. A workspace ZIP holds the same
+- Workspace JSON restores directly. A workspace ZIP holds the same
   `inventory.json` plus interchange exports; restore it by extracting
   `inventory.json` and loading it from Settings.
 - Browser downloads are reported as requests, not verified saves. Confirm the
-  Database JSON or ZIP exists and can be reopened before treating it as a
+  Workspace JSON or ZIP exists and can be reopened before treating it as a
   durable checkpoint.
 - Source: `src/artifacts/claude-science-analysis-results.ts`, `src/artifacts/claude-science-session.ts`.
 

@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { selectRecord } from './record-selection';
+import { chooseTheme } from './theme';
 
 const artifactUrl = process.env.MOTIF_ARTIFACT_URL;
 
@@ -88,7 +89,7 @@ test.describe('Claude Science scientific status UX', () => {
     await expect(digest.locator('.motif-cs-digest-outcome')).toContainText('No double-strand cuts predicted.');
     await expect(digest.locator('.motif-cs-digest-outcome')).toContainText('DNA molecule continuous');
 
-    await page.getByRole('combobox', { name: 'Theme' }).selectOption({ label: 'Warm Dark' });
+    await chooseTheme(page, 'dark');
     await page.setViewportSize({ width: 390, height: 760 });
     await digest.scrollIntoViewIfNeeded();
     const statusBox = await digest.locator('.motif-cs-digest-outcome').boundingBox();
@@ -201,7 +202,7 @@ test.describe('Claude Science scientific status UX', () => {
     const translationWindow = page.locator('.motif-cs-window').filter({ hasText: 'Translation' });
     const ambiguityStatus = translationWindow.getByTestId('translation-ambiguity-status');
     await expect(ambiguityStatus).toHaveAttribute('data-status', 'partial');
-    await expect(ambiguityStatus).toContainText('shown as X');
+    await expect(ambiguityStatus).toContainText('unresolved codon');
     await ambiguityStatus.locator('summary').focus();
     await page.keyboard.press('Enter');
     await expect(ambiguityStatus).toContainText('ambiguous_codon');
@@ -218,7 +219,7 @@ test.describe('Claude Science scientific status UX', () => {
     await expect(page.locator('.motif-cs-sequence').getByRole('button', { name: 'S, codon 5-7' })).toHaveCount(0);
     await expect(translationWindow.getByRole('button', { name: 'U, codon 5-7' })).toBeVisible();
     await expect(translationWindow.getByRole('button', { name: 'S, codon 5-7' })).toHaveCount(0);
-    await translationWindow.getByRole('button', { name: 'New protein' }).click();
+    await translationWindow.getByRole('button', { name: 'Create protein' }).click();
     await expect.poll(async () => page.evaluate(() => window.motifGetActiveRecord()?.seq)).toBe('MU*');
 
     await selectRecord(page, 'GenBank quarantine edge');
@@ -262,7 +263,7 @@ test.describe('Claude Science scientific status UX', () => {
     await expect(provenance).toBeVisible();
     await expect(provenance).toContainText('fallback: bounded comparison route');
 
-    await page.getByRole('combobox', { name: 'Theme' }).selectOption({ label: 'Warm Dark' });
+    await chooseTheme(page, 'dark');
     await page.setViewportSize({ width: 390, height: 760 });
     const summary = provenance.locator('summary');
     await summary.focus();

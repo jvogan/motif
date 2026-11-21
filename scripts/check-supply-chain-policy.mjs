@@ -30,14 +30,14 @@ export function checkSupplyChainPolicy(rootPath = root, { requireRelease = false
   if (requireRelease && !releaseExists) {
     throw new Error('Generated release bundle is required but does not exist; build distributables before final verification');
   }
-  if (releaseExists && (!existsSync(releaseArchivePath) || !existsSync(releaseManifestDigestPath))) {
+  if (requireRelease && (!existsSync(releaseArchivePath) || !existsSync(releaseManifestDigestPath))) {
     throw new Error('Generated release artifacts are incomplete; release ZIP and external manifest digest are required');
   }
   const summary = checkLockfilePolicy(workspace);
   const { inventory } = loadDependencyPolicy(workspace);
-  if (releaseExists) {
+  if (requireRelease) {
     const generated = readJson(join(releasePath, 'connector-inventory.json'), 'Generated connector inventory');
-    compareConnectorInventory(inventory, generated);
+    compareConnectorInventory(inventory, generated, readJson(join(workspace, 'package-lock.json'), 'package-lock.json'));
     verifyReleaseArtifacts({
       releaseDirectory: releasePath,
       archivePath: releaseArchivePath,
@@ -45,7 +45,7 @@ export function checkSupplyChainPolicy(rootPath = root, { requireRelease = false
       expectedVersion: readJson(join(workspace, 'package.json'), 'package.json').version,
     });
   }
-  return { ...summary, releaseChecked: releaseExists };
+  return { ...summary, releaseChecked: requireRelease };
 }
 
 if (isDirectScriptExecution(process.argv[1], fileURLToPath(import.meta.url))) {

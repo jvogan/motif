@@ -34,7 +34,7 @@ test.describe('GenBank mRNA LOCUS import', () => {
   }
 
   async function pickFile(page: Page, name: string, text: string) {
-    await page.getByRole('button', { name: 'Add entry' }).first().click();
+    await page.getByRole('button', { name: 'Import records' }).first().click();
     await page.getByLabel('Choose sequence or workspace files').setInputFiles({ name, mimeType: 'text/plain', buffer: Buffer.from(text) });
   }
 

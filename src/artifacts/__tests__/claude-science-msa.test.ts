@@ -31,6 +31,26 @@ import {
   type ArtifactMsaRecord,
 } from '../claude-science-msa';
 
+describe('CLUSTAL block integrity', () => {
+  const options = { name: 'Blocks', molecule: 'dna' as const };
+  const header = 'CLUSTAL W multiple sequence alignment\r\r';
+
+  it('round-trips valid blocks with consensus markers and a shorter last block', () => {
+    const alignment = parseAlignmentText(header + 'a AC-\rb ACG\r  **\r\ra GT\rb TT\r', options);
+    expect(alignment.rows.map((row) => row.aligned)).toEqual(['AC-GT', 'ACGTT']);
+    const formatted = formatClustal(alignment, 3);
+    expect(formatClustal(parseAlignmentText(formatted, options), 3)).toBe(formatted);
+  });
+
+  it.each([
+    ['a AC\na GT\n\nb AC\nb GT', /duplicate/i],
+    ['a AC\nb A\n\na G\nb GT', /width/i],
+    ['a AC\nb AC\n\na G\nc G', /identifier/i],
+  ])('rejects invalid blocks even when the final column totals match', (body, issue) => {
+    expect(() => parseAlignmentText(header.replaceAll('\r', '\n') + body, options)).toThrow(issue);
+  });
+});
+
 function expectAlignmentError(run: () => unknown, code: ArtifactAlignmentError['code']): void {
   try {
     run();

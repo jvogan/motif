@@ -1,16 +1,23 @@
 import type { RestrictionEnzyme } from '../bio/types';
 import type { RestrictionEnzymeSourceId } from '../bio/restriction-presets';
 import { VALID_NCBI_TABLE_IDS } from '../bio/codon-tables';
+import { ABI_IMPORT_LIMITS } from '../bio/abi-import';
+import { ARTIFACT_SANGER_MAX_WORKSPACE_SAMPLE_ENTRIES } from './claude-science-sanger';
+import { MAX_MOTIF_PRELOAD_BYTES } from './motif-preload-limits';
 
 export const LARGE_SEQUENCE_DETAIL_THRESHOLD = 50_000;
 /**
- * Database JSON is pretty-printed on export. A legal workspace containing the
+ * Workspace JSON is pretty-printed on export. A legal workspace containing the
  * full four-million-entry Sanger trace budget can therefore exceed the former
  * 32 MiB text ceiling even though the underlying AB1 files were individually
  * bounded. Keep restore parsing bounded, but leave enough room for that
  * supported workspace plus JSON indentation and record metadata.
  */
 export const MAX_ARTIFACT_DATABASE_JSON_CHARACTERS = 128 * 1024 * 1024;
+export const MAX_ARTIFACT_JSON_NODES = 250_000;
+export const MAX_ARTIFACT_JSON_NESTING = 22;
+export const MAX_ARTIFACT_JSON_BYTES = MAX_MOTIF_PRELOAD_BYTES;
+export const MAX_ARTIFACT_RECORDS = 100;
 export const MOTIF_INVENTORY_SCHEMA_V1 = 'motif.claude-science.inventory.v1';
 export const MOTIF_INVENTORY_SCHEMA = 'motif.claude-science.inventory.v2';
 export const MAX_CUSTOM_ENZYMES = 100;
@@ -68,9 +75,21 @@ function isObject(value: unknown): value is Record<string, unknown> {
  * prototype setter and silently drops the durable value. Null-prototype maps
  * remain JSON-compatible while making every record id an ordinary data key.
  */
-function createRecordMap<T>(): Record<string, T> {
-  return Object.create(null) as Record<string, T>;
+export function createRecordMap<T>(
+  source?: Readonly<Record<string, T>>,
+  changes?: Readonly<Record<string, NoInfer<T>>>,
+): Record<string, T> {
+  return Object.assign(Object.create(null) as Record<string, T>, source, changes);
 }
+
+export const RECORD_KEYED_ARTIFACT_STATE_FIELDS = [
+  'translationLayersByRecord',
+  'enzymeSourcesByRecord',
+  'hiddenEnzymesByRecord',
+  'hiddenFeatureTranslationsByRecord',
+  'restrictionLabelsByRecord',
+  'motifsByRecord',
+] as const;
 
 const MOTIF_INVENTORY_SCHEMA_PREFIX = 'motif.claude-science.inventory.';
 const SUPPORTED_MOTIF_INVENTORY_SCHEMAS = new Set([
@@ -79,16 +98,111 @@ const SUPPORTED_MOTIF_INVENTORY_SCHEMAS = new Set([
 ]);
 const MAX_ARTIFACT_SCHEMA_LENGTH = 160;
 
+export class ArtifactJsonLimitError extends Error {
+  readonly code = 'MOTIF_INPUT_LIMIT_EXCEEDED';
+  readonly details = { mutated: false };
+}
+
 export function assertArtifactJsonCharacterCount(characterCount: number): void {
   if (!Number.isSafeInteger(characterCount) || characterCount < 0) {
     throw new Error('Artifact JSON character count must be a non-negative safe integer.');
   }
   if (characterCount <= MAX_ARTIFACT_DATABASE_JSON_CHARACTERS) return;
   const maximumMiB = MAX_ARTIFACT_DATABASE_JSON_CHARACTERS / (1024 * 1024);
-  throw new Error(
+  throw new ArtifactJsonLimitError(
     `Artifact JSON exceeds the artifact maximum of ${maximumMiB.toLocaleString()} MiB. `
-    + 'Split the inventory into smaller workspace backups.',
+    + 'Split the library into smaller workspace backups.',
   );
+}
+
+type JsonContainer = 'root' | 'records' | 'record' | 'trace' | 'channels' | 'samples' | 'calls' | 'other';
+type JsonFrame = {
+  container: JsonContainer;
+  expectsKey: boolean;
+  object: boolean;
+  key?: string;
+  numericEntries: number;
+};
+
+function classifyJsonContainer(parent: JsonFrame | undefined, object: boolean): JsonContainer {
+  if (!parent) return 'root';
+  const { container, key } = parent;
+  if (container === 'root' && !object && (key === 'records' || key === 'entries' || key === 'vectors')) return 'records';
+  if (object && (container === 'records' || (container === 'root' && key === 'record'))) return 'record';
+  if (object && (container === 'record' || container === 'root') && key === 'sangerTrace') return 'trace';
+  if (container === 'trace' && object && key === 'channels') return 'channels';
+  if (container === 'trace' && !object && (key === 'qualityScores' || key === 'peakPositions')) return 'calls';
+  if (container === 'channels' && !object && (key === 'A' || key === 'C' || key === 'G' || key === 'T')) return 'samples';
+  return 'other';
+}
+
+/** Bound allocation before handing syntax validation and decoding to JSON.parse. */
+function assertArtifactJsonStructure(text: string): void {
+  const frames: JsonFrame[] = [];
+  let nodes = 0;
+  let sampleEntries = 0;
+  let callEntries = 0;
+  const countNode = () => {
+    nodes += 1;
+    if (nodes > MAX_ARTIFACT_JSON_NODES) {
+      throw new ArtifactJsonLimitError(`Artifact JSON exceeds the maximum of ${MAX_ARTIFACT_JSON_NODES.toLocaleString()} JSON nodes.`);
+    }
+  };
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    const frame = frames[frames.length - 1];
+    if (char === ' ' || char === '\r' || char === '\n' || char === '\t' || char === ':') continue;
+    if (char === ',') {
+      if (frame) {
+        frame.expectsKey = frame.object;
+        frame.key = undefined;
+      }
+      continue;
+    }
+    if (char === '}' || char === ']') {
+      frames.pop();
+      continue;
+    }
+    if (char === '{' || char === '[') {
+      countNode();
+      if (frames.length >= MAX_ARTIFACT_JSON_NESTING) {
+        throw new ArtifactJsonLimitError(`Artifact JSON exceeds the maximum supported nesting depth of ${MAX_ARTIFACT_JSON_NESTING}.`);
+      }
+      const object = char === '{';
+      frames.push({ container: classifyJsonContainer(frame, object), expectsKey: object, object, numericEntries: 0 });
+      continue;
+    }
+    if (char === '"') {
+      const start = index;
+      while (++index < text.length && text[index] !== '"') {
+        if (text[index] === '\\') index += 1;
+      }
+      if (frame?.expectsKey) {
+        frame.expectsKey = false;
+        // Only short keys can identify the known trace arrays. Escaped keys go
+        // through the same decoder as the document, including Unicode escapes.
+        if (frame.container !== 'other' && index - start < 96) {
+          const rawKey = text.slice(start, index + 1);
+          frame.key = rawKey.includes('\\') ? JSON.parse(rawKey) : rawKey.slice(1, -1);
+        }
+      } else countNode();
+      continue;
+    }
+    const numeric = char === '-' || (char >= '0' && char <= '9');
+    if (numeric && frame && (frame.container === 'samples' || frame.container === 'calls')) {
+      frame.numericEntries += 1;
+      const samples = frame.container === 'samples';
+      if (samples) sampleEntries += 1;
+      else callEntries += 1;
+      if (frame.numericEntries > (samples ? ABI_IMPORT_LIMITS.maxTraceSamplesPerChannel : ABI_IMPORT_LIMITS.maxBaseCalls)
+        || sampleEntries > ARTIFACT_SANGER_MAX_WORKSPACE_SAMPLE_ENTRIES
+        || callEntries > 2 * MAX_ARTIFACT_RECORDS * ABI_IMPORT_LIMITS.maxBaseCalls) {
+        throw new ArtifactJsonLimitError('Artifact JSON exceeds the trace sample or base-call limit.');
+      }
+    } else countNode();
+    // Skip primitive-token characters in one pass. JSON.parse checks syntax.
+    while (index + 1 < text.length && /[a-zA-Z0-9.+-]/.test(text[index + 1])) index += 1;
+  }
 }
 
 function parseArtifactJsonObject(text: string): Record<string, unknown> | null {
@@ -99,9 +213,11 @@ function parseArtifactJsonObject(text: string): Record<string, unknown> | null {
 
   let parsed: unknown;
   try {
+    assertArtifactJsonStructure(trimmed);
     parsed = JSON.parse(trimmed);
   } catch (cause) {
-    throw new Error(`Artifact JSON could not be parsed: ${cause instanceof Error ? cause.message : String(cause)}`);
+    if (cause instanceof ArtifactJsonLimitError) throw cause;
+    throw new Error('Artifact JSON could not be parsed.');
   }
   return isObject(parsed) ? parsed : null;
 }
@@ -111,12 +227,12 @@ function validateArtifactDatabaseSchema(database: Record<string, unknown>): void
   if (schema === undefined) return;
   if (typeof schema !== 'string' || !schema.trim() || schema !== schema.trim()
     || schema.length > MAX_ARTIFACT_SCHEMA_LENGTH) {
-    throw new Error(`Database JSON schema must be a non-empty string no longer than ${MAX_ARTIFACT_SCHEMA_LENGTH} characters.`);
+    throw new Error(`Workspace JSON schema must be a non-empty string no longer than ${MAX_ARTIFACT_SCHEMA_LENGTH} characters.`);
   }
   if (schema.startsWith(MOTIF_INVENTORY_SCHEMA_PREFIX)
     && !SUPPORTED_MOTIF_INVENTORY_SCHEMAS.has(schema)) {
     throw new Error(
-      `Database JSON uses unsupported Motif inventory schema ${JSON.stringify(schema)}; `
+      `Workspace JSON uses unsupported Motif inventory schema ${JSON.stringify(schema)}; `
       + `${Array.from(SUPPORTED_MOTIF_INVENTORY_SCHEMAS).join(' and ')} are supported.`,
     );
   }
@@ -150,18 +266,28 @@ function uniqueId(
   return candidate;
 }
 
-export function parseArtifactDatabaseJson(text: string): Record<string, unknown> | null {
+export type ArtifactImportJson =
+  | { kind: 'database' | 'record'; value: Record<string, unknown> }
+  | { kind: 'unrecognized' };
+
+export function parseArtifactImportJson(text: string): ArtifactImportJson {
   const parsed = parseArtifactJsonObject(text);
-  if (!parsed) return null;
+  if (!parsed) return { kind: 'unrecognized' };
   const hasRecords = Object.prototype.hasOwnProperty.call(parsed, 'records');
   const hasKnownInventorySchema = typeof parsed.schema === 'string'
     && parsed.schema.startsWith(MOTIF_INVENTORY_SCHEMA_PREFIX);
-  if (!hasRecords && !hasKnownInventorySchema) return null;
-  validateArtifactDatabaseSchema(parsed);
-  if (!Array.isArray(parsed.records)) {
-    throw new Error('Database JSON must contain a records array.');
+  if (hasRecords || hasKnownInventorySchema) {
+    validateArtifactDatabaseSchema(parsed);
+    if (!Array.isArray(parsed.records)) throw new Error('Workspace JSON must contain a records array.');
+    return { kind: 'database', value: parsed };
   }
-  return parsed;
+  const hasSequence = typeof parsed.seq === 'string' || typeof parsed.sequence === 'string';
+  return hasSequence ? { kind: 'record', value: parsed } : { kind: 'unrecognized' };
+}
+
+export function parseArtifactDatabaseJson(text: string): Record<string, unknown> | null {
+  const parsed = parseArtifactImportJson(text);
+  return parsed.kind === 'database' ? parsed.value : null;
 }
 
 /**
@@ -172,10 +298,8 @@ export function parseArtifactDatabaseJson(text: string): Record<string, unknown>
  * text.
  */
 export function parseArtifactRecordJson(text: string): Record<string, unknown> | null {
-  const parsed = parseArtifactJsonObject(text);
-  if (!parsed || Object.prototype.hasOwnProperty.call(parsed, 'records')) return null;
-  const hasSequence = typeof parsed.seq === 'string' || typeof parsed.sequence === 'string';
-  return hasSequence ? parsed : null;
+  const parsed = parseArtifactImportJson(text);
+  return parsed.kind === 'record' ? parsed.value : null;
 }
 
 function normalizeMethylationEvidence(value: unknown, path: string): RestrictionEnzyme['methylationEvidence'] {
@@ -290,8 +414,9 @@ function normalizeCustomEnzymes(value: unknown): RestrictionEnzyme[] {
 function normalizeTranslationLayers(
   value: unknown,
   recordLengths: ReadonlyMap<string, number>,
+  circularRecordIds: ReadonlySet<string>,
 ): Record<string, PortableTranslationTrack[]> {
-  if (value === undefined) return {};
+  if (value === undefined) return createRecordMap();
   if (!isObject(value)) throw new Error('artifactState.translationLayersByRecord must be an object.');
   const result = createRecordMap<PortableTranslationTrack[]>();
 
@@ -312,8 +437,16 @@ function normalizeTranslationLayers(
       const label = requiredString(raw.label, `${path}.label`);
       const start = requiredInteger(raw.start, `${path}.start`);
       const end = requiredInteger(raw.end, `${path}.end`);
-      if (start < 0 || end <= start || end > sequenceLength) {
-        throw new Error(`${path} must use a valid 0-based [start,end) range within ${sequenceLength} residues.`);
+      // A layer pinned across the origin of a circular record ends past the
+      // record length, as a range dragged across the origin does: it starts
+      // inside the record and covers at most one full length. A linear record
+      // has no origin to cross, so its layers end inside it.
+      if (circularRecordIds.has(recordId)) {
+        if (start < 0 || start >= sequenceLength || end <= start || end - start > sequenceLength) {
+          throw new Error(`${path} must use a valid 0-based [start,end) range on the ${sequenceLength}-residue circular record: start below ${sequenceLength}, end after start, at most ${sequenceLength} residues in all; a layer across the origin ends past ${sequenceLength}.`);
+        }
+      } else if (start < 0 || end <= start || end > sequenceLength) {
+        throw new Error(`${path} must use a valid 0-based [start,end) range within the ${sequenceLength} residues of the linear record.`);
       }
       const strand = raw.strand === -1 ? -1 : raw.strand === 1 ? 1 : null;
       if (strand === null) throw new Error(`${path}.strand must be 1 or -1.`);
@@ -359,7 +492,7 @@ function normalizeStringArraysByRecord(
   recordLengths: ReadonlyMap<string, number>,
   maxEntries?: number,
 ): Record<string, string[]> {
-  if (value === undefined) return {};
+  if (value === undefined) return createRecordMap();
   if (!isObject(value)) throw new Error(`${path} must be an object.`);
   const result = createRecordMap<string[]>();
   for (const [recordId, rawValues] of Object.entries(value)) {
@@ -394,7 +527,7 @@ function normalizeBooleanByRecord(
   path: string,
   recordLengths: ReadonlyMap<string, number>,
 ): Record<string, boolean> {
-  if (value === undefined) return {};
+  if (value === undefined) return createRecordMap();
   if (!isObject(value)) throw new Error(`${path} must be an object.`);
   const result = createRecordMap<boolean>();
   for (const [recordId, rawValue] of Object.entries(value)) {
@@ -409,7 +542,7 @@ function normalizeMotifs(
   value: unknown,
   recordLengths: ReadonlyMap<string, number>,
 ): Record<string, string> {
-  if (value === undefined) return {};
+  if (value === undefined) return createRecordMap();
   if (!isObject(value)) throw new Error('artifactState.motifsByRecord must be an object.');
   const result = createRecordMap<string>();
   for (const [recordId, rawValue] of Object.entries(value)) {
@@ -424,25 +557,44 @@ function normalizeMotifs(
   return result;
 }
 
+/** The ids of the circular records, whose translation layers may cross the origin. */
+export function circularRecordIdsOf(
+  records: Iterable<{ readonly id: string; readonly topology?: unknown }>,
+): Set<string> {
+  const ids = new Set<string>();
+  for (const record of records) {
+    if (record.topology === 'circular') ids.add(record.id);
+  }
+  return ids;
+}
+
+const NO_CIRCULAR_RECORDS: ReadonlySet<string> = new Set();
+
+/**
+ * Validates and clones the durable workbench state. `circularRecordIds`
+ * names the circular records; every other record is read as linear, so a
+ * caller that leaves it out gets the linear rule for every layer.
+ */
 export function normalizeArtifactDurableState(
   value: unknown,
   recordLengths: ReadonlyMap<string, number>,
+  circularRecordIds: ReadonlySet<string> = NO_CIRCULAR_RECORDS,
 ): ArtifactDurableState {
   if (value === undefined) {
     return {
       customEnzymes: [],
-      translationLayersByRecord: {},
-      enzymeSourcesByRecord: {},
-      hiddenEnzymesByRecord: {},
-      hiddenFeatureTranslationsByRecord: {},
-      restrictionLabelsByRecord: {},
-      motifsByRecord: {},
+      translationLayersByRecord: createRecordMap(),
+      enzymeSourcesByRecord: createRecordMap(),
+      hiddenEnzymesByRecord: createRecordMap(),
+      hiddenFeatureTranslationsByRecord: createRecordMap(),
+      restrictionLabelsByRecord: createRecordMap(),
+      motifsByRecord: createRecordMap(),
     };
   }
   if (!isObject(value)) throw new Error('artifactState must be an object.');
   return {
     customEnzymes: normalizeCustomEnzymes(value.customEnzymes),
-    translationLayersByRecord: normalizeTranslationLayers(value.translationLayersByRecord, recordLengths),
+    translationLayersByRecord: normalizeTranslationLayers(value.translationLayersByRecord, recordLengths, circularRecordIds),
     enzymeSourcesByRecord: normalizeRestrictionSources(value.enzymeSourcesByRecord, recordLengths),
     hiddenEnzymesByRecord: normalizeStringArraysByRecord(
       value.hiddenEnzymesByRecord,

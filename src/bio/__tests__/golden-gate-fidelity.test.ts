@@ -1,19 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import {
   assessGoldenGateAssemblyFidelity,
-  GOLDEN_GATE_FIDELITY_CONDITIONS,
-  GOLDEN_GATE_FIDELITY_DATASETS,
+  getGoldenGateFidelityConditions,
+  getGoldenGateFidelityDatasets,
   findGoldenGateFidelityDataset,
   rankGoldenGateOverhangSets,
 } from '../golden-gate-fidelity';
 
-const BSAI = GOLDEN_GATE_FIDELITY_CONDITIONS['pryor-2020-bsai-hfv2'];
-const SAPI = GOLDEN_GATE_FIDELITY_CONDITIONS['pryor-2020-sapi'];
+const BSAI = getGoldenGateFidelityConditions()['pryor-2020-bsai-hfv2'];
+const SAPI = getGoldenGateFidelityConditions()['pryor-2020-sapi'];
 
 describe('empirical Golden Gate fidelity', () => {
   it('loads all five primary-source matrices with independent source hashes', () => {
-    expect(GOLDEN_GATE_FIDELITY_DATASETS.map((dataset) => dataset.overhangLength)).toEqual([4, 4, 4, 4, 3]);
-    expect(GOLDEN_GATE_FIDELITY_DATASETS.map((dataset) => dataset.provenance.sourceSha256)).toEqual([
+    expect(getGoldenGateFidelityDatasets().map((dataset) => dataset.overhangLength)).toEqual([4, 4, 4, 4, 3]);
+    expect(getGoldenGateFidelityDatasets().map((dataset) => dataset.provenance.sourceSha256)).toEqual([
       '320dd058f3ca6372768c7ddfe9cda2a2ea2a076c4f86dd08587d8f295aae1d15',
       '7c444e99e5e4d245461a892e8543a35c84987f93abcee7098de9d9d817237e94',
       '1557e62cfa4f89cd021420b75e145dae2f453ecf26dcca340a8c29008736ea66',
@@ -26,7 +26,7 @@ describe('empirical Golden Gate fidelity', () => {
   it('retains every empirical source cell as a bounded integer observation', () => {
     let cellCount = 0;
     let nonZeroCellCount = 0;
-    for (const dataset of GOLDEN_GATE_FIDELITY_DATASETS) {
+    for (const dataset of getGoldenGateFidelityDatasets()) {
       for (const leftOverhang of dataset.overhangs) {
         for (const rightOverhang of dataset.overhangs) {
           const count = dataset.count(leftOverhang, rightOverhang);

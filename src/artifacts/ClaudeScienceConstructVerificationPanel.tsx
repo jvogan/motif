@@ -164,15 +164,15 @@ type ClassifiedVariant = {
 const VERDICT_COPY: Record<ArtifactConstructVerificationState, { label: string; summary: string }> = {
   consistent: {
     label: 'Consistent',
-    summary: 'Observed read evidence is consistent with the predicted construct within the recorded thresholds.',
+    summary: 'Reads match the reference within the saved thresholds.',
   },
   needs_review: {
     label: 'Needs review',
-    summary: 'The evidence is incomplete or contains findings that need scientific review before acceptance.',
+    summary: 'Review incomplete coverage or flagged findings.',
   },
   inconsistent: {
     label: 'Inconsistent',
-    summary: 'Observed read evidence conflicts with the predicted construct or a required expectation is missing.',
+    summary: 'Reads conflict with the reference or an expected finding is missing.',
   },
 };
 
@@ -359,7 +359,7 @@ export function ClaudeScienceConstructVerificationPanel({
     ?? result.reference.name
     ?? result.reference.recordId
       ?? result.reference.id
-      ?? 'Predicted construct';
+      ?? 'Reference DNA';
   const expectedVariantCount = result.variants.expected.length;
   const unexpectedVariantCount = result.variants.unexpected.filter((variant) => variant.confidence !== 'low').length;
   const missingExpectedCount = result.variants.missingExpected.length;
@@ -372,14 +372,12 @@ export function ClaudeScienceConstructVerificationPanel({
       data-testid="construct-verification-panel"
     >
       <header className="motif-cs-construct-verification-verdict" data-verdict={result.state}>
-        <span className="motif-cs-construct-verification-rail" aria-hidden="true" />
         <div className="motif-cs-construct-verification-heading">
-          <span className="motif-cs-construct-verification-eyebrow">Construct verification</span>
           <strong>{verdict.label}</strong>
           <p>{verdict.summary}</p>
         </div>
         <div className="motif-cs-construct-verification-reference">
-          <span>Predicted reference</span>
+          <span>Reference DNA</span>
           <strong title={referenceLabel}>{referenceLabel}</strong>
           <span>{formatNumber(result.reference.length, ' bp')} · {readableToken(result.reference.topology)}</span>
         </div>
@@ -398,8 +396,8 @@ export function ClaudeScienceConstructVerificationPanel({
 
       <div className="motif-cs-construct-verification-coverage">
         <div className="motif-cs-construct-verification-coverage-label">
-          <span>Reference bases with accepted read coverage</span>
-          <strong>{acceptedCoveredBases.toLocaleString()} bp · {formatPercent(result.coverage.coveredFraction)}</strong>
+          <span>Covered bases</span>
+          <strong>{acceptedCoveredBases.toLocaleString()} bp</strong>
         </div>
         <progress
           aria-label={`Reference coverage ${formatPercent(result.coverage.coveredFraction)}`}
@@ -410,7 +408,7 @@ export function ClaudeScienceConstructVerificationPanel({
 
       <section className="motif-cs-construct-verification-section" aria-labelledby={`${sectionId}-findings`}>
         <div className="motif-cs-construct-verification-section-heading">
-          <span id={`${sectionId}-findings`}>Review findings</span>
+          <span id={`${sectionId}-findings`}>Findings</span>
           <small>
             {findings.length.toLocaleString()} finding{findings.length === 1 ? '' : 's'}
             {findings.length !== result.reasons.length ? ` · ${result.reasons.length.toLocaleString()} reason${result.reasons.length === 1 ? '' : 's'}` : ''}
@@ -437,22 +435,22 @@ export function ClaudeScienceConstructVerificationPanel({
                     </li>
                   ))}
                 </ul>
-                {omittedReasons ? <p className="motif-cs-construct-verification-empty">{omittedReasons.toLocaleString()} additional findings are outside this bounded preview.</p> : null}
+                {omittedReasons ? <p className="motif-cs-construct-verification-empty">{omittedReasons.toLocaleString()} more findings are in the saved report.</p> : null}
               </details>
             ) : null}
           </>
         ) : (
-          <p className="motif-cs-construct-verification-empty">No review findings were recorded for this result.</p>
+          <p className="motif-cs-construct-verification-empty">No findings recorded.</p>
         )}
       </section>
 
       <section className="motif-cs-construct-verification-section" aria-labelledby={`${sectionId}-variants`}>
         <div className="motif-cs-construct-verification-section-heading">
-          <span id={`${sectionId}-variants`}>Variant evidence</span>
+          <span id={`${sectionId}-variants`}>Variants</span>
           <label className="motif-cs-construct-verification-filter">
             <span>Show</span>
             <select value={variantFilter} onChange={(event) => setVariantFilter(event.target.value as VariantFilter)}>
-              <option value="all">All evidence ({allVariants.length.toLocaleString()})</option>
+              <option value="all">All variants ({allVariants.length.toLocaleString()})</option>
               <option value="unexpected">Unexpected ({unexpectedVariantCount.toLocaleString()})</option>
               <option value="expected">Expected ({expectedVariantCount.toLocaleString()})</option>
               <option value="missing_expected">Missing expected ({missingExpectedCount.toLocaleString()})</option>
@@ -528,7 +526,7 @@ export function ClaudeScienceConstructVerificationPanel({
             ) : null}
           </div>
         ) : (
-          <p className="motif-cs-construct-verification-empty">No variant evidence matches this view.</p>
+          <p className="motif-cs-construct-verification-empty">{variantFilter === 'all' ? 'No variants found.' : 'No matching variants. Choose All variants.'}</p>
         )}
       </section>
 
@@ -562,7 +560,7 @@ export function ClaudeScienceConstructVerificationPanel({
 
       <section className="motif-cs-construct-verification-section" aria-labelledby={`${sectionId}-reads`}>
         <div className="motif-cs-construct-verification-section-heading">
-          <span id={`${sectionId}-reads`}>Read evidence</span>
+          <span id={`${sectionId}-reads`}>Reads</span>
           <small>{result.reads.length.toLocaleString()} read{result.reads.length === 1 ? '' : 's'}</small>
         </div>
         {result.reads.length ? (
@@ -586,7 +584,7 @@ export function ClaudeScienceConstructVerificationPanel({
             ) : null}
           </details>
         ) : (
-          <p className="motif-cs-construct-verification-empty">No read evidence was recorded.</p>
+          <p className="motif-cs-construct-verification-empty">No saved read evidence. Check the selected reads.</p>
         )}
       </section>
 

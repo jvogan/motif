@@ -125,22 +125,26 @@ describe('ClaudeScienceMsaViewer interaction-state overlays', () => {
   });
 
   it('assigns a separate token and geometry to every state', () => {
-    expect(overlayCss).toMatch(/\.motif-cs-msa-selection-band\s*\{[\s\S]*?background:\s*transparent;[\s\S]*?border:\s*2px solid var\(--motif-cs-msa-selection-rule\)/);
+    // A selected range is one flat tint of the accent with a 1px hairline at each end:
+    // no box, no keyline, no corner handles, no second layer.
+    expect(overlayCss).toMatch(/\.motif-cs-msa-selection-band\s*\{[\s\S]*?background:\s*color-mix\(in srgb, var\(--motif-cs-msa-selection-rule\) 12%, transparent\);[\s\S]*?border:\s*0;[\s\S]*?border-inline:\s*1px solid var\(--motif-cs-msa-selection-rule\)/);
+    expect(overlayCss).not.toMatch(/\.motif-cs-msa-selection-band::(before|after)/);
+    const bandRule = overlayCss.slice(overlayCss.indexOf('.motif-cs-msa-selection-band {'));
+    expect(bandRule.slice(0, bandRule.indexOf('}'))).not.toMatch(/box-shadow|gradient/);
     expect(overlayCss).toMatch(/\.motif-cs-msa-hover-column\s*\{[\s\S]*?background:\s*transparent;[\s\S]*?outline:\s*1px dashed var\(--motif-cs-msa-hover-rule\)/);
     expect(overlayCss).toMatch(/\.motif-cs-msa-symbol\[data-search-match\][\s\S]*?inset 0 -3px 0 var\(--amber\)/);
     expect(overlayCss).toMatch(/\.motif-cs-msa-symbol\[data-search-active\][\s\S]*?inset 0 0 0 2px var\(--amber\)/);
     expect(overlayCss).toContain('--motif-cs-msa-jump-rule: var(--purple);');
     // The jump marker covers the whole cell as a translucent band rather than
-    // drawing a rule inside it. It used to be a 3px bar inset 1px from the left
-    // edge, which at a 10.6px column lands on the glyph's left stroke, so the
-    // marked column read as letters with a line struck through them. Assert the
-    // band explicitly, and assert no width, so the rule cannot come back.
+    // drawing a rule inside it. A 3px bar inset 1px from the left edge would land
+    // on the glyph's left stroke at a 10.6px column, so the marked column would
+    // read as letters with a line struck through them. Assert the band
+    // explicitly, and assert no width.
     expect(overlayCss).toMatch(/\.motif-cs-msa-symbol\[data-jump='true'\]::after[\s\S]*?inset:\s*0;[\s\S]*?background:\s*color-mix\(in srgb, var\(--motif-cs-msa-jump-rule\)/);
     const jumpBlock = overlayCss.slice(overlayCss.indexOf(".motif-cs-msa-symbol[data-jump='true']::after"));
     expect(jumpBlock.slice(0, jumpBlock.indexOf('}'))).not.toMatch(/width:/);
-    // The roving cursor used to be the one state this test's own title excludes:
-    // raw var(--accent), no token, which put it within 1.2:1 of the selection
-    // rule it sits on top of by default.
+    // The roving cursor is never raw var(--accent) with no token, which would put
+    // it within 1.2:1 of the selection rule it sits on top of by default.
     expect(overlayCss).toContain('--motif-cs-msa-cursor-rule: var(--text-primary);');
     expect(overlayCss).toContain('--motif-cs-msa-cursor-keyline: var(--bg-primary);');
     expect(overlayCss).toMatch(/\.motif-cs-msa-symbol\[data-active-cell='true'\]\s*\{[\s\S]*?outline:\s*2px solid var\(--motif-cs-msa-cursor-rule\)/);
@@ -152,9 +156,8 @@ describe('ClaudeScienceMsaViewer interaction-state overlays', () => {
 
   it('keeps the overview viewport off the selection colour', () => {
     // The viewport rectangle and the selection band are the viewer's only two
-    // region outlines, one strip apart. While both were accent-derived they
-    // measured ΔE 1.9-3.3 apart in all four themes — one colour saying two
-    // things. The viewport marks where the system is looking, which is the
+    // region outlines, one strip apart. Were both accent-derived they would sit
+    // ΔE 1.9-3.3 apart — one colour saying two things. The viewport marks where the system is looking, which is the
     // cursor's statement, so it takes the cursor's channel; accent is then left
     // to mean the selection and nothing else.
     const viewport = ruleBlockContaining(artifactCss, '.motif-cs-msa-overview-viewport', 'min-width');
@@ -162,7 +165,7 @@ describe('ClaudeScienceMsaViewer interaction-state overlays', () => {
     expect(viewport).toMatch(/border:[^;]*var\(--motif-cs-msa-cursor-rule/);
     expect(viewport).not.toMatch(/border[^;]*var\(--accent\)/);
     // The other half of the split: the selection rule stays accent-derived, so
-    // the two cannot converge again from the opposite direction. It is the
+    // the two cannot converge from the opposite direction. It is the
     // theme's accent UNDILUTED — the invariant, not a byte string. Any mix
     // toward ink drags the band back onto the cursor's own channel, which is
     // exactly what this test exists to prevent; see

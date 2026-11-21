@@ -1,11 +1,13 @@
 import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const artifactPath = resolve(root, 'preview/motif-artifact.html');
+const useRelease = process.env.MOTIF_GATE_STEP === 'core-browser-workflows';
+const artifactPath = resolve(root, useRelease ? 'dist-motif/motif-artifact.html' : 'preview/motif-artifact.html');
 const host = '127.0.0.1';
 const requestedPort = Number(process.env.MOTIF_ARTIFACT_PORT ?? 0);
 
@@ -19,16 +21,24 @@ if (
   process.exit(1);
 }
 
-const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-const npxCommand = process.platform === 'win32' ? 'npx.cmd' : 'npx';
 
-const build = spawnSync(npmCommand, ['run', 'preview:claude-science'], {
-  cwd: root,
-  stdio: 'inherit',
-});
-if (build.status !== 0) process.exit(build.status ?? 1);
+if (!useRelease) {
+  const build = spawnSync(process.execPath, [resolve(root, 'scripts/build-preview.mjs')], {
+    cwd: root,
+    stdio: 'inherit',
+  });
+  if (build.status !== 0) process.exit(build.status ?? 1);
+}
 
 const artifact = readFileSync(artifactPath);
+if (useRelease) {
+  const checksums = JSON.parse(readFileSync(resolve(root, 'dist-motif/motif-for-claude-science.checksums.json'), 'utf8'));
+  const digest = createHash('sha256').update(artifact).digest('hex');
+  if (digest !== checksums.files['skills/motif-for-claude-science/resources/motif-artifact.html']) {
+    throw new Error('Browser gate artifact differs from the staged plugin HTML.');
+  }
+  console.log(`Browser gate artifact SHA-256 ${digest}`);
+}
 const server = createServer((request, response) => {
   let pathname;
   try {
@@ -90,8 +100,8 @@ const artifactUrl = `http://${host}:${port}/motif-artifact.html`;
 console.log(`Standalone artifact audit URL: ${artifactUrl}`);
 
 const test = spawn(
-  npxCommand,
-  ['playwright', 'test', '--config', 'scripts/playwright.claude-science.config.ts', ...process.argv.slice(2)],
+  process.execPath,
+  [resolve(root, 'node_modules/@playwright/test/cli.js'), 'test', '--config', 'scripts/playwright.claude-science.config.ts', ...process.argv.slice(2)],
   {
     cwd: root,
     stdio: 'inherit',

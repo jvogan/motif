@@ -39,6 +39,7 @@ import { linearSelectionEdgePaths } from '../../plasmid-map/selection-overlay';
 import { keepSettledSquares, measureMoreHitSquares, type HitRect } from '../../plasmid-map/more-hit-area';
 import type { FeatureType } from '../../bio/types';
 import { featureDisplayTokens } from '../sequence-stack/feature-display-colors';
+import { measureSelectedName, sameSelectedName, type SelectedNameRender } from './selected-name';
 import './plasmid-map.css';
 
 type ThemeName = Parameters<typeof featureDisplayTokens>[1];
@@ -87,13 +88,19 @@ export interface SequenceMapViewProps {
    */
   onRestrictionMenu?: (clusterId: string, enzymes: readonly RestrictionClusterEnzyme[], anchor: Element) => void;
   onRangeOverlayClick?: (overlayId: string) => void;
+  /**
+   * Makes a drawn "+N sites" or "+N features" count a button that opens the list
+   * it counts from, as the circular map's counts beside the ring already are.
+   */
+  onOverflowClick?: (kind: string) => void;
   onBackgroundClick?: () => void;
   /**
-   * Wheel is the map's ONLY viewport gesture: plain wheel translates, ctrl/pinch
-   * scales. There is deliberately no drag-to-pan — background drag belongs to the
-   * host's range selection, and this component used to advertise a pan (data-pannable,
-   * cursor:grab, onPanStart/Move/End) that nothing ever wired, so a grab cursor invited
-   * a drag that moved nothing. An affordance nobody implements is worse than none.
+   * The wheel is this component's only viewport gesture: plain wheel translates,
+   * ctrl/pinch scales. Drag-to-pan is the host's: it listens on its own wrapper and
+   * pans on a middle-button drag, a drag with Space held or its hand toggle on, and a
+   * drag on blank canvas, and sets the grab cursor only where its drag pans. This
+   * component declares no pan affordance (data-pannable, cursor:grab,
+   * onPanStart/Move/End) of its own; an affordance nobody implements is worse than none.
    *
    * Return false to decline a wheel event: it is then neither prevented nor stopped,
    * so the page or pane around the map scrolls. The host declines the plain wheel at
@@ -106,8 +113,10 @@ export interface SequenceMapViewProps {
 
 const DEFAULT_VIEWPORT: MapViewport = { k: 1, tx: 0, ty: 0 };
 const NO_MORE_HITS: ReadonlyMap<string, HitRect> = new Map();
+/* An unlabelled site's tick. The border token gives 1.41:1 in light, too pale
+   for a 1px line; the strong border token clears 3:1 in every theme. */
 const RESTRICTION_DENSITY_TICK_STYLE = {
-  stroke: 'var(--border, var(--text-secondary, #8a8a8a))',
+  stroke: 'var(--border-strong, var(--text-secondary, #8a8a8a))',
 } as CSSProperties;
 const MAX_RESTRICTION_DENSITY_TICKS = 512;
 /** Keep circular map text legible without letting deep zoom turn it into dominant,
@@ -261,6 +270,31 @@ function svgPointFromClient(svg: SVGSVGElement, clientX: number, clientY: number
   return { x: local.x, y: local.y };
 }
 
+/**
+ * Scroll just enough to show the part of a map item the map can actually show.
+ * The item's box is clipped to the SVG's drawing first, because a bare focus()
+ * scrolls to the whole box, and on a zoomed map that box runs outside the drawing,
+ * where no scroll can reveal it. Nothing scrolls when the clipped part is already in
+ * view or when nothing of the item is inside the drawing at all.
+ */
+function revealMapItem(item: Element, svg: SVGSVGElement): void {
+  const box = item.getBoundingClientRect();
+  const drawing = svg.getBoundingClientRect();
+  const top = Math.max(box.top, drawing.top);
+  const bottom = Math.min(box.bottom, drawing.bottom);
+  if (bottom <= top || Math.min(box.right, drawing.right) <= Math.max(box.left, drawing.left)) return;
+  let scroller = svg.parentElement;
+  while (scroller && !(scroller.scrollHeight > scroller.clientHeight
+    && /auto|scroll/.test(getComputedStyle(scroller).overflowY))) {
+    scroller = scroller.parentElement;
+  }
+  const view = scroller ? scroller.getBoundingClientRect() : { top: 0, bottom: window.innerHeight };
+  const delta = top < view.top ? top - view.top : bottom > view.bottom ? Math.min(bottom - view.bottom, top - view.top) : 0;
+  if (Math.abs(delta) < 1) return;
+  if (scroller) scroller.scrollTop += delta;
+  else window.scrollBy(0, delta);
+}
+
 function activateKey(handler: () => void) {
   return (e: KeyboardEvent) => {
     if (e.key === 'Enter' || e.key === ' ') {
@@ -298,7 +332,7 @@ function MapText({
           <polyline className="motif-pm-leader" points={label.leader.map((p) => `${p.x},${p.y}`).join(' ')} />
         )}
         <path id={pathId} className="motif-pm-label-arc-path" d={label.arcPath} fill="none" stroke="none" />
-        <text className={className} textAnchor="middle" dominantBaseline={label.baseline ?? 'middle'}>
+        <text className={className} data-on-arc="true" textAnchor="middle" dominantBaseline={label.baseline ?? 'middle'}>
           <textPath xlinkHref={`#${pathId}`} startOffset="50%">
             {label.text}
           </textPath>
@@ -596,12 +630,12 @@ const RestrictionMark = memo(function RestrictionMark({
 
 function RestrictionDensityTick({ densityTick }: { densityTick: RenderedRestrictionDensityTick }) {
   const siteCount = densityTick.siteCount ?? 1;
+  // A busier bin darkens toward the text colour; it does not thicken or fade.
+  // Every tick on the map is 1px on screen, and none is paler than 3:1.
   const densityStyle = siteCount > 1
     ? {
-        ...RESTRICTION_DENSITY_TICK_STYLE,
-        strokeOpacity: Math.min(0.82, 0.5 + Math.log2(siteCount) * 0.04),
-        strokeWidth: Math.min(1.8, 1.1 + Math.log2(siteCount) * 0.09),
-      }
+        stroke: `color-mix(in srgb, var(--text-secondary, #383838) ${Math.min(100, Math.round(Math.log2(siteCount) * 10))}%, var(--border-strong, #8a8a8a))`,
+      } as CSSProperties
     : RESTRICTION_DENSITY_TICK_STYLE;
   return (
     <line
@@ -659,6 +693,7 @@ export const SequenceMapView = memo(function SequenceMapView({
   onRestrictionClick,
   onRestrictionMenu,
   onRangeOverlayClick,
+  onOverflowClick,
   onBackgroundClick,
   onWheelZoom,
   centerLinearContent = false,
@@ -683,25 +718,17 @@ export const SequenceMapView = memo(function SequenceMapView({
   // keeps scaling its text with the zoom; that wants a re-layout, not a cap.
   const circularTextScale = isCircular ? restrictionAnnotationSemanticScale(viewport.k) : 1;
   const rangeOverlaysInteractive = interactive && !!onRangeOverlayClick;
-  const rawSelectionGradientId = useId();
-  const selectionGradientId = `motif-pm-selection-gradient-${rawSelectionGradientId.replace(/:/g, '')}`;
-  const selectionEdgeGradientId = `motif-pm-selection-edge-gradient-${rawSelectionGradientId.replace(/:/g, '')}`;
-  const selectionGradientRadius = Math.max(1, layout.radius * 1.08);
-  // A stroke can only name a paint server by url(), and the id is generated per
-  // instance, so hand it to the stylesheet as a custom property rather than letting
-  // CSS guess it. A host that styles the selection edges reads
-  // --motif-pm-selection-edge-gradient with its own colour as the fallback.
-  const selectionEdgeGradientStyle = useMemo(
-    () => ({ '--motif-pm-selection-edge-gradient': `url(#${selectionEdgeGradientId})` }) as CSSProperties,
-    [selectionEdgeGradientId],
-  );
   // A linear selection is a band 18px tall on a drawing 274px deep (measured on the
   // synthetic pUC19 once bundled, at 1440x900), so it marks the ruler and says nothing about the restriction band
   // or the feature rows the same bases run through. These carry each span's two
   // boundaries down to where the coordinate gridlines stop.
+  // A dragged range carries its boundaries down through every lane, since they show
+  // which features fall inside it. A selected feature's own outline already says
+  // which row it is, so its boundaries stop at the ruler band.
+  const linearEdgeReach = selectedFeatureId ? 'band' : 'grid';
   const linearSelectionEdges = useMemo(
-    () => selectionPaths?.flatMap((d) => linearSelectionEdgePaths(layout, d)) ?? [],
-    [selectionPaths, layout],
+    () => selectionPaths?.flatMap((d) => linearSelectionEdgePaths(layout, d, linearEdgeReach)) ?? [],
+    [selectionPaths, layout, linearEdgeReach],
   );
   // Arrow keys walk the map in sequence order: clockwise from the origin on a
   // ring, left to right on a line. Features and sites interleave, each at the
@@ -765,6 +792,40 @@ export const SequenceMapView = memo(function SequenceMapView({
     setMoreHits((current) => keepSettledSquares(current, next));
   }, [circularTextScale, layout, measuresTails]);
 
+  // A selected feature the ring draws without a name gets its name beside it, as part
+  // of the selection: drawn over the map after everything else, read off the drawing
+  // once it is laid out, and never moving anything the map already placed. A named
+  // feature, a range, a linear map and no selection draw nothing here at all.
+  const unnamedSelectedFeature = isCircular && selectedFeatureId
+    ? layout.features.find((feature) => feature.id === selectedFeatureId && !feature.label
+      && feature.name.trim() !== '' && feature.segmentPaths.length > 0)
+    : undefined;
+  // Kept with the drawing it was measured on, so a stale name never stands on a new
+  // drawing, where the "+N" tails' press targets would read it as one more word.
+  const [selectedName, setSelectedName] = useState<{
+    layout: MapLayout;
+    featureId: string;
+    render: SelectedNameRender;
+  } | null>(null);
+  useLayoutEffect(() => {
+    const svg = svgRef.current;
+    const render = svg && unnamedSelectedFeature
+      ? measureSelectedName(svg, unnamedSelectedFeature, layout, circularTextScale)
+      : null;
+    const next = render && unnamedSelectedFeature ? { layout, featureId: unnamedSelectedFeature.id, render } : null;
+    setSelectedName((current) => (
+      current === next
+        || (current && next && current.layout === next.layout && current.featureId === next.featureId
+          && sameSelectedName(current.render, next.render))
+        ? current
+        : next
+    ));
+  }, [circularTextScale, layout, selectionPaths, theme, unnamedSelectedFeature, viewport.k, viewport.tx, viewport.ty]);
+  const shownSelectedName = unnamedSelectedFeature && selectedName
+    && selectedName.layout === layout && selectedName.featureId === unnamedSelectedFeature.id
+    ? selectedName.render
+    : null;
+
   const handleMapItemFocus = useCallback((interactionIndex: number) => {
     const key = mapInteractionModel.keys[interactionIndex];
     if (key) setRovingMapInteractionKey(key);
@@ -774,9 +835,11 @@ export const SequenceMapView = memo(function SequenceMapView({
     const key = mapInteractionModel.keys[interactionIndex];
     if (!key) return;
     setRovingMapInteractionKey(key);
-    svgRef.current
-      ?.querySelector<SVGGElement>(`[data-map-interaction-index="${interactionIndex}"]`)
-      ?.focus();
+    const svg = svgRef.current;
+    const item = svg?.querySelector<SVGGElement>(`[data-map-interaction-index="${interactionIndex}"]`);
+    if (!svg || !item) return;
+    item.focus({ preventScroll: true });
+    revealMapItem(item, svg);
   }, [mapInteractionModel]);
 
   const handleMapItemKeyDown = useCallback<RovingMapKeyDown>((event, interactionIndex, activate) => {
@@ -836,8 +899,8 @@ export const SequenceMapView = memo(function SequenceMapView({
         isCircular ? 'circular map' : 'linear map'
       }`}
       preserveAspectRatio={preserveAspectRatio}
-      style={selectionEdgeGradientStyle}
       data-interactive={interactive ? 'true' : undefined}
+      data-miniature={layout.smallRing ? 'true' : undefined}
       onClick={interactive ? () => onBackgroundClick?.() : undefined}
     >
       {/* Background-clear lives on the SVG root above, so clicking ANY
@@ -849,7 +912,7 @@ export const SequenceMapView = memo(function SequenceMapView({
           It carries NO pointer handlers on purpose. Whatever drag the host wants over
           the map (range selection, in this app) it listens for on its own wrapper and
           receives by bubbling; a handler here would only be able to compete with that.
-          Viewport translation is the wheel's job — see onWheelZoom. */}
+          The host's drag pans too (middle button, Space, its hand toggle); see onWheelZoom. */}
       <rect
         className="motif-pm-bg"
         x={layout.bg.x}
@@ -857,36 +920,6 @@ export const SequenceMapView = memo(function SequenceMapView({
         width={layout.bg.width}
         height={layout.bg.height}
       />
-      {isCircular && selectionPaths && selectionPaths.length > 0 ? (
-        <defs>
-          <radialGradient
-            id={selectionGradientId}
-            gradientUnits="userSpaceOnUse"
-            cx={layout.center.x}
-            cy={layout.center.y}
-            r={selectionGradientRadius}
-          >
-            <stop className="motif-pm-selection-stop motif-pm-selection-stop-center" offset="0%" />
-            <stop className="motif-pm-selection-stop motif-pm-selection-stop-mid" offset="56%" />
-            <stop className="motif-pm-selection-stop motif-pm-selection-stop-edge" offset="100%" />
-          </radialGradient>
-          {/* The radial edge lines ride the same ramp as the fill, just opaque
-              enough to read as lines: faint where they approach the center label,
-              solid where they meet the backbone. Both are userSpaceOnUse and
-              centered on the map, so a line's fade tracks its own radius. */}
-          <radialGradient
-            id={selectionEdgeGradientId}
-            gradientUnits="userSpaceOnUse"
-            cx={layout.center.x}
-            cy={layout.center.y}
-            r={selectionGradientRadius}
-          >
-            <stop className="motif-pm-selection-edge-stop motif-pm-selection-edge-stop-center" offset="0%" />
-            <stop className="motif-pm-selection-edge-stop motif-pm-selection-edge-stop-mid" offset="56%" />
-            <stop className="motif-pm-selection-edge-stop motif-pm-selection-edge-stop-edge" offset="100%" />
-          </radialGradient>
-        </defs>
-      ) : null}
       <g className="motif-pm-viewport" transform={viewportTransform}>
         {layout.coordinates.some((coord) => coord.grid) ? (
           <g className="motif-pm-coordinate-grid" aria-hidden="true">
@@ -959,12 +992,7 @@ export const SequenceMapView = memo(function SequenceMapView({
         {selectionPaths && selectionPaths.length > 0 ? (
           <g className="motif-pm-selection-layer" aria-hidden="true">
             {selectionPaths.map((d, i) => (
-              <path
-                key={i}
-                className="motif-pm-selection"
-                d={d}
-                fill={isCircular ? `url(#${selectionGradientId})` : undefined}
-              />
+              <path key={i} className="motif-pm-selection" d={d} />
             ))}
           </g>
         ) : null}
@@ -999,7 +1027,18 @@ export const SequenceMapView = memo(function SequenceMapView({
                 key={overflow.id}
                 className="motif-pm-overflow-chip"
                 data-kind={overflow.kind}
+                data-actionable={onOverflowClick ? true : undefined}
+                role={onOverflowClick ? 'button' : undefined}
+                tabIndex={onOverflowClick ? 0 : undefined}
+                aria-label={onOverflowClick ? overflow.title : undefined}
                 onPointerDown={(e) => e.stopPropagation()}
+                onClick={onOverflowClick ? (e) => { e.stopPropagation(); onOverflowClick(overflow.kind); } : undefined}
+                onKeyDown={onOverflowClick ? (e) => {
+                  if (e.key !== 'Enter' && e.key !== ' ') return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onOverflowClick(overflow.kind);
+                } : undefined}
               >
                 <title>
                   {restrictionDensityRender.binned && overflow.kind === 'restriction-labels'
@@ -1107,18 +1146,50 @@ export const SequenceMapView = memo(function SequenceMapView({
                 {line.text}
               </text>
             ))}
-            <text
-              className="motif-pm-center-len"
-              x={layout.center.x}
-              y={centerTitle.lenBaselineY}
-              textAnchor="middle"
-              style={centerTitle.lenFontSize ? { fontSize: `${centerTitle.lenFontSize}px` } : undefined}
-            >
-              {layout.length.toLocaleString()} {unit}
-            </text>
+            {centerTitle.showLength !== false ? (
+              <text
+                className="motif-pm-center-len"
+                x={layout.center.x}
+                y={centerTitle.lenBaselineY}
+                textAnchor="middle"
+                style={centerTitle.lenFontSize ? { fontSize: `${centerTitle.lenFontSize}px` } : undefined}
+              >
+                {layout.length.toLocaleString()} {unit}
+              </text>
+            ) : null}
           </g>
         ) : null}
       </g>
+      {shownSelectedName ? (
+        <g
+          className="motif-pm-selected-name"
+          aria-hidden="true"
+          pointerEvents="none"
+          data-selected-name={shownSelectedName.text}
+        >
+          {shownSelectedName.leader ? (
+            <polyline className="motif-pm-selected-name-leader" points={shownSelectedName.leader} />
+          ) : null}
+          <rect
+            className="motif-pm-selected-name-plate"
+            x={shownSelectedName.x}
+            y={shownSelectedName.y}
+            width={shownSelectedName.width}
+            height={shownSelectedName.height}
+            rx={shownSelectedName.radius}
+          />
+          <text
+            className="motif-pm-selected-name-text"
+            x={shownSelectedName.x + shownSelectedName.width / 2}
+            y={shownSelectedName.y + shownSelectedName.height / 2}
+            textAnchor="middle"
+            dominantBaseline="central"
+            style={{ fontSize: `${shownSelectedName.fontSize}px` }}
+          >
+            {shownSelectedName.text}
+          </text>
+        </g>
+      ) : null}
     </svg>
   );
 });

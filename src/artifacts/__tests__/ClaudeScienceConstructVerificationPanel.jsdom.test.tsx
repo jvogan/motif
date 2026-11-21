@@ -102,7 +102,7 @@ describe('ClaudeScienceConstructVerificationPanel', () => {
     expect(screen.getByText('2 F · 1 R')).toBeTruthy();
     expect(screen.getByText('2.0×')).toBeTruthy();
     expect(screen.getByRole('progressbar', { name: 'Reference coverage 100.0%' }).getAttribute('value')).toBe('100');
-    expect(screen.getByText('No review findings were recorded for this result.')).toBeTruthy();
+    expect(screen.getByText('No findings recorded.')).toBeTruthy();
   });
 
   it('keeps findings inert, bounds their initial presentation, and filters variant evidence accessibly', async () => {

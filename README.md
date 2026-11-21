@@ -61,7 +61,7 @@ connector.
 - ORF and translation analysis, plus PAM-based CRISPR guide candidates
 - Workflow history, typed analysis results, and inert plain-text or JSON
   attachments
-- Database JSON checkpoint and restore, workspace ZIP export, and standard
+- Workspace JSON checkpoint and restore, workspace ZIP export, and standard
   biological interchange formats
 - Deterministic host packages with a full-workbench `ui://` App and portable
   HTML fallback

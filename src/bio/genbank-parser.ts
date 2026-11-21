@@ -33,10 +33,9 @@ function utf8ByteLength(value: string): number {
 }
 
 /** Append complete Unicode scalars, replacing malformed surrogates. */
-function appendUtf8WithinLimit(current: string, incoming: string, limit: number): string {
-  let output = current;
-  let bytes = utf8ByteLength(current);
-  if (bytes >= limit) return output;
+function truncateUtf8(incoming: string, limit: number): string {
+  let output = '';
+  let bytes = 0;
   for (let index = 0; index < incoming.length; index += 1) {
     const code = incoming.charCodeAt(index);
     let fragment = incoming[index];
@@ -72,10 +71,6 @@ function appendUtf8WithinLimit(current: string, incoming: string, limit: number)
   return output;
 }
 
-function truncateUtf8(value: string, limit: number): string {
-  return appendUtf8WithinLimit('', value, limit);
-}
-
 const QUALIFIER_TRUNCATED_SUFFIX_BYTES = utf8ByteLength(QUALIFIER_TRUNCATED_SUFFIX);
 
 function hasOddTrailingQuoteRun(value: string): boolean {
@@ -84,13 +79,12 @@ function hasOddTrailingQuoteRun(value: string): boolean {
   return count > 0 && count % 2 === 1;
 }
 
-function qualifierChunkStats(value: string, opening: boolean, closing: boolean): { bytes: number; retained: string } {
+function qualifierChunkStats(value: string, opening: boolean, closing: boolean, retentionLimit: number): { bytes: number; retained: string } {
   const start = opening && value.startsWith('"') ? 1 : 0;
   let end = value.length;
   if (closing && end > start && value.endsWith('"')) end -= 1;
   if (end < start) end = start;
   let bytes = 0;
-  let retainedBytes = 0;
   const retained: string[] = [];
   for (let index = start; index < end; index += 1) {
     let fragment = value[index];
@@ -121,10 +115,7 @@ function qualifierChunkStats(value: string, opening: boolean, closing: boolean):
       }
     }
     bytes += fragmentBytes;
-    if (retainedBytes + fragmentBytes <= QUALIFIER_VALUE_MAX_BYTES) {
-      retained.push(fragment);
-      retainedBytes += fragmentBytes;
-    }
+    if (bytes <= retentionLimit) retained.push(fragment);
   }
   return { bytes, retained: retained.join('') };
 }
@@ -398,7 +389,7 @@ function importedFeatureType(featureKey: string, qualifiers: Readonly<Record<str
   const regulatory = featureKey === 'regulatory' && typeof regulatoryClass === 'string'
     ? regulatoryClassFeatureType(regulatoryClass)
     : undefined;
-  return marked ?? regulatory ?? FEATURE_TYPE_MAP[featureKey] ?? 'custom';
+  return marked ?? regulatory ?? (Object.hasOwn(FEATURE_TYPE_MAP, featureKey) ? FEATURE_TYPE_MAP[featureKey] : 'custom');
 }
 
 export const SAFE_IMPORTED_FEATURE_COLOR = /^(?:#[0-9a-f]{3,8}|(?:rgb|hsl)a?\([\d\s.,%+\-/]+\)|[a-z]+)$/i;
@@ -669,7 +660,7 @@ export function parseFeatures(featuresText: string): Feature[] {
   // feature-table syntax; it is kept with the preceding feature (so no later
   // feature is lost) and reported on that feature as an import diagnostic.
   const unindentedBlocks = new Set<number>();
-  const lines = featuresText.split(/\r?\n/);
+  const lines = featuresText.split(/\r\n?|\n/);
   let current = '';
 
   for (const line of lines) {
@@ -719,31 +710,25 @@ export function parseFeatures(featuresText: string): Feature[] {
     const qualifierEntries: GenBankQualifier[] = [];
     const qualifierTruncations: GenBankQualifierTruncation[] = [];
     let currentQualKey = '';
-    let currentQualRetainedValue = '';
+    let currentQualChunks: string[] = [];
     let currentQualOriginalBytes = 0;
     let currentQualIsQuoted = false;
     let currentQualClosed = false;
     let currentQualValueless = false;
 
     const appendQualifierChunk = (rawChunk: string, separator = '', opening = false, closing = false) => {
-      const separatorStats = qualifierChunkStats(separator, false, false);
-      const chunkStats = qualifierChunkStats(rawChunk, opening, closing);
-      currentQualOriginalBytes += separatorStats.bytes + chunkStats.bytes;
-      const retainedLimit = currentQualOriginalBytes > QUALIFIER_VALUE_MAX_BYTES
-        ? QUALIFIER_VALUE_MAX_BYTES - QUALIFIER_TRUNCATED_SUFFIX_BYTES
-        : QUALIFIER_VALUE_MAX_BYTES;
-      if (utf8ByteLength(currentQualRetainedValue) > retainedLimit) {
-        currentQualRetainedValue = truncateUtf8(currentQualRetainedValue, retainedLimit);
-      }
-      currentQualRetainedValue = appendUtf8WithinLimit(
-        currentQualRetainedValue,
-        `${separator}${chunkStats.retained}`,
-        retainedLimit,
-      );
+      const remaining = QUALIFIER_VALUE_MAX_BYTES - currentQualOriginalBytes;
+      const chunk = qualifierChunkStats(rawChunk, opening, closing, remaining - separator.length);
+      if (separator && separator.length <= remaining) currentQualChunks.push(separator);
+      if (chunk.retained) currentQualChunks.push(chunk.retained);
+      currentQualOriginalBytes += separator.length + chunk.bytes;
     };
 
     const saveQualifier = () => {
       if (!currentQualKey) return;
+      if (currentQualIsQuoted && !currentQualClosed) {
+        throw new SyntaxError(`GenBank feature has an unclosed quoted qualifier /${currentQualKey.slice(0, 80)}.`);
+      }
       let value: string | true;
       if (currentQualValueless) {
         // Valueless GenBank qualifier (/pseudo, /partial, /ribosomal_slippage,
@@ -755,9 +740,10 @@ export function parseFeatures(featuresText: string): Feature[] {
         value = true;
       } else {
         const truncated = currentQualOriginalBytes > QUALIFIER_VALUE_MAX_BYTES;
+        const retained = currentQualChunks.join('');
         const raw = truncated
-          ? `${currentQualRetainedValue}${QUALIFIER_TRUNCATED_SUFFIX}`
-          : currentQualRetainedValue;
+          ? truncateUtf8(retained, QUALIFIER_VALUE_MAX_BYTES - QUALIFIER_TRUNCATED_SUFFIX_BYTES) + QUALIFIER_TRUNCATED_SUFFIX
+          : retained;
         if (truncated) {
           const originalBytes = currentQualOriginalBytes;
           const retainedBytes = utf8ByteLength(raw);
@@ -812,7 +798,7 @@ export function parseFeatures(featuresText: string): Feature[] {
         const eqIdx = l.indexOf('=');
         if (eqIdx === -1) {
           currentQualKey = l.slice(1);
-          currentQualRetainedValue = '';
+          currentQualChunks = [];
           currentQualOriginalBytes = 0;
           currentQualIsQuoted = false;
           currentQualClosed = true;
@@ -820,7 +806,7 @@ export function parseFeatures(featuresText: string): Feature[] {
         } else {
           currentQualKey = l.slice(1, eqIdx);
           const value = l.slice(eqIdx + 1);
-          currentQualRetainedValue = '';
+          currentQualChunks = [];
           currentQualOriginalBytes = 0;
           currentQualIsQuoted = value.startsWith('"');
           currentQualClosed = !currentQualIsQuoted || isQuotedValueClosed(value);
@@ -882,7 +868,6 @@ export function parseFeatures(featuresText: string): Feature[] {
       (typeof qualifiers['label'] === 'string' && qualifiers['label']) ||
       (typeof qualifiers['gene'] === 'string' && qualifiers['gene']) ||
       (typeof qualifiers['product'] === 'string' && qualifiers['product']) ||
-      (typeof qualifiers['note'] === 'string' && qualifiers['note']) ||
       featureKey;
 
     // Parse location
@@ -957,33 +942,51 @@ export function parseFeatures(featuresText: string): Feature[] {
  * Parse one or more GenBank records from a string.
  * Records are separated by `//`.
  */
-export function parseGenBank(input: string): GenBankRecord[] {
-  return parseMultiGenBank(input);
+export function parseGenBank(input: string, options: { maxRecords?: number } = {}): GenBankRecord[] {
+  return parseMultiGenBank(input, options);
 }
 
-function splitGenBankRecords(input: string): string[] {
-  const records: string[] = [];
-  const lines = input.split(/\r?\n/);
-  let currentLines: string[] = [];
+export function hasGenBankLocus(input: string): boolean {
+  return /^[^\S\r\n\u2028\u2029]*LOCUS\s/m.test(input);
+}
 
+/** A top-level GenBank keyword line starts at column 1. */
+const TOP_LEVEL_KEYWORD_LINE = /^[A-Z][A-Z_]{2,}(?:\s|$)/;
+
+/**
+ * Whether `line` ends a GenBank record. A `//` line ends one at any
+ * indentation, except at qualifier indentation (21 spaces) inside FEATURES,
+ * where a line of slashes can be part of a quoted note.
+ */
+export function isGenBankTerminator(line: string, inFeatures = false): boolean {
+  return line.trim() === '//' && !(inFeatures && /^ {21}/.test(line));
+}
+
+function splitGenBankRecords(input: string, maxRecords: number): Array<{ text: string; terminated: boolean }> {
+  const records: Array<{ text: string; terminated: boolean }> = [];
+  const lines = input.split(/\r\n?|\n/);
+  let currentLines: string[] = [];
+  let inFeatures = false;
+  const addRecord = (terminated: boolean) => {
+    const text = currentLines.join('\n').trim();
+    if (!text) return;
+    if (records.length === maxRecords) {
+      throw new Error(`GenBank input exceeds the ${maxRecords}-record limit.`);
+    }
+    records.push({ text, terminated });
+  };
   for (const line of lines) {
-    if (line.trim() === '//') {
-      const record = currentLines.join('\n').trim();
-      if (record.length > 0) {
-        records.push(record);
-      }
+    if (isGenBankTerminator(line, inFeatures)) {
+      addRecord(true);
       currentLines = [];
+      inFeatures = false;
       continue;
     }
-
+    if (/^FEATURES\b/.test(line)) inFeatures = true;
+    else if (TOP_LEVEL_KEYWORD_LINE.test(line)) inFeatures = false;
     currentLines.push(line);
   }
-
-  const trailingRecord = currentLines.join('\n').trim();
-  if (trailingRecord.length > 0) {
-    records.push(trailingRecord);
-  }
-
+  addRecord(false);
   return records;
 }
 
@@ -1033,6 +1036,7 @@ function parseLocusLine(line: string): LocusFields {
     if (/^\d+$/.test(tok) && /^(bp|aa)$/i.test(next)) {
       result.length = parseInt(tok, 10);
       if (fieldsStart < 0) fieldsStart = i + 2;
+      if (next.toLowerCase() === 'aa') result.moleculeType = 'protein';
     }
   }
   if (fieldsStart < 0) {
@@ -1046,10 +1050,10 @@ function parseLocusLine(line: string): LocusFields {
   // continues to receive plain `DNA` / `RNA`. `mRNA` keeps INSDC's spelling:
   // an import that keeps the LOCUS token writes it back on export.
   const strandMatch = line.match(/\b(ss|ds|ms)-(DNA|RNA|mRNA)\b/i);
-  if (strandMatch) {
+  if (strandMatch && result.moleculeType !== 'protein') {
     result.strandedness = strandMatch[1].toLowerCase() as GenBankStrandedness;
     result.moleculeType = /^mrna$/i.test(strandMatch[2]) ? 'mRNA' : strandMatch[2].toUpperCase();
-  } else {
+  } else if (result.moleculeType !== 'protein') {
     const molMatch = line.match(/\b(DNA|RNA|mRNA|cDNA|tRNA|rRNA|ncRNA)\b/i);
     if (molMatch) result.moleculeType = molMatch[1];
   }
@@ -1075,15 +1079,12 @@ function parseLocusLine(line: string): LocusFields {
   return result;
 }
 
-/** A top-level GenBank keyword line: an uppercase keyword of 3+ characters at column 0. */
-const TOP_LEVEL_KEYWORD_LINE = /^[A-Z][A-Z_]{2,}(?:\s|$)/;
-
-function parseSingleGenBankRecord(raw: string): GenBankRecord | null {
+function parseSingleGenBankRecord({ text: raw, terminated }: { text: string; terminated: boolean }): GenBankRecord | null {
   if (raw.trim().length === 0) {
     return null;
   }
 
-  const lines = raw.split(/\r?\n/);
+  const lines = raw.split('\n');
   let locus: LocusFields = {
     name: 'Unknown',
     length: 0,
@@ -1118,6 +1119,7 @@ function parseSingleGenBankRecord(raw: string): GenBankRecord | null {
   // and the intake pipeline refuses the import instead of materializing
   // a 0-bp block with phantom features.
   let originSeen = false;
+  let locusSeen = false;
 
   const flushDefinition = () => {
     if (inDefinition) {
@@ -1128,7 +1130,7 @@ function parseSingleGenBankRecord(raw: string): GenBankRecord | null {
   const flushComment = () => {
     if (inComment) {
       // Preserve embedded newlines so multi-line COMMENTs round-trip.
-      comment = commentLines.join('\n').replace(/\s+$/g, '');
+      comment = commentLines.join('\n').trimEnd();
       inComment = false;
     }
   };
@@ -1160,10 +1162,28 @@ function parseSingleGenBankRecord(raw: string): GenBankRecord | null {
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
+    if (section === 'origin') {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      // Records run together after ORIGIN, so say what is missing rather than
+      // reporting the next LOCUS line as a bad sequence row.
+      if (/^LOCUS\s/.test(line)) throw new SyntaxError('GenBank record is missing its // terminator before the next LOCUS.');
+      const chunks = trimmed.split(/\s+/);
+      const firstResidueChunk = /^\d+$/.test(chunks[0]) ? 1 : 0;
+      const residueChunks = chunks.slice(firstResidueChunk);
+      if (residueChunks.length === 0 || residueChunks.some((chunk) => !/^[A-Za-z*?.-]+$/.test(chunk))) {
+        throw new SyntaxError(`Malformed GenBank ORIGIN row on record line ${i + 1}.`);
+      }
+      sequence += residueChunks.join('');
+      continue;
+    }
 
-    if (line.startsWith('LOCUS')) {
+    const headerLine = section === 'header' && !locusSeen ? line.trimStart() : line;
+    if (/^LOCUS\s/.test(headerLine)) {
+      if (locusSeen) throw new SyntaxError('GenBank record is missing its // terminator before the next LOCUS.');
       flushAllHeaderBuffers();
-      locus = parseLocusLine(line);
+      locus = parseLocusLine(headerLine);
+      locusSeen = true;
       section = 'header';
       continue;
     }
@@ -1281,7 +1301,7 @@ function parseSingleGenBankRecord(raw: string): GenBankRecord | null {
       continue;
     }
 
-    if (line.startsWith('ORIGIN')) {
+    if (/^ORIGIN(?:\s|$)/.test(line)) {
       flushAllHeaderBuffers();
       section = 'origin';
       originSeen = true;
@@ -1292,11 +1312,6 @@ function parseSingleGenBankRecord(raw: string): GenBankRecord | null {
       featuresText += line + '\n';
     }
 
-    if (section === 'origin') {
-      // Sequence lines: strip leading numbers and spaces
-      const seqLine = line.replace(/[\s\d/]/g, '');
-      sequence += seqLine;
-    }
   }
 
   flushAllHeaderBuffers();
@@ -1368,6 +1383,20 @@ function parseSingleGenBankRecord(raw: string): GenBankRecord | null {
       parsedSequenceLength: parsed,
       reason: `LOCUS declared ${declared} bp but only ${parsed} bp parsed (${Math.round((parsed / declared) * 100)}%). ORIGIN is partial — the file was truncated mid-sequence.`,
     };
+  } else if (!terminated && locusSeen && parsed !== declared) {
+    // A missing final `//` alone loses nothing when ORIGIN holds exactly the
+    // length LOCUS declares; pasted and hand-edited records often drop it. It
+    // is evidence of truncation only when the length cannot confirm the
+    // sequence. Text after the last `//` with no LOCUS is not a record and
+    // stays an empty one that intake skips.
+    truncated = {
+      originSeen,
+      declaredLength: declared,
+      parsedSequenceLength: parsed,
+      reason: declared > 0
+        ? `GenBank record has no final // terminator and ORIGIN holds ${parsed} of the ${declared} bp its LOCUS line declares.`
+        : 'GenBank record has no final // terminator and its LOCUS line gives no length, so the sequence cannot be confirmed complete.',
+    };
   }
 
   return {
@@ -1398,8 +1427,8 @@ function parseSingleGenBankRecord(raw: string): GenBankRecord | null {
  * Parse multiple GenBank records from a string.
  * Records are separated by `//`.
  */
-export function parseMultiGenBank(input: string): GenBankRecord[] {
-  return splitGenBankRecords(input)
+export function parseMultiGenBank(input: string, { maxRecords = Infinity }: { maxRecords?: number } = {}): GenBankRecord[] {
+  return splitGenBankRecords(input, maxRecords)
     .map(parseSingleGenBankRecord)
     .filter((record): record is GenBankRecord => record !== null);
 }

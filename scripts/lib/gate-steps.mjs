@@ -21,7 +21,7 @@ export const GATE_STEPS = Object.freeze([
   { id: 'reproducibility', label: 'Reproducible release build', command: ['npm', 'run', 'security:reproducibility'] },
   { id: 'release-budgets', label: 'Release budgets', command: ['npm', 'run', 'security:budgets'] },
   { id: 'core-browser-workflows', label: 'Core browser workflows', command: ['npm', 'run', 'test:e2e'] },
-  { id: 'msa-browser-workflows', label: 'MSA interaction workflows', command: ['npm', 'run', 'test:e2e:msa'] },
+  { id: 'msa-browser-workflows', label: 'MSA interaction workflows', command: ['npm', 'run', 'test:e2e:msa', '--', '--reporter=line,./scripts/gate-fixture-reporter.mjs'] },
 ]);
 
 export const GATE_RECEIPT_SCHEMA = 'motif.gate-step.v2';

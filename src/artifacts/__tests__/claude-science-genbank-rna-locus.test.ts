@@ -35,7 +35,7 @@ describe('GenBank records whose LOCUS names an RNA', () => {
   it('imports an mRNA written in DNA letters as DNA with the bases unchanged', () => {
     const record = importOne(locusFile('NM_TEST', 'mRNA'));
     expect(record).toMatchObject({ molecule: 'dna', seq: bases, provenance: { genbankMolecule: 'mRNA' } });
-    // The runtime validator used to refuse it: "its sequence is not valid DNA, RNA, or protein".
+    // The runtime validator accepts it, rather than refusing with "its sequence is not valid DNA, RNA, or protein".
     expect(() => validateRuntimeRecordInputs([record], 'motifAddRecords', true)).not.toThrow();
     expect(normalizeRecord(record, 0)).toMatchObject({ type: 'dna', sequence: bases.toUpperCase() });
   });
@@ -95,7 +95,7 @@ describe('GenBank records whose LOCUS names an RNA', () => {
     expect(molecule({ provenance: undefined })).toBe('DNA');
   });
 
-  it('keeps the token through a Database JSON checkpoint the validators accept', () => {
+  it('keeps the token through a Workspace JSON checkpoint the validators accept', () => {
     const record = importOne(locusFile('NM_TEST', 'mRNA'));
     const database = parseArtifactDatabaseJson(JSON.stringify({ schema: 'motif.claude-science.inventory.v2', records: [record] }));
     const [restored] = database!.records as typeof record[];

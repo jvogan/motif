@@ -149,10 +149,12 @@ export function ClaudeScienceNotesPanel({
   const restoreDeleteFocusIdRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (filter === 'record' && !activeRecordId) setFilter('all');
+    // With no notes the filter is hidden, so it goes back to All: a note added
+    // next must not land behind a filter that is not on screen.
+    if (filter !== 'all' && (notes.length === 0 || (filter === 'record' && !activeRecordId))) setFilter('all');
     if (!activeRecordId && createScope !== 'workspace') setCreateScope('workspace');
     else if (createScope === 'range' && !selectedRange) setCreateScope(activeRecordId ? 'record' : 'workspace');
-  }, [activeRecordId, createScope, filter, selectedRange]);
+  }, [activeRecordId, createScope, filter, notes.length, selectedRange]);
 
   useEffect(() => {
     if (editingId && !notes.some((note) => note.id === editingId)) setEditingId(null);
@@ -207,15 +209,15 @@ export function ClaudeScienceNotesPanel({
   const submitCreate = useCallback((event?: FormEvent) => {
     event?.preventDefault();
     if (!createDraft.body.trim()) {
-      setCreateError('Note body is required.');
+      setCreateError('Enter note text.');
       return;
     }
     if (createScope !== 'workspace' && !activeRecordId) {
-      setCreateError('Choose an active record before adding this note.');
+      setCreateError('Select a record first.');
       return;
     }
     if (createScope === 'range' && !selectedRange) {
-      setCreateError('Select a sequence range before adding a range note.');
+      setCreateError('Select a sequence range first.');
       return;
     }
     const note: ArtifactNoteInput = {
@@ -233,7 +235,7 @@ export function ClaudeScienceNotesPanel({
       setStatus('Note added.');
       closeAddNote();
     } catch (error) {
-      setCreateError(error instanceof Error ? error.message : 'The note could not be added.');
+      setCreateError(error instanceof Error ? error.message : 'Note save failed. Retry.');
     }
   }, [activeRecordId, closeAddNote, createDraft, createScope, onAdd, selectedRange]);
 
@@ -253,7 +255,7 @@ export function ClaudeScienceNotesPanel({
   const submitEdit = useCallback((event: FormEvent, noteId: string) => {
     event.preventDefault();
     if (!editDraft.body.trim()) {
-      setEditError('Note body is required.');
+      setEditError('Enter note text.');
       return;
     }
     try {
@@ -267,7 +269,7 @@ export function ClaudeScienceNotesPanel({
       setEditError('');
       setStatus('Note updated.');
     } catch (error) {
-      setEditError(error instanceof Error ? error.message : 'The note could not be updated.');
+      setEditError(error instanceof Error ? error.message : 'Note update failed. Retry.');
     }
   }, [editDraft, onUpdate]);
 
@@ -283,50 +285,54 @@ export function ClaudeScienceNotesPanel({
       setStatus('Note deleted.');
       addSummaryRef.current?.focus();
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : 'The note could not be deleted.');
+      setStatus(error instanceof Error ? error.message : 'Note deletion failed. Retry.');
     }
   }, [onRemove]);
 
   const confirmAnchor = useCallback((noteId: string) => {
     try {
       onConfirmAnchor(noteId);
-      setStatus('Range anchor confirmed.');
+      setStatus('Range confirmed.');
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : 'The range anchor could not be confirmed.');
+      setStatus(error instanceof Error ? error.message : 'Range confirmation failed. Retry.');
     }
   }, [onConfirmAnchor]);
 
   const emptyMessage = filter === 'workspace'
-    ? 'No workspace notes yet.'
+    ? 'Add a workspace note.'
     : filter === 'record'
-      ? `No notes for ${activeRecordName?.trim() || 'this record'} yet.`
-      : 'No notes yet. Add workspace context or annotate the active record.';
+      ? `Add a note for ${activeRecordName?.trim() || 'this record'}.`
+      : 'Add your first note.';
 
   return (
     <section className="motif-cs-notes-panel motif-cs-annotation-panel-body" aria-label="Notes">
-      <div className="motif-cs-layer-actions" role="group" aria-label="Filter notes">
-        <div className="motif-cs-segmented">
-          {(['all', 'workspace', 'record'] as const).map((option) => (
-            <button
-              key={option}
-              type="button"
-              data-active={filter === option || undefined}
-              aria-pressed={filter === option}
-              disabled={option === 'record' && !activeRecordId}
-              onClick={() => setFilter(option)}
-            >
-              {option === 'all' ? 'All' : option === 'workspace' ? 'Workspace' : 'Record'}
-            </button>
-          ))}
+      {/* No filter until there is a note to filter: over no notes, each of
+          its three views would be empty. */}
+      {notes.length > 0 ? (
+        <div className="motif-cs-layer-actions" role="group" aria-label="Filter notes">
+          <div className="motif-cs-segmented">
+            {(['all', 'workspace', 'record'] as const).map((option) => (
+              <button
+                key={option}
+                type="button"
+                data-active={filter === option || undefined}
+                aria-pressed={filter === option}
+                disabled={option === 'record' && !activeRecordId}
+                onClick={() => setFilter(option)}
+              >
+                {option === 'all' ? 'All' : option === 'workspace' ? 'Workspace' : 'Record'}
+              </button>
+            ))}
+          </div>
+          {/* Nothing to count is not a count. When the filter shows no notes the
+              panel already says why, in a sentence that names the filter - "No
+              workspace notes yet." - so "0 shown" beside the filter buttons is
+              the same fact, worse put. */}
+          {visibleNotes.length > 0 && visibleNotes.length < notes.length ? (
+            <span className="motif-cs-muted">{visibleNotes.length} of {notes.length} shown</span>
+          ) : null}
         </div>
-        {/* Nothing to count is not a count. When the filter shows no notes the
-            panel already says why, in a sentence that names the filter - "No
-            workspace notes yet." - so "0 shown" beside the filter buttons is
-            the same fact, worse put. */}
-        {visibleNotes.length ? (
-          <span className="motif-cs-muted">{visibleNotes.length} shown</span>
-        ) : null}
-      </div>
+      ) : null}
 
       <details
         ref={addDetailsRef}
@@ -343,7 +349,6 @@ export function ClaudeScienceNotesPanel({
           }}
         >
           <span>Add note</span>
-          <span className="motif-cs-chip">{defaultScope(activeRecordId, selectedRange)}</span>
         </summary>
         <form
           className="motif-cs-form-body"
@@ -470,7 +475,7 @@ export function ClaudeScienceNotesPanel({
                     onChange={(format) => setEditDraft((draft) => ({ ...draft, format }))}
                     label="Edit note format"
                   />
-                  <button className="motif-cs-mini-button motif-cs-mini-button-accent" type="submit">Update</button>
+                  <button className="motif-cs-mini-button motif-cs-mini-button-accent" type="submit">Save note</button>
                   <button className="motif-cs-mini-button" type="button" onClick={() => cancelEdit(note.id)}>Cancel</button>
                 </div>
                 {editError ? <p id={`${editBodyId}-error`} className="motif-cs-inline-error" role="alert">{editError}</p> : null}
@@ -485,10 +490,10 @@ export function ClaudeScienceNotesPanel({
                 <p>{note.body}</p>
                 {anchorReview ? (
                   <p className="motif-cs-form-note" role="note">
-                    <strong>Review range anchor.</strong>{' '}
+                    <strong>Review note range.</strong>{' '}
                     {anchorReview.status === 'detached'
-                      ? `Bases ${anchorReview.previousRange.start + 1}–${anchorReview.previousRange.end} were fully deleted; this note was retained at record level.`
-                      : `The sequence changed inside bases ${anchorReview.previousRange.start + 1}–${anchorReview.previousRange.end}; confirm the updated range after review.`}
+                      ? `Bases ${anchorReview.previousRange.start + 1}–${anchorReview.previousRange.end} deleted. Note kept on the record.`
+                      : `Bases ${anchorReview.previousRange.start + 1}–${anchorReview.previousRange.end} changed. Review and confirm the new range.`}
                   </p>
                 ) : null}
               </div>
@@ -506,7 +511,7 @@ export function ClaudeScienceNotesPanel({
                   cancelDelete(note.id);
                 }}
               >
-                <span>Delete?</span>
+                <span>Delete note?</span>
                 <button ref={cancelDeleteRef} className="motif-cs-mini-button" type="button" onClick={() => cancelDelete(note.id)}>Cancel</button>
                 <button className="motif-cs-mini-button motif-cs-confirm-delete" data-armed="true" type="button" onClick={() => confirmDelete(note.id)}>Delete note</button>
               </div>
@@ -543,7 +548,7 @@ export function ClaudeScienceNotesPanel({
                 </button>
                 {anchorReview?.status === 'review' ? (
                   <button className="motif-cs-mini-button motif-cs-mini-button-accent" type="button" onClick={() => confirmAnchor(note.id)}>
-                    Confirm anchor
+                    Confirm range
                   </button>
                 ) : null}
               </div>

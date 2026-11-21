@@ -9,6 +9,8 @@ import {
   isMaterializableFeatureLocation,
   isMultipartFeature,
   isQuarantinedFeatureLocation,
+  MAX_FEATURE_SEQUENCE_RESIDUES,
+  projectFeatureSequence,
   remapFeatureLocation,
 } from '../feature-location';
 import { parseFeatures } from '../genbank-parser';
@@ -47,6 +49,22 @@ function parsedFeature(location: string): Feature {
 }
 
 describe('feature location semantics', () => {
+  it('refuses an oversized repeated feature before extracting any residues', () => {
+    const width = 500;
+    const segment = { start: 0, end: width, strand: -1 as const };
+    const sequence = 'A'.repeat(width);
+    const atLimit = feature({
+      ...segment, subRanges: Array(MAX_FEATURE_SEQUENCE_RESIDUES / width).fill(segment),
+      metadata: { motifSubRangeOrder: 'biological' },
+    });
+    expect(projectFeatureSequence(atLimit, width)).toMatchObject({ ok: true, length: MAX_FEATURE_SEQUENCE_RESIDUES });
+    expect(extractFeatureSequence(sequence, atLimit, 'dna')).toHaveLength(MAX_FEATURE_SEQUENCE_RESIDUES);
+    const oversized = { ...atLimit, subRanges: [...atLimit.subRanges!, segment] };
+    expect(projectFeatureSequence(oversized, width)).toEqual({ ok: false, code: 'feature_sequence_limit' });
+    const slice = () => { throw new Error('Sequence sliced before checking length'); };
+    const unsliceable = { length: width, slice } as unknown as string;
+    expect(extractFeatureSequence(unsliceable, oversized, 'dna')).toBe('');
+  });
   it('concatenates forward join pieces and excludes intervening bases', () => {
     const joined = parsedFeature('join(1..3,10..12)');
 

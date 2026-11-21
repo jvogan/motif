@@ -1,7 +1,9 @@
 import { expect, test } from '@playwright/test';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
+import { openTool } from './tool-panel-aliases';
 import { selectRecord } from './record-selection';
+import { chooseTheme } from './theme';
 
 const artifactUrl = process.env.MOTIF_ARTIFACT_URL;
 const outputDir = path.resolve('output/playwright/pcr-materialization');
@@ -39,13 +41,15 @@ test.describe('Claude Science PCR materialization', () => {
     });
     expect(sourceBefore.id).toBeTruthy();
 
-    const primerPanel = page.locator('details[data-rail-tool="primer-design"]');
-    await primerPanel.locator(':scope > summary').click();
+    const primerPanel = await openTool(page, 'primer-design');
     await primerPanel.getByTestId('open-primer-workspace').click();
     const workspace = page.getByTestId('primer-workspace');
     await expect(workspace.locator('.motif-cs-primer-pair-row').first()).toBeVisible();
-    const simulate = workspace.getByRole('button', { name: 'Simulate PCR' });
-    const create = workspace.getByRole('button', { name: 'Create amplicon record' });
+    // The secondary primer actions live in the footer's "More" menu.
+    const more = workspace.getByTestId('primer-more-menu');
+    await more.click();
+    const simulate = workspace.getByRole('menuitem', { name: 'Simulate PCR' });
+    const create = workspace.getByRole('menuitem', { name: 'Create amplicon record' });
     await expect(simulate).toBeEnabled();
     await expect(create).toBeEnabled();
 
@@ -67,6 +71,7 @@ test.describe('Claude Science PCR materialization', () => {
       ? afterSimulation.simulations[0].data.products?.[0]
       : null).not.toHaveProperty('recordId');
 
+    await more.click();
     await create.click();
     await expect(workspace).toHaveCount(0);
     const materialized = await page.evaluate((sourceId) => {
@@ -101,14 +106,13 @@ test.describe('Claude Science PCR materialization', () => {
       },
     });
 
-    const resultsPanel = page.locator('details[data-rail-tool="analysis-results"]');
-    await resultsPanel.locator(':scope > summary').click();
+    const resultsPanel = await openTool(page, 'analysis-results');
     const materializedRow = resultsPanel.locator(`[data-testid="analysis-result-${materialized.result?.id}"]`);
     await expect(materializedRow).toContainText('PCR');
     await expect(materializedRow.locator('.motif-cs-agent-result-heading [data-freshness="fresh"]')).toBeVisible();
     await page.screenshot({ path: path.join(outputDir, 'materialized-result-light.png'), fullPage: true });
 
-    await page.locator('select[name="artifact-theme"]').selectOption('claude-dark');
+    await chooseTheme(page, 'dark');
     await page.setViewportSize({ width: 760, height: 900 });
     await expect(materializedRow).toBeVisible();
     expect(await resultsPanel.locator('.motif-cs-agent-results').evaluate((element) => element.scrollWidth <= element.clientWidth + 2)).toBe(true);
@@ -128,8 +132,7 @@ test.describe('Claude Science PCR materialization', () => {
     await expect(page.locator('.motif-cs-shell')).toBeVisible();
     const countBefore = await page.evaluate(() => window.motifGetInventory?.().length ?? 0);
 
-    const primerPanel = page.locator('details[data-rail-tool="primer-design"]');
-    await primerPanel.locator(':scope > summary').click();
+    const primerPanel = await openTool(page, 'primer-design');
     await primerPanel.getByTestId('open-primer-workspace').click();
     const workspace = page.getByTestId('primer-workspace');
     await expect(workspace.locator('.motif-cs-primer-pair-row').first()).toBeVisible();
@@ -141,7 +144,8 @@ test.describe('Claude Science PCR materialization', () => {
     await expect(heading).toHaveText(/^[\d,]+ bp amplicon with tails$/);
     const stated = Number((await heading.textContent())!.replace(/[^\d]/g, ''));
 
-    await workspace.getByRole('button', { name: 'Create amplicon record' }).click();
+    await workspace.getByTestId('primer-more-menu').click();
+    await workspace.getByRole('menuitem', { name: 'Create amplicon record' }).click();
     await expect.poll(() => page.evaluate(() => window.motifGetInventory?.().length ?? 0)).toBe(countBefore + 1);
     const created = await page.evaluate(() => {
       const records = window.motifGetInventory?.() ?? [];
@@ -169,10 +173,7 @@ test.describe('Claude Science PCR materialization', () => {
     }));
 
     const useInCloning = async () => {
-      const primerPanel = page.locator('details[data-rail-tool="primer-design"]');
-      if (!(await primerPanel.evaluate((element) => (element as HTMLDetailsElement).open))) {
-        await primerPanel.locator(':scope > summary').click();
-      }
+      const primerPanel = await openTool(page, 'primer-design');
       await primerPanel.getByTestId('open-primer-workspace').click();
       const workspace = page.getByTestId('primer-workspace');
       await expect(workspace.locator('.motif-cs-primer-pair-row').first()).toBeVisible();

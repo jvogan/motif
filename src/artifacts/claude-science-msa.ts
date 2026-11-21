@@ -525,7 +525,7 @@ function rowsFromAlignedFasta(text: string): ArtifactAlignmentRowInput[] {
   }
   const rows: ArtifactAlignmentRowInput[] = [];
   let current: ArtifactAlignmentRowInput | null = null;
-  for (const rawLine of text.replace(/^\uFEFF/, '').split(/\r?\n/)) {
+  for (const rawLine of text.replace(/^\uFEFF/, '').split(/\r\n?|\n/)) {
     const line = rawLine.trim();
     if (!line || line.startsWith(';')) continue;
     if (line.startsWith('>')) {
@@ -554,34 +554,55 @@ function rowsFromClustal(text: string): ArtifactAlignmentRowInput[] {
   if (text.length > ARTIFACT_MSA_MAX_IMPORT_CHARACTERS) {
     throw new ArtifactAlignmentError('too_large', `Aligned text cannot exceed ${ARTIFACT_MSA_MAX_IMPORT_CHARACTERS.toLocaleString()} characters.`);
   }
-  const lines = text.replace(/^\uFEFF/, '').split(/\r?\n/);
+  const lines = text.replace(/^\uFEFF/, '').split(/\r\n?|\n/);
   const firstContent = lines.findIndex((line) => line.trim().length > 0);
   if (firstContent < 0 || !/^CLUSTAL(?:\s|$)/i.test(lines[firstContent].trim())) {
     throw new ArtifactAlignmentError('invalid_fasta', 'CLUSTAL text must begin with a CLUSTAL header.');
   }
 
-  const order: string[] = [];
   const sequences = new Map<string, string>();
-  for (const rawLine of lines.slice(firstContent + 1)) {
+  const block = new Map<string, string>();
+  let blockWidth = 0;
+  const finishBlock = () => {
+    if (block.size === 0) return;
+    if (sequences.size > 0 && (block.size !== sequences.size
+      || Array.from(block.keys()).some((identifier) => !sequences.has(identifier)))) {
+      throw new ArtifactAlignmentError('invalid_fasta', 'Every CLUSTAL block must contain the same row identifiers.');
+    }
+    for (const [identifier, chunk] of block) {
+      const next = (sequences.get(identifier) ?? '') + chunk;
+      if (next.length > ARTIFACT_MSA_MAX_COLUMNS) {
+        throw new ArtifactAlignmentError('too_large', `An alignment can contain at most ${ARTIFACT_MSA_MAX_COLUMNS.toLocaleString()} columns.`);
+      }
+      sequences.set(identifier, next);
+    }
+    block.clear();
+  };
+  for (let lineIndex = firstContent + 1; lineIndex < lines.length; lineIndex += 1) {
+    const rawLine = lines[lineIndex];
     const trimmed = rawLine.trim();
-    if (!trimmed || /^[*:.\s]+$/.test(trimmed) || trimmed.startsWith('#')) continue;
+    if (!trimmed || /^[*:.\s]+$/.test(trimmed)) {
+      finishBlock();
+      continue;
+    }
+    if (trimmed.startsWith('#')) continue;
     const match = rawLine.match(/^\s*(\S+)\s+([A-Za-z*?.-]+)(?:\s+\d+)?\s*$/);
     if (!match) throw new ArtifactAlignmentError('invalid_fasta', `Malformed CLUSTAL row: ${trimmed.slice(0, 80)}`);
     const [, identifier, chunk] = match;
-    if (!sequences.has(identifier)) {
-      order.push(identifier);
-      sequences.set(identifier, '');
-      if (order.length > ARTIFACT_MSA_MAX_ROWS) {
-        throw new ArtifactAlignmentError('too_large', `An alignment can contain at most ${ARTIFACT_MSA_MAX_ROWS} rows.`);
-      }
+    if (block.has(identifier)) {
+      throw new ArtifactAlignmentError('invalid_fasta', `Duplicate CLUSTAL row identifier on line ${lineIndex + 1}.`);
     }
-    const next = `${sequences.get(identifier) ?? ''}${chunk}`;
-    if (next.length > ARTIFACT_MSA_MAX_COLUMNS) {
-      throw new ArtifactAlignmentError('too_large', `An alignment can contain at most ${ARTIFACT_MSA_MAX_COLUMNS.toLocaleString()} columns.`);
+    if (block.size >= ARTIFACT_MSA_MAX_ROWS) {
+      throw new ArtifactAlignmentError('too_large', `An alignment can contain at most ${ARTIFACT_MSA_MAX_ROWS} rows.`);
     }
-    sequences.set(identifier, next);
+    if (block.size === 0) blockWidth = chunk.length;
+    if (chunk.length !== blockWidth) {
+      throw new ArtifactAlignmentError('invalid_fasta', `CLUSTAL row on line ${lineIndex + 1} does not match the block width.`);
+    }
+    block.set(identifier, chunk);
   }
-  return order.map((identifier) => ({ id: identifier, name: identifier, aligned: sequences.get(identifier) ?? '' }));
+  finishBlock();
+  return Array.from(sequences, ([identifier, aligned]) => ({ id: identifier, name: identifier, aligned }));
 }
 
 export function normalizeArtifactAlignment(
@@ -773,7 +794,7 @@ export function parseAlignmentText(
   if (typeof text !== 'string' || text.length > ARTIFACT_MSA_MAX_IMPORT_CHARACTERS) {
     throw new ArtifactAlignmentError('too_large', `Aligned text cannot exceed ${ARTIFACT_MSA_MAX_IMPORT_CHARACTERS.toLocaleString()} characters.`);
   }
-  const firstContent = text.replace(/^\uFEFF/, '').split(/\r?\n/).find((line) => {
+  const firstContent = text.replace(/^\uFEFF/, '').split(/\r\n?|\n/).find((line) => {
     const trimmed = line.trim();
     return Boolean(trimmed && !trimmed.startsWith(';'));
   })?.trim() ?? '';

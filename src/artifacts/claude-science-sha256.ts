@@ -27,6 +27,26 @@ const SHA256_ROUND_CONSTANTS = new Uint32Array([
 
 export const SHA256_HEX_PATTERN = /^[0-9a-f]{64}$/i;
 
+const SEQUENCE_HASH_CACHE_ENTRIES = 256;
+const SEQUENCE_HASH_CACHE_CHARS = 4_000_000;
+const sequenceHashes = new Map<string, string>();
+let cachedSequenceChars = 0;
+
+export function cachedSequenceSha256(sequence: string): string {
+  const cached = sequenceHashes.get(sequence);
+  if (cached !== undefined) return cached;
+  const hash = sha256HexSync(sequence);
+  if (sequence.length > SEQUENCE_HASH_CACHE_CHARS) return hash;
+  sequenceHashes.set(sequence, hash);
+  cachedSequenceChars += sequence.length;
+  while (sequenceHashes.size > SEQUENCE_HASH_CACHE_ENTRIES || cachedSequenceChars > SEQUENCE_HASH_CACHE_CHARS) {
+    const oldest = sequenceHashes.keys().next().value!;
+    sequenceHashes.delete(oldest);
+    cachedSequenceChars -= oldest.length;
+  }
+  return hash;
+}
+
 function rotateRight(value: number, amount: number): number {
   return (value >>> amount) | (value << (32 - amount));
 }

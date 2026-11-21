@@ -1,9 +1,11 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { compareConnectorInventory } from '../lib/supply-chain-policy.mjs';
 import { GATE_STEPS } from '../lib/gate-steps.mjs';
+import { compareBuildInventories } from '../check-release-reproducibility.mjs';
 import { checkSupplyChainPolicy } from '../check-supply-chain-policy.mjs';
 
 // `npm run gate` is the canonical local and hosted check sequence. The runner
@@ -39,7 +41,17 @@ describe('npm run gate matches CI', () => {
     expect(ids.length).toBeGreaterThan(15);
     expect(ids).not.toContain('release-publish');
     expect(pkg.scripts['check:release-publish']).toBe('node scripts/check-release-publish.mjs');
-    expect(ids.indexOf('supply-chain-policy')).toBeLessThan(ids.indexOf('reviewed-lifecycle'));
+    expect(ids.slice(0, 8)).toEqual([
+      'typecheck', 'lint', 'repository-language', 'product-language', 'unit-tests',
+      'release-alignment', 'runtime-compatibility', 'security-audit',
+    ]);
+    expect(ids.slice(8, 15)).toEqual([
+      'supply-chain-policy', 'reviewed-lifecycle', 'dependency-cooling-off', 'plugin-checks',
+      'connector-checks', 'css-token-checks', 'aria-controls',
+    ]);
+    expect(GATE_STEPS.find(({ id }) => id === 'connector-checks')?.command)
+      .toEqual(['npm', 'run', 'test:connector']);
+    expect(ids).not.toContain('staged-plugin-checks');
     expect(GATE_STEPS).toContainEqual({
       id: 'codex-plugin-checks',
       label: 'Codex plugin checks',
@@ -94,14 +106,50 @@ describe('npm run gate matches CI', () => {
   });
 
   it('executes the declared Node 24 compatibility branch', () => {
-    expect(workflow).toContain('node-24-compatibility:');
-    expect(workflow).toContain('node-version: 24');
-    expect(workflow).toContain('run: npm run typecheck');
-    expect(workflow).toContain('run: npm test');
+    const compatibility = workflow.split('\n  node-24-compatibility:\n')[1];
+    expect(compatibility).toContain('node-version: 24');
+    expect([...compatibility.matchAll(/^\s*run: (.+)$/gm)].map(([, command]) => command)).toEqual([
+      'npm ci --ignore-scripts', 'npm run security:policy', 'npm run security:lifecycle',
+      'npm run typecheck', 'npm test',
+    ]);
   });
 });
 
 describe('post-build release verification', () => {
+  it('leaves stale generated outputs to explicit release verification', () => {
+    const fixture = mkdtempSync(join(tmpdir(), 'motif-release-policy-'));
+    try {
+      for (const directory of ['security', 'dist-motif/motif-for-claude-science-release']) {
+        mkdirSync(join(fixture, directory), { recursive: true });
+      }
+      for (const name of ['package.json', 'package-lock.json', 'security/dependency-policy.json', 'security/connector-inventory.json']) {
+        writeFileSync(join(fixture, name), readFileSync(join(root, name)));
+      }
+      expect(() => checkSupplyChainPolicy(fixture, { requireRelease: true }))
+        .toThrow(/artifacts are incomplete/u);
+      expect(() => checkSupplyChainPolicy(fixture)).not.toThrow(/artifacts are incomplete/u);
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects inventoried versions or integrity values that differ from the exact lock entry', () => {
+    const reviewed = { packages: [{ name: 'fixture', packagePath: ['fixture'], licenseFile: 'fixture-LICENSE.txt' }] };
+    const identity = { version: '1.0.0', resolved: 'fixture.tgz', integrity: 'fixture-hash' };
+    const entry = { ...reviewed.packages[0], ...identity, licenseFile: 'licenses/fixture-LICENSE.txt' };
+    const lock = { packages: { 'node_modules/fixture': identity } };
+    expect(() => compareConnectorInventory(reviewed, { packages: [entry] }, lock)).not.toThrow();
+    expect(() => compareConnectorInventory(reviewed, {
+      packages: [{ ...entry, version: '1.0.1' }],
+    }, lock)).toThrow(/differs from the lockfile/u);
+  });
+
+  it('detects changed or missing files in an independently staged second build', () => {
+    expect(compareBuildInventories({ 'app.html': 'a' }, { 'app.html': 'a' })).toMatchObject({ fileCount: 1 });
+    expect(() => compareBuildInventories({ 'app.html': 'a' }, { 'app.html': 'b', 'extra.html': 'c' }))
+      .toThrow(/2 file.*app.html, extra.html/u);
+  });
+
   it('fails before policy work when the generated release is missing', () => {
     const emptyWorkspace = mkdtempSync(join(tmpdir(), 'motif-release-required-'));
     try {

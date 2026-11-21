@@ -23,8 +23,8 @@ export type ClaudeScienceFreshnessBadgeProps = {
 };
 
 const STATE_LABELS: Record<ScientificFreshnessDisplayEvaluation['state'], string> = {
-  fresh: 'Fresh',
-  stale: 'Stale',
+  fresh: 'Inputs match',
+  stale: 'Inputs changed',
   unverified: 'Unverified',
 };
 

@@ -17,16 +17,16 @@ function sliceBetween(startNeedle: string, endNeedle: string): string {
 }
 
 describe('Claude Science MSA narrow chrome guards', () => {
-  it('docks the delete target without shrinking its hit area or changing DOM order', () => {
+  it('keeps the labeled delete button in flow at full target height and DOM order', () => {
     const toolbar = sliceBetween('.motif-cs-msa-toolbar {', '.motif-cs-msa-copy-status {');
     const narrow = sliceBetween(
       '@container motif-cs-msa-toolbar (max-width: 820px)',
       '\n.motif-cs-msa-alignment-picker {',
     );
 
-    expect(toolbar).toContain('padding: 5px 38px 6px 4px;');
-    expect(narrow).toMatch(/\.motif-cs-msa-delete\s*\{[\s\S]*?position:\s*absolute;/);
-    expect(narrow).toMatch(/\.motif-cs-msa-delete\s*\{[\s\S]*?width:\s*28px;[\s\S]*?min-height:\s*28px;/);
+    expect(toolbar).toContain('padding: 5px 4px 6px;');
+    expect(narrow).not.toMatch(/\.motif-cs-msa-delete\s*\{/);
+    expect(artifactCss).toMatch(/\.motif-cs-msa-delete\s*\{[\s\S]*?min-height:\s*var\(--control-h-sm\);/);
     expect(narrow).not.toMatch(/\border\s*:/);
   });
 
@@ -41,7 +41,7 @@ describe('Claude Science MSA narrow chrome guards', () => {
     expect(meta).toContain('container-type: inline-size;');
     expect(compact).toMatch(/\.motif-cs-msa-stats\s*\{[\s\S]*?flex-wrap:\s*nowrap;/);
     expect(compact).toContain('min-height: 30px;');
-    expect(compact).toContain('font-size: 11px;');
+    expect(compact).toContain('font-size: var(--fs-xs);');
     expect(compact).toContain('white-space: nowrap;');
     expect(compact).not.toMatch(/(?:#(?:[\da-f]{3}){1,2}|rgba?\()/i);
   });
@@ -83,7 +83,7 @@ describe('Claude Science MSA pinned track labels', () => {
 
   it('gives every row in the pinned group the same label treatment', () => {
     // Read the group's rows off the markup: a new track must not slip in with
-    // sentence-case labels beside four uppercase ones.
+    // its own label style beside the shared one.
     const group = viewer.slice(
       viewer.indexOf('data-testid="msa-pinned-tracks"'),
       viewer.indexOf('data-testid="msa-logo-row"'),
@@ -94,12 +94,12 @@ describe('Claude Science MSA pinned track labels', () => {
     expect(rowClasses).toEqual(['consensus', 'conservation', 'hist']);
 
     const rule = trackLabelRule();
-    expect(rule.body).toContain('text-transform: uppercase');
+    expect(rule.body).toContain('font-size: var(--fs-xs);');
     for (const rowClass of rowClasses) {
       const covered = rowClass === 'hist'
         ? rule.selectors.includes('.motif-cs-msa-hist-label')
         : rule.selectors.includes(`.motif-cs-msa-${rowClass}-row > .motif-cs-msa-row-label`);
-      expect(covered, `the ${rowClass} track label keeps its own case`).toBe(true);
+      expect(covered, `the ${rowClass} track label shares the group's treatment`).toBe(true);
     }
   });
 
@@ -179,5 +179,19 @@ describe('Claude Science MSA matrix panel height', () => {
       overlayCss.indexOf('.motif-cs-msa-differences-stage > .motif-cs-msa-matrix-shell'),
     );
     expect(stage, 'the stage rule moved').toContain('flex: 1 1 auto;');
+  });
+
+  it('stacks each difference on two lines instead of scrolling the table sideways', () => {
+    expect(overlayCss).toMatch(/\.motif-cs-msa-differences-table-wrap\s*\{[^}]*container-type:\s*inline-size;/);
+    const stacked = overlayCss.slice(
+      overlayCss.indexOf('@container (max-width: 649px)'),
+      overlayCss.indexOf('@media (prefers-reduced-motion: reduce)', overlayCss.indexOf('@container (max-width: 649px)')),
+    );
+    expect(stacked).toContain('min-width: 0;');
+    expect(stacked).toMatch(/tbody tr \{[^}]*display: grid;/);
+    // The header row stays in the tree for assistive technology.
+    expect(stacked).toMatch(/thead \{[^}]*clip-path: inset\(50%\);/);
+    // The row header cell carries a width from the wide layout; the stack resets it.
+    expect(stacked).toContain('tbody tr > :nth-child(n) { width: auto; }');
   });
 });

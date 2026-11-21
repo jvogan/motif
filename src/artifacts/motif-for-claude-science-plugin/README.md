@@ -142,7 +142,7 @@ ABIF. It does not claim to re-base-call raw signal. The Alignment workspace can
 auto-orient likely reverse-primer reads for its bounded preview and display a
 scrollable chromatogram with mismatch navigation.
 
-Database JSON and workspace ZIP preserve the trace. FASTA and basic
+Workspace JSON and workspace ZIP preserve the trace. FASTA and basic
 GenBank/GFF3 exports are intentionally lossy because those formats cannot carry
 an electropherogram.
 
@@ -151,7 +151,7 @@ locations and fuzzy bounds where representable, and records feature-specific
 diagnostics for valid INSDC locations that cannot be projected locally (such as
 between-base or remote-accession locations). Basic GenBank export remains a
 lossy interchange format and writes that limitation into the exported record;
-use Database JSON or ZIP for a complete Motif checkpoint.
+use Workspace JSON or ZIP for a complete Motif checkpoint.
 
 ## Runtime and persistence boundaries
 
@@ -162,7 +162,7 @@ other agents may use page APIs only through a verified browser bridge and must
 confirm the visible result. `window.motifHelp()` is the runtime source of
 truth for current functions, schemas, limits, and examples.
 
-Edits are session-owned until exported. Database JSON is directly restorable.
+Edits are session-owned until exported. Workspace JSON is directly restorable.
 The workspace ZIP is a portable handoff containing `inventory.json` plus
 interchange exports; extract and restore `inventory.json` when recovering from
 a ZIP. The portable HTML is not an encrypted vault, a compliance system, or a

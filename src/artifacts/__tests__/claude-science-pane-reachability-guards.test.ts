@@ -6,9 +6,20 @@ import { describe, expect, it } from 'vitest';
 const here = dirname(fileURLToPath(import.meta.url));
 const artifactCss = readFileSync(resolve(here, '..', 'motif-artifact.css'), 'utf8');
 
-/** Declarations of the first rule whose selector line matches `selector`. */
+/**
+ * Declarations of the first rule whose whole selector is `selector`. A longer
+ * selector that ends in the same text, or a selector list that includes it, is
+ * a different rule: the text before the match must end a rule, open a block or
+ * close a comment.
+ */
 function declarationsOf(selector: string): string {
-  const start = artifactCss.indexOf(`${selector} {`);
+  let start = -1;
+  for (let at = artifactCss.indexOf(`${selector} {`); at >= 0; at = artifactCss.indexOf(`${selector} {`, at + 1)) {
+    if (/(?:[{}]|\*\/)\s*$/.test(artifactCss.slice(Math.max(0, at - 200), at))) {
+      start = at;
+      break;
+    }
+  }
   expect(start, `missing rule: ${selector}`).toBeGreaterThanOrEqual(0);
   const open = artifactCss.indexOf('{', start);
   const close = artifactCss.indexOf('}', open);
@@ -67,11 +78,11 @@ describe('pane reachability guards', () => {
     expect(wide).not.toMatch(/height:\s*clamp\(640px/);
   });
 
-  it('keeps the map dock strip a sticky footer only while both panels are collapsed', () => {
-    // Opening one makes the strip the panel body; pinning that would cover the map.
-    const collapsed = declarationsOf('.motif-cs-map-dock-strip:not(:has(> details[open]))');
-    expect(collapsed).toMatch(/position:\s*sticky\s*;/);
-    expect(collapsed).toMatch(/bottom:\s*-10px\s*;/);
-    expect(artifactCss).not.toMatch(/\.motif-cs-map-dock-strip\s*\{[^}]*position:\s*sticky/);
+  it('keeps the map dock strip a sticky footer whether a panel is open or not', () => {
+    // An open panel floats over the map or the sequence, so the strip keeps its
+    // size and the head just pressed stays where it is.
+    expect(artifactCss).toMatch(/\.motif-cs-map-dock-strip\s*\{\s*position:\s*sticky;\s*bottom:\s*-10px;/);
+    expect(artifactCss).not.toContain('.motif-cs-map-dock-strip:not(:has(> details[open]))');
+    expect(declarationsOf('.motif-cs-map-dock-strip:has(> details[open])')).not.toMatch(/position:/);
   });
 });

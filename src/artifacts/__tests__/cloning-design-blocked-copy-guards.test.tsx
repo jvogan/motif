@@ -80,9 +80,9 @@ describe('cloning design blocked-input copy', () => {
     expect(screen.getByText('Add a second part', { selector: 'strong' })
       .closest('.motif-cs-cloning-design-check')).toBeTruthy();
     expect(screen.getByTestId('cloning-design-product-empty').textContent)
-      .toBe('Two Parts NeededAdd a second part in step 02.');
+      .toBe('Two parts neededAdd a second part in Parts.');
     expect(screen.queryByText('Cloning design requires at least two ordered DNA inputs.')).toBeNull();
-    expect(screen.queryByText(/Issues & Warnings/)).toBeNull();
+    expect(screen.queryByText(/Issues and warnings/)).toBeNull();
   });
 
   it('keeps one word for the unchecked state in both review slots', () => {
@@ -90,7 +90,7 @@ describe('cloning design blocked-input copy', () => {
 
     const required = screen.getByText('Required', { selector: 'dt' });
     expect(required.parentElement?.textContent).toBe('RequiredNot checked');
-    expect(screen.getByText('Preparation Checklist').parentElement?.textContent).toContain('Not checked');
+    expect(screen.getByText('Preparation checklist').parentElement?.textContent).toContain('Not checked');
     expect(screen.queryByText('Not evaluated')).toBeNull();
   });
 
@@ -110,11 +110,11 @@ describe('cloning design blocked-input copy', () => {
     })} />);
 
     expect(screen.getByTestId('cloning-design-product-empty').textContent)
-      .toBe('Two Usable Parts Needed1 of 2 parts cannot be read as DNA. See Issues & Warnings.');
+      .toBe('Two usable parts needed1 of 2 parts cannot be read as DNA. See Issues and warnings.');
     expect(screen.getByText('Fix an unusable part').parentElement?.textContent)
       .toContain('Checks start at 2 usable parts.');
     expect(screen.queryByTestId('cloning-design-add-hint')).toBeNull();
-    expect(screen.getByText(/^Issues & Warnings/)).toBeTruthy();
+    expect(screen.getByText(/^Issues and warnings/)).toBeTruthy();
   });
 
   it('leaves every string untouched once two usable parts are ordered', async () => {
@@ -124,12 +124,12 @@ describe('cloning design blocked-input copy', () => {
 
     expect(screen.queryByTestId('cloning-design-add-hint')).toBeNull();
     expect(screen.queryByText(/Add a second part/)).toBeNull();
-    expect(screen.queryByText('Two Parts Needed')).toBeNull();
+    expect(screen.queryByText('Two parts needed')).toBeNull();
     expect(screen.getByRole('button', { name: 'Order checked' })).toBeTruthy();
     const required = screen.getByText('Required', { selector: 'dt' });
     expect(required.parentElement?.textContent).toMatch(/^Required\d+$/);
-    expect(screen.getByText('Preparation Checklist').parentElement?.textContent)
-      .toMatch(/^Preparation Checklist\d+$/);
+    expect(screen.getByText('Preparation checklist').parentElement?.textContent)
+      .toMatch(/^Preparation checklist\d+$/);
   });
 
   it('states the unfixable-inputs case once per region instead of twice in one sentence', async () => {
@@ -138,9 +138,9 @@ describe('cloning design blocked-input copy', () => {
     await user.click(screen.getByRole('tab', { name: /Gibson/ }));
 
     expect(screen.getByTestId('cloning-design-product-empty').textContent)
-      .toBe('Review Blocking IssuesNo preparation step can fix these inputs.');
+      .toBe('Preview blockedNo preparation step can fix these inputs.');
     expect(screen.getByText('Review blocking issues').parentElement?.textContent)
-      .toBe('Review blocking issuesSee Issues & Warnings.');
+      .toBe('Review blocking issuesSee Issues and warnings.');
     expect(screen.getByText('Cloning design requires at least two ordered DNA inputs.')).toBeTruthy();
   });
 

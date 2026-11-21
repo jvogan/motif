@@ -20,6 +20,10 @@ export type ClaudeScienceMsaShadeMode = MsaShadeMode;
 export const MSA_ZOOM_MIN = 0.2;
 export const MSA_ZOOM_MAX = 2;
 
+/** Alignment letter size bounds, in px. Nothing on screen renders below 12px. */
+export const MSA_FONT_SIZE_MIN = 12;
+export const MSA_FONT_SIZE_MAX = 18;
+
 export type MsaFitZoomInput = {
   baseCellWidth: number;
   columnCount: number;
@@ -101,7 +105,7 @@ export const DEFAULT_CLAUDE_SCIENCE_MSA_VIEW_PREFERENCES: ClaudeScienceMsaViewPr
   colorScheme: 'auto',
   shadeMode: 'none',
   sortMode: 'original',
-  fontSize: 11,
+  fontSize: 13,
   zoom: 1,
   translationFrame: 0,
   textFormat: 'fasta',
@@ -153,7 +157,7 @@ export function normalizeClaudeScienceMsaViewPreferences(value: unknown): Claude
       ? source.sortMode
       : 'original',
     fontSize: Number.isFinite(source.fontSize)
-      ? Math.max(9, Math.min(16, Math.round(source.fontSize as number)))
+      ? Math.max(MSA_FONT_SIZE_MIN, Math.min(MSA_FONT_SIZE_MAX, Math.round(source.fontSize as number)))
       : DEFAULT_CLAUDE_SCIENCE_MSA_VIEW_PREFERENCES.fontSize,
     zoom: Number.isFinite(source.zoom)
       ? Math.max(MSA_ZOOM_MIN, Math.min(MSA_ZOOM_MAX, Math.round((source.zoom as number) * 100) / 100))

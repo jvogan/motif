@@ -68,14 +68,40 @@ describe('Motif public-brand guard', () => {
     // The topbar names the product, not the distribution. "for Claude Science" lives
     // in the About block and in exported provenance, where the build matters.
     expect(artifactSource).not.toContain('<small translate="no">for Claude Science</small>');
-    expect(artifactCss).not.toMatch(/@media \(max-width: (?:1180|840)px\)[\s\S]*?\.motif-cs-brand\s*\{\s*display:\s*none;/);
+    // The brand leaves the top bar only below 470px, where the row has room for
+    // the four labels but not the brand beside the host's Annotate reserve.
+    const hides = [...artifactCss.matchAll(/@media \(max-width: (\d+)px\) \{\s*[^{}]*\.motif-cs-brand\s*\{\s*display:\s*none;/g)].map((m) => m[1]);
+    expect(hides).toEqual(['469']);
+    expect(artifactCss).not.toMatch(/(?:^|\n)\.motif-cs-brand\s*\{[^}]*display:\s*none/);
   });
 
   it('brands generated inventory reports and derived-record provenance as Motif', () => {
-    expect(artifactSource).toContain('# Motif Sequence Inventory');
-    expect(artifactSource).toContain('<title>Motif Sequence Inventory</title>');
+    expect(artifactSource).toContain('# Motif Sequence Library');
+    expect(artifactSource).toContain('<title>Motif Sequence Library</title>');
     expect(artifactSource).toContain('exported from Motif.');
     expect(artifactSource).not.toContain('exported from the Claude Science artifact');
     expect(artifactSource).not.toContain('generated in the Claude Science artifact');
+  });
+
+  it('names the pane that lists the records Library wherever a user sees or hears it', () => {
+    expect(artifactSource).toContain("inventory: 'Library',");
+    expect(artifactSource).toContain('Library cannot contain more than');
+    expect(artifactSource).toContain("'Whole library'");
+    for (const old of [
+      "'Records pane'",
+      'Records pane cannot',
+      'Collapse records pane',
+      'Resize records pane',
+      'Move Records pane',
+      'aria-label="Inventory records"',
+      "'Whole inventory'",
+      "'Inventory CSV'",
+      'Inventory cannot contain',
+      'in Inventory and Workflow results',
+      'already in the inventory',
+      '# Motif Sequence Inventory',
+    ]) {
+      expect(artifactSource).not.toContain(old);
+    }
   });
 });

@@ -5,7 +5,7 @@ import type { FastaRecord } from './types';
  * Handles multi-line sequences and multiple records.
  *
  * If the input contained `-` or `.` characters (CLUSTAL / MAFFT alignment
- * gaps), they are stripped from the sequence and a `gapsRemoved` count is
+ * gaps), they are stripped unless `preserveGaps` is set. A `gapsRemoved` count is
  * attached to the resulting record so callers can surface an "aligned input
  * was degapped" warning. Formatting whitespace is also ignored. Every other
  * non-residue character is rejected with its original line, column, and
@@ -33,14 +33,38 @@ export class FastaParseError extends Error {
   }
 }
 
-export function parseFasta(input: string): FastaRecord[] {
+export class EmptyFastaRecordError extends Error {
+  readonly code = 'empty_record';
+  readonly header: string;
+  readonly line: number;
+
+  constructor(header: string, line: number) {
+    super(`FASTA record ${header ? JSON.stringify(header) + ' ' : ''}at line ${line} has no residues.`);
+    this.name = 'EmptyFastaRecordError';
+    this.header = header;
+    this.line = line;
+  }
+}
+
+export function parseFasta(
+  input: string,
+  options: {
+    onEmptyRecord?: (error: EmptyFastaRecordError) => void;
+    rejectPreamble?: boolean;
+    maxRecords?: number;
+    preserveGaps?: boolean;
+  } = {},
+): FastaRecord[] {
+  const preserveGaps = options.preserveGaps ?? false;
   const records: FastaRecord[] = [];
-  const lines = input.split(/\r?\n/);
+  const lines = input.split(/\r\n?|\n/);
   let currentHeader = '';
   let currentDescription = '';
   let currentRawHeader = '';
   let currentSeq: string[] = [];
   let hasActiveHeader = false;
+  let headerLineNumber = 0;
+  let headerCount = 0;
   let gapsInCurrent = 0;
   let inputOffset = 0;
 
@@ -55,6 +79,9 @@ export function parseFasta(input: string): FastaRecord[] {
   const finalizeRecord = () => {
     const sequence = currentSeq.join('');
     if (sequence.length === 0) {
+      const error = new EmptyFastaRecordError(currentHeader, headerLineNumber);
+      if (!options.onEmptyRecord) throw error;
+      options.onEmptyRecord(error);
       gapsInCurrent = 0;
       return;
     }
@@ -84,6 +111,10 @@ export function parseFasta(input: string): FastaRecord[] {
       continue;
     }
     if (trimmed.startsWith('>')) {
+      headerCount += 1;
+      if (options.maxRecords !== undefined && headerCount > options.maxRecords) {
+        throw new Error(`FASTA input exceeds the ${options.maxRecords.toLocaleString()}-record limit.`);
+      }
       // Save the previous record before starting a new header.
       if (hasActiveHeader) {
         finalizeRecord();
@@ -102,6 +133,7 @@ export function parseFasta(input: string): FastaRecord[] {
       }
       currentSeq = [];
       hasActiveHeader = true;
+      headerLineNumber = lineIndex + 1;
     } else if (line.length > 0 && hasActiveHeader) {
       // Sequence lines accept ASCII formatting whitespace and the historical
       // alignment-gap convention (`-` / `.`). All other characters are
@@ -112,7 +144,8 @@ export function parseFasta(input: string): FastaRecord[] {
         const character = line[columnIndex];
         if (character === ' ' || character === '\t' || character === '\r') continue;
         if (character === '-' || character === '.') {
-          gapsInCurrent += 1;
+          if (preserveGaps) cleaned += character;
+          else gapsInCurrent += 1;
           continue;
         }
         if (/^[A-Za-z*]$/.test(character)) {
@@ -127,6 +160,8 @@ export function parseFasta(input: string): FastaRecord[] {
         );
       }
       currentSeq.push(cleaned);
+    } else if (trimmed && options.rejectPreamble) {
+      throw new Error(`Expected a FASTA header at line ${lineIndex + 1}.`);
     }
 
     advanceInputOffset(line);
@@ -196,22 +231,23 @@ function looksLikeLeadingRawSequenceLine(line: string): boolean {
  * text appears after sequence rows. The normal parser still handles clean FASTA
  * directly.
  */
-export function extractEmbeddedFastaContent(input: string): string | null {
+export function extractEmbeddedFastaContent(input: string, onOmittedLines?: (count: number) => void): string | null {
   const output: string[] = [];
   const leadingSequenceLines: string[] = [];
   let inRecord = false;
   let currentHasSequence = false;
   let sawHeader = false;
   let leadingSequenceFlushed = false;
+  let omittedLines = 0;
 
   const flushLeadingSequence = () => {
     if (leadingSequenceFlushed || leadingSequenceLines.length === 0) return;
     output.push('>Pasted sequence');
-    output.push(...leadingSequenceLines);
+    for (const line of leadingSequenceLines) output.push(line);
     leadingSequenceFlushed = true;
   };
 
-  for (const line of input.split(/\r?\n/)) {
+  for (const line of input.split(/\r\n?|\n/)) {
     const trimmed = line.trim();
     if (trimmed.startsWith('>')) {
       flushLeadingSequence();
@@ -223,9 +259,9 @@ export function extractEmbeddedFastaContent(input: string): string | null {
     }
 
     if (!inRecord) {
-      if (looksLikeLeadingRawSequenceLine(trimmed)) {
+      if (!sawHeader && looksLikeLeadingRawSequenceLine(trimmed)) {
         leadingSequenceLines.push(trimmed);
-      }
+      } else if (trimmed && !trimmed.startsWith(';')) omittedLines += 1;
       continue;
     }
     if (!trimmed || trimmed.startsWith(';')) {
@@ -243,11 +279,26 @@ export function extractEmbeddedFastaContent(input: string): string | null {
       inRecord = false;
       currentHasSequence = false;
     }
+    omittedLines += 1;
   }
 
   if (!sawHeader) return null;
-  const extracted = output.join('\n').trim();
-  return parseFasta(extracted).length > 0 ? extracted : null;
+  if (omittedLines > 0) onOmittedLines?.(omittedLines);
+  return output.join('\n');
+}
+
+const FASTA_HEADER_LINE = /^[^\S\r\n\u2028\u2029]*>/m;
+
+export function hasFastaHeader(input: string): boolean {
+  return FASTA_HEADER_LINE.test(input);
+}
+
+export function startsWithFastaHeader(input: string): boolean {
+  for (const line of input.split(/\r\n?|\n/u)) {
+    const trimmed = line.trimStart();
+    if (trimmed && !trimmed.startsWith(';')) return trimmed.startsWith('>');
+  }
+  return false;
 }
 
 /**

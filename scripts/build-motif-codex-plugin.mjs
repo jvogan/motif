@@ -2,11 +2,12 @@
 
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isDirectScriptExecution } from './lib/direct-script.mjs';
 
 import {
+  checkPluginSourceInventory,
   createDeterministicZipBuffer,
   listFilesRecursively,
 } from './build-claude-science-artifact.mjs';
@@ -95,9 +96,7 @@ function readPackageVersion(rootDirectory) {
 }
 
 function validatePluginSource({ rootDirectory = root, sourcePath = sourceDirectory } = {}) {
-  for (const relativePath of requiredSourceFiles) {
-    requireFile(join(sourcePath, relativePath), `Codex plugin source file ${relativePath}`);
-  }
+  checkPluginSourceInventory(sourcePath, requiredSourceFiles);
 
   const packageVersion = readPackageVersion(rootDirectory);
   const manifestPath = join(sourcePath, '.codex-plugin', 'plugin.json');
@@ -149,7 +148,7 @@ export function buildMotifCodexPlugin({
   rmSync(zipPath, { force: true });
   rmSync(checksumPath, { force: true });
 
-  cpSync(sourcePath, outputDirectory, { recursive: true });
+  for (const path of requiredSourceFiles) copyFile(sourcePath, path, outputDirectory);
   for (const [sourceRelativePath, targetRelativePath] of runtimeFiles) {
     copyFile(runtimeRootDirectory, sourceRelativePath, outputDirectory, targetRelativePath);
   }
@@ -203,7 +202,7 @@ export function buildMotifCodexPlugin({
   const checksums = {
     schema: 'motif.codex-plugin-checksums.v1',
     algorithm: 'sha256',
-    archive: `${bundleDirectoryName}.zip`,
+    archive: basename(zipPath),
     archiveSha256: sha256(zip),
     files,
   };

@@ -35,7 +35,7 @@ describe('Sequence pane chrome', () => {
   );
 
   it('has no panel head repeating the pane name, the strand and the range', () => {
-    // The head was a 38px row over an 88px sequence area at 1280x720.
+    // A head would be a 38px row over an 88px sequence area at 1280x720.
     expect(sequencePanel).not.toContain('className="motif-cs-panel-head"');
     expect(sequencePanel).not.toContain('motif-cs-panel-meta');
     // The strand direction is stated once, in the resting readout.
@@ -43,37 +43,43 @@ describe('Sequence pane chrome', () => {
     expect(sequencePanel).toContain('className="motif-cs-seq-orientation"');
   });
 
-  it('puts the toolbar and the selection dock in one wrapping strip, toolbar first', () => {
+  it('puts one toolbar row over the bases and the selection dock at the foot', () => {
     const chrome = sequencePanel.indexOf('<div className="motif-cs-sequence-chrome">');
     const toolbar = sequencePanel.indexOf('<div className="motif-cs-edit-toolbar"');
+    const view = sequencePanel.indexOf('<SequenceText');
     const dock = sequencePanel.indexOf('className="motif-cs-selection-bar"');
     expect(chrome).toBeGreaterThanOrEqual(0);
     expect(toolbar).toBeGreaterThan(chrome);
+    // The dock is the status line under the bases, not a second row of chrome
+    // over them: with the title row, the toolbar is the pane's whole header.
+    // It follows the toolbar in the document, so its actions are one Tab stop
+    // past it, and CSS `order` draws it at the foot (an e2e pins the drawing).
+    expect(view).toBeGreaterThan(toolbar);
     expect(dock).toBeGreaterThan(toolbar);
+    expect(dock).toBeLessThan(view);
+    expect(between(sequencePanel, '<div className="motif-cs-sequence-chrome">', '{selectedFeatureQuarantineStatus').match(/className="motif-cs-selection-bar"/g)).toHaveLength(1);
+    expect(cssRule('.motif-cs-sequence-panel > .motif-cs-selection-bar')).toMatch(/order:\s*1/);
 
     const strip = cssRule('.motif-cs-sequence-chrome');
     expect(strip).toMatch(/display:\s*flex/);
-    expect(strip).toMatch(/flex-wrap:\s*wrap/);
+    expect(strip).toMatch(/flex-direction:\s*column/);
     // In a flex column a clipping box has no content floor; without this the
     // strip collapsed to 5px.
     expect(strip).toMatch(/flex:\s*0 0 auto/);
-    // The dock grows far faster than the toolbar, so on a shared row the
-    // toolbar keeps its content width, and its basis decides when it wraps.
-    const dockRule = cssRule('.motif-cs-sequence-chrome > .motif-cs-selection-bar');
-    const basis = /flex:\s*(\d+) 1 (\d+)px/.exec(dockRule);
-    expect(basis, 'dock flex').not.toBeNull();
-    expect(Number(basis![1])).toBeGreaterThanOrEqual(100);
-    // Three buttons (222px) and a readout that can hold a feature name.
-    expect(Number(basis![2])).toBeGreaterThanOrEqual(400);
-    expect(cssRule('.motif-cs-sequence-chrome > .motif-cs-edit-toolbar')).toMatch(/flex:\s*1 1 auto/);
+    // The toolbar wraps its two groups; neither scrolls a control out of reach.
+    const toolbarRule = cssRule('.motif-cs-edit-toolbar');
+    expect(toolbarRule).toMatch(/flex-wrap:\s*wrap/);
+    expect(toolbarRule).not.toMatch(/overflow-x/);
+    // The dock keeps one height with or without a selection.
+    expect(cssRule('.motif-cs-selection-bar')).toMatch(/min-height:\s*32px/);
   });
 
   it('keeps three controls in the dock and the rest in Create, with no short labels', () => {
     const dock = between(sequencePanel, '<div className="motif-cs-selection-actions">', '{selectedFeatureQuarantineStatus');
-    expect(dock).toContain('+ Feature');
+    expect(dock).toContain('Add feature');
     expect(dock).toContain('<SequenceActionMenu');
     expect(dock).toContain('label="Create"');
-    for (const label of ['Add AA track', 'Design primers', 'New reverse complement record', 'New protein record']) {
+    for (const label of ['Pin translation', 'Design primers', 'New reverse complement record', 'New protein record']) {
       expect(dock).toContain(`'${label}'`);
     }
     expect(artifactSource).not.toContain('motif-cs-label-short');
@@ -82,15 +88,21 @@ describe('Sequence pane chrome', () => {
 
   it('says why an unavailable action is off and what to do instead', () => {
     const dock = between(sequencePanel, '<div className="motif-cs-selection-actions">', '{selectedFeatureQuarantineStatus');
-    // Copy and + Feature: the title is a disabled button's accessible
+    // Copy and Add feature: the title is a disabled button's accessible
     // description, so it has to name the missing step, not the action.
-    expect(dock).toContain("'Select a range or a feature to copy its sequence'");
-    expect(dock).toContain("'This ordered location cannot be copied as one sequence'");
-    expect(dock).toContain("'Drag a range on the sequence to add a feature'");
-    expect(dock).toContain("'A feature is selected; drag a range on the sequence to add a new feature'");
+    expect(dock).toContain("'Select a range or feature to copy'");
+    expect(dock).toContain("'Ordered segments cannot be copied together'");
+    expect(dock).toContain("'Drag a range to add a feature'");
+    // With a feature selected, the reason is that it is one already.
+    expect(dock).toContain("'This is already a feature; drag a range to add a feature'");
+    // Add feature is drawn in every state and disabled without a range, so Copy
+    // and Create keep their places when a range starts or ends.
+    expect(dock).not.toContain('{selectedFeature && !selectedMapRange ? null : (');
+    expect(dock).toMatch(/<button\s+className="motif-cs-mini-button"\s+type="button"\s+disabled=\{!canAnnotateSelectedMapRange\}/);
+    expect(dock).not.toContain("'Drag a range to add another feature'");
     // The translating entries reuse the Translation panel's own reason first.
     expect(dock.match(/translationUnavailableReason \?\? \(selectionSummary/g)).toHaveLength(2);
-    expect(dock).toContain("'Select a range or coding feature to translate it'");
+    expect(dock).toContain("'Select a range or coding feature'");
   });
 
   it('gives a protein record no Create menu, since every entry in it needs nucleotides', () => {
@@ -98,10 +110,34 @@ describe('Sequence pane chrome', () => {
     expect(dock).toMatch(/\{isNucleotideRecord \? \(\s*<SequenceActionMenu/);
   });
 
+  it('separates sequence blocks with whitespace, not a rule', () => {
+    const block = cssRule('.motif-cs-seq-block');
+    expect(block).not.toMatch(/border/);
+    expect(block).toMatch(/padding:\s*6px 0 8px/);
+    expect(artifactCss).not.toMatch(/\.motif-cs-seq-block:last-child\s*\{[^}]*border/);
+  });
+
+  it('draws no label shard on a feature block too narrow for four characters', () => {
+    // The base label rule comes before the width rules, or at equal
+    // specificity it puts back every label they hide.
+    const base = artifactCss.indexOf('\n.motif-cs-feature-block span {');
+    const tiny = artifactCss.indexOf('@container (max-width: 34px) {\n  .motif-cs-feature-block span {\n    display: none;');
+    const shard = artifactCss.indexOf('@container (max-width: 6ch) {\n  .motif-cs-feature-block span:not([data-short]) {\n    display: none;');
+    expect(base).toBeGreaterThanOrEqual(0);
+    expect(tiny).toBeGreaterThan(base);
+    expect(shard).toBeGreaterThan(base);
+    // A name of three characters or fewer is whole at that width, so it stays.
+    expect(artifactSource).toContain('<span translate="no" data-short={feature.name.length < 4 || undefined}>{feature.name}</span>');
+  });
+
   it('shows the edited state at every width', () => {
-    expect(sequencePanel).toContain('className="motif-cs-chip motif-cs-edit-state"');
-    // Nothing may hide it, and the caret readout that used to carry "edited"
-    // is no longer display:none in narrow panes either.
+    // It sits after the record's name in the title row, above the Undo that
+    // reverts it, rather than taking room in the one toolbar row.
+    const titleRow = between(artifactSource, 'className="motif-cs-title-row motif-cs-sequence-title"', '<section className="motif-cs-panel motif-cs-sequence-panel">');
+    expect(titleRow).toContain('className="motif-cs-chip motif-cs-edit-state"');
+    expect(sequencePanel).not.toContain('motif-cs-edit-state');
+    // Nothing may hide it: neither the edit-state chip nor the caret readout is
+    // display:none in narrow panes.
     expect(artifactCss).not.toMatch(/\.motif-cs-edit-state[^{]*\{[^}]*display:\s*none/);
     expect(artifactCss).not.toMatch(/\.motif-cs-edit-hint\s*\{[^}]*display:\s*none/);
   });

@@ -74,9 +74,9 @@ describe('single-strand DNA molecular-weight reference fixtures', () => {
   const seq100 = 'ACGT'.repeat(25);
 
   it('matches 1-, 20-, and 100-nt average and monoisotopic masses', () => {
-    expect(molecularWeight('A', { fivePrime: 'hydroxyl' })).toBe(251.26);
-    expect(molecularWeight(balanced20, { fivePrime: 'hydroxyl' })).toBe(6116.99);
-    expect(molecularWeight(seq100, { fivePrime: 'hydroxyl' })).toBe(30832.73);
+    expect(molecularWeight('A', { fivePrime: 'hydroxyl' })).toBe(251.24);
+    expect(molecularWeight(balanced20, { fivePrime: 'hydroxyl' })).toBe(6116.97);
+    expect(molecularWeight(seq100, { fivePrime: 'hydroxyl' })).toBe(30832.72);
     expect(molecularWeight('A', { mode: 'monoisotopic', fivePrime: 'hydroxyl' })).toBe(251.10);
     expect(molecularWeight(balanced20, { mode: 'monoisotopic', fivePrime: 'hydroxyl' })).toBe(6114.06);
     expect(molecularWeight(seq100, { mode: 'monoisotopic', fivePrime: 'hydroxyl' })).toBe(30818.11);

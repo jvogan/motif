@@ -13,9 +13,9 @@ function rule(selector: string): string {
 }
 
 describe('construct verification style guards', () => {
-  it('paints the coverage bar in neutral ink, never the accent the warm themes share with the failure red', () => {
-    // Warm Dark's accent sat ΔE 12.9 from --red and Warm Light's ΔE 10.2, so a
-    // Consistent run drew a full bar in what reads as the Inconsistent colour.
+  it('paints the coverage bar in neutral ink, never the accent or the failure red', () => {
+    // A Consistent run draws a full bar, so it must not take --red, which reads as
+    // Inconsistent, or the accent, which can sit close to it.
     for (const selector of [
       '.motif-cs-construct-verification-coverage progress',
       '.motif-cs-construct-verification-coverage progress::-webkit-progress-value',

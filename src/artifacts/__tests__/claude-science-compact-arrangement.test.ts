@@ -2,24 +2,107 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { compactWorkspaceArrangement, popOutFloatingPaneRect, sideBySideSequenceShareAfterResize, stackedSequenceRowFloor } from '../motif-artifact';
+import { compactWorkspaceArrangement, defaultSideBySideSequenceShare, inventoryHiddenByDefault, paneCollapseDirection, popOutFloatingPaneRect, sideBySideSequenceShareAfterResize, singleColumnPaneOrder, stackedSequenceRowFloor } from '../motif-artifact';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const artifactSource = readFileSync(resolve(here, '..', 'motif-artifact.tsx'), 'utf8');
 const artifactCss = readFileSync(resolve(here, '..', 'motif-artifact.css'), 'utf8');
 
 describe('compact workspace arrangement', () => {
+  it('hides the Inventory by default for one record or a panel narrower than 900px', () => {
+    expect(inventoryHiddenByDefault(1, 1600)).toBe(true);
+    expect(inventoryHiddenByDefault(0, 1600)).toBe(true);
+    expect(inventoryHiddenByDefault(2, 899)).toBe(true);
+    expect(inventoryHiddenByDefault(3, 600)).toBe(true);
+    expect(inventoryHiddenByDefault(2, 900)).toBe(false);
+    expect(inventoryHiddenByDefault(13, 1600)).toBe(false);
+    // The default only hides what is drawn: the saved visibility is what gets
+    // persisted, and the top-bar toggle flips what is on screen.
+    expect(artifactSource).toContain('paneVisibility: storedPaneVisibility,');
+    expect(artifactSource).toContain("if (pane === 'inventory') setInventoryChosen(true);");
+    expect(artifactSource).toContain('const current = inventoryAutoHidden ? { ...stored, inventory: false } : stored;');
+    expect(artifactSource).toContain('return { ...stored, [pane]: !current[pane] };');
+  });
+
+  it('closes the Records list by default beside a side-by-side split narrower than 1100px', () => {
+    // At 1040x860 an open 210px list leaves the Sequence 25 bases a line, and any split
+    // that reaches 40 would cut the ring under 85% of its 328px, so the list starts closed.
+    expect(inventoryHiddenByDefault(13, 1040, 860)).toBe(true);
+    expect(inventoryHiddenByDefault(13, 1099, 860)).toBe(true);
+    expect(inventoryHiddenByDefault(13, 1024, 768)).toBe(true);
+    // Stacked at the same width (near-square), and from 1100px, the list stays open.
+    expect(inventoryHiddenByDefault(13, 1040, 1000)).toBe(false);
+    expect(inventoryHiddenByDefault(13, 900, 820)).toBe(false);
+    expect(inventoryHiddenByDefault(13, 1100, 860)).toBe(false);
+    expect(inventoryHiddenByDefault(13, 1180, 820)).toBe(false);
+    expect(inventoryHiddenByDefault(13, 1280, 820)).toBe(false);
+    expect(artifactSource).toContain('inventoryHiddenByDefault(payload.records.length, floatingViewport.width, floatingViewport.height)');
+    // Sequence starts with 45% of the split there, 40% from 1100px; a moved divider wins.
+    expect(defaultSideBySideSequenceShare(1040, false)).toBe(0.45);
+    expect(defaultSideBySideSequenceShare(1099, false)).toBe(0.45);
+    // With the list open the 40:60 split stands.
+    expect(defaultSideBySideSequenceShare(1040, true)).toBe(0.4);
+    expect(defaultSideBySideSequenceShare(1100, false)).toBe(0.4);
+    expect(defaultSideBySideSequenceShare(1440, false)).toBe(0.4);
+    expect(artifactSource).toContain('sideBySideSequenceShare ?? defaultSideBySideSequenceShare(floatingViewport.width, recordsDocked)');
+    expect(artifactSource).not.toContain('sideBySideSequenceShare ?? SIDE_BY_SIDE_SEQUENCE_SHARE_DEFAULT');
+  });
+
+  it('sizes the single-column map frame from the window and gives the sequence the rest', () => {
+    const block = (selectorStart: string) => {
+      const at = artifactCss.indexOf(selectorStart);
+      expect(at, selectorStart).toBeGreaterThanOrEqual(0);
+      return artifactCss.slice(at, artifactCss.indexOf('}', at));
+    };
+    // Never below 250px: a smaller frame draws the map's labels under 12px. Half the
+    // window from 788px tall keeps every name the full map names (700x860, 660x788).
+    expect(block('  .motif-cs-map-frame[data-map-mode="circular"] {\n    height: clamp(260px')).toContain('height: clamp(260px, min(50vh, 200vh - 1100px, 85vw), 460px);');
+    expect(artifactCss).not.toContain('height: clamp(260px, min(85vw, 50vh), 460px);\n    min-height: 260px;');
+    expect(block('  .motif-cs-sequence-column:not([data-stacked-resized="true"]) {\n    flex: 1 0 auto')).toContain('height: auto !important;');
+    // The column's own size is its chrome plus 160px of bases, never the whole sequence.
+    expect(block('  .motif-cs-sequence-column:not([data-stacked-resized="true"]) .motif-cs-sequence-panel > .motif-cs-sequence {\n    flex: 1 1 auto;')).toMatch(/min-height: 160px;\s*max-height: none;\s*height: 160px;/);
+    // A panel too short for any line of sequence keeps the frame it has.
+    expect(artifactCss).toContain('@media (max-width: 559px) and (max-height: 690px), (min-width: 560px) and (max-width: 699px) and (max-height: 635px), (min-width: 700px) and (max-width: 899px) and (max-height: 580px) {\n  .motif-cs-map-frame[data-map-mode="circular"] {\n    height: clamp(260px, min(85vw, 50vh), 460px);');
+  });
+
+  it('points Collapse up or down where the panes stand one above another', () => {
+    expect(paneCollapseDirection('map', ['map', 'sequence'], 'single-column')).toBe('up');
+    expect(paneCollapseDirection('sequence', ['map', 'sequence'], 'single-column')).toBe('down');
+    expect(paneCollapseDirection('inventory', ['inventory', 'map', 'sequence'], 'single-column')).toBe('up');
+    expect(paneCollapseDirection('map', ['inventory', 'map', 'sequence'], 'single-column')).toBe('up');
+    expect(paneCollapseDirection('sequence', ['inventory', 'map', 'sequence'], 'single-column')).toBe('down');
+    // Two rows: Map under Records and Sequence; Records keeps its left edge.
+    expect(paneCollapseDirection('map', ['inventory', 'sequence', 'map'], 'two-rows')).toBe('down');
+    expect(paneCollapseDirection('sequence', ['inventory', 'sequence', 'map'], 'two-rows')).toBe('up');
+    expect(paneCollapseDirection('inventory', ['inventory', 'sequence', 'map'], 'two-rows')).toBe('left');
+    // Side by side, Collapse points left or right.
+    expect(paneCollapseDirection('inventory', ['inventory', 'sequence', 'map'], 'columns')).toBe('left');
+    expect(paneCollapseDirection('sequence', ['inventory', 'sequence', 'map'], 'columns')).toBe('left');
+    expect(paneCollapseDirection('map', ['inventory', 'sequence', 'map'], 'columns')).toBe('right');
+    for (const pane of ['inventory', 'map', 'sequence']) {
+      expect(artifactSource).toContain(`<PaneCollapseChevron direction={collapseDirectionFor('${pane}')} />`);
+    }
+    expect(artifactSource).not.toContain('paneCollapsePointsRight');
+  });
+
+  it('draws Map just above Sequence in the single column without touching other panes', () => {
+    expect(singleColumnPaneOrder(['inventory', 'sequence', 'map', 'tools'])).toEqual(['inventory', 'map', 'sequence', 'tools']);
+    expect(singleColumnPaneOrder(['sequence', 'tools', 'inventory', 'map'])).toEqual(['map', 'sequence', 'tools', 'inventory']);
+    const mapFirst = ['map', 'inventory', 'sequence', 'tools'] as const;
+    expect(singleColumnPaneOrder(mapFirst)).toBe(mapFirst);
+  });
+
   it('puts Sequence beside Map in landscape laptop windows and keeps narrow, portrait and near-square ones stacked', () => {
     // Measured: side by side these show 140-360 bp and a 235-474px ring. Stacked, the
-    // four laptop windows opened with one row of bases or none (1535x864: 0 of 155)
-    // under a 206-279px ring, and 1024x768 now gets a 128px ring to fit its toolbar.
-    for (const [width, height] of [[1024, 768], [1280, 720], [1366, 768], [1440, 900], [1535, 864], [960, 800], [1024, 900]]) {
+    // four laptop windows would open with one row of bases or none (1535x864: 0 of 155)
+    // under a 206-279px ring, and 1024x768 gets a 128px ring to fit its toolbar.
+    for (const [width, height] of [[1024, 768], [1280, 720], [1366, 768], [1440, 900], [1535, 864], [960, 800], [1024, 900], [900, 700], [959, 700], [900, 800]]) {
       expect(compactWorkspaceArrangement(width, height), `${width}x${height}`).toBe('side-by-side');
     }
     // Stacked keeps the larger ring, or side by side has no room: 820x1100 is 326px
-    // stacked against 140px, 1024x1000 is 323 against 263, and below 960px wide the
-    // sequence column sits on its 240px floor.
-    for (const [width, height] of [[959, 700], [900, 700], [820, 1100], [1024, 1000], [1100, 1000], [1180, 1100], [600, 900]]) {
+    // stacked against 140px, 1024x1000 is 323 against 263. Below 900px the
+    // workspace is one column, so the compact arrangement never applies there.
+    for (const [width, height] of [[899, 700], [900, 820], [820, 1100], [1024, 1000], [1100, 1000], [1180, 1100], [600, 900]]) {
       expect(compactWorkspaceArrangement(width, height), `${width}x${height}`).toBe('stacked');
     }
   });
@@ -117,13 +200,38 @@ describe('stacked sequence row', () => {
 });
 
 describe('map dock panels', () => {
-  it('keep half the map column for the circular map while a panel is open, and scroll the panel instead', () => {
-    // Sized to its content with no cap, an open panel took the whole column: the
-    // ring measured 0px with Map Visibility open at every width up to 1536.
-    expect(artifactCss).toMatch(/@media \(min-width: 640px\)\s*\{\s*\.motif-cs-map-column:has\(> \.motif-cs-map-dock-strip > details\[open\]\) > \.motif-cs-map-frame\[data-map-mode="circular"\]\s*\{\s*min-height:\s*50%;/);
-    expect(artifactCss).toMatch(/\.motif-cs-map-dock-strip:has\(> details\[open\]\)\s*\{\s*display:\s*flex;\s*flex:\s*0 1 auto;\s*flex-direction:\s*column;\s*min-height:\s*0;/);
-    expect(artifactCss).toMatch(/\.motif-cs-map-dock-strip > details\[open\]\s*\{\s*flex:\s*0 1 auto;\s*min-height:\s*0;\s*overflow-y:\s*auto;/);
-    expect(artifactCss).toMatch(/\.motif-cs-map-dock-strip > details\[open\] > summary\.motif-cs-panel-head\s*\{\s*position:\s*sticky;/);
+  it('float an open panel over what is beside the heads, capped and scrolling, so nothing else moves', () => {
+    // In flow, an open panel would push the Sequence pane down 682px at 700px and the
+    // page would scroll after it; from 900px it would take half the column from the ring.
+    // It floats on the product's popover surface, at most the measured room
+    // or 60% of the window, and scrolls inside that.
+    expect(artifactCss).toMatch(/\.motif-cs-map-dock-strip > details\[open\]::details-content\s*\{\s*position:\s*absolute;\s*top:\s*100%;\s*right:\s*0;\s*left:\s*0;\s*grid-row:\s*auto;\s*grid-column:\s*auto;[^}]*max-height:\s*var\(--motif-cs-dock-room, 60vh\);\s*overflow-y:\s*auto;\s*overscroll-behavior:\s*contain;\s*scrollbar-gutter:\s*stable;\s*border:\s*1px solid var\(--border-strong\);[^}]*background:\s*var\(--bg-primary\);\s*box-shadow:\s*var\(--elevation-popover\);/);
+    // Nothing clips the floating body, and the map frame does not change size for it.
+    expect(artifactCss).not.toMatch(/\.motif-cs-map-dock-strip:has\(> details\[open\]\)\s*\{[^}]*overflow:\s*hidden/);
+    expect(artifactCss).not.toMatch(/\.motif-cs-map-column:has\(> \.motif-cs-map-dock-strip > details\[open\]\) > \.motif-cs-map-frame/);
+    expect(artifactCss).toMatch(/\.motif-cs-map-dock-strip:has\(> details\[open\]\)\s*\{\s*z-index:\s*7;\s*\}/);
+    expect(artifactCss).toMatch(/\.motif-cs-map-dock-strip > details\s*\{\s*display:\s*contents;\s*\}/);
+    // The head click measures the side and the room before the first frame, and
+    // the page scrolls only for a head that is itself off screen.
+    const handlerStart = artifactSource.indexOf('const handleMapDockOpen = useCallback(');
+    expect(handlerStart).toBeGreaterThanOrEqual(0);
+    const handler = artifactSource.slice(handlerStart, artifactSource.indexOf('}, [closeOpenToolDetails]);', handlerStart));
+    expect(handler).toContain("strip.setAttribute('data-dock-side', side);");
+    expect(handler).toContain("strip.style.setProperty('--motif-cs-dock-room', `${Math.floor(room)}px`);");
+    expect(handler).toContain('if (box.bottom <= 0 || box.top >= window.innerHeight) head.scrollIntoView(');
+    expect(handler).not.toContain('mapColumnRef.current?.scrollTo(');
+  });
+
+  it('keep both heads in one row and open the body above them when there is no room below', () => {
+    // Opening one panel does not restack the strip, so the head just pressed does not
+    // jump to a new row. The heads keep their row; the body floats beside them.
+    expect(artifactCss).toMatch(/\.motif-cs-map-dock-strip > details > summary\.motif-cs-panel-head\s*\{\s*grid-row:\s*1;/);
+    expect(artifactCss).toMatch(/\.motif-cs-map-dock-strip > details::details-content\s*\{\s*grid-column:\s*1 \/ -1;\s*grid-row:\s*2;/);
+    expect(artifactCss).toMatch(/\.motif-cs-map-dock-strip\[data-dock-side="above"\] > details\[open\]::details-content\s*\{\s*top:\s*auto;\s*bottom:\s*100%;/);
+    // From 900px the heads are the foot of a fixed-height column: above is the default.
+    expect(artifactCss).toMatch(/@media \(min-width: 900px\)\s*\{\s*\.motif-cs-map-dock-strip:not\(\[data-dock-side\]\) > details\[open\]::details-content\s*\{\s*top:\s*auto;\s*bottom:\s*100%;/);
+    // A closed body must not stretch over the open one and take its pointer.
+    expect(artifactCss).toMatch(/\.motif-cs-map-dock-strip > details:not\(\[open\]\)::details-content\s*\{\s*align-self:\s*start;\s*pointer-events:\s*none;/);
   });
 });
 
@@ -139,7 +247,7 @@ describe('popping out a pane', () => {
     // Each side grows on its own: a wide stacked map keeps its width.
     expect(popOutFloatingPaneRect({ x: 264, y: 92, w: 580, h: 580 }, { width: 852, height: 251 }, viewport, mapLimits))
       .toMatchObject({ w: 852, h: 580 });
-    // The pane's own limits still cap it. They were 900px for the map, under its
+    // The pane's own limits still cap it. The map's cap of 1200px is above its
     // docked 976x1042 at 1920x1080.
     expect(artifactSource).toContain('map: { minWidth: 340, minHeight: 320, maxWidth: 1200, maxHeight: 1200 },');
     expect(popOutFloatingPaneRect({ x: 24, y: 92, w: 580, h: 580 }, { width: 1444, height: 1402 }, { ...viewport, width: 2560, height: 1440 }, mapLimits))
@@ -155,16 +263,38 @@ describe('popping out a pane', () => {
 });
 
 describe('header controls', () => {
-  it('sizes the theme select by its longest option', () => {
-    const rule = artifactCss.match(/\.motif-cs-theme-picker select\s*\{[^}]*\}/)?.[0] ?? '';
-    expect(rule).toContain('height: 26px;');
-    expect(artifactCss).not.toMatch(/\.motif-cs-theme-picker select\s*\{[^}]*min-width/);
+  it('lists the themes only in Settings; the top bar ends with one icon that flips them', () => {
+    // Settings > Appearance holds the one list of themes. The top bar's last control is
+    // an icon button that flips Light and Dark, in the pane headers' icon-button face.
+    const header = artifactSource.slice(
+      artifactSource.indexOf('<header ref={topbarRef} className="motif-cs-topbar"'),
+      artifactSource.indexOf('</header>'),
+    );
+    expect(header).toContain('className="motif-cs-pane-switcher"');
+    expect(header).not.toMatch(/<select|THEME_OPTIONS/);
+    const toggle = header.slice(header.lastIndexOf('<button'));
+    expect(toggle).toContain('className="motif-cs-pane-placement-button motif-cs-theme-toggle"');
+    expect(toggle).toContain("aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}");
+    expect(toggle).not.toContain('aria-pressed');
+    // No width rule hides it: the script shows it wherever the row has room for it.
+    expect(header).toContain('{themeToggleFits ? (');
+    expect(artifactCss).not.toMatch(/\.motif-cs-theme-toggle \{\s*display: none;/);
+    // It sits one row gap after the row's last control: the row stops at its controls
+    // instead of filling the bar, and the button gives back the 4px the bar's 12px gap
+    // has over the row's 8px.
+    expect(artifactCss).toMatch(/\.motif-cs-topbar-meta \{\s*display: flex;\s*flex: 0 1 auto;/);
+    expect(artifactCss).toMatch(/\.motif-cs-topbar > \.motif-cs-theme-toggle \{\s*margin-left: -4px;\s*\}/);
+    expect(artifactSource).not.toContain('name="artifact-theme"');
+    expect(artifactCss).not.toContain('motif-cs-theme-picker');
+    // Settings lists every theme, and its choice is the one that is saved.
+    expect(artifactSource).toMatch(/\{THEME_OPTIONS\.map\(\(option\) => \(\s*<label\s+key=\{option\.id\}\s+className="motif-cs-theme-choice"/);
+    expect(artifactSource).toMatch(/name="settings-theme"[\s\S]{0,200}onChange=\{\(\) => \{\s*chooseTheme\(option\.id\);/);
   });
 
-  it('shows the whole "Translations" label up to 840px', () => {
-    // The pane toggles keep their 8ch cap; the Translations window toggle, a
-    // later rule of equal specificity, lifts it.
-    expect(artifactCss).toMatch(/max-width: 8ch;[^}]*\}\s*(?:\/\*[^*]*\*\/\s*)?\.motif-cs-window-toggle > span\s*\{\s*max-width:\s*none;\s*\}/);
+  it('never clips a top bar label, and moves the Translations toggle out below 681px', () => {
+    // A label is shown whole or the control leaves the row; no character cap.
+    expect(artifactCss).not.toMatch(/\.motif-cs-(?:pane|window)-toggle > span\s*\{[^}]*max-width:\s*\d+ch/);
+    expect(artifactCss).toMatch(/@media \(max-width: 680px\) \{\s*\.motif-cs-window-toggle \{\s*display: none;\s*\}\s*\}/);
   });
 });
 

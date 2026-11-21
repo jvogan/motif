@@ -147,7 +147,7 @@ export function loadDependencyPolicy(root) {
   return { policy, inventory, policyPath, inventoryPath };
 }
 
-export function checkLockfilePolicy(rootPath = process.cwd()) {
+export function checkLockfilePolicy(rootPath = process.cwd(), { inspectInstalled = true } = {}) {
   const root = resolve(rootPath);
   const { policy, inventory } = loadDependencyPolicy(root);
   const packageJson = readJson(join(root, 'package.json'), 'package.json');
@@ -242,7 +242,7 @@ export function checkLockfilePolicy(rootPath = process.cwd()) {
   const bindingFindings = [];
   for (const [lockPath, metadata] of packages) {
     assertSafeLockPackagePath(lockPath);
-    const manifest = packageManifest(root, lockPath);
+    const manifest = inspectInstalled ? packageManifest(root, lockPath) : null;
     const name = packageName(manifest, lockPath);
     const version = metadata.version;
     if (typeof version !== 'string' || !EXACT_VERSION.test(version)) throw new Error(`${lockPath} has no exact version`);
@@ -257,7 +257,7 @@ export function checkLockfilePolicy(rootPath = process.cwd()) {
     if (metadata.hasInstallScript || lifecycleKeys.length > 0) {
       const ownedPreparation = ownedPreparations[identity];
       if (ownedPreparation) {
-        if (lifecycleKeys.length !== 1 || lifecycleKeys[0] !== ownedPreparation.lifecycle) {
+        if (inspectInstalled && (lifecycleKeys.length !== 1 || lifecycleKeys[0] !== ownedPreparation.lifecycle)) {
           lifecycleFindings.push(`${identity} lifecycle entries do not match its exact Motif-owned preparation`);
         }
         if (metadata.hasInstallScript && npmAllowScripts[identity] !== false) {
@@ -276,7 +276,7 @@ export function checkLockfilePolicy(rootPath = process.cwd()) {
       }
     }
     const packageDirectory = join(root, lockPath);
-    const hasBinding = packageFiles(packageDirectory).some(path => path.endsWith('/binding.gyp') || path.endsWith('\\binding.gyp'));
+    const hasBinding = inspectInstalled && packageFiles(packageDirectory).some(path => path.endsWith('/binding.gyp') || path.endsWith('\\binding.gyp'));
     if (hasBinding && !policy.allowedBindingGyp?.includes(name)) bindingFindings.push(`${name}@${version} contains binding.gyp`);
   }
   if (lifecycleFindings.length > 0) throw new Error(`Lifecycle-script policy violation: ${lifecycleFindings.join('; ')}`);
@@ -312,7 +312,7 @@ function packageJsonAllowScripts(packageJson) {
   return value;
 }
 
-export function compareConnectorInventory(expected, generated) {
+export function compareConnectorInventory(expected, generated, lock) {
   const expectedEntries = expected.packages.map(entry => ({
     name: entry.name,
     packagePath: entry.packagePath,
@@ -325,5 +325,13 @@ export function compareConnectorInventory(expected, generated) {
   })).sort((left, right) => left.name.localeCompare(right.name));
   if (JSON.stringify(expectedEntries) !== JSON.stringify(generatedEntries)) {
     throw new Error(`Bundled connector inventory drift: expected ${expectedEntries.map(entry => entry.name).join(', ')}, generated ${generatedEntries.map(entry => entry.name).join(', ')}`);
+  }
+  if (lock) {
+    for (const entry of generated.packages) {
+      const pinned = lock.packages?.[`node_modules/${entry.packagePath.join('/')}`];
+      if (!pinned || ['version', 'resolved', 'integrity'].some(key => entry[key] !== pinned[key])) {
+        throw new Error(`Bundled connector package differs from the lockfile: ${entry.name}`);
+      }
+    }
   }
 }

@@ -4,6 +4,7 @@ import type {
   ArtifactNote,
   ArtifactSequenceRange,
 } from './claude-science-workspace-collections';
+import type { ArtifactAnalysisResult } from './claude-science-analysis-results';
 import type { PortableTranslationTrack } from './claude-science-session';
 
 const RANGE_ANCHOR_METADATA_KEY = 'motifRangeAnchor';
@@ -14,6 +15,29 @@ export type SequenceCoordinateEdit = {
   insertedLength: number;
   oldLength: number;
 };
+
+export type SavedResultRangeRejection = {
+  kind: 'saved-result-range';
+  result: Pick<ArtifactAnalysisResult, 'id' | 'name'>;
+};
+
+/** Check saved primer targets and PCR template ranges before shortening their record. */
+export function checkSavedResultRanges(
+  results: readonly ArtifactAnalysisResult[],
+  recordId: string,
+  oldLength: number,
+  newLength: number,
+): SavedResultRangeRejection | null {
+  if (newLength >= oldLength) return null;
+  const result = results.find((entry) => {
+    if (entry.kind === 'primer_design') {
+      return entry.data.targetRecordId === recordId && (entry.data.targetRange?.end ?? 0) > newLength;
+    }
+    return entry.kind === 'pcr' && entry.data.templateRecordId === recordId
+      && entry.data.products.some((product) => (product.templateRange?.end ?? 0) > newLength);
+  });
+  return result ? { kind: 'saved-result-range', result } : null;
+}
 
 export type NoteAnchorSnapshot = {
   id: string;
@@ -186,6 +210,59 @@ export function describeNetSequenceEdit(input: {
   });
 }
 
+/**
+ * The features an edit took out of the record, as the end of its notice
+ * sentence: "Deleted 31 bp (350–380) and the feature primer_1." A deleted
+ * annotation is named, not left to vanish from the map and the sequence with
+ * only "Deleted 31 bp (350–380)." said. At most three names, then "and 2 more". The
+ * sentence comes back unchanged when every feature survived.
+ */
+export function withRemovedFeatures(
+  sentence: string,
+  before: readonly { id: string; name?: string; type: string }[],
+  after: readonly { id: string }[],
+): string {
+  const kept = new Set(after.map((feature) => feature.id));
+  const names = before.filter((feature) => !kept.has(feature.id)).map((feature) => feature.name || feature.type);
+  if (names.length === 0) return sentence;
+  const listed = names.length <= 3
+    ? (names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`)
+    : `${names.slice(0, 3).join(', ')} and ${names.length - 3} more`;
+  const clause = `the feature${names.length === 1 ? '' : 's'} ${listed}`;
+  const body = sentence.replace(/\.$/, '');
+  return sentence.startsWith('Deleted ') ? `${body} and ${clause}.` : `${body}, removing ${clause}.`;
+}
+
+/**
+ * The span, in coordinates after the last edit, that a run of edits changed,
+ * or null when an edit does not touch or abut the span of the edits before it.
+ * A notice stays up while the user keeps typing and its Undo reverts the whole
+ * run, so only edits at the same or neighbouring bases may join it: a base
+ * changed 1,989 bases away is a new edit with its own notice and its own Undo.
+ * The span is empty after a run that only deleted.
+ */
+export function contiguousEditSpan(
+  edits: readonly SequenceCoordinateEdit[],
+): { start: number; end: number } | null {
+  let span: { start: number; end: number } | null = null;
+  for (const edit of edits) {
+    const deleteEnd = edit.start + edit.deletedLength;
+    if (span === null) {
+      span = { start: edit.start, end: edit.start + edit.insertedLength };
+      continue;
+    }
+    if (edit.start > span.end || deleteEnd < span.start) return null;
+    // The edit lies inside the union of the span and the bases it deleted, so
+    // that union shifts by exactly what the edit added or removed.
+    const unionEnd = Math.max(span.end, deleteEnd);
+    span = {
+      start: Math.min(span.start, edit.start),
+      end: unionEnd - edit.deletedLength + edit.insertedLength,
+    };
+  }
+  return span;
+}
+
 export function transformSequenceRange(
   range: ArtifactSequenceRange,
   edit: SequenceCoordinateEdit,
@@ -244,6 +321,33 @@ export function transformSequenceRange(
     range: transformed,
     changed: transformed === null || !rangesEqual(range, transformed),
     overlapsMeaning: deletionOverlaps || insertionChangesMeaning,
+  };
+}
+
+/**
+ * Moves a translation layer's range through an edit. A layer across the
+ * origin of a circular record ends past the record length: its piece from its
+ * start to the record end and its piece from the origin on move separately and
+ * join again past the new length. Bases inserted at the origin fall inside it.
+ * When the edit removes one piece, the other is the whole layer.
+ */
+export function transformLayerRange(
+  range: ArtifactSequenceRange,
+  edit: SequenceCoordinateEdit,
+): RangeTransform {
+  if (range.end <= edit.oldLength) return transformSequenceRange(range, edit);
+  const newLength = edit.oldLength + edit.insertedLength - edit.deletedLength;
+  const tail = transformSequenceRange({ start: range.start, end: edit.oldLength }, edit);
+  const head = transformSequenceRange({ start: 0, end: range.end - edit.oldLength }, edit);
+  const insertedAtOrigin = edit.insertedLength > 0 && (edit.start === 0 || edit.start === edit.oldLength);
+  const overlapsMeaning = tail.overlapsMeaning || head.overlapsMeaning || insertedAtOrigin;
+  const transformed = tail.range && head.range
+    ? { start: tail.range.start, end: newLength + head.range.end }
+    : tail.range ?? head.range;
+  return {
+    range: transformed,
+    changed: transformed === null || !rangesEqual(range, transformed),
+    overlapsMeaning,
   };
 }
 
@@ -338,7 +442,7 @@ export function applySequenceEditToAnchors(input: {
   let removedLayerCount = 0;
   const translationLayers = input.translationLayers.flatMap((layer) => {
     const originalLength = layer.end - layer.start;
-    const transformed = transformSequenceRange({ start: layer.start, end: layer.end }, edit);
+    const transformed = transformLayerRange({ start: layer.start, end: layer.end }, edit);
     const collapsedByEdit = transformed.range
       ? originalLength >= 3 && transformed.range.end - transformed.range.start < 3
       : true;

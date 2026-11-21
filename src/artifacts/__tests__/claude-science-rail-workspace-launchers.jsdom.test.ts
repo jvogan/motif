@@ -21,33 +21,47 @@ function build({ pinned = false, open = false, windowTitle }: { pinned?: boolean
 
 describe('a rail head whose workspace is open', () => {
   it('brings the workspace forward instead of opening its launcher over it', () => {
-    const { summary, preventDefault, window } = build({ windowTitle: 'Primer Design' });
-    railWorkspaceClick('Primer Design')({ currentTarget: summary, preventDefault });
+    const { summary, preventDefault, window } = build({ windowTitle: 'Primer design' });
+    railWorkspaceClick('Primer design')({ currentTarget: summary, preventDefault });
     expect(preventDefault).toHaveBeenCalledTimes(1);
     expect(document.activeElement).toBe(window);
   });
 
+  it('runs the follow-up after bringing the workspace forward, so a drawer can close', () => {
+    const { summary, preventDefault, window } = build({ windowTitle: 'Primer design' });
+    const after = vi.fn(() => expect(document.activeElement).toBe(window));
+    railWorkspaceClick('Primer design', after)({ currentTarget: summary, preventDefault });
+    expect(after).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips the follow-up when the launcher opens instead', () => {
+    const { summary, preventDefault } = build({ windowTitle: 'Primer design' });
+    const after = vi.fn();
+    railWorkspaceClick(null, after)({ currentTarget: summary, preventDefault });
+    expect(after).not.toHaveBeenCalled();
+  });
+
   it('opens the launcher as before when no workspace is open', () => {
-    const { summary, preventDefault } = build({ windowTitle: 'Primer Design' });
+    const { summary, preventDefault } = build({ windowTitle: 'Primer design' });
     railWorkspaceClick(null)({ currentTarget: summary, preventDefault });
     expect(preventDefault).not.toHaveBeenCalled();
   });
 
   it('still closes a launcher that is already open', () => {
-    const { summary, preventDefault } = build({ open: true, windowTitle: 'Primer Design' });
-    railWorkspaceClick('Primer Design')({ currentTarget: summary, preventDefault });
+    const { summary, preventDefault } = build({ open: true, windowTitle: 'Primer design' });
+    railWorkspaceClick('Primer design')({ currentTarget: summary, preventDefault });
     expect(preventDefault).not.toHaveBeenCalled();
   });
 
   it('leaves the pinned Tools pane alone, where the launcher is not a popover', () => {
-    const { summary, preventDefault } = build({ pinned: true, windowTitle: 'Primer Design' });
-    railWorkspaceClick('Primer Design')({ currentTarget: summary, preventDefault });
+    const { summary, preventDefault } = build({ pinned: true, windowTitle: 'Primer design' });
+    railWorkspaceClick('Primer design')({ currentTarget: summary, preventDefault });
     expect(preventDefault).not.toHaveBeenCalled();
   });
 
   it('opens the launcher when the named window is not actually on screen', () => {
     const { summary, preventDefault } = build({});
-    railWorkspaceClick('Primer Design')({ currentTarget: summary, preventDefault });
+    railWorkspaceClick('Primer design')({ currentTarget: summary, preventDefault });
     expect(preventDefault).not.toHaveBeenCalled();
   });
 });

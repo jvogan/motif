@@ -15,6 +15,7 @@ import {
   type RefObject,
 } from 'react';
 import './claude-science-msa.css';
+import { requestBrowserBlobDownload, type BrowserDownloadReceipt } from './claude-science-download';
 import { ChevronDown, ChevronLeft, ChevronRight, Crosshair, Download, FilePenLine, GripVertical, Info, List, Play, Search, SlidersHorizontal, Trash2, UploadCloud } from 'lucide-react';
 import { MSA_MAX_SEQ_LEN } from '../bio/msa';
 import type { SangerTraceData } from '../bio/abi-import';
@@ -98,6 +99,8 @@ import {
 import { preferredTraceOrientation } from './claude-science-sanger';
 import {
   DEFAULT_CLAUDE_SCIENCE_MSA_VIEW_PREFERENCES,
+  MSA_FONT_SIZE_MAX,
+  MSA_FONT_SIZE_MIN,
   MSA_ZOOM_MIN,
   MSA_ZOOM_MAX,
   normalizeClaudeScienceMsaViewPreferences,
@@ -347,7 +350,7 @@ export type ClaudeScienceMsaViewerProps = {
   onDeleteAlignment: (alignmentId: string) => void;
   onImportRecords: (files: FileList | File[]) => Promise<ClaudeScienceMsaRecordImportResult>;
   onCopy: (label: string, content: string) => Promise<boolean>;
-  onDownload: (filename: string, content: string, mime?: string) => void;
+  onDownload: (filename: string, content: string, mime?: string) => BrowserDownloadReceipt | void;
   /** A column to show, sent from another tool (a verification variant row). Applied once per token. */
   navigationRequest?: ClaudeScienceMsaNavigationRequest | null;
   /** Told when a navigation request has been applied, so the host can drop it. */
@@ -469,21 +472,6 @@ function imageExportRows(alignment: ArtifactAlignment, referenceRowId: string): 
     ? [template, ...alignment.rows.filter((row) => row.id !== template.id)]
     : [...alignment.rows];
   return ordered.map((row) => ({ name: row.name, aligned: row.aligned, isTemplate: row.id === template?.id }));
-}
-
-/** Binary download via an object URL + temporary anchor (onDownload is text-only). */
-function downloadBlobFile(filename: string, blob: Blob) {
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = filename;
-  anchor.rel = 'noopener';
-  anchor.style.display = 'none';
-  document.body.appendChild(anchor);
-  anchor.click();
-  document.body.removeChild(anchor);
-  // Revoke on the next tick so the navigation to the blob has started.
-  window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 /**
@@ -958,7 +946,8 @@ function withoutSharedPrefix(name: string, prefix: string): string {
 // it is biased back toward the alignment while keeping rows tellable apart.
 // eslint-disable-next-line react-refresh/only-export-components -- pure MSA helper exported for unit tests
 export function msaRowLabelWidth(viewportWidth: number): number {
-  return Math.max(136, Math.min(216, Math.round(viewportWidth * 0.22)));
+  // 148px floor: the template row's "Template 100.0%" and the axis label need it at 12px.
+  return Math.max(148, Math.min(216, Math.round(viewportWidth * 0.22)));
 }
 
 // Rows in one alignment routinely share a gene or project prefix ("PAL — ")
@@ -1230,7 +1219,10 @@ const MSA_BASE_CELL_MIN = 8;
 const MSA_BASE_CELL_MAX = 15;
 const MSA_CELL_MIN = 3;
 const MSA_CELL_MAX = 30;
-const MSA_LETTER_MIN = 6.5;
+// Narrowest cell that still holds a 12px monospace letter (about 7.2px wide).
+const MSA_LETTER_MIN = 7.5;
+/** On-screen text never renders below this size, in px. */
+const MSA_SCREEN_FONT_MIN = 12;
 // Overlay geometry mirrors the fixed row heights in the viewer stylesheet.
 const MSA_MATRIX_ROW_HEIGHT = 30;
 /**
@@ -1263,8 +1255,8 @@ const MSA_MATRIX_SCROLL_MIN_HEIGHT = 142;
  * Floor for the clipped matrix frame: the sum of the floors its own two children
  * already declare. Not a chosen number — a frame shorter than this clips content that
  * has refused to shrink, which is the same defect the shell exists to remove, just
- * one box further in. Deriving it from ruler + N rows instead gave 147 and lost
- * exactly 25px to the clip, measured.
+ * one box further in. Deriving it from ruler + N rows instead gives 147 and loses
+ * 25px to the clip.
  *
  * The floor is what lets the body scroll again on a short panel: below it the frame
  * would collapse and take the residue viewport with it, while above it the frame
@@ -1283,7 +1275,24 @@ const MSA_MATRIX_FRAME_MIN_HEIGHT = MSA_OVERVIEW_ROW_HEIGHT + MSA_MATRIX_SCROLL_
  * height is measured at runtime, because this strip WRAPS at narrow widths — an
  * existing e2e expectation has the zoom row past 40px at 440x760.
  */
-const MSA_STATUSBAR_HEIGHT = 33;
+/**
+ * A collapsed floating window keeps its body mounted and hidden, so the window-level
+ * shortcuts below must stand down while the viewer is not on screen.
+ */
+function isInCollapsedWindow(node: Element | null): boolean {
+  return Boolean(node?.closest('[data-window-collapsed]'));
+}
+const MSA_STATUSBAR_HEIGHT = 36;
+/** Below this workspace width the toolbar folds Edit inputs, Go to, Export, Delete and the counts into More. */
+const MSA_COMPACT_TOOLBAR_WIDTH = 560;
+// Below this width the full toolbar wraps onto a second line. Measured: it needs
+// 912px with an 8-row, 120-column alignment (picker at its 150px minimum, the
+// counts 157px), and wider counts add up to about 40px. Between the two, Go to
+// and Export stay on the first row and the rest goes behind More: only Delete
+// from 880px (Edit inputs and the counts still fit, about 870px with wide
+// counts), Edit inputs, the counts and Delete below that.
+const MSA_FULL_TOOLBAR_WIDTH = 1000;
+const MSA_WIDE_MID_TOOLBAR_WIDTH = 880;
 /** `.motif-cs-msa-selection-readout`: 40px plus its 6px top margin, in flow. */
 const MSA_SELECTION_READOUT_HEIGHT = 46;
 /**
@@ -1340,7 +1349,7 @@ function msaMatrixShellMinHeight(rows: {
 // Sequence-logo track: plotting height (must match .motif-cs-msa-logo-row in
 // the CSS) and the smallest glyph, in px, still worth drawing in a segment.
 const MSA_LOGO_TRACK_HEIGHT = 46;
-const MSA_LOGO_LETTER_MIN_PX = 7;
+const MSA_LOGO_LETTER_MIN_PX = 12;
 
 function MsaRowStatsPanel({
   alignment,
@@ -1577,7 +1586,7 @@ function MsaDifferencesPane({
   onClose: () => void;
   onJump: (variant: MsaVariant) => void;
   onCopyTsv?: () => Promise<boolean>;
-  onDownloadTsv?: () => void;
+  onDownloadTsv?: () => BrowserDownloadReceipt | void;
 }) {
   const paneRef = useRef<HTMLElement>(null);
   const [exportStatus, setExportStatus] = useState('');
@@ -1636,8 +1645,8 @@ function MsaDifferencesPane({
               data-testid="msa-differences-download-tsv"
               disabled={runs.length === 0}
               onClick={() => {
-                onDownloadTsv();
-                setExportStatus(`Download requested for ${countLabel}.`);
+                const receipt = onDownloadTsv();
+                setExportStatus(receipt && receipt.status === 'failed' ? receipt.message : `Download requested for ${countLabel}.`);
               }}
             >Download TSV</button>
           ) : null}
@@ -1778,10 +1787,9 @@ function AlignmentMatrix({
   const userScrollPointerRef = useRef(false);
   const restoredViewportRef = useRef(false);
   // Seeded from the session, not from null. Leaving Viewer for Text unmounts this
-  // component; a null seed made it forget that the incoming jump had already been
-  // taken, so on the way back it replayed jump token 1 (column 0) straight over
-  // the position it had just correctly restored. Measured: restore set scrollLeft
-  // to 15,271 and a scrollTo({left: 0}) followed it within one frame.
+  // component; a null seed would forget that the incoming jump had already been
+  // taken, so on the way back it would replay jump token 1 (column 0) straight
+  // over the position it had just restored.
   const handledJumpTokenRef = useRef<number | null>(
     msaMatrixViewportSession.get(alignment.id)?.handledJumpToken ?? null,
   );
@@ -1829,10 +1837,10 @@ function AlignmentMatrix({
    * MEASURED height of the in-flow rows under the frame — pan slider, status line,
    * order note — rather than a sum of constants.
    *
-   * Two things depend on it and a constant 33 had both wrong. The shell's floor was
-   * short whenever the status line wrapped, and `claude-science-msa-interactions`
-   * already asserts the zoom row exceeds 40px at 440x760, so that was demonstrated
-   * rather than theoretical. And the mid-drag readout floats over exactly this strip,
+   * Two things depend on it and a constant gets both wrong. The shell's floor would
+   * be short whenever the status line wraps (`claude-science-msa-interactions`
+   * asserts the zoom row exceeds 40px at 440x760). And the mid-drag readout floats
+   * over exactly this strip,
    * so whether it FITS turns on the same number: with no pan row the strip is a single
    * status line and a 40px readout overhangs it into the residue grid.
    *
@@ -1883,7 +1891,7 @@ function AlignmentMatrix({
   // Shrink glyphs to fit narrowing cells as the user zooms out, so letters stay
   // legible (not overlapping) right down to the blocks threshold; never exceed
   // the chosen font size when zooming in.
-  const renderFontSize = blocks ? fontSize : Math.min(fontSize, Math.max(7, Math.round(cellWidth * 1.32)));
+  const renderFontSize = blocks ? fontSize : Math.min(fontSize, Math.max(MSA_SCREEN_FONT_MIN, Math.round(cellWidth * 1.32)));
   const [expandedColumnRanges, setExpandedColumnRanges] = useState<MsaExpandedColumnRange[]>([]);
   // Returning the current array when it is already empty lets React bail out
   // instead of re-rendering the whole matrix for an identical state.
@@ -2242,10 +2250,10 @@ function AlignmentMatrix({
   // A restore is retried only when the browser rejected the first assignment:
   // the matrix can still have its transient pre-layout width during this layout
   // effect, and a one-shot assignment would then be clamped to the beginning.
-  // This replaces the old pixel restore (`viewport.scrollLeft = saved?.left ?? 0;`
-  // and `viewport.scrollTop = saved?.top ?? 0;`) and its matching unconditional
-  // `msaMatrixViewportSession.set(alignment.id, { left, top });`: those statements
-  // let transient layout pixels become durable review position.
+  // Restoring pixels directly (`viewport.scrollLeft = saved?.left ?? 0;` and
+  // `viewport.scrollTop = saved?.top ?? 0;`), or saving them unconditionally with
+  // `msaMatrixViewportSession.set(alignment.id, { left, top });`, would let
+  // transient layout pixels become durable review position.
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
     if (!viewport) return;
@@ -2261,13 +2269,12 @@ function AlignmentMatrix({
     if (!firstLayout && !geometryChanged) return;
 
     // Only a position the reader actually created is worth restoring: a saved
-    // session, a jump, or their own scroll. Seeding this from the live scrollLeft
-    // instead looked harmless and was not. During this layout effect the matrix
-    // can still hold its transient pre-layout width, so the seed is taken at one
-    // width and converted back at another, and half the difference survives as a
-    // permanent offset. Measured at a 700px window: seeded at 698px, applied at
-    // 597px, the alignment opened on column 5 of 120 and the retry below kept
-    // re-applying it. With nothing to restore, leave the scroll alone.
+    // session, a jump, or their own scroll. Do not seed this from the live
+    // scrollLeft: during this layout effect the matrix can still hold its
+    // transient pre-layout width, so the seed would be taken at one width and
+    // converted back at another, and half the difference would survive as a
+    // permanent offset that the retry below keeps re-applying. With nothing to
+    // restore, leave the scroll alone.
     const centerColumn = desiredCenterColumnRef.current;
     if (centerColumn === null) return;
     const top = saved?.top ?? viewport.scrollTop;
@@ -2303,8 +2310,7 @@ function AlignmentMatrix({
   ]);
 
   // Bring a jump's row into vertical view (horizontal is handled below). It runs
-  // first because any scroll aborts a smooth one: after the horizontal scroll
-  // had started, this assignment stopped it before it moved.
+  // first so the two scrolls land in the same frame, vertical before horizontal.
   useEffect(() => {
     if (!jumpRowId) return;
     const viewport = viewportRef.current;
@@ -2323,8 +2329,8 @@ function AlignmentMatrix({
     handledJumpTokenRef.current = jumpToken;
     const saved = msaMatrixViewportSession.get(alignment.id);
     if (saved) msaMatrixViewportSession.set(alignment.id, { ...saved, handledJumpToken: jumpToken });
-    const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
-    scrollToColumn(jumpColumn, reducedMotion ? 'auto' : 'smooth');
+    // One direct jump: a click never animates the scroll position.
+    scrollToColumn(jumpColumn, 'auto');
   }, [alignment.id, jumpColumn, jumpToken, scrollToColumn, viewportRef]);
 
   useEffect(() => {
@@ -2576,8 +2582,7 @@ function AlignmentMatrix({
   // An explicit scheme keeps its own data-color-key fills instead.
   const toneColored = !explicitScheme && (colorMode === 'residue' || blocks);
 
-  const selectingRef = useRef(false);
-  const rulerSelectingRef = useRef(false);
+  const selectionDragRef = useRef<{ kind: 'grid' | 'ruler'; pointerId: number; surface: HTMLDivElement } | null>(null);
   const hoverReadoutRef = useRef<HTMLDivElement>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
 
@@ -2635,9 +2640,12 @@ function AlignmentMatrix({
     const viewport = viewportRef.current;
     if (!viewport) return null;
     const rect = viewport.getBoundingClientRect();
+    const clientLeft = rect.left + viewport.clientLeft;
+    // The reserved scrollbar gutter is outside the scroller's client area.
+    const clientRight = viewport.clientWidth > 0 ? clientLeft + viewport.clientWidth : rect.right;
     const slotIndex = msaColumnFromClientX(clientX, {
-      viewportLeft: rect.left,
-      viewportRight: rect.right,
+      viewportLeft: clientLeft,
+      viewportRight: clientRight,
       labelWidth,
       scrollLeft: viewport.scrollLeft,
       cellWidth,
@@ -2648,7 +2656,9 @@ function AlignmentMatrix({
     if (!slot) return null;
     if (slot.kind === 'column') return slot.column;
     if (!clampToViewport) return null;
-    const sequenceX = clientX - rect.left - labelWidth + viewport.scrollLeft;
+    const sequenceLeft = clientLeft + labelWidth;
+    const point = clampMsaClientPoint(clientX, 0, { left: sequenceLeft, right: clientRight, top: 0, bottom: 1 });
+    const sequenceX = point.clientX - sequenceLeft + viewport.scrollLeft;
     const withinSlot = sequenceX - slotIndex * cellWidth;
     return withinSlot < cellWidth / 2 ? slot.startColumn : slot.endColumn - 1;
   }, [cellWidth, columnSlotCount, columnView, labelWidth, viewportRef]);
@@ -2679,10 +2689,12 @@ function AlignmentMatrix({
     const viewport = viewportRef.current;
     if (!viewport) return null;
     const rect = viewport.getBoundingClientRect();
+    const clientLeft = rect.left + viewport.clientLeft;
+    const clientRight = viewport.clientWidth > 0 ? clientLeft + viewport.clientWidth : rect.right;
     const point = clampToViewport
       ? clampMsaClientPoint(clientX, clientY, {
-        left: rect.left + labelWidth,
-        right: rect.right,
+        left: clientLeft + labelWidth,
+        right: clientRight,
         top: rect.top,
         bottom: rect.bottom,
       })
@@ -2752,8 +2764,8 @@ function AlignmentMatrix({
     const cellLeft = activeSlotIndex * cellWidth;
     const cellRight = cellLeft + cellWidth;
     // A jump to this column has already started a smooth scroll that centres it.
-    // Judged from the scrollLeft it is leaving, the cell looked off-screen, and a
-    // nearest-edge scroll here cancelled the centring and parked it on the edge.
+    // Judged from the scrollLeft it is leaving, the cell looks off-screen, and a
+    // nearest-edge scroll here would cancel the centring and park it on the edge.
     if (desiredCenterColumnRef.current === activeCell.column + 0.5) { /* already on its way */ }
     else if (cellLeft < viewport.scrollLeft) setHorizontalScroll(cellLeft);
     else if (cellRight > viewport.scrollLeft + sequenceViewportWidth) {
@@ -2785,8 +2797,30 @@ function AlignmentMatrix({
     activateCell(focusRequest, focusRequest.focus);
   }, [activateCell, focusRequest]);
 
+  const cancelSelectionDrag = useCallback(() => {
+    userScrollPointerRef.current = false;
+    const drag = selectionDragRef.current;
+    if (!drag) return;
+    selectionDragRef.current = null;
+    stopDragAutoScroll();
+    setIsSelecting(false);
+    if (drag.surface.hasPointerCapture?.(drag.pointerId)) drag.surface.releasePointerCapture(drag.pointerId);
+  }, [stopDragAutoScroll]);
+
+  useEffect(() => {
+    window.addEventListener('blur', cancelSelectionDrag);
+    return () => window.removeEventListener('blur', cancelSelectionDrag);
+  }, [cancelSelectionDrag]);
+
+  const handleSelectionPointerCancel = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = selectionDragRef.current;
+    if (drag && drag.pointerId !== event.pointerId) return;
+    if (event.type === 'lostpointercapture' && event.target !== drag?.surface) return;
+    cancelSelectionDrag();
+  };
+
   const handleGridPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0) return;
+    if (event.button !== 0 || selectionDragRef.current) return;
     userScrollPointerRef.current = true;
     const cell = pointToCell(event.clientX, event.clientY);
     if (!cell) return;
@@ -2801,7 +2835,7 @@ function AlignmentMatrix({
     if (!(event.shiftKey && selectionAnchorRef.current)) {
       selectionAnchorRef.current = { column: cell.column, rowIndex: cell.rowIndex };
     }
-    selectingRef.current = true;
+    selectionDragRef.current = { kind: 'grid', pointerId: event.pointerId, surface: event.currentTarget };
     setIsSelecting(true);
     applySelectionTo(cell);
     stopDragAutoScroll();
@@ -2809,31 +2843,35 @@ function AlignmentMatrix({
   };
 
   const handleGridPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (selectingRef.current) {
+    const drag = selectionDragRef.current;
+    if (drag) {
+      if (drag.kind !== 'grid' || event.pointerId !== drag.pointerId) return;
+      // A mouse or pen move with no button down means the release was lost; touch has no hover.
+      if (event.pointerType !== 'touch' && !(event.buttons & 1)) { cancelSelectionDrag(); return; }
       const { clientX, clientY } = event;
       updateDragAutoScroll(clientX, clientY, { horizontal: true, vertical: true }, () => {
-        if (!selectingRef.current) return;
+        if (selectionDragRef.current !== drag) return;
         const cell = pointToCell(clientX, clientY, true);
         if (cell) applySelectionTo(cell);
       });
       return;
     }
-    setHoverCell(pointToCell(event.clientX, event.clientY));
+    // Moving inside one cell keeps the same state object, so React skips the
+    // render; every visible row would otherwise re-render on each pointer move.
+    const cell = pointToCell(event.clientX, event.clientY);
+    setHoverCell((current) => (
+      current && cell && current.column === cell.column && current.rowId === cell.rowId ? current : cell
+    ));
   };
 
-  const endSelectionDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
-    userScrollPointerRef.current = false;
-    if (!selectingRef.current) return;
-    stopDragAutoScroll();
-    if (event.type === 'pointerup') {
+  const handleGridPointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = selectionDragRef.current;
+    if (drag) {
+      if (drag.kind !== 'grid' || event.pointerId !== drag.pointerId) return;
       const cell = pointToCell(event.clientX, event.clientY, true);
       if (cell) applySelectionTo(cell);
     }
-    selectingRef.current = false;
-    setIsSelecting(false);
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
+    cancelSelectionDrag();
   };
 
   const selectWholeColumn = (column: number) => {
@@ -2844,13 +2882,14 @@ function AlignmentMatrix({
   };
 
   const handleRulerPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0) return;
+    if (event.button !== 0 || selectionDragRef.current) return;
     const column = columnFromClientX(event.clientX);
     if (column == null) return;
     event.preventDefault();
     setHoverCell(null);
     selectWholeColumn(column);
-    rulerSelectingRef.current = true;
+    userScrollPointerRef.current = true;
+    selectionDragRef.current = { kind: 'ruler', pointerId: event.pointerId, surface: event.currentTarget };
     // Mirrors the grid path. `isSelecting` is what floats the selection readout out of
     // the flow and defers the block statistics while the pointer is down. Without it a
     // ruler drag mounted the readout as a row mid-gesture and took 46px — one whole
@@ -2861,10 +2900,12 @@ function AlignmentMatrix({
     try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* capture is best-effort */ }
   };
   const handleRulerPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!rulerSelectingRef.current) return;
+    const drag = selectionDragRef.current;
+    if (drag?.kind !== 'ruler' || event.pointerId !== drag.pointerId) return;
+    if (event.pointerType !== 'touch' && !(event.buttons & 1)) { cancelSelectionDrag(); return; }
     const { clientX, clientY } = event;
     updateDragAutoScroll(clientX, clientY, { horizontal: true, vertical: false }, () => {
-      if (!rulerSelectingRef.current) return;
+      if (selectionDragRef.current !== drag) return;
       const column = columnFromClientX(clientX, true);
       const anchor = selectionAnchorRef.current;
       if (column == null || !anchor) return;
@@ -2877,23 +2918,19 @@ function AlignmentMatrix({
     });
   };
   const handleRulerPointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!rulerSelectingRef.current) return;
-    stopDragAutoScroll();
-    if (event.type === 'pointerup') {
-      const column = columnFromClientX(event.clientX, true);
-      const anchor = selectionAnchorRef.current;
-      if (column != null && anchor) {
-        setSelection({
-          colStart: Math.min(anchor.column, column),
-          colEnd: Math.max(anchor.column, column),
-          rowStart: 0,
-          rowEnd: Math.max(0, orderedRows.length - 1),
-        });
-      }
+    const drag = selectionDragRef.current;
+    if (drag?.kind !== 'ruler' || event.pointerId !== drag.pointerId) return;
+    const column = columnFromClientX(event.clientX, true);
+    const anchor = selectionAnchorRef.current;
+    if (column != null && anchor) {
+      setSelection({
+        colStart: Math.min(anchor.column, column),
+        colEnd: Math.max(anchor.column, column),
+        rowStart: 0,
+        rowEnd: Math.max(0, orderedRows.length - 1),
+      });
     }
-    rulerSelectingRef.current = false;
-    setIsSelecting(false);
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    cancelSelectionDrag();
   };
 
   const clearSelection = useCallback(() => {
@@ -3174,20 +3211,18 @@ function AlignmentMatrix({
   };
 
   useEffect(() => {
+    cancelSelectionDrag();
     stopDragAutoScroll();
     setSelection(null);
     setHoverCell(null);
     setContextMenu(null);
     selectionAnchorRef.current = null;
-    selectingRef.current = false;
-    setIsSelecting(false);
-    rulerSelectingRef.current = false;
     setManualOrder(null);
     setRowDrag(null);
     rowDragRef.current = null;
     rowTemplateClickRef.current = null;
     setReorderStatus('');
-  }, [alignment.id, resetToken, stopDragAutoScroll]);
+  }, [alignment.id, cancelSelectionDrag, resetToken, stopDragAutoScroll]);
 
   // A change to the persisted sort control supersedes any manual drag order.
   useEffect(() => { setManualOrder(null); }, [sortMode]);
@@ -3274,11 +3309,12 @@ function AlignmentMatrix({
   useEffect(() => {
     if (!selection) return undefined;
     const onKeyDown = (event: KeyboardEvent) => {
+      if (isInCollapsedWindow(viewportRef.current)) return;
       if (event.key === 'Escape' && !event.defaultPrevented && !contextMenu && !searchActive) clearSelection();
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [clearSelection, contextMenu, searchActive, selection]);
+  }, [clearSelection, contextMenu, searchActive, selection, viewportRef]);
 
   /**
    * Where the selection readout sits. It FLOATS over the bottom chrome only while the
@@ -3311,7 +3347,8 @@ function AlignmentMatrix({
     '--motif-cs-msa-frame-min-height': `${MSA_MATRIX_FRAME_MIN_HEIGHT}px`,
     '--motif-cs-msa-shell-min-height': `${msaMatrixShellMinHeight({
       chromeHeight,
-      readoutInFlow: readoutPlacement === 'flow',
+      // The status row is always in flow: the hint holds it when nothing is selected.
+      readoutInFlow: true,
     })}px`,
   } as CSSProperties;
 
@@ -3557,9 +3594,9 @@ function AlignmentMatrix({
      *
      * Everything that does not scroll — the pan slider, the status line, the order
      * note, the selection readout — is a sibling of the frame rather than a child.
-     * Inside the frame those rows were squeezed out of a box that clips, with the
-     * window body no longer overflowing, so on a short panel they were unreachable:
-     * no scrollbar anywhere led to them. As siblings they keep their own height, the
+     * Inside the frame those rows would be squeezed out of a box that clips while the
+     * window body does not overflow, so on a short panel they would be unreachable:
+     * no scrollbar anywhere would lead to them. As siblings they keep their own height, the
      * frame absorbs the shrink instead, and once the frame hits its floor the shell
      * outgrows the body and the body scrolls again.
      *
@@ -3681,8 +3718,9 @@ function AlignmentMatrix({
         )}
         onPointerDown={handleGridPointerDown}
         onPointerMove={handleGridPointerMove}
-        onPointerUp={endSelectionDrag}
-        onPointerCancel={endSelectionDrag}
+        onPointerUp={handleGridPointerUp}
+        onPointerCancel={handleSelectionPointerCancel}
+        onLostPointerCapture={handleSelectionPointerCancel}
         onPointerLeave={() => setHoverCell(null)}
         onContextMenu={handleGridContextMenu}
         role="region"
@@ -3778,7 +3816,6 @@ function AlignmentMatrix({
                 : undefined}
             >
               <span>{mergeAxisRows ? 'Alignment / template' : 'Alignment position'}</span>
-              {mergeAxisRows ? <small translate="no">{template?.name ?? 'Template'}</small> : null}
             </div>
             <div
               className="motif-cs-msa-ruler-window motif-cs-msa-ruler-window-clickable"
@@ -3787,7 +3824,6 @@ function AlignmentMatrix({
               onPointerDown={handleRulerPointerDown}
               onPointerMove={handleRulerPointerMove}
               onPointerUp={handleRulerPointerUp}
-              onPointerCancel={handleRulerPointerUp}
             >
               {renderedSlots.map((slot) => {
                 if (slot.kind === 'elision') {
@@ -3990,7 +4026,7 @@ function AlignmentMatrix({
                 aria-rowindex={firstSequenceRow + orderedRows.length + Number(visibility.showConservation) + Number(visibility.showConsensus)}
                 aria-label="Per-column conservation histogram"
               >
-                <div className="motif-cs-msa-sticky-label motif-cs-msa-row-label motif-cs-msa-hist-label" role="rowheader"><span>Conservation histogram</span></div>
+                <div className="motif-cs-msa-sticky-label motif-cs-msa-row-label motif-cs-msa-hist-label" role="rowheader"><span title="Conservation histogram">Conservation histogram</span></div>
                 {renderHistogram((stat) => stat.conservation, 'conservation')}
               </div> : null}
             </div>
@@ -4002,7 +4038,7 @@ function AlignmentMatrix({
             aria-rowindex={firstSequenceRow + orderedRows.length + Number(visibility.showConservation) + Number(visibility.showConsensus) + Number(visibility.showConservationHistogram)}
             aria-label="Per-column occupancy histogram"
           >
-            <div className="motif-cs-msa-sticky-label motif-cs-msa-row-label motif-cs-msa-hist-label" role="rowheader"><span>Occupancy</span></div>
+            <div className="motif-cs-msa-sticky-label motif-cs-msa-row-label motif-cs-msa-hist-label" role="rowheader"><span title="Occupancy">Occupancy</span></div>
             {renderHistogram((stat) => stat.occupancy, 'occupancy')}
           </div> : null}
 
@@ -4041,30 +4077,32 @@ function AlignmentMatrix({
       {/* The pan slider is the alignment's horizontal scrollbar, so it sits
           directly against the matrix and stays aligned to the residue columns
           rather than joining the status line below. It is a SIBLING of the frame,
-          not a child: inside the clipped frame it was the first thing squeezed off
-          a short panel, with nothing to scroll to reach it. */}
-      {maxHorizontalScroll > 0 ? (
-        <div className="motif-cs-msa-pan-row" data-testid="msa-horizontal-scroll-row">
-          <span className="motif-cs-msa-pan-label" aria-hidden="true">Columns</span>
-          <input
-            className="motif-cs-msa-pan-range"
-            data-testid="msa-horizontal-scroll"
-            type="range"
-            min={0}
-            max={Math.max(1, Math.ceil(maxHorizontalScroll))}
-            step={1}
-            value={Math.min(Math.ceil(maxHorizontalScroll), Math.round(scrollLeft))}
-            onChange={(event) => {
-              markUserScrollIntent();
-              setHorizontalScroll(Number(event.target.value));
-            }}
-            aria-label="Horizontal alignment scroll"
-            aria-valuetext={visibleWindowText}
-            title="Drag to pan alignment columns"
-            style={{ '--motif-cs-msa-pan-thumb-width': `${panThumbWidth}px` } as CSSProperties}
-          />
-        </div>
-      ) : null}
+          not a child: inside the clipped frame it would be the first thing squeezed
+          off a short panel, with nothing to scroll to reach it. */}
+      {/* Always mounted. When the whole alignment fits (Fit, a column filter, a
+          wide window) the lane stays as an idle, disabled trough instead of
+          vanishing, so the status line below it never jumps by a row. */}
+      <div className="motif-cs-msa-pan-row" data-testid="msa-horizontal-scroll-row" data-idle={maxHorizontalScroll > 0 ? undefined : 'true'}>
+        <span className="motif-cs-msa-pan-label" aria-hidden="true">Columns</span>
+        <input
+          className="motif-cs-msa-pan-range"
+          data-testid="msa-horizontal-scroll"
+          type="range"
+          min={0}
+          max={Math.max(1, Math.ceil(maxHorizontalScroll))}
+          step={1}
+          value={Math.min(Math.ceil(maxHorizontalScroll), Math.round(scrollLeft))}
+          disabled={maxHorizontalScroll <= 0}
+          onChange={(event) => {
+            markUserScrollIntent();
+            setHorizontalScroll(Number(event.target.value));
+          }}
+          aria-label="Horizontal alignment scroll"
+          aria-valuetext={visibleWindowText}
+          title={maxHorizontalScroll > 0 ? 'Drag to pan alignment columns' : 'The whole alignment is in view'}
+          style={{ '--motif-cs-msa-pan-thumb-width': `${panThumbWidth}px` } as CSSProperties}
+        />
+      </div>
       {/* Zoom and the visible-column readout answer the same question — what am
           I looking at, and how closely — so they share one status line instead
           of taking a strip each under the alignment. */}
@@ -4098,9 +4136,14 @@ function AlignmentMatrix({
         >
           {canFitAlignment ? 'Fit' : 'Min zoom'}
         </button>
-        {Math.round(zoom * 100) !== 100 ? (
-          <button type="button" className="motif-cs-mini-button" data-testid="msa-zoom-reset" onClick={() => setZoom(1)} title="Reset zoom to 100%">100%</button>
-        ) : null}
+        <button
+          type="button"
+          className="motif-cs-mini-button"
+          data-testid="msa-zoom-reset"
+          disabled={Math.round(zoom * 100) === 100}
+          onClick={() => setZoom(1)}
+          title={Math.round(zoom * 100) === 100 ? 'Zoom is already 100%' : 'Reset zoom to 100%'}
+        >100%</button>
         {blocks ? <span className="motif-cs-chip motif-cs-msa-blocks-chip" data-testid="msa-blocks-chip" title="Columns are compressed past letter legibility; residues render as colored blocks">Blocks</span> : null}
       </div>
       {footerNavigation}
@@ -4118,6 +4161,15 @@ function AlignmentMatrix({
       ) : null}
       <span className="motif-cs-visually-hidden" data-testid="msa-reorder-status" role="status" aria-live="polite">{reorderStatus}</span>
       </div>
+      {/* The status line below the matrix is one fixed row. With nothing selected
+          it says what a drag does; a selection replaces the hint in the same box,
+          so selecting and clearing never move the rows above or below it. While a
+          drag floats the readout, the hint keeps the row reserved. */}
+      {readoutPlacement !== 'flow' ? (
+        <div className="motif-cs-msa-selection-hint" data-testid="msa-selection-hint">
+          Drag across the alignment to select columns
+        </div>
+      ) : null}
       {selection && selectionCoordinates ? (
         <div
           ref={readoutRef}
@@ -4343,6 +4395,9 @@ export function ClaudeScienceMsaViewer({
   const [viewResetStatus, setViewResetStatus] = useState('');
   const alignmentFileInputRef = useRef<HTMLInputElement>(null);
   const recordFileInputRef = useRef<HTMLInputElement>(null);
+  const intakeRequestRef = useRef<symbol | null>(null);
+  const latestRecordInputsRef = useRef({ records, localTemplateId });
+  const runTimerRef = useRef<number | null>(null);
   const dropDepthRef = useRef(0);
   const sourceSummaryRef = useRef<HTMLElement>(null);
   const alignmentPickerRef = useRef<HTMLSelectElement>(null);
@@ -4354,6 +4409,16 @@ export function ClaudeScienceMsaViewer({
   const exportMenuRef = useRef<HTMLDetailsElement>(null);
   const exportMenuButtonRef = useRef<HTMLElement>(null);
   const gotoMenuRef = useRef<HTMLDetailsElement>(null);
+  // Narrow panels fold the secondary toolbar group into one "More" menu. The width is the
+  // workspace's own (a floating window can be narrower than the viewport); it stays 0, so the
+  // full toolbar, wherever nothing can be measured.
+  const [workspaceRef, workspaceWidth] = useObservedWidth<HTMLDivElement>(0);
+  const compactToolbar = workspaceWidth > 0 && workspaceWidth < MSA_COMPACT_TOOLBAR_WIDTH;
+  const midToolbar = !compactToolbar && workspaceWidth > 0 && workspaceWidth < MSA_FULL_TOOLBAR_WIDTH;
+  const wideMidToolbar = midToolbar && workspaceWidth >= MSA_WIDE_MID_TOOLBAR_WIDTH;
+  const moreMenuRef = useRef<HTMLDetailsElement>(null);
+  const moreMenuButtonRef = useRef<HTMLElement>(null);
+  const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const gotoMenuButtonRef = useRef<HTMLElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const cancelScheduledSearchRef = useRef<(() => void) | null>(null);
@@ -4434,6 +4499,7 @@ export function ClaudeScienceMsaViewer({
   useEffect(() => {
     if (!searchQuery) return undefined;
     const onKeyDown = (event: KeyboardEvent) => {
+      if (isInCollapsedWindow(workspaceRef.current)) return;
       if (event.key === 'Escape') {
         event.preventDefault();
         event.stopPropagation();
@@ -4443,7 +4509,7 @@ export function ClaudeScienceMsaViewer({
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [searchQuery]);
+  }, [searchQuery, workspaceRef]);
 
   const traceAvailable = activeAlignment ? hasLinkedSangerTrace(activeAlignment, records) : false;
 
@@ -4451,7 +4517,13 @@ export function ClaudeScienceMsaViewer({
     if (displayMode === 'trace' && !traceAvailable) updateViewPreferences({ displayMode: 'viewer' });
   }, [displayMode, traceAvailable, updateViewPreferences]);
 
-  useEffect(() => () => {
+  useLayoutEffect(() => {
+    latestRecordInputsRef.current = { records, localTemplateId };
+  }, [records, localTemplateId]);
+
+  useLayoutEffect(() => () => {
+    intakeRequestRef.current = null;
+    if (runTimerRef.current !== null) window.clearTimeout(runTimerRef.current);
     if (copyStatusTimerRef.current !== null) window.clearTimeout(copyStatusTimerRef.current);
   }, []);
 
@@ -4726,7 +4798,7 @@ export function ClaudeScienceMsaViewer({
     if (copyStatusTimerRef.current !== null) window.clearTimeout(copyStatusTimerRef.current);
     setCopyStatus({
       label,
-      message: ok ? `${label} copied` : 'Copy was blocked. Use Download or copy from Text view.',
+      message: ok ? `${label} copied` : 'Copy blocked. Download or open Text.',
       tone: ok ? 'status' : 'error',
     });
     copyStatusTimerRef.current = window.setTimeout(() => {
@@ -4778,7 +4850,7 @@ export function ClaudeScienceMsaViewer({
   );
   const downloadDifferencesTsv = useCallback(() => {
     if (!activeAlignment) return;
-    onDownload(
+    return onDownload(
       safeAlignmentFilename(activeAlignment, 'tsv').replace(/\.tsv$/, '-differences.tsv'),
       differencesTsv(),
       'text/tab-separated-values',
@@ -4804,7 +4876,7 @@ export function ClaudeScienceMsaViewer({
     const viewWindow = imageScope === 'view' && visible && visible.end > visible.start ? visible : null;
     // A fixed, legible export density derived from the font-size preference;
     // the layout scales this down when a whole wide alignment must fit the budget.
-    const imageFontSize = Math.max(9, Math.min(16, fontSize));
+    const imageFontSize = Math.max(MSA_FONT_SIZE_MIN, Math.min(16, fontSize));
     try {
       const layout = computeAlignmentImageLayout(activeAlignment, {
         scope: imageScope,
@@ -4823,11 +4895,11 @@ export function ClaudeScienceMsaViewer({
           ? getComputedStyle(element).getPropertyValue(name)
           : '';
       });
-      // Mirror what the matrix paints rather than the scheme alone. The export used
-      // to read only `colorScheme`, so turning "Residue colors" off changed nothing
-      // about the image — and because the scheme select is disabled while colours
-      // are off, the saved file was coloured by a setting the UI was preventing the
-      // user from inspecting. The exception is the same one the matrix makes: when
+      // Mirror what the matrix paints rather than the scheme alone. Reading only
+      // `colorScheme` would ignore "Residue colors" being off — and because the
+      // scheme select is disabled while colours are off, the saved file would be
+      // coloured by a setting the UI prevents the user from inspecting. The
+      // exception is the same one the matrix makes: when
       // cells are too narrow to carry glyphs, colour is the only thing left holding
       // the sequence, so a monochrome birdseye would export a blank rectangle. In
       // that case the matrix falls back to the automatic tone scheme, not to the
@@ -4838,18 +4910,26 @@ export function ClaudeScienceMsaViewer({
       if (format === 'svg') {
         const svg = renderAlignmentImageSvg(rows, activeAlignment.molecule, exportScheme, layout, title, palette);
         const filename = safeAlignmentFilename(activeAlignment, 'svg');
-        downloadBlobFile(filename, new Blob([svg], { type: 'image/svg+xml' }));
+        const receipt = requestBrowserBlobDownload(filename, new Blob([svg], { type: 'image/svg+xml' }));
+        if (receipt.status === 'failed') {
+          flashStatus('Image export', receipt.message, 'error');
+          return;
+        }
         flashStatus('Image export', layout.clamped ? `Saved ${filename} (scaled to fit)` : `Saved ${filename}`, 'status');
         return;
       }
       const canvas = renderAlignmentImageCanvas(rows, activeAlignment.molecule, exportScheme, layout, title, palette);
       const blob = canvas ? await canvasToPngBlob(canvas) : null;
       if (!blob) {
-        flashStatus('Image export', 'PNG export is unavailable here. Try Save SVG.', 'error');
+        flashStatus('Image export', 'PNG unavailable. Save SVG.', 'error');
         return;
       }
       const filename = safeAlignmentFilename(activeAlignment, 'png');
-      downloadBlobFile(filename, blob);
+      const receipt = requestBrowserBlobDownload(filename, blob);
+      if (receipt.status === 'failed') {
+        flashStatus('Image export', receipt.message, 'error');
+        return;
+      }
       flashStatus('Image export', layout.clamped ? `Saved ${filename} (scaled; Save SVG for full vector)` : `Saved ${filename}`, 'status');
     } catch (caught) {
       if (caught instanceof AlignmentImageExportError) {
@@ -4865,11 +4945,12 @@ export function ClaudeScienceMsaViewer({
         );
         return;
       }
-      flashStatus('Image export', 'Image export failed. Try Save SVG or the Visible view scope.', 'error');
+      flashStatus('Image export', 'Image export failed. Save SVG or export the visible region.', 'error');
     }
   }, [activeAlignment, colorMode, colorScheme, fontSize, imageScope, referenceRowId, flashStatus]);
 
   const hydrateInputsFromAlignment = useCallback((alignment: ArtifactAlignment) => {
+    intakeRequestRef.current = null;
     const linked = alignment.rows.map((row) => (
       row.sourceRecordId ? records.find((record) => record.id === row.sourceRecordId) ?? null : null
     ));
@@ -4914,7 +4995,20 @@ export function ClaudeScienceMsaViewer({
     setError(null);
   }, [alignments, hydrateInputsFromAlignment, onActiveAlignmentChange, sourceOpen]);
 
+  const invalidateIntake = useCallback(() => {
+    if (intakeRequestRef.current === null) return;
+    intakeRequestRef.current = null;
+    setIntakeStatus(null);
+  }, []);
+
+  const changeSourceMode = (mode: SourceMode) => {
+    if (mode === sourceMode) return;
+    invalidateIntake();
+    setSourceMode(mode);
+  };
+
   const toggleRecord = (record: ViewerRecord, checked: boolean) => {
+    invalidateIntake();
     setError(null);
     setSelectedIds((current) => {
       const next = new Set(current);
@@ -4925,11 +5019,11 @@ export function ClaudeScienceMsaViewer({
       const chosen = records.filter((candidate) => next.has(candidate.id));
       const molecule = chosen[0]?.type;
       if (molecule && molecule !== record.type) {
-        setError(`Choose only ${molecule.toUpperCase()} records for one alignment.`);
+        setError(`Choose ${molecule.toUpperCase()} records only.`);
         return current;
       }
       if (next.size >= ARTIFACT_MSA_MAX_LOCAL_SEQUENCES) {
-        setError(`Browser alignment supports at most ${ARTIFACT_MSA_MAX_LOCAL_SEQUENCES} records.`);
+        setError(`Select up to ${ARTIFACT_MSA_MAX_LOCAL_SEQUENCES} records.`);
         return current;
       }
       next.add(record.id);
@@ -4938,6 +5032,7 @@ export function ClaudeScienceMsaViewer({
   };
 
   const clearSelectedRecords = () => {
+    invalidateIntake();
     setSelectedIds(new Set());
     setSelectedOnly(false);
     explicitlySelectedTemplateIdRef.current = null;
@@ -4947,18 +5042,25 @@ export function ClaudeScienceMsaViewer({
   const importRecordFiles = useCallback(async (files: FileList | File[]) => {
     const pending = Array.from(files);
     if (pending.length === 0) return;
+    const request = Symbol();
+    intakeRequestRef.current = request;
     setError(null);
     setIntakeStatus({ message: `Reading ${pending.length} sequence file${pending.length === 1 ? '' : 's'}…`, tone: 'status' });
     let result: ClaudeScienceMsaRecordImportResult;
     try {
       result = await onImportRecords(pending);
     } catch (caught) {
+      if (request !== intakeRequestRef.current) return;
+      intakeRequestRef.current = null;
       setIntakeStatus({
-        message: caught instanceof Error ? caught.message : 'The sequence files could not be imported. Check their format and contents.',
+        message: caught instanceof Error ? caught.message : 'Import failed. Check the file format and contents.',
         tone: 'error',
       });
       return;
     }
+    if (request !== intakeRequestRef.current) return;
+    intakeRequestRef.current = null;
+    const { records, localTemplateId } = latestRecordInputsRef.current;
     const firstType = result.records[0]?.type;
     const compatible = firstType ? result.records.filter((record) => record.type === firstType) : [];
     if (compatible.length > 0) {
@@ -4994,9 +5096,7 @@ export function ClaudeScienceMsaViewer({
       explicitlySelectedTemplateIdRef.current = retainedTemplate?.id === explicitlySelectedTemplateIdRef.current
         ? retainedTemplate.id
         : null;
-      if (!alignmentName.trim()) {
-        setAlignmentName(`${compatible[0].group?.trim() || compatible[0].name} alignment`);
-      }
+      setAlignmentName((name) => name.trim() ? name : `${compatible[0].group?.trim() || compatible[0].name} alignment`);
       const skippedMixed = result.records.length - compatible.length;
       const skippedLong = compatible.filter((record) => record.sequence.length > MSA_MAX_SEQ_LEN).length;
       const skippedCapacity = Math.max(
@@ -5018,8 +5118,8 @@ export function ClaudeScienceMsaViewer({
       });
       return;
     }
-    setIntakeStatus({ message: result.message || 'No supported sequence records were found. Choose FASTA, GenBank, AB1/ABI, or raw text files.', tone: 'error' });
-  }, [alignmentName, localTemplateId, onImportRecords, records]);
+    setIntakeStatus({ message: result.message || 'Choose FASTA, GenBank, AB1/ABI, or raw sequence text.', tone: 'error' });
+  }, [onImportRecords]);
 
   const selectTemplate = useCallback((rowId: string) => {
     if (!activeAlignment?.rows.some((row) => row.id === rowId)) return;
@@ -5047,7 +5147,7 @@ export function ClaudeScienceMsaViewer({
     if (copyStatusTimerRef.current !== null) window.clearTimeout(copyStatusTimerRef.current);
     setCopyStatus({
       label: 'alignment-save',
-      message: `Saved ${saved.rows.length} rows × ${saved.alignmentLength.toLocaleString()} columns to this session · export a workspace backup to keep it after reload.`,
+      message: `Saved this session · ${saved.rows.length} × ${saved.alignmentLength.toLocaleString()}. Download a backup before reloading.`,
       tone: 'status',
     });
     copyStatusTimerRef.current = window.setTimeout(() => {
@@ -5057,10 +5157,17 @@ export function ClaudeScienceMsaViewer({
   };
 
   const runLocalAlignment = () => {
+    if (runTimerRef.current !== null) return;
+    invalidateIntake();
     setRunning(true);
     setError(null);
-    window.setTimeout(() => {
+    runTimerRef.current = window.setTimeout(() => {
+      runTimerRef.current = null;
       try {
+        if (!selectedRecords.every((record) => latestRecordInputsRef.current.records.includes(record))) {
+          setError('Source records changed. Run the alignment again.');
+          return;
+        }
         const templateRecord = selectedRecords.find((record) => record.id === localTemplateId) ?? selectedRecords[0];
         let reverseOrientedCount = 0;
         const alignmentRecords = selectedRecords.map((record) => {
@@ -5083,7 +5190,7 @@ export function ClaudeScienceMsaViewer({
             : alignment.note,
         });
       } catch (caught) {
-        setError(caught instanceof Error ? caught.message : 'Alignment could not be computed.');
+        setError(caught instanceof Error ? caught.message : 'Alignment failed. Check the selected records.');
       } finally {
         setRunning(false);
       }
@@ -5091,6 +5198,7 @@ export function ClaudeScienceMsaViewer({
   };
 
   const importAlignment = () => {
+    invalidateIntake();
     try {
       saveAlignment(parseAlignmentText(alignedFasta, {
         id: `alignment-${Date.now()}`,
@@ -5101,29 +5209,37 @@ export function ClaudeScienceMsaViewer({
         note: 'Imported from pre-aligned FASTA or CLUSTAL text; the artifact did not execute the external alignment engine.',
       }));
     } catch (caught) {
-      setError(caught instanceof ArtifactAlignmentError || caught instanceof Error ? caught.message : 'Aligned file could not be imported.');
+      setError(caught instanceof ArtifactAlignmentError || caught instanceof Error ? caught.message : 'Import failed. Check the alignment format.');
     }
   };
 
   const loadAlignmentFile = async (file: File | undefined) => {
     if (!file) return;
+    setIntakeStatus(null);
     if (file.size > ARTIFACT_MSA_MAX_IMPORT_BYTES) {
-      setError(`Alignment files cannot exceed ${Math.round(ARTIFACT_MSA_MAX_IMPORT_BYTES / 1_000_000 * 10) / 10} MB.`);
+      intakeRequestRef.current = null;
+      setError(`Choose an alignment file up to ${Math.round(ARTIFACT_MSA_MAX_IMPORT_BYTES / 1_000_000 * 10) / 10} MB.`);
       return;
     }
+    const request = Symbol();
+    intakeRequestRef.current = request;
     try {
       const text = await file.text();
+      if (request !== intakeRequestRef.current) return;
       setAlignedFasta(text);
-      if (!alignmentName.trim()) setAlignmentName(file.name.replace(/\.(?:fa|fasta|fas|faa|aln)$/i, ''));
+      setAlignmentName((name) => name.trim() ? name : file.name.replace(/\.(?:fa|fasta|fas|faa|aln)$/i, ''));
       if (/mafft/i.test(file.name)) setImportEngine('mafft');
       else if (/muscle/i.test(file.name)) setImportEngine('muscle');
       else if (/clustal|clustalo/i.test(file.name)) setImportEngine('clustal-omega');
       setSourceMode('import');
       setSourceOpen(true);
-      setIntakeStatus({ message: `Loaded ${file.name}. Review the molecule and engine, then import.`, tone: 'status' });
+      setIntakeStatus({ message: `Loaded ${file.name}. Check molecule type and engine.`, tone: 'status' });
       setError(null);
     } catch {
-      setError('The alignment file could not be read. Check the file and try again.');
+      if (request !== intakeRequestRef.current) return;
+      setError('File unreadable. Choose the alignment file again.');
+    } finally {
+      if (request === intakeRequestRef.current) intakeRequestRef.current = null;
     }
   };
 
@@ -5173,12 +5289,11 @@ export function ClaudeScienceMsaViewer({
   const jumpDifference = useCallback((direction: -1 | 1) => {
     if (differenceNavigationDisabled) return;
     // Stepping back off the front returns to the neutral "— of N" state rather
-    // than teleporting to the far end. Both ends used to wrap by modular
-    // arithmetic with nothing said about it, so three Prev presses from the start
-    // read "130 of 130" and threw the view to the opposite end of the alignment —
-    // and Prev from neutral did the same, before the user had gone anywhere.
-    // Forward still wraps, because there is no neutral state past the last one to
-    // land on, and that wrap is at least announced by the counter returning to 1.
+    // than teleporting to the far end: a silent wrap there would read "130 of 130"
+    // after a few Prev presses from the start and throw the view to the opposite
+    // end of the alignment before the user had gone anywhere.
+    // Forward wraps, because there is no neutral state past the last one to
+    // land on, and that wrap is announced by the counter returning to 1.
     if (direction < 0 && differenceIndex <= 0) {
       setDifferenceIndex(-1);
       setJumpColumn(null);
@@ -5203,6 +5318,7 @@ export function ClaudeScienceMsaViewer({
     // because the search field only exists in the grid view.
     if (!activeAlignment || (displayMode !== 'viewer' && displayMode !== 'trace')) return undefined;
     const onKeyDown = (event: KeyboardEvent) => {
+      if (isInCollapsedWindow(workspaceRef.current)) return;
       if (event.defaultPrevented || isMsaShortcutTextTarget(event.target)) return;
       const key = event.key.toLocaleLowerCase();
       if (displayMode === 'trace') {
@@ -5225,7 +5341,7 @@ export function ClaudeScienceMsaViewer({
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [activeAlignment, displayMode, jumpDifference]);
+  }, [activeAlignment, displayMode, jumpDifference, workspaceRef]);
 
   const jumpToRowDifference = useCallback((rowId: string, column: number) => {
     setDifferenceIndex(-1);
@@ -5366,12 +5482,10 @@ export function ClaudeScienceMsaViewer({
   };
 
   // The saved result that is this alignment in the numbering state asked for, if
-  // the session already holds one. Both buttons used to save unconditionally,
-  // which made "Use plain 1-based" a third result rather than a way back to the
-  // first: three round trips left seven results named up to "REVIEW 2 2 2 2 2 2".
-  // Reopening the state the user already has keeps one result per distinct
-  // numbering, which is what "save as a new session result" was always meant to
-  // mean.
+  // the session already holds one. Saving unconditionally would make "Use plain
+  // 1-based" a third result rather than a way back to the first, and each round
+  // trip would add more. Reopening the state the user already has keeps one
+  // result per distinct numbering.
   const savedResultWithNumbering = (numbering: ArtifactAlignmentReferenceNumbering | undefined) => (
     activeAlignment
       ? alignments.find((candidate) => (
@@ -5486,6 +5600,14 @@ export function ClaudeScienceMsaViewer({
   const closeViewMenu = useDismissableMenu(viewMenuOpen, setViewMenuOpen, viewMenuRef, viewMenuButtonRef);
   const closeExportMenu = useDismissableMenu(exportMenuOpen, setExportMenuOpen, exportMenuRef, exportMenuButtonRef);
   const closeGotoMenu = useDismissableMenu(gotoMenuOpen, setGotoMenuOpen, gotoMenuRef, gotoMenuButtonRef);
+  const closeMoreMenu = useDismissableMenu(moreMenuOpen, setMoreMenuOpen, moreMenuRef, moreMenuButtonRef);
+  // Closing More closes the menus inside it, so a hidden open menu cannot claim Escape from the window.
+  useEffect(() => {
+    if (moreMenuOpen) return;
+    for (const menu of [gotoMenuRef.current, exportMenuRef.current]) {
+      if (menu?.open && menu.closest('.motif-cs-msa-more-menu')) menu.open = false;
+    }
+  }, [moreMenuOpen]);
 
   const deleteActiveAlignment = () => {
     if (!activeAlignment) return;
@@ -5525,8 +5647,11 @@ export function ClaudeScienceMsaViewer({
 
   return (
     <div
+      ref={workspaceRef}
       className="motif-cs-msa-workspace"
       data-testid="msa-workspace"
+      data-compact-toolbar={compactToolbar || undefined}
+      data-mid-toolbar={midToolbar || undefined}
       data-drop-active={dropActive || undefined}
       data-motif-cs-escape-scope={searchQuery ? 'true' : undefined}
       onDragEnter={handleDragEnter}
@@ -5537,7 +5662,7 @@ export function ClaudeScienceMsaViewer({
       {dropActive ? (
         <div className="motif-cs-msa-drop-overlay" data-testid="msa-drop-overlay" aria-hidden="true">
           <UploadCloud size={22} />
-          <strong>{sourceMode === 'records' ? 'Add and select sequence files' : 'Load an aligned FASTA or CLUSTAL file'}</strong>
+          <strong>{sourceMode === 'records' ? 'Drop sequence files' : 'Drop aligned FASTA or CLUSTAL'}</strong>
         </div>
       ) : null}
       <details
@@ -5550,8 +5675,7 @@ export function ClaudeScienceMsaViewer({
       >
         <summary ref={sourceSummaryRef}>
           <span className="motif-cs-msa-source-summary-copy">
-            <strong>Inputs &amp; alignment settings</strong>
-            <small>{sourceOpen ? 'Choose records or import an aligned file' : 'Change records, template, or source'}</small>
+            <strong>Alignment inputs</strong>
           </span>
           <span className="motif-cs-msa-source-summary-actions">
             <span className="motif-cs-chip">
@@ -5567,8 +5691,8 @@ export function ClaudeScienceMsaViewer({
         </summary>
         <div className="motif-cs-msa-source-body" id="motif-cs-msa-source-body">
           <div className="motif-cs-segmented motif-cs-msa-source-tabs" role="group" aria-label="Alignment source">
-            <button type="button" data-active={sourceMode === 'records' || undefined} aria-pressed={sourceMode === 'records'} onClick={() => setSourceMode('records')}>Workspace records</button>
-            <button type="button" data-active={sourceMode === 'import' || undefined} aria-pressed={sourceMode === 'import'} onClick={() => setSourceMode('import')}>Aligned file</button>
+            <button type="button" data-active={sourceMode === 'records' || undefined} aria-pressed={sourceMode === 'records'} onClick={() => changeSourceMode('records')}>Workspace records</button>
+            <button type="button" data-active={sourceMode === 'import' || undefined} aria-pressed={sourceMode === 'import'} onClick={() => changeSourceMode('import')}>Aligned file</button>
           </div>
           {activeAlignment ? <p className="motif-cs-msa-source-guide">Changes create a new alignment; the current result stays available in this session.</p> : null}
 
@@ -5651,12 +5775,12 @@ export function ClaudeScienceMsaViewer({
                     </label>
                   );
                 })}
-                {filteredRecords.length === 0 ? <p className="motif-cs-muted">{selectedOnly ? 'No records selected.' : 'No records match this filter.'}</p> : null}
+                {filteredRecords.length === 0 ? <p className="motif-cs-muted">{selectedOnly ? 'No records selected.' : 'No matches. Clear filter.'}</p> : null}
               </div>
               {selectedRecords.length >= 2 ? (
                 <div className="motif-cs-msa-local-options">
                   <label>
-                    <span>Initial template</span>
+                    <span>Comparison template</span>
                     <select value={localTemplateId} onChange={(event) => {
                       setLocalTemplateId(event.target.value);
                       explicitlySelectedTemplateIdRef.current = event.target.value;
@@ -5685,9 +5809,9 @@ export function ClaudeScienceMsaViewer({
                     // Stated against the in-browser limit rather than as a raw
                     // count of comparison cells, which no reader can judge.
                     ? exceedsLocalBudget
-                      ? `Too large to align in the browser: about ${Math.round((workEstimate / ARTIFACT_MSA_LOCAL_WORK_BUDGET) * 100).toLocaleString()}% of its size limit. Align with an external aligner and import the aligned file.`
-                      : `Within the browser's size limit (about ${Math.max(1, Math.round((workEstimate / ARTIFACT_MSA_LOCAL_WORK_BUDGET) * 100)).toLocaleString()}% of it)`
-                    : `Select 2–${ARTIFACT_MSA_MAX_LOCAL_SEQUENCES} records of one molecule type`}
+                      ? `About ${Math.round((workEstimate / ARTIFACT_MSA_LOCAL_WORK_BUDGET) * 100).toLocaleString()}% of browser limit. Import an external alignment.`
+                      : `About ${Math.max(1, Math.round((workEstimate / ARTIFACT_MSA_LOCAL_WORK_BUDGET) * 100)).toLocaleString()}% of browser limit`
+                    : `Select 2–${ARTIFACT_MSA_MAX_LOCAL_SEQUENCES} same-type records.`}
                 </span>
                 <button
                   className="motif-cs-mini-button motif-cs-mini-button-accent"
@@ -5709,7 +5833,7 @@ export function ClaudeScienceMsaViewer({
                       : 'Unaligned FASTA for run-msa.mjs, MAFFT, MUSCLE, or Clustal Omega'}</small>
                   </span>
                   <div>
-                    <button className="motif-cs-mini-button" type="button" data-testid="msa-copy-input-fasta" onClick={() => void copyFromViewer('Unaligned FASTA inputs', selectedInputFasta)}>Copy inputs</button>
+                    <button className="motif-cs-mini-button motif-cs-copy-button" type="button" data-testid="msa-copy-input-fasta" data-copied={(copyStatus?.label === 'Unaligned FASTA inputs' && copyStatus.tone === 'status') || undefined} onClick={() => void copyFromViewer('Unaligned FASTA inputs', selectedInputFasta)}><span>Copy inputs</span><span>Copied</span></button>
                     <button className="motif-cs-mini-button" type="button" data-testid="msa-download-input-fasta" onClick={() => onDownload(inputFastaFilename(alignmentName), selectedInputFasta, 'text/plain')}>Download FASTA</button>
                   </div>
                 </div>
@@ -5741,7 +5865,7 @@ export function ClaudeScienceMsaViewer({
                 </label>
                 <label>
                   <span>Created with</span>
-                  <select className="motif-cs-input" value={importEngine} onChange={(event) => setImportEngine(event.target.value)}>
+                  <select className="motif-cs-input" value={importEngine} onChange={(event) => { invalidateIntake(); setImportEngine(event.target.value); }}>
                     <option value="mafft">MAFFT</option>
                     <option value="muscle">MUSCLE</option>
                     <option value="clustal-omega">Clustal Omega</option>
@@ -5756,7 +5880,7 @@ export function ClaudeScienceMsaViewer({
               <textarea
                 className="motif-cs-textarea motif-cs-msa-import-text"
                 value={alignedFasta}
-                onChange={(event) => setAlignedFasta(event.target.value)}
+                onChange={(event) => { invalidateIntake(); setAlignedFasta(event.target.value); }}
                 placeholder=">sample-a&#10;ACGT--ACGT&#10;>sample-b&#10;ACGTTTACGT"
                 spellCheck={false}
                 name="aligned-sequence-text"
@@ -5795,179 +5919,11 @@ export function ClaudeScienceMsaViewer({
                 {!alignments.some((alignment) => alignment.id === activeAlignment.id) ? <option value={activeAlignment.id}>{pickerLabels.get(activeAlignment.id) ?? activeAlignment.name}</option> : null}
               </select>
             </label>
-            {/* The engine chip used to sit here repeating what the Provenance
-                summary one row below already says — same label, same version,
-                same fallback note — and it cost 134px of a row that had none to
-                spare. Provenance says strictly more (it adds how the engine was
-                executed), so nothing is lost by letting it be the one voice. */}
-            <button
-              className="motif-cs-mini-button motif-cs-msa-edit-inputs"
-              type="button"
-              data-testid="msa-edit-inputs"
-              onClick={revealSourceSettings}
-              aria-controls="motif-cs-msa-source-body"
-              aria-label="Edit inputs"
-              title="Change records, template, or alignment source"
-            >
-              <FilePenLine size={13} strokeWidth={2.1} aria-hidden="true" />
-              <span>Edit inputs</span>
-            </button>
-            <div className="motif-cs-msa-header-meta" data-testid="msa-stats-bar">
-              <span><strong>{activeAlignment.rows.length}</strong> rows</span>
-              <span><strong>{activeAlignment.alignmentLength.toLocaleString()}</strong> columns</span>
-              <details
-                className="motif-cs-msa-provenance"
-                data-testid="msa-provenance"
-                data-fallback={activeComparison?.fallback || activeAlignment.engine.usedFallback || undefined}
-              >
-                <summary
-                  aria-label={`Provenance: ${activeAlignment.engine.label}${activeAlignment.engine.version ? ` ${activeAlignment.engine.version}` : ''}`}
-                  title="Provenance"
-                >
-                  <Info size={13} aria-hidden="true" />
-                  <span className="motif-cs-visually-hidden">
-                    Provenance · {activeAlignment.engine.label}{activeAlignment.engine.version ? ` ${activeAlignment.engine.version}` : ''}
-                    {activeAlignment.engine.usedFallback
-                      ? ' · fallback: Motif browser preview'
-                      : activeComparison?.fallback
-                        ? ' · fallback: bounded comparison route'
-                        : ` · ${engineModeLabel(activeAlignment.engine.mode)}`}
-                  </span>
-                </summary>
-                <dl>
-                  <div><dt>Conserved</dt><dd><strong>{conservedPct}%</strong> conserved</dd></div>
-                  <div><dt>Average to template</dt><dd><strong>{avgIdentity === null ? 'N/A' : `${formatIdentity(avgIdentity)}%`}</strong> avg to template</dd></div>
-                  <div><dt>Columns differ from template</dt><dd><strong>{differences.length.toLocaleString()}</strong> columns differ from template</dd></div>
-                  {ambiguities.length > 0 ? (
-                    <div><dt>Compatible calls</dt><dd><span data-testid="msa-ambiguous-count"><strong>{ambiguities.length.toLocaleString()}</strong> compatible</span></dd></div>
-                  ) : null}
-                  <div><dt>Engine</dt><dd>{activeAlignment.engine.label}{activeAlignment.engine.version ? ` ${activeAlignment.engine.version}` : ''}</dd></div>
-                  <div><dt>Execution</dt><dd>{engineModeLabel(activeAlignment.engine.mode)}</dd></div>
-                  {activeComparison ? <div><dt>Method</dt><dd>{activeComparison.method}</dd></div> : null}
-                  {activeComparison ? <div><dt>Algorithm</dt><dd>{activeComparison.algorithm}</dd></div> : null}
-                  {activeComparison?.fallback || activeAlignment.engine.usedFallback ? <div><dt>Fallback</dt><dd>{activeAlignment.engine.usedFallback ? 'The requested engine was not used; Motif local browser preview produced this alignment.' : 'The primary comparison route was not used; the recorded bounded route produced these aligned rows.'}</dd></div> : null}
-                  {activeComparison?.warnings.length ? <div><dt>Warnings</dt><dd><ul>{activeComparison.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></dd></div> : null}
-                  {activeAlignment.engine.parameters?.length ? <div><dt>Parameters</dt><dd><code>{activeAlignment.engine.parameters.join(' ')}</code></dd></div> : null}
-                  {formatCreatedAt(activeAlignment.createdAt) ? <div><dt>Created</dt><dd><time dateTime={activeAlignment.createdAt}>{formatCreatedAt(activeAlignment.createdAt)}</time></dd></div> : null}
-                  {activeAlignment.outputSha256 ? <div><dt>Output SHA-256</dt><dd><code title={activeAlignment.outputSha256}>{shortHash(activeAlignment.outputSha256)}</code></dd></div> : null}
-                  {activeAlignment.provenance?.executable ? <div><dt>Executable</dt><dd><code>{activeAlignment.provenance.executable}</code>{activeAlignment.provenance.executableSource ? ` · ${activeAlignment.provenance.executableSource}` : ''}</dd></div> : null}
-                  {activeAlignment.provenance?.executableSha256 ? <div><dt>Executable SHA-256</dt><dd><code title={activeAlignment.provenance.executableSha256}>{shortHash(activeAlignment.provenance.executableSha256)}</code></dd></div> : null}
-                  {activeAlignment.rows.some((row) => row.inputSha256) ? (
-                    <div>
-                      <dt>Input SHA-256</dt>
-                      <dd className="motif-cs-msa-provenance-inputs">
-                        {activeAlignment.rows.filter((row) => row.inputSha256).map((row) => (
-                          <span key={row.id}><b>{row.name}</b><code title={row.inputSha256}>{shortHash(row.inputSha256!)}</code></span>
-                        ))}
-                      </dd>
-                    </div>
-                  ) : null}
-                  {activeAlignment.note ? <div><dt>Note</dt><dd>{activeAlignment.note}</dd></div> : null}
-                </dl>
-              </details>
-            </div>
-            <div className="motif-cs-msa-toolbar-spacer" />
             <div className="motif-cs-segmented" role="group" aria-label="Alignment presentation">
               <button type="button" data-active={displayMode === 'viewer' || undefined} aria-pressed={displayMode === 'viewer'} onClick={() => updateViewPreferences({ displayMode: 'viewer' })}>Viewer</button>
               {traceAvailable ? <button type="button" data-active={displayMode === 'trace' || undefined} aria-pressed={displayMode === 'trace'} onClick={() => updateViewPreferences({ displayMode: 'trace' })}>Traces</button> : null}
               <button type="button" data-active={displayMode === 'text' || undefined} aria-pressed={displayMode === 'text'} onClick={() => updateViewPreferences({ displayMode: 'text' })}>Text</button>
             </div>
-            {/* Jumping to a coordinate is a deliberate "take me there" action, not
-                something read while scanning residues, and as a permanent form it
-                was the control that forced the row below onto a second line. */}
-            {displayMode === 'viewer' ? (
-              <details
-                ref={gotoMenuRef}
-                className="motif-cs-msa-goto-menu"
-                // Static, and read together with the element's own `open`: the
-                // panel's data-motif-cs-escape-scope below cannot be trusted for
-                // the ~52ms between the browser opening this menu and React
-                // hearing about it, which is long enough for the host window to
-                // take an Escape meant for the menu and close itself.
-                data-motif-cs-escape-scope-when-open="true"
-                open={gotoMenuOpen}
-                onToggle={(event) => setGotoMenuOpen(event.currentTarget.open)}
-                onKeyDown={(event) => {
-                  if (event.key !== 'Escape') return;
-                  event.preventDefault();
-                  event.stopPropagation();
-                  closeGotoMenu();
-                }}
-              >
-                <summary ref={gotoMenuButtonRef} data-testid="msa-goto-menu-button" aria-label="Go to a position in the alignment" aria-expanded={gotoMenuOpen}>
-                  <Crosshair size={13} strokeWidth={2.1} aria-hidden="true" />
-                  <span>{coordinateSystem === 'alignment'
-                    ? 'Go to'
-                    : activeReferenceCoordinates ? 'Go to \u00b7 reference' : 'Go to \u00b7 template'}</span>
-                  <ChevronDown size={12} aria-hidden="true" />
-                </summary>
-                <div className="motif-cs-msa-goto-menu-panel" data-testid="msa-goto-menu" data-motif-cs-escape-scope={gotoMenuOpen || undefined}>
-                    <form
-                      className="motif-cs-msa-column-jump"
-                      data-invalid={columnError ? true : undefined}
-                      noValidate
-                      onSubmit={(event) => {
-                        event.preventDefault();
-                        goToCoordinate();
-                      }}
-                    >
-                      <label className="motif-cs-msa-coordinate-system">
-                        <span className="motif-cs-visually-hidden">Coordinate system</span>
-                        <select
-                          data-testid="msa-coordinate-system"
-                          name="alignment-coordinate-system"
-                          value={coordinateSystem}
-                          aria-label="Coordinate system"
-                          onChange={(event) => {
-                            setCoordinateSystem(event.target.value as CoordinateSystem);
-                            setColumnDraft('');
-                            setColumnError(null);
-                            setColumnStatus('');
-                          }}
-                        >
-                          <option value="alignment">Alignment column</option>
-                          <option value="template">{activeReferenceCoordinates ? 'Reference position' : 'Template position'}</option>
-                        </select>
-                      </label>
-                      <label>
-                        <span className="motif-cs-visually-hidden">{coordinateSystem === 'alignment' ? 'Alignment column' : activeReferenceCoordinates ? 'Reference position' : 'Template position'}</span>
-                        <input
-                          data-testid="msa-coordinate-input"
-                          type={coordinateSystem === 'template' && activeReferenceCoordinates ? 'text' : 'number'}
-                          name="alignment-coordinate"
-                          autoComplete="off"
-                          inputMode={coordinateSystem === 'template' && activeReferenceCoordinates ? 'text' : 'numeric'}
-                          min={coordinateSystem === 'template' && activeReferenceCoordinates ? undefined : 1}
-                          max={coordinateSystem === 'template' && activeReferenceCoordinates
-                            ? undefined
-                            : coordinateSystem === 'alignment'
-                              ? activeAlignment.alignmentLength
-                              : activeTemplate?.aligned.replace(/-/g, '').length ?? 0}
-                          step={coordinateSystem === 'template' && activeReferenceCoordinates ? undefined : 1}
-                          pattern={coordinateSystem === 'template' && activeReferenceCoordinates ? '[0-9]+[A-Za-z]*' : undefined}
-                          placeholder={coordinateSystem === 'template' && activeReferenceCoordinates ? '101 or 101A' : undefined}
-                          value={columnDraft}
-                          onChange={(event) => {
-                            setColumnDraft(event.target.value);
-                            setColumnError(null);
-                            setColumnStatus('');
-                          }}
-                          aria-label={coordinateSystem === 'alignment' ? 'Go to alignment column' : activeReferenceCoordinates ? 'Go to reference position' : 'Go to template position'}
-                          aria-invalid={columnError ? true : undefined}
-                          aria-describedby={columnError ? 'motif-cs-msa-column-error' : undefined}
-                        />
-                      </label>
-                      <button className="motif-cs-mini-button" type="submit">Go</button>
-                      {columnError ? <span id="motif-cs-msa-column-error" className="motif-cs-msa-column-error" role="alert">{columnError}</span> : null}
-                      {/* Safe inside the panel only because the panel stays open
-                          after a jump (see goToCoordinate). Anyone adding
-                          auto-close must move this out first, or the success is
-                          announced into a closed <details> and never heard. */}
-                      <span className="motif-cs-visually-hidden" role="status" aria-live="polite">{columnStatus}</span>
-                    </form>
-                </div>
-              </details>
-            ) : null}
             <details
               ref={viewMenuRef}
               className="motif-cs-msa-view-menu"
@@ -6047,7 +6003,7 @@ export function ClaudeScienceMsaViewer({
                 ) : null}
                 {/* Row order is a display preference like the tracks above it, and
                     it is set once and left alone — it does not earn 155px of the
-                    control row it used to sit in. */}
+                    main control row. */}
                 <label className="motif-cs-msa-view-select">
                   <span>Sort</span>
                   <select
@@ -6091,6 +6047,7 @@ export function ClaudeScienceMsaViewer({
                   <select
                     value={colorScheme}
                     disabled={colorMode !== 'residue'}
+                    title={colorMode !== 'residue' ? 'Turn on residue colors to choose a scheme' : undefined}
                     onChange={(event) => updateViewPreferences({ colorScheme: event.target.value as MsaColorScheme })}
                   >
                     <option value="auto">Auto (by molecule)</option>
@@ -6149,7 +6106,7 @@ export function ClaudeScienceMsaViewer({
                   <small id="motif-cs-msa-reference-numbering-convention">Gap columns append A…Z, then AA…, to the preceding position. Leading gaps use the position before the first residue. Applying changes saves a new session result.</small>
                   <div className="motif-cs-msa-reference-numbering-actions">
                     <button className="motif-cs-mini-button" data-testid="msa-apply-reference-numbering" type="button" onClick={applyReferenceNumbering}>Apply reference numbering</button>
-                    <button className="motif-cs-mini-button" data-testid="msa-clear-reference-numbering" type="button" disabled={!activeAlignment.referenceNumbering} onClick={clearReferenceNumbering}>Use plain 1-based</button>
+                    <button className="motif-cs-mini-button" data-testid="msa-clear-reference-numbering" type="button" disabled={!activeAlignment.referenceNumbering} title={!activeAlignment.referenceNumbering ? 'Numbering is already plain 1-based' : undefined} onClick={clearReferenceNumbering}>Use plain 1-based</button>
                   </div>
                   {referenceNumberingError ? <span className="motif-cs-msa-reference-numbering-error" role="alert">{referenceNumberingError}</span> : null}
                   <span className="motif-cs-msa-reference-numbering-status" data-empty={!referenceNumberingStatus || undefined} role="status" aria-live="polite">{referenceNumberingStatus}</span>
@@ -6170,77 +6127,296 @@ export function ClaudeScienceMsaViewer({
                   </select>
                 </label>
                 <div className="motif-cs-msa-view-font-row">
-                  <span>Aa {fontSize} px</span>
-                  <div className="motif-cs-msa-font-controls" role="group" aria-label="Alignment font size">
-                    <button className="motif-cs-mini-button" type="button" disabled={fontSize <= 9} onClick={() => updateViewPreferences({ fontSize: Math.max(9, fontSize - 1) })} aria-label="Decrease alignment font size">−</button>
-                    <button className="motif-cs-mini-button" type="button" disabled={fontSize >= 16} onClick={() => updateViewPreferences({ fontSize: Math.min(16, fontSize + 1) })} aria-label="Increase alignment font size">+</button>
+                  <span>Text size {fontSize} px</span>
+                  <div className="motif-cs-msa-font-controls" role="group" aria-label="Text size">
+                    <button className="motif-cs-mini-button" type="button" disabled={fontSize <= MSA_FONT_SIZE_MIN} onClick={() => updateViewPreferences({ fontSize: Math.max(MSA_FONT_SIZE_MIN, fontSize - 1) })} aria-label="Smaller text" title="Smaller text">−</button>
+                    <button className="motif-cs-mini-button" type="button" disabled={fontSize >= MSA_FONT_SIZE_MAX} onClick={() => updateViewPreferences({ fontSize: Math.min(MSA_FONT_SIZE_MAX, fontSize + 1) })} aria-label="Larger text" title="Larger text">+</button>
                   </div>
                 </div>
                 <button className="motif-cs-mini-button motif-cs-msa-view-reset" type="button" onClick={resetAlignmentView}>Reset alignment view</button>
                 <span className="motif-cs-msa-view-menu-status" data-testid="msa-view-menu-status" data-empty={!viewResetStatus || undefined} role="status" aria-live="polite">{viewResetStatus}</span>
               </div>
             </details>
-            {/* Export used to be a permanent 49px strip under the alignment, most
-                of it a sentence of guidance nobody rereads. It is an end-of-look
-                action, so it belongs beside the other toolbar menus. */}
-            <details
-              ref={exportMenuRef}
-              className="motif-cs-msa-export-menu"
-              data-motif-cs-escape-scope-when-open="true"
-              open={exportMenuOpen}
-              onToggle={(event) => setExportMenuOpen(event.currentTarget.open)}
-              onKeyDown={(event) => {
-                if (event.key !== 'Escape') return;
-                event.preventDefault();
-                event.stopPropagation();
-                closeExportMenu();
-              }}
-            >
-              <summary ref={exportMenuButtonRef} data-testid="msa-export-menu-button" aria-label="Export alignment" aria-expanded={exportMenuOpen}>
-                <Download size={13} strokeWidth={2.1} aria-hidden="true" />
-                <span>Export</span>
-                <ChevronDown size={12} aria-hidden="true" />
-              </summary>
-              <div className="motif-cs-msa-export-row motif-cs-msa-export-menu-panel" data-testid="msa-export-menu" data-motif-cs-escape-scope={exportMenuOpen || undefined}>
-                <label>
-                  <span>Export</span>
-                  <select value={textFormat} onChange={(event) => updateViewPreferences({ textFormat: event.target.value as TextFormat })}>
-                    <option value="fasta">Aligned FASTA</option>
-                    <option value="clustal">CLUSTAL</option>
-                    <option value="consensus">Consensus FASTA</option>
-                    <option value="json">Alignment JSON</option>
-                  </select>
-                </label>
-                <button className="motif-cs-mini-button" type="button" onClick={() => void copyFromViewer(selectedExport.label, textContent)}>{copyStatus?.label === selectedExport.label && copyStatus.tone === 'status' ? 'Copied' : 'Copy'}</button>
-                <button className="motif-cs-mini-button" type="button" onClick={() => onDownload(safeAlignmentFilename(activeAlignment, selectedExport.extension), textContent, selectedExport.mime)}>Download</button>
-                <div className="motif-cs-msa-export-image" data-testid="msa-export-image">
-                  <label className="motif-cs-msa-image-scope">
-                    <span>Image</span>
-                    <select
-                      value={imageScope}
-                      data-testid="msa-export-image-scope"
-                      aria-label="Image export scope"
-                      onChange={(event) => setImageScope(event.target.value as AlignmentImageScope)}
+            {compactToolbar || midToolbar ? null : <div className="motif-cs-msa-toolbar-spacer" />}
+            {(() => {
+              // Edit inputs, the row and column counts, Go to, Export and Delete are one group:
+              // inline on a wide panel, and behind one More menu on a narrow one, where they
+              // would otherwise take three of the five toolbar rows.
+              const secondaryHead = (
+                <>
+                {/* No engine chip here: the Provenance summary one row below gives
+                    the same label, version and fallback note, plus how the engine
+                    was executed, and the row has no 134px to spare. */}
+                <button
+                  className="motif-cs-mini-button motif-cs-msa-edit-inputs"
+                  type="button"
+                  data-testid="msa-edit-inputs"
+                  onClick={revealSourceSettings}
+                  aria-controls="motif-cs-msa-source-body"
+                  aria-label="Edit inputs"
+                  title="Edit alignment inputs"
+                >
+                  <FilePenLine size={13} strokeWidth={2.1} aria-hidden="true" />
+                  <span>Edit inputs</span>
+                </button>
+                <div className="motif-cs-msa-header-meta" data-testid="msa-stats-bar">
+                  <span><strong>{activeAlignment.rows.length}</strong> rows</span>
+                  <span><strong>{activeAlignment.alignmentLength.toLocaleString()}</strong> columns</span>
+                  <details
+                    className="motif-cs-msa-provenance"
+                    data-testid="msa-provenance"
+                    data-fallback={activeComparison?.fallback || activeAlignment.engine.usedFallback || undefined}
+                  >
+                    <summary
+                      aria-label={`Provenance: ${activeAlignment.engine.label}${activeAlignment.engine.version ? ` ${activeAlignment.engine.version}` : ''}`}
+                      title="Provenance"
                     >
-                      <option value="view">Visible view</option>
-                      <option value="all">Whole alignment</option>
-                    </select>
-                  </label>
-                  <button className="motif-cs-mini-button" type="button" data-testid="msa-export-png" onClick={() => void exportAlignmentImage('png')}>Save PNG</button>
-                  <button className="motif-cs-mini-button" type="button" data-testid="msa-export-svg" onClick={() => void exportAlignmentImage('svg')}>Save SVG</button>
+                      <Info size={13} aria-hidden="true" />
+                      <span className="motif-cs-visually-hidden">
+                        Provenance · {activeAlignment.engine.label}{activeAlignment.engine.version ? ` ${activeAlignment.engine.version}` : ''}
+                        {activeAlignment.engine.usedFallback
+                          ? ' · fallback: Motif browser preview'
+                          : activeComparison?.fallback
+                            ? ' · fallback: bounded comparison route'
+                            : ` · ${engineModeLabel(activeAlignment.engine.mode)}`}
+                      </span>
+                    </summary>
+                    <dl>
+                      <div><dt>Conserved</dt><dd><strong>{conservedPct}%</strong> conserved</dd></div>
+                      <div><dt>Average to template</dt><dd><strong>{avgIdentity === null ? 'N/A' : `${formatIdentity(avgIdentity)}%`}</strong> avg to template</dd></div>
+                      <div><dt>Columns differ from template</dt><dd><strong>{differences.length.toLocaleString()}</strong> columns differ from template</dd></div>
+                      {ambiguities.length > 0 ? (
+                        <div><dt>Compatible calls</dt><dd><span data-testid="msa-ambiguous-count"><strong>{ambiguities.length.toLocaleString()}</strong> compatible</span></dd></div>
+                      ) : null}
+                      <div><dt>Engine</dt><dd>{activeAlignment.engine.label}{activeAlignment.engine.version ? ` ${activeAlignment.engine.version}` : ''}</dd></div>
+                      <div><dt>Execution</dt><dd>{engineModeLabel(activeAlignment.engine.mode)}</dd></div>
+                      {activeComparison ? <div><dt>Method</dt><dd>{activeComparison.method}</dd></div> : null}
+                      {activeComparison ? <div><dt>Algorithm</dt><dd>{activeComparison.algorithm}</dd></div> : null}
+                      {activeComparison?.fallback || activeAlignment.engine.usedFallback ? <div><dt>Fallback</dt><dd>{activeAlignment.engine.usedFallback ? 'The requested engine was not used; Motif local browser preview produced this alignment.' : 'The primary comparison route was not used; the recorded bounded route produced these aligned rows.'}</dd></div> : null}
+                      {activeComparison?.warnings.length ? <div><dt>Warnings</dt><dd><ul>{activeComparison.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></dd></div> : null}
+                      {activeAlignment.engine.parameters?.length ? <div><dt>Parameters</dt><dd><code>{activeAlignment.engine.parameters.join(' ')}</code></dd></div> : null}
+                      {formatCreatedAt(activeAlignment.createdAt) ? <div><dt>Created</dt><dd><time dateTime={activeAlignment.createdAt}>{formatCreatedAt(activeAlignment.createdAt)}</time></dd></div> : null}
+                      {activeAlignment.outputSha256 ? <div><dt>Output SHA-256</dt><dd><code title={activeAlignment.outputSha256}>{shortHash(activeAlignment.outputSha256)}</code></dd></div> : null}
+                      {activeAlignment.provenance?.executable ? <div><dt>Executable</dt><dd><code>{activeAlignment.provenance.executable}</code>{activeAlignment.provenance.executableSource ? ` · ${activeAlignment.provenance.executableSource}` : ''}</dd></div> : null}
+                      {activeAlignment.provenance?.executableSha256 ? <div><dt>Executable SHA-256</dt><dd><code title={activeAlignment.provenance.executableSha256}>{shortHash(activeAlignment.provenance.executableSha256)}</code></dd></div> : null}
+                      {activeAlignment.rows.some((row) => row.inputSha256) ? (
+                        <div>
+                          <dt>Input SHA-256</dt>
+                          <dd className="motif-cs-msa-provenance-inputs">
+                            {activeAlignment.rows.filter((row) => row.inputSha256).map((row) => (
+                              <span key={row.id}><b>{row.name}</b><code title={row.inputSha256}>{shortHash(row.inputSha256!)}</code></span>
+                            ))}
+                          </dd>
+                        </div>
+                      ) : null}
+                      {activeAlignment.note ? <div><dt>Note</dt><dd>{activeAlignment.note}</dd></div> : null}
+                    </dl>
+                  </details>
                 </div>
-                <span className="motif-cs-muted">Saved for this session. Export a workspace backup before reloading. To restore it, unzip the export and choose inventory.json in Settings. {activeAlignment.note}</span>
-              </div>
-            </details>
-            {pendingDeleteId === activeAlignment.id ? (
-              <div className="motif-cs-msa-delete-confirm" role="group" aria-label="Confirm alignment deletion">
-                <span>Delete?</span>
-                <button ref={cancelDeleteRef} className="motif-cs-mini-button" type="button" onClick={cancelDelete}>Cancel</button>
-                <button className="motif-cs-mini-button motif-cs-msa-delete-danger" type="button" data-testid="msa-confirm-delete" onClick={deleteActiveAlignment}>Delete</button>
-              </div>
-            ) : (
-              <button ref={deleteButtonRef} className="motif-cs-mini-button motif-cs-msa-delete" type="button" onClick={() => setPendingDeleteId(activeAlignment.id)} title="Delete this alignment from the session" aria-label="Delete this alignment from the session"><Trash2 size={13} aria-hidden="true" /></button>
-            )}
+                </>
+              );
+              const secondaryMenus = (
+                <>
+                {/* Jumping to a coordinate is a deliberate "take me there" action, not
+                    something read while scanning residues, and as a permanent form it
+                    would force the row below onto a second line. */}
+                {displayMode === 'viewer' ? (
+                  <details
+                    ref={gotoMenuRef}
+                    className="motif-cs-msa-goto-menu"
+                    // Static, and read together with the element's own `open`: the
+                    // panel's data-motif-cs-escape-scope below cannot be trusted for
+                    // the ~52ms between the browser opening this menu and React
+                    // hearing about it, which is long enough for the host window to
+                    // take an Escape meant for the menu and close itself.
+                    data-motif-cs-escape-scope-when-open="true"
+                    open={gotoMenuOpen}
+                    onToggle={(event) => setGotoMenuOpen(event.currentTarget.open)}
+                    onKeyDown={(event) => {
+                      if (event.key !== 'Escape') return;
+                      event.preventDefault();
+                      event.stopPropagation();
+                      closeGotoMenu();
+                    }}
+                  >
+                    <summary ref={gotoMenuButtonRef} data-testid="msa-goto-menu-button" aria-label="Go to a position in the alignment" aria-expanded={gotoMenuOpen}>
+                      <Crosshair size={13} strokeWidth={2.1} aria-hidden="true" />
+                      <span>{coordinateSystem === 'alignment'
+                        ? 'Go to'
+                        : activeReferenceCoordinates ? 'Go to \u00b7 reference' : 'Go to \u00b7 template'}</span>
+                      <ChevronDown size={12} aria-hidden="true" />
+                    </summary>
+                    <div className="motif-cs-msa-goto-menu-panel" data-testid="msa-goto-menu" data-motif-cs-escape-scope={gotoMenuOpen || undefined}>
+                        <form
+                          className="motif-cs-msa-column-jump"
+                          data-invalid={columnError ? true : undefined}
+                          noValidate
+                          onSubmit={(event) => {
+                            event.preventDefault();
+                            goToCoordinate();
+                          }}
+                        >
+                          <label className="motif-cs-msa-coordinate-system">
+                            <span className="motif-cs-visually-hidden">Coordinate system</span>
+                            <select
+                              data-testid="msa-coordinate-system"
+                              name="alignment-coordinate-system"
+                              value={coordinateSystem}
+                              aria-label="Coordinate system"
+                              onChange={(event) => {
+                                setCoordinateSystem(event.target.value as CoordinateSystem);
+                                setColumnDraft('');
+                                setColumnError(null);
+                                setColumnStatus('');
+                              }}
+                            >
+                              <option value="alignment">Alignment column</option>
+                              <option value="template">{activeReferenceCoordinates ? 'Reference position' : 'Template position'}</option>
+                            </select>
+                          </label>
+                          <label>
+                            <span className="motif-cs-visually-hidden">{coordinateSystem === 'alignment' ? 'Alignment column' : activeReferenceCoordinates ? 'Reference position' : 'Template position'}</span>
+                            <input
+                              data-testid="msa-coordinate-input"
+                              type={coordinateSystem === 'template' && activeReferenceCoordinates ? 'text' : 'number'}
+                              name="alignment-coordinate"
+                              autoComplete="off"
+                              inputMode={coordinateSystem === 'template' && activeReferenceCoordinates ? 'text' : 'numeric'}
+                              min={coordinateSystem === 'template' && activeReferenceCoordinates ? undefined : 1}
+                              max={coordinateSystem === 'template' && activeReferenceCoordinates
+                                ? undefined
+                                : coordinateSystem === 'alignment'
+                                  ? activeAlignment.alignmentLength
+                                  : activeTemplate?.aligned.replace(/-/g, '').length ?? 0}
+                              step={coordinateSystem === 'template' && activeReferenceCoordinates ? undefined : 1}
+                              pattern={coordinateSystem === 'template' && activeReferenceCoordinates ? '[0-9]+[A-Za-z]*' : undefined}
+                              placeholder={coordinateSystem === 'template' && activeReferenceCoordinates ? '101 or 101A' : undefined}
+                              value={columnDraft}
+                              onChange={(event) => {
+                                setColumnDraft(event.target.value);
+                                setColumnError(null);
+                                setColumnStatus('');
+                              }}
+                              aria-label={coordinateSystem === 'alignment' ? 'Go to alignment column' : activeReferenceCoordinates ? 'Go to reference position' : 'Go to template position'}
+                              aria-invalid={columnError ? true : undefined}
+                              aria-describedby={columnError ? 'motif-cs-msa-column-error' : undefined}
+                            />
+                          </label>
+                          <button className="motif-cs-mini-button" type="submit">Go</button>
+                          {columnError ? <span id="motif-cs-msa-column-error" className="motif-cs-msa-column-error" role="alert">{columnError}</span> : null}
+                          {/* Safe inside the panel only because the panel stays open
+                              after a jump (see goToCoordinate). Anyone adding
+                              auto-close must move this out first, or the success is
+                              announced into a closed <details> and never heard. */}
+                          <span className="motif-cs-visually-hidden" role="status" aria-live="polite">{columnStatus}</span>
+                        </form>
+                    </div>
+                  </details>
+                ) : null}
+                {/* Export is an end-of-look action, so it is a menu beside the
+                    other toolbar menus rather than a permanent strip under the
+                    alignment. */}
+                <details
+                  ref={exportMenuRef}
+                  className="motif-cs-msa-export-menu"
+                  data-motif-cs-escape-scope-when-open="true"
+                  open={exportMenuOpen}
+                  onToggle={(event) => setExportMenuOpen(event.currentTarget.open)}
+                  onKeyDown={(event) => {
+                    if (event.key !== 'Escape') return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    closeExportMenu();
+                  }}
+                >
+                  <summary ref={exportMenuButtonRef} data-testid="msa-export-menu-button" aria-label="Export alignment" aria-expanded={exportMenuOpen}>
+                    <Download size={13} strokeWidth={2.1} aria-hidden="true" />
+                    <span>Export</span>
+                    <ChevronDown size={12} aria-hidden="true" />
+                  </summary>
+                  <div className="motif-cs-msa-export-row motif-cs-msa-export-menu-panel" data-testid="msa-export-menu" data-motif-cs-escape-scope={exportMenuOpen || undefined}>
+                    <label>
+                      <span>Format</span>
+                      <select value={textFormat} onChange={(event) => updateViewPreferences({ textFormat: event.target.value as TextFormat })}>
+                        <option value="fasta">Aligned FASTA</option>
+                        <option value="clustal">CLUSTAL</option>
+                        <option value="consensus">Consensus FASTA</option>
+                        <option value="json">Alignment JSON</option>
+                      </select>
+                    </label>
+                    <button className="motif-cs-mini-button motif-cs-copy-button" type="button" data-copied={(copyStatus?.label === selectedExport.label && copyStatus.tone === 'status') || undefined} onClick={() => void copyFromViewer(selectedExport.label, textContent)}><span>Copy</span><span>Copied</span></button>
+                    <button className="motif-cs-mini-button" type="button" onClick={() => onDownload(safeAlignmentFilename(activeAlignment, selectedExport.extension), textContent, selectedExport.mime)}>Download</button>
+                    <div className="motif-cs-msa-export-image" data-testid="msa-export-image">
+                      <label className="motif-cs-msa-image-scope">
+                        <span>Image</span>
+                        <select
+                          value={imageScope}
+                          data-testid="msa-export-image-scope"
+                          aria-label="Image export scope"
+                          onChange={(event) => setImageScope(event.target.value as AlignmentImageScope)}
+                        >
+                          <option value="view">Visible view</option>
+                          <option value="all">Whole alignment</option>
+                        </select>
+                      </label>
+                      <button className="motif-cs-mini-button" type="button" data-testid="msa-export-png" onClick={() => void exportAlignmentImage('png')}>Save PNG</button>
+                      <button className="motif-cs-mini-button" type="button" data-testid="msa-export-svg" onClick={() => void exportAlignmentImage('svg')}>Save SVG</button>
+                    </div>
+                    <span className="motif-cs-muted">Download a backup before reloading. From a workspace ZIP, extract inventory.json and restore it in Settings.</span>
+                  </div>
+                </details>
+                </>
+              );
+              const secondaryTail = (
+                <>
+                {pendingDeleteId === activeAlignment.id ? (
+                  <div className="motif-cs-msa-delete-confirm" role="group" aria-label="Confirm alignment deletion">
+                    <span>Delete alignment?</span>
+                    <button ref={cancelDeleteRef} className="motif-cs-mini-button" type="button" onClick={cancelDelete}>Cancel</button>
+                    <button className="motif-cs-mini-button motif-cs-msa-delete-danger" type="button" data-testid="msa-confirm-delete" onClick={deleteActiveAlignment}>Delete</button>
+                  </div>
+                ) : (
+                  <button ref={deleteButtonRef} className="motif-cs-mini-button motif-cs-msa-delete" type="button" onClick={() => setPendingDeleteId(activeAlignment.id)} title="Delete alignment" aria-label="Delete alignment"><Trash2 size={13} aria-hidden="true" /><span>Delete</span></button>
+                )}
+                  {compactToolbar ? (
+                      <label className="motif-cs-msa-reference-picker">
+                        <span>Comparison template</span>
+                        <select value={referenceRowId} disabled={!hasComparableRows} onChange={(event) => selectTemplate(event.target.value)}>
+                          {activeAlignment.rows.map((row) => <option key={row.id} value={row.id} title={row.name}>{compareRowLabels.get(row.id) ?? row.name}</option>)}
+                        </select>
+                      </label>
+                  ) : null}
+                </>
+              );
+              const secondary = <>{secondaryHead}{secondaryMenus}{secondaryTail}</>;
+              if (!compactToolbar && !midToolbar) return secondary;
+              const moreMenu = (items: ReactNode) => (
+                <details
+                  ref={moreMenuRef}
+                  className="motif-cs-msa-more-menu"
+                  data-motif-cs-escape-scope-when-open="true"
+                  open={moreMenuOpen}
+                  onToggle={(event) => setMoreMenuOpen(event.currentTarget.open)}
+                  onKeyDown={(event) => {
+                    if (event.key !== 'Escape') return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    closeMoreMenu();
+                  }}
+                >
+                  <summary ref={moreMenuButtonRef} data-testid="msa-more-menu-button" aria-label="More alignment actions" aria-expanded={moreMenuOpen}>
+                    <span>More</span>
+                    <ChevronDown size={12} aria-hidden="true" />
+                  </summary>
+                  <div className="motif-cs-msa-more-menu-panel" data-testid="msa-more-menu" data-motif-cs-escape-scope={moreMenuOpen || undefined}>
+                    {items}
+                  </div>
+                </details>
+              );
+              if (wideMidToolbar) return <>{secondaryHead}{secondaryMenus}{moreMenu(secondaryTail)}</>;
+              if (midToolbar) return <>{secondaryMenus}{moreMenu(<>{secondaryHead}{secondaryTail}</>)}</>;
+              return moreMenu(secondary);
+            })()}
           </div>
 
           {alphabetAnomalies.length > 0 && dismissedAlphabetWarningId !== activeAlignment.id ? (
@@ -6282,17 +6458,19 @@ export function ClaudeScienceMsaViewer({
                   data-testid="msa-column-filter-toggle"
                   data-active={columnFilter === 'differences' || undefined}
                   aria-pressed={columnFilter === 'differences'}
-                  title={`Show only differing columns with ${columnFilterContext} flanking columns on each side`}
+                  title={`Show differences with ${columnFilterContext} columns on each side.`}
                   onClick={() => updateViewPreferences({ columnFilter: columnFilter === 'differences' ? 'all' : 'differences' })}
                 >
                   Differing only
                 </button>
-                <label className="motif-cs-msa-reference-picker">
-                  <span>Compare against</span>
-                  <select value={referenceRowId} disabled={!hasComparableRows} onChange={(event) => selectTemplate(event.target.value)}>
-                    {activeAlignment.rows.map((row) => <option key={row.id} value={row.id} title={row.name}>{compareRowLabels.get(row.id) ?? row.name}</option>)}
-                  </select>
-                </label>
+                {compactToolbar ? null : (
+                  <label className="motif-cs-msa-reference-picker">
+                    <span>Comparison template</span>
+                    <select value={referenceRowId} disabled={!hasComparableRows} onChange={(event) => selectTemplate(event.target.value)}>
+                      {activeAlignment.rows.map((row) => <option key={row.id} value={row.id} title={row.name}>{compareRowLabels.get(row.id) ?? row.name}</option>)}
+                    </select>
+                  </label>
+                )}
                 <form
                   className="motif-cs-msa-search"
                   data-testid="msa-search"
@@ -6327,11 +6505,11 @@ export function ClaudeScienceMsaViewer({
                       if (event.key === 'Enter') { event.preventDefault(); stepSearch(event.shiftKey ? -1 : 1); }
                       else if (event.key === 'Escape') {
                         // Escape has to hand focus back to the grid, not just empty
-                        // the box. Leaving the caret here left every single-key
+                        // the box. Leaving the caret here would leave every single-key
                         // shortcut dead — N and P for the next variable column, /
                         // to search again — because they are ignored while a text
-                        // field has focus. The reader saw a finder they had already
-                        // dismissed silently swallowing the next thing they typed.
+                        // field has focus, so a dismissed finder would silently
+                        // swallow the next thing the reader typed.
                         event.preventDefault();
                         event.stopPropagation();
                         if (searchQuery) setSearchQuery('');
@@ -6358,8 +6536,8 @@ export function ClaudeScienceMsaViewer({
                                 : `${motifSearchCount.toLocaleString()}${searchResult.truncated ? '+' : ''} motif ${motifSearchCount === 1 ? 'match' : 'matches'}`
                       : ''}
                   </span>
-                  <button type="button" className="motif-cs-mini-button" data-testid="msa-search-prev" disabled={searchMatches.length === 0} onClick={() => stepSearch(-1)} aria-label="Previous match"><ChevronLeft size={13} /></button>
-                  <button type="submit" className="motif-cs-mini-button" data-testid="msa-search-next" disabled={searchMatches.length === 0} aria-label="Next match"><ChevronRight size={13} /></button>
+                  <button type="button" className="motif-cs-mini-button" data-testid="msa-search-prev" disabled={searchMatches.length === 0} title={searchMatches.length === 0 ? 'No matches to step through' : undefined} onClick={() => stepSearch(-1)} aria-label="Previous match"><ChevronLeft size={13} /></button>
+                  <button type="submit" className="motif-cs-mini-button" data-testid="msa-search-next" disabled={searchMatches.length === 0} title={searchMatches.length === 0 ? 'No matches to step through' : undefined} aria-label="Next match"><ChevronRight size={13} /></button>
                 </form>
               </div>
               {viewPreferences.showRowStatsPanel ? (
@@ -6437,7 +6615,7 @@ export function ClaudeScienceMsaViewer({
             <>
               <div className="motif-cs-msa-view-controls motif-cs-msa-trace-controls">
                 <label className="motif-cs-msa-reference-picker">
-                  <span>Compare against</span>
+                  <span>Comparison template</span>
                   <select value={referenceRowId} disabled={!hasComparableRows} onChange={(event) => selectTemplate(event.target.value)}>
                     {activeAlignment.rows.map((row) => <option key={row.id} value={row.id} title={row.name}>{compareRowLabels.get(row.id) ?? row.name}</option>)}
                   </select>
@@ -6452,7 +6630,6 @@ export function ClaudeScienceMsaViewer({
                   onToggle={() => setDifferencesOpen((open) => !open)}
                   toggleRef={differencesToggleRef}
                 />
-                <span className="motif-cs-muted">Click a call, drag the position slider, or use arrow keys inside the trace.</span>
               </div>
               <div className="motif-cs-msa-differences-stage motif-cs-msa-differences-stage-trace">
               {differencesOpen ? (
@@ -6488,8 +6665,7 @@ export function ClaudeScienceMsaViewer({
         </>
       ) : (
         <div className="motif-cs-msa-empty" data-testid="msa-empty-state">
-          <strong>No alignment loaded</strong>
-          <span>Select workspace records to align in the browser, or import an aligned FASTA or CLUSTAL file.</span>
+          <span>Choose records or import aligned FASTA or CLUSTAL.</span>
         </div>
       )}
     </div>

@@ -3,6 +3,8 @@ import {
   MOTIF_INVENTORY_SCHEMA,
   MOTIF_INVENTORY_SCHEMA_V1,
   MAX_ARTIFACT_DATABASE_JSON_CHARACTERS,
+  MAX_ARTIFACT_JSON_NESTING,
+  MAX_ARTIFACT_JSON_NODES,
   MAX_CUSTOM_ENZYMES,
   MAX_CUSTOM_ENZYME_EVIDENCE_TEXT_LENGTH,
   MAX_CUSTOM_ENZYME_NAME_LENGTH,
@@ -13,6 +15,7 @@ import {
   MAX_TRANSLATION_LAYER_TEXT_LENGTH,
   MAX_TRANSLATION_LAYERS_PER_RECORD,
   assertArtifactJsonCharacterCount,
+  circularRecordIdsOf,
   normalizeArtifactDurableState,
   parseArtifactDatabaseJson,
   parseArtifactRecordJson,
@@ -32,10 +35,29 @@ describe('Claude Science durable session validation', () => {
       .toThrow(/maximum of 128 MiB/i);
   });
 
-  it('keeps the Database JSON ceiling large enough for bounded pretty-printed AB1 workspaces', () => {
+  it('keeps the Workspace JSON ceiling large enough for bounded pretty-printed AB1 workspaces', () => {
     expect(MAX_ARTIFACT_DATABASE_JSON_CHARACTERS).toBe(128 * 1024 * 1024);
     expect(() => assertArtifactJsonCharacterCount(MAX_ARTIFACT_DATABASE_JSON_CHARACTERS)).not.toThrow();
     expect(() => assertArtifactJsonCharacterCount(-1)).toThrow(/non-negative safe integer/i);
+  });
+
+  it('rejects deeply nested and dense JSON before decoding the document', () => {
+    const limitError = expect.objectContaining({
+      code: 'MOTIF_INPUT_LIMIT_EXCEEDED',
+      details: { mutated: false },
+    });
+    expect(() => parseArtifactDatabaseJson('{"records":' + '['.repeat(MAX_ARTIFACT_JSON_NESTING)))
+      .toThrowError(limitError);
+    expect(() => parseArtifactDatabaseJson('{"records":[' + 'null,'.repeat(MAX_ARTIFACT_JSON_NODES)))
+      .toThrowError(limitError);
+  });
+
+  it('allows large trace arrays while counting unrelated numeric values', () => {
+    const samples = Array(MAX_ARTIFACT_JSON_NODES + 1).fill(0);
+    const value = { records: [{ sangerTrace: { channels: { A: samples } } }] };
+    expect(parseArtifactDatabaseJson(JSON.stringify(value))?.records).toHaveLength(1);
+    expect(() => parseArtifactDatabaseJson(JSON.stringify({ records: [{ metadata: { A: samples } }] })))
+      .toThrowError(expect.objectContaining({ code: 'MOTIF_INPUT_LIMIT_EXCEEDED' }));
   });
 
   it('recognizes a bare Record JSON export without treating it as a workspace restore', () => {
@@ -207,6 +229,30 @@ describe('Claude Science durable session validation', () => {
     );
     expect(roundTripped.translationLayersByRecord['__proto__']).toHaveLength(1);
     expect(roundTripped.motifsByRecord['__proto__']).toBe('GAATTC');
+  });
+
+  it('lets a layer cross the origin of a circular record and keeps a linear record\'s layers inside it', () => {
+    const layer = (start: number, end: number) => ({
+      translationLayersByRecord: { 'record-a': [{ id: 'ring', label: 'ring', start, end, strand: 1, frame: 0 }] },
+    });
+    const circular = circularRecordIdsOf([{ id: 'record-a', topology: 'circular' }, { id: 'record-b', topology: 'linear' }]);
+    expect([...circular]).toEqual(['record-a']);
+    // Bases 100..120 and 0..20 of the 120-residue record.
+    expect(normalizeArtifactDurableState(layer(100, 140), recordLengths, circular).translationLayersByRecord['record-a'][0])
+      .toMatchObject({ start: 100, end: 140 });
+    // One whole turn read from base 100.
+    expect(normalizeArtifactDurableState(layer(100, 220), recordLengths, circular).translationLayersByRecord['record-a'][0])
+      .toMatchObject({ start: 100, end: 220 });
+    expect(() => normalizeArtifactDurableState(layer(100, 221), recordLengths, circular))
+      .toThrow(/circular record: start below 120, end after start, at most 120 residues in all/i);
+    expect(() => normalizeArtifactDurableState(layer(120, 130), recordLengths, circular)).toThrow(/circular record/i);
+    expect(() => normalizeArtifactDurableState(layer(-1, 20), recordLengths, circular)).toThrow(/circular record/i);
+    // A linear record, or one the caller does not name as circular, has no origin to cross.
+    expect(() => normalizeArtifactDurableState(layer(100, 140), recordLengths, new Set()))
+      .toThrow(/within the 120 residues of the linear record/i);
+    expect(() => normalizeArtifactDurableState(layer(100, 140), recordLengths)).toThrow(/linear record/i);
+    expect(normalizeArtifactDurableState(layer(100, 120), recordLengths).translationLayersByRecord['record-a'][0])
+      .toMatchObject({ start: 100, end: 120 });
   });
 
   it('rejects malformed nested session state instead of letting it reach React', () => {

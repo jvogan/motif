@@ -1,0 +1,296 @@
+/* Find: the find bar above the sequence view, its match highlights in
+   both sequence views, and the strand mark in the Sequence search hit list. */
+
+/* A bottom-strand hit says so at the end of its row. */
+.motif-cs-motif-hit-list > .motif-cs-motif-hit-row[data-strand="-1"] {
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+}
+
+.motif-cs-find-strand {
+  align-self: center;
+  padding: 0 var(--space-2);
+  color: var(--text-secondary);
+  font: var(--fs-xs)/1 var(--font-ui);
+}
+
+/* The anchor is a zero-height block just above the sequence view. A bar at the
+   bottom edge floats over the view and takes no layout space; a bar at the top
+   edge takes its own row (below). */
+.motif-cs-find-anchor {
+  --motif-cs-find-scrollbar: 0px;
+  position: relative;
+  z-index: 6;
+  flex: 0 0 0;
+  height: 0;
+  min-height: 0;
+}
+
+.motif-cs-find-bar {
+  position: absolute;
+  top: var(--space-2);
+  right: calc(var(--space-2) + var(--motif-cs-find-scrollbar));
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  width: min(440px, calc(100% - var(--space-4) - var(--motif-cs-find-scrollbar)));
+  padding: var(--space-1);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  box-shadow: var(--elevation-popover);
+  font-family: var(--font-ui);
+}
+
+/* A narrow pane gives the bar its full width. */
+@container (max-width: 479px) {
+  .motif-cs-find-bar {
+    left: var(--space-2);
+    width: auto;
+  }
+}
+
+/* Docked: while the bar sits at the top edge it takes its own row above the
+   bases, so the text moves down rather than going under it. Its sides keep
+   the bases' 12px inset, so a full-width bar starts on the Find button's left
+   edge and the first base. */
+.motif-cs-find-anchor:has(> .motif-cs-find-bar[data-placement="top"]) {
+  flex: 0 0 auto;
+  height: auto;
+  padding: var(--space-1) var(--space-3) 0;
+}
+
+.motif-cs-find-bar[data-placement="top"] {
+  position: relative;
+  top: auto;
+  right: auto;
+  left: auto;
+  margin-left: auto;
+}
+
+.motif-cs-find-field {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.motif-cs-find-input {
+  display: block;
+  width: 100%;
+  height: var(--control-h-sm);
+  margin: 0;
+  /* The clear button's room is always reserved, so typing never reflows. */
+  padding: 0 var(--control-h-sm) 0 var(--space-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font: var(--fs-sm)/1 var(--font-mono);
+  letter-spacing: 0;
+}
+
+.motif-cs-find-input::placeholder {
+  color: var(--text-muted);
+  font-family: var(--font-ui);
+}
+
+.motif-cs-find-input:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -1px;
+}
+
+.motif-cs-find-clear,
+.motif-cs-find-step {
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-h-sm);
+  height: var(--control-h-sm);
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.motif-cs-find-clear {
+  position: absolute;
+  top: 0;
+  right: 0;
+  color: var(--text-secondary);
+}
+
+.motif-cs-find-step {
+  flex: 0 0 auto;
+  border-color: transparent;
+  /* The arrows and Done are soft buttons: a resting fill so they read as
+     clickable, darker on hover. */
+  background: var(--control-soft);
+}
+
+.motif-cs-find-clear:hover {
+  background: var(--control-hover);
+  color: var(--text-primary);
+}
+
+.motif-cs-find-step:hover:not(:disabled),
+.motif-cs-find-done:hover {
+  background: var(--control-soft-hover);
+  color: var(--text-primary);
+}
+
+/* Off, an arrow drops the resting fill that says "clickable". */
+.motif-cs-find-step:disabled {
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: default;
+}
+
+.motif-cs-find-clear:focus-visible,
+.motif-cs-find-step:focus-visible,
+.motif-cs-find-done:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+/* Fixed width: "3 of 12" turning into "10 of 10,000+" never moves a button. */
+.motif-cs-find-count {
+  display: grid;
+  flex: 0 0 116px;
+  width: 116px;
+  min-width: 0;
+  padding-left: var(--space-1);
+  font-size: var(--fs-xs);
+  line-height: 1.25;
+  font-variant-numeric: tabular-nums;
+}
+
+.motif-cs-find-count-main,
+.motif-cs-find-count-detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.motif-cs-find-count-main {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.motif-cs-find-wrapped {
+  color: var(--text-secondary);
+}
+
+.motif-cs-find-count-detail {
+  min-height: 1.25em;
+  color: var(--text-secondary);
+}
+
+.motif-cs-find-done {
+  flex: 0 0 auto;
+  height: var(--control-h-sm);
+  padding: 0 var(--space-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: var(--control-soft);
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+/* The toolbar's Find button: icon and word, like its neighbours, and pressed
+   while its bar is open, as the title row's Export is while its popover is. */
+.motif-cs-sequence-panel .motif-cs-edit-toolbar .motif-cs-find-button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  /* At rest it wears a button's boundary, like Copy and Export, so it never
+     reads as a caption beside the two bare undo and redo icons. */
+  border-color: transparent;
+  background: transparent;
+}
+
+.motif-cs-sequence-panel .motif-cs-edit-toolbar .motif-cs-find-button[data-open] {
+  border-color: var(--border-strong);
+  background: var(--control-hover);
+  color: var(--text-primary);
+}
+
+/* A side-by-side or narrow pane: a slimmer count leaves the field room to type. */
+@container (max-width: 399px) {
+  .motif-cs-find-count {
+    flex-basis: 92px;
+    width: 92px;
+  }
+}
+
+/* Find matches in the sequence view. A match is a search result, not part of
+   the molecule, so it uses purple: amber is the restriction family and the
+   accent is the selection. One flat tint on the strand it was found on; the
+   current match is the selection, so it adds only a purple outline. */
+.motif-cs-find-hit,
+.motif-cs-find-current {
+  position: absolute;
+  top: 0.16em;
+  height: calc(var(--seq-strand-axis, 1.7em) - 0.32em);
+  pointer-events: none;
+}
+
+.motif-cs-find-hit {
+  background: color-mix(in srgb, var(--purple) 22%, transparent);
+}
+
+/* Dark: a match needs a stronger tint to stand out from the other hits. 36%
+   reads 1.82:1 by token; bases keep 8.8:1 and the complement 6.5:1. */
+html[data-theme="dark"] .motif-cs-find-hit {
+  background: color-mix(in srgb, var(--purple) 36%, transparent);
+}
+
+.motif-cs-find-current {
+  box-shadow: inset 0 0 0 1.5px var(--purple);
+}
+
+/* With the complement shown, a bottom-strand match sits on that row. */
+.motif-cs-find-hit[data-strand="-1"],
+.motif-cs-find-current[data-strand="-1"] {
+  top: auto;
+  bottom: 0.16em;
+}
+
+/* Bottom-strand letters under a match are drawn at secondary strength so they
+   keep 4.5:1 on the tint. */
+.motif-cs-seq-bases:has(.motif-cs-find-hit[data-strand="-1"]) .motif-cs-seq-complement {
+  color: var(--text-secondary);
+}
+
+/* The large-record layer sits over the textarea's content box and clips to it. */
+.motif-cs-large-sequence:has(> .motif-cs-find-large-layer) {
+  position: relative;
+}
+
+.motif-cs-find-large-layer {
+  position: absolute;
+  z-index: 1;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.motif-cs-find-large-ruler {
+  position: absolute;
+  visibility: hidden;
+  white-space: pre;
+}
+
+/* A textarea hides its own selection while the find field has focus, so the
+   current match carries the selection tint here as well as the outline. */
+.motif-cs-find-large-current {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+/* While the bar sits at the top of the view, a reveal that honours
+   scroll-padding lands the match below the bar instead of under it. */
+.motif-cs-sequence-panel:has(> .motif-cs-find-anchor > .motif-cs-find-bar[data-placement="top"]) > .motif-cs-sequence,
+.motif-cs-sequence-panel:has(> .motif-cs-find-anchor > .motif-cs-find-bar[data-placement="top"]) .motif-cs-large-sequence-value {
+  scroll-padding-top: 56px;
+}

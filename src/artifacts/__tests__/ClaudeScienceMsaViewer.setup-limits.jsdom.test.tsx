@@ -51,7 +51,7 @@ describe('ClaudeScienceMsaViewer alignment setup limits', () => {
     const checkbox = shortB?.querySelector('input') as HTMLInputElement;
     if (!checkbox.checked) fireEvent.click(checkbox);
     const runRow = document.querySelector('.motif-cs-msa-run-row .motif-cs-muted');
-    expect(runRow?.textContent).toBe("Within the browser's size limit (about 1% of it)");
+    expect(runRow?.textContent).toBe('About 1% of browser limit');
     expect(document.body.textContent).not.toMatch(/comparison cells/);
   });
 });

@@ -88,10 +88,12 @@ export function sequenceVariantLabel(variant: SequenceVariant): string {
   const position = Math.max(0, Math.floor(variant.start)) + 1;
   const ref = variant.reference?.trim();
   const alt = variant.alternate?.trim();
+  if (variant.kind === 'insertion') {
+    const location = position === 1 ? 'before 1' : `after ${position - 1}`;
+    return ['Insertion', alt, location].filter(Boolean).join(' ');
+  }
   if (ref || alt) {
     switch (variant.kind) {
-      case 'insertion':
-        return `Insertion ${alt ?? ''} at ${position}`.trim();
       case 'deletion':
         return `Deletion ${ref ?? ''} at ${position}`.trim();
       default:

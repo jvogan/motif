@@ -113,6 +113,56 @@ describe('map keyboard order', () => {
     });
   }
 
+  describe('scrolling while arrowing', () => {
+    // On a zoomed map an item's box runs outside the SVG's own viewport. A bare
+    // focus() would scroll the workspace to that box, which no scroll can show: 141px at
+    // 700px wide, six zoom steps in. Focus never scrolls by itself, and the map
+    // scrolls only enough to show the part of the item the drawing shows.
+    const rect = (top: number, bottom: number, left = 0, right = 400) =>
+      ({ top, bottom, left, right, x: left, y: top, width: right - left, height: bottom - top, toJSON: () => ({}) }) as DOMRect;
+
+    function arrange(itemTop: number, itemBottom: number) {
+      render(layoutFor('circular'));
+      host!.style.overflowY = 'auto';
+      Object.defineProperty(host!, 'scrollHeight', { configurable: true, value: 2000 });
+      Object.defineProperty(host!, 'clientHeight', { configurable: true, value: 400 });
+      host!.scrollTop = 300;
+      host!.getBoundingClientRect = () => rect(100, 500);
+      host!.querySelector('svg')!.getBoundingClientRect = () => rect(50, 450);
+      const calls: unknown[] = [];
+      for (const item of host!.querySelectorAll<SVGGElement>('svg [data-map-interaction-index]')) {
+        item.getBoundingClientRect = () => rect(itemTop, itemBottom, 100, 160);
+        const focus = item.focus.bind(item);
+        item.focus = (options?: FocusOptions) => { calls.push(options); focus(options); };
+      }
+      const start = host!.querySelector<SVGGElement>('svg [data-map-interaction-index][tabindex="0"]')!;
+      act(() => start.focus());
+      calls.length = 0;
+      return calls;
+    }
+
+    it('asks focus not to scroll', () => {
+      const calls = arrange(200, 240);
+      press('ArrowRight');
+      expect(calls).toEqual([{ preventScroll: true }]);
+      expect(host!.scrollTop).toBe(300);
+    });
+
+    it('does not scroll for an item drawn outside the map viewport', () => {
+      arrange(-400, -300);
+      press('ArrowRight');
+      expect(host!.scrollTop).toBe(300);
+    });
+
+    it('scrolls by the least amount that shows the visible part of the item', () => {
+      // The item spans 60-120; the drawing clips it to 60-120; the scroller shows
+      // 100-500, so it moves up 40px and no further.
+      arrange(60, 120);
+      press('ArrowRight');
+      expect(host!.scrollTop).toBe(260);
+    });
+  });
+
   it('keeps painting features in layout order', () => {
     const layout = layoutFor('circular');
     render(layout);

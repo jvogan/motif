@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -11,6 +12,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
 import { buildMotifCodexPlugin } from './build-motif-codex-plugin.mjs';
+import { parseReleaseArchive } from './lib/motif-release-bundle.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const fixtureDirectory = mkdtempSync(join(tmpdir(), 'motif-codex-plugin-'));
@@ -89,22 +91,25 @@ function redactDiagnostics(text, truncated) {
   return `${redacted || '(no stderr captured)'}${truncated ? ' [truncated]' : ''}`;
 }
 
-function expandPluginRoot(value) {
-  assert.equal(typeof value, 'string', 'MCP command and args must be strings');
-  return value.replaceAll('${PLUGIN_ROOT}', outputDirectory);
+function verifyPluginArchive(path, checksums) {
+  const archive = parseReleaseArchive(path);
+  assert.equal(archive.archiveSha256, checksums.archiveSha256);
+  assert.deepEqual(archive.entries.map(entry => entry.name).sort(), Object.keys(checksums.files).sort());
+  for (const entry of archive.entries) {
+    assert.equal(createHash('sha256').update(entry.data).digest('hex'), checksums.files[entry.name]);
+  }
+  for (const required of ['.mcp.json', 'server/motif-mcp-server.mjs', 'server/motif-mcp-app.html']) {
+    assert.ok(archive.byName.has(required), `staged plugin archive is missing ${required}`);
+  }
 }
 
-async function verifyStagedMcp(mcpManifest) {
-  const server = mcpManifest.mcpServers?.motif;
-  assert.equal(typeof server?.command, 'string', 'staged MCP server command is missing');
-  assert.equal(Array.isArray(server?.args), true, 'staged MCP server args are missing');
-  const command = expandPluginRoot(server.command);
-  const args = server.args.map(expandPluginRoot);
-  assert.equal(
-    [command, ...args].some(value => value.includes('${PLUGIN_ROOT}')),
-    false,
-    'staged MCP command must expand every PLUGIN_ROOT placeholder before launch',
-  );
+// The Codex manifest wraps its servers in `mcpServers`; the Claude plugin
+// manifest is a direct server map. Callers pass the `motif` entry itself.
+async function verifyStagedMcp(server, pluginRoot = outputDirectory, placeholder = '${PLUGIN_ROOT}') {
+  assert.equal(server?.command, 'node', 'staged MCP server must use the Node runtime');
+  assert.deepEqual(server?.args, [`${placeholder}/server/motif-mcp-server.mjs`]);
+  const command = process.execPath;
+  const args = server.args.map(value => value.replace(placeholder, pluginRoot));
 
   const transport = new StdioClientTransport({ command, args, stderr: 'pipe' });
   const stderr = captureStderr(transport.stderr);
@@ -144,12 +149,19 @@ async function verifyStagedMcp(mcpManifest) {
     const opened = await withDeadline(
       'staged MCP motif_open_workbench',
       REQUEST_TIMEOUT_MS,
-      () => client.callTool({ name: 'motif_open_workbench', arguments: {} }),
+      () => client.callTool({ name: 'motif_open_workbench' }),
     );
     assert.notEqual(opened.isError, true, 'staged motif_open_workbench returned an error');
     assert.equal(opened.structuredContent?.schema, 'motif.mcp.workbench.v1');
     assert.equal(opened.structuredContent?.delivery, 'live-app-request');
     assert.equal(opened.structuredContent?.runtimeBuildId, buildIdentity);
+    const exported = await withDeadline('staged MCP artifact export', REQUEST_TIMEOUT_MS, () => client.callTool({
+      name: 'motif_create_workbench_artifact',
+      arguments: { content: JSON.stringify({ records: [] }) },
+    }));
+    assert.notEqual(exported.isError, true, 'staged artifact export returned an error');
+    assert.equal(exported.structuredContent?.runtimeBuildId, buildIdentity);
+    assert.equal(exported.content.find(item => item.type === 'resource')?.resource?.mimeType, 'text/html');
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const diagnostics = stderr();
@@ -311,7 +323,18 @@ try {
     'skills/motif-for-codex/assets/logo.png',
   ]);
 
-  await verifyStagedMcp(mcpManifest);
+  verifyPluginArchive(zipPath, checksums);
+  await verifyStagedMcp(mcpManifest.mcpServers?.motif);
+
+  if (process.argv.includes('--both-hosts')) {
+    const dist = join(root, 'dist-motif');
+    const claudeRoot = join(dist, 'motif-for-claude-science');
+    const claudeMcp = JSON.parse(readFileSync(join(claudeRoot, '.mcp.json'), 'utf8'));
+    const claudeChecksums = JSON.parse(readFileSync(join(dist, 'motif-for-claude-science.checksums.json'), 'utf8'));
+    verifyPluginArchive(join(dist, 'motif-for-claude-science.zip'), claudeChecksums);
+    await verifyStagedMcp(claudeMcp.motif, claudeRoot, '${CLAUDE_PLUGIN_ROOT}');
+    console.log('Staged Claude packaging and stdio checks passed.');
+  }
 
   buildMotifCodexPlugin({
     rootDirectory: root,

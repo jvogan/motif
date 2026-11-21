@@ -197,9 +197,7 @@ export function simulateGel(
  * Format a size in bp for display (e.g. 1000 → "1kb", 500 → "500").
  */
 function formatSize(bp: number): string {
-  if (bp >= 1000 && bp % 1000 === 0) return `${bp / 1000}kb`;
-  if (bp >= 1000) return `${(bp / 1000).toFixed(1)}kb`;
-  return String(bp);
+  return bp >= 1000 ? `${bp / 1000}kb` : String(bp);
 }
 
 /**
@@ -221,13 +219,13 @@ export function renderGelASCII(
 
   // ── Build the size label column (right side) ──────────────────────────
   // Gather all unique migration distances and their size labels from ladder
-  const ladderRows = new Map<number, string>(); // row → label
+  const ladderRows = new Map<number, GelBand>();
   for (const band of result.ladderBands) {
     const row = Math.round(band.migrationDistance * (gelHeight - 1));
     // Prefer smaller sizes when two bands map to the same row
     const existing = ladderRows.get(row);
-    if (!existing || band.size < parseSizeBP(existing)) {
-      ladderRows.set(row, band.label);
+    if (!existing || band.size < existing.size) {
+      ladderRows.set(row, band);
     }
   }
 
@@ -273,7 +271,7 @@ export function renderGelASCII(
   // Gel body rows
   for (let row = 0; row < gelHeight; row++) {
     const cells = grid[row].map(cell => '│' + cell).join('');
-    const sizeLabel = ladderRows.get(row) ?? '';
+    const sizeLabel = ladderRows.get(row)?.label ?? '';
     lines.push('  ' + cells + '│' + (sizeLabel ? '  ' + sizeLabel : ''));
   }
 
@@ -284,14 +282,6 @@ export function renderGelASCII(
   lines.push(bottomBorder);
 
   return lines.join('\n');
-}
-
-/** Parse a size label back to bp for comparison. */
-function parseSizeBP(label: string): number {
-  if (label.endsWith('kb')) {
-    return parseFloat(label) * 1000;
-  }
-  return parseInt(label, 10) || 0;
 }
 
 function validateAgarosePercent(value: number): void {

@@ -417,12 +417,15 @@ export function parseAbiImport(
   // only for files that omit the corresponding #2 tag.
   const baseCallsSource = firstEntry(entries, 'PBAS2', 'PBAS1', warnings);
   if (!baseCallsSource) fail('file did not contain PBAS2 or PBAS1 base calls.');
-  const sequence = readChars(
+  const rawSequence = readChars(
     view,
     baseCallsSource.entry,
     baseCallsSource.key,
     ABI_IMPORT_LIMITS.maxBaseCalls,
-  ).replace(/\0+$/, '');
+  );
+  let sequenceEnd = rawSequence.length;
+  while (sequenceEnd > 0 && rawSequence.charCodeAt(sequenceEnd - 1) === 0) sequenceEnd -= 1;
+  const sequence = rawSequence.slice(0, sequenceEnd);
   if (!sequence) fail('base-call payload is empty.');
   if (!/^[ACGTRYSWKMBDHVNacgtryswkmbdhvn]+$/.test(sequence)) {
     fail(`${baseCallsSource.key} contains non-IUPAC base-call characters.`);

@@ -19,12 +19,17 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { SequenceMapView } from '../SequenceMapView';
 import { computeMapLayout } from '../../../plasmid-map/layout';
-import { selectionOverlayPaths } from '../../../plasmid-map/selection-overlay';
+import {
+  linearSelectionColumnPath,
+  linearSelectionEdgePaths,
+  selectionOverlayPaths,
+} from '../../../plasmid-map/selection-overlay';
 import { projectRangeOverlays } from '../../../plasmid-map/range-overlays';
 import type { MapInput, MapLayout } from '../../../plasmid-map/types';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const mapCss = readFileSync(resolve(here, '..', 'plasmid-map.css'), 'utf8');
+const artifactCss = readFileSync(resolve(here, '..', '..', '..', 'artifacts', 'motif-artifact.css'), 'utf8');
 
 const base: MapInput = {
   mode: 'linear',
@@ -47,12 +52,14 @@ const base: MapInput = {
 let root: Root | null = null;
 let host: HTMLDivElement | null = null;
 
-function render(layout: MapLayout, selectionPaths: readonly string[]): HTMLDivElement {
+function render(layout: MapLayout, selectionPaths: readonly string[], selectedFeatureId?: string): HTMLDivElement {
   host = document.createElement('div');
   document.body.appendChild(host);
   root = createRoot(host);
   act(() => {
-    root!.render(<SequenceMapView layout={layout} theme="light" interactive selectionPaths={selectionPaths} />);
+    root!.render(
+      <SequenceMapView layout={layout} theme="light" interactive selectionPaths={selectionPaths} selectedFeatureId={selectedFeatureId} />,
+    );
   });
   return host;
 }
@@ -87,6 +94,54 @@ describe('a linear selection reaches the depth the gridlines do', () => {
     expect(gridBottom - bandBottom).toBeGreaterThan(50);
     for (const edge of edges) {
       expect(Math.max(...ysOf(edge.getAttribute('d')!))).toBe(gridBottom);
+    }
+  });
+
+  it('spans the wash over the extent the boundary lines reach, as one column', () => {
+    // The app draws linearSelectionColumnPath: the wash runs from the top of the
+    // ruler band to the bottom of the gridlines, where the lines end, not just the
+    // 18px band, so the selected stretch reads as one column.
+    const layout = computeMapLayout(base);
+    const band = selectionOverlayPaths(layout, [{ start: 600, end: 1600 }]);
+    const column = band.map((d) => linearSelectionColumnPath(layout, d));
+    const el = render(layout, column);
+    const wash = el.querySelector<SVGPathElement>('.motif-pm-selection-layer .motif-pm-selection');
+    expect(wash).not.toBeNull();
+    const washYs = ysOf(wash!.getAttribute('d')!);
+    const gridBottom = Math.max(...layout.coordinates.flatMap((c) => (c.grid ? [c.grid.y2] : [])));
+    const bandTop = Math.min(...ysOf(band[0]));
+    expect(Math.min(...washYs)).toBe(bandTop);
+    expect(Math.max(...washYs)).toBe(gridBottom);
+    // Same x as the band, so the lines read back from the column are unchanged.
+    const edges = [...el.querySelectorAll<SVGPathElement>('.motif-pm-selection-edges .motif-pm-selection-edge')];
+    expect(edges.map((e) => e.getAttribute('d'))).toEqual(linearSelectionEdgePaths(layout, band[0]));
+    for (const edge of edges) {
+      const lineYs = ysOf(edge.getAttribute('d')!).slice(0, 2);
+      expect([Math.min(...lineYs), Math.max(...lineYs)]).toEqual([Math.min(...washYs), Math.max(...washYs)]);
+    }
+    // A selected feature's lines stop at the band, and so does its wash.
+    expect(linearSelectionColumnPath(layout, band[0], 'band')).toBe(band[0]);
+    // A circular sector is not a band and comes back untouched.
+    const circular = computeMapLayout({ ...base, mode: 'circular', topology: 'circular', width: 600, height: 600 });
+    const sector = selectionOverlayPaths(circular, [{ start: 600, end: 1600 }])[0];
+    expect(linearSelectionColumnPath(circular, sector)).toBe(sector);
+  });
+
+  it('stops a selected feature\'s boundaries at the ruler band and keeps its tint', () => {
+    // The feature's own outline already says which row it is, so its boundaries
+    // need not cross every lane. A dragged range keeps them full height (above).
+    const layout = computeMapLayout(base);
+    const paths = selectionOverlayPaths(layout, [{ start: 300, end: 900 }]);
+    const el = render(layout, paths, 'f1');
+    const band = el.querySelector<SVGPathElement>('.motif-pm-selection-layer .motif-pm-selection');
+    expect(band).not.toBeNull();
+    const bandYs = ysOf(band!.getAttribute('d')!);
+    const edges = [...el.querySelectorAll<SVGPathElement>('.motif-pm-selection-edges .motif-pm-selection-edge')];
+    expect(edges).toHaveLength(2);
+    for (const edge of edges) {
+      const ys = ysOf(edge.getAttribute('d')!);
+      expect(Math.min(...ys)).toBe(Math.min(...bandYs));
+      expect(Math.max(...ys)).toBe(Math.max(...bandYs));
     }
   });
 
@@ -132,20 +187,44 @@ describe('a linear selection reaches the depth the gridlines do', () => {
     expect(el.querySelectorAll('.motif-pm-selection-layer > *')).toHaveLength(paths.length);
   });
 
-  it('gives the boundaries the accent rather than the gridline border tone', () => {
+  it('gives the boundaries the primary text colour rather than the gridline border tone', () => {
     // The lines are read against a field of coordinate gridlines. Those draw
     // --border under stroke-opacity, so a boundary in the same paint at the same
-    // weight would be one more guide rather than the edge of a selection.
-    const rule = mapCss.slice(mapCss.indexOf('.motif-pm-selection-edge {'));
-    const body = rule.slice(0, rule.indexOf('}') + 1);
-    expect(body).toMatch(/stroke:\s*var\(--accent/);
-    expect(body).toMatch(/stroke-width:\s*2;/);
-    expect(body).not.toMatch(/stroke-opacity/);
-    // Whole pixels: a fractional width under crispEdges paints 1 column at some
-    // x and 2 at others, so one selection could draw its two ends unequally.
-    expect(body).toMatch(/shape-rendering:\s*crispEdges;/);
+    // weight would be one more guide rather than the edge of a selection. The
+    // map's only host draws it in .motif-cs-map-frame, where the artifact's
+    // rule, shared with the circular map's end lines, outranks this sheet's.
+    const ruleAt = artifactCss.indexOf('.motif-cs-map-frame .motif-pm-selection-edges .motif-pm-selection-edge {');
+    expect(ruleAt).toBeGreaterThan(-1);
+    const body = artifactCss.slice(ruleAt, artifactCss.indexOf('}', ruleAt) + 1);
+    // Through the fade gradient (text-colour stops, solid at the backbone);
+    // the solid text colour where there is none.
+    expect(body).toMatch(/stroke:\s*var\(--motif-selection-edge-paint, var\(--text-primary\)\);/);
+    // The circular map's weight, at full strength: the text colour marks the
+    // boundary, and 1.5px keeps it a line rather than a bar.
+    expect(body).toMatch(/stroke-width:\s*1\.5;/);
+    expect(body).toMatch(/stroke-opacity:\s*1;/);
+    // The path's closed triangle at the backbone is filled in the same colour.
+    expect(body).toMatch(/fill:\s*var\(--text-primary\);/);
+    expect(body).toMatch(/fill-opacity:\s*1;/);
+    // Antialiased: 1.5px under crispEdges paints 1 column at some x and 2 at
+    // others, so one selection could draw its two ends unequally.
+    expect(body).toMatch(/shape-rendering:\s*auto;/);
     const grid = mapCss.slice(mapCss.indexOf('.motif-pm-coord-grid {'));
     expect(grid.slice(0, grid.indexOf('}') + 1)).toMatch(/stroke-opacity:\s*0\.5;/);
+
+    // Each boundary path carries that triangle: tip on the backbone, closed.
+    const layout = computeMapLayout(base);
+    const el = render(layout, selectionOverlayPaths(layout, [{ start: 600, end: 1600 }]));
+    const edges = [...el.querySelectorAll<SVGPathElement>('.motif-pm-selection-edges .motif-pm-selection-edge')];
+    expect(edges).toHaveLength(2);
+    for (const edge of edges) {
+      const d = edge.getAttribute('d')!;
+      const triangle = d.slice(d.lastIndexOf('M'));
+      expect(triangle).toMatch(/Z$/);
+      const ys = ysOf(triangle);
+      expect(ys).toHaveLength(3);
+      expect(Math.min(...ys)).toBeCloseTo(layout.center.y, 1);
+    }
   });
 
   it('keeps a system colour for the boundaries under forced colors', () => {

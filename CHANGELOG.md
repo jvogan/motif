@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- Redesigned the workbench. The top bar holds the record's facts and actions
+  on one row, records live in a Library pane, a labeled Tools drawer replaces
+  the icon rail, and controls share one height and one text scale with a 12px
+  floor. Inventory is now Library, Add Entry is Import records, and Database
+  JSON is Workspace JSON.
+- The theme is Light unless you choose Dark, with a light/dark button in the
+  top bar. The two warm themes are gone; a saved choice of one opens in Light
+  or Dark.
+- Added a Find bar (Cmd/Ctrl+F), a right-click menu on the sequence, and
+  notices after an edit that carry their own Undo.
+- A click changes what is selected and leaves the view where it is. Selecting
+  a feature in the sequence or on the map selects it in both, and picking an
+  amino acid selects its bases.
+- The circular map shows full feature names, names a selected feature that it
+  otherwise leaves unnamed, lists the unnamed features in the "+N features"
+  tooltip, and draws a miniature with whole names in a small pane.
+- Translation opens in its own window beside the sequence, translation rows
+  follow the strand, and a pinned translation that crosses the origin of a
+  circular record is kept through save, restore, and edits.
+- Each pane recovers from its own error without closing the workbench.
 - Choosing the full enzyme list on a long record no longer crashes the
   workbench. A scan that would exceed its work or result limit now covers as
   many of the selected enzymes as fit, says how many were scanned, and the

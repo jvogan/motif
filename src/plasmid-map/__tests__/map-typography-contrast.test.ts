@@ -45,12 +45,24 @@ describe('map typography and backbone visual contracts', () => {
     expect(ruleBody(mapCss, '.motif-pm-feature-label')).toMatch(/font-size:\s*calc\(16px \* var\(--pm-zoom-text-scale, 1\)\);/);
   });
 
+  it('sets every name on the map in the one UI face', () => {
+    // Feature names, enzyme names, ruler numerals and the centre title share one
+    // face: no class is monospace, enzyme names included.
+    expect(mapCss).toMatch(/\n\.motif-plasmid-map \{[^}]*font-family:\s*var\(--font-ui,/);
+    expect(ruleBody(mapCss, '.motif-pm-feature-label')).toMatch(/font-family:\s*var\(--font-ui,/);
+    expect(ruleBody(mapCss, '.motif-pm-restriction-label')).toMatch(/font-family:\s*var\(--font-ui,/);
+    for (const selector of ['.motif-pm-coord-label', '.motif-pm-center-name', '.motif-pm-center-len']) {
+      expect(ruleBody(mapCss, selector)).not.toMatch(/font-family/);
+    }
+    expect(mapCss).not.toMatch(/\.motif-pm-(restriction|feature|coord|center)[\w-]*[^{}]*\{[^}]*--font-mono/);
+  });
+
   it('draws the linear ruler no larger than the names it sits above', () => {
     // A ruler is the quietest thing on a map. In linear mode the drawing renders
     // at scale 1, so the base 16px made these numerals the largest type in the
     // workspace — larger than the 13px enzyme names beneath them and the 11px
     // pane title above. Both linear annotation faces now draw at
-    // LINEAR_REC_LABEL_FONT_PX, which is the size campaign 15's minimum-screen-px
+    // LINEAR_REC_LABEL_FONT_PX, which is the size the minimum-screen-px
     // floor is calculated against. Nothing in the linear path measures a
     // coordinate label: they are anchored 'middle' with no width-based collision
     // pass, so shrinking the face cannot move or drop one.
@@ -71,40 +83,43 @@ describe('map typography and backbone visual contracts', () => {
 
   it('clears 4.5:1 on a Type IIS enzyme name in every product theme', () => {
     // These names render at LABEL_FONT_PX, which is under the 24px WCAG calls
-    // large, so the floor is 4.5 and not 3. Measured on the built artifact
-    // before this was fixed: 4.34 light, 4.27 claude-light, 3.63 claude-dark —
-    // claude-dark was missing from the dark override and fell through to the
-    // light tan. Only `dark` passed, at 7.21.
+    // large, so the floor is 4.5 and not 3.
     const lightTan = ruleBody(mapCss, ".motif-pm-restriction-enz--typeiis").match(/#[0-9a-f]{6}/i)![0];
     const darkTan = mapCss.match(/--pm-typeiis-dark,\s*(#[0-9a-f]{6})/i)![1];
 
-    // Both dark themes must name themselves in the override, or they inherit a
-    // tan mixed for a white ground.
-    expect(mapCss).toContain("[data-theme='claude-dark'] .motif-pm-restriction-enz--typeiis");
+    // The dark theme must name itself in the override, or it inherits a tan mixed
+    // for a white ground.
+    expect(mapCss).toContain("[data-theme='dark'] .motif-pm-restriction-enz--typeiis {");
 
-    for (const [selector, tan] of [
-      [':root,\nhtml[data-theme="light"]', lightTan],
-      ['html[data-theme="claude-light"]', lightTan],
-      ['html[data-theme="dark"]', darkTan],
-      ['html[data-theme="claude-dark"]', darkTan],
+    // The light tan keeps headroom to 5.5, so a popover's drop shadow over the map, or any
+    // wash over the label, cannot take "BsaI" under 4.5.
+    for (const [selector, tan, floor] of [
+      [':root,\nhtml[data-theme="light"]', lightTan, 5.5],
+      ['html[data-theme="dark"]', darkTan, 4.5],
     ] as const) {
       const body = ruleBody(artifactCss, selector);
-      expect(contrast(tan, token(body, '--bg-primary')), selector).toBeGreaterThanOrEqual(4.5);
+      expect(contrast(tan, token(body, '--bg-primary')), selector).toBeGreaterThanOrEqual(floor);
     }
   });
 
-  it('uses the strong border token and clears 3:1 in every product theme', () => {
+  it('draws the 2px ring in the muted text token, clear of 4.5:1 in every product theme', () => {
+    // A 2px ring holds beside 19-unit feature bands, where a thinner line would look like
+    // a hairline. The muted text grey holds 4.5:1 or more on the map ground in both
+    // themes, and the Line view's axis is the same element.
     const backbone = ruleBody(mapCss, '.motif-pm-backbone');
-    expect(backbone).toContain('stroke: var(--border-strong');
+    expect(backbone).toContain('stroke: var(--text-muted');
+    expect(backbone).toMatch(/stroke-width:\s*2;/);
     expect(mapCss).not.toMatch(/\[data-theme=['"](?:light|dark)['"]\][^{]*\.motif-pm-backbone/);
 
     for (const selector of [
       'html[data-theme="dark"]',
       ':root,\nhtml[data-theme="light"]',
-      'html[data-theme="claude-light"]',
-      'html[data-theme="claude-dark"]',
     ]) {
       const body = ruleBody(artifactCss, selector);
+      // The ring draws in the muted text token at 4.5:1 or more; the unlabelled site
+      // ticks keep the strong border token, a non-text edge at 3:1 or more.
+      expect(contrast(token(body, '--text-muted'), token(body, '--bg-primary')), selector)
+        .toBeGreaterThanOrEqual(4.5);
       expect(contrast(token(body, '--border-strong'), token(body, '--bg-primary')), selector)
         .toBeGreaterThanOrEqual(3);
     }
@@ -115,11 +130,13 @@ describe('form placeholder legibility', () => {
   // Several placeholders carry the input's expected format rather than a
   // restatement of its label — "Known enzyme (for example, EcoRV)" — so they
   // have to be readable, not merely present. Lightening --text-muted toward the
-  // field background put three of the four themes under the floor.
+  // field background would put them under the 4.5:1 floor.
   it('sets the placeholder to --text-muted with nothing mixed into it', () => {
-    const body = ruleBody(artifactCss, '.motif-cs-field::placeholder,\n.motif-cs-input::placeholder');
+    // Textareas share the rule: the import box's placeholder takes --text-muted, not the
+    // browser's default grey.
+    const body = ruleBody(artifactCss, '.motif-cs-field::placeholder,\n.motif-cs-input::placeholder,\n.motif-cs-textarea::placeholder');
     expect(body).toMatch(/color:\s*var\(--text-muted\)\s*;/);
-    expect(body, 'a blend toward the background is what dropped this below 4.5:1')
+    expect(body, 'a blend toward the background would drop this below 4.5:1')
       .not.toMatch(/color:\s*color-mix\([^;]*--bg-/);
   });
 
@@ -127,8 +144,6 @@ describe('form placeholder legibility', () => {
     for (const selector of [
       ':root,\nhtml[data-theme="light"]',
       'html[data-theme="dark"]',
-      'html[data-theme="claude-light"]',
-      'html[data-theme="claude-dark"]',
     ]) {
       const body = ruleBody(artifactCss, selector);
       expect(contrast(token(body, '--text-muted'), token(body, '--bg-primary')), selector)

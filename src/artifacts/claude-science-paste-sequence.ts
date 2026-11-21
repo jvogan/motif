@@ -2,13 +2,12 @@
  * Paste into the sequence editor: decide which of the pasted lines are sequence
  * before deciding which characters are bases.
  *
- * The editor used to do only the second half — filter the whole clipboard string
- * against the record's alphabet — which is wrong for every format anyone actually
- * copies sequence out of. `>gi|12345|ref|NM_001` survives that filter as `GRNM`,
- * because G, R, N and M are all legal IUPAC ambiguity codes, so a FASTA header
- * silently became four bases at the head of the insert and rendered as ordinary
- * uppercase letters. Structure has to be stripped by LINE; dropping the `>`
- * character alone is what produced the bug.
+ * Doing only the second half — filtering the whole clipboard string against the
+ * record's alphabet — is wrong for every format anyone actually copies sequence
+ * out of. `>gi|12345|ref|NM_001` survives that filter as `GRNM`, because G, R, N
+ * and M are all legal IUPAC ambiguity codes, so a FASTA header would silently
+ * become four bases at the head of the insert. Structure has to be stripped by
+ * LINE; dropping the `>` character alone is not enough.
  *
  * Two formats are recognised, and only where they cannot be confused with residues:
  *
@@ -28,6 +27,8 @@
  * silence.
  */
 
+import { hasGenBankLocus, isGenBankTerminator } from '../bio/genbank-parser';
+
 export type PastedSequenceFormat = 'plain' | 'fasta' | 'genbank';
 
 interface PastedSequenceDetails {
@@ -46,6 +47,10 @@ interface PastedSequenceDetails {
    * remains is the count worth telling someone about: letters that were not bases.
    */
   droppedCharacters: number;
+  /** Letters among `droppedCharacters`, upper-cased, each once, in the order first seen. */
+  droppedLetters: string[];
+  /** Characters read as another base through `readAs`, such as U pasted into DNA read as T. */
+  convertedCharacters: number;
 }
 
 export interface AcceptedPastedSequence extends PastedSequenceDetails {
@@ -80,7 +85,6 @@ const FASTA_COMMENT = /^\s*;/;
 // words such as "LOCUS" or "ORIGIN" without starting another record.
 const GENBANK_LOCUS = /^[ \t]{0,4}LOCUS[ \t]+\S+[ \t]+\d+[ \t]+(?:bp|aa)\b/i;
 const GENBANK_ORIGIN = /^[ \t]{0,4}ORIGIN[ \t]*$/i;
-const GENBANK_TERMINATOR = /^\s*\/\/\s*$/;
 /** The position counter that starts each ORIGIN line, and that many viewers emit. */
 const LEADING_POSITION = /^\s*\d+\s*/;
 
@@ -97,7 +101,7 @@ function firstGenBankOrigin(lines: readonly string[]): number {
   let locusSeen = false;
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
-    if (GENBANK_TERMINATOR.test(line)) {
+    if (isGenBankTerminator(line)) {
       locusSeen = false;
     } else if (GENBANK_LOCUS.test(line)) {
       locusSeen = true;
@@ -118,7 +122,7 @@ function genbankRecordCount(lines: readonly string[]): number {
     originMarkers = 0;
   };
   for (const line of lines) {
-    if (GENBANK_TERMINATOR.test(line)) {
+    if (isGenBankTerminator(line)) {
       finishBlock();
       continue;
     }
@@ -152,7 +156,7 @@ export function sequenceLinesFromPaste(value: string): PastedSequenceLines {
   // A GenBank record: keep the ORIGIN block and nothing else.
   const scoped = isGenBank
     ? all.slice(originAt + 1, (() => {
-      const end = all.findIndex((line, index) => index > originAt && GENBANK_TERMINATOR.test(line));
+      const end = all.findIndex((line, index) => index > originAt && isGenBankTerminator(line));
       return end >= 0 ? end : all.length;
     })())
     : all;
@@ -174,10 +178,16 @@ export function sequenceLinesFromPaste(value: string): PastedSequenceLines {
 /**
  * Residues from a clipboard string, plus what it cost to get them. `alphabet` is
  * the record's own accepted set, so a protein record keeps letters a DNA record
- * discards.
+ * discards. `readAs` maps an upper-case letter to the base it stands for in
+ * this record (U read as T in DNA, T read as U in RNA); each such letter is
+ * counted in `convertedCharacters`.
  */
-export function parsePastedSequence(value: string, alphabet: string): PastedSequence {
-  const allowed = new Set(alphabet.toUpperCase().split(''));
+export function parsePastedSequence(
+  value: string,
+  alphabet: string,
+  readAs: Readonly<Record<string, string>> = {},
+): PastedSequence {
+  const allowed = new Set(alphabet.toUpperCase() + alphabet.toLowerCase());
   const {
     lines,
     droppedLines,
@@ -196,6 +206,8 @@ export function parsePastedSequence(value: string, alphabet: string): PastedSequ
       genbankRecordCount,
       droppedLines,
       droppedCharacters: 0,
+      droppedLetters: [],
+      convertedCharacters: 0,
     };
   }
 
@@ -209,15 +221,30 @@ export function parsePastedSequence(value: string, alphabet: string): PastedSequ
       genbankRecordCount,
       droppedLines,
       droppedCharacters: 0,
+      droppedLetters: [],
+      convertedCharacters: 0,
     };
   }
 
   let sequence = '';
   let droppedCharacters = 0;
+  let convertedCharacters = 0;
+  const droppedLetters = new Set<string>();
   for (const line of lines) {
-    for (const char of line.replace(LEADING_POSITION, '').toUpperCase()) {
-      if (allowed.has(char)) sequence += char;
-      else if (!/\s|\d/.test(char)) droppedCharacters += 1;
+    for (const char of line.replace(LEADING_POSITION, '')) {
+      // Only the 26 ASCII letters are named or read as another base: ſ
+      // upper-cases to S, which is a base, so naming it would be wrong.
+      const ascii = /^[A-Za-z]$/.test(char);
+      const upper = char.toUpperCase();
+      if (ascii && Object.prototype.hasOwnProperty.call(readAs, upper)) {
+        sequence += readAs[upper];
+        convertedCharacters += 1;
+      } else if (allowed.has(char)) {
+        sequence += upper;
+      } else if (!/\s|\d/.test(char)) {
+        droppedCharacters += 1;
+        if (ascii) droppedLetters.add(upper);
+      }
     }
   }
   return {
@@ -229,6 +256,8 @@ export function parsePastedSequence(value: string, alphabet: string): PastedSequ
     genbankRecordCount,
     droppedLines,
     droppedCharacters,
+    droppedLetters: [...droppedLetters],
+    convertedCharacters,
   };
 }
 
@@ -243,8 +272,6 @@ export function parsePastedSequence(value: string, alphabet: string): PastedSequ
 const ORIGIN_ROW = /^(\s*)(\d+)([ \t]+[A-Za-z*.-][A-Za-z*. \t-]*)$/;
 const ORIGIN_HEADER = /^\s*ORIGIN\s*$/i;
 const RECORD_JSON_START = /^\s*[[{]/;
-// Any LOCUS line marks a whole GenBank record, which the importer reads as it is.
-const GENBANK_RECORD_LOCUS = /^[ \t]*LOCUS[ \t]/m;
 
 export interface ImportPastePreparation {
   /** The text to parse. Same line count and column positions as the paste. */
@@ -254,7 +281,7 @@ export interface ImportPastePreparation {
 }
 
 /**
- * Add entry paste only: blank out the position numbers that most sequence
+ * Import records paste only: blank out the position numbers that most sequence
  * sources copy at the start of each ORIGIN row, so `1 atggctagca …` imports as
  * the sequence it plainly is instead of failing on the digit `1`.
  *
@@ -263,13 +290,13 @@ export interface ImportPastePreparation {
  * remaining character keeps its line and column. An error the importer reports
  * afterwards therefore points at the character in the text the person pasted.
  *
- * A complete GenBank record (it has a LOCUS line) and Record or Database JSON are
+ * A complete GenBank record (it has a LOCUS line) and Record or Workspace JSON are
  * returned unchanged: the GenBank parser reads its own ORIGIN block, and a JSON
  * string can hold digits that are data. This never runs on the strict direct and
  * MCP boundary, which must not remove characters from a sequence it was given.
  */
-export function stripOriginPositionNumbers(value: string): ImportPastePreparation {
-  if (RECORD_JSON_START.test(value) || GENBANK_RECORD_LOCUS.test(value)) return { text: value, numberedLines: 0 };
+export function stripOriginPositionNumbers(value: string, genBank = hasGenBankLocus(value)): ImportPastePreparation {
+  if (RECORD_JSON_START.test(value) || genBank) return { text: value, numberedLines: 0 };
   const lines = value.split(/(\r\n|\r|\n)/);
   let numberedLines = 0;
   for (let index = 0; index < lines.length; index += 2) {
@@ -280,7 +307,7 @@ export function stripOriginPositionNumbers(value: string): ImportPastePreparatio
   }
   if (numberedLines === 0) return { text: value, numberedLines: 0 };
   for (let index = 0; index < lines.length; index += 2) {
-    if (ORIGIN_HEADER.test(lines[index]) || GENBANK_TERMINATOR.test(lines[index])) {
+    if (ORIGIN_HEADER.test(lines[index]) || isGenBankTerminator(lines[index])) {
       lines[index] = ' '.repeat(lines[index].length);
     }
   }

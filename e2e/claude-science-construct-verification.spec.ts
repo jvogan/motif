@@ -1,6 +1,8 @@
 import { expect, test } from '@playwright/test';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
+import { openTool } from './tool-panel-aliases';
+import { chooseTheme } from './theme';
 
 const artifactUrl = process.env.MOTIF_ARTIFACT_URL;
 const outputDirectory = path.resolve('output/playwright/construct-verification');
@@ -112,13 +114,10 @@ test.describe('Claude Science construct verification trust loop', () => {
       activeId: RECORD_IDS.reference,
     });
 
-    const tool = page.locator('details[data-rail-tool="construct-verification"]');
-    await tool.scrollIntoViewIfNeeded();
-    await tool.locator(':scope > summary').click();
-    await expect(tool).toHaveAttribute('open', '');
+    const tool = await openTool(page, 'construct-verification');
     await tool.getByTestId('open-construct-verification').click();
 
-    const dialog = page.getByRole('dialog', { name: /Construct Verification/i });
+    const dialog = page.getByRole('dialog', { name: /Construct verification/i });
     const workspace = page.getByTestId('construct-verification-workspace');
     await expect(dialog).toBeVisible();
     await expect(workspace).toBeVisible();
@@ -129,7 +128,7 @@ test.describe('Claude Science construct verification trust loop', () => {
     await expect(readList.locator('input[type="checkbox"]:checked')).toHaveCount(2);
     await expect(readList).toContainText('Sanger forward E2E');
     await expect(readList).toContainText('Sanger reverse E2E');
-    await expect(workspace).toContainText('2 of 2 reads selected');
+    await expect(workspace).toContainText('2/2 reads');
 
     const requireBothStrands = workspace.getByRole('checkbox', { name: 'Require both strands' });
     const runButton = workspace.getByTestId('construct-verification-run');
@@ -149,7 +148,7 @@ test.describe('Claude Science construct verification trust loop', () => {
     await expect(facts.locator('dd').nth(2)).toHaveText('1 F · 1 R');
     await expect(evidence.getByRole('progressbar', { name: 'Reference coverage 100.0%' }))
       .toHaveAttribute('value', '100');
-    await expect(workspace.getByTestId('construct-verification-status')).toContainText('Verification complete');
+    await expect(workspace.getByTestId('construct-verification-status')).toContainText('Review the result, then save.');
     await expect(saveButton).toBeEnabled();
 
     await saveButton.click();
@@ -275,8 +274,8 @@ test.describe('Claude Science construct verification trust loop', () => {
 
     await page.screenshot({ path: path.join(outputDirectory, 'construct-verification-light.png'), fullPage: true });
 
-    await page.locator('select[name="artifact-theme"]').selectOption('claude-dark');
-    await expect(page.locator('html')).toHaveAttribute('data-theme', 'claude-dark');
+    await chooseTheme(page, 'dark');
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
     await page.setViewportSize({ width: 640, height: 900 });
     await expect(dialog).toBeVisible();
     expect(await workspace.evaluate((element) => element.scrollWidth)).toBeLessThanOrEqual(
@@ -288,23 +287,25 @@ test.describe('Claude Science construct verification trust loop', () => {
     const resizeReachability = await dialog.locator('.motif-cs-window-resize').evaluate((handle) => {
       const rail = document.querySelector<HTMLElement>('.motif-cs-inspector[data-tools-pinned="false"]');
       const handleRect = handle.getBoundingClientRect();
-      const railRect = rail?.getBoundingClientRect();
+      // Below 1536px a shut Tools drawer takes no width and has no rect to clear;
+      // a rail that is drawn must still sit clear of the handle.
+      const railRect = rail && getComputedStyle(rail).display !== 'none' ? rail.getBoundingClientRect() : null;
       const hit = document.elementFromPoint(
         handleRect.left + handleRect.width / 2,
         handleRect.top + handleRect.height / 2,
       );
       return {
-        clearsRail: Boolean(railRect && handleRect.right <= railRect.left),
+        hasTools: Boolean(rail),
+        clearsRail: railRect === null || handleRect.right <= railRect.left,
         pointerHitsHandle: hit === handle || (hit !== null && handle.contains(hit)),
       };
     });
-    expect(resizeReachability).toEqual({ clearsRail: true, pointerHitsHandle: true });
+    expect(resizeReachability).toEqual({ hasTools: true, clearsRail: true, pointerHitsHandle: true });
     await page.screenshot({ path: path.join(outputDirectory, 'construct-verification-compact-dark.png'), fullPage: true });
 
-    await dialog.getByRole('button', { name: /Close Construct Verification/i }).click();
+    await dialog.getByRole('button', { name: /Close Construct verification/i }).click();
     await expect(dialog).toHaveCount(0);
-    const results = page.locator('details[data-rail-tool="analysis-results"]');
-    if ((await results.getAttribute('open')) === null) await results.locator(':scope > summary').click();
+    await openTool(page, 'analysis-results');
     const resultId = saved.result?.id;
     expect(resultId).toBeTruthy();
     const resultRow = page.getByTestId(`analysis-result-${resultId}`);
@@ -312,7 +313,7 @@ test.describe('Claude Science construct verification trust loop', () => {
     await expect(resultRow).toContainText('Construct verification');
     const freshness = resultRow.locator('.motif-cs-agent-result-heading [data-freshness="fresh"]');
     await expect(freshness).toBeVisible();
-    await expect(freshness).toContainText('Fresh');
+    await expect(freshness).toContainText('Inputs match');
 
     await resultRow.getByRole('button', { name: /Remove Construct verification/i }).click();
     await resultRow.getByRole('button', { name: 'Remove Result' }).click();
@@ -375,12 +376,8 @@ test.describe('Claude Science construct verification trust loop', () => {
       ] as never);
     }, { ids: RECORD_IDS, reference: REFERENCE_SEQUENCE, read: substituted });
 
-    const tool = page.locator('details[data-rail-tool="construct-verification"]');
     const openVerification = async () => {
-      if ((await tool.getAttribute('open')) === null) {
-        await tool.scrollIntoViewIfNeeded();
-        await tool.locator(':scope > summary').click();
-      }
+      const tool = await openTool(page, 'construct-verification');
       await tool.getByTestId('open-construct-verification').click();
     };
     await openVerification();
@@ -477,9 +474,7 @@ test.describe('Claude Science construct verification trust loop', () => {
       ] as never);
     }, { ids: RECORD_IDS, reference: REFERENCE_SEQUENCE, read: substituted });
 
-    const tool = page.locator('details[data-rail-tool="construct-verification"]');
-    await tool.scrollIntoViewIfNeeded();
-    await tool.locator(':scope > summary').click();
+    const tool = await openTool(page, 'construct-verification');
     await tool.getByTestId('open-construct-verification').click();
     const workspace = page.getByTestId('construct-verification-workspace');
     await workspace.getByTestId('construct-verification-run').click();
@@ -500,9 +495,7 @@ test.describe('Claude Science construct verification trust loop', () => {
     expect(await page.evaluate(() => window.motifGetAnalysisWorkspace?.().analysisResults.length)).toBe(0);
     await page.evaluate((text) => window.motifReplaceWorkspace?.(JSON.parse(text)), snapshot);
 
-    const results = page.locator('details[data-rail-tool="analysis-results"]');
-    await results.scrollIntoViewIfNeeded();
-    await results.locator(':scope > summary').click();
+    await openTool(page, 'analysis-results');
     const resultRow = page.getByTestId(`analysis-result-${saved.id}`);
     await resultRow.getByTestId('analysis-result-open-evidence').click();
     const position = resultRow.getByTestId('construct-verification-variant-table')

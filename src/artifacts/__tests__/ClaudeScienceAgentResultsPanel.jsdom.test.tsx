@@ -160,7 +160,7 @@ describe('ClaudeScienceAgentResultsPanel', () => {
     expect(screen.getByText('pUC19 nucleotide search')).toBeTruthy();
     expect(view.container.querySelector('img')).toBeNull();
     const blastRow = screen.getByTestId('analysis-result-blast-1');
-    await user.click(within(blastRow).getByText('Provenance & Data'));
+    await user.click(within(blastRow).getByText('Provenance & data'));
     expect(within(blastRow).getByLabelText('pUC19 nucleotide search safe text preview').textContent).toContain('TEST.1');
   });
 
@@ -179,6 +179,8 @@ describe('ClaudeScienceAgentResultsPanel', () => {
     );
     expect(screen.queryByText(/shown$/)).toBeNull();
     expect(screen.getByText('No analysis results yet')).toBeTruthy();
+    // Nor is there a filter: four views of an empty list are all empty.
+    expect(screen.queryByLabelText('Show')).toBeNull();
     cleanup();
 
     render(
@@ -190,7 +192,9 @@ describe('ClaudeScienceAgentResultsPanel', () => {
         onRemove={vi.fn()}
       />,
     );
-    expect(screen.getByText(/shown$/)).toBeTruthy();
+    // Nothing is hidden, so there is no count to show.
+    expect(screen.queryByText(/shown$/)).toBeNull();
+    expect((screen.getByLabelText('Show') as HTMLSelectElement).value).toBe('all');
   });
 
   it('filters result groups without discarding saved results', () => {
@@ -206,7 +210,7 @@ describe('ClaudeScienceAgentResultsPanel', () => {
     fireEvent.change(screen.getByLabelText('Show'), { target: { value: 'design' } });
     expect(screen.getByText('pUC19 verification primers')).toBeTruthy();
     expect(screen.queryByText('pUC19 nucleotide search')).toBeNull();
-    expect(screen.getByText('1 shown')).toBeTruthy();
+    expect(screen.getByText('1 of 2 shown')).toBeTruthy();
   });
 
   it('pages and copies a complete report while keeping Markdown and HTML-looking text inert', async () => {
@@ -226,7 +230,7 @@ describe('ClaudeScienceAgentResultsPanel', () => {
     );
     const row = screen.getByTestId('analysis-result-report-1');
     expect(within(row).queryByLabelText('Agent safety report safe text preview')).toBeNull();
-    await user.click(within(row).getByText('Provenance & Data'));
+    await user.click(within(row).getByText('Provenance & data'));
 
     const firstPage = within(row).getByLabelText('Agent safety report safe text preview');
     expect(firstPage.tabIndex).toBe(0);
@@ -275,7 +279,7 @@ describe('ClaudeScienceAgentResultsPanel', () => {
       />,
     );
     const row = screen.getByTestId('analysis-result-report-asset');
-    await user.click(within(row).getByText('Provenance & Data'));
+    await user.click(within(row).getByText('Provenance & data'));
     expect(within(row).getByLabelText('Asset-backed report safe text preview').textContent).toContain('asset-backed report');
     expect(within(row).getAllByText(/<body>.txt/).length).toBeGreaterThan(0);
     expect(view.container.querySelector('script')).toBeNull();
@@ -311,7 +315,7 @@ describe('ClaudeScienceAgentResultsPanel', () => {
     );
 
     const row = screen.getByTestId('analysis-result-primer-assets');
-    await user.click(within(row).getByText('Provenance & Data'));
+    await user.click(within(row).getByText('Provenance & data'));
     expect(within(row).getByText(/\+ 27 more/)).toBeTruthy();
     expect(row.querySelectorAll('.motif-cs-agent-asset')).toHaveLength(25);
     expect(within(row).queryByText('asset-30.txt', { selector: 'summary span' })).toBeNull();
@@ -342,7 +346,7 @@ describe('ClaudeScienceAgentResultsPanel', () => {
         />,
       );
       const row = screen.getByTestId('analysis-result-report-1');
-      await user.click(within(row).getByText('Provenance & Data'));
+      await user.click(within(row).getByText('Provenance & data'));
       await user.click(within(row).getByRole('button', { name: 'Copy report Agent safety report' }));
 
       expect(writeText).toHaveBeenCalledWith(reportText);
@@ -373,7 +377,7 @@ describe('ClaudeScienceAgentResultsPanel', () => {
       />,
     );
     const row = screen.getByTestId('analysis-result-table-1');
-    await user.click(within(row).getByText('Provenance & Data'));
+    await user.click(within(row).getByText('Provenance & data'));
     const table = within(row).getByRole('table');
     expect(within(table).getAllByRole('columnheader')).toHaveLength(3);
     expect(within(table).getAllByRole('row')).toHaveLength(51);
@@ -450,7 +454,7 @@ describe('ClaudeScienceAgentResultsPanel', () => {
     );
 
     const row = screen.getByTestId('analysis-result-table-wide');
-    await user.click(within(row).getByText('Provenance & Data'));
+    await user.click(within(row).getByText('Provenance & data'));
     const table = within(row).getByRole('table');
     expect(within(table).getAllByRole('row')).toHaveLength(4);
     expect(within(table).getAllByRole('cell')).toHaveLength(768);
@@ -478,7 +482,7 @@ describe('ClaudeScienceAgentResultsPanel', () => {
       />,
     );
     const row = screen.getByTestId('analysis-result-blast-1');
-    await user.click(within(row).getByText('Provenance & Data'));
+    await user.click(within(row).getByText('Provenance & data'));
     const hitTable = within(row).getByRole('table');
     const accessions = () => within(hitTable).getAllByRole('row').slice(1).map((tableRow) => (
       within(tableRow).getAllByRole('cell')[0]?.textContent
@@ -534,7 +538,7 @@ describe('ClaudeScienceAgentResultsPanel', () => {
     );
 
     const row = screen.getByTestId('analysis-result-blast-paged');
-    await user.click(within(row).getByText('Provenance & Data'));
+    await user.click(within(row).getByText('Provenance & data'));
     const table = within(row).getByRole('table');
     expect(within(table).getAllByRole('row')).toHaveLength(26);
     expect(within(table).getByText('HIT.01')).toBeTruthy();
@@ -620,9 +624,9 @@ describe('ClaudeScienceAgentResultsPanel', () => {
       />,
     );
     expect(screen.getByText('complete')).toBeTruthy();
-    expect(screen.getAllByText('Stale')).toHaveLength(1);
-    await user.click(screen.getByText('Provenance & Data'));
-    expect(screen.getAllByText('Stale')).toHaveLength(2);
+    expect(screen.getAllByText('Inputs changed')).toHaveLength(1);
+    await user.click(screen.getByText('Provenance & data'));
+    expect(screen.getAllByText('Inputs changed')).toHaveLength(2);
     expect(document.querySelector('.motif-cs-freshness-reason')?.textContent).toContain("pUC19's sequence has changed");
   });
 
@@ -638,7 +642,7 @@ describe('ClaudeScienceAgentResultsPanel', () => {
         onRemove={onRemove}
       />,
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Reveal Input' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reveal input' }));
     expect(onRevealRecord).toHaveBeenCalledWith('puc19');
     fireEvent.click(screen.getByRole('button', { name: 'Remove pUC19 verification primers' }));
     await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Cancel' })));

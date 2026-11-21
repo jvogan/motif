@@ -8,9 +8,8 @@ function feature(id: string, name: string, type: Feature['type'], start: number,
   return { id, name, type, start, end, strand: 1, color: '#8a8a8a', metadata: {} };
 }
 
-// The map draws a shortened name so the label fits. Its tooltip and accessible
-// name are the only place a screen reader learns what the feature is, so they
-// carry the name the record gives it.
+// The map draws the name the record gives each feature, end-truncated only where
+// it does not fit. Its tooltip and accessible name always carry the full name.
 const features = [
   feature('box', 'sigma70 -35 box', 'regulatory', 39, 45),
   feature('primer', 'M13/pUC forward primer (-47)', 'primer_bind', 300, 323),
@@ -19,13 +18,21 @@ const features = [
 ];
 
 describe('map feature names', () => {
-  it('draws a shortened name and keeps the full one beside it', () => {
-    expect(mapFeaturesForDrawing(features).map((f) => [f.name, 'titleName' in f ? f.titleName : undefined])).toEqual([
-      ['sigma70 -35 b…', 'sigma70 -35 box'],
-      ['M13/pUC fwd', 'M13/pUC forward primer (-47)'],
-      ['AmpR prom.', 'AmpR promoter'],
-      ['ori', 'ori'],
+  it('passes every name through unchanged', () => {
+    expect(mapFeaturesForDrawing(features).map((f) => f.name)).toEqual([
+      'sigma70 -35 box',
+      'M13/pUC forward primer (-47)',
+      'AmpR promoter',
+      'ori',
     ]);
+  });
+
+  it('leaves whole-record source features off the map', () => {
+    const source: Feature = {
+      ...feature('src', 'source', 'custom', 0, 3000),
+      metadata: { motifOriginalFeatureKey: 'source' },
+    };
+    expect(mapFeaturesForDrawing([source, ...features]).map((f) => f.id)).toEqual(['box', 'primer', 'amp', 'ori']);
   });
 
   for (const mode of ['circular', 'linear'] as const) {
@@ -46,16 +53,16 @@ describe('map feature names', () => {
       expect(byId.get('primer')!.title).toBe('M13/pUC forward primer (-47) · primer_bind · 301–323 →');
       expect(byId.get('amp')!.title).toBe('AmpR promoter · promoter · 901–1005 →');
       expect(byId.get('ori')!.title).toBe('ori · origin · 1501–2089 →');
-      // The drawn labels stay the shortened ones.
+      // The drawn labels are the record's names, never abbreviations.
       const drawn = layout.features.map((f) => f.label?.text).filter(Boolean);
-      expect(drawn).toContain('AmpR prom.');
-      expect(drawn).not.toContain('AmpR promoter');
+      expect(drawn).toContain('AmpR promoter');
+      expect(drawn).not.toContain('AmpR prom.');
     });
 
     it(`names a regulatory feature's class on the ${mode} map`, () => {
       const [box] = parseFeatures([
         '     -35_signal      40..45',
-        '                     /note="sigma70 -35 box"',
+        '                     /label="sigma70 -35 box"',
       ].join('\n'));
       const layout = computeMapLayout({
         mode,

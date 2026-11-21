@@ -51,7 +51,11 @@ describe('Claude Science cloning design workspace guards', () => {
   });
 
   it('avoids glowing, one-sided active cards and unsafe broad transitions', () => {
-    expect(css).not.toMatch(/box-shadow\s*:/);
+    // No glow, no one-sided bar and no ring: the shared toggle "on" is a fill with no edge,
+    // so the only box-shadow declaration left is the one that clears it.
+    const shadows = css.match(/box-shadow\s*:[^;]*;/g) ?? [];
+    for (const shadow of shadows) expect(shadow).toBe('box-shadow: none;');
+    expect(shadows.length).toBeGreaterThan(0);
     expect(css).not.toMatch(/text-shadow\s*:/);
     expect(css).not.toMatch(/transition\s*:\s*all/);
     expect(css).not.toMatch(/border-left-color\s*:\s*var\(--accent/);
@@ -70,33 +74,22 @@ describe('Claude Science cloning design workspace guards', () => {
     );
   });
 
-  it('sets reading text at 10px or more and keeps smaller sizes for labels and tags', () => {
-    // 28 rules set sentence text at 9-9.5px, so 63 of 99 painted text nodes at two
-    // parts were 9.5px or smaller; the primer workspace had 17 of 157.
-    const smallReadingRules = [...css.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+  it('sets no text below 12px, labels and tags included', () => {
+    // Every size is a --fs-* token (12px at the smallest), so no rule keeps a literal px
+    // size below 12.
+    const smallRules = [...css.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{}]+)\{([^{}]*)\}/g)]
       .filter(([, , body]) => {
         const size = body.match(/font-size:\s*([\d.]+)px/);
-        return size !== null && Number(size[1]) <= 9.5 && !/text-transform:\s*uppercase/.test(body);
+        return size !== null && Number(size[1]) < 12;
       })
       .map(([, selector]) => selector.trim().replace(/\s+/g, ' '));
-    expect(smallReadingRules).toEqual([
-      // Declared but overridden: the broad `button { font: inherit }` rule wins.
-      '.motif-cs-cloning-design-quiet-button',
-      // The "Closing" tag on a Gibson junction lane.
-      '.motif-cs-cloning-design-lane em',
-      // "Golden Gate" ellipsizes in the review's 62px Method column above 9.5px.
-      '.motif-cs-cloning-design-product dd, .motif-cs-cloning-design-summary dd',
-    ]);
+    expect(smallRules).toEqual([]);
   });
 
-  it('shows the window subtitle in full when the title bar has room for it', () => {
-    // A 22ch cap cut "Golden Gate profiles + Gibson" to "Golden Gate profiles + Gib…"
-    // in a 1,178px title bar. The ellipsis stays for a bar that is too narrow.
-    expect(host).toContain('subtitle="Golden Gate profiles + Gibson"');
-    const rule = artifactCss.match(/\.motif-cs-window-title small\s*\{([^}]*)\}/)?.[1] ?? '';
-    expect(rule).toContain('overflow: hidden;');
-    expect(rule).toContain('text-overflow: ellipsis;');
-    expect(rule).not.toContain('max-width');
+  it('titles the window "Cloning design" with no subtitle', () => {
+    expect(host).toContain('title={WORKSPACE_WINDOW_TITLES.cloningDesign}');
+    expect(host).toContain("cloningDesign: 'Cloning design',");
+    expect(host).not.toContain('subtitle=');
   });
 
   it('revalidates source hashes and records actual product order before host mutation', () => {

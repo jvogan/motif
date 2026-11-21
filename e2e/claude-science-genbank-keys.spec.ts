@@ -1,10 +1,13 @@
 import { readFile } from 'node:fs/promises';
 import { expect, test, type Page } from '@playwright/test';
+import { openTool } from './tool-panel-aliases';
 
 const artifactUrl = process.env.MOTIF_ARTIFACT_URL;
 
 // A protein_bind has no Motif type, so it reads as `custom`; an ncRNA without
-// the /ncRNA_class INSDC makes mandatory gets the vocabulary's "other".
+// the /ncRNA_class INSDC makes mandatory gets the vocabulary's "other". A
+// feature is named by /label, /gene or /product: with only a /note it takes its
+// key as its name, so the named features here carry a /label as well as a /note.
 const fixture = [
   'LOCUS       KEYDEMO                   60 bp    DNA     linear   SYN 23-SEP-2026',
   'DEFINITION  Feature-key round trip.',
@@ -13,6 +16,7 @@ const fixture = [
   '     protein_bind    5..21',
   '                     /bound_moiety="lac repressor"',
   '                     /note="lac operator"',
+  '                     /label="lac operator"',
   '     ncRNA           complement(30..50)',
   '                     /note="unclassed RNA"',
   'ORIGIN',
@@ -38,7 +42,7 @@ test.describe('Basic GenBank feature keys', () => {
 
   async function importText(page: Page, name: string, text: string) {
     const before = (await inventory(page)).length;
-    await page.getByRole('button', { name: 'Add entry' }).first().click();
+    await page.getByRole('button', { name: 'Import records' }).first().click();
     await page.getByLabel('Choose sequence or workspace files').setInputFiles({ name, mimeType: 'text/plain', buffer: Buffer.from(text) });
     await expect.poll(async () => (await inventory(page)).length).toBe(before + 1);
     await page.keyboard.press('Escape');
@@ -86,20 +90,27 @@ test.describe('Basic GenBank feature keys', () => {
     '     protein_bind    5..21',
     '                     /bound_moiety="lac repressor"',
     '                     /note="lac operator"',
+    '                     /label="lac operator"',
     '     misc_binding    25..36',
     '                     /bound_moiety="theophylline"',
     '                     /note="aptamer"',
+    '                     /label="aptamer"',
     '     -35_signal      40..45',
     '                     /note="minus 35 box"',
+    '                     /label="minus 35 box"',
     '     -10_signal      63..68',
     '                     /note="minus 10 box"',
+    '                     /label="minus 10 box"',
     '     TATA_signal     70..76',
     '                     /note="TATA"',
+    '                     /label="TATA"',
     '     misc_signal     80..90',
     '                     /note="unknown signal"',
+    '                     /label="unknown signal"',
     '     regulatory      95..115',
     '                     /regulatory_class="riboswitch"',
     '                     /note="TPP riboswitch"',
+    '                     /label="TPP riboswitch"',
     'ORIGIN',
     '        1 gctaaagaca attacataac atacacgtca gcacgaaact tgttggccca gtgtgaatcg',
     '       61 cttaagggtt aagtaagtgt gatgcatacg cctttacttg ctgtgtccac cccatcggac',
@@ -125,7 +136,7 @@ test.describe('Basic GenBank feature keys', () => {
     const minus10 = page.locator('.motif-cs-feature-block[title^="minus 10 box · "]').first();
     await expect(minus10).toHaveAttribute('title', 'minus 10 box · regulatory (minus_10_signal) · 63-68 · Double-click to edit');
     await minus10.click();
-    await page.locator('[data-rail-tool="inspector"] summary').click();
+    await openTool(page, 'inspector');
     await expect(page.locator('.motif-cs-inspector-body strong', { hasText: 'minus 10 box' }).locator('xpath=following-sibling::span[1]'))
       .toHaveText('regulatory (minus_10_signal) · 63-68 · forward');
     await page.keyboard.press('Escape');
@@ -141,8 +152,9 @@ test.describe('Basic GenBank feature keys', () => {
       'tata_signal regulatory', 'misc_signal regulatory', 'regulatory regulatory',
     ]);
     const gff3 = await exportAs(page, 'Active record - Basic GFF3 features');
+    // The first row is the record-wide region that carries the name and Is_circular.
     expect(gff3.split('\n').filter((line) => line.includes('\tMotif\t')).map((line) => line.split('\t')[2]))
-      .toEqual(['protein_bind', 'misc_binding', 'regulatory', 'regulatory', 'regulatory', 'regulatory', 'regulatory']);
+      .toEqual(['region', 'protein_bind', 'misc_binding', 'regulatory', 'regulatory', 'regulatory', 'regulatory', 'regulatory']);
 
     const first = await exportGenBank(page);
     const blocks = first.slice(first.indexOf('FEATURES'), first.indexOf('\nORIGIN')).split(/\n(?= {5}\S)/).slice(1);
@@ -173,7 +185,7 @@ test.describe('Basic GenBank feature keys', () => {
     await expect(typeMenu.locator('option:checked')).toHaveText('protein_bind');
     await expect(typeMenu.locator('option')).toHaveCount(13);
     await typeMenu.selectOption('promoter');
-    await page.getByRole('button', { name: 'Update', exact: true }).click();
+    await page.getByRole('button', { name: 'Save feature', exact: true }).click();
     await expect(page.locator('.motif-cs-feature-block[title^="lac operator · "]').first()).toHaveAttribute('title', 'lac operator · promoter · 5-21 · Double-click to edit');
     const retyped = await exportGenBank(page);
     expect(retyped).toMatch(/\n {5}regulatory {6}5\.\.21\n(?: {21}\/.*\n)*? {21}\/regulatory_class="promoter"\n/);

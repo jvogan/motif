@@ -37,31 +37,26 @@ function isDefiniteCodonMember(codon: string, accepted: ReadonlySet<string>): bo
   return expansions.length > 0 && expansions.every((concreteCodon) => accepted.has(concreteCodon));
 }
 
-function addWarning(warnings: string[], warning: string): void {
-  if (!warnings.includes(warning)) warnings.push(warning);
+type AmbiguousCodon = { warning: string; positions: number[] };
+
+function firstPositionAtOrAfter(positions: readonly number[], start: number): number {
+  let low = 0;
+  let high = positions.length;
+  while (low < high) {
+    const mid = low + Math.floor((high - low) / 2);
+    if (positions[mid] < start) low = mid + 1;
+    else high = mid;
+  }
+  return positions[low] ?? Infinity;
 }
 
-function ambiguityWarnings(
-  seq: string,
-  start: number,
-  end: number,
-  table: CodonTable,
-  hasAmbiguity: boolean,
-): string[] {
-  const warnings: string[] = [];
-  if (!hasAmbiguity) return warnings;
-  for (let position = start; position + 2 < end; position += 3) {
-    const codon = seq.slice(position, position + 3);
-    const resolution = resolveIupacCodon(codon, table);
-    if (!resolution.ambiguous) continue;
-    if (resolution.residue !== null) {
-      addWarning(warnings, `Ambiguous codon ${codon} resolves deterministically to ${resolution.residue}`);
-    } else {
-      const possibilities = resolution.residues.length > 0 ? resolution.residues.join('/') : 'an unknown residue';
-      addWarning(warnings, `Ambiguous codon ${codon} is indeterminate (${possibilities})`);
-    }
+function ambiguityWarning(codon: string, table: CodonTable): string {
+  const resolution = resolveIupacCodon(codon, table);
+  if (resolution.residue !== null) {
+    return `Ambiguous codon ${codon} resolves deterministically to ${resolution.residue}`;
   }
-  return warnings;
+  const possibilities = resolution.residues.length > 0 ? resolution.residues.join('/') : 'an unknown residue';
+  return `Ambiguous codon ${codon} is indeterminate (${possibilities})`;
 }
 
 function boundaryWarning(topology: Topology): string {
@@ -70,56 +65,14 @@ function boundaryWarning(topology: Topology): string {
     : 'No in-frame stop codon before the sequence boundary';
 }
 
-/**
- * Find all ORFs in a DNA sequence across all 3 reading frames on both strands.
- * Valid IUPAC DNA ambiguity symbols are accepted. Each result explicitly
- * reports whether a table-recognized stop completed it or whether it is a
- * partial boundary-limited candidate; ambiguity warnings explain any codons
- * whose concrete expansions do not agree.
- */
-/**
- * A six-frame scan is expensive and its answer depends on nothing but the four
- * arguments below, so it is worth remembering.
- *
- * Two callers asked the same question over and over. Dragging a range selection
- * re-ran the whole scan on every pointermove, because the effect that keeps the
- * artifact's snapshot current lists the selection in its dependencies and the
- * snapshot names the longest ORF — measured at 4.9ms of scan per move on the
- * synthetic pUC19 once bundled and 10.6ms on a 6,788 bp record, where one move
- * already costs more than
- * a whole frame. A selection cannot change a record's ORFs, so all of it was
- * waste. Switching back to a record you have already opened paid the same scan
- * again, 17.7ms of a 53ms switch.
- *
- * The table is the WeakMap key so a genetic code the app has dropped takes its
- * results with it. The inner map is bounded because sequences are not: it holds
- * the last ORF_CACHE_LIMIT distinct (topology, minimum, sequence) triples and
- * evicts in insertion order.
- *
- * That limit was 12 while the shipped inventory holds 13 records, which is the
- * worst possible pairing: walking the tab strip evicts the entry you are about
- * to ask for, so a lap missed every single time and the round-robin switch only
- * improved from 48.5ms to 42.5ms while a two-record alternation went to 27.0ms
- * with no long tasks at all. The count is 32 now, and additional bounds cap the
- * total sequence and ORF objects held, so long or ORF-dense records cannot turn
- * a cache into a leak. Oversized result sets are returned but not cached. The
- * entry just inserted is never the one evicted.
- *
- * Hits return a copy. The scan mutates its own ORF objects while unwinding the
- * reverse strand, and a caller that sorted or spliced the array it was handed
- * would otherwise rewrite the cached answer for everyone after it.
- */
+// The weak key ties cached scans to the lifetime of the codon table. Each
+// table's cache is bounded by entry count, key characters, and result count.
 const ORF_CACHE_LIMIT = 32;
 const ORF_CACHE_MAX_CHARS = 4_000_000;
 const ORF_CACHE_MAX_RESULTS = 50_000;
 const ORF_CACHE_MAX_RESULTS_PER_ENTRY = 25_000;
 
-type ORFCacheEntry = {
-  orfs: ORF[];
-  sequenceChars: number;
-};
-
-const orfCache = new WeakMap<CodonTable, Map<string, ORFCacheEntry>>();
+const orfCache = new WeakMap<CodonTable, Map<string, ORF[]>>();
 
 type CodonTableSnapshot = {
   starts: string[];
@@ -163,6 +116,10 @@ function cloneORFs(orfs: readonly ORF[]): ORF[] {
   }));
 }
 
+/**
+ * Scan all six reading frames, including partial ORFs at sequence boundaries.
+ * Ambiguity warnings identify codons whose concrete expansions disagree.
+ */
 export function findORFs(
   seq: string,
   minAminoAcids = 30,
@@ -189,10 +146,10 @@ export function findORFs(
 
   const startKey = startCodons === null ? '*' : [...startCodons].sort().join(',');
   const cacheKey = `${codonTableVersion(effectiveTable)}|${topology}|${effectiveMinAa}|${startKey}|${upper}`;
-  const cacheableSequence = upper.length <= ORF_CACHE_MAX_CHARS;
+  const cacheableSequence = cacheKey.length <= ORF_CACHE_MAX_CHARS;
   let tableCache = orfCache.get(effectiveTable);
   const cached = cacheableSequence ? tableCache?.get(cacheKey) : undefined;
-  if (cached) return cloneORFs(cached.orfs);
+  if (cached) return cloneORFs(cached);
 
   const circular = topology === 'circular';
   const forwardScanBuffer = circular ? upper + upper : upper;
@@ -233,19 +190,13 @@ export function findORFs(
       startCodons,
     );
     for (const orf of found) {
-      if (circular) {
-        const origStart = 2 * seqLen - orf.end;
-        const origEnd = 2 * seqLen - orf.start;
-        orf.start = origStart;
-        orf.end = origEnd;
-        if (orf.start >= 0 && orf.start < seqLen) orfs.push(orf);
-      } else {
-        const origStart = seqLen - orf.end;
-        const origEnd = seqLen - orf.start;
-        orf.start = origStart;
-        orf.end = origEnd;
-        orfs.push(orf);
-      }
+      if (circular && orf.start >= seqLen) continue;
+      const origStart = seqLen - orf.end;
+      const origEnd = seqLen - orf.start;
+      const wrap = origStart < 0 ? seqLen : 0;
+      orf.start = origStart + wrap;
+      orf.end = origEnd + wrap;
+      orfs.push(orf);
     }
   }
 
@@ -257,29 +208,38 @@ export function findORFs(
   if (!cacheableSequence || orfs.length > ORF_CACHE_MAX_RESULTS_PER_ENTRY) return orfs;
 
   if (!tableCache) {
-    tableCache = new Map<string, ORFCacheEntry>();
+    tableCache = new Map<string, ORF[]>();
     orfCache.set(effectiveTable, tableCache);
   }
-  tableCache.set(cacheKey, { orfs, sequenceChars: upper.length });
+  rememberOrfScan(tableCache, cacheKey, orfs);
+  return cloneORFs(orfs);
+}
+
+/** Store one scan and evict the oldest entries first, retaining the newest. */
+export function rememberOrfScan(
+  cache: Map<string, ORF[]>,
+  key: string,
+  orfs: ORF[],
+  maxChars = ORF_CACHE_MAX_CHARS,
+): void {
+  cache.set(key, orfs);
   let cachedChars = 0;
   let cachedResults = 0;
-  for (const value of tableCache.values()) {
-    cachedChars += value.sequenceChars;
-    cachedResults += value.orfs.length;
+  for (const [cachedKey, result] of cache) {
+    cachedChars += cachedKey.length;
+    cachedResults += result.length;
   }
-  while (tableCache.size > 0 && (
-    tableCache.size > ORF_CACHE_LIMIT
-    || cachedChars > ORF_CACHE_MAX_CHARS
+  while (cache.size > 1 && (
+    cache.size > ORF_CACHE_LIMIT
+    || cachedChars > maxChars
     || cachedResults > ORF_CACHE_MAX_RESULTS
   )) {
-    const oldest = tableCache.keys().next();
+    const oldest = cache.keys().next();
     if (oldest.done) break;
-    const evicted = tableCache.get(oldest.value);
-    cachedChars -= evicted?.sequenceChars ?? 0;
-    cachedResults -= evicted?.orfs.length ?? 0;
-    tableCache.delete(oldest.value);
+    cachedChars -= oldest.value.length;
+    cachedResults -= cache.get(oldest.value)?.length ?? 0;
+    cache.delete(oldest.value);
   }
-  return cloneORFs(orfs);
 }
 
 /**
@@ -308,6 +268,7 @@ function findORFsInFrame(
   const startPositions: number[] = [];
   const stopPositions: number[] = [];
   const hasAmbiguity = /[RYSWKMBDHVN]/.test(seq);
+  const ambiguousCodons = new Map<string, AmbiguousCodon>();
 
   for (let position = frameOffset; position + 2 < seq.length; position += 3) {
     const codon = seq.slice(position, position + 3);
@@ -316,7 +277,45 @@ function findORFsInFrame(
       : isDefiniteCodonMember(codon, startCodons);
     if (initiator) startPositions.push(position);
     if (isDefiniteCodonMember(codon, stops)) stopPositions.push(position);
+    if (hasAmbiguity && /[RYSWKMBDHVN]/.test(codon)) {
+      let evidence = ambiguousCodons.get(codon);
+      if (!evidence) {
+        evidence = { warning: ambiguityWarning(codon, table), positions: [] };
+        ambiguousCodons.set(codon, evidence);
+      }
+      evidence.positions.push(position);
+    }
   }
+
+  // Most overlapping candidates are only counted. Materialize their evidence
+  // on read, using the first occurrence of each codon in the interval.
+  const withWarnings = (orf: ORF): ORF => {
+    const { start, end, status } = orf;
+    if (ambiguousCodons.size === 0) {
+      orf.warnings = status === 'partial' ? [boundaryWarning(topology)] : [];
+      return orf;
+    }
+    const setWarnings = (warnings: string[] | undefined) => {
+      Object.defineProperty(orf, 'warnings', { value: warnings, enumerable: true, writable: true, configurable: true });
+    };
+    return Object.defineProperty(orf, 'warnings', {
+      enumerable: true,
+      configurable: true,
+      get() {
+        const evidence: Array<{ position: number; warning: string }> = [];
+        for (const { warning, positions } of ambiguousCodons.values()) {
+          const position = firstPositionAtOrAfter(positions, start);
+          if (position + 2 < end) evidence.push({ position, warning });
+        }
+        evidence.sort((left, right) => left.position - right.position);
+        const warnings = evidence.map(({ warning }) => warning);
+        if (status === 'partial') warnings.push(boundaryWarning(topology));
+        setWarnings(warnings);
+        return warnings;
+      },
+      set: setWarnings,
+    });
+  };
 
   let nextStopIndex = 0;
   for (const startPos of startPositions) {
@@ -330,8 +329,7 @@ function findORFsInFrame(
       const bpLength = stopPos + 3 - startPos;
       const aaLength = Math.floor(bpLength / 3) - 1;
       if (aaLength >= minAminoAcids) {
-        const warnings = ambiguityWarnings(seq, startPos, stopPos + 3, table, hasAmbiguity);
-        orfs.push({
+        orfs.push(withWarnings({
           start: startPos,
           end: stopPos + 3,
           frame: frameForStart(startPos, originalLength),
@@ -341,8 +339,7 @@ function findORFsInFrame(
           startCodon: seq.slice(startPos, startPos + 3),
           stopCodon: seq.slice(stopPos, stopPos + 3),
           status: 'complete',
-          warnings,
-        });
+        }));
         continue;
       }
       continue;
@@ -356,9 +353,7 @@ function findORFsInFrame(
     const bpLength = implicitEnd - startPos;
     const aaLength = bpLength / 3;
     if (aaLength >= minAminoAcids) {
-      const warnings = ambiguityWarnings(seq, startPos, implicitEnd, table, hasAmbiguity);
-      addWarning(warnings, boundaryWarning(topology));
-      orfs.push({
+      orfs.push(withWarnings({
         start: startPos,
         end: implicitEnd,
         frame: frameForStart(startPos, originalLength),
@@ -368,8 +363,7 @@ function findORFsInFrame(
         startCodon: seq.slice(startPos, startPos + 3),
         stopCodon: '',
         status: 'partial',
-        warnings,
-      });
+      }));
     }
   }
 

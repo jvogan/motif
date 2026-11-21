@@ -16,11 +16,13 @@ describe('parsePastedSequence', () => {
       genbankRecordCount: 0,
       droppedLines: 0,
       droppedCharacters: 0,
+      droppedLetters: [],
+      convertedCharacters: 0,
     });
   });
 
   it('drops a FASTA header instead of filtering it into bases', () => {
-    // The reported bug: `>gi|12345|ref|NM_001` survives a character filter as
+    // A header such as `>gi|12345|ref|NM_001` survives a character filter as
     // GRNM, because every one of those four is a legal IUPAC ambiguity code, and
     // renders in the canvas as ordinary sequence.
     const bare = 'ATGCATGC'.split('').filter((c) => DNA.includes(c)).join('');
@@ -435,6 +437,26 @@ describe('parsePastedSequence', () => {
     expect(parsePastedSequence('ATGC', 'ACGURYSWKMBDHVN').droppedCharacters).toBe(1);
   });
 
+  it('reads U as T in DNA and T as U in RNA, and counts each one', () => {
+    const dna = parsePastedSequence('AUGaug', DNA, { U: 'T' });
+    expect(dna.sequence).toBe('ATGATG');
+    expect(dna.convertedCharacters).toBe(2);
+    expect(dna.droppedCharacters).toBe(0);
+    const rna = parsePastedSequence('ACGTACGT', 'ACGURYSWKMBDHVN', { T: 'U' });
+    expect(rna.sequence).toBe('ACGUACGU');
+    expect(rna.convertedCharacters).toBe(2);
+  });
+
+  it('names each rejected letter once, so protein is not silently read as ambiguity codes', () => {
+    // M, S, D and V are IUPAC codes; E, P and Q are not DNA at all.
+    const parsed = parsePastedSequence('MEEPQSDPSV', DNA, { U: 'T' });
+    expect(parsed.droppedLetters).toEqual(['E', 'P', 'Q']);
+    expect(parsed.droppedCharacters).toBe(5);
+    // Gaps, stops, digits and letters outside A-Z are not named.
+    expect(parsePastedSequence('ATG-C*1', DNA).droppedLetters).toEqual([]);
+    expect(parsePastedSequence('ßſ', DNA, { U: 'T' })).toMatchObject({ sequence: '', droppedCharacters: 2, droppedLetters: [] });
+  });
+
   it('returns nothing for empty input without reporting a loss', () => {
     expect(parsePastedSequence('', DNA)).toEqual({
       ok: true,
@@ -445,6 +467,8 @@ describe('parsePastedSequence', () => {
       genbankRecordCount: 0,
       droppedLines: 0,
       droppedCharacters: 0,
+      droppedLetters: [],
+      convertedCharacters: 0,
     });
   });
 });

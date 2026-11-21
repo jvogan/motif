@@ -10,7 +10,7 @@ experimental design.
 | `motif-demo.gb` | GenBank import and first connector-created workbench | `MOTIFDEMO`, linear DNA, 180 bp, two features |
 | `synthetic-proteins.fasta` | Multi-record FASTA intake and browser MSA | Three synthetic protein records; lengths 60, 60, and 59 aa |
 | `synthetic-proteins.aln` | Aligned CLUSTAL import and review | Three rows, 60 alignment columns, one gap |
-| `synthetic-alignment-workspace.json` | Database JSON restore, notes, alignment, provenance, and inert report review | Three records, one alignment, one note, one report, one text asset |
+| `synthetic-alignment-workspace.json` | Workspace JSON restore, notes, alignment, provenance, and inert report review | Three records, one alignment, one note, one report, one text asset |
 
 ## GenBank installation check
 
@@ -31,7 +31,7 @@ and verify these values during the installation check.
 
 ## FASTA and aligned CLUSTAL checks
 
-Run the standalone preview, open **Add Entry**, and import
+Run the standalone preview, open **Import records**, and import
 `synthetic-proteins.fasta`. Confirm that all three records are proteins, then
 open the Alignment workspace and run the bounded browser preview.
 
@@ -41,8 +41,8 @@ rows, 60 columns, and one visible gap in `synthetic_protein_c`.
 
 ## Complete workspace check
 
-Restore `synthetic-alignment-workspace.json` from **Settings → Data & recovery →
-Restore Database JSON**. Confirm the three records, the saved alignment, the
+Restore `synthetic-alignment-workspace.json` with **Import records**, or drop the
+file on the workbench. Confirm the three records, the saved alignment, the
 workspace note, and the inert report in Results.
 
 To create a preloaded standalone artifact from the same validated payload:

@@ -1,8 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { prepareMotifWorkbench } from '../payload.js';
+import { MOTIF_MCP_LIMITS, prepareMotifWorkbench } from '../payload.js';
 
 describe('Motif payload format detection', () => {
+  it('rejects direct payloads over the serialized UTF-8 byte limit', () => {
+    const payload = { records: [], padding: 'é'.repeat(MOTIF_MCP_LIMITS.maxPayloadBytes / 2) };
+    expect(() => prepareMotifWorkbench({ payload })).toThrow('Payload cannot exceed 32 MiB.');
+  });
+
   it('stays linear on content made of many blank lines', () => {
     const content = `ACGT\n${'\n'.repeat(200_000)}x`;
     const startedAt = performance.now();

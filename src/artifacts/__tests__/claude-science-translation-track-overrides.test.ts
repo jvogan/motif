@@ -41,6 +41,45 @@ function residueAt(sequence: string, source: Feature, overrides: ReturnType<type
   return inlineTrackResidues(sequence, 'dna', track(source, overrides), 'linear').find((residue) => residue.start === start);
 }
 
+describe('translation residue coordinates', () => {
+  it.each([
+    [1, 0, [['M', 0, 3], ['P', 3, 6], ['*', 6, 9]]],
+    [1, 1, [['C', 1, 4], ['P', 4, 7]]],
+    [1, 2, [['A', 2, 5], ['L', 5, 8]]],
+    [-1, 0, [['L', 6, 9], ['G', 3, 6], ['H', 0, 3]]],
+    [-1, 1, [['*', 5, 8], ['G', 2, 5]]],
+    [-1, 2, [['R', 4, 7], ['A', 1, 4]]],
+  ] as const)('places strand %d frame offset %d on the bases read', (strand, frame, expected) => {
+    const residues = inlineTrackResidues('ATGCCCTAA', 'dna', {
+      ...track(feature('cds', 'cds', 0, 9, strand), new Map()), frame,
+    }, 'linear');
+    expect(residues.map(({ aa, start, end }) => [aa, start, end])).toEqual(expected);
+  });
+
+  it('places a codon across the circular origin on both strands', () => {
+    const sequence = 'GCCCTAANNAT';
+    const residues = (strand: 1 | -1) => inlineTrackResidues(sequence, 'dna',
+      track(feature('cds', 'cds', 9, 18, strand), new Map()), 'circular');
+    expect(residues(1)).toEqual([
+      { aa: 'M', start: 9, end: 12 }, { aa: 'P', start: 1, end: 4 }, { aa: '*', start: 4, end: 7 },
+    ]);
+    expect(residues(-1)).toEqual([
+      { aa: 'L', start: 4, end: 7 }, { aa: 'G', start: 1, end: 4 }, { aa: 'H', start: 9, end: 12 },
+    ]);
+  });
+
+  it('preserves the reading origin of a rotated full-circle track', () => {
+    const source = feature('cds', 'cds', 1, 11, 1);
+    // Start at position 1 of the ten-base circle, reading ATG CCC TAG A.
+    expect(inlineTrackResidues('AATGCCCTAG', 'dna', track(source, new Map()), 'circular')).toEqual([
+      { aa: 'M', start: 1, end: 4 }, { aa: 'P', start: 4, end: 7 }, { aa: '*', start: 7, end: 10 },
+    ]);
+    expect(inlineTrackResidues('AATGCCCTAG', 'dna', track({ ...source, strand: -1 }, new Map()), 'circular')).toEqual([
+      { aa: 'S', start: 8, end: 11 }, { aa: 'R', start: 5, end: 8 }, { aa: 'A', start: 2, end: 5 },
+    ]);
+  });
+});
+
 describe('a CDS /transl_except on the other coding tracks over its codon', () => {
   const cds = feature('cds', 'cds', 1, 19, 1, { transl_except: '(pos:8..10,aa:Sec)' });
   const overrides = cdsCodonOverrides([cds], materialize(SEQUENCE));

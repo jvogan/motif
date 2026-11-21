@@ -215,7 +215,7 @@ export function ClaudeScienceWorkflowHistoryPanel({
       {ordered.length === 0 ? (
         <div className="motif-cs-workflow-empty">
           <strong>No saved results</strong>
-          <span>Save a digest, gel, Golden Gate, or ligation result to keep its inputs and provenance with this workspace.</span>
+          <span>Save a digest, gel, or assembly result here.</span>
         </div>
       ) : (
         <div className="motif-cs-workflow-list" data-testid="workflow-result-list">

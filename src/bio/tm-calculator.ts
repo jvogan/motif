@@ -396,8 +396,9 @@ function santaluciaSaltCorrection(
  * naConc in mM. Returns corrected Tm in °C.
  */
 function wetmurSaltCorrection(tmK: number, naConc: number): number {
-  // Tm(Na) ≈ Tm(1M) + 16.6 * log10([Na+])
-  const correction = 16.6 * Math.log10(naConc / 1000);
+  const sodiumMolar = naConc / 1000;
+  // The input Tm is referenced to 1 M Na+, where the activity term is 1 / 1.7.
+  const correction = 16.6 * Math.log10(1.7 * sodiumMolar / (1 + 0.7 * sodiumMolar));
   return tmK - 273.15 + correction;
 }
 

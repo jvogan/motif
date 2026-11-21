@@ -2,18 +2,16 @@
 
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { isDirectScriptExecution } from './lib/direct-script.mjs';
 import {
   DEFAULT_CLAUDE_SCIENCE_CONFIG_PATH,
-  MOTIF_LOCAL_CONNECTOR_NAME,
   desiredMotifLocalServer,
-  motifLocalServerMatches,
   preflightConnectorFiles,
-  readLocalMcpConfig,
+  readRegisteredMotifLocalServer,
+  resolveNodeBinary,
 } from './lib/motif-local-mcp-config.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -90,11 +88,14 @@ class StdioMcpClient {
     this.protocolError = null;
     this.lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
     this.lines.on('line', line => this.handleLine(line));
-    // A connector that exits between protocol steps closes its stdin; the exit
-    // handler below reports that, so a late write error must not crash the doctor.
-    child.stdin.on('error', () => {});
+    // A connector that exits between protocol steps closes its stdin, and the
+    // close handler below reports that exit, so a late EPIPE is expected. Any
+    // other stdin failure fails the pending requests.
+    child.stdin.on('error', error => {
+      if (error.code !== 'EPIPE') this.failAll('connector protocol stdin failed');
+    });
     child.once('error', error => this.failAll(`connector process failed to start (${error.code ?? 'unknown'})`));
-    child.once('exit', (code, signal) => {
+    child.once('close', (code, signal) => {
       if (this.pending.size > 0) {
         this.failAll(`connector exited before replying (${signal ?? code ?? 'unknown'})`);
       }
@@ -111,7 +112,7 @@ class StdioMcpClient {
       this.failAll(this.protocolError.message);
       return;
     }
-    if (message.id === undefined) return;
+    if (message?.id === undefined) return;
     const pending = this.pending.get(message.id);
     if (!pending) return;
     this.pending.delete(message.id);
@@ -166,18 +167,6 @@ class StdioMcpClient {
   }
 }
 
-function doctorEnvironment(paths) {
-  return {
-    HOME: homedir(),
-    PATH: '/usr/bin:/bin:/usr/sbin:/sbin',
-    TMPDIR: process.env.TMPDIR || tmpdir(),
-    LANG: 'C.UTF-8',
-    MOTIF_NODE_BIN: process.execPath,
-    MOTIF_ROOT: paths.root,
-    MOTIF_MCP_TRACE: '1',
-  };
-}
-
 function captureStderr(stream, maximumBytes = 1_048_576) {
   const chunks = [];
   let bytes = 0;
@@ -205,23 +194,23 @@ function toolResourceUri(tool) {
   return tool?._meta?.ui?.resourceUri ?? tool?._meta?.['ui/resourceUri'];
 }
 
-async function inspectProtocol(paths, timeoutMs) {
-  // Mirror the registered command exactly: /usr/bin/env applies the minimal
-  // startup environment before Bash can inspect BASH_ENV, ENV, or imports.
-  const child = spawn('/usr/bin/env', [
-    '-i',
-    `MOTIF_NODE_BIN=${process.execPath}`,
-    `MOTIF_ROOT=${paths.root}`,
-    'MOTIF_MCP_TRACE=1',
-    'PATH=/usr/bin:/bin',
-    '/bin/bash',
-    '--noprofile',
-    '--norc',
-    '-p',
-    paths.launcher,
-  ], {
+const LAUNCHER_DIAGNOSTICS = [
+  'MOTIF_ROOT does not match this connector checkout.',
+  'A required built connector file is missing or unsafe.',
+  'MOTIF_NODE_BIN must be an absolute executable path.',
+  'Node.js 22.13 or newer (22.x) or 24 or newer is required.',
+];
+const BOOTSTRAP_DIAGNOSTICS = [
+  'Motif runtime resources have missing or inconsistent build identities.',
+  'Motif artifact template is missing its embedded data tag.',
+  'Motif MCP App resource could not be read.',
+  'Motif artifact template could not be read.',
+];
+
+async function inspectProtocol({ entry, paths }, timeoutMs, { initializeOnly = false } = {}) {
+  const child = spawn(entry.command, entry.args, {
     cwd: paths.root,
-    env: doctorEnvironment(paths),
+    env: entry.env,
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   const stderrSnapshot = captureStderr(child.stderr);
@@ -234,7 +223,9 @@ async function inspectProtocol(paths, timeoutMs) {
       clientInfo: { name: 'motif-local-doctor', version: '1.0.0' },
     });
     assert(initialized?.serverInfo?.name === 'motif-claude-science', 'server identity is not motif-claude-science');
+    assert(typeof initialized.protocolVersion === 'string' && initialized.protocolVersion, 'connector did not negotiate an MCP version');
     client.notify('notifications/initialized');
+    if (initializeOnly) return { protocolVersion: initialized.protocolVersion };
 
     const listed = await client.request('tools/list');
     const tools = Array.isArray(listed?.tools) ? listed.tools : [];
@@ -333,9 +324,21 @@ async function inspectProtocol(paths, timeoutMs) {
       artifactBytes: Buffer.byteLength(embeddedArtifact.text, 'utf8'),
       stderrBytes: stderr.bytes,
     };
+  } catch (error) {
+    const lines = stderrSnapshot().text.split(/\r?\n/u);
+    const diagnostic = LAUNCHER_DIAGNOSTICS.find(message => lines.includes(`[motif-claude-science] ${message}`))
+      ?? BOOTSTRAP_DIAGNOSTICS.find(message => lines.includes(`[motif] Fatal error: ${message}`)
+        || lines.includes(`[motif-claude-science] Fatal error: ${message}`));
+    if (diagnostic) throw new Error(diagnostic);
+    throw error;
   } finally {
     await client.close();
   }
+}
+
+export async function checkRegisteredConnector(configPath, timeoutMs = 10_000) {
+  const registration = readRegisteredMotifLocalServer(configPath);
+  return inspectProtocol(registration, timeoutMs, { initializeOnly: true });
 }
 
 export async function runDoctor(options) {
@@ -343,19 +346,23 @@ export async function runDoctor(options) {
     process.stdout.write(usage());
     return { ok: true };
   }
-  const paths = preflightConnectorFiles(root, { requireBuild: true });
-  if (!options.skipConfig) {
-    const desired = desiredMotifLocalServer(root);
-    const document = readLocalMcpConfig(options.configPath);
-    const entry = document.config.servers.find(server => server?.name === MOTIF_LOCAL_CONNECTOR_NAME);
-    assert(motifLocalServerMatches(entry, desired), `${MOTIF_LOCAL_CONNECTOR_NAME} is not registered as expected`);
-  }
+  const registration = options.skipConfig
+    ? { paths: preflightConnectorFiles(root) }
+    : readRegisteredMotifLocalServer(options.configPath);
   if (options.filesOnly) {
     process.stdout.write('\u2713 Motif connector files and requested registration checks passed\n');
     return { ok: true, filesOnly: true };
   }
 
-  const result = await inspectProtocol(paths, options.timeoutMs);
+  if (options.skipConfig) {
+    const nodeBinary = resolveNodeBinary({
+      environment: { MOTIF_NODE_BIN: process.env.MOTIF_NODE_BIN || process.execPath },
+    });
+    const entry = desiredMotifLocalServer(root, { nodeBinary });
+    entry.args.splice(3, 0, 'MOTIF_MCP_TRACE=1');
+    registration.entry = entry;
+  }
+  const result = await inspectProtocol(registration, options.timeoutMs);
   process.stdout.write('\u2713 Motif local connector doctor passed\n');
   process.stdout.write(`  protocol: ${result.protocolVersion}\n`);
   process.stdout.write(`  tools: ${result.tools.join(', ')}\n`);

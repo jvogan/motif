@@ -38,9 +38,9 @@ const ORIGIN_SEQUENCE = 'ATGGCTAGCAAAGGAGAAGAACTTTTCACTGGAGTTGTCCCAATTCTTGTTGAAT
 
 describe('describeSequenceRejection', () => {
   it("reports the normaliser's character and position instead of a fixed sentence", () => {
-    // The measured case: "ATGCATGC1" with Molecule set to Auto, then to DNA, was
-    // "No usable sequence found. Choose the molecule type explicitly…", and
-    // choosing DNA as advised failed identically.
+    // "ATGCATGC1" with Molecule set to Auto, then to DNA, gets the same specific
+    // reason, not "No usable sequence found. Choose the molecule type
+    // explicitly…" that choosing DNA as advised would repeat.
     expect(describeSequenceRejection('ATGCATGC1', 'auto')).toBe('“1” at position 9 is not a DNA residue.');
     expect(describeSequenceRejection('ATGCATGC1', 'dna')).toBe('“1” at position 9 is not a DNA residue.');
     expect(describeSequenceRejection('ATGC-ATGC', 'auto')).toBe('“-” at position 5 is not a DNA residue.');
@@ -79,8 +79,8 @@ describe('parseImportedRecords skip reporting', () => {
   });
 
   it('names a FASTA record that an explicit molecule type filtered out', () => {
-    // With Molecule = DNA the protein record used to vanish, and the panel said
-    // "1 record added" for a two-record paste.
+    // With Molecule = DNA the protein record is named as skipped; it does not vanish
+    // while the panel says "1 record added" for a two-record paste.
     const skipped: ImportSkip[] = [];
     const records = parseImportedRecords('>seqA first\nATGCATGCATGCATGC\n>seqB second\nMKTAYIAKQRQISFVK', '', 'dna', 'linear', skipped);
     expect(records.map((record) => record.name)).toEqual(['seqA']);
@@ -93,20 +93,43 @@ describe('parseImportedRecords skip reporting', () => {
       ['seqA', 'seqa', 'first one'],
       ['seqB', 'seqb', ''],
     ]);
-    // One record keeps the file's name, or its whole header when pasted.
-    expect(parseImportedRecords('>QAVAR variant\nATGCATGC', 'qavar', 'auto', 'linear')[0].name).toBe('qavar');
-    expect(parseImportedRecords('>Wave3 Enzyme Probe\nATGCATGC', '', 'auto', 'linear')[0].name).toBe('Wave3 Enzyme Probe');
+    expect(parseImportedRecords('>QAVAR variant\nATGCATGC', 'qavar', 'auto', 'linear')[0].name).toBe('QAVAR');
+    expect(parseImportedRecords('>Wave3 Enzyme Probe\nATGCATGC', '', 'auto', 'linear')[0].name).toBe('Wave3');
   });
 
   it('says a FASTA header has no sequence rather than reporting its ">"', () => {
     const skipped: ImportSkip[] = [];
     expect(parseImportedRecords('>just a header', '', 'auto', 'linear', skipped)).toEqual([]);
-    expect(explainUnimportedPaste('>just a header', skipped)).toBe('The FASTA header has no sequence under it.');
+    expect(explainUnimportedPaste('>just a header', skipped)).toBe('just: FASTA record "just" at line 1 has no residues.');
   });
 
   it('keeps the old two-argument contract: no collector, same records', () => {
     expect(parseImportedRecords('ATGCATGC1', '', 'auto', 'linear')).toEqual([]);
     expect(parseImportedRecords('ATGCATGC', '', 'auto', 'linear')[0]).toMatchObject({ seq: 'ATGCATGC', molecule: 'dna' });
+  });
+
+  it('imports a complete GenBank record whose final // was lost and refuses one that is short', () => {
+    const record = ['LOCUS       sample                 12 bp    DNA     linear', 'ORIGIN', '        1 atgcatgcat gc'];
+    expect(parseImportedRecords(record.join('\r\n'), '', 'auto', 'linear', [], 'file')[0]).toMatchObject({ seq: 'atgcatgcatgc' });
+    const withTrailer = `${record.join('\n')}\n//\nPasted from a lab notebook\n`;
+    expect(parseImportedRecords(withTrailer, '', 'auto', 'linear', [], 'file')[0]).toMatchObject({ seq: 'atgcatgcatgc' });
+    expect(() => parseImportedRecords(record.join('\n').replace('12 bp', '20 bp'), '', 'auto', 'linear', [], 'file'))
+      .toThrow(/incomplete/);
+  });
+
+  it('says which part of a GenBank record the parser refused', () => {
+    const record = (feature: string, origin = '        1 atgcatgcat gc') => [
+      'LOCUS       sample                 12 bp    DNA     linear',
+      'FEATURES             Location/Qualifiers',
+      feature,
+      'ORIGIN',
+      origin,
+      '//',
+    ].join('\n');
+    expect(() => parseImportedRecords(record('     misc_feature    1..4\n                     /note="unfinished'), '', 'auto', 'linear'))
+      .toThrow('This GenBank record could not be parsed: GenBank feature has an unclosed quoted qualifier /note. Export or paste a complete GenBank record and try again.');
+    expect(() => parseImportedRecords(record('     misc_feature    1..4', '        1 atgcatgcat g1c'), '', 'auto', 'linear'))
+      .toThrow(/could not be parsed: Malformed GenBank ORIGIN row on record line 5\. Export or paste/);
   });
 });
 
@@ -146,7 +169,7 @@ describe('CLUSTAL detection', () => {
     const skipped: ImportSkip[] = [];
     expect(parseImportedRecords(clustal, '', 'auto', 'linear', skipped)).toEqual([]);
     expect(explainUnimportedPaste(clustal, skipped))
-      .toBe('This is a CLUSTAL alignment. Load it from Alignment → Open alignment workspace → Aligned file.');
+      .toBe('This is a CLUSTAL alignment. Load it from Alignment → Open alignment → Aligned file.');
   });
 
   it('points a chosen CLUSTAL file at the Alignment tool', () => {
@@ -161,7 +184,7 @@ describe('file reasons', () => {
     expect(unreadableFileReason({ type: 'image/png' }, pngAsText)).toBe('not a sequence file');
     expect(unreadableFileReason({ type: '' }, '')).toBe('the file is empty');
     expect(unreadableFileReason({ type: 'text/plain' }, '>ok\nACGT')).toBeNull();
-    expect(explainUnimportedFile({ type: 'application/json' }, '{"hello": 1}', [])).toBe('not a Record JSON or Database JSON export');
+    expect(explainUnimportedFile({ type: 'application/json' }, '{"hello": 1}', [])).toBe('not a Record JSON or Workspace JSON export');
     expect(explainUnimportedFile({ type: 'text/plain' }, 'Meeting notes: reply by Friday.', [{ reason: 'ignored for files' }]))
       .toBe('no sequence found');
     expect(explainUnimportedFile({ type: 'text/plain' }, '>p\nMKTAYI', [{ record: 'p', reason: '“I” at position 6 is not a DNA residue.' }]))
@@ -213,7 +236,7 @@ describe('describeFileImportOutcome', () => {
     );
   });
 
-  it('names every skip in the detail the Add entry panel keeps on screen', () => {
+  it('names every skip in the detail the Import records panel keeps on screen', () => {
     // Measured before: 16 records plus 5 bad files left "· 2 more skipped" in both
     // the notice and the panel, so fake.dna and notes.txt never showed a reason.
     const skipped = ['a.png', 'b.txt', 'c.fasta', 'd.gb', 'e.dna'].map((source) => ({ source, reason: 'no sequence found.' }));
@@ -307,13 +330,28 @@ describe('import outcome wiring', () => {
 
   it('skips a chosen record that repeats one already open, and says so', () => {
     expect(importFiles).toContain('const repeats = duplicateOfOpenRecord(record, [...payloadRef.current.records, ...importable]);');
-    expect(importFiles).toContain('skipped.push({ source, reason: `${repeats} is already in the inventory` });');
+    expect(importFiles).toContain('skipped.push({ source, reason: `${repeats} is already in the library` });');
   });
 
-  it('mirrors a chosen file import into the Add entry status line', () => {
-    expect(importPanel).toContain('onImportFiles: (files: FileList | File[]) => Promise<ArtifactFileImportResult>;');
-    expect(importPanel).toContain('setMirroredNotice(result.detail ?? result.message);');
+  it('mirrors a chosen file import into the Import records status line', () => {
+    expect(importPanel).toContain('onImportFiles: (files: FileList | File[], showNotice?: boolean) => Promise<ArtifactFileImportResult>;');
     expect(importPanel).toContain('setStatus(result.detail ?? result.message);');
+    // An open panel reports in its own status line, which keeps Choose files reachable;
+    // the workbench notice only confirms a clean pick that closes the panel.
+    expect(importPanel).toContain('void onImportFiles(files, !reportInPanel).then((result) => {');
+    expect(importPanel).toContain('if (reportInPanel && closesPanel) onNotice(result.message);');
+    expect(importPanel).toContain("setMirroredNotice(reportInPanel && !closesPanel ? '' : result.detail ?? result.message);");
+  });
+
+  it('confirms a pasted import in the workbench notice and opens the first added record', () => {
+    // The form closes after a clean import, so its own status line is not seen.
+    expect(importPanel).toContain('onNotice: (message: string) => void;');
+    expect(importPanel).toContain("onNotice(`${addedCount.toLocaleString()} record${addedCount === 1 ? '' : 's'} added`);");
+    expect(importPanel.indexOf('onNotice(`')).toBeGreaterThan(importPanel.indexOf('if (skipped.length > 0) {'));
+    expect(artifactSource).toContain('onNotice={showWorkbenchNotice}');
+    const addRecordsBody = sliceBetween(artifactSource, 'const addRecords = useCallback((', 'const addRecord = useCallback(');
+    expect(addRecordsBody).toContain('const selectedAddition = additions[0];');
+    expect(addRecordsBody).not.toContain('additions[additions.length - 1]');
   });
 
   it('moves focus into the paste box whenever the panel opens', () => {

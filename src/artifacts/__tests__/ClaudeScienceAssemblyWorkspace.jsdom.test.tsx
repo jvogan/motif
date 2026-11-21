@@ -90,12 +90,12 @@ describe('ClaudeScienceAssemblyWorkspace', () => {
     const user = userEvent.setup();
     render(<ClaudeScienceAssemblyWorkspace {...props()} />);
 
-    expect(screen.getByRole('dialog', { name: 'Assembly workspace' })).toBeTruthy();
+    expect(screen.getByRole('dialog', { name: 'Assembly' })).toBeTruthy();
     expect(screen.getByRole('tab', { name: 'Golden Gate' }).getAttribute('aria-selected')).toBe('true');
     expect(screen.getByLabelText('Type IIS enzyme')).toBeTruthy();
     expect(partNames()).toEqual(['Left fragment', 'Right fragment']);
 
-    await user.click(screen.getByRole('tab', { name: 'Traditional ligation' }));
+    await user.click(screen.getByRole('tab', { name: 'Ligation' }));
 
     expect(screen.queryByLabelText('Type IIS enzyme')).toBeNull();
     expect(screen.getAllByText('5′ CAGT').length).toBeGreaterThan(0);
@@ -118,7 +118,7 @@ describe('ClaudeScienceAssemblyWorkspace', () => {
     render(<ClaudeScienceAssemblyWorkspace {...props()} />);
 
     const goldenGate = screen.getByRole('tab', { name: 'Golden Gate' });
-    const ligation = screen.getByRole('tab', { name: 'Traditional ligation' });
+    const ligation = screen.getByRole('tab', { name: 'Ligation' });
     expect(goldenGate.getAttribute('tabindex')).toBe('0');
     expect(ligation.getAttribute('tabindex')).toBe('-1');
     goldenGate.focus();
@@ -380,7 +380,7 @@ describe('ClaudeScienceAssemblyWorkspace', () => {
   it('keeps the standing scope disclaimer out of the warning list and its count', async () => {
     const user = userEvent.setup();
     render(<ClaudeScienceAssemblyWorkspace {...props()} />);
-    await user.click(screen.getByRole('tab', { name: 'Traditional ligation' }));
+    await user.click(screen.getByRole('tab', { name: 'Ligation' }));
 
     const note = screen.getByTestId('assembly-scope-note');
     expect(note.getAttribute('role')).toBe('note');

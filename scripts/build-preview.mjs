@@ -14,6 +14,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { jsonForScriptTag, readBuildPayload } from './build-claude-science-artifact.mjs';
 import { stampMotifBuildIdentity } from './motif-build-identity.mjs';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -42,15 +43,6 @@ function inlineAssetTags(html) {
   return inlined;
 }
 
-function jsonForScriptTag(value) {
-  return JSON.stringify(value)
-    .replace(/</g, '\\u003C')
-    .replace(/>/g, '\\u003E')
-    .replace(/&/g, '\\u0026')
-    .replace(/\u2028/g, '\\u2028')
-    .replace(/\u2029/g, '\\u2029');
-}
-
 function injectPayload(html, payloadJson) {
   const pattern = /(<script type="application\/json" id="motif-artifact-data">)([\s\S]*?)(<\/script>)/;
   if (!pattern.test(html)) throw new Error('Could not find motif-artifact-data script tag');
@@ -62,8 +54,8 @@ function injectPayload(html, payloadJson) {
 
 try {
   const build = spawnSync(
-    'npx',
-    ['vite', 'build', '--config', 'vite.claude-science.config.ts', '--configLoader', 'runner', '--outDir', buildDir, '--emptyOutDir'],
+    process.execPath,
+    [join(root, 'node_modules/vite/bin/vite.js'), 'build', '--config', 'vite.claude-science.config.ts', '--configLoader', 'runner', '--outDir', buildDir, '--emptyOutDir'],
     {
       cwd: root,
       stdio: 'inherit',
@@ -75,7 +67,7 @@ try {
     const stamped = stampMotifBuildIdentity(inlineAssetTags(readFileSync(distHtml, 'utf8')));
     let html = stamped.html;
     if (payloadPath) {
-      const payload = JSON.parse(readFileSync(resolve(payloadPath), 'utf8'));
+      const payload = readBuildPayload(resolve(payloadPath));
       html = injectPayload(html, jsonForScriptTag(payload));
     }
 
