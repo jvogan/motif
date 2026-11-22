@@ -297,6 +297,24 @@ test.describe('Claude Science artifact workflows', () => {
     expect(tracksAfter).toBeLessThan(tracksBefore);
   });
 
+  test('a press on the Create menu padding keeps the menu open', async ({ page }) => {
+    await openArtifact(page, 1180, 900);
+    await ensureDetailMode(page);
+    await page.locator('.motif-cs-feature-block').filter({ hasText: 'lacZ-alpha' }).first().click();
+    const menu = await openCreateMenu(page);
+    await expect(menu.getByRole('menuitem').first()).toBeFocused();
+    const box = await menu.boundingBox();
+    if (!box) throw new Error('Create menu has no box');
+    // The middle of the top edge is padding, not an item. A press there moves focus
+    // to the nearest focusable ancestor, which must be the menu itself: focus
+    // leaving the menu would close it.
+    await page.mouse.move(box.x + box.width / 2, box.y + 2);
+    await page.mouse.down();
+    await expect(menu).toBeFocused();
+    await page.mouse.up();
+    await expect(menu).toBeVisible();
+  });
+
   test('opening and closing Export leaves the reader on the line they were reading', async ({ page }) => {
     await openArtifact(page, 1440, 1000);
     const column = page.locator('.motif-cs-sequence-column');

@@ -23633,6 +23633,7 @@ export function SequenceActionMenu({
         className="motif-cs-action-menu-list"
         role="menu"
         aria-label={menuLabel}
+        tabIndex={-1}
         hidden={!open}
         data-motif-cs-escape-scope={open ? 'true' : undefined}
         onKeyDown={handleMenuKeyDown}

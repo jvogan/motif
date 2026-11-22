@@ -1175,6 +1175,26 @@ test.describe('Motif MSA viewer interactions', () => {
     await expect(page.locator('.motif-cs-msa-hist-bar-occupancy').first()).toBeVisible();
   });
 
+  test('a real press on a View menu label ticks its box and keeps the menu open', async ({ page }) => {
+    await setup(page);
+    const trigger = page.getByTestId('msa-view-menu-button');
+    await trigger.click();
+    // The viewer learns the menu is open a moment after the browser shows it, and
+    // only then starts closing it on presses outside. Wait for that before pressing.
+    await expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    const menu = page.getByTestId('msa-view-menu');
+    await expect(menu).toBeVisible();
+    const occupancy = page.getByRole('checkbox', { name: 'Occupancy' });
+    await expect(occupancy).not.toBeChecked();
+    // The press lands on the label's text, not on the box. Focus then moves to the
+    // nearest focusable ancestor, which must be the menu panel itself: if it were
+    // outside the <details>, the dismissal listener would close the menu mid-press.
+    await menu.getByText('Occupancy', { exact: true }).click();
+    await expect(menu).toBeVisible();
+    await expect(occupancy).toBeChecked();
+    await expect(page.locator('.motif-cs-msa-hist-bar-occupancy').first()).toBeVisible();
+  });
+
   test('colour scheme and mismatch shading apply to the matrix', async ({ page }) => {
     await setup(page);
     await page.getByTestId('msa-view-menu-button').click();
