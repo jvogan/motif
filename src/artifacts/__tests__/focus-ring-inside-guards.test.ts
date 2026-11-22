@@ -51,7 +51,7 @@ describe('a focused field shows one ring', () => {
 
   it('keeps no second field treatment beside it', () => {
     for (const selector of ['.motif-cs-input:focus', '.motif-cs-field:focus', '.motif-cs-textarea:focus', '.motif-cs-title-edit:focus']) {
-      expect(artifactCss, selector).not.toMatch(new RegExp(`\\n${selector.replace(/[.]/g, '\\.')}\\s*[,{]`));
+      expect(artifactCss, selector).not.toMatch(new RegExp(`\\n${selector.replace(/[\\.]/g, '\\$&')}\\s*[,{]`));
     }
   });
 });

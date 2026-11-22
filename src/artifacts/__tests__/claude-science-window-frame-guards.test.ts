@@ -16,7 +16,7 @@ function sliceBetween(source: string, startNeedle: string, endNeedle: string): s
 }
 
 function rule(selector: string): string {
-  const escaped = selector.replace(/[.[\]()*+?^${}|:"=-]/g, '\\$&');
+  const escaped = selector.replace(/[\\.[\]()*+?^${}|:"=-]/g, '\\$&');
   return artifactCss.match(new RegExp(`\\n${escaped}\\s*\\{([^}]*)\\}`))?.[1] ?? '';
 }
 

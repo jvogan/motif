@@ -12,7 +12,7 @@ const gelSource = read('ClaudeScienceGelWorkspace.tsx');
 const artifactCss = read('motif-artifact.css');
 
 function rule(css: string, selector: string): string {
-  const escaped = selector.replace(/[.[\]()*+?^${}|:"=>~-]/g, '\\$&');
+  const escaped = selector.replace(/[\\.[\]()*+?^${}|:"=>~-]/g, '\\$&');
   return [...css.matchAll(new RegExp(`(?:^|\\n)${escaped}\\s*\\{([^}]*)\\}`, 'g'))].map((match) => match[1]).join('\n');
 }
 

@@ -74,7 +74,7 @@ describe('control hover and pressed fills', () => {
       '.motif-cs-find-done',
       '.motif-cs-segmented button',
     ]) {
-      expect(artifactCss, family).toMatch(new RegExp(`${family.replace(/[.[\]]/g, '\\$&')}[,\\s\\S]{0,400}\\):active:not\\(`));
+      expect(artifactCss, family).toMatch(new RegExp(`${family.replace(/[\\.[\]]/g, '\\$&')}[,\\s\\S]{0,400}\\):active:not\\(`));
     }
     expect(artifactCss).toMatch(/\.motif-cs-selection-actions \.motif-cs-mini-button:active:not\([^)]*\) \{\s*background: var\(--control-active\);/);
     // The selection actions rest on the soft fill with a higher-specificity rule, so they need

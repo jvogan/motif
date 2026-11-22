@@ -159,7 +159,8 @@ describe('exportMapLayoutSvg', () => {
     // Stroked along a radial fade in the label colour, filled solid (the marker).
     const strokes = [...edged.matchAll(/<path [^>]*fill="#0f172a" stroke="url\(#([\w-]+-edge)\)" stroke-width="1\.5"[^>]*\/>/g)];
     expect(strokes).toHaveLength(2);
-    expect(edged).toMatch(new RegExp(`<radialGradient id="${strokes[0][1]}" gradientUnits="userSpaceOnUse"[^>]*><stop [^>]*stop-color="#0f172a" stop-opacity="0\\.15"/><stop [^>]*stop-color="#0f172a" stop-opacity="1"/></radialGradient>`));
+    const fades = [...edged.matchAll(/<radialGradient id="([\w-]+-edge)" gradientUnits="userSpaceOnUse"[^>]*><stop [^>]*stop-color="#0f172a" stop-opacity="0\.15"\/><stop [^>]*stop-color="#0f172a" stop-opacity="1"\/><\/radialGradient>/g)].map((match) => match[1]);
+    expect(fades).toContain(strokes[0][1]);
   });
 
   it('gives each exported selection fade its own gradient ids', () => {
