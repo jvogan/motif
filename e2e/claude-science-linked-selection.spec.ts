@@ -49,10 +49,29 @@ async function basePoint(page: Page, index: number) {
   }, index);
 }
 
+/**
+ * The centre of `locator` once a press there reaches it; scrolls it into view first.
+ * Sequence blocks are `content-visibility: auto`: a block scrolled in from far away
+ * is drawn and hit-tested only once the browser finds it on screen, which can take
+ * a frame or more. A press before then lands on the block itself, which reads it as
+ * a caret on the nearest line, so the point is read again until the element is
+ * what a press there would reach.
+ */
 async function centre(locator: Locator) {
   await locator.scrollIntoViewIfNeeded();
-  const box = (await locator.boundingBox())!;
-  return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  let point = { x: 0, y: 0 };
+  await expect.poll(async () => {
+    const reach = await locator.evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      const x = rect.left + rect.width / 2;
+      const y = rect.top + rect.height / 2;
+      const hit = document.elementFromPoint(x, y);
+      return { x, y, reached: hit !== null && element.contains(hit) };
+    });
+    point = { x: reach.x, y: reach.y };
+    return reach.reached;
+  }, { message: 'a press at the centre reaches the element' }).toBe(true);
+  return point;
 }
 
 /** A real pointer click at the centre of `locator`. */
