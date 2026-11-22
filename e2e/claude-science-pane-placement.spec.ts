@@ -510,12 +510,13 @@ test.describe('state-preserving pane placement', () => {
     // at rest is a nuisance, but a label hidden at every scroll position of every
     // scrollable ancestor is unreachable, and only the sweep tells those apart.
     for (const width of [640, 660, 700, 767, 768, 900, 1100, 1280, 1440]) {
+      await openArtifact(page, width, 900);
+      await expect(page.locator('.motif-cs-map-frame[data-map-mode="circular"]')).toBeVisible();
       // The map draws unique cutters by default, which leaves fewer labels
-      // (16 at 640px) than a dense map of every cutter. Both are swept: the
-      // default is what a user sees, every cutter is the worst case.
+      // (16 at 640px) than a dense map of every cutter. Both are swept on the
+      // same load, as a user switches them: the default is what a user sees,
+      // every cutter is the worst case. The sweep leaves both scrollers at 0.
       for (const sites of ['unique', 'all'] as const) {
-        await openArtifact(page, width, 900);
-        await expect(page.locator('.motif-cs-map-frame[data-map-mode="circular"]')).toBeVisible();
         if (sites === 'all') await page.getByRole('combobox', { name: 'Restriction sites' }).selectOption('all');
 
         const reach = await page.evaluate(async () => {
@@ -536,11 +537,15 @@ test.describe('state-preserving pane placement', () => {
           };
           const columnRange = column.scrollHeight - column.clientHeight;
           const mainRange = main.scrollHeight - main.clientHeight;
+          // Nine stops down each scroller, every pairing of the two. A scroller with
+          // less range has fewer distinct stops (one when it does not scroll), and each
+          // distinct position is measured once, a frame after it is set.
+          const stops = (range: number) => [...new Set(Array.from({ length: 9 }, (_, k) => Math.round((range * k) / 8)))];
           let best = Infinity;
-          for (let i = 0; i <= 8; i += 1) {
-            for (let j = 0; j <= 8; j += 1) {
-              column.scrollTop = Math.round((columnRange * i) / 8);
-              main.scrollTop = Math.round((mainRange * j) / 8);
+          for (const columnTop of stops(columnRange)) {
+            for (const mainTop of stops(mainRange)) {
+              column.scrollTop = columnTop;
+              main.scrollTop = mainTop;
               await new Promise((settle) => requestAnimationFrame(() => settle(null)));
               best = Math.min(best, hidden());
             }
@@ -733,12 +738,14 @@ test.describe('state-preserving pane placement', () => {
     await reachable('floated Tools pane');
   });
 
-  test('a side panel opens with the map whole and the sequence in view, and 1040px gives 40 bases a line', async ({ page }) => {
+  test('a side panel opens with the map whole and the sequence in view, and at 1040px the Records list starts closed so lines hold more bases', async ({ page }) => {
     // At 700x860 the map frame takes half the window less 95px and the sequence the
-    // rest, so at least three whole lines of sequence are in view; the status line shares the
-    // Sites and Digest row.
-    // At 1040x860 the Sequence is wide enough for 40 bases a line (with the Records
-    // list it would be 330px, 25 bases a line, beside a 328px ring).
+    // rest, which has room for at least three lines of bases; the status line shares the
+    // Sites and Digest row. The room is counted in lines with nothing drawn beside
+    // their bases: a line that carries a feature, site or amino-acid row is taller,
+    // and which lines carry one depends on how many bases a line holds.
+    // At 1040x860 the Records list starts closed and the Sequence starts with a larger
+    // share of the split beside the Map, so a line holds more bases than with the list open.
     const read = () => page.evaluate(() => {
       const viewHeight = window.innerHeight;
       const scroller = document.querySelector('.motif-cs-sequence')!.getBoundingClientRect();
@@ -747,6 +754,12 @@ test.describe('state-preserving pane placement', () => {
         const box = line.getBoundingClientRect();
         return box.top >= Math.max(scroller.top, 0) - 1 && box.bottom <= Math.min(scroller.bottom, viewHeight) + 1;
       }).length;
+      // The step from a line with nothing beside its bases to the next line.
+      const blocks = [...document.querySelectorAll('.motif-cs-sequence .motif-cs-seq-block')];
+      const bare = blocks.findIndex((block, index) => index + 1 < blocks.length
+        && !block.querySelector('.motif-cs-feature-track-lane, .motif-cs-restriction-track-lane, .motif-cs-seq-aa-row'));
+      const pitch = bare < 0 ? 0 : blocks[bare + 1].getBoundingClientRect().top - blocks[bare].getBoundingClientRect().top;
+      const room = Math.min(scroller.bottom, viewHeight) - Math.max(scroller.top, 0);
       const frame = document.querySelector('.motif-cs-map-frame')!.getBoundingClientRect();
       const ring = document.querySelector('.motif-cs-map-frame .motif-pm-backbone')!.getBoundingClientRect();
       const labels = [...document.querySelectorAll<SVGTextElement>('.motif-cs-map-frame .motif-pm-feature-label, .motif-cs-map-frame .motif-pm-restriction-label')]
@@ -758,6 +771,7 @@ test.describe('state-preserving pane placement', () => {
       const heads = [...document.querySelectorAll('.motif-cs-map-dock-strip > details > summary')].map((head) => head.getBoundingClientRect());
       return {
         whole,
+        linesOfRoom: pitch > 0 ? room / pitch : 0,
         basesPerLine: Number(lines[0]?.dataset.lineLen ?? 0),
         ring: Math.round(Math.max(ring.width, ring.height)),
         labels: labels.length,
@@ -769,13 +783,17 @@ test.describe('state-preserving pane placement', () => {
         headBottoms: heads.map((head) => Math.round(head.bottom)),
         miniature: document.querySelector('.motif-cs-map-frame svg.motif-plasmid-map')?.getAttribute('data-miniature') === 'true',
         recordsShown: Boolean(document.querySelector('[data-pane-key="inventory"]')?.getBoundingClientRect().width),
+        sequenceWidth: Math.round(document.querySelector('[data-pane-key="sequence"]')!.getBoundingClientRect().width),
+        mapWidth: Math.round(document.querySelector('[data-pane-key="map"]')!.getBoundingClientRect().width),
       };
     });
 
     await openArtifact(page, 700, 860);
     await expect(page.locator('.motif-cs-map-frame .motif-pm-backbone')).toBeVisible();
-    await expect.poll(async () => (await read()).whole).toBeGreaterThanOrEqual(3);
+    await expect.poll(async () => (await read()).linesOfRoom).toBeGreaterThanOrEqual(3);
     let geometry = await read();
+    // The room shows the sequence: at least one line of bases is whole on screen.
+    expect(geometry.whole).toBeGreaterThanOrEqual(1);
     expect(geometry.ring).toBeGreaterThanOrEqual(240);
     // All 11 map labels a 377px ring draws are drawn at this smaller ring (one, "BspQI,
     // SapI", reads "BspQI +1" at every frame under 400px).
@@ -788,27 +806,37 @@ test.describe('state-preserving pane placement', () => {
     expect(geometry.statusTop!).toBeGreaterThan(geometry.headTops[0]);
     expect(geometry.statusTop!).toBeGreaterThan(geometry.frameBottom);
 
-    // A short side panel keeps three lines and a 200px ring. Its 680x298 frame draws
+    // A short side panel keeps room for three lines and a 200px ring. Its 680x298 frame draws
     // the miniature, which names fewer things (small-ring-miniature.test.ts): eight here.
     await openArtifact(page, 700, 700);
     await expect(page.locator('.motif-cs-map-frame .motif-pm-backbone')).toBeVisible();
-    await expect.poll(async () => (await read()).whole).toBeGreaterThanOrEqual(3);
+    await expect.poll(async () => (await read()).linesOfRoom).toBeGreaterThanOrEqual(3);
     geometry = await read();
+    expect(geometry.whole).toBeGreaterThanOrEqual(1);
     expect(geometry.ring).toBeGreaterThanOrEqual(200);
     expect(geometry.miniature).toBe(true);
     expect(geometry.labels).toBeGreaterThanOrEqual(8);
 
     await openArtifact(page, 1040, 860);
     await expect(page.locator('.motif-cs-map-frame .motif-pm-backbone')).toBeVisible();
-    await expect.poll(async () => (await read()).basesPerLine).toBeGreaterThanOrEqual(40);
+    // With the list closed the Sequence starts with 45% of the split beside the Map.
+    await expect.poll(async () => {
+      const { sequenceWidth, mapWidth } = await read();
+      return sequenceWidth / (sequenceWidth + mapWidth);
+    }).toBeGreaterThan(0.44);
     geometry = await read();
     // 85% of the 328px ring the 40:60 split gives beside an open Records list.
     expect(geometry.ring).toBeGreaterThanOrEqual(279);
     expect(geometry.labels).toBeGreaterThanOrEqual(11);
     expect(geometry.recordsShown).toBe(false);
-    // The list is one press away, and opening it gives the side-by-side arrangement.
+    expect(geometry.basesPerLine).toBeGreaterThan(0);
+    const closedLine = geometry.basesPerLine;
+    // The list is one press away, and opening it gives the side-by-side arrangement,
+    // whose narrower Sequence holds fewer bases a line.
     await showPane(page, 'inventory');
     await expect.poll(async () => (await read()).recordsShown).toBe(true);
+    await expect.poll(async () => (await read()).basesPerLine).toBeLessThan(closedLine);
+    expect((await read()).basesPerLine).toBeGreaterThan(0);
   });
 });
 

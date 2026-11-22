@@ -111,6 +111,18 @@ test.describe('records strip edge', () => {
       await page.goto(artifactUrl!);
       await expect(page.locator('.motif-cs-record-strip-more')).toBeVisible();
       const nav = page.locator('.motif-cs-record-tabs');
+      // Where the last whole tab ends depends on the interface font: in a wider face its
+      // name can end inside the 20px read below. A whole tab keeps its box but draws its
+      // name transparent, so the reading is what the strip paints at its edge. A tab the
+      // edge cuts keeps its ink, so one left showing there still counts.
+      await nav.evaluate((strip) => {
+        const edge = strip.getBoundingClientRect();
+        for (const tab of strip.querySelectorAll<HTMLElement>('.motif-cs-record-tab')) {
+          const box = tab.getBoundingClientRect();
+          if (box.left < edge.left - 1 || box.right > edge.right + 1) continue;
+          for (const name of tab.querySelectorAll<HTMLElement>('.motif-cs-record-tab-name')) name.style.color = 'transparent';
+        }
+      });
       // Columns of the 20px inside an edge whose contrast against the strip's background
       // exceeds 1.02, read from a screenshot of the page.
       const marked = async (edge: 'right') => {
@@ -147,7 +159,7 @@ test.describe('records strip edge', () => {
         }, 'data:image/png;base64,' + shot.toString('base64'));
       };
       // A tab the edge would cut is hidden whole, so the 20px is the strip's background
-      // plus the hairline: one marked column.
+      // plus the hairline: one marked column. A 16px shadow would mark 16.
       expect(await marked('right'), 'right edge with tabs past it').toBe(1);
     });
   }

@@ -233,13 +233,20 @@ test.describe('Find in sequence', () => {
     await page.locator('#motif-cs-sequence-view').focus();
     await page.keyboard.press('ControlOrMeta+f');
     await searchbox(page).fill(BSAI);
-    const current = page.locator('[data-find-current]');
-    await expect(current).toHaveAttribute('data-strand', '-1');
-    const bases = current.locator('xpath=ancestor::*[contains(concat(" ", normalize-space(@class), " "), " motif-cs-seq-bases ")]');
-    const complementRow = await box(bases.locator('.motif-cs-seq-complement'));
-    const ring = await box(current);
-    expect(ring.y).toBeGreaterThanOrEqual(complementRow.y - 2);
-    expect(ring.y + ring.height).toBeLessThanOrEqual(complementRow.y + complementRow.height + 2);
+    // A match that runs past a line end is drawn in one piece on each line; every
+    // piece sits on the complement row of its own line.
+    const pieces = page.locator('[data-find-current]');
+    await expect(pieces.first()).toHaveAttribute('data-strand', '-1');
+    const count = await pieces.count();
+    for (let index = 0; index < count; index += 1) {
+      const current = pieces.nth(index);
+      await expect(current).toHaveAttribute('data-strand', '-1');
+      const bases = current.locator('xpath=ancestor::*[contains(concat(" ", normalize-space(@class), " "), " motif-cs-seq-bases ")]');
+      const complementRow = await box(bases.locator('.motif-cs-seq-complement'));
+      const ring = await box(current);
+      expect(ring.y).toBeGreaterThanOrEqual(complementRow.y - 2);
+      expect(ring.y + ring.height).toBeLessThanOrEqual(complementRow.y + complementRow.height + 2);
+    }
   });
 
   test('a match is found across the origin of a circular record', async ({ page }) => {
@@ -353,11 +360,14 @@ test.describe('Find docked over the default record', () => {
       await page.keyboard.type(ECORI);
       await page.keyboard.press('Enter');
       await expect(findStatus(page)).toContainText('1 of 1');
+      // Where the match runs past a line end it is drawn in one piece on each
+      // line, and the rule holds for the pieces together.
       const current = page.locator('[data-find-current]:not([data-find-current="continued"])');
-      await expect(current).toBeVisible();
+      await expect(current.first()).toBeVisible();
       await expect.poll(async () => (await layout()).overflow, 'Find adds no page overflow').toBeLessThanOrEqual(closed.overflow);
-      const fit = await current.evaluate((mark) => {
-        const m = mark.getBoundingClientRect();
+      const fit = await current.evaluateAll((marks) => {
+        const boxes = marks.map((mark) => mark.getBoundingClientRect());
+        const m = { top: Math.min(...boxes.map((b) => b.top)), bottom: Math.max(...boxes.map((b) => b.bottom)) };
         const bar = document.querySelector('.motif-cs-find-bar')!.getBoundingClientRect();
         const view = document.querySelector<HTMLElement>('#motif-cs-sequence-view')!;
         const v = view.getBoundingClientRect();

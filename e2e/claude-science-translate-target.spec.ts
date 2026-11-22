@@ -584,13 +584,30 @@ test.describe('An amino-acid row ends where its line of bases ends', () => {
           const r = columnsOf(rest);
           (split[track] ??= []).push({ codon: [a, a + 1, b], letter: l.bases, rest: r.bases, lines: new Set([l.lineStart, r.lineStart]).size });
         }
-        return { past, pieces, split };
+        const lineLength = Number(document.querySelector<HTMLElement>('.motif-cs-seq-bases[data-line-start]')!.dataset.lineLen);
+        return { past, pieces, split, lineLength };
       });
       expect(result.pieces).toBeGreaterThan(300);
       expect(result.past).toBe(0);
-      for (const track of ['feat:f1', 'feat:f2', 'feat:r1', 'feat:r2']) {
+      // Lines start at multiples of the line length the view chose, so which codons
+      // cross a line end follows from it. When that length is a multiple of three,
+      // one phase on each strand has none and the other crosses every line end.
+      const crossing = ({ start, end }: { start: number; end: number }) => {
+        const firstBases: number[] = [];
+        for (let codon = start; codon + 3 <= end; codon += 3) {
+          if (Math.floor(codon / result.lineLength) !== Math.floor((codon + 2) / result.lineLength)) firstBases.push(codon + 1);
+        }
+        return firstBases;
+      };
+      for (const strand of [1, -1]) {
+        const drawn = annotations.filter((feature) => feature.strand === strand)
+          .reduce((sum, feature) => sum + (result.split[`feat:${feature.id}`]?.length ?? 0), 0);
+        expect(drawn, `strand ${strand}: codons drawn across a line end`).toBeGreaterThan(0);
+      }
+      for (const feature of annotations) {
+        const track = `feat:${feature.id}`;
         const codons = result.split[track] ?? [];
-        expect(codons.length, track).toBeGreaterThan(0);
+        expect(codons.map((codon) => codon.codon[0]).sort((x, y) => x - y), `${track} at ${result.lineLength} bases a line`).toEqual(crossing(feature));
         for (const codon of codons) {
           // Its two pieces lie on two lines and cover its three bases; the letter covers the middle one.
           expect(codon.lines, track).toBe(2);
