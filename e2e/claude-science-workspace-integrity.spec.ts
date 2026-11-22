@@ -1,5 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
+import { openTool } from './tool-panel-aliases';
 import { selectRecord } from './record-selection';
+import { openExportPanel } from './export-panel';
 
 const artifactUrl = process.env.MOTIF_ARTIFACT_URL;
 
@@ -266,13 +268,11 @@ test.describe('Claude Science workspace integrity', () => {
     expect(edited.layer).toMatchObject({ start: 6, end: 12, needsReview: true });
     await expect(page.getByTestId('session-durability-status')).toHaveText('unsaved changes');
 
-    const notesPanel = page.locator('details[data-rail-tool="notes"]');
-    if (!(await notesPanel.getAttribute('open'))) await notesPanel.locator(':scope > summary').click();
-    await expect(notesPanel.getByText('Review range anchor.')).toBeVisible();
+    const notesPanel = await openTool(page, 'notes');
+    await expect(notesPanel.getByText('Review note range.')).toBeVisible();
 
-    const annotationsPanel = page.locator('details[data-rail-tool="annotations"]');
-    if (!(await annotationsPanel.getAttribute('open'))) await annotationsPanel.locator(':scope > summary').click();
-    await expect(annotationsPanel.getByText('Review anchor')).toBeVisible();
+    const annotationsPanel = await openTool(page, 'annotations');
+    await expect(annotationsPanel.getByText('Review range')).toBeVisible();
 
     await page.getByRole('button', { name: 'Undo', exact: true }).click();
     const afterUndo = await page.evaluate(() => {
@@ -417,8 +417,7 @@ test.describe('Claude Science workspace integrity', () => {
     expect(spoofedDiscard.error).toMatchObject({ code: 'MOTIF_UNSAVED_WORKSPACE' });
     expect(spoofedDiscard.after).toEqual(dirtyAfterSelection);
 
-    const exportPanel = page.locator('.motif-cs-sequence-tools-panel');
-    if (!(await exportPanel.getAttribute('open'))) await exportPanel.locator(':scope > summary').click();
+    const exportPanel = await openExportPanel(page);
     await exportPanel.locator('select[name="export-format"]').selectOption('inventory-json');
     const browserDownload = page.waitForEvent('download');
     await exportPanel.locator('.motif-cs-export-picker-actions').getByRole('button', { name: 'Download' }).click();
@@ -434,8 +433,7 @@ test.describe('Claude Science workspace integrity', () => {
     }, dirtyAfterSelection);
     await expect(page.getByTestId('session-durability-status')).toHaveText('session only');
 
-    const settings = page.locator('details[data-rail-tool="settings"]');
-    if (!(await settings.getAttribute('open'))) await settings.locator(':scope > summary').click();
+    const settings = await openTool(page, 'settings');
     await settings.getByTestId('restore-workspace-file').setInputFiles({
       name: 'verified-workspace.json',
       mimeType: 'application/json',
@@ -449,8 +447,7 @@ test.describe('Claude Science workspace integrity', () => {
 
   test('makes restore confirmation inert, focus-trapped, and shortcut-isolated', async ({ page }) => {
     await openInjectedWorkspace(page);
-    const settings = page.locator('details[data-rail-tool="settings"]');
-    if (!(await settings.getAttribute('open'))) await settings.locator(':scope > summary').click();
+    const settings = await openTool(page, 'settings');
     await settings.getByTestId('restore-workspace-file').setInputFiles({
       name: 'restore-focus.json',
       mimeType: 'application/json',

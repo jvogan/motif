@@ -45,11 +45,11 @@ describe('Claude Science MSA integration guards', () => {
     expect(artifactSource).toContain('const [alignmentWin, setAlignmentWin] = useState<WindowRect>(defaultAlignmentWindowRect);');
     expect(artifactSource).toContain('data-rail-tool="alignment"');
     expect(artifactSource).toContain('data-testid="msa-open-button"');
-    expect(artifactSource).toContain('aria-label="Open alignment workspace"');
+    expect(artifactSource).toContain('aria-label="Open alignment"');
     expect(artifactSource).toContain('className="motif-cs-alignment-launch-copy"');
     expect(artifactSource).toContain('className="motif-cs-alignment-boundary" role="note"');
     expect(artifactSource).toContain('title={WORKSPACE_WINDOW_TITLES.alignment}');
-    expect(artifactSource).toContain("alignment: 'Multiple Sequence Alignment',");
+    expect(artifactSource).toContain("alignment: 'Alignment',");
     expect(artifactSource).toContain('onCommit={setAlignmentWin}');
     expect(artifactSource).toContain('returnFocusRef={alignmentToggleRef}');
     expect(artifactSource).toContain('maximizable');
@@ -64,7 +64,9 @@ describe('Claude Science MSA integration guards', () => {
     expect(artifactCss).toMatch(/\.motif-cs-alignment-launch\s*\{[\s\S]*?width:\s*100%;[\s\S]*?white-space:\s*normal;/);
     const floatingWindow = sliceBetween(artifactCss, '.motif-cs-window {', '.motif-cs-window-head {');
     expect(artifactCss).toContain('--shadow-ink: #000000;');
-    expect(floatingWindow).toContain('var(--shadow-ink)');
+    // The one shadow every floating surface casts, itself drawn in the themed ink.
+    expect(floatingWindow).toContain('box-shadow: var(--elevation-popover);');
+    expect(artifactCss).toMatch(/--elevation-popover:[^;]*var\(--shadow-ink\)/);
     expect(floatingWindow).not.toContain('var(--text-secondary)');
   });
 
@@ -77,7 +79,7 @@ describe('Claude Science MSA integration guards', () => {
     expect(artifactSource).toContain("{ operation: 'motifAddAlignments', inputCount: raw.length, mutated: false }");
     expect(artifactSource).toContain('window.motifGetAlignments = () => payloadRef.current.alignments.map(serializeArtifactAlignment);');
     expect(artifactSource).toContain('Never claim the browser artifact executed MAFFT, MUSCLE, or Clustal Omega');
-    expect(artifactSource).toContain('<span><strong>External engines</strong> run outside this HTML; imported results retain their actual provenance.</span>');
+    expect(artifactSource).toContain('<span>External engines run outside Motif.</span>');
   });
 
   it('round-trips alignments through payload loading, recovery, dirty-state, database JSON, and ZIP exports', () => {
@@ -101,13 +103,13 @@ describe('Claude Science MSA integration guards', () => {
     expect(fingerprint).toContain('alignments: payload.alignments.map(serializeArtifactAlignment),');
 
     expect(artifactSource).toContain('alignments: payload.alignments.map(serializeArtifactAlignment),');
-    expect(artifactSource).toContain('createArtifactDatabaseSnapshot({');
+    expect(artifactSource).toMatch(/createValidatedArtifactDatabaseJson\(\{\s+payload: \{[\s\S]*?alignments: \[\.\.\.alignments\],/);
     expect(artifactSource).toContain("file(`alignments/${safeAlignmentFilename(alignment, 'aligned.fasta')}`, formatAlignedFasta(alignment))");
     expect(artifactSource).toContain("file(`alignments/${safeAlignmentFilename(alignment, 'aln')}`, formatClustal(alignment))");
     expect(artifactSource).toContain('const updateAlignmentTemplate = useCallback((alignmentId: string, rowId: string): ArtifactAlignment | null => {');
     expect(artifactSource).toContain('serializeArtifactAlignment({ ...alignment, referenceRowId: rowId })');
     expect(artifactSource).toContain('onUpdateAlignmentTemplate={updateAlignmentTemplate}');
-    expect(viewerSource).toContain('export a workspace backup to keep it after reload.');
+    expect(viewerSource).toContain('Download a backup before reloading.');
     expect(artifactSource).not.toContain('Added alignment to this session');
     expect(artifactSource).toContain('function uniqueAlignmentName(base: string, alignments: readonly ArtifactAlignment[]): string');
     expect(artifactSource).toContain('name: uniqueAlignmentName(alignment.name, current.alignments),');
@@ -116,16 +118,16 @@ describe('Claude Science MSA integration guards', () => {
 
 describe('Claude Science MSA interaction and rendering guards', () => {
   it('paints the conservation track above the 3:1 floor in every theme', () => {
-    // Every bar here was mixed toward `transparent`, which is what a bar is painted
+    // A bar must not be mixed toward `transparent`, which is what a bar is painted
     // ON, not a colour. Over a white ground the mix lightens toward white: sampled
-    // live in Chromium across 90 bars the buckets ran 1.44 to 2.34 in `light` and
-    // 1.42 to 2.33 in `claude-light`, against a 3.0 floor for a non-text graphic.
-    // Raising the mix percentage could not fix it — solid, three of the five old
-    // hexes still measure under 3 on white — so the ramp is per theme now.
+    // live in Chromium across 90 bars the buckets ran 1.44 to 2.34 in `light`,
+    // against a 3.0 floor for a non-text graphic. Raising the mix percentage
+    // cannot fix it — solid, three of the five hexes still measure under 3 on
+    // white — so the ramp is per theme.
     expect(msaCss).not.toMatch(/\.motif-cs-msa-hist-bar[^{]*\{[^}]*color-mix\([^)]*transparent/);
 
     const light = ruleBody(msaCss, ':root');
-    const dark = ruleBody(msaCss, "html:is([data-theme='dark'], [data-theme='claude-dark'])");
+    const dark = ruleBody(msaCss, "html[data-theme='dark']");
     const ground = (theme: string) => {
       const body = ruleBody(artifactCss, theme);
       const match = body.match(/--bg-primary:\s*(#[0-9a-fA-F]{6})/);
@@ -139,8 +141,8 @@ describe('Claude Science MSA interaction and rendering guards', () => {
     };
 
     for (const [body, themes] of [
-      [light, [':root,\nhtml[data-theme="light"]', 'html[data-theme="claude-light"]']],
-      [dark, ['html[data-theme="dark"]', 'html[data-theme="claude-dark"]']],
+      [light, [':root,\nhtml[data-theme="light"]']],
+      [dark, ['html[data-theme="dark"]']],
     ] as const) {
       for (const theme of themes) {
         for (let index = 0; index < 5; index += 1) {
@@ -150,14 +152,12 @@ describe('Claude Science MSA interaction and rendering guards', () => {
       }
     }
 
-    // The neutral bars failed in all four themes for the same reason — 2.12 to 2.68
-    // — and a solid accent clears the floor everywhere, so they need no ramp.
+    // The neutral bars fall under the floor for the same reason — 2.12 to 2.68 —
+    // and a solid accent clears it everywhere, so they need no ramp.
     expect(ruleBody(msaCss, '.motif-cs-msa-hist-bar-occupancy')).toContain('background: var(--accent)');
     for (const theme of [
       'html[data-theme="dark"]',
       ':root,\nhtml[data-theme="light"]',
-      'html[data-theme="claude-light"]',
-      'html[data-theme="claude-dark"]',
     ]) {
       const body = ruleBody(artifactCss, theme);
       const accent = body.match(/--accent:\s*(#[0-9a-fA-F]{6})/)![1];
@@ -174,7 +174,8 @@ describe('Claude Science MSA interaction and rendering guards', () => {
     // the two counts are derived separately and have to agree.
     const menus = viewerSource.match(/= useDismissableMenu\(/g) ?? [];
     const marked = viewerSource.match(/data-motif-cs-escape-scope-when-open="true"/g) ?? [];
-    expect(menus.length).toBe(3);
+    // Go to, View and Export, plus the More menu a narrow toolbar folds the rest into.
+    expect(menus.length).toBe(4);
     expect(marked.length).toBe(menus.length);
     expect(artifactSource).toContain("querySelector('details[data-motif-cs-escape-scope-when-open][open]')");
     // Dismissal has to close the element, not just the state that mirrors it:
@@ -241,7 +242,7 @@ describe('Claude Science MSA interaction and rendering guards', () => {
   });
 
   it('makes result reconfiguration explicit while preserving the current alignment', () => {
-    expect(viewerSource).toContain('<strong>Inputs &amp; alignment settings</strong>');
+    expect(viewerSource).toContain('<strong>Alignment inputs</strong>');
     expect(viewerSource).toContain("activeAlignment ? <p className=\"motif-cs-msa-source-guide\">Changes create a new alignment; the current result stays available in this session.</p>");
     expect(viewerSource).toContain('data-testid="msa-edit-inputs"');
     expect(viewerSource).not.toContain('aria-expanded={sourceOpen}');
@@ -325,7 +326,7 @@ describe('Claude Science MSA interaction and rendering guards', () => {
   });
 
   it('uses explicit template vocabulary, pairwise stats, stable sorting, and distinguishing name suffixes', () => {
-    expect(viewerSource).toContain('<span>Compare against</span>');
+    expect(viewerSource).toContain('<span>Comparison template</span>');
     expect(viewerSource).toContain('Alignment position');
     expect(viewerSource).toContain('data-template={isTemplate || undefined}');
     expect(viewerSource).toContain('return template ? [template, ...nonTemplateRows] : nonTemplateRows;');
@@ -471,11 +472,10 @@ describe('Claude Science MSA interaction and rendering guards', () => {
 
   it('keeps the pan lane trough drawn at a boundary strong enough to read as a scrollbar', () => {
     // The empty trough is the part that states how much alignment lies beyond
-    // the edge. Diluting its border to 72% measured 2.14:1 in light and dark and
-    // 2.28:1 in the claude themes against the row behind it — under the 3.0
-    // non-text floor — while the fill sat at 1.03-1.05, so the lane rendered as a
-    // thumb floating on flat chrome. Two reviewers read those pixels and both
-    // reported the alignment as having no horizontal scroll affordance at all.
+    // the edge. Diluting its border to 72% would measure 2.14:1 against the row
+    // behind it — under the 3.0 non-text floor — and with the fill at 1.03-1.05 the
+    // lane would render as a thumb floating on flat chrome, reading as no
+    // horizontal scroll affordance at all.
     const webkitTrack = sliceBetween(artifactCss, '.motif-cs-msa-pan-range::-webkit-slider-runnable-track {', '}');
     const mozTrack = sliceBetween(artifactCss, '.motif-cs-msa-pan-range::-moz-range-track {', '}');
     const borderOf = (rule: string) => /border:\s*1px solid ([^;]+);/.exec(rule)?.[1];
@@ -487,8 +487,8 @@ describe('Claude Science MSA interaction and rendering guards', () => {
     }
     // Both engines must draw the same trough; this pair is a hand-kept duplicate.
     expect(borderOf(mozTrack)).toBe(borderOf(webkitTrack));
-    // The thumb stays the strongest thing in the lane and is not part of this
-    // change — it already measured 4.56-5.94 against the row.
+    // The thumb stays the strongest thing in the lane; it measures 4.56-5.94
+    // against the row.
     expect(artifactCss).toMatch(/::-webkit-slider-thumb\s*\{[\s\S]*?background:\s*color-mix\(in srgb, var\(--text-muted\) 82%, var\(--border-strong\)\)/);
   });
 
@@ -528,32 +528,37 @@ describe('Claude Science MSA interaction and rendering guards', () => {
     // when constructVerificationRecords is assembled, so this count is honest.
     expect(artifactSource).toContain('const constructVerificationReadCount = useMemo(() => constructVerificationRecords.filter(');
     expect(head).toContain('data-rail-count={constructVerificationReadCount || undefined}');
-    expect(head).toContain('`Construct Verification — ${constructVerificationReadCount} eligible Sanger read${constructVerificationReadCount === 1 ? \'\' : \'s\'}`');
+    expect(head).toContain('`Construct verification — ${constructVerificationReadCount} eligible Sanger read${constructVerificationReadCount === 1 ? \'\' : \'s\'}`');
     // A verification session without eligible evidence retains its ordinary
     // accessible name and carries no dot.
     expect(head).toContain("|| undefined");
   });
 
   it('records why the matrix hides its own horizontal scrollbar', () => {
-    // The rule carried no rationale on a branch where nearly every decision
-    // does, and `overflow-x: hidden` next to a surface with 2801px of hidden
-    // extent got re-litigated as a bug twice. The scroll is real; the bar is
-    // hand-drawn one box below as .motif-cs-msa-pan-row.
+    // `overflow-x: hidden` next to a surface with 2801px of hidden extent can
+    // look like a bug. The scroll is real; the bar is hand-drawn one box below
+    // as .motif-cs-msa-pan-row.
     const scrollRule = sliceBetween(artifactCss, '.motif-cs-msa-matrix-scroll {', '}');
     expect(scrollRule).toContain('overflow-x: hidden');
     expect(scrollRule).toMatch(/motif-cs-msa-pan-row/);
   });
 
+  it('announces only a failed alignment download, leaving success status to the viewer', () => {
+    // The Differences panel already says "Download requested" in its own
+    // status line; a second workbench notice would announce it twice.
+    const handler = sliceBetween(artifactSource, 'const downloadAlignmentText = useCallback(', '}, [showWorkbenchNotice]);');
+    expect(handler).toContain("if (receipt.status === 'failed') showWorkbenchNotice(receipt.message, 'error');");
+    expect(handler.match(/showWorkbenchNotice\(/g)).toHaveLength(1);
+  });
+
   it('never pairs a scrollbar-color with ::-webkit-scrollbar rules on the same element', () => {
     // Naming a `scrollbar-color` makes Chromium ignore every ::-webkit-scrollbar
     // pseudo-element on that element, so the two cannot be combined: whichever
-    // half is written second is dead text that still reads as intent. The matrix
-    // scroller carried both for a long time — an 11px inset pill with an accent
-    // hover tint that never painted a pixel. Measured headed (offsetWidth minus
-    // clientWidth plus screenshot hashes of the gutter strip), the element
-    // rendered byte-identical with those five rules present and absent, while the
-    // same five rules WITHOUT the scrollbar-color rendered visibly different —
-    // which is what proves the colour is the thing disabling them.
+    // half is written second is dead text that still reads as intent. A scroller
+    // with both would have an 11px inset pill with an accent hover tint that never
+    // paints a pixel. In Chromium the element renders byte-identical with those five
+    // rules present and absent, while the same five rules WITHOUT the scrollbar-color
+    // render visibly different, so the colour is the thing disabling them.
     //
     // Asserted over the whole stylesheet rather than over the matrix alone,
     // because the failure mode is someone reaching for ::-webkit-scrollbar on the
@@ -590,8 +595,8 @@ describe('Claude Science MSA interaction and rendering guards', () => {
     ).toEqual([]);
 
     // And the matrix specifically keeps the half that paints. Deleting the colour
-    // to revive the pseudo-elements would restore the defect the colour was added
-    // for: on a system drawing overlay scrollbars nothing is painted at rest, so
+    // to revive the pseudo-elements would bring back the defect the colour
+    // prevents: on a system drawing overlay scrollbars nothing is painted at rest, so
     // the scroller reads as simply ending.
     const scrollRule = sliceBetween(artifactCss, '.motif-cs-msa-matrix-scroll {', '}');
     expect(scrollRule).toMatch(/scrollbar-color:/);

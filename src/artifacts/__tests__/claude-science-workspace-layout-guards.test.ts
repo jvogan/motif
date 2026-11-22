@@ -17,30 +17,30 @@ function sliceBetween(source: string, startNeedle: string, endNeedle: string): s
 }
 
 describe('workspace layout guards', () => {
-  it('offers four host-neutral themes and migrates legacy theme ids', () => {
-    expect(artifactSource).toContain("type ArtifactThemeName = 'light' | 'dark' | 'warm-light' | 'warm-dark';");
-    expect(artifactSource).toContain("{ id: 'light', palette: 'light', label: 'Light', description: 'Neutral surface · blue' }");
-    expect(artifactSource).toContain("{ id: 'dark', palette: 'dark', label: 'Dark', description: 'Deep neutral · blue' }");
-    expect(artifactSource).toContain("{ id: 'warm-light', palette: 'claude-light', label: 'Warm Light', description: 'Warm paper · terracotta' }");
-    expect(artifactSource).toContain("{ id: 'warm-dark', palette: 'claude-dark', label: 'Warm Dark', description: 'Warm charcoal · coral' }");
-    expect(artifactSource).toContain("if (value === 'claude-light' || value === 'claude') return 'warm-light';");
-    expect(artifactSource).toContain("if (value === 'claude-dark' || value === 'tokyo') return 'warm-dark';");
+  it('offers two host-neutral themes and migrates legacy theme ids', () => {
+    expect(artifactSource).toContain("type ArtifactThemeName = 'light' | 'dark';");
+    expect(artifactSource).toContain("{ id: 'light', label: 'Light', description: 'Neutral surface · blue' }");
+    expect(artifactSource).toContain("{ id: 'dark', label: 'Dark', description: 'Deep neutral · blue' }");
+    expect(artifactSource).toContain("if (value === 'warm-light' || value === 'claude-light' || value === 'claude') return 'light';");
+    expect(artifactSource).toContain("if (value === 'warm-dark' || value === 'claude-dark' || value === 'tokyo') return 'dark';");
     expect(artifactSource).toContain("const WORKSPACE_LAYOUT_STORAGE_KEY = 'motif.workspace-layout.v1';");
     expect(artifactSource).toContain("const LEGACY_WORKSPACE_LAYOUT_STORAGE_KEY = 'motif.claude-science.workspace-layout.v1';");
     expect(artifactSource).not.toContain("label: 'Claude Beige'");
-    expect(artifactCss).toContain('html[data-theme="claude-light"]');
-    expect(artifactCss).toContain('html[data-theme="claude-dark"]');
+    expect(artifactSource).not.toContain("label: 'Warm Light'");
+    expect(artifactSource).not.toContain("label: 'Warm Dark'");
+    expect(artifactSource).not.toContain('ArtifactThemePaletteName');
+    expect(artifactCss).not.toContain('data-theme="claude-light"');
+    expect(artifactCss).not.toContain('data-theme="claude-dark"');
     expect(artifactCss).not.toContain('html[data-theme="tokyo"]');
     expect(artifactSource).toContain('data-map-mode={layout.mode}');
     expect(artifactSource).toContain('data-theme={mapTheme}');
     expect(artifactSource).toContain('applyArtifactTheme(loadWorkspaceLayoutPrefs().theme);');
     expect(artifactSource).toContain("document.querySelector<HTMLMetaElement>('meta[name=\"theme-color\"]')");
-    expect(artifactSource).toContain("description: 'Warm paper · terracotta'");
-    expect(artifactSource).toContain("description: 'Warm charcoal · coral'");
-    expect(artifactCss).toContain('.motif-cs-theme-choice[data-theme-choice="claude-light"]');
-    expect(artifactCss).toContain('--theme-preview-claude-light-surface: #f9f9f7;');
-    expect(artifactCss).toContain('--theme-preview-claude-dark-surface: #1f1f1f;');
-    expect(artifactCss).toContain('--choice-accent: var(--theme-preview-claude-accent);');
+    expect(artifactCss).toContain('.motif-cs-theme-choice[data-theme-choice="light"]');
+    expect(artifactCss).toContain('.motif-cs-theme-choice[data-theme-choice="dark"]');
+    expect(artifactCss).toContain('--theme-preview-light-surface: #ffffff;');
+    expect(artifactCss).toContain('--theme-preview-dark-surface: #181818;');
+    expect(artifactCss).not.toContain('theme-preview-claude');
   });
 
   it('resets pane geometry without silently changing the selected appearance', () => {
@@ -49,7 +49,7 @@ describe('workspace layout guards', () => {
       'const resetWorkspaceLayout = useCallback',
       'const toggleToolsPinned = useCallback',
     );
-    expect(resetLayout).toContain('clearWorkspaceLayoutPrefs();');
+    expect(resetLayout).toContain('if (!clearWorkspaceLayoutPrefs()) reportPreferenceStorageFailure();');
     expect(resetLayout).toContain('setPreferredPaneWidths({ ...DEFAULT_WORKSPACE_LAYOUT.paneWidths });');
     expect(resetLayout).not.toContain('setTheme(');
     expect(artifactSource).toContain('onResetDisplayPreferences={resetDisplayPreferences}');
@@ -58,10 +58,9 @@ describe('workspace layout guards', () => {
 
   it('lets "Reset display" reach every floating tool window, including one already open', () => {
     // The seven tool windows keep their geometry in plain state, deliberately: a
-    // size dragged onto a corner survives closing and reopening that window. What
-    // was missing is the way back — the button reset the panes and left every
-    // window exactly as small as it found it, which is the state a user presses
-    // it in.
+    // size dragged onto a corner survives closing and reopening that window. The
+    // way back is Reset display, which resets every window as well as the panes: a
+    // user presses it when the windows are badly sized.
     const resetRects = sliceBetween(
       artifactSource,
       'const resetToolWindowRects = useCallback',
@@ -76,18 +75,26 @@ describe('workspace layout guards', () => {
 
     // Named one at a time. A window left off this list is not reset and says
     // nothing about it; the entire failure mode here is a silent omission.
-    for (const tool of ['Translations', 'Primer', 'Alignment', 'Gel', 'Assembly', 'CloningDesign', 'ConstructVerification']) {
+    for (const tool of ['Primer', 'Alignment', 'Gel', 'Assembly', 'CloningDesign', 'ConstructVerification']) {
       expect(resetRects, `the ${tool} window is not restored by "Reset display"`)
         .toContain(`set${tool}Win(default${tool}WindowRect());`);
     }
+    // Translation's rect is null until the user moves the window; null opens it at
+    // its default, worked out at that moment so a pinned Tools pane stays clear.
+    expect(resetRects, 'the Translations window is not restored by "Reset display"')
+      .toContain('setTranslationsWin(null);');
+    // Worked out at that moment: the default, or, when the panes have no room for it
+    // to dock, the same window over the Map pane.
+    expect(artifactSource).toContain('const translationsDefaultRect = defaultTranslationsWindowRect(');
+    expect(artifactSource).toContain('const translationsInitialRect = translationsWin ?? (');
+    expect(sliceBetween(artifactSource, 'const translationsInitialRect = translationsWin ?? (', 'const translationDocked ='))
+      .toMatch(/translationOverMapRect\(\s*translationsDefaultRect,[\s\S]*: translationsDefaultRect\s*\);/);
     expect(resetRects).toContain('setWindowResetSignal((value) => value + 1);');
 
     // Resetting that state is only half of it. `initial` is read once, in a
     // useState initialiser, so a window that is already open when the button is
-    // pressed never sees the new rect — measured on the live app, it sat at
-    // 280x180 while only the NEXT open came up correct, which is the one moment
-    // the user is guaranteed not to be watching. Every window must be handed the
-    // signal or it is one of the ones that does not move.
+    // pressed never sees the new rect and keeps its size and place until the next
+    // open. Every window must be handed the signal, or it does not move.
     const windowElements = artifactSource.split('<FloatingWindow').slice(1)
       .map((chunk) => chunk.slice(0, chunk.search(/\n\s*>\n/)));
     expect(windowElements, 'expected seven floating tool windows').toHaveLength(7);
@@ -95,7 +102,10 @@ describe('workspace layout guards', () => {
       const rect = /initial=\{(\w+)\}/.exec(element)?.[1];
       expect(rect, 'a FloatingWindow is rendered without an initial rect').toBeTruthy();
       expect(element, `the ${rect} window is never told that a display reset happened`)
-        .toContain('resetSignal={windowResetSignal}');
+        .toContain(rect === 'translationsInitialRect'
+          // Translation is also placed again, while unmoved, when the Tools drawer opens or shuts.
+          ? 'resetSignal={windowResetSignal + translationPlaceSignal}'
+          : 'resetSignal={windowResetSignal}');
     }
 
     // And the receiving end adopts it. Keyed on the counter rather than on
@@ -139,7 +149,7 @@ describe('workspace layout guards', () => {
       'const openContentCount = CONTENT_PANE_KEYS.filter((key) => current[key]).length;',
     );
     expect(togglePane).toContain(
-      "if (pane !== 'tools' && current[pane] && openContentCount <= 1) return current;",
+      "if (pane !== 'tools' && current[pane] && openContentCount <= 1) return stored;",
     );
   });
 
@@ -159,12 +169,11 @@ describe('workspace layout guards', () => {
     // (strand, stop) reading frames. Four of the eight rows the panel lists are
     // the same reverse-strand frame entered at four different starts.
     //
-    // The sharper defect the filing did not have: the record summary reports
-    // the SAME word for a 30 aa population — 96 on this record — so the app
-    // published 221 and 96 as "ORFs" with nothing to tell them apart, because
-    // only the summary's EMPTY branch named its floor. Both are legitimate
-    // populations, so both now say which they are; unifying them would have
-    // moved a number somebody may already be quoting.
+    // A second ambiguity: the record summary reports the SAME word for a 30 aa
+    // population — 96 on this record — so 221 and 96 would both read as "ORFs"
+    // with nothing to tell them apart. Both are legitimate populations, so both
+    // say which they are; unifying them would move a number somebody may
+    // already be quoting.
     expect(artifactSource).toContain('const ANALYSIS_ORF_MIN_AA = 10;');
     expect(artifactSource).toContain('const SUMMARY_ORF_MIN_AA = 30;');
 
@@ -187,11 +196,12 @@ describe('workspace layout guards', () => {
     // ...and the machine-readable copy carries it as data.
     expect(artifactSource).toContain('minAminoAcids: SUMMARY_ORF_MIN_AA,');
 
-    // The panel now lists and counts one ORF per strand and stop (80 on pUC19),
-    // not one per start (216), so the rows no longer repeat a frame and the
+    // The panel lists and counts one ORF per strand and stop (80 on pUC19),
+    // not one per start (216), so the rows do not repeat a frame and the
     // note is one line. Chip, note and rows read the SAME per-stop array.
     expect(artifactSource).toContain('const stopOrfs = useMemo(() => longestOrfPerStop(allOrfs, record.sequence.length)');
-    expect(artifactSource).toContain('{visibleOrfs.length} longest of {stopOrfs.length}, one per stop, from its farthest start.');
+    expect(artifactSource).toContain('Showing {visibleOrfs.length} of {stopOrfs.length}: the longest ORF per stop.');
+    expect(artifactSource).toContain('All {stopOrfs.length}: the longest ORF per stop.');
     // The start set comes from the table the scan used, because the panel has a
     // "Record genetic code" select and the tables disagree — standard initiates
     // at ATG/TTG/CTG, vertebrate mitochondrial at ATT/ATC/ATA/ATG/GTG. A fixed
@@ -211,9 +221,8 @@ describe('workspace layout guards', () => {
     // forced-colors / prefers-contrast / dark: `display: none`, 0x0, every time.
     // Deleting them changed 0 of 462 element rects across 7 widths.
     //
-    // The filing supposed the base rule had been added later and the
-    // media-query one left behind as redundant; `git log -S` refutes that —
-    // both, and the sequence-title rule, arrived in the initial commit.
+    // The base-block rule and the media-query rule hide them alike, so no
+    // condition reveals them.
     const topbarMeta = sliceBetween(
       artifactSource,
       '<div className="motif-cs-topbar-meta">',
@@ -228,13 +237,12 @@ describe('workspace layout guards', () => {
     );
     expect(titleActions, 'sequence-title chip is hidden by the stylesheet; do not render it').not.toContain('motif-cs-chip');
 
-    // ...and the rules that hid them are gone rather than left to hide markup
-    // that no longer exists.
+    // ...and no rule remains to hide markup that does not exist.
     expect(artifactCss).not.toContain('.motif-cs-topbar-meta > .motif-cs-chip');
     expect(artifactCss).not.toContain('.motif-cs-sequence-title .motif-cs-title-actions .motif-cs-chip');
-    // This one never matched anything: the topbar's only children are
-    // .motif-cs-brand and .motif-cs-topbar-meta, so a direct-child chip
-    // selector had nothing to style even before the chips were removed.
+    // This one would match nothing: the topbar's only children are
+    // .motif-cs-brand, .motif-cs-topbar-meta and the theme button, so a direct-child chip
+    // selector has nothing to style.
     expect(artifactCss).not.toContain('.motif-cs-topbar > .motif-cs-chip');
   });
 
@@ -243,11 +251,10 @@ describe('workspace layout guards', () => {
     // 1024 pCDFDuet-1 is entirely off-strip, at 900 pRSFDuet-1 goes with it.
     // The edge fades work (measured headed: 1.15:1 against the field, and the
     // shadow swaps ends with scroll position), but the bar is what says how
-    // much is left, and with no colour it fell through to the platform default
-    // at 1.72:1 in BOTH light themes and 2.66:1 in both dark ones — identical
-    // rgb across themes, the tell that it was never themed at all. Now 4.30,
-    // 5.38, 4.59 and 4.50, measured HEADED because headless Chromium paints no
-    // scrollbar for a non-root scroller and would show nothing to measure.
+    // much is left, and with no colour it falls through to the platform default
+    // at 1.72:1 in light and 2.66:1 in dark. Themed, it measures 4.30 or more,
+    // measured HEADED because headless Chromium paints no scrollbar for a
+    // non-root scroller and would show nothing to measure.
     const strip = sliceBetween(artifactCss, '.motif-cs-record-tabs {', '}');
     expect(strip).toContain('overflow-x: auto');
     expect(strip, 'record tab strip left on the platform default scrollbar').toContain('scrollbar-color:');
@@ -260,9 +267,8 @@ describe('workspace layout guards', () => {
     expect(colourOf(strip)).toBe(colourOf(inventory));
 
     // `scrollbar-width` above is a standard property, so Chromium ignores these
-    // pseudo-elements entirely. The pair that used to sit here declared a 5px
-    // bar and a border-strong thumb and delivered neither — 11px, Chromium's
-    // own thumb. Dead text that reads like live styling is worse than none.
+    // pseudo-elements entirely: rules for them would declare a bar Chromium never
+    // draws. Dead text that reads like live styling is worse than none.
     expect(artifactCss).not.toContain('.motif-cs-record-tabs::-webkit-scrollbar');
   });
 
@@ -286,6 +292,10 @@ describe('workspace layout guards', () => {
     expect(flyout).not.toContain('position: fixed;');
     expect(flyout).toContain('pointer-events: none;');
     expect(flyout).toContain('text-transform: none;');
+    // Its own compositor layer. Painted into the page's layer, showing the name
+    // would re-raster the map drawing under the rail, shifting pixels above the
+    // last icon on hover.
+    expect(flyout).toContain('will-change: transform;');
     // The empty alt text keeps generated content out of the accessible name,
     // which every rail head resolves from its own clipped label.
     expect(flyout).not.toMatch(/content: attr\(title\);/);
@@ -309,37 +319,23 @@ describe('workspace layout guards', () => {
     expect(artifactSource).toContain('onScroll={clearRailFlyouts}');
   });
 
-  it('paints the sequence edit toolbar as a scroll strip instead of hiding its bar', () => {
-    // Measured `scrollWidth - clientWidth` on .motif-cs-edit-toolbar: 114px at
-    // 320 wide, 74 at 360, 44 at 390, 4 at 430, 0 through 620, and 11 again at
-    // exactly 640 where the layout crosses a breakpoint. The Complement switch is
-    // what leaves the right edge, so the control that says which strand you are
-    // reading was the one with no cue that it existed: `scrollbar-width: none`
-    // plus a ::-webkit-scrollbar display:none removed the only cue the platform
-    // gives, and nothing replaced it.
+  it('wraps the sequence edit toolbar instead of scrolling a control away', () => {
+    // A scrolling strip would hide 74px at 360 wide and cut "Complement" off, and
+    // a scroll strip with its bar painted would still leave the switch that
+    // says which strand you read behind a drag. The toolbar is two groups, the
+    // edit controls and the display switches; a pane too narrow for both puts
+    // the second group on a row of its own.
     const toolbar = sliceBetween(artifactCss, '.motif-cs-edit-toolbar {', '}');
-    expect(toolbar).toContain('overflow-x: auto');
-    expect(toolbar, 'the edit toolbar scrolls with its bar switched off').not.toContain('scrollbar-width: none');
-    expect(toolbar).toContain('scrollbar-color:');
-
-    // One scrollbar for the app: the same two tokens the record tabs use.
-    const tabs = sliceBetween(artifactCss, '.motif-cs-record-tabs {', '}');
-    const colourOf = (rule: string) => /scrollbar-color:\s*([^;]+);/.exec(rule)?.[1].replace(/\s+/g, ' ').trim();
-    expect(colourOf(toolbar)).toBeTruthy();
-    expect(colourOf(toolbar)).toBe(colourOf(tabs));
-
-    // Edge fades on both ends, attached `local` so the shadow swaps sides with the
-    // scroll position — the treatment .motif-cs-selection-actions already carries
-    // in this same pane. Verified painted at 390px in all four themes; the thin
-    // bar costs no height, the row stays 36px.
-    expect(toolbar).toContain('background-attachment: local, local, scroll, scroll');
-    expect(toolbar).toContain('linear-gradient(to right, var(--motif-cs-edit-toolbar-bg) 30%, transparent)');
-    expect(toolbar).toContain('linear-gradient(to left, var(--motif-cs-edit-toolbar-bg) 30%, transparent)');
-
-    // Naming a `scrollbar-color` makes Chromium ignore ::-webkit-scrollbar on the
-    // same element, so the old display:none rule became dead text that reads like
-    // live styling. It is deleted rather than overridden.
-    expect(artifactCss).not.toContain('.motif-cs-edit-toolbar::-webkit-scrollbar');
+    expect(toolbar).toContain('flex-wrap: wrap');
+    expect(toolbar, 'the toolbar must not scroll').not.toMatch(/overflow-x:\s*(auto|scroll)/);
+    expect(toolbar).not.toContain('scrollbar-color');
+    expect(toolbar).not.toContain('background-attachment');
+    // One 32px row: 28px controls and 2px above and below.
+    expect(toolbar).toContain('min-height: 32px');
+    // Its controls are 28px, the small control height.
+    expect(artifactCss).toMatch(/\.motif-cs-sequence-panel \.motif-cs-edit-toolbar button\s*\{[^}]*height:\s*var\(--control-h-sm\)/);
+    const groups = sliceBetween(artifactCss, '.motif-cs-edit-controls,\n.motif-cs-display-toggles {', '}');
+    expect(groups).toContain('flex-wrap: wrap');
   });
 
   it('only advertises pane reordering where the rendered layout can honor it', () => {
@@ -366,13 +362,20 @@ describe('workspace layout guards', () => {
 
     expect(floatingWindow).toContain("window.addEventListener('keydown', closeFromEscape, true)");
     expect(floatingWindow).toContain("if (event.key !== 'Escape') return;");
-    expect(floatingWindow).toContain('returnFocusRef?.current?.focus({ preventScroll: true })');
+    // Focus returns to the sequence view when the window opened while the user was typing
+    // there, otherwise to the control that launched it while that control is on screen...
+    expect(floatingWindow).toContain('captureFocusOrigin()');
+    expect(floatingWindow).toContain('const target = returnFocusRef?.current;');
+    expect(floatingWindow).toContain('target.getClientRects().length > 0');
+    expect(floatingWindow).toContain('if (restoreFocusOrigin(origin, target && target.isConnected && target.getClientRects().length > 0 ? target : null)) return;');
+    // ...and to the top-bar Tools button when it is not (a tool opened from the drawer shuts the drawer).
+    expect(floatingWindow).toContain("document.querySelector<HTMLElement>('[data-pane-toggle=\"tools\"]')?.focus({ preventScroll: true });");
     expect(floatingWindow).toContain('onClick={closeWindow}');
     expect(artifactSource).toContain('returnFocusRef={translationsToggleRef}');
   });
 
   it('keeps sequence scrolling local to each open record', () => {
-    expect(artifactSource).toContain('const sequenceScrollByRecordRef = useRef<Record<string, number>>({});');
+    expect(artifactSource).toContain('const sequenceScrollByRecordRef = useRef<Record<string, number>>(createRecordMap());');
     expect(artifactSource).toContain('const rememberActiveSequenceScroll = useCallback(() => {');
     expect(artifactSource).toContain('sequenceScrollByRecordRef.current[activeRecordId] = effectiveSequenceScroller(sequenceElement).scrollTop;');
     expect(artifactSource).toContain('effectiveSequenceScroller(sequenceElement).scrollTop = sequenceScrollByRecordRef.current[recordId] ?? 0;');
@@ -400,7 +403,16 @@ describe('workspace layout guards', () => {
       'const updateRecordDetails = useCallback',
     );
 
-    expect(selectRecord).toContain('setSelection(null);');
+    // A switch never carries the previous record's selection over: it selects
+    // what the arriving record had selected when the reader left it, or nothing.
+    expect(selectRecord).toContain('recallRecordSelection(nextRecordId);');
+    const recallRecordSelection = sliceBetween(
+      artifactSource,
+      'const recallRecordSelection = useCallback',
+      'const selectRecord = useCallback',
+    );
+    expect(recallRecordSelection).toContain('restoreRecordSelection(rememberedSelectionsRef.current[nextRecordId], record)');
+    expect(recallRecordSelection).toContain('setSelection(restored.selection);');
     expect(addRecords).toContain('setSelection(null);');
     expect(addRecord).not.toContain('nextRecord.features[0]');
     expect(artifactSource).toMatch(/window\.motifRenderInventory = \(entriesOrPayload\) => \{[\s\S]*?setSelection\(null\);/);
@@ -428,19 +440,21 @@ describe('workspace layout guards', () => {
 
   it('supports keyboard resizing on workspace separators', () => {
     expect(artifactSource).toContain('const resizePaneFromKeyboard = useCallback');
-    expect(artifactSource).toContain("if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;");
+    expect(artifactSource).toContain("if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;");
     expect(artifactSource).toContain('aria-valuenow={Math.round(width)}');
     expect(artifactSource).toContain('data-pane={pane}');
     expect(artifactSource).toContain('onKeyDown={(event) => onKeyDown(pane, event, edge)}');
     expect(artifactSource).toContain('const totalSlack = shrinkable.reduce(');
     expect(artifactSource).toContain('deficit * (slack / totalSlack)');
-    expect(artifactSource).toContain("const STACKED_LAYOUT_MEDIA = '(max-width: 767px)';");
-    expect(artifactSource).toContain("const TWO_ROW_LAYOUT_MEDIA = '(min-width: 640px) and (max-width: 1535px)';");
+    expect(artifactSource).toContain('const COMPACT_LAYOUT_MIN_WIDTH = 900;');
+    expect(artifactSource).toContain("const STACKED_LAYOUT_MEDIA = '(max-width: 899px)';");
+    expect(artifactSource).toContain("const TWO_ROW_LAYOUT_MEDIA = '(min-width: 900px) and (max-width: 1535px)';");
+    expect(artifactSource).toContain('const stableCompactTopology = workspaceMainSize.width >= COMPACT_LAYOUT_MIN_WIDTH && workspaceMainSize.width <= 1535;');
     expect(artifactSource).toContain("const OVERLAY_TOOLS_LAYOUT_MEDIA = '(max-width: 1535px)';");
     expect(artifactSource).toContain("sequence: { min: 240, max: 2000 }");
     expect(artifactSource).toContain("map: { min: 300, max: 2000 }");
     expect(artifactCss).toMatch(/\.motif-cs-resize-handle\[data-pane="sequence"\]\s*\{[\s\S]*?display:\s*block/);
-    expect(artifactCss).toMatch(/@media \(min-width: 768px\) and \(max-width: 1535px\)[\s\S]*?\.motif-cs-resize-handle\[data-pane="inventory"\],[\s\S]*?\.motif-cs-resize-handle\[data-pane="sequence"\][\s\S]*?display:\s*block/);
+    expect(artifactCss).toMatch(/@media \(min-width: 900px\) and \(max-width: 1535px\)[\s\S]*?\.motif-cs-resize-handle\[data-pane="inventory"\],[\s\S]*?\.motif-cs-resize-handle\[data-pane="sequence"\][\s\S]*?display:\s*block/);
     expect(artifactCss).toMatch(/@media \(min-width: 1536px\)[\s\S]*?\.motif-cs-resize-handle\[data-pane="tools"\][\s\S]*?display:\s*block/);
     expect(artifactSource).toContain("const overlayTools = pane === 'tools' && overlayLayout;");
     expect(artifactSource).toContain("visibleResizablePanes.filter((pane) => pane !== 'tools')");
@@ -464,12 +478,12 @@ describe('workspace layout guards', () => {
     expect(artifactSource).toContain('stopPaneResize();');
     expect(artifactSource).toContain('stopStackedPaneResize();');
     expect(artifactCss).toContain('var(--motif-cs-tools-pane-width, 280px)');
-    expect(artifactCss).toMatch(/@media \(min-width: 640px\) and \(max-width: 1535px\)[\s\S]*?\.motif-cs-resize-handle\[data-pane="sequence"\]\s*\{[\s\S]*?display:\s*none/);
+    expect(artifactCss).toMatch(/@media \(min-width: 900px\) and \(max-width: 1535px\)[\s\S]*?\.motif-cs-resize-handle\[data-pane="sequence"\]\s*\{[\s\S]*?display:\s*none/);
   });
 
   it('reflows a pinned compact workspace without overlaying or reserving a hidden map lane', () => {
     expect(artifactSource).toContain('data-tools-pinned={toolsDocked || undefined}');
-    expect(artifactCss).toMatch(/@media \(min-width: 640px\) and \(max-width: 1535px\)[\s\S]*?\.motif-cs-main\[data-tools-pinned="true"\]\s*\{[\s\S]*?display:\s*grid/);
+    expect(artifactCss).toMatch(/@media \(min-width: 900px\) and \(max-width: 1535px\)[\s\S]*?\.motif-cs-main\[data-tools-pinned="true"\]\s*\{[\s\S]*?display:\s*grid/);
     expect(artifactCss).toContain('.motif-cs-main[data-tools-pinned="true"] > .motif-cs-stacked-resize-handle[data-pane="sequence"]');
     expect(artifactSource).toContain('COMPACT_PINNED_LAYOUT_MEDIA');
     expect(artifactSource).toContain("'--motif-cs-compact-top-row-height'");
@@ -487,8 +501,9 @@ describe('workspace layout guards', () => {
     expect(artifactSource).toContain("stableCompactTopology && visibleContentPanes.length === 3 && pane === 'inventory'");
     expect(artifactSource).toContain('Math.floor(workspaceMainSize.width * 0.38)');
     expect(artifactSource).toContain("const limits = paneWidthLimitsForCurrentLayout('inventory');");
-    expect(artifactSource).toContain('limits={paneWidthLimitsForCurrentLayout(\'inventory\')}');
-    expect(artifactSource).toContain('limits={paneWidthLimitsForCurrentLayout(\'tools\')}');
+    expect(artifactSource).toContain('limits={separatorWidthLimits(\'inventory\', \'after\')}');
+    expect(artifactSource).toContain('limits={separatorWidthLimits(\'tools\', \'before\')}');
+    expect(artifactSource).toContain('if (!neighbor) return paneWidthLimitsForCurrentLayout(pane);');
     expect(artifactSource).toContain('const workspaceRowResizeActive = compactRowResizeActive || twoRowResizeActive;');
     expect(artifactSource).toContain('const TWO_ROW_VERY_SHORT_MIN_HEIGHT = 120;');
     expect(artifactSource).toContain('if (total <= mainWidth) return widths;');
@@ -503,25 +518,28 @@ describe('workspace layout guards', () => {
 
   it('keeps the short two-row workbench internally scrollable with a persistent rail', () => {
     expect(artifactSource).toContain('|| window.matchMedia(TWO_ROW_LAYOUT_MEDIA).matches');
-    expect(artifactCss).toMatch(/@media \(min-width: 640px\) and \(max-width: 1535px\)[\s\S]*?grid-template-rows:[\s\S]*?9px/);
-    expect(artifactCss).toMatch(/@media \(min-width: 640px\) and \(max-width: 1535px\)[\s\S]*?\.motif-cs-stacked-resize-handle\[data-pane="sequence"\]\s*\{[\s\S]*?display:\s*block/);
-    expect(artifactCss).toMatch(/@media \(min-width: 640px\) and \(max-width: 1535px\)[\s\S]*?\.motif-cs-main > \.motif-cs-sequence-column\s*\{[\s\S]*?overflow-y:\s*auto/);
+    expect(artifactCss).toMatch(/@media \(min-width: 900px\) and \(max-width: 1535px\)[\s\S]*?grid-template-rows:[\s\S]*?9px/);
+    expect(artifactCss).toMatch(/@media \(min-width: 900px\) and \(max-width: 1535px\)[\s\S]*?\.motif-cs-stacked-resize-handle\[data-pane="sequence"\]\s*\{[\s\S]*?display:\s*block/);
+    expect(artifactCss).toMatch(/@media \(min-width: 900px\) and \(max-width: 1535px\)[\s\S]*?\.motif-cs-main > \.motif-cs-sequence-column\s*\{[\s\S]*?overflow-y:\s*auto/);
     expect(artifactCss).toMatch(/\.motif-cs-main > \.motif-cs-sequence-column > \.motif-cs-sequence-panel\s*\{[\s\S]*?min-height:\s*280px/);
   });
 
   it('contains narrow grid panes and preserves a usable short map canvas', () => {
-    expect(artifactCss).toMatch(/@media \(min-width: 640px\) and \(max-width: 767px\)[\s\S]*?\.motif-cs-main\[data-content-pane-count="3"\] > \.motif-cs-sequence-column,[\s\S]*?height:\s*100% !important/);
-    expect(artifactCss).toMatch(/\.motif-cs-main\[data-content-pane-count="3"\] > \.motif-cs-sequence-column,[\s\S]*?\.motif-cs-main\[data-content-pane-count="3"\] > \.motif-cs-map-column\s*\{[\s\S]*?overflow-y:\s*auto/);
-    expect(artifactCss).toMatch(/@media \(min-width: 640px\) and \(max-width: 1535px\) and \(max-height: 620px\)[\s\S]*?\.motif-cs-map-frame\s*\{[\s\S]*?min-height:\s*120px/);
+    // The single column ends at 899px and the grid starts at 900px, so no width
+    // runs both rule sets and needs a strip of overrides between them.
+    expect(artifactCss).not.toContain('(min-width: 640px) and (max-width: 767px)');
+    expect(artifactCss).not.toContain('@media (max-width: 767px)');
+    expect(artifactCss).not.toContain('(min-width: 640px) and (max-width: 1535px)');
+    expect(artifactCss).toMatch(/@media \(min-width: 900px\) and \(max-width: 1535px\) and \(max-height: 620px\)[\s\S]*?\.motif-cs-map-frame\s*\{[\s\S]*?min-height:\s*120px/);
   });
 
   it('anchors the phone Tools rail and drawer below the visible top bar', () => {
     expect(artifactSource).toContain('const topbarRef = useRef<HTMLElement | null>(null);');
     expect(artifactSource).toContain("'--motif-cs-topbar-height': `${topbarHeight}px`");
     expect(artifactSource).toContain('<header ref={topbarRef}');
-    expect(artifactCss).toMatch(/@media \(max-width: 639px\)[\s\S]*?\.motif-cs-inspector\[data-tools-pinned="false"\],[\s\S]*?\.motif-cs-inspector\[data-tools-pinned="true"\]\s*\{[\s\S]*?position:\s*fixed;[\s\S]*?top:\s*var\(--motif-cs-topbar-height,\s*38px\);[\s\S]*?bottom:\s*0/);
-    expect(artifactCss).toMatch(/@media \(max-width: 639px\)[\s\S]*?\.motif-cs-inspector\[data-tools-pinned="true"\]\s*\{[\s\S]*?overflow:\s*auto;[\s\S]*?overscroll-behavior:\s*contain/);
-    expect(artifactCss).toMatch(/@media \(max-width: 639px\)[\s\S]*?\.motif-cs-resize-handle\[data-pane="tools"\]\s*\{[\s\S]*?position:\s*fixed;[\s\S]*?top:\s*var\(--motif-cs-topbar-height,\s*38px\)/);
+    expect(artifactCss).toMatch(/@media \(max-width: 899px\)[\s\S]*?\.motif-cs-inspector\[data-tools-pinned="false"\],[\s\S]*?\.motif-cs-inspector\[data-tools-pinned="true"\]\s*\{[\s\S]*?position:\s*fixed;[\s\S]*?top:\s*var\(--motif-cs-topbar-height,\s*38px\);[\s\S]*?bottom:\s*0/);
+    expect(artifactCss).toMatch(/@media \(max-width: 899px\)[\s\S]*?\.motif-cs-inspector\[data-tools-pinned="true"\]\s*\{[\s\S]*?overflow:\s*auto;[\s\S]*?overscroll-behavior:\s*contain/);
+    expect(artifactCss).toMatch(/@media \(max-width: 899px\)[\s\S]*?\.motif-cs-resize-handle\[data-pane="tools"\]\s*\{[\s\S]*?position:\s*fixed;[\s\S]*?top:\s*var\(--motif-cs-topbar-height,\s*38px\)/);
   });
 
   it('uses a roomy four-column bridge before pane reordering becomes available', () => {
@@ -533,16 +551,16 @@ describe('workspace layout guards', () => {
   it('keeps large sequence rendering local and skippable off screen', () => {
     expect(artifactCss).toMatch(/\.motif-cs-seq-block\s*\{[\s\S]*?content-visibility:\s*auto/);
     expect(artifactCss).toMatch(/\.motif-cs-seq-block\[data-seq-focus="true"\]\s*\{[\s\S]*?content-visibility:\s*visible/);
-    expect(artifactCss).toMatch(/\.motif-cs-large-sequence\s*\{[\s\S]*?overflow:\s*auto[\s\S]*?font:\s*12px\/1\.65 var\(--font-mono\)/);
+    expect(artifactCss).toMatch(/\.motif-cs-large-sequence\s*\{[\s\S]*?overflow:\s*auto[\s\S]*?font:\s*var\(--fs-sm\)\/1\.7 var\(--font-mono\)/);
     expect(artifactCss).toMatch(/\.motif-cs-large-sequence-notice\s*\{[\s\S]*?overflow-wrap:\s*anywhere/);
-    expect(artifactCss).toMatch(/\.motif-cs-large-sequence-value\s*\{[\s\S]*?flex:\s*1 1 auto[\s\S]*?font:\s*12px\/1\.65 var\(--font-mono\)[\s\S]*?resize:\s*none/);
+    expect(artifactCss).toMatch(/\.motif-cs-large-sequence-value\s*\{[\s\S]*?flex:\s*1 1 auto[\s\S]*?font:\s*var\(--fs-sm\)\/1\.7 var\(--font-mono\)[\s\S]*?resize:\s*none/);
     expect(artifactCss).toMatch(/\.motif-cs-large-sequence-value:focus-visible\s*\{[\s\S]*?outline:\s*2px solid var\(--focus-ring\)/);
   });
 
   it('keeps compact sequence content scrollable and short workspaces escapable', () => {
     expect(artifactCss).toMatch(/\.motif-cs-main\[data-tools-pinned="true"\] \.motif-cs-sequence-panel > \.motif-cs-sequence\s*\{[\s\S]*?min-height:\s*0/);
-    expect(artifactCss).toMatch(/@media \(min-width: 640px\) and \(max-width: 1535px\) and \(max-height: 620px\)[\s\S]*?minmax\(var\(--motif-cs-compact-bottom-row-min, 120px\), 1fr\)/);
-    expect(artifactCss).toMatch(/@media \(min-width: 640px\) and \(max-width: 1535px\) and \(max-height: 330px\)[\s\S]*?data-content-pane-count="3"[\s\S]*?overflow-y:\s*auto/);
+    expect(artifactCss).toMatch(/@media \(min-width: 900px\) and \(max-width: 1535px\) and \(max-height: 620px\)[\s\S]*?minmax\(var\(--motif-cs-compact-bottom-row-min, 120px\), 1fr\)/);
+    expect(artifactCss).toMatch(/@media \(min-width: 900px\) and \(max-width: 1535px\) and \(max-height: 330px\)[\s\S]*?data-content-pane-count="3"[\s\S]*?overflow-y:\s*auto/);
     expect(artifactCss).toMatch(/data-inventory-hidden="true"\][\s\S]*?motif-cs-stacked-resize-handle\[data-pane="sequence"\][\s\S]*?grid-column:\s*1 \/ 4/);
   });
 
@@ -556,20 +574,32 @@ describe('workspace layout guards', () => {
     expect(artifactSource).toContain('stackedPaneHeights: normalizeStackedPaneHeights(source.stackedPaneHeights)');
     expect(artifactSource).toContain("pane=\"inventory\"");
     expect(artifactSource).toContain("pane=\"sequence\"");
-    expect(artifactCss).toMatch(/@media \(max-width: 767px\)[\s\S]*?\.motif-cs-stacked-resize-handle\s*\{[\s\S]*?cursor:\s*ns-resize/);
+    expect(artifactCss).toMatch(/@media \(max-width: 899px\)[\s\S]*?\.motif-cs-stacked-resize-handle\s*\{[\s\S]*?cursor:\s*ns-resize/);
     expect(artifactCss).toContain('var(--motif-cs-stacked-inventory-pane-height, min(176px, 20vh))');
     expect(artifactCss).toContain('var(--motif-cs-stacked-sequence-pane-height, clamp(360px, 47vh, 420px))');
     expect(artifactCss).toMatch(/\.motif-cs-sidebar\[data-stacked-resized="true"\][\s\S]*?max-height:\s*520px/);
     expect(artifactCss).toMatch(/\.motif-cs-sequence-column\[data-stacked-resized="true"\][\s\S]*?\.motif-cs-sequence-panel > \.motif-cs-sequence\s*\{[\s\S]*?max-height:\s*none/);
-    expect(artifactCss).toMatch(/@media \(min-width: 640px\) and \(max-width: 767px\)[\s\S]*?\.motif-cs-main > \.motif-cs-stacked-resize-handle\[data-pane="inventory"\]\s*\{[\s\S]*?display:\s*none/);
-    expect(artifactCss).toMatch(/@media \(min-width: 640px\) and \(max-width: 767px\)[\s\S]*?data-content-pane-count="3"[\s\S]*?\.motif-cs-resize-handle\[data-pane="inventory"\]\s*\{[\s\S]*?display:\s*block/);
+    // The single column draws Map above Sequence, and the DOM follows so Tab
+    // matches the screen; the saved pane order is left alone.
+    expect(artifactSource).toContain('const singleColumnLayout = workspaceMainSize.width < COMPACT_LAYOUT_MIN_WIDTH;');
+    expect(artifactSource).toContain('() => singleColumnLayout ? singleColumnPaneOrder(paneOrder) : paneOrder,');
+    expect(artifactSource).toContain('{orderPaneSlots(drawnPaneOrder, {');
   });
 
   it('lets split sequence and map canvases consume the available height', () => {
-    expect(artifactCss).toMatch(/@media \(min-width: 768px\)[\s\S]*?\.motif-cs-sequence-panel\s*\{[\s\S]*?flex:\s*1 1 auto/);
+    expect(artifactCss).toMatch(/@media \(min-width: 900px\)[\s\S]*?\.motif-cs-sequence-panel\s*\{[\s\S]*?flex:\s*1 1 auto/);
     expect(artifactCss).toMatch(/\.motif-cs-sequence-panel > \.motif-cs-sequence\s*\{[\s\S]*?max-height:\s*none/);
-    expect(artifactCss).toMatch(/@media \(min-width: 768px\)[\s\S]*?\.motif-cs-map-frame\s*\{[\s\S]*?flex:\s*1 1 auto/);
+    expect(artifactCss).toMatch(/@media \(min-width: 900px\)[\s\S]*?\.motif-cs-map-frame\s*\{[\s\S]*?flex:\s*1 1 auto/);
     expect(artifactSource).toContain('Math.floor(fit / 5) * 5');
+  });
+
+  it('reserves no workspace width for Tools below 1536px', () => {
+    // Tools opens over the workspace there, so a closed Tools pane costs no width.
+    expect(artifactCss).toMatch(/@media \(max-width: 1535px\) \{\s*\/\* No width is reserved for Tools below 1536px[^*]*\*\/\s*\.motif-cs-main \{\s*position: relative;\s*\}/);
+    expect(artifactCss).not.toContain('padding-right: 48px');
+    expect(artifactSource).toContain('const toolsWidth = toolsDocked ? next.tools + 7 : 0;');
+    expect(artifactSource).toContain('const effectiveToolsRailWidth = overlayTools ? 0 : toolsRailWidth;');
+    expect(artifactSource).toContain('const effectiveToolsRailWidth = overlayLayout ? 0 : toolsRailWidth;');
   });
 
   it('avoids duplicate scroll tracks behind the narrow Tools overlay', () => {
@@ -581,32 +611,39 @@ describe('workspace layout guards', () => {
     const editToolbar = sliceBetween(
       artifactSource,
       '<div className="motif-cs-edit-toolbar"',
-      '{/* Always mounted so range-selection actions have a stable dock;',
+      'className="motif-cs-selection-bar"',
     );
-    expect(artifactSource).toContain('className="motif-cs-segmented motif-cs-edit-mode-toggle"');
-    expect(artifactSource).toContain('aria-label="Typing mode"');
+    expect(artifactSource).toContain('className="motif-cs-mini-button motif-cs-edit-mode-toggle"');
+    expect(artifactSource).toContain("aria-label={insertMode ? 'Typing mode: Insert. Switch to Replace' : 'Typing mode: Replace. Switch to Insert'}");
+    expect(artifactSource).toContain("data-mode={insertMode ? 'insert' : 'replace'}");
     expect(artifactSource).toContain('className="motif-cs-mini-button motif-cs-display-switch motif-cs-ds-toggle"');
-    expect(artifactSource).toContain('<span>Complement</span>');
-    // One action, one name: the dock's Create menu and the Translation panel
-    // both call addTranslationLayer, so both say "Add AA track". The menu has
-    // room for full words at every width, so there is no short spelling left.
+    // The switch label carries its own text for the width it reserves when on.
+    expect(artifactSource).toContain('<span className="motif-cs-toolbar-label" data-label="Complement">Complement</span>');
+    // With the words dropped, Complement must not wear the arrows the
+    // Replace and Insert button already has.
+    const complementSwitch = sliceBetween(artifactSource, 'motif-cs-display-switch motif-cs-ds-toggle', 'data-label="Complement"');
+    // A double helix for the second strand; mirrored triangles read as an hourglass.
+    expect(complementSwitch).toContain('<Dna className="motif-cs-switch-icon"');
+    expect(complementSwitch).not.toContain('FlipVertical');
+    expect(complementSwitch).not.toContain('ArrowRightLeft');
+    expect(editToolbar.match(/<ArrowRightLeft /g)).toHaveLength(1);
+    // The Create menu spells the action out: "Pin translation" shows the
+    // translation under the sequence and "Remove translation" takes it away.
     expect(artifactSource).toContain(
-      "label: selectedInlineTranslationTrack ? 'Remove AA track' : 'Add AA track',",
+      "label: selectedInlineTranslationTrack ? 'Remove translation' : 'Pin translation',",
     );
     expect(artifactSource).not.toContain('motif-cs-label-short');
     expect(artifactSource).toContain('disabled: !selectedInlineTranslationTrack && (!selectionActionTranslation || !canPinPreviewTranslation),');
     expect(artifactSource).toContain('if (selectedInlineTranslationTrack) deleteTranslationLayer(selectedInlineTranslationTrack.id);');
     expect(artifactSource).toContain('addTranslationLayer();');
     expect(artifactSource).toContain('onTranslationTrackSelect={handleTranslationTrackSelectAndReveal}');
-    expect(artifactSource).toMatch(/>\s*\+ Feature\s*<\/button>/);
+    expect(artifactSource).toMatch(/>\s*Add feature\s*<\/button>/);
 
-    // Both controls in this bar that add a record to the inventory say so. They
-    // used to be spelled like the "Copy" beside them, so pressing "Rev comp"
-    // took a session from 13 records to 14 and opened a new Derived group with
-    // nothing in the label to warn of it — and with no selection it is the only
-    // enabled control here, so it was the one thing the resting bar invited.
-    // "New" is the word the Export panel already uses to tell "Copy rev comp"
-    // from "New rev comp"; reusing it keeps the two surfaces agreeing.
+    // Both controls in this bar that add a record to the inventory say so.
+    // Spelled like the "Copy" beside them, "Rev comp" would add a record and open
+    // a new Derived group with nothing in the label to warn of it — and with no
+    // selection it is the only enabled control here.
+    // "New" tells the record-making entry from Export's "Copy reverse complement".
     // In the Create menu they are spelled out: "rev comp" was the one
     // abbreviation left, and "record" says what lands in the inventory.
     expect(artifactSource).toContain("label: 'New reverse complement record',");
@@ -620,7 +657,7 @@ describe('workspace layout guards', () => {
     // enters and leaves Detail, so the row reads like the Complement switch
     // beside it. Guard the toggling call, which a split control cannot make.
     expect(artifactSource).toContain(
-      "onClick={() => setSequenceViewMode(effectiveSequenceViewMode === 'detail' ? 'standard' : 'detail')}",
+      "setSequenceViewMode(effectiveSequenceViewMode === 'detail' ? 'standard' : 'detail');",
     );
     expect(artifactSource).toContain('className="motif-cs-mini-button motif-cs-display-switch motif-cs-detail-toggle"');
     expect(artifactSource).not.toContain('motif-cs-view-toggle');
@@ -631,27 +668,37 @@ describe('workspace layout guards', () => {
     expect(artifactSource.match(/onSelect: addContextReverseComplementRecord,/g)).toHaveLength(1);
     expect(editToolbar).not.toContain('addContextReverseComplementRecord');
     // The menu is mounted only for nucleotide records, so the item's own test
-    // no longer needs a molecule clause.
+    // needs no molecule clause.
     expect(artifactSource).toContain('disabled: !!selectionSummary && !hasMaterializableSequenceSelection,\n');
     expect(artifactSource).toContain('className="motif-cs-edit-controls"');
     expect(artifactCss).toContain('.motif-cs-switch-track');
     expect(artifactCss).not.toContain('.motif-cs-view-toggle');
-    expect(artifactCss).not.toMatch(/\.motif-cs-selection-bar\[data-empty\] \.motif-cs-selection-actions\s*\{[\s\S]*?display:\s*none/);
-    // Two lines only where a one-line bar would leave the readout no room.
-    expect(artifactCss).toMatch(/@container \(max-width: 400px\) \{\s*\.motif-cs-selection-bar\s*\{[\s\S]*?flex-direction:\s*column;[\s\S]*?min-height:\s*62px/);
-    expect(artifactCss).toMatch(/@container \(max-width: 400px\) \{[\s\S]*?\.motif-cs-selection-bar\[data-empty\]\s*\{[\s\S]*?min-height:\s*62px/);
-    expect(artifactCss).not.toMatch(/@container \(max-width: 640px\) \{\s*\.motif-cs-selection-bar/);
+    // Nothing selected: the bar is one hint, with Copy, Add feature and Create
+    // beside it, disabled where they have nothing to act on. Nothing in the dock
+    // is hidden by state, and the row keeps one height either way, so selecting
+    // never moves the bases or a control.
+    expect(artifactCss).not.toMatch(/\.motif-cs-selection-bar\[data-empty\][^{]*\{[^}]*display:\s*none/);
+    expect(artifactCss).toMatch(/\.motif-cs-selection-bar\s*\{[\s\S]*?min-height:\s*32px/);
+    // The dock wraps instead of scrolling. Where the readout and the three
+    // controls cannot share a row (under 560px of pane, with the readout at
+    // 12px) it is two rows tall in every state, readout on top, so a selection
+    // never grows it mid-drag.
+    expect(artifactCss).toMatch(/\.motif-cs-selection-bar\s*\{[\s\S]*?flex-wrap:\s*wrap/);
+    // Under 560px of pane one row would cut a feature's position and length.
+    expect(artifactCss).toMatch(/@container \(max-width: 559px\) \{\s*\.motif-cs-selection-bar\s*\{[\s\S]*?min-height:\s*56px[\s\S]*?\.motif-cs-selection-label\s*\{\s*flex-basis:\s*100%/);
+    // A long feature name takes the ellipsis; the facts after it never do.
+    expect(artifactCss).toMatch(/\.motif-cs-selection-name-tail\s*\{\s*flex:\s*0 0 auto;/);
+    expect(artifactSource).toContain('<span className="motif-cs-selection-name-head">{selectedFeature.name || selectedFeature.type}</span>');
   });
 
   it('supports platform-standard map wheel modifiers', () => {
-    expect(artifactSource).toContain('const handleCommandWheel = (event: globalThis.WheelEvent) => {');
-    expect(artifactSource).toContain('if (!event.metaKey || event.ctrlKey) return;');
-    expect(artifactSource).toContain("mapFrame.addEventListener('wheel', handleCommandWheel, { passive: false, capture: true })");
+    expect(artifactSource).toContain('const handlePaneWheel = (event: globalThis.WheelEvent) => {');
+    expect(artifactSource).toContain('handleMapWheel(point, event.deltaX, event.deltaY, event.deltaMode, event.ctrlKey || event.metaKey, event.shiftKey);');
+    expect(artifactSource).toContain("pane.addEventListener('wheel', handlePaneWheel, { passive: false, capture: true })");
     expect(artifactSource).toContain('Ctrl/Command-wheel zooms');
-    // Ctrl zooms at any scale; the plain wheel pans only a zoomed map and passes
-    // through at Fit (see mapWheelIntent and its behavioural test).
-    expect(artifactSource).toContain("if (ctrlKey) return 'zoom';");
-    expect(artifactSource).toContain("if (intent === 'pass') return false;");
+    // Ctrl or Command zooms at any scale; the plain wheel pans at every zoom, Fit
+    // included (see mapWheelIntent and its behavioural test).
+    expect(artifactSource).toContain("return ctrlKey ? 'zoom' : 'pan';");
     expect(artifactSource).toContain('const panX = (shiftKey && Math.abs(normalizedX) < 0.5 ? normalizedY : normalizedX) * panScale;');
   });
 
@@ -669,7 +716,15 @@ describe('workspace layout guards', () => {
     expect(selectTranslationCodon).toContain('setLockedTranslateTarget({ recordId, target });');
     expect(selectTranslationCodon).not.toContain('target: translateTarget');
     expect(selectTranslationCodon).toContain('setSelectedTranslationLayerByRecord');
-    expect(artifactSource).toContain('onTranslationCodonSelect(\n                start,\n                end,\n                track.strand,\n                track.translationTableId,\n                track.featureId,\n                track.source,\n              );');
+    // A clicked codon and a run of selected residues lock the target in the track's strand and code.
+    expect(artifactSource).toContain('onTranslationCodonSelect(\n      range.start,\n      range.end,\n      entry.track.strand,\n      entry.track.translationTableId,\n      entry.track.featureId,\n      entry.track.source,\n');
+    // The target keeps the residues as the track drew them (an initiator GTG reads V alone),
+    // and the code it drew them under, so a later code change reads the bases again.
+    expect(selectTranslationCodon).toContain('      protein,\n      proteinTranslationTableId: protein ? translationTableId : undefined,\n      pickStrand,\n      segments,\n    };');
+    // An ORF row and a find match lock the target in their own strand, read from their 5' end.
+    expect(artifactSource).toContain('onClick={() => onSelectOrf(orf.start, orf.end, orf.strand, true)}');
+    expect(artifactSource).toContain('selectStrandedRangeAndReveal(match.start, match.end, match.strand, false);');
+    expect(artifactSource).toContain('selectTranslationCodon(start, end, strand, undefined, undefined, undefined, 0, completeCds || undefined, undefined, undefined, strand);');
   });
 
   it('keeps genetic-code context synchronized across feature, pinned-track, and PCR flows', () => {
@@ -695,7 +750,11 @@ describe('workspace layout guards', () => {
   });
 
   it('resets translation controls for record, target, and natural strand changes', () => {
-    expect(artifactSource).toContain('[recordId, translateTarget.defaultFrame, translateTarget.defaultStrand, translateTargetKey]');
+    const controls = sliceBetween(artifactSource, 'const translationControlTarget = useMemo', 'const previewTrack = useMemo');
+    expect(controls).toContain('[recordId, translateTargetKey, translateTarget.defaultStrand, translateTarget.defaultFrame]');
+    expect(controls).toContain('translationOverride?.target === translationControlTarget ? translationOverride : null');
+    expect(controls).toContain('activeTranslationOverride?.strand ?? translationControlTarget.strand');
+    expect(controls).toContain('activeTranslationOverride?.frame ?? translationControlTarget.frame');
     expect(artifactSource).not.toContain('// eslint-disable-next-line react-hooks/exhaustive-deps -- reset only on target change');
   });
 
@@ -715,8 +774,8 @@ describe('workspace layout guards', () => {
     expect(pointerStart).not.toContain('mapViewport.k >');
     expect(artifactSource).toContain('data-map-interaction-surface');
     expect(artifactSource).toContain('data-map-pointer-action={mapPointerAction}');
-    // Features and restriction ticks used to veto the gesture entirely, which made
-    // 25.5% of the disc's area impossible to start a range drag from. They now take
+    // Features and restriction ticks do not veto the gesture, which would leave
+    // about a quarter of the disc's area unable to start a range drag. They take
     // part like any other surface and are told apart from a drag by whether the
     // pointer moved. Workflow range overlays keep their veto.
     expect(artifactSource).toContain("target.closest('.motif-pm-range-overlay[data-interactive=\"true\"]')");
@@ -727,15 +786,24 @@ describe('workspace layout guards', () => {
       'const handleMapSurfacePointerCancel = useCallback',
       'const handleMapBackgroundClick = useCallback',
     );
-    expect(pointerCancel).toContain('if (event.pointerId !== mapPointerIdRef.current) return;');
-    expect(pointerCancel).toContain('event.currentTarget.releasePointerCapture?.(event.pointerId);');
-    expect(pointerCancel).toContain('mapPointerIdRef.current = null;');
-    expect(pointerCancel).toContain('mapDragRef.current = null;');
-    expect(pointerCancel).toContain('mapPressOnObjectRef.current = false;');
-    expect(pointerCancel).not.toContain('handleMapPointerEnd();');
-    expect(pointerCancel).not.toContain('suppressNextBackgroundClick');
-    expect(pointerCancel).not.toContain('suppressNextMapObjectClick');
+    const cancelDrag = sliceBetween(
+      artifactSource,
+      'const cancelMapDrag = useCallback',
+      'useEffect(() => {\n    cancelMapDrag();',
+    );
+    expect(pointerCancel).toContain('if (event.pointerId !== mapPointerRef.current?.id) return;');
+    expect(pointerCancel).toContain('cancelMapDrag();');
+    expect(cancelDrag).toContain('pointer.surface.releasePointerCapture(pointer.id);');
+    expect(cancelDrag).toContain('mapPointerRef.current = null;');
+    expect(cancelDrag).toContain('mapDragRef.current = null;');
+    expect(cancelDrag).toContain('mapPressOnObjectRef.current = false;');
+    for (const path of [pointerCancel, cancelDrag]) {
+      expect(path).not.toContain('handleMapPointerEnd();');
+      expect(path).not.toContain('suppressNextBackgroundClick');
+      expect(path).not.toContain('suppressNextMapObjectClick');
+    }
     expect(artifactSource).toContain('onPointerCancel={handleMapSurfacePointerCancel}');
+    expect(artifactSource).toContain('onLostPointerCapture={handleMapSurfacePointerCancel}');
     expect(artifactCss).toMatch(/\.motif-cs-map-frame \.motif-pm-backbone\s*\{[\s\S]*?pointer-events:\s*none/);
     expect(artifactCss).toMatch(/\[data-map-pointer-action="pan"\] \.motif-pm-bg\s*\{[\s\S]*?cursor:\s*grab/);
   });
@@ -764,7 +832,7 @@ describe('workspace layout guards', () => {
     expect(artifactSource).toContain('if (previousRecordIdRef.current === record.id) return;');
     expect(artifactSource).toContain('Use visible cutters');
     expect(artifactSource).toContain('const targetRecordId = selectedRecordIdRef.current ?? recordId;');
-    expect(artifactSource).toContain('setEnzymeSourcesByRecord((current) => ({ ...current, [targetRecordId]: next }));');
+    expect(artifactSource).toContain('setEnzymeSourcesByRecord((current) => createRecordMap(current, { [targetRecordId]: next }));');
   });
 
   it('makes floating tools focusable and keyboard movable and resizable', () => {
@@ -777,17 +845,20 @@ describe('workspace layout guards', () => {
     expect(artifactSource).toContain('aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown"');
     expect(artifactCss).toContain('.motif-cs-window-resize:focus-visible');
     expect(artifactCss).toMatch(/\.motif-cs-window-resize\s*\{[\s\S]*?width:\s*28px;[\s\S]*?height:\s*28px/);
-    expect(artifactSource).toContain('rightInset={toolsRail ? TOOLS_RAIL_WIDTH : 0}');
+    expect(artifactSource).toContain('rightInset={windowRightInset}');
+    // Only the wide layout has a rail; below 1536px a window keeps no inset for it.
+    expect(artifactSource).toContain('const windowRightInset = toolsRail && !toolsDrawer ? TOOLS_RAIL_WIDTH : 0;');
+    expect(artifactSource).not.toContain('rightInset={toolsRail ? TOOLS_RAIL_WIDTH : 0}');
     expect(artifactSource).toContain('clampWindowRect(raw, vw, vh, rightInset)');
     expect(artifactSource).toContain('vw - rightInset - drag.base.x - 8');
     expect(artifactCss).not.toContain('.motif-cs-window-resize {\n    right: 58px;');
   });
 
   it('keeps the window corner grip above anything the window body stacks', () => {
-    // The grip used to declare no z-index, so it lost to the MSA toolbar's
-    // sticky z-index: 10 wherever the two overlapped — which is the whole
-    // bottom-right corner once the toolbar wraps taller than a short body. The
-    // press then went to the toolbar and the window could not be mouse-resized.
+    // Without its own z-index the grip loses to the MSA toolbar's sticky
+    // z-index: 10 wherever the two overlap — which is the whole bottom-right
+    // corner once the toolbar wraps taller than a short body. The press would
+    // then go to the toolbar and the window could not be mouse-resized.
     const declared = (selector: string) => {
       const rule = artifactCss.match(new RegExp(`\\n${selector.replace('.', '\\.')}\\s*\\{([\\s\\S]*?)\\n\\}`));
       const found = rule?.[1].match(/\n\s*z-index:\s*(\d+);/);
@@ -823,8 +894,22 @@ describe('workspace layout guards', () => {
   });
 
   it('copies reverse features in feature orientation from the keyboard path', () => {
-    expect(artifactSource).toContain('text = sequenceForFeature(sequence, selectedFeature, sequenceType);');
-    expect(artifactSource).toContain('[copyText, handleZoomIn, handleZoomOut, handleZoomReset, pendingDatabaseRestore, recordId, selectedFeature, selectedMapRange, sequence, sequenceType, toolsPinned, topology]');
+    expect(artifactSource).toContain('materializeFeatureSequence(sequence, selectedFeatureProjection, sequenceType)');
+    expect(artifactSource).toContain('text = inspectorSelectionSeq;');
+    // The shortcut effect must re-run when anything the copy path reads changes.
+    const shortcutDependencies = artifactSource
+      .match(/\}, \[(copyText, handleZoomIn, [^\]]*)\]\);/)?.[1]
+      .split(', ') ?? [];
+    expect(shortcutDependencies).toEqual(expect.arrayContaining([
+      'copyText',
+      'inspectorSelectionSeq',
+      'recordId',
+      'selectedFeature',
+      'selectedMapRange',
+      'selectedSiteCopy',
+      'sequence',
+      'topology',
+    ]));
   });
 
   it('serializes native mouse-selected bases without embedded annotation text', () => {
@@ -843,12 +928,72 @@ describe('workspace layout guards', () => {
       '.motif-cs-map-frame[data-map-mode="circular"] .motif-pm-selection-layer .motif-pm-selection:nth-child(3n + 2)',
       '}',
     );
-    // Stroked, not filled: the edge paths carry no area, so a fill renders nothing.
-    expect(edgeRule).toContain('fill: none;');
-    // The map hands its per-instance gradient id over as a custom property; the flat
-    // accent stays as the fallback so a host without the gradient still draws a line.
-    expect(edgeRule).toContain('stroke: var(--motif-pm-selection-edge-gradient, var(--accent));');
+    // Stroked and filled in the text colour: the line carries no area, so the fill
+    // paints only the triangle marker at its outer end.
+    expect(edgeRule).toContain('fill: var(--text-primary);');
+    // One thin text-colour line that fades toward the centre: the paint server
+    // comes in through a variable, with the solid text colour as its fallback,
+    // and its stops are the text colour.
+    expect(edgeRule).toContain('stroke: var(--motif-selection-edge-paint, var(--text-primary));');
+    expect(sliceBetween(artifactCss, '.motif-cs-selection-fade [data-role="edge"] stop {', '}')).toContain('stop-color: var(--text-primary);');
+    expect(edgeRule).toContain('stroke-width: 1.5;');
+    expect(edgeRule).not.toContain('gradient');
     expect(edgeRule).toContain('vector-effect: non-scaling-stroke;');
+    // Line view's boundary lines and their backbone triangles share the rule,
+    // antialiased: a 1.5px line under crispEdges paints 1 column at some x, 2 at others.
+    const lineRule = sliceBetween(artifactCss, '.motif-pm-selection:nth-child(3n + 3),', '}');
+    expect(lineRule).toContain('.motif-cs-map-frame .motif-pm-selection-edges .motif-pm-selection-edge {');
+    expect(lineRule).toContain('shape-rendering: auto;');
+  });
+
+  it('draws a Line view selection wash over the boundary lines\' extent, a selected feature\'s at the band', () => {
+    expect(artifactSource).toContain("const linearReach = selectedFeatureId ? 'band' : 'grid';");
+    expect(artifactSource).toContain('.map((d) => linearSelectionColumnPath(layout, d, linearReach))');
+    expect(artifactSource).toContain('visibleMapRanges={visibleMapRanges} selectedFeatureId={selectedFeatureId}>');
+  });
+
+  it('hands the map the selection fade gradients under ids unique to its drawing', () => {
+    expect(artifactSource).toContain("const fadeId = `motif-map-selection-${useId().replace(/[^A-Za-z0-9_-]/g, '')}`;");
+    expect(artifactSource).toContain("'--motif-selection-edge-paint': `url(#${fadeId}-edge)`, '--motif-selection-wash-paint': `url(#${fadeId}-wash)`");
+    expect(artifactSource).toContain('className="motif-pm-container"\n                  style={selectionPaint}');
+    expect(artifactSource).toContain('<svg className="motif-cs-selection-fade" width="0" height="0" aria-hidden="true" focusable="false">');
+    // Forced colours: solid lines (above) and a flat wash, no gradient.
+    const forcedAt = artifactCss.indexOf('Lines and wash are solid here: no fade gradient.');
+    expect(forcedAt).toBeGreaterThan(-1);
+    const block = artifactCss.slice(forcedAt, artifactCss.indexOf('\n}\n', forcedAt)).replace(/\s+/g, ' ');
+    expect(block).toContain('.motif-cs-map-frame .motif-pm-selection-layer .motif-pm-selection { fill: var(--accent); }');
+  });
+
+  it('paints the selection end lines and triangles of both map views in Highlight under forced colours', () => {
+    // The frame-scoped rule above outranks plasmid-map.css's own forced-colours
+    // Highlight, so a later rule with the very same selectors must restate it.
+    const themedAt = artifactCss.indexOf('.motif-cs-map-frame .motif-pm-selection-edges .motif-pm-selection-edge {');
+    expect(themedAt).toBeGreaterThan(-1);
+    const head = artifactCss.slice(artifactCss.lastIndexOf('}', themedAt) + 1, artifactCss.indexOf('{', themedAt));
+    const selectors = head.replace(/\/\*[\s\S]*?\*\//g, '').split(',').map((s) => s.trim());
+    expect(selectors).toEqual([
+      '.motif-cs-map-frame[data-map-mode="circular"] .motif-pm-selection-layer .motif-pm-selection:nth-child(3n + 2)',
+      '.motif-cs-map-frame[data-map-mode="circular"] .motif-pm-selection-layer .motif-pm-selection:nth-child(3n + 3)',
+      '.motif-cs-map-frame .motif-pm-selection-edges .motif-pm-selection-edge',
+    ]);
+    const wanted = `${selectors.join(', ')} {`;
+    const bodies: string[] = [];
+    const media = '@media (forced-colors: active) {';
+    for (let at = artifactCss.indexOf(media, themedAt); at > -1; at = artifactCss.indexOf(media, at + 1)) {
+      const block = artifactCss.slice(at, artifactCss.indexOf('\n}\n', at)).replace(/\s+/g, ' ');
+      const ruleAt = block.indexOf(wanted);
+      if (ruleAt > -1) bodies.push(block.slice(ruleAt + wanted.length, block.indexOf('}', ruleAt)));
+    }
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]).toMatch(/fill:\s*Highlight;/);
+    expect(bodies[0]).toMatch(/stroke:\s*Highlight;/);
+  });
+
+  it('draws one edge line, not two, for a circular span too narrow to tell them apart', () => {
+    // A span this narrow (a find match a degree wide) draws one line: two edges 3px apart read as one thick bar.
+    expect(artifactSource).toContain('const CIRCULAR_SELECTION_SINGLE_EDGE_UNITS = 5;');
+    expect(artifactSource).toContain('const arc = (circularSelectionRadii(layout).outer * 2 * Math.PI * (span.end - span.start)) / Math.max(1, layout.length);');
+    expect(artifactSource).toContain('result.push(fill, circularSelectionEdgePath(layout, (span.start + span.end) / 2), seam);');
   });
 
   it('suppresses the radial edge a wrapping selection would draw down the origin', () => {
@@ -863,7 +1008,25 @@ describe('workspace layout guards', () => {
     expect(artifactSource).toContain('const minH = Math.min(180');
     expect(artifactSource).toContain('w: clamp(drag.base.w + dx, 280');
     expect(artifactSource).toContain('h: clamp(drag.base.h + dy, 180');
-    expect(artifactCss).toMatch(/@media \(max-width: 840px\)[\s\S]*?\.motif-cs-window\s*\{\s*border-color:/);
+    // Below 900px an unplaced window is a bottom sheet; once moved or resized it is drawn where the user put it.
+    expect(artifactCss).toMatch(/@media \(max-width: 899\.98px\) \{\s*\.motif-cs-window\[data-sheet\]:not\(\[data-placed\]\):not\(\[data-collapsed\]\):not\(\[data-maximized\]\) \{\s*top: auto !important;/);
+    // A window or sheet is told apart from the work by the popover shadow plus the
+    // app's one hairline (--border-subtle) at every width, with no narrower rule that
+    // restates both. The e2e overlays spec measures both at 700 and 500px, and the
+    // system-colour edge in forced colours.
+    const frame = artifactCss.match(/\n\.motif-cs-window \{([^}]*)\}/)?.[1] ?? '';
+    expect(frame).toContain('border: 1px solid var(--border-subtle);');
+    expect(frame).toContain('box-shadow: var(--elevation-popover);');
+    expect(artifactCss).toMatch(/\n {2}--elevation-popover: 0 8px 24px color-mix\(in srgb, var\(--shadow-ink\) 12%, transparent\), 0 1px 3px color-mix\(in srgb, var\(--shadow-ink\) 8%, transparent\), 0 0 0 1px var\(--elevation-edge\);/);
+    const sheetRules = [
+      ...artifactCss.matchAll(/\n\s*\.motif-cs-window\[(?:data-fit\]\[)?(?:data-fill\]\[)?data-sheet\][^{]*\{([^}]*)\}/g),
+    ].map((match) => match[1]);
+    expect(sheetRules.length).toBeGreaterThanOrEqual(3);
+    for (const sheet of sheetRules) {
+      expect(sheet).not.toMatch(/box-shadow|border(?:-top)?(?:-width)?:\s*(?:0|none)\b|border-color/);
+    }
+    // Edge to edge below 600px, the sheet keeps its top hairline.
+    expect(artifactCss).toMatch(/\n\.motif-cs-window\[data-fill\]\[data-sheet\]:not\(\[data-placed\]\):not\(\[data-collapsed\]\):not\(\[data-maximized\]\) \{[^}]*border-width: 1px 0 0;/);
     expect(artifactCss).toMatch(/@media \(max-width: 840px\)[\s\S]*?\.motif-cs-window\[data-collapsed\]\s*\{[\s\S]*?left:\s*8px !important;[\s\S]*?width:\s*calc\(100vw - 16px - var\(--motif-cs-floating-right-inset, 0px\)\) !important/);
     expect(artifactCss).not.toMatch(/@media \(max-width: 840px\)[\s\S]*?\.motif-cs-window\s*\{[\s\S]*?height:\s*min\(30vh, 240px\) !important/);
   });
@@ -876,8 +1039,8 @@ describe('workspace layout guards', () => {
     );
     const reveal = sliceBetween(artifactSource, 'const revealExportPanel = useCallback', '}, [exportOpenedFrom]);');
 
-    // Opening no longer moves the column: the in-flow panel it replaced
-    // scrolled it 339px at 1024x768, 1280x720 and 1440x900.
+    // Opening does not move the column: an in-flow panel would scroll it
+    // 339px at 1024x768, 1280x720 and 1440x900.
     expect(reveal).not.toContain('scrollIntoView');
     expect(reveal).not.toContain('scrollTop');
     expect(exportPanel).not.toContain('column.scrollTo');
@@ -886,15 +1049,19 @@ describe('workspace layout guards', () => {
     // Anchored to the title-row button, or above the summary that opened it,
     // and bounded by the room the viewport has.
     expect(exportPanel).toContain("const anchor = triggerOnScreen ? triggerRect : summary.getBoundingClientRect();");
-    expect(exportPanel).toContain("body.style.maxHeight = `${Math.max(120, Math.floor(below ? roomBelow : roomAbove))}px`;");
+    // A summary that a resize left off screen does not take the popover with it,
+    // and the popover is never taller than the window.
+    expect(exportPanel).toContain('const anchorTop = clamp(anchor.top, ceiling, window.innerHeight - margin);');
+    expect(exportPanel).toContain('const anchorBottom = clamp(anchor.bottom, ceiling, window.innerHeight - margin);');
+    expect(exportPanel).toContain("body.style.maxHeight = `${Math.max(0, Math.floor(Math.min(Math.max(120, below ? roomBelow : roomAbove), reach)))}px`;");
 
     // Escape closes it and hands focus back to whatever opened it, without
     // reaching the document handler that clears the selection.
     expect(exportPanel).toMatch(/if \(event\.key !== 'Escape' \|\| !exportPanelRef\.current\?\.open\) return;\s*[\s\S]*?event\.stopPropagation\(\);\s*closeExportPanel\(\);/);
     expect(exportPanel).toContain("const returnTo = openedFrom === 'header' && trigger?.isConnected");
-    expect(exportPanel).toContain('aria-label="Close Export and copy"');
+    expect(exportPanel).toContain('aria-label="Close export"');
 
-    // The resizable in-flow viewport is gone with the scrolling it served.
+    // There is no resizable in-flow viewport, since nothing scrolls for it to serve.
     expect(artifactSource).not.toContain('Resize Export and Copy panel');
     expect(artifactCss).not.toContain('motif-cs-export-resize-handle');
     expect(artifactCss).not.toContain('data-resized');
@@ -913,7 +1080,7 @@ describe('workspace layout guards', () => {
     expect(artifactSource).toContain(': exportChoice?.content ?? exportFallbackPreview;');
     expect(artifactSource).toContain("exportChoice?.id === 'inventory-zip'");
     expect(artifactSource).toContain("exportChoice?.id === 'report-print'");
-    expect(artifactSource).toContain('value={exportPreview} aria-label="Selected export preview"');
+    expect(artifactSource).toContain('value={exportPreview} aria-label="Export preview"');
     expect(artifactSource).not.toContain('value={preview} aria-label="Copyable sequence preview"');
   });
 
@@ -942,10 +1109,9 @@ describe('workspace layout guards', () => {
   });
 
   it('lets the collapsed Tools rail scroll once its fifteen tools stop fitting', () => {
-    // Below 695px of viewport the rail's tools do not fit and used to simply
-    // leave the screen -- Settings and Alignment unreachable, with wheel,
-    // touch-drag and 120 presses of Tab all measured as no-ops. Only page zoom
-    // under 100% recovered them.
+    // Below 695px of viewport the rail's tools do not fit. Without a scroll they
+    // would leave the screen, with Settings and Alignment unreachable by wheel,
+    // touch-drag or Tab.
     const rule = sliceBetween(
       artifactCss,
       '@media (max-height: 709px) {',
@@ -1011,20 +1177,20 @@ describe('workspace layout guards', () => {
     // its tallest item is a 32px field, and the title row stays 26px because of
     // the Export button beside it.
     expect(artifactCss).toMatch(/\.motif-cs-toggle-inline \{[^}]*min-height:\s*24px/);
-    // Padding, not min-height, and still a block container: `text-overflow`
-    // trims inline content, so a flex container here would drop the ellipsis
-    // that keeps a long record name off the edge.
-    expect(artifactCss).toMatch(/\.motif-cs-title-edit-trigger \{[^}]*display: block;[^}]*padding: 3px 0;/);
+    // Still a block container: `text-overflow` trims inline content, so a flex
+    // container here would drop the ellipsis that keeps a long record name off
+    // the edge. The trigger is a 28px control, through min-height on that block
+    // with 4px of padding; the title row is 28px because of the Export and pane
+    // buttons beside it.
+    expect(artifactCss).toMatch(/\.motif-cs-title-edit-trigger \{[^}]*display: block;[^}]*min-height: var\(--control-h-sm\);[^}]*padding: 4px 0;/);
     expect(artifactCss).toMatch(/\.motif-cs-title-edit-trigger \{[^}]*text-overflow: ellipsis/);
   });
 
   it('does not report a guide count before guides are counted', () => {
     // findGuidesInRange runs on first open, which is the right call for a scan
-    // this size -- but `guides` is empty until then, and the rail chip printed
-    // that emptiness as a result. Measured on the built artifact at 1440x900:
-    // pUC19's chip read "0" on first paint and "250" after the panel was
-    // opened once; pBR322 reads 89. The zero was on screen in the default
-    // state, for every record, and it was wrong.
+    // this size -- but `guides` is empty until then, and the rail chip must not
+    // print that emptiness as a result. The chip does not read "0" on first paint
+    // and a real count after the panel is opened.
     expect(artifactSource).toContain('() => hasOpened ? findGuidesInRange(sequence, sequenceType, nuclease, activeScopeRange, topology) : [],');
     // With no record at all there is nothing to count either, so no chip.
     expect(artifactSource).toMatch(/const guideChip = !hasRecord\s*\?\s*undefined\s*:\s*!isNucleotide\s*\?\s*'n\/a'\s*:\s*hasOpened\s*\?/);
@@ -1033,30 +1199,28 @@ describe('workspace layout guards', () => {
   });
 
   it('keeps every rail head to one line by not counting to zero', () => {
-    // "0 reads" was the last zero counter in the rail, and it was also the
-    // reason Construct Verification was the only two-line head in a list of 16.
+    // A "0 reads" chip would be the rail's only zero counter, and it would make
+    // Construct Verification the only two-line head in a list of 16.
     // Measured docked at 1280x800, 1440x900 and 1920x1080: 15 heads at 34px and
-    // this one at 42.2px with a 28.2px label span. Removing the chip alone
-    // drops it to 34px with the full 174px label on one line, so the count and
+    // this one at 42.2px with a 28.2px label span with the chip. Without it the head
+    // is 34px with the full 174px label on one line, so the count and
     // the ragged row are one defect, not two.
     expect(artifactSource).toContain('{constructVerificationReadCount ? (');
-    expect(artifactSource).not.toMatch(/<span>Construct Verification<\/span>\s*<span className="motif-cs-chip">/);
-    // The full label stays -- shortening it would have fixed the row and lost
-    // the name.
-    expect(artifactSource).toContain('<span>Construct Verification</span>');
+    expect(artifactSource).not.toMatch(/<span>Construct verification<\/span>\s*<span className="motif-cs-chip">/);
+    // The full label stays -- shortening it would fix the row and lose the name.
+    expect(artifactSource).toContain('<span>Construct verification</span>');
     // And the count is still reachable from the head itself.
-    expect(artifactSource).toContain('`Construct Verification — ${constructVerificationReadCount} eligible Sanger read${constructVerificationReadCount === 1 ? \'\' : \'s\'}`');
+    expect(artifactSource).toContain('`Construct verification — ${constructVerificationReadCount} eligible Sanger read${constructVerificationReadCount === 1 ? \'\' : \'s\'}`');
   });
 
-  it('keeps a disabled control readable in the light themes', () => {
+  it('keeps a disabled control readable against its backdrop', () => {
     // Measured on the built artifact, rasterised over each control's real
     // backdrop (rasteriser checked first against #777 on white = 4.48):
-    //   at 0.48/0.52  map 2.61 light, 2.37 claude-light; mini 2.56, 2.33
-    //   at 0.62       map 3.74 light, 5.56 dark, 3.19 claude-light, 5.05 claude-dark
-    //                 mini 3.64, 5.41, 3.12, 4.82
-    // The dark themes already cleared 3:1 at the old values, so this was a
-    // light-theme defect wearing a global declaration. Enabled controls of the
-    // same class measure 8.17-12.70, so the state is still obvious.
+    //   at 0.48/0.52  map 2.61 light; mini 2.56
+    //   at 0.62       map 3.74 light, 5.56 dark; mini 3.64, 5.41
+    // Dark clears 3:1 at either value, so the opacity is a light-theme matter
+    // wearing a global declaration. Enabled controls of the same class measure
+    // 8.17-12.70, so the state is still obvious.
     for (const sel of ['.motif-cs-map-button', '.motif-cs-pane-toggle', '.motif-cs-row', '.motif-cs-mini-button']) {
       expect(artifactCss).toMatch(new RegExp(`\\${sel}:disabled \\{[^}]*opacity: 0\\.62`));
     }
@@ -1064,26 +1228,23 @@ describe('workspace layout guards', () => {
     // run from 0.35 to 1 -- .motif-cs-assembly-part-actions button at 0.35,
     // .motif-cs-pane-placement-button at 0.40, .motif-cs-segmented button at
     // 0.45, .motif-cs-pane-collapse at 0.46, .motif-cs-restriction-site-row at
-    // 0.55, .motif-cs-icon-button at 0.56. Several are almost certainly worse
-    // than the two that were measured, but they were not measured, and an
-    // unmeasured control is not a finding. Left for a pass that can put each of
-    // them on screen in its disabled state.
+    // 0.55, .motif-cs-icon-button at 0.56. Those are not measured here, and an
+    // unmeasured control is not a finding.
     expect(artifactCss).not.toMatch(/\.motif-cs-map-button:disabled \{[^}]*opacity: 0\.48/);
     expect(artifactCss).not.toMatch(/\.motif-cs-mini-button:disabled \{[^}]*opacity: 0\.52/);
   });
 
   it('applies the stacked map floor at short heights too', () => {
-    // The first version of this cap skipped workspaces under 620px, on the
-    // reasoning that there was no height to redistribute there. Sweeping the
-    // drag range refuted it: at 1100x650 the untouched default gave the
-    // sequence pane 286px and the ring 117.4px, while dragging to 240px gave
-    // the ring 145.3px -- 24% more map -- with one full block of sequence
-    // either way. Measured after, at the default with nothing dragged:
-    //   1100x650  top 240  ring 145.3  1 full block   (was 286 / 117.4)
+    // The cap applies to workspaces under 620px as well: sweeping the drag range
+    // shows there is height to redistribute there. At 1100x650 an uncapped default
+    // would give the sequence pane 286px and the ring 117.4px, while 240px gives the
+    // ring 145.3px -- 24% more map -- with one full block of sequence either way. At
+    // the default with nothing dragged:
+    //   1100x650  top 240  ring 145.3  1 full block
     //   1100x600  top 240  ring 127.1  1 full block
-    //   1280x720  top 240  ring 202.3  1 full block   (unchanged)
-    //   1366x768  top 240  ring 256.2  1 full block   (unchanged)
-    //   1440x800  top 251  ring 275.6  1 full block   (unchanged)
+    //   1280x720  top 240  ring 202.3  1 full block
+    //   1366x768  top 240  ring 256.2  1 full block
+    //   1440x800  top 251  ring 275.6  1 full block
     // The floor is COMPACT_ROW_MIN_HEIGHT, not compactRowMinHeight, because
     // the latter drops to 150 below 620 and 150px of sequence pane is chrome
     // with no block under it.

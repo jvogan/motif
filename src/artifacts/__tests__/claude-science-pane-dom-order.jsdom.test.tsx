@@ -110,11 +110,11 @@ describe('workspace pane DOM order', () => {
     const end = artifactSource.indexOf('</main>', start);
     expect(start).toBeGreaterThan(0);
     const workspace = artifactSource.slice(start, end);
-    expect(workspace).toContain('{orderPaneSlots(paneOrder, {');
+    expect(workspace).toContain('{orderPaneSlots(drawnPaneOrder, {');
     for (const pane of ['inventory', 'sequence', 'map', 'tools']) {
       expect(workspace).toContain(`${pane}: paneVisibility.${pane} ? (\n          <Fragment key="${pane}">`);
       expect(workspace).not.toContain(`{paneVisibility.${pane} ? (`);
     }
-    expect(artifactSource).toContain('useKeepScrollAcrossPaneReorder(workspaceMainRef, paneOrder);');
+    expect(artifactSource).toContain('useKeepScrollAcrossPaneReorder(workspaceMainRef, drawnPaneOrder);');
   });
 });

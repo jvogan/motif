@@ -519,13 +519,13 @@ function restrictionDigestResultFor(
   // coordinates (and therefore producing different sticky ends). Group by
   // the complete physical geometry and fail closed when one boundary has
   // incompatible co-located cleavage records.
+  // The normalized strand coordinates, length, and polarity identify the
+  // window. Unwrapped window endpoints can differ by a full circle.
   const geometryKey = (record: typeof allCutRecords[number]): string => JSON.stringify([
     record.geometry.mode,
     record.geometry.topCutPosition,
     record.geometry.bottomCutPosition,
     record.geometry.cutPosition,
-    record.geometry.overhangStart,
-    record.geometry.overhangEnd,
     record.geometry.overhangLength,
     record.geometry.valid,
     record.enzyme.overhang,

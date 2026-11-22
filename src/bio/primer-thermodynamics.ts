@@ -307,10 +307,11 @@ export function predictHairpin(
   let bestLeft = Number.POSITIVE_INFINITY;
   let bestStem = Number.POSITIVE_INFINITY;
   let bestRightEnd = Number.POSITIVE_INFINITY;
+  let bestDeltaG = 0;
 
   // The match table makes each possible arm comparison O(1). For a fixed
   // (left, rightEnd), the valid stem lengths form a prefix; a running minimum
-  // of exact NN ΔG values avoids the former cubic stem × loop enumeration.
+  // of exact NN ΔG values gives the best stem for each possible limit.
   for (let left = 0; left + 2 * MIN_STEM + MIN_LOOP <= n; left += 1) {
     const maxStem = Math.floor((n - left - MIN_LOOP) / 2);
     const bestDeltaGAtStem = new Array<number>(maxStem + 1).fill(Number.POSITIVE_INFINITY);
@@ -335,8 +336,8 @@ export function predictHairpin(
       if (stemLength < MIN_STEM) continue;
       const dG = bestDeltaGAtStem[stemLimit];
       const loopSize = rightEnd - left - 2 * stemLength;
-      const shouldReplace = dG < best.deltaG
-        || (dG === best.deltaG && (
+      const shouldReplace = dG < bestDeltaG
+        || (dG === bestDeltaG && (
           left < bestLeft
           || (left === bestLeft && (
             stemLength < bestStem
@@ -344,6 +345,7 @@ export function predictHairpin(
           ))
         ));
       if (!shouldReplace) continue;
+      bestDeltaG = dG;
       const leftArm = seq.slice(left, left + stemLength);
       const rightArm = seq.slice(rightEnd - stemLength, rightEnd);
       best = {
@@ -419,22 +421,22 @@ export function predictPrimerDimer(
     return workLimitedDimerResult(`${a}|${b}`, workLimitWarning(workUnits, maxWorkUnits));
   }
 
-  // The dimer alignment is p1 (5′→3′ top) vs p2 reverse-complement aligned at offset.
+  // Align p1 (5′→3′ top) with the reverse complement of p2.
   const b_rc = reverseComplement(b);
   const prefixes = nnPrefixSums(a);
 
-  // b_rc[i + offset] pairs with a[i], so the overlap is non-empty for every
-  // offset in [-(len(a)-1), len(b_rc)-1]. Evaluate every maximal contiguous
+  // b_rc[i + indexOffset] pairs with a[i], so the overlap is non-empty for every
+  // indexOffset in [-(len(a)-1), len(b_rc)-1]. Evaluate every maximal contiguous
   // Watson-Crick run at each offset. A shorter GC-rich run at one offset can
   // be more stable than a longer AT-rich run at the same offset.
-  for (let offset = -(a.length - 1); offset < b_rc.length; offset++) {
+  for (let indexOffset = -(a.length - 1); indexOffset < b_rc.length; indexOffset++) {
     let runStart = -1;
     const evaluateRun = (start: number, length: number): void => {
       if (start < 0 || length < 3) return;
       const matched = a.slice(start, start + length);
       const deltaG = Math.round(nnDeltaGAt(a, start, length, prefixes) * 100) / 100;
       const matchedEnd = start + length;
-      const bRunStart = start + offset;
+      const bRunStart = start + indexOffset;
       // Participation means the duplex reaches the actual terminal 3′ base;
       // the overlap count is capped at the five terminal bases for ranking.
       const primer1ThreePrime = matchedEnd === a.length ? Math.min(length, 5) : 0;
@@ -454,6 +456,7 @@ export function predictPrimerDimer(
           || (terminalBases === bestTerminalBases && length > best.pairLength)
         ));
       if (!shouldReplace) return;
+      const offset = 0 - indexOffset;
       best = {
         deltaG,
         pairLength: length,
@@ -465,9 +468,10 @@ export function predictPrimerDimer(
         status: 'exact',
       };
     };
-    for (let i = Math.max(0, -offset); i < Math.min(a.length, b_rc.length - offset); i++) {
+    const runEnd = Math.min(a.length, b_rc.length - indexOffset);
+    for (let i = Math.max(0, -indexOffset); i < runEnd; i++) {
       const ai = a[i];
-      const bi = b_rc[i + offset];
+      const bi = b_rc[i + indexOffset];
       if (ai === bi) {
         if (runStart === -1) runStart = i;
       } else {
@@ -475,7 +479,6 @@ export function predictPrimerDimer(
         runStart = -1;
       }
     }
-    const runEnd = Math.min(a.length, b_rc.length - offset);
     evaluateRun(runStart, runStart === -1 ? 0 : runEnd - runStart);
   }
   return best;

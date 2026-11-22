@@ -8,7 +8,7 @@
  * layout leader geometry so the tangle can't regress.
  */
 import { describe, it, expect } from 'vitest';
-import { computeMapLayout, LINEAR_REC_LABEL_FONT_PX, placeRestrictionRow } from '../layout';
+import { computeMapLayout, LINEAR_REC_LABEL_FONT_PX, placeRestrictionRow, RESTRICTION_LABEL_FONT_MODE } from '../layout';
 import type { MapInput, MapLabelRender, MapLayout, Pt } from '../types';
 import type { RestrictionSite } from '../../bio/types';
 import { approxTextWidth, LABEL_LINE_HEIGHT_PX } from '../geometry/labels';
@@ -52,7 +52,7 @@ function labelVerticalOffsets(baseline: MapLabelRender['baseline'] | undefined):
  * not draw — the instrument, not the layout. See LINEAR_REC_LABEL_FONT_PX.
  */
 function labelBox(label: MapLabelRender): LabelBox {
-  const w = approxTextWidth(label.text, LINEAR_REC_LABEL_FONT_PX, 'monospace');
+  const w = approxTextWidth(label.text, LINEAR_REC_LABEL_FONT_PX, RESTRICTION_LABEL_FONT_MODE);
   const ax0 = label.anchor === 'start' ? 0 : label.anchor === 'end' ? -w : -w / 2;
   const ax1 = label.anchor === 'start' ? w : label.anchor === 'end' ? 0 : w / 2;
   const { ay0, ay1 } = labelVerticalOffsets(label.baseline);
@@ -243,12 +243,12 @@ describe('linear restriction leaders (non-crossing, near-vertical)', () => {
 
     // At a 420px pane the layout stops stretching to a flat 720 once a 13px
     // enzyme name would scale below LINEAR_MIN_SCREEN_LABEL_PX, so the axis
-    // carries fewer pixels and names fewer sites: 10 placed at 7.6 screen px
-    // became 5 placed at 10.0. Assert the SUM as well, because the trade is
+    // carries fewer pixels and names fewer sites: 4 of the 10 are named at the
+    // minimum screen size. Assert the SUM as well, because the trade is
     // only acceptable while the sites that lost their name are still counted —
     // a future change must not drop one silently.
     const placed = [...byRow.values()].reduce((sum, row) => sum + row.length, 0);
-    expect(placed).toBe(5);
+    expect(placed).toBe(4);
     expect(placed + layout.budgets.hiddenLabelCount).toBe(10);
     for (const row of byRow.values()) {
       row.sort((a, b) => a.x0 - b.x0 || a.x1 - b.x1);

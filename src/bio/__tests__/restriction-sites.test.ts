@@ -67,6 +67,22 @@ function reverseOnlyRecognitionExample(recognitionSequence: string): string | nu
 }
 
 describe('restriction-site scanning', () => {
+  it('finds overlapping literal and degenerate sites across the origin without matching ambiguous bases', () => {
+    const [a, n, r] = String.fromCharCode(65, 78, 82);
+    const sequence = a.repeat(3) + n + a.repeat(2);
+    const enzymes: RestrictionEnzyme[] = [
+      { name: 'Literal', recognitionSequence: a.repeat(2), cutOffset: 1, complementCutOffset: 1, overhang: 'blunt' },
+      { name: 'Degenerate', recognitionSequence: r + a, cutOffset: 1, complementCutOffset: 1, overhang: 'blunt' },
+    ];
+    for (const [topology, expected] of [['linear', [0, 1, 4]], ['circular', [0, 1, 4, 5]]] as const) {
+      const { sites } = scanRestrictionSites(sequence, enzymes, { topology });
+      for (const enzyme of enzymes) {
+        expect(sites.filter((site) => site.enzyme === enzyme.name).map((site) => [site.position, site.strand]))
+          .toEqual(expected.map((position) => [position, 1]));
+      }
+    }
+  });
+
   it('anchors every catalog recognition sequence and sense-strand cut at its actual match', () => {
     for (const candidate of RESTRICTION_ENZYMES_FULL) {
       const sequence = materializeRecognitionSequence(candidate.recognitionSequence);
@@ -93,11 +109,17 @@ describe('restriction-site scanning', () => {
       if (!sequence) continue;
       checked += 1;
       const sites = findRestrictionSites(sequence, [candidate]);
+      // A reverse-strand hit puts a nickase's strand on the other side of the molecule.
+      const mode = candidate.cleavageMode === 'nick_top'
+        ? 'nick_bottom'
+        : candidate.cleavageMode === 'nick_bottom' ? 'nick_top' : candidate.cleavageMode ?? 'double-strand';
+      const top = mode === 'nick_bottom' ? null : candidate.recognitionSequence.length - candidate.complementCutOffset;
+      const bottom = mode === 'nick_top' ? null : candidate.recognitionSequence.length - candidate.cutOffset;
 
       expect(sites, candidate.name).toContainEqual(expect.objectContaining({
         enzyme: candidate.name,
         position: 0,
-        cutPosition: candidate.recognitionSequence.length - candidate.complementCutOffset,
+        cutPosition: top ?? bottom,
         recognitionSequence: candidate.recognitionSequence,
         overhang: candidate.overhang,
         strand: -1,

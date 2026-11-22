@@ -23,24 +23,20 @@ function rule(source: string, selector: string): string {
 }
 
 describe('map control group treatment guards', () => {
-  it('rests every member of the map control group bare', () => {
+  it('borders the shape toggle like the Sites field and rests the zoom group bare', () => {
     // One `role="group"` in the map heading holds three, four, or five controls
-    // depending on the record: zoom out, Fit, zoom in, then the render-mode
-    // toggle on a nucleotide record and the restriction-sites toggle on DNA.
-    // Only one of them carries a state, and only that one may be marked at rest.
-    //
-    // The mode toggle used to carry a resting box. Measured on the built
-    // artifact, rasterised over the heading it sits on (rasteriser checked
-    // first against #777 on white = 4.48):
-    //   resting box vs its own fill  1.24 light  1.13 dark  1.21 claude-light  1.26 claude-dark
-    //   hover box, every member      1.84        1.84       1.83              2.24
-    //   resting background           1.00        1.07       1.03              1.04
-    // A permanent mark a third of the way to the hover mark reads as a control
-    // under a pointer that is not there, and its background paints nothing in
-    // any theme. Both are gone; `margin-left` was already marking the boundary.
-    const mode = rule(artifactCss, '.motif-cs-map-mode-toggle');
-    expect(mode, 'the render-mode toggle grew a resting border again').not.toMatch(/border-color:/);
-    expect(mode, 'the render-mode toggle grew a resting background again').not.toMatch(/background:/);
+    // depending on the record: zoom out, Fit, zoom in, then the shape toggle on a
+    // nucleotide record and the Sites field on DNA. A bare shape toggle would read
+    // the bare "Line" as part of "Sites". It is an action, so it carries the Sites
+    // field's own edge and fill, and only the zoom trio rests bare. The
+    // Circle | Line pair is a segmented group whose segments must be full 28px targets,
+    // so its 1px field edge is an inset shadow in the edge colour that takes no space
+    // (forced colours get a system-colour outline drawn inside instead).
+    const mode = rule(artifactCss, '.motif-cs-map-toolbar .motif-cs-map-shape');
+    expect(mode).toMatch(/border:\s*0;/);
+    expect(mode).toMatch(/box-shadow:\s*inset 0 0 0 1px var\(--border-strong\);/);
+    expect(mode).toMatch(/height:\s*28px/);
+    expect(mode).toMatch(/background:\s*var\(--bg-primary\)/);
     expect(mode).toMatch(/margin-left:\s*6px/);
 
     // The base class stays bare and keeps the 1px reserved, so landing a hover
@@ -51,33 +47,30 @@ describe('map control group treatment guards', () => {
   });
 
   it('leaves hover and the pressed state as the only marks in the group', () => {
-    // Hover and keyboard focus are the one thing that draws a box here, so a
-    // box has to keep meaning "the pointer is here": 1.84 / 1.84 / 1.83 / 2.24
-    // against the button's fill.
+    // Hover and keyboard focus fill the button, as they fill every other button;
+    // no edge appears, so a box never means "button" in this app.
     const hover = rule(artifactCss, '.motif-cs-map-button:hover,\n.motif-cs-map-button:focus-visible');
-    expect(hover).toMatch(/border-color:\s*color-mix\(in srgb, var\(--border-strong\) 55%, transparent\)/);
+    expect(hover).toMatch(/border-color:\s*transparent/);
+    expect(hover).toMatch(/background:\s*var\(--control-hover\)/);
     expect(hover).toMatch(/color:\s*var\(--text-primary\)/);
 
-    // The scissors toggle is the only member with `aria-pressed`, so it is the
-    // only one that has a state to paint. Its chip measures 5.39 light, 3.29
-    // dark, 4.60 claude-light, 3.44 claude-dark against the same heading.
-    const pressed = rule(
-      artifactCss,
-      '.motif-cs-map-sites-toggle[data-active],\n.motif-cs-map-sites-toggle[data-active]:hover,\n.motif-cs-map-sites-toggle[data-active]:focus-visible',
-    );
-    expect(pressed).toMatch(/background:\s*var\(--accent-base\)/);
-    expect(pressed).toMatch(/color:\s*var\(--accent-contrast\)/);
+    // The Sites menu is a field, not a pressed chip: a bordered select with a
+    // visible "Sites" label, so its value is the state and nothing else paints it.
+    const sites = rule(artifactCss, '.motif-cs-map-sites-toggle');
+    expect(sites).toMatch(/border:\s*1px solid var\(--border-strong\)/);
+    expect(sites).toMatch(/background:\s*var\(--bg-primary\)/);
+    expect(sites).toMatch(/height:\s*28px/);
+    expect(artifactCss).not.toContain('.motif-cs-map-sites-toggle[data-active]');
   });
 
   it('lets the control group own its own layout', () => {
     // Both `.motif-cs-pane-title > div` rules outrank `.motif-cs-map-toolbar`,
     // and the group is a bare `div` in that heading, so without the `:not()`
-    // they governed it. Measured at 1440x900 before the exclusion: the group
-    // painted `align-items: baseline`, leaving its five 28px buttons on four
-    // tops spanning 3.75px (441.0, 441.5, 444.203, 444.75); `flex: 1 1 0`,
-    // stretching its box to 644px around 176px of controls; and `gap: 6px` and
-    // `gap: 1px` over its own. After: one top, 441.0, in all five record
-    // shapes, and a 176px box.
+    // they would govern it. At 1440x900 the group would paint `align-items:
+    // baseline`, leaving its five 28px buttons on four tops spanning 3.75px
+    // (441.0, 441.5, 444.203, 444.75); `flex: 1 1 0`, stretching its box to 644px
+    // around 176px of controls; and `gap: 6px` and `gap: 1px` over its own. With
+    // the exclusion: one top, 441.0, in all five record shapes, and a 176px box.
     expect(artifactCss, 'the title-block rule reached the map control group again')
       .toContain('.motif-cs-pane-title > div:not(.motif-cs-map-toolbar) {');
     expect(artifactCss, 'the map-column title rule reached the control group again')
@@ -89,21 +82,34 @@ describe('map control group treatment guards', () => {
     expect(toolbar).toMatch(/align-items:\s*center/);
     expect(toolbar).toMatch(/flex:\s*0 0 auto/);
     // 6px within the group against the mode toggle's 12px break: the spacing is
-    // the whole boundary now, so it has to stay twice the gap it separates.
+    // the whole boundary, so it has to stay twice the gap it separates.
     expect(toolbar).toMatch(/gap:\s*6px/);
   });
 
   it('paints the focus ring on all four sides of a map control', () => {
     // The ring is 2px wide 2px outside the button, and the heading leaves it
     // 2px before the map frame starts. The frame is `position: relative` and
-    // comes later in the document, so at `z-index: auto` it covered the ring's
-    // bottom segment: three sides read 5.10-6.82:1 against the gap in front of
-    // them while the bottom read 1.00-1.21. With the focused button lifted over
-    // the frame, all four sides read 5.39 light, 6.21 dark, 5.10 claude-light,
-    // 6.82 claude-dark, on every member of every record shape.
+    // comes later in the document, so at `z-index: auto` it would cover the ring's
+    // bottom segment. With the focused button lifted over the frame, all four sides
+    // read 5.39 light and 6.21 dark, on every member of every record shape.
     const lift = rule(artifactCss, '.motif-cs-map-button:focus-visible');
     expect(lift).toMatch(/position:\s*relative/);
     expect(lift).toMatch(/z-index:\s*1/);
     expect(artifactCss).toContain('.motif-cs-map-button:focus-visible,\n');
+  });
+
+  it('paints the focus ring on all four sides of a Circle or Line segment', () => {
+    // The segments do not carry `.motif-cs-map-button`, so the lift above does not
+    // reach them, and their group isolates. Unlifted, with the keyboard: at 400px
+    // the ring's bottom side shows 0 of 4 ring pixels in light and dark (the map
+    // frame covers it), and a free segment's side along the seam shows 0 of 4
+    // under the pressed segment's z-index 1. Lifted, every side reads 4 of 4 at
+    // 400, 600 and 1040px.
+    const group = rule(artifactCss, '.motif-cs-map-toolbar .motif-cs-map-shape:has(> button:focus-visible)');
+    expect(group).toMatch(/position:\s*relative/);
+    expect(group).toMatch(/z-index:\s*1/);
+    const segment = rule(artifactCss, '.motif-cs-map-toolbar .motif-cs-map-shape > button:focus-visible');
+    expect(segment).toMatch(/position:\s*relative/);
+    expect(segment).toMatch(/z-index:\s*2/);
   });
 });

@@ -10,7 +10,7 @@ import { describe, expect, it } from 'vitest';
 import { findRestrictionSites } from '../../bio/restriction-sites';
 import { resolveEnzymeUnion } from '../../bio/restriction-presets';
 import { approxTextWidth } from '../geometry/labels';
-import { computeMapLayout } from '../layout';
+import { computeMapLayout, RESTRICTION_LABEL_FONT_MODE } from '../layout';
 import { restrictionDensitySourcesForMap, restrictionSitesForInteractiveMap } from '../restriction-display';
 import type { MapInput, MapLayout } from '../types';
 
@@ -63,7 +63,7 @@ function labelsUnderChip(layout: MapLayout): string[] {
   return layout.restrictions.flatMap((restriction) => {
     const label = restriction.label;
     if (!label) return [];
-    const width = approxTextWidth(label.text, 13, 'monospace');
+    const width = approxTextWidth(label.text, 13, RESTRICTION_LABEL_FONT_MODE);
     const x0 = label.anchor === 'start' ? label.x : label.anchor === 'end' ? label.x - width : label.x - width / 2;
     const box = { x0, x1: x0 + width, y0: label.y - 7.5, y1: label.y + 7.5 };
     const overlaps = Math.min(box.x1, chipBox.x1) - Math.max(box.x0, chipBox.x0) > 0

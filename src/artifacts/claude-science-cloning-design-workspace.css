@@ -70,43 +70,19 @@
 
 .motif-cs-cloning-design-header {
   display: flex;
-  align-items: start;
+  align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  padding: 14px 16px 12px;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
   border-bottom: 1px solid var(--border-subtle);
 }
 
-.motif-cs-cloning-design-header > div {
-  min-width: 0;
-}
-
-.motif-cs-cloning-design-header h2,
-.motif-cs-cloning-design-header p {
-  margin: 0;
-}
-
 .motif-cs-cloning-design-header h2 {
-  margin-top: 2px;
-  font-size: 17px;
+  min-width: 0;
+  margin: 0;
+  font-size: var(--fs-lg);
+  font-weight: 600;
   line-height: 1.2;
-  text-wrap: balance;
-}
-
-.motif-cs-cloning-design-header p {
-  margin-top: 3px;
-  color: var(--text-muted);
-  font-size: 10.5px;
-  line-height: 1.4;
-  text-wrap: pretty;
-}
-
-.motif-cs-cloning-design-kicker {
-  color: var(--text-muted);
-  font-size: 9px;
-  font-weight: 780;
-  letter-spacing: .08em;
-  text-transform: uppercase;
 }
 
 .motif-cs-cloning-design-close,
@@ -121,10 +97,10 @@
 }
 
 .motif-cs-cloning-design-close {
-  width: 30px;
-  height: 30px;
+  width: var(--control-h-sm);
+  height: var(--control-h-sm);
   padding: 0;
-  font-size: 19px;
+  font-size: var(--fs-xl);
 }
 
 .motif-cs-cloning-design-close:hover,
@@ -136,24 +112,23 @@
 
 .motif-cs-cloning-design-methods {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 190px));
-  gap: 6px;
-  padding: 8px 14px;
+  grid-template-columns: repeat(2, minmax(0, 160px));
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
   border-bottom: 1px solid var(--border-subtle);
-  background: color-mix(in srgb, var(--bg-secondary) 52%, var(--bg-primary));
+  background: var(--bg-secondary);
 }
 
 .motif-cs-cloning-design-methods button {
   display: grid;
   min-width: 0;
-  min-height: 42px;
-  gap: 1px;
-  padding: 6px 10px;
+  min-height: var(--control-h);
+  place-items: center;
+  padding: 0 var(--space-3);
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
   background: transparent;
-  color: var(--text-muted);
-  text-align: left;
+  color: var(--text-secondary);
   cursor: pointer;
 }
 
@@ -163,21 +138,15 @@
 }
 
 .motif-cs-cloning-design-methods button[data-selected] {
-  border-color: var(--border-strong);
-  background: var(--bg-primary);
+  border-color: transparent;
+  background: var(--bg-active);
   color: var(--text-primary);
+  box-shadow: none;
 }
 
 .motif-cs-cloning-design-methods strong {
-  font-size: 11.5px;
-}
-
-.motif-cs-cloning-design-methods small {
-  overflow: hidden;
-  font-size: 10px;
-  font-weight: 500;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: var(--fs-sm);
+  font-weight: 600;
 }
 
 .motif-cs-cloning-design-body {
@@ -203,7 +172,7 @@
 
 .motif-cs-cloning-design-review {
   border-left: 1px solid var(--border-subtle);
-  background: color-mix(in srgb, var(--bg-secondary) 52%, var(--bg-primary));
+  background: var(--bg-primary);
 }
 
 .motif-cs-cloning-design-setup,
@@ -213,7 +182,7 @@
 .motif-cs-cloning-design-review > section,
 .motif-cs-cloning-design-issues {
   margin: 0;
-  padding: 12px 14px;
+  padding: var(--space-3);
   border: 0;
   border-bottom: 1px solid var(--border-subtle);
 }
@@ -231,42 +200,60 @@
   display: flex;
   align-items: baseline;
   min-width: 0;
-  gap: 7px;
+  gap: var(--space-2);
 }
 
 .motif-cs-cloning-design-section-head h3 {
   min-width: 0;
   margin: 0;
-  font-size: 12.5px;
+  font-size: var(--fs-md);
+  font-weight: 600;
   line-height: 1.2;
   text-wrap: balance;
 }
 
-.motif-cs-cloning-design-section-head > div:first-child > span {
-  color: var(--text-muted);
-  font: 9px/1 var(--font-mono);
-}
-
 .motif-cs-cloning-design-section-head > div:first-child > em {
   color: var(--text-muted);
-  font: 9px/1 var(--font-mono);
+  font-size: var(--fs-xs);
   font-style: normal;
+}
+
+/* A checkbox and its words share one line, level with the neighbouring fields. */
+.motif-cs-cloning-design-field-grid > .motif-cs-cloning-design-check-field {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  align-self: end;
+  min-height: var(--control-h);
+  gap: var(--space-2);
+  font-weight: 500;
 }
 
 .motif-cs-cloning-design-section-head > small {
   max-width: 42ch;
   color: var(--text-muted);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   line-height: 1.35;
   text-align: right;
   text-wrap: pretty;
 }
 
+/* The setup help is a sentence, so it sits under its heading instead of
+   squeezing a column beside it. */
+.motif-cs-cloning-design-setup > .motif-cs-cloning-design-section-head {
+  flex-wrap: wrap;
+}
+
+.motif-cs-cloning-design-setup > .motif-cs-cloning-design-section-head > small {
+  flex: 1 1 100%;
+  max-width: none;
+  text-align: left;
+}
+
 .motif-cs-cloning-design-field-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-  gap: 8px;
-  margin-top: 10px;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
 }
 
 .motif-cs-cloning-design-field-grid > label,
@@ -274,16 +261,15 @@
 .motif-cs-cloning-design-footer > label {
   display: grid;
   min-width: 0;
-  gap: 3px;
-  color: var(--text-muted);
-  font-size: 10px;
-  font-weight: 720;
-  letter-spacing: .015em;
+  gap: var(--space-1);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  font-weight: 500;
 }
 
 .motif-cs-cloning-design-field-grid > label > small {
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: var(--fs-xs);
   font-weight: 500;
   letter-spacing: 0;
   line-height: 1.35;
@@ -293,7 +279,7 @@
 .motif-cs-cloning-design-organization-help {
   margin: 8px 2px 0;
   color: var(--text-muted);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   line-height: 1.4;
   text-wrap: pretty;
 }
@@ -305,20 +291,20 @@
 .motif-cs-cloning-design-reaction {
   margin-left: 4px;
   color: var(--text-secondary);
-  font-family: var(--font-mono);
+  font-family: var(--font-ui);
   white-space: nowrap;
 }
 
 .motif-cs-cloning-design-advanced {
   margin-top: 7px;
   color: var(--text-muted);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
 }
 
 .motif-cs-cloning-design-advanced summary {
   width: fit-content;
   color: var(--text-secondary);
-  font-weight: 650;
+  font-weight: 600;
   cursor: pointer;
 }
 
@@ -337,11 +323,16 @@
   min-width: 0;
   height: 30px;
   padding: 0 8px;
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
-  background: var(--control-bg);
+  background: var(--bg-primary);
   color: var(--text-primary);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
+}
+
+/* Placeholder text uses the muted ink, not the browser's own grey, so it keeps its contrast on the field. */
+.motif-cs-cloning-design input::placeholder {
+  color: var(--text-muted);
 }
 
 .motif-cs-cloning-design select:hover,
@@ -354,7 +345,9 @@
 .motif-cs-cloning-design select:disabled,
 .motif-cs-cloning-design input:disabled,
 .motif-cs-cloning-design button:disabled {
-  opacity: .46;
+  border-color: var(--border);
+  background: var(--bg-secondary);
+  color: var(--text-muted);
   cursor: default;
 }
 
@@ -369,11 +362,11 @@
 
 .motif-cs-cloning-design-segmented legend {
   grid-column: 1 / -1;
-  margin-bottom: 3px;
+  margin-bottom: var(--space-1);
   padding: 0;
-  color: var(--text-muted);
-  font-size: 10px;
-  font-weight: 720;
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  font-weight: 500;
 }
 
 .motif-cs-cloning-design-segmented label {
@@ -381,10 +374,10 @@
   display: grid;
   place-items: center;
   min-height: 30px;
-  border: 1px solid var(--border-subtle);
-  background: var(--control-bg);
-  color: var(--text-muted);
-  font-size: 10px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
   cursor: pointer;
 }
 
@@ -399,9 +392,10 @@
 
 .motif-cs-cloning-design-segmented label[data-selected] {
   z-index: 1;
-  border-color: var(--border-strong);
-  background: var(--bg-primary);
+  border-color: transparent;
+  background: var(--bg-active);
   color: var(--text-primary);
+  box-shadow: none;
 }
 
 .motif-cs-cloning-design-segmented label:focus-within {
@@ -431,7 +425,7 @@
   top: 9px;
   right: 8px;
   color: var(--text-muted);
-  font: 9px/1 var(--font-mono);
+  font: var(--fs-xs)/1 var(--font-mono);
   pointer-events: none;
 }
 
@@ -442,13 +436,13 @@
   border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--bg-secondary) 48%, var(--bg-primary));
   color: var(--text-secondary);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
 }
 
 .motif-cs-cloning-design-profile-note summary,
 .motif-cs-cloning-design-issues summary {
   color: var(--text-primary);
-  font-weight: 720;
+  font-weight: 600;
   cursor: pointer;
 }
 
@@ -481,13 +475,13 @@
   border-radius: 2px;
   background: var(--bg-primary);
   color: var(--text-secondary);
-  font: 9.5px/1.1 var(--font-mono);
+  font: var(--fs-xs)/1.1 var(--font-mono);
 }
 
 .motif-cs-cloning-design-help {
-  margin: 5px 0 8px 22px;
+  margin: var(--space-1) 0 var(--space-2);
   color: var(--text-muted);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   line-height: 1.35;
 }
 
@@ -540,8 +534,8 @@
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
   background: transparent;
-  color: var(--text-muted);
-  font: 9px/1 var(--font-mono);
+  color: var(--text-secondary);
+  font: var(--fs-xs)/1 var(--font-mono);
   cursor: grab;
 }
 
@@ -556,7 +550,7 @@
 }
 
 .motif-cs-cloning-design-part-order > span {
-  font-size: 14px;
+  font-size: var(--fs-md);
 }
 
 .motif-cs-cloning-design-part-identity {
@@ -589,11 +583,11 @@
   min-width: 34px;
   height: 30px;
   padding: 0 6px;
-  border: 1px solid var(--border-subtle);
-  background: var(--control-bg);
-  color: var(--text-muted);
-  font-size: 10px;
-  font-weight: 720;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
+  font-weight: 600;
   cursor: pointer;
 }
 
@@ -608,7 +602,6 @@
 
 .motif-cs-cloning-design-orientation button:hover {
   z-index: 1;
-  border-color: var(--border-strong);
   background: var(--control-hover);
   color: var(--text-primary);
 }
@@ -616,14 +609,15 @@
 .motif-cs-cloning-design-orientation button[data-selected] {
   z-index: 1;
   border-color: var(--border-strong);
-  background: var(--bg-primary);
+  background: var(--bg-active);
   color: var(--text-primary);
+  box-shadow: none;
 }
 
 .motif-cs-cloning-design-part-identity small {
   overflow: hidden;
   color: var(--text-muted);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -656,15 +650,13 @@
   height: 26px;
   padding-inline: 6px;
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
 }
 
 .motif-cs-cloning-design-part-metrics small {
   color: var(--text-muted);
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: .025em;
-  text-transform: uppercase;
+  font-size: var(--fs-xs);
+  font-weight: 600;
 }
 
 .motif-cs-cloning-design-part-metrics strong,
@@ -672,8 +664,8 @@
   min-width: 0;
   overflow: hidden;
   color: var(--text-secondary);
-  font-size: 10.5px;
-  font-weight: 620;
+  font-size: var(--fs-xs);
+  font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -690,8 +682,8 @@
   border-radius: 999px;
   background: var(--bg-primary);
   color: var(--text-secondary);
-  font-size: 10px;
-  font-weight: 720;
+  font-size: var(--fs-xs);
+  font-weight: 600;
   white-space: nowrap;
 }
 
@@ -705,8 +697,8 @@
    `.motif-cs-cloning-design button { font: inherit }` rule would otherwise
    set it at the row's size instead of the other pills'. */
 .motif-cs-cloning-design-part-metrics button.motif-cs-cloning-design-state {
-  font-size: 10px;
-  font-weight: 720;
+  font-size: var(--fs-xs);
+  font-weight: 600;
   cursor: pointer;
 }
 
@@ -728,14 +720,17 @@
 
 .motif-cs-cloning-design-part-actions {
   display: flex;
-  gap: 2px;
+  gap: var(--space-1);
 }
 
 .motif-cs-cloning-design-part-actions button {
-  width: 32px;
-  height: 32px;
-  padding: 0;
-  font-size: 11px;
+  min-width: var(--control-h-sm);
+  height: var(--control-h-sm);
+  padding: 0 var(--space-2);
+  border-color: transparent;
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  font-weight: 500;
 }
 
 .motif-cs-cloning-design-fusion-editor {
@@ -744,22 +739,23 @@
   padding: 5px 0 2px;
   border-top: 1px solid var(--border-subtle);
   color: var(--text-muted);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
 }
 
 .motif-cs-cloning-design-fusion-editor summary {
   width: fit-content;
   color: var(--text-secondary);
-  font-size: 11px;
-  font-weight: 680;
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  line-height: var(--control-h-sm);
   cursor: pointer;
 }
 
 .motif-cs-cloning-design-fusion-editor > div {
   display: grid;
   grid-template-columns: minmax(105px, 150px) auto minmax(105px, 150px);
-  /* Without this the arrow's auto track took the spare width and set the
-     right boundary 474px from the left one at 1440x900. */
+  /* The columns pack to the left, so the arrow's auto track does not take the
+     spare width and push the right field away. */
   justify-content: start;
   align-items: end;
   gap: 7px;
@@ -770,7 +766,7 @@
   display: grid;
   gap: 3px;
   color: var(--text-muted);
-  font-weight: 650;
+  font-weight: 600;
 }
 
 .motif-cs-cloning-design-fusion-editor input {
@@ -797,7 +793,7 @@
 .motif-cs-cloning-design-source-limit {
   margin: 8px 0 0;
   color: var(--text-muted);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   line-height: 1.35;
 }
 
@@ -806,7 +802,7 @@
 .motif-cs-cloning-design-add-hint {
   margin: 9px 0 0;
   color: var(--text-muted);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   line-height: 1.35;
 }
 
@@ -818,24 +814,22 @@
 .motif-cs-cloning-design-secondary-button,
 .motif-cs-cloning-design-quiet-button,
 .motif-cs-cloning-design-wide-button {
-  min-height: 30px;
-  padding: 0 10px;
-  border: 1px solid var(--border-subtle);
+  min-height: var(--control-h);
+  padding: 0 var(--space-3);
+  border: 1px solid transparent;
   border-radius: var(--radius-sm);
-  background: var(--control-bg);
+  background: transparent;
   color: var(--text-primary);
-  font-size: 10px;
-  font-weight: 700;
+  font-size: var(--fs-sm);
+  font-weight: 500;
   cursor: pointer;
 }
 
 .motif-cs-cloning-design-primary-button {
-  border-color: color-mix(in srgb, var(--accent) 62%, var(--border-strong));
+  border-color: transparent;
   background: var(--accent);
-  /* The fallback in the old `var(--accent-contrast, var(--bg-primary))` named
-     the right colour and never got to supply it, because --accent-contrast is
-     defined in every theme. On this --accent fill the near-white it does supply
-     read 2.86 in dark and 2.33 in claude-dark on Add part. */
+  /* --accent-fill-contrast is the foreground for an --accent fill, so the
+     label on Add part keeps its contrast in every theme. */
   color: var(--accent-fill-contrast);
 }
 
@@ -846,15 +840,14 @@
 .motif-cs-cloning-design-secondary-button:hover:not(:disabled),
 .motif-cs-cloning-design-quiet-button:hover:not(:disabled),
 .motif-cs-cloning-design-wide-button:hover:not(:disabled) {
-  border-color: var(--border-strong);
+  border-color: transparent;
   background: var(--control-hover);
 }
 
 .motif-cs-cloning-design-quiet-button {
-  min-height: 26px;
+  min-height: var(--control-h-sm);
   background: transparent;
   color: var(--text-secondary);
-  font-size: 9px;
 }
 
 .motif-cs-cloning-design-lanes {
@@ -866,7 +859,7 @@
 .motif-cs-cloning-design-lanes > p {
   margin: 0;
   color: var(--text-muted);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
 }
 
 .motif-cs-cloning-design-lane {
@@ -890,7 +883,7 @@
 
 .motif-cs-cloning-design-lane strong {
   overflow: hidden;
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -900,7 +893,7 @@
   border: 1px solid var(--border-subtle);
   border-radius: 999px;
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: var(--fs-xs);
   font-style: normal;
 }
 
@@ -908,14 +901,14 @@
   min-width: 0;
   overflow: hidden;
   color: var(--text-secondary);
-  font: 9px/1.25 var(--font-mono);
+  font: var(--fs-xs)/1.25 var(--font-mono);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .motif-cs-cloning-design-lane > span {
   color: var(--text-muted);
-  font: 9.5px/1 var(--font-mono);
+  font: var(--fs-xs)/1 var(--font-mono);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -934,12 +927,8 @@
 
 .motif-cs-cloning-design-product {
   display: grid;
-  gap: 8px;
-  margin-top: 9px;
-  padding: 10px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  background: color-mix(in srgb, var(--bg-secondary) 42%, var(--bg-primary));
+  gap: var(--space-2);
+  margin-top: var(--space-2);
 }
 
 .motif-cs-cloning-design-product-chain {
@@ -958,14 +947,12 @@
   border-radius: 999px;
   background: var(--bg-primary);
   color: var(--text-secondary);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
 }
 
 .motif-cs-cloning-design-product-chain small {
   color: var(--text-muted);
-  font: 9px/1 var(--font-mono);
-  letter-spacing: .02em;
-  text-transform: uppercase;
+  font: var(--fs-xs)/1 var(--font-mono);
 }
 
 .motif-cs-cloning-design-product-chain b {
@@ -991,9 +978,8 @@
 .motif-cs-cloning-design-product dt,
 .motif-cs-cloning-design-summary dt {
   color: var(--text-muted);
-  font-size: 9px;
-  font-weight: 700;
-  text-transform: uppercase;
+  font-size: var(--fs-xs);
+  font-weight: 600;
 }
 
 .motif-cs-cloning-design-product dd,
@@ -1002,10 +988,9 @@
   margin: 0;
   overflow: hidden;
   color: var(--text-secondary);
-  font-size: 9.5px;
+  font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .motif-cs-cloning-design-product dd code {
@@ -1015,10 +1000,10 @@
 .motif-cs-cloning-design-sequence-preview {
   overflow: hidden;
   padding: 6px 7px;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   background: var(--bg-tertiary);
   color: var(--text-secondary);
-  font: 9.5px/1.35 var(--font-mono);
+  font: var(--fs-xs)/1.35 var(--font-mono);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1040,12 +1025,12 @@
 
 .motif-cs-cloning-design-empty strong {
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 
 .motif-cs-cloning-design-empty span {
   max-width: 60ch;
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   line-height: 1.4;
   text-wrap: pretty;
 }
@@ -1053,10 +1038,8 @@
 .motif-cs-cloning-design-review-head > span,
 .motif-cs-cloning-design-review-head > strong {
   color: var(--text-secondary);
-  font-size: 9.5px;
-  font-weight: 760;
-  letter-spacing: .025em;
-  text-transform: uppercase;
+  font-size: var(--fs-xs);
+  font-weight: 600;
 }
 
 .motif-cs-cloning-design-review-head > strong[data-state="ready"] {
@@ -1071,9 +1054,14 @@
   color: var(--red);
 }
 
+/* Waiting for parts is a to-do, not an error: muted, never red. */
+.motif-cs-cloning-design-review-head > strong[data-state="incomplete"] {
+  color: var(--text-muted);
+}
+
 .motif-cs-cloning-design-review-head > small {
   color: var(--text-muted);
-  font: 9px/1 var(--font-mono);
+  font: var(--fs-xs)/1 var(--font-ui);
 }
 
 .motif-cs-cloning-design-summary {
@@ -1082,13 +1070,9 @@
 }
 
 .motif-cs-cloning-design-next-level {
-  margin: 9px 0 0;
-  padding: 7px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  background: var(--bg-primary);
+  margin: var(--space-2) 0 0;
   color: var(--text-muted);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   line-height: 1.4;
 }
 
@@ -1098,20 +1082,21 @@
 
 .motif-cs-cloning-design-checklist {
   display: grid;
-  gap: 5px;
-  margin-top: 9px;
+  margin-top: var(--space-2);
 }
 
 .motif-cs-cloning-design-check {
   display: grid;
   grid-template-columns: 18px minmax(0, 1fr) auto;
   align-items: start;
-  gap: 6px;
+  gap: var(--space-2);
   min-width: 0;
-  padding: 7px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  background: var(--bg-primary);
+  padding: var(--space-2) 0;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.motif-cs-cloning-design-check:first-child {
+  border-top: 0;
 }
 
 .motif-cs-cloning-design-check > span {
@@ -1120,9 +1105,9 @@
   width: 17px;
   height: 17px;
   border: 1px solid var(--border-strong);
-  border-radius: 50%;
+  border-radius: 999px;
   color: var(--text-secondary);
-  font: 9px/1 var(--font-mono);
+  font: var(--fs-xs)/1 var(--font-ui);
 }
 
 .motif-cs-cloning-design-check[data-state="required"] > span {
@@ -1148,27 +1133,28 @@
 
 .motif-cs-cloning-design-check strong {
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   line-height: 1.3;
   overflow-wrap: anywhere;
 }
 
 .motif-cs-cloning-design-check small {
   color: var(--text-muted);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
 
 .motif-cs-cloning-design-check button {
   justify-self: start;
-  margin-top: 3px;
+  min-height: var(--control-h-sm);
+  margin-top: var(--space-1);
   padding: 0;
   border: 0;
   background: transparent;
   color: var(--text-secondary);
-  font-size: 10.5px;
-  font-weight: 720;
+  font-size: var(--fs-sm);
+  font-weight: 500;
   text-decoration: underline;
   text-underline-offset: 2px;
   cursor: pointer;
@@ -1180,11 +1166,9 @@
 
 .motif-cs-cloning-design-check > em {
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: var(--fs-xs);
   font-style: normal;
-  font-weight: 720;
-  letter-spacing: .02em;
-  text-transform: uppercase;
+  font-weight: 600;
 }
 
 .motif-cs-cloning-design-wide-button {
@@ -1194,7 +1178,7 @@
 
 .motif-cs-cloning-design-issues {
   background: transparent;
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
 }
 
 .motif-cs-cloning-design-issues ul {
@@ -1218,8 +1202,8 @@
   display: grid;
   grid-template-columns: minmax(190px, 280px) minmax(140px, 1fr) auto;
   align-items: end;
-  gap: 9px 12px;
-  padding: 9px 14px;
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-2) var(--space-3);
   border-top: 1px solid var(--border-subtle);
   background: var(--bg-primary);
 }
@@ -1227,12 +1211,14 @@
 .motif-cs-cloning-design-feedback {
   align-self: center;
   min-width: 0;
+  /* One line is always reserved, so a save or error note does not grow the footer 16px. */
+  min-height: calc(1.35 * var(--fs-xs));
 }
 
 .motif-cs-cloning-design-feedback p {
   margin: 0;
   color: var(--text-secondary);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
@@ -1245,9 +1231,35 @@
   display: none;
 }
 
+/* A note on a routine choice stays in the live region but is not drawn. */
+.motif-cs-cloning-design-feedback p[role="status"][data-quiet] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
 .motif-cs-cloning-design-save-actions {
   display: flex;
-  gap: 6px;
+  gap: var(--space-2);
+}
+
+/* Each save keeps the width of its longest label ("Saving product…"), so
+   "Plan saved" does not shift its neighbour or the name field. */
+.motif-cs-cloning-design-save-actions > button {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.motif-cs-cloning-design-save-actions > button::after {
+  content: attr(data-label-reserve) / "";
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
 }
 
 .motif-cs-visually-hidden {
@@ -1261,13 +1273,12 @@
   border: 0;
 }
 
-@media (max-width: 920px) {
-  .motif-cs-cloning-design-body {
-    grid-template-columns: minmax(0, 1fr) minmax(220px, 250px);
-  }
-
+/* A part row needs its name, four facts and three labeled actions on one line
+   only when the design column is about 880px wide. Below that the facts and
+   the actions each take a line under the name. */
+@media (max-width: 1200px) {
   .motif-cs-cloning-design-part {
-    grid-template-columns: 42px minmax(0, 1fr) auto;
+    grid-template-columns: 42px minmax(0, 1fr);
   }
 
   .motif-cs-cloning-design-part-metrics {
@@ -1277,8 +1288,27 @@
   }
 
   .motif-cs-cloning-design-part-actions {
-    grid-column: 3;
-    grid-row: 1;
+    grid-column: 2;
+    grid-row: 3;
+  }
+}
+
+@media (max-width: 920px) {
+  /* At 920px and below the review column goes under the design: beside it, a
+     part row is too narrow for its name and three labeled actions. */
+  .motif-cs-cloning-design-body {
+    display: block;
+    overflow: auto;
+  }
+
+  .motif-cs-cloning-design-main,
+  .motif-cs-cloning-design-review {
+    overflow: visible;
+  }
+
+  .motif-cs-cloning-design-review {
+    border-top: 1px solid var(--border-subtle);
+    border-left: 0;
   }
 
   .motif-cs-cloning-design-fusion-editor {
@@ -1307,42 +1337,9 @@
     border-radius: 0;
   }
 
-  .motif-cs-cloning-design-body {
-    display: block;
-    overflow: auto;
-  }
-
-  .motif-cs-cloning-design-main,
-  .motif-cs-cloning-design-review {
-    overflow: visible;
-  }
-
-  .motif-cs-cloning-design-review {
-    border-top: 1px solid var(--border-subtle);
-    border-left: 0;
-  }
-
   .motif-cs-cloning-design-field-grid,
   .motif-cs-cloning-design-field-grid[data-method="gibson"] {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .motif-cs-cloning-design-part {
-    grid-template-columns: 42px minmax(0, 1fr) auto;
-  }
-
-  .motif-cs-cloning-design-part-metrics {
-    grid-column: 2 / -1;
-    grid-row: 2;
-  }
-
-  .motif-cs-cloning-design-part-actions {
-    grid-column: 3;
-    grid-row: 1;
-  }
-
-  .motif-cs-cloning-design-fusion-editor {
-    grid-column: 2 / -1;
   }
 
   .motif-cs-cloning-design-lane {
@@ -1375,7 +1372,10 @@
 
   .motif-cs-cloning-design-methods {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    padding-inline: 10px;
+  }
+
+  .motif-cs-cloning-design-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .motif-cs-cloning-design-field-grid,
@@ -1390,22 +1390,7 @@
   }
 
   .motif-cs-cloning-design-section-head > small {
-    padding-left: 22px;
     text-align: left;
-  }
-
-  .motif-cs-cloning-design-part {
-    grid-template-columns: 42px minmax(0, 1fr);
-  }
-
-  .motif-cs-cloning-design-part-actions {
-    grid-column: 2;
-    grid-row: 3;
-    justify-content: flex-end;
-  }
-
-  .motif-cs-cloning-design-part-metrics {
-    grid-column: 2;
   }
 
   .motif-cs-cloning-design-fusion-editor {
@@ -1449,16 +1434,5 @@
   }
 }
 
-html:is([data-theme="claude-light"], [data-theme="claude-dark"]) .motif-cs-cloning-design-methods button[data-selected],
-html:is([data-theme="claude-light"], [data-theme="claude-dark"]) .motif-cs-cloning-design-methods button[data-selected]:hover,
-html:is([data-theme="claude-light"], [data-theme="claude-dark"]) .motif-cs-cloning-design-segmented label[data-selected],
-html:is([data-theme="claude-light"], [data-theme="claude-dark"]) .motif-cs-cloning-design-orientation button[data-selected],
-html:is([data-theme="claude-light"], [data-theme="claude-dark"]) .motif-cs-cloning-design-orientation button[data-selected]:hover {
-  border-color: var(--accent-base);
-  background: var(--accent-base);
-  color: var(--accent-contrast);
-}
 
-html:is([data-theme="claude-light"], [data-theme="claude-dark"]) .motif-cs-cloning-design-methods button[data-selected] small {
-  color: var(--accent-contrast);
-}
+

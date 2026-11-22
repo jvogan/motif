@@ -390,9 +390,17 @@ var VALID_TRANSLATION_TABLE_IDS = new Set(VALID_NCBI_TABLE_IDS);
 function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
-function createRecordMap() {
-  return /* @__PURE__ */ Object.create(null);
+function createRecordMap(source, changes) {
+  return Object.assign(/* @__PURE__ */ Object.create(null), source, changes);
 }
+var RECORD_KEYED_ARTIFACT_STATE_FIELDS = [
+  "translationLayersByRecord",
+  "enzymeSourcesByRecord",
+  "hiddenEnzymesByRecord",
+  "hiddenFeatureTranslationsByRecord",
+  "restrictionLabelsByRecord",
+  "motifsByRecord"
+];
 function requiredString(value, path, maxLength = MAX_TRANSLATION_LAYER_TEXT_LENGTH) {
   if (typeof value !== "string" || !value.trim() || value.length > maxLength) {
     throw new Error(`${path} must be a non-empty string no longer than ${maxLength} characters.`);
@@ -495,8 +503,8 @@ function normalizeCustomEnzymes(value) {
   });
   return normalizedEnzymes;
 }
-function normalizeTranslationLayers(value, recordLengths) {
-  if (value === void 0) return {};
+function normalizeTranslationLayers(value, recordLengths, circularRecordIds) {
+  if (value === void 0) return createRecordMap();
   if (!isObject(value)) throw new Error("artifactState.translationLayersByRecord must be an object.");
   const result = createRecordMap();
   for (const [recordId, rawLayers] of Object.entries(value)) {
@@ -516,8 +524,12 @@ function normalizeTranslationLayers(value, recordLengths) {
       const label = requiredString(raw.label, `${path}.label`);
       const start = requiredInteger(raw.start, `${path}.start`);
       const end = requiredInteger(raw.end, `${path}.end`);
-      if (start < 0 || end <= start || end > sequenceLength) {
-        throw new Error(`${path} must use a valid 0-based [start,end) range within ${sequenceLength} residues.`);
+      if (circularRecordIds.has(recordId)) {
+        if (start < 0 || start >= sequenceLength || end <= start || end - start > sequenceLength) {
+          throw new Error(`${path} must use a valid 0-based [start,end) range on the ${sequenceLength}-residue circular record: start below ${sequenceLength}, end after start, at most ${sequenceLength} residues in all; a layer across the origin ends past ${sequenceLength}.`);
+        }
+      } else if (start < 0 || end <= start || end > sequenceLength) {
+        throw new Error(`${path} must use a valid 0-based [start,end) range within the ${sequenceLength} residues of the linear record.`);
       }
       const strand = raw.strand === -1 ? -1 : raw.strand === 1 ? 1 : null;
       if (strand === null) throw new Error(`${path}.strand must be 1 or -1.`);
@@ -555,7 +567,7 @@ function normalizeTranslationLayers(value, recordLengths) {
   return result;
 }
 function normalizeStringArraysByRecord(value, path, recordLengths, maxEntries) {
-  if (value === void 0) return {};
+  if (value === void 0) return createRecordMap();
   if (!isObject(value)) throw new Error(`${path} must be an object.`);
   const result = createRecordMap();
   for (const [recordId, rawValues] of Object.entries(value)) {
@@ -581,7 +593,7 @@ function normalizeRestrictionSources(value, recordLengths) {
   return result;
 }
 function normalizeBooleanByRecord(value, path, recordLengths) {
-  if (value === void 0) return {};
+  if (value === void 0) return createRecordMap();
   if (!isObject(value)) throw new Error(`${path} must be an object.`);
   const result = createRecordMap();
   for (const [recordId, rawValue] of Object.entries(value)) {
@@ -592,7 +604,7 @@ function normalizeBooleanByRecord(value, path, recordLengths) {
   return result;
 }
 function normalizeMotifs(value, recordLengths) {
-  if (value === void 0) return {};
+  if (value === void 0) return createRecordMap();
   if (!isObject(value)) throw new Error("artifactState.motifsByRecord must be an object.");
   const result = createRecordMap();
   for (const [recordId, rawValue] of Object.entries(value)) {
@@ -606,22 +618,23 @@ function normalizeMotifs(value, recordLengths) {
   }
   return result;
 }
-function normalizeArtifactDurableState(value, recordLengths) {
+var NO_CIRCULAR_RECORDS = /* @__PURE__ */ new Set();
+function normalizeArtifactDurableState(value, recordLengths, circularRecordIds = NO_CIRCULAR_RECORDS) {
   if (value === void 0) {
     return {
       customEnzymes: [],
-      translationLayersByRecord: {},
-      enzymeSourcesByRecord: {},
-      hiddenEnzymesByRecord: {},
-      hiddenFeatureTranslationsByRecord: {},
-      restrictionLabelsByRecord: {},
-      motifsByRecord: {}
+      translationLayersByRecord: createRecordMap(),
+      enzymeSourcesByRecord: createRecordMap(),
+      hiddenEnzymesByRecord: createRecordMap(),
+      hiddenFeatureTranslationsByRecord: createRecordMap(),
+      restrictionLabelsByRecord: createRecordMap(),
+      motifsByRecord: createRecordMap()
     };
   }
   if (!isObject(value)) throw new Error("artifactState must be an object.");
   return {
     customEnzymes: normalizeCustomEnzymes(value.customEnzymes),
-    translationLayersByRecord: normalizeTranslationLayers(value.translationLayersByRecord, recordLengths),
+    translationLayersByRecord: normalizeTranslationLayers(value.translationLayersByRecord, recordLengths, circularRecordIds),
     enzymeSourcesByRecord: normalizeRestrictionSources(value.enzymeSourcesByRecord, recordLengths),
     hiddenEnzymesByRecord: normalizeStringArraysByRecord(
       value.hiddenEnzymesByRecord,
@@ -993,14 +1006,6 @@ function isPlainObject2(value) {
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
 }
-var RECORD_KEYED_ARTIFACT_STATE_FIELDS = [
-  "translationLayersByRecord",
-  "enzymeSourcesByRecord",
-  "hiddenEnzymesByRecord",
-  "hiddenFeatureTranslationsByRecord",
-  "restrictionLabelsByRecord",
-  "motifsByRecord"
-];
 function assertArtifactStateRecordKeys(artifactState, recordLengths) {
   if (!isPlainObject2(artifactState)) return;
   for (const field of RECORD_KEYED_ARTIFACT_STATE_FIELDS) {
@@ -1042,14 +1047,14 @@ function assertAlignmentRecordKeys(workspace, recordLengths) {
     );
   }
 }
-function normalizeArtifactWorkspaceEnvelope(value, recordLengths) {
+function normalizeArtifactWorkspaceEnvelope(value, recordLengths, circularRecordIds) {
   if (!isPlainObject2(value)) throw new Error("Workspace payload must be a plain object.");
   const collections = normalizeArtifactWorkspaceCollections(value, { recordLengths });
   assertAlignmentRecordKeys(value, recordLengths);
   assertArtifactStateRecordKeys(value.artifactState, recordLengths);
   return {
     ...collections,
-    artifactState: normalizeArtifactDurableState(value.artifactState, recordLengths)
+    artifactState: normalizeArtifactDurableState(value.artifactState, recordLengths, circularRecordIds)
   };
 }
 export {

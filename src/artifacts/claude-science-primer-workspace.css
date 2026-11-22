@@ -9,6 +9,9 @@
 }
 
 .motif-cs-primer-workspace {
+  container-type: inline-size;
+  font-size: var(--fs-sm);
+  line-height: 1.4;
   width: min(1180px, calc(100vw - 32px));
   height: min(780px, calc(100dvh - 32px));
   min-width: min(660px, calc(100vw - 16px));
@@ -64,40 +67,36 @@
 .motif-cs-primer-workspace-header {
   flex: 0 0 auto;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  gap: 20px;
-  min-height: 76px;
-  padding: 16px 18px 13px;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
   border-bottom: 1px solid var(--border-subtle);
 }
 
-.motif-cs-primer-workspace-header h2,
-.motif-cs-primer-results-heading h3,
-.motif-cs-primer-evidence-heading h3 {
-  margin: 1px 0 0;
-  font-size: 20px;
-  line-height: 1.2;
-  letter-spacing: -0.015em;
+.motif-cs-primer-workspace-header > div {
+  min-width: 0;
+}
+
+.motif-cs-primer-workspace-header h2 {
+  margin: 0;
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  line-height: 1.25;
 }
 
 .motif-cs-primer-workspace-header p {
-  margin: 5px 0 0;
+  margin: 2px 0 0;
+  overflow: hidden;
   color: var(--text-muted);
-  font-size: 12px;
-}
-
-.motif-cs-primer-eyebrow {
-  color: var(--text-muted);
-  font-size: 10px;
-  font-weight: 650;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
+  font-size: var(--fs-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .motif-cs-primer-icon-button {
-  width: 32px;
-  height: 32px;
+  width: var(--control-h);
+  height: var(--control-h);
   display: grid;
   place-items: center;
   flex: 0 0 auto;
@@ -105,13 +104,13 @@
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-secondary);
-  font-size: 23px !important;
+  font-size: var(--fs-xl) !important;
   line-height: 1;
   cursor: pointer;
 }
 
 .motif-cs-primer-icon-button:hover {
-  border-color: var(--border);
+  border-color: transparent;
   background: var(--bg-hover);
   color: var(--text-primary);
 }
@@ -120,22 +119,23 @@
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 6px;
-  min-height: 48px;
-  padding: 8px 18px;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
   overflow-x: auto;
   border-bottom: 1px solid var(--border-subtle);
   background: var(--panel-bg);
 }
 
 .motif-cs-primer-preset {
-  min-height: 30px;
-  padding: 4px 10px;
+  min-height: var(--control-h-sm);
+  padding: 0 var(--space-3);
   white-space: nowrap;
-  border: 1px solid var(--border);
+  border: 1px solid transparent;
   border-radius: var(--radius-sm);
-  background: var(--control-bg);
+  background: transparent;
   color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  font-weight: 500;
   cursor: pointer;
 }
 
@@ -144,24 +144,22 @@
   color: var(--text-primary);
 }
 
+/* The toggle "on" look, as everywhere: the --bg-active fill, no edge, primary
+   text, and the same weight as off so a preset does not widen when chosen. */
 .motif-cs-primer-preset[data-active] {
-  border-color: var(--border-strong);
-  background: var(--control-active);
+  border-color: transparent;
+  background: var(--bg-active);
   color: var(--text-primary);
-  font-weight: 650;
+  box-shadow: none;
 }
 
-.motif-cs-primer-custom-chip,
-.motif-cs-primer-result-badge {
+.motif-cs-primer-custom-chip {
   display: inline-flex;
   align-items: center;
-  min-height: 26px;
-  padding: 3px 8px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--bg-primary);
+  min-height: var(--control-h-sm);
+  padding: 0 var(--space-2);
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   white-space: nowrap;
 }
 
@@ -188,23 +186,21 @@
 
 .motif-cs-primer-preparation-context {
   display: grid;
-  gap: 3px;
-  padding: 12px 16px;
+  gap: var(--space-1);
+  padding: var(--space-3) var(--space-4);
   border-bottom: 1px solid var(--border-subtle);
-  background: color-mix(in srgb, var(--bg-primary) 72%, var(--panel-bg));
 }
 
 .motif-cs-primer-preparation-context > span {
   color: var(--text-muted);
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: .08em;
-  text-transform: uppercase;
+  font-size: var(--fs-xs);
+  font-weight: 500;
 }
 
 .motif-cs-primer-preparation-context > strong {
   color: var(--text-primary);
-  font-size: 12px;
+  font-size: var(--fs-sm);
+  font-weight: 600;
   line-height: 1.35;
 }
 
@@ -212,27 +208,22 @@
 .motif-cs-primer-preparation-context > small {
   margin: 0;
   color: var(--text-muted);
-  font-size: 10px;
-  line-height: 1.45;
+  font-size: var(--fs-xs);
+  line-height: 1.4;
   overflow-wrap: anywhere;
-}
-
-.motif-cs-primer-preparation-context > small {
-  margin-top: 3px;
-  color: var(--text-secondary);
 }
 
 .motif-cs-primer-preparation-navigation,
 .motif-cs-primer-preparation-navigation > div {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-2);
 }
 
 .motif-cs-primer-preparation-navigation {
   justify-content: space-between;
-  margin-top: 5px;
-  padding-top: 7px;
+  margin-top: var(--space-1);
+  padding-top: var(--space-2);
   border-top: 1px solid var(--border-subtle);
 }
 
@@ -240,40 +231,42 @@
   display: grid;
   gap: 1px;
   color: var(--text-secondary);
-  font-size: 9.5px;
-  font-weight: 650;
+  font-size: var(--fs-xs);
+  font-weight: 600;
 }
 
 .motif-cs-primer-preparation-navigation > span small {
   color: var(--text-muted);
-  font-size: 9px;
-  font-weight: 500;
+  font-size: var(--fs-xs);
+  font-weight: 400;
 }
 
 .motif-cs-primer-preparation-navigation button {
-  min-height: 28px;
-  padding: 0 8px;
-  border: 1px solid var(--border-subtle);
+  min-height: var(--control-h-sm);
+  padding: 0 var(--space-2);
+  border: 1px solid transparent;
   border-radius: var(--radius-sm);
-  background: var(--control-bg);
+  background: transparent;
   color: var(--text-primary);
   font: inherit;
-  font-size: 9.5px;
+  font-size: var(--fs-sm);
   cursor: pointer;
 }
 
 .motif-cs-primer-preparation-navigation button:hover:not(:disabled) {
-  border-color: var(--border-strong);
+  border-color: transparent;
   background: var(--control-hover);
 }
 
 .motif-cs-primer-preparation-navigation button:disabled {
-  opacity: .45;
+  border-color: transparent;
+  background: var(--bg-secondary);
+  color: var(--text-muted);
   cursor: default;
 }
 
 .motif-cs-primer-section {
-  padding: 16px;
+  padding: var(--space-3) var(--space-4) var(--space-4);
   border-bottom: 1px solid var(--border-subtle);
 }
 
@@ -283,60 +276,54 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-}
-
-.motif-cs-primer-section-heading > div {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
-
-.motif-cs-primer-section-heading > div > span {
-  color: var(--text-muted);
-  font: 10px/1 var(--font-mono);
+  gap: var(--space-3);
 }
 
 .motif-cs-primer-section-heading h3 {
   margin: 0;
-  font-size: 12px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  font-size: var(--fs-md);
+  font-weight: 600;
 }
 
 .motif-cs-primer-section-heading > span {
   color: var(--text-muted);
-  font: 11px/1 var(--font-mono);
+  font-size: var(--fs-xs);
 }
 
+/* Drawn like every other segmented control: 1px inside the group's border,
+   so the chosen option's 2px edge lies on the group's outline instead of a
+   second box 3px inside it. */
 .motif-cs-primer-intent {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 4px;
-  margin: 12px 0;
-  padding: 3px;
-  border: 1px solid var(--border);
+  gap: 0;
+  margin: var(--space-3) 0 0;
+  padding: 1px;
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
   background: var(--bg-secondary);
+  isolation: isolate;
 }
 
 .motif-cs-primer-intent label {
   position: relative;
   display: grid;
   place-items: center;
-  min-height: 28px;
+  min-height: var(--control-h-sm);
   border: 1px solid transparent;
-  border-radius: 3px;
-  color: var(--text-muted);
-  font-size: 11px;
+  border-radius: 2px;
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  font-weight: 500;
   cursor: pointer;
 }
 
 .motif-cs-primer-intent label[data-checked] {
-  border-color: var(--border);
-  background: var(--bg-primary);
+  z-index: 1;
+  border-color: transparent;
+  background: var(--bg-active);
   color: var(--text-primary);
-  font-weight: 650;
+  box-shadow: none;
 }
 
 .motif-cs-primer-intent input {
@@ -346,11 +333,18 @@
   opacity: 0;
 }
 
+/* The radio itself is a hidden 1px box, so the keyboard ring goes on its option. */
+.motif-cs-primer-intent label:has(input:focus-visible) {
+  z-index: 2;
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
 .motif-cs-primer-field-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-  margin-top: 12px;
+  gap: var(--space-2) var(--space-3);
+  margin-top: var(--space-3);
 }
 
 .motif-cs-primer-field-grid label,
@@ -358,27 +352,37 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   color: var(--text-secondary);
-  font-size: 11px;
-  font-weight: 600;
+  font-size: var(--fs-sm);
+  font-weight: 500;
+}
+
+.motif-cs-primer-field-grid .motif-cs-primer-field-wide {
+  grid-column: 1 / -1;
 }
 
 .motif-cs-primer-field-grid small {
   color: var(--text-muted);
+  font-size: var(--fs-xs);
   font-weight: 400;
 }
 
 .motif-cs-primer-workspace input:not([type="checkbox"]):not([type="radio"]),
 .motif-cs-primer-workspace select {
   width: 100%;
-  min-height: 34px;
+  min-height: var(--control-h-sm);
   min-width: 0;
-  padding: 6px 8px;
-  border: 1px solid var(--border);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
-  background: var(--control-bg);
+  background: var(--bg-primary);
   color: var(--text-primary);
+  font-size: var(--fs-sm);
+}
+
+.motif-cs-primer-workspace select {
+  text-overflow: ellipsis;
 }
 
 .motif-cs-primer-workspace input[type="number"],
@@ -387,12 +391,14 @@
 }
 
 .motif-cs-primer-text-button {
-  margin-top: 9px;
-  padding: 2px 0;
+  min-height: var(--control-h-sm);
+  margin-top: var(--space-1);
+  padding: 0;
   border: 0;
   background: transparent;
   color: var(--accent);
-  font-size: 11px !important;
+  font-size: var(--fs-sm) !important;
+  font-weight: 500;
   cursor: pointer;
 }
 
@@ -401,20 +407,27 @@
   text-underline-offset: 3px;
 }
 
+/* With no selection the button stays in place, greyed, and its title says why. */
+.motif-cs-primer-text-button:disabled {
+  color: var(--text-muted);
+  text-decoration: none;
+  cursor: default;
+}
+
 .motif-cs-primer-advanced {
   border-bottom: 1px solid var(--border-subtle);
 }
 
 .motif-cs-primer-advanced > summary {
-  min-height: 46px;
+  min-height: var(--control-h);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  padding: 10px 16px;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
   color: var(--text-secondary);
-  font-size: 12px;
-  font-weight: 650;
+  font-size: var(--fs-sm);
+  font-weight: 600;
   cursor: pointer;
   list-style: none;
 }
@@ -437,20 +450,20 @@
 .motif-cs-primer-advanced > summary > span {
   margin-left: auto;
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: var(--fs-xs);
   font-weight: 400;
 }
 
 .motif-cs-primer-advanced-body {
-  padding: 0 16px 16px;
+  padding: 0 var(--space-4) var(--space-4);
 }
 
 .motif-cs-primer-check-field {
-  min-height: 34px;
+  min-height: var(--control-h);
   flex-direction: row !important;
   align-items: center;
-  gap: 7px !important;
-  padding-top: 16px;
+  gap: var(--space-2) !important;
+  padding-top: var(--space-4);
 }
 
 .motif-cs-primer-check-field input {
@@ -470,62 +483,80 @@
 }
 
 .motif-cs-primer-help {
-  margin: 10px 0 0;
+  margin: var(--space-2) 0 0;
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: var(--fs-xs);
   line-height: 1.45;
 }
 
 .motif-cs-primer-results {
-  padding: 18px;
+  padding: var(--space-4);
+}
+
+.motif-cs-primer-results[data-pending] .motif-cs-primer-pair-list,
+.motif-cs-primer-results[data-pending] .motif-cs-primer-evidence {
+  opacity: 0.55;
 }
 
 .motif-cs-primer-results-heading {
-  margin-bottom: 13px;
+  margin-bottom: var(--space-3);
 }
 
 .motif-cs-primer-results-heading h3,
 .motif-cs-primer-evidence-heading h3 {
-  font-size: 17px;
+  margin: 0;
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  line-height: 1.25;
 }
 
 .motif-cs-primer-search-receipt {
   display: grid;
-  gap: 4px;
-  margin: 0 0 12px;
-  padding: 9px 11px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  background: var(--panel-bg);
+  gap: var(--space-1);
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--border-subtle);
   color: var(--text-secondary);
-  font-size: 10px;
+  font-size: var(--fs-xs);
+}
+
+.motif-cs-primer-search-receipt strong {
+  font-size: var(--fs-sm);
+  font-weight: 600;
 }
 
 .motif-cs-primer-search-receipt p,
 .motif-cs-primer-search-receipt small {
   margin: 0;
   color: var(--text-muted);
-  line-height: 1.45;
+  line-height: 1.4;
 }
 
 .motif-cs-primer-pair-list {
-  overflow: hidden;
-  border: 1px solid var(--border);
+  /* About four and a half rows, then the list scrolls, so ten ranked rows do
+     not push the chosen pair's sequences, the point of this window, out of view. */
+  max-height: 164px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
 }
 
+/* One row per pair: rank, size and range, then the melting temperatures. The
+   temperatures wrap as whole values, so none ever runs into its neighbour. */
 .motif-cs-primer-pair-row {
   width: 100%;
-  min-height: 52px;
+  min-height: var(--control-h);
   display: grid;
-  grid-template-columns: 32px minmax(100px, 1fr) minmax(112px, 0.75fr) minmax(65px, 0.45fr) 16px;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 11px;
+  grid-template-columns: 24px minmax(0, 1fr);
+  align-items: baseline;
+  gap: var(--space-1) var(--space-2);
+  padding: var(--space-2) var(--space-3);
   border: 0;
   border-bottom: 1px solid var(--border-subtle);
   background: var(--bg-primary);
   color: var(--text-primary);
+  font-size: var(--fs-sm);
   text-align: left;
   cursor: pointer;
 }
@@ -538,40 +569,65 @@
   background: var(--bg-hover);
 }
 
+/* A chosen pair is a selected list row: the product's 8% row tint, so the muted Tm and
+   position meta keep 4.5:1 on it (the toggles' 14% put them at 4.35), and the inset ring,
+   since the row has no border of its own. The rank goes primary. */
 .motif-cs-primer-pair-row[data-selected] {
-  background: var(--accent-wash);
+  background: var(--bg-active);
+  box-shadow: none;
 }
 
 .motif-cs-primer-pair-row[data-selected] .motif-cs-primer-pair-rank {
-  color: var(--accent);
-  font-weight: 700;
+  color: var(--text-primary);
+  font-weight: 600;
 }
 
-.motif-cs-primer-pair-row > span:not(.motif-cs-primer-pair-rank):not(.motif-cs-primer-pair-arrow),
 .motif-cs-primer-pair-main {
+  grid-column: 2;
   min-width: 0;
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0 var(--space-2);
+}
+
+.motif-cs-primer-pair-temps {
+  grid-column: 2;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0 var(--space-3);
+}
+
+.motif-cs-primer-pair-temps > span {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  white-space: nowrap;
 }
 
 .motif-cs-primer-pair-row small {
-  overflow: hidden;
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: var(--fs-xs);
   font-weight: 400;
+}
+
+.motif-cs-primer-pair-main small {
+  min-width: 0;
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .motif-cs-primer-pair-row strong {
-  font-size: 12px;
-  font-weight: 650;
+  font-size: var(--fs-sm);
+  font-weight: 600;
 }
 
 .motif-cs-primer-pair-rank {
   color: var(--text-muted);
-  font: 11px/1 var(--font-mono);
+  font-size: var(--fs-xs);
 }
 
 .motif-cs-primer-pair-flag[data-state="review"] {
@@ -579,24 +635,24 @@
 }
 
 .motif-cs-primer-tail-note {
-  margin: 0 0 10px;
+  margin: 0 0 var(--space-2);
   color: var(--text-secondary);
-  font-size: 11px;
-  line-height: 1.45;
+  font-size: var(--fs-xs);
+  line-height: 1.4;
 }
 
 .motif-cs-primer-tail-structure {
   display: grid;
-  gap: 5px;
-  padding: 10px 13px;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
   border-top: 1px solid var(--border-subtle);
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 
 .motif-cs-primer-tail-structure strong {
   color: var(--text-primary);
-  font-size: 11px;
+  font-size: var(--fs-sm);
 }
 
 .motif-cs-primer-tail-structure[data-state="review"] strong {
@@ -605,39 +661,33 @@
 
 .motif-cs-primer-tail-structure ul {
   margin: 0;
-  padding-left: 17px;
-  line-height: 1.45;
-}
-
-.motif-cs-primer-pair-arrow {
-  color: var(--text-muted);
-  font-size: 18px;
+  padding-left: var(--space-4);
+  line-height: 1.4;
 }
 
 .motif-cs-primer-evidence {
-  margin-top: 14px;
+  margin-top: var(--space-3);
   overflow: hidden;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
   background: var(--panel-bg);
 }
 
 .motif-cs-primer-evidence-heading {
-  min-height: 56px;
-  padding: 10px 13px;
+  padding: var(--space-2) var(--space-3);
   border-bottom: 1px solid var(--border-subtle);
 }
 
 .motif-cs-primer-evidence-heading > span {
   color: var(--text-muted);
-  font: 11px/1 var(--font-mono);
+  font-size: var(--fs-xs);
 }
 
 .motif-cs-primer-oligo {
   display: grid;
-  grid-template-columns: 70px minmax(0, 1fr);
-  gap: 8px 12px;
-  padding: 12px 13px;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-3);
   border-bottom: 1px solid var(--border-subtle);
 }
 
@@ -648,29 +698,57 @@
 }
 
 .motif-cs-primer-oligo-name strong {
-  font-size: 11px;
+  font-size: var(--fs-sm);
+  font-weight: 600;
 }
 
 .motif-cs-primer-oligo-name span {
   color: var(--text-muted);
-  font: 10px/1.2 var(--font-mono);
+  font: var(--fs-xs)/1.2 var(--font-mono);
+}
+
+/* With a host to select in, the primer's name selects where it binds. It keeps
+   the label's box exactly; hover and pressed paint a 4px halo outside it with a
+   shadow, so nothing in the card moves. The pressed tint is the chosen pair
+   row's, on which the muted position keeps 4.5:1. */
+button.motif-cs-primer-oligo-name {
+  justify-self: start;
+  align-self: start;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+button.motif-cs-primer-oligo-name:hover {
+  background: var(--bg-hover);
+  box-shadow: 0 0 0 4px var(--bg-hover);
+}
+
+button.motif-cs-primer-oligo-name[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-primary));
+  box-shadow:
+    0 0 0 4px color-mix(in srgb, var(--accent) 8%, var(--bg-primary)),
+    0 0 0 5px var(--accent-rule);
 }
 
 .motif-cs-primer-oligo code {
   min-width: 0;
   overflow-wrap: anywhere;
   color: var(--text-primary);
-  font: 12px/1.45 var(--font-mono);
+  font: var(--fs-sm)/1.45 var(--font-mono);
 }
 
 .motif-cs-primer-metrics {
   grid-column: 2;
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 1px;
-  overflow: hidden;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-2) var(--space-3);
 }
 
 .motif-cs-primer-metric {
@@ -678,21 +756,16 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 6px 7px;
-  background: var(--bg-primary);
 }
 
 .motif-cs-primer-metric span {
-  overflow: hidden;
   color: var(--text-muted);
-  font-size: 9px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: var(--fs-xs);
 }
 
 .motif-cs-primer-metric strong {
   color: var(--text-secondary);
-  font: 10px/1.2 var(--font-mono);
+  font: var(--fs-sm)/1.2 var(--font-ui);
 }
 
 .motif-cs-primer-metric[data-state="pass"] strong {
@@ -704,17 +777,17 @@
 }
 
 .motif-cs-primer-cross-check {
-  display: grid;
-  grid-template-columns: minmax(120px, 1fr) auto minmax(170px, 1.3fr);
-  align-items: center;
-  gap: 12px;
-  padding: 10px 13px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-3);
+  padding: var(--space-2) var(--space-3);
   color: var(--text-secondary);
-  font-size: 10px;
+  font-size: var(--fs-sm);
 }
 
 .motif-cs-primer-cross-check strong {
-  font: 12px/1.3 var(--font-mono);
+  font: var(--fs-sm)/1.3 var(--font-ui);
 }
 
 .motif-cs-primer-cross-check[data-state="pass"] strong {
@@ -726,63 +799,73 @@
 }
 
 .motif-cs-primer-cross-check small {
+  margin-left: auto;
   color: var(--text-secondary);
-  font-size: 12px;
-  text-align: right;
+  font-size: var(--fs-xs);
 }
 
 .motif-cs-primer-evidence-review {
   display: grid;
-  gap: 7px;
-  margin: 0 13px 13px;
-  padding: 10px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-sm);
-  background: var(--bg-primary);
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border-top: 1px solid var(--border-strong);
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--fs-xs);
+}
+
+.motif-cs-primer-evidence-review strong {
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  font-weight: 600;
 }
 
 .motif-cs-primer-evidence-review ul {
   margin: 0;
-  padding-left: 17px;
+  padding-left: var(--space-4);
   color: var(--text-secondary);
-  line-height: 1.45;
+  line-height: 1.4;
 }
 
 .motif-cs-primer-evidence-review label {
   display: flex;
   align-items: flex-start;
-  gap: 7px;
+  gap: var(--space-2);
+  min-height: var(--control-h-sm);
   color: var(--text-primary);
-  line-height: 1.45;
+  font-size: var(--fs-sm);
+  line-height: 1.4;
 }
 
 .motif-cs-primer-evidence-review input {
   flex: 0 0 auto;
-  width: 15px;
-  height: 15px;
-  margin: 0;
+  width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
   accent-color: var(--accent);
 }
 
 .motif-cs-primer-empty {
-  min-height: 220px;
+  min-height: 120px;
   display: grid;
   place-content: center;
-  gap: 5px;
-  padding: 24px;
+  gap: var(--space-1);
+  padding: var(--space-4);
   border: 1px dashed var(--border);
   border-radius: var(--radius-md);
   color: var(--text-secondary);
   text-align: center;
 }
 
+.motif-cs-primer-empty strong {
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+
 .motif-cs-primer-empty p {
   max-width: 430px;
   margin: 0;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 
 .motif-cs-primer-workspace-footer {
@@ -791,68 +874,136 @@
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 14px;
-  min-height: 58px;
-  padding: 9px 12px 9px 18px;
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-2) var(--space-3);
   border-top: 1px solid var(--border-subtle);
   background: var(--panel-bg);
 }
 
-/* The status carries the QC verdict, so it wraps rather than ellipsising: the
-   ΔTm sits at the end of the sentence and was the first thing cut. It is the
-   only yielding item next to a rigid 858px button block, so it also needs a
-   flex-basis small enough to stay on the buttons' row at the default window
-   width, and wrap onto its own row rather than collapse to 0 below that. */
+/* The status carries the QC verdict and any reason an action is off, so it
+   wraps rather than ellipsising. It shares a row with the actions when there
+   is room and takes its own row when there is not. */
 .motif-cs-primer-live-status {
-  flex: 1 1 180px;
+  flex: 1 1 200px;
   min-width: 0;
-  color: var(--text-muted);
-  font-size: 11px;
+  /* Two lines are always reserved, so a longer message never makes the footer taller. */
+  min-height: calc(2 * 1.4 * var(--fs-xs));
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
   overflow-wrap: anywhere;
   white-space: normal;
 }
 
 .motif-cs-primer-footer-actions {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-width: 0;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  justify-content: flex-end;
+  gap: var(--space-1);
 }
 
-.motif-cs-primer-footer-actions button {
-  min-height: 34px;
-  padding: 6px 10px;
-  border: 1px solid var(--border);
+.motif-cs-primer-footer-actions > button,
+.motif-cs-primer-more > summary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+  min-height: var(--control-h-sm);
+  padding: 0 var(--space-2);
+  border: 1px solid transparent;
   border-radius: var(--radius-sm);
-  background: var(--control-bg);
-  color: var(--text-secondary);
+  background: transparent;
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  font-weight: 500;
   white-space: nowrap;
   cursor: pointer;
+  list-style: none;
 }
 
-.motif-cs-primer-footer-actions button:hover:not(:disabled) {
+.motif-cs-primer-more > summary::-webkit-details-marker {
+  display: none;
+}
+
+.motif-cs-primer-footer-actions > button:hover:not(:disabled),
+.motif-cs-primer-more > summary:hover,
+.motif-cs-primer-more[open] > summary {
   background: var(--control-hover);
   color: var(--text-primary);
 }
 
+/* Disabled stays readable: muted text at full strength on a flat surface, no
+   opacity. The `title` of each disabled action says what to do first. */
 .motif-cs-primer-footer-actions button:disabled {
+  border-color: transparent;
+  background: var(--bg-secondary);
   color: var(--text-muted);
   cursor: not-allowed;
-  opacity: 0.56;
 }
 
-/* This button already had the right foreground for an --accent fill and said it
-   as a raw surface token. --accent-fill-contrast is the same value, named. */
-.motif-cs-primer-footer-actions .motif-cs-primer-primary-action {
+/* --accent-fill-contrast is the foreground for an --accent fill. */
+.motif-cs-primer-footer-actions > .motif-cs-primer-primary-action {
   border-color: var(--accent);
   background: var(--accent);
   color: var(--accent-fill-contrast);
-  font-weight: 700;
+  font-weight: 600;
 }
 
-.motif-cs-primer-footer-actions .motif-cs-primer-primary-action:hover:not(:disabled) {
+.motif-cs-primer-footer-actions > .motif-cs-primer-primary-action:hover:not(:disabled) {
   background: color-mix(in srgb, var(--accent) 88%, var(--text-primary));
   color: var(--accent-fill-contrast);
+}
+
+.motif-cs-primer-footer-actions > .motif-cs-primer-primary-action:disabled {
+  border-color: var(--border);
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+}
+
+/* The secondary actions sit in one menu that opens upward over the results, so
+   the footer keeps three controls in one row at every width. */
+.motif-cs-primer-more {
+  position: relative;
+}
+
+.motif-cs-primer-more-panel {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + var(--space-1));
+  z-index: 5;
+  display: grid;
+  min-width: 190px;
+  max-width: calc(100vw - 32px);
+  padding: var(--space-1);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  box-shadow: var(--elevation-popover);
+}
+
+.motif-cs-primer-more-panel > button {
+  min-height: var(--control-h-sm);
+  padding: 0 var(--space-2);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.motif-cs-primer-more-panel > button:hover:not(:disabled) {
+  background: var(--control-hover);
+}
+
+.motif-cs-primer-more-panel > button:disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
 }
 
 .motif-cs-primer-sr-only {
@@ -866,12 +1017,25 @@
   border: 0;
 }
 
-@media (max-width: 840px) {
-  .motif-cs-primer-workspace {
-    min-width: 0;
-    resize: none;
+/* The workspace is its own container: a window narrower than the panel must
+   stack on its own width, not on the viewport's. */
+@container (min-width: 1000px) {
+  .motif-cs-primer-metrics {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+}
+
+@container (min-width: 521px) {
+  .motif-cs-primer-pair-row {
+    grid-template-columns: 24px minmax(0, 1fr) minmax(0, 1.2fr);
   }
 
+  .motif-cs-primer-pair-temps {
+    grid-column: 3;
+  }
+}
+
+@container (max-width: 760px) {
   .motif-cs-primer-workspace-body {
     display: block;
     overflow: auto;
@@ -886,46 +1050,9 @@
     border-right: 0;
     border-bottom: 1px solid var(--border-subtle);
   }
-
-  .motif-cs-primer-workspace-footer {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  /* The footer is a column here, so the base rule's flex-basis would be read as
-     a height and give the status 180px of empty box. It already spans the full
-     width in a column, so it needs no basis at all. */
-  .motif-cs-primer-live-status {
-    flex: 0 0 auto;
-    white-space: normal;
-  }
-
-  .motif-cs-primer-footer-actions {
-    flex-wrap: wrap;
-    width: 100%;
-    min-width: 0;
-    overflow: visible;
-  }
-
-  .motif-cs-primer-footer-actions button {
-    flex: 1 1 140px;
-  }
 }
 
-@media (max-width: 640px) {
-  .motif-cs-primer-backdrop {
-    padding: 0;
-  }
-
-  .motif-cs-primer-workspace {
-    width: 100vw;
-    height: 100dvh;
-    max-width: none;
-    max-height: none;
-    border: 0;
-    border-radius: 0;
-  }
-
+@container (max-width: 520px) {
   .motif-cs-primer-presets {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -938,27 +1065,26 @@
 
   .motif-cs-primer-custom-chip {
     grid-column: 1 / -1;
-    width: max-content;
   }
 
   .motif-cs-primer-footer-actions {
+    width: 100%;
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    overflow: visible;
   }
 
-  .motif-cs-primer-footer-actions button {
+  .motif-cs-primer-footer-actions > button,
+  .motif-cs-primer-more > summary {
     min-width: 0;
     width: 100%;
+    height: auto;
+    padding: var(--space-1) var(--space-2);
+    line-height: 1.25;
     white-space: normal;
   }
 
-  .motif-cs-primer-pair-row {
-    grid-template-columns: 28px minmax(90px, 1fr) minmax(86px, 0.65fr) 14px;
-  }
-
-  .motif-cs-primer-pair-row > span:nth-child(4) {
-    display: none;
+  .motif-cs-primer-footer-actions > .motif-cs-primer-primary-action {
+    grid-column: 1 / -1;
   }
 
   .motif-cs-primer-oligo {
@@ -967,16 +1093,31 @@
 
   .motif-cs-primer-metrics {
     grid-column: 1;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
-  .motif-cs-primer-cross-check {
-    grid-template-columns: 1fr auto;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .motif-cs-primer-cross-check small {
-    grid-column: 1 / -1;
-    text-align: left;
+    margin-left: 0;
+    flex-basis: 100%;
+  }
+}
+
+/* A modal window fills the screen on a phone-width viewport. The embedded
+   window sizes itself and ignores this. */
+@media (max-width: 640px) {
+  .motif-cs-primer-backdrop {
+    padding: 0;
+  }
+
+  .motif-cs-primer-workspace:not([data-embedded]) {
+    width: 100vw;
+    height: 100dvh;
+    min-width: 0;
+    max-width: none;
+    max-height: none;
+    resize: none;
+    border: 0;
+    border-radius: 0;
   }
 }
 
@@ -987,17 +1128,3 @@
   }
 }
 
-html:is([data-theme="claude-light"], [data-theme="claude-dark"]) .motif-cs-primer-preset[data-active],
-html:is([data-theme="claude-light"], [data-theme="claude-dark"]) .motif-cs-primer-preset[data-active]:hover,
-html:is([data-theme="claude-light"], [data-theme="claude-dark"]) .motif-cs-primer-pair-row[data-selected],
-html:is([data-theme="claude-light"], [data-theme="claude-dark"]) .motif-cs-primer-pair-row[data-selected]:hover {
-  border-color: var(--accent-base);
-  background: var(--accent-base);
-  color: var(--accent-contrast);
-}
-
-html:is([data-theme="claude-light"], [data-theme="claude-dark"]) .motif-cs-primer-pair-row[data-selected] .motif-cs-primer-pair-rank,
-html:is([data-theme="claude-light"], [data-theme="claude-dark"]) .motif-cs-primer-pair-row[data-selected] .motif-cs-primer-pair-arrow,
-html:is([data-theme="claude-light"], [data-theme="claude-dark"]) .motif-cs-primer-pair-row[data-selected] small {
-  color: var(--accent-contrast);
-}

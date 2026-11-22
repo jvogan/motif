@@ -5,7 +5,9 @@ import {
   circularSelectionRadii,
   coordinateGridExtent,
   linearSelectionEdgePaths,
+  selectionFadeGradients,
   selectionOverlayPaths,
+  type SelectionFadeGradient,
 } from '../selection-overlay';
 import type { MapInput } from '../types';
 
@@ -49,7 +51,7 @@ describe('selectionOverlayPaths', () => {
     expect(selectionOverlayPaths(computeMapLayout(circular()), [])).toEqual([]);
   });
 
-  it('projects a circular range to one annular sector clear of the center', () => {
+  it('projects a circular range to one annular band clear of the center', () => {
     const layout = computeMapLayout(circular());
     const paths = selectionOverlayPaths(layout, [{ start: 500, end: 900 }]);
     expect(paths).toHaveLength(1);
@@ -67,34 +69,103 @@ describe('selectionOverlayPaths', () => {
     }
   });
 
-  it('starts the sector outside everything the map draws at the center', () => {
+  it('starts the band outside everything the map draws at the center', () => {
     const layout = computeMapLayout(circular());
     expect(layout.centerLabelRadius).toBeGreaterThan(0);
     expect(circularSelectionRadii(layout).inner).toBeGreaterThan(layout.centerLabelRadius as number);
   });
 
-  it('tracks the clearance a longer name needs rather than a fixed inset', () => {
-    const short = computeMapLayout({ ...circular(), name: 'p' });
-    const long = computeMapLayout({ ...circular(), name: 'pSB1C3-mCherry-terminator' });
-    expect(long.centerLabelRadius as number).toBeGreaterThan(short.centerLabelRadius as number);
-    expect(circularSelectionRadii(long).inner).toBeGreaterThan(circularSelectionRadii(short).inner);
+  it('spans a wedge from a third of the ring\'s radius to just past the ring', () => {
+    const layout = computeMapLayout({
+      ...circular(),
+      features: [
+        { id: 'a', name: 'Outer', type: 'cds', start: 200, end: 1400, strand: 1, color: '#2f9e44', metadata: {} },
+        { id: 'b', name: 'Nested', type: 'cds', start: 400, end: 900, strand: -1, color: '#1f5fc0', metadata: {} },
+        { id: 'c', name: 'Third', type: 'promoter', start: 500, end: 700, strand: 1, color: '#8a5500', metadata: {} },
+      ],
+    });
+    const lanes = layout.featureLaneInnerRadius as number;
+    expect(lanes).toBeGreaterThan(0);
+    expect(lanes).toBeLessThan(layout.featureLaneOuterRadius as number);
+    const { inner, outer } = circularSelectionRadii(layout);
+    // The wash straddles the ring line and reaches a third of the way out from
+    // the centre, well past the deepest lane, so the wedge reads as a slice of
+    // the map rather than a stub at the ring.
+    expect(outer).toBeGreaterThan(layout.radius);
+    expect(outer - layout.radius).toBeLessThanOrEqual(6);
+    expect(inner).toBeCloseTo(layout.radius / 3, 3);
+    expect(lanes - inner).toBeGreaterThan(20);
+    expect(inner).toBeGreaterThanOrEqual((layout.centerLabelRadius as number) + 4);
+    // Every feature body lies inside the wedge, so the range covers every lane it crosses.
+    expect(layout.features.length).toBe(3);
+    for (const feature of layout.features) {
+      for (const d of feature.segmentPaths) {
+        for (const radius of radiiOf(d, layout)) {
+          expect(radius).toBeGreaterThanOrEqual(inner - 0.5);
+          expect(radius).toBeLessThanOrEqual(outer + 0.5);
+        }
+      }
+    }
   });
 
-  it('keeps the sector a band however long the name gets', () => {
+  it('reaches just inside the lanes where they pack deeper than a third of the ring', () => {
+    const base = computeMapLayout(circular());
+    const ring = base.radius;
+    // A crowded record: its innermost lane sits a quarter of the way out.
+    const layout = { ...base, featureLaneInnerRadius: ring * 0.25, centerLabelRadius: ring * 0.1 };
+    const { inner } = circularSelectionRadii(layout);
+    expect(inner).toBeLessThan(ring / 3);
+    expect(inner).toBeCloseTo(ring * 0.25 - 3, 3);
+    // A lane edge between the reach and the ring does not pull the wedge back out.
+    const shallow = circularSelectionRadii({ ...base, featureLaneInnerRadius: ring * 0.8, centerLabelRadius: ring * 0.1 });
+    expect(shallow.inner).toBeCloseTo(ring / 3, 3);
+  });
+
+  it('keeps the band clear of the centre however long the name gets', () => {
+    const short = circularSelectionRadii(computeMapLayout({ ...circular(), name: 'p' }));
     const layout = computeMapLayout({ ...circular(), name: 'x'.repeat(400) });
     const { inner, outer } = circularSelectionRadii(layout);
+    const title = layout.centerLabelRadius as number;
     expect(inner).toBeLessThan(outer);
-    expect(inner / outer).toBeLessThanOrEqual(0.62);
+    // A short name leaves the wedge at a third of the ring; a long one widens the
+    // title's clear disc past that, and the wedge stops 4 units outside it.
+    expect(short.inner).toBeCloseTo(layout.radius / 3, 3);
+    expect(title + 4).toBeGreaterThan(layout.radius / 3);
+    expect(inner).toBeCloseTo(title + 4, 3);
+    // Lanes packed into the title's disc still leave the disc clear.
+    const crowded = circularSelectionRadii({ ...layout, featureLaneInnerRadius: title - 10 });
+    expect(crowded.inner).toBeCloseTo(title + 4, 3);
+    // A title disc that reaches the ring still leaves a pixel of wedge.
+    const swamped = circularSelectionRadii({ ...layout, centerLabelRadius: layout.radius });
+    expect(swamped.inner).toBeCloseTo(layout.radius - 1, 3);
+    expect(swamped.inner).toBeLessThan(swamped.outer);
   });
 
-  it('draws each radial edge as a line spanning exactly the sector it bounds', () => {
+  it('draws each radial edge as a line spanning exactly the wedge, capped by an inward triangle outside the ring', () => {
     const layout = computeMapLayout(circular());
     const { inner, outer } = circularSelectionRadii(layout);
     const edge = circularSelectionEdgePath(layout, 500);
-    expect(edge).toMatch(/^M [-\d.]+ [-\d.]+ L [-\d.]+ [-\d.]+$/);
-    const [from, to] = radiiOf(edge, layout);
-    expect(from).toBeCloseTo(inner, 0);
-    expect(to).toBeCloseTo(outer, 0);
+    const num = '(-?[\\d.]+) (-?[\\d.]+)';
+    const shape = new RegExp(`^M ${num} L ${num} M ${num} L ${num} L ${num} Z$`).exec(edge);
+    expect(shape).not.toBeNull();
+    const radii = radiiOf(edge, layout);
+    // The line: inner arc to outer arc.
+    expect(radii[0]).toBeCloseTo(inner, 0);
+    expect(radii[1]).toBeCloseTo(outer, 0);
+    // The triangle: its tip on the line's outer end, its base outside the ring.
+    expect(radii[2]).toBeCloseTo(outer, 0);
+    expect(radii[3]).toBeGreaterThan(outer + 6);
+    expect(radii[4]).toBeGreaterThan(outer + 6);
+    const n = shape!.slice(1).map(Number);
+    const base = Math.hypot(n[6] - n[8], n[7] - n[9]);
+    const height = Math.hypot((n[6] + n[8]) / 2 - n[4], (n[7] + n[9]) / 2 - n[5]);
+    expect(base).toBeGreaterThanOrEqual(8);
+    expect(base).toBeLessThanOrEqual(12);
+    expect(height).toBeGreaterThanOrEqual(7);
+    expect(height).toBeLessThanOrEqual(11);
+    // Pointing inward: the base midpoint lies farther from the centre than the tip.
+    const baseMid = Math.hypot((n[6] + n[8]) / 2 - layout.center.x, (n[7] + n[9]) / 2 - layout.center.y);
+    expect(baseMid).toBeGreaterThan(radii[2]);
   });
 
   it('splits an origin-wrapping circular selection into two sectors', () => {
@@ -192,8 +263,9 @@ describe('linear selection boundary lines', () => {
   }
 
   /** The endpoints of an `M x y L x y` line. */
+  /** The boundary line: the first subpath (the triangle marker follows it). */
   function lineOf(path: string): { x: number; y1: number; y2: number } {
-    const n = path.match(/-?\d+(?:\.\d+)?/g)!.map(Number);
+    const n = path.split(' M ')[0].match(/-?\d+(?:\.\d+)?/g)!.map(Number);
     expect(n).toHaveLength(4);
     expect(n[0]).toBe(n[2]); // vertical
     return { x: n[0], y1: n[1], y2: n[3] };
@@ -229,6 +301,19 @@ describe('linear selection boundary lines', () => {
     }
   });
 
+  it('stops the boundaries at the band when asked to reach only the ruler', () => {
+    const layout = computeMapLayout(linear());
+    const [band] = selectionOverlayPaths(layout, [{ start: 500, end: 2500 }]);
+    const { x0, x1 } = bandX(band);
+    const edges = linearSelectionEdgePaths(layout, band, 'band').map(lineOf);
+    expect(edges).toHaveLength(2);
+    expect(edges.map((edge) => edge.x)).toEqual([x0, x1]);
+    for (const { y1, y2 } of edges) {
+      expect(Math.min(y1, y2)).toBe(Math.round((layout.center.y - 9) * 1000) / 1000);
+      expect(Math.max(y1, y2)).toBe(Math.round((layout.center.y + 9) * 1000) / 1000);
+    }
+  });
+
   it('stands the boundaries on the band it bounds, at the same two bp', () => {
     const layout = computeMapLayout(linear());
     const [band] = selectionOverlayPaths(layout, [{ start: 500, end: 2500 }]);
@@ -243,11 +328,14 @@ describe('linear selection boundary lines', () => {
     expect(x1).toBeCloseTo(padX + (2500 / 3000) * axisWidth, 0);
   });
 
-  it('keeps the single-base minimum width between the two boundaries', () => {
+  it('keeps the single-base minimum band width, and marks it with one line, not two 3px apart', () => {
     const layout = computeMapLayout(linear());
     const [band] = selectionOverlayPaths(layout, [{ start: 1500, end: 1501 }]);
-    const [start, end] = linearSelectionEdgePaths(layout, band).map(lineOf);
-    expect(end.x - start.x).toBeGreaterThanOrEqual(3);
+    const [, x0, x1] = /^M ([\d.-]+) [\d.-]+ L ([\d.-]+)/.exec(band)!.map(Number);
+    expect(x1 - x0).toBeGreaterThanOrEqual(3);
+    const edges = linearSelectionEdgePaths(layout, band).map(lineOf);
+    expect(edges).toHaveLength(1);
+    expect(edges[0].x).toBeCloseTo((x0 + x1) / 2, 2);
   });
 
   it('falls back to the band alone when no tick carries a grid', () => {
@@ -296,5 +384,101 @@ describe('linear selection boundary lines', () => {
     expect(extent).not.toBeNull();
     expect(extent.bottom).toBe(gridBottomOf(layout));
     expect(extent.top).toBe(Math.min(...layout.coordinates.flatMap((c) => (c.grid ? [c.grid.y1] : []))));
+  });
+});
+
+describe('the linear boundary marker', () => {
+  it('caps each boundary line with a filled triangle on the backbone, pointing at it', () => {
+    const layout = computeMapLayout(linear());
+    const [band] = selectionOverlayPaths(layout, [{ start: 500, end: 2500 }]);
+    const r = (v: number) => Math.round(v * 1000) / 1000;
+    for (const reach of ['grid', 'band'] as const) {
+      const edges = linearSelectionEdgePaths(layout, band, reach);
+      expect(edges).toHaveLength(2);
+      for (const edge of edges) {
+        const m = /^M (-?[\d.]+) -?[\d.]+ L -?[\d.]+ -?[\d.]+ M (-?[\d.]+) (-?[\d.]+) L (-?[\d.]+) (-?[\d.]+) L (-?[\d.]+) (-?[\d.]+) Z$/.exec(edge);
+        expect(m, edge).not.toBeNull();
+        const [x, tipX, tipY, ax, ay, bx, by] = m!.slice(1).map(Number);
+        // The tip sits on the backbone at the boundary's own x.
+        expect(tipX).toBe(x);
+        expect(tipY).toBe(r(layout.center.y));
+        // The base lies flat below it, inside the band, clear of the ruler
+        // numerals above the backbone: the ring marker's 9 by 10.
+        expect(ay).toBe(by);
+        expect(ay).toBe(r(layout.center.y + 9));
+        expect(bx - ax).toBe(10);
+        expect((ax + bx) / 2).toBeCloseTo(x, 3);
+      }
+    }
+  });
+});
+
+describe('a linear span too narrow to tell two edges apart', () => {
+  it('draws one edge line through its middle, not two lines 3px apart', () => {
+    const layout = computeMapLayout(linear());
+    const [band] = selectionOverlayPaths(layout, [{ start: 1000, end: 1001 }]);
+    const edges = linearSelectionEdgePaths(layout, band, 'band');
+    expect(edges).toHaveLength(1);
+    const wide = linearSelectionEdgePaths(layout, selectionOverlayPaths(layout, [{ start: 500, end: 2500 }])[0], 'band');
+    expect(wide).toHaveLength(2);
+  });
+});
+
+describe('a selection fades away from the backbone', () => {
+  /** The gradient's opacity at one offset, padded past its first and last stops. */
+  function opacityAt(gradient: SelectionFadeGradient, offset: number): number {
+    const stops = gradient.stops;
+    if (offset <= stops[0].offset) return stops[0].opacity;
+    for (let i = 1; i < stops.length; i += 1) {
+      const [a, b] = [stops[i - 1], stops[i]];
+      if (offset <= b.offset) return a.opacity + ((b.opacity - a.opacity) * (offset - a.offset)) / (b.offset - a.offset);
+    }
+    return stops[stops.length - 1].opacity;
+  }
+
+  it('fades each circular end line from full at the ring to 0.15 at its inner end, its marker solid', () => {
+    const layout = computeMapLayout({ ...circular(), features: [{ id: 'f', name: 'f', type: 'gene', start: 100, end: 900, strand: 1, color: '#888', metadata: {} }] });
+    const fade = selectionFadeGradients(layout)!;
+    const edge = fade.edge;
+    expect(edge.kind).toBe('radial');
+    if (edge.kind !== 'radial') return;
+    expect([edge.cx, edge.cy]).toEqual([layout.center.x, layout.center.y]);
+    const { inner, outer } = circularSelectionRadii(layout);
+    const at = (r: number) => opacityAt(edge, r / edge.r);
+    // The line runs from the outer arc (just past the ring) in to the inner arc.
+    expect(at(outer)).toBe(1);
+    expect(at(layout.radius)).toBeCloseTo(1, 3);
+    expect(at(inner)).toBeCloseTo(0.15, 3);
+    const half = at((inner + outer) / 2);
+    expect(half).toBeGreaterThan(0.5);
+    expect(half).toBeLessThan(0.65);
+    // The marker sits from the outer arc outward: solid all the way.
+    expect(at(outer + 9)).toBe(1);
+    // The wash eases from full (0.06 at the CSS opacity) at the ring to the share
+    // the lines end at, so the wedge's inner arc dissolves into the canvas.
+    expect(inner).toBeCloseTo(layout.radius / 3, 3);
+    expect(opacityAt(fade.wash, inner / edge.r)).toBeCloseTo(0.15, 3);
+    expect(opacityAt(fade.wash, layout.radius / edge.r)).toBeCloseTo(1, 3);
+  });
+
+  it('fades each linear boundary line downward from the backbone, solid over the band and the marker', () => {
+    const layout = computeMapLayout(linear());
+    const fade = selectionFadeGradients(layout)!;
+    const edge = fade.edge;
+    expect(edge.kind).toBe('linear');
+    if (edge.kind !== 'linear') return;
+    const extent = coordinateGridExtent(layout)!;
+    expect([edge.x1, edge.x2, edge.y1, edge.y2]).toEqual([0, 0, layout.center.y, Math.round(extent.bottom * 1000) / 1000]);
+    const span = edge.y2 - edge.y1;
+    const at = (y: number) => opacityAt(edge, (y - edge.y1) / span);
+    expect(at(layout.center.y - 9)).toBe(1);
+    expect(at(layout.center.y + 9)).toBeCloseTo(1, 3);
+    expect(at(edge.y2)).toBeCloseTo(0.15, 3);
+    expect(opacityAt(fade.wash, 1)).toBeCloseTo(0.5, 3);
+  });
+
+  it('draws no fade for a linear layout whose lines stop at the band', () => {
+    const layout = computeMapLayout(linear());
+    expect(selectionFadeGradients({ ...layout, coordinates: layout.coordinates.map((c) => ({ ...c, grid: undefined })) })).toBeNull();
   });
 });

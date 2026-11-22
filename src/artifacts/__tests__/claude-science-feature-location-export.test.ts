@@ -21,16 +21,81 @@ import type { Feature } from '../../bio/types';
 import vectors from '../../../public/data/vectors.json';
 import {
   buildArtifactExportLossReport,
+  createArtifactDatabaseSnapshot,
   describePayloadSnapshot,
   featuresToCsv,
   inventoryReportHtml,
   normalizeRecord,
+  omitUndefinedObjectProperties,
   parseImportedRecords,
+  prepareArtifactDatabaseRestore,
   toGenBankLite,
   toGff3Lite,
 } from '../motif-artifact';
 
 const sequence = 'ATGCCCGGGCCATTTAAA';
+
+it('drops an imported CDS translation after editing its bases and preserves it after a shift', () => {
+  const [input] = parseImportedRecords([
+    'LOCUS       Coding 9 bp DNA linear',
+    'FEATURES             Location/Qualifiers',
+    '     CDS             1..9',
+    '                     /translation="MK"',
+    '                     /note="imported peptide"',
+    '                     /transl_table=11',
+    'ORIGIN',
+    '        1 atgaaataa',
+    '//',
+  ].join('\n'), '', 'auto', 'linear');
+  const record = normalizeRecord(input, 0)!;
+  const roundTrip = (result: ReturnType<typeof applySubstitution>) => {
+    const text = toGenBankLite({ ...record, sequence: result.raw, features: result.features }, 'linear');
+    return parseGenBank(text)[0];
+  };
+
+  const shifted = roundTrip(applyInsertion(record.sequence, [], record.features, -1, 'C'));
+  expect(shifted.features[0]).toMatchObject({ start: 1, end: 10, metadata: { translation: 'MK' } });
+  const edited = roundTrip(applySubstitution(record.sequence, [], record.features, 3, 'C'));
+  expect(edited.sequence.toUpperCase()).toBe('ATGCAATAA');
+  expect(edited.features[0].metadata).toMatchObject({ note: 'imported peptide', transl_table: '11' });
+  expect(edited.features[0].metadata.translation).toBeUndefined();
+});
+
+it('uses GenBank feature keys for note-only labels and round-trips whole-record source qualifiers', () => {
+  const input = [
+    `LOCUS sample ${sequence.length} bp DNA`,
+    'FEATURES             Location/Qualifiers',
+    `     source          1..${sequence.length}`,
+    '                     /organism="Sample organism"',
+    '                     /db_xref="taxon:1"',
+    '     promoter        2..4',
+    '                     /note="A sentence that belongs in metadata."',
+    '     CDS             5..10',
+    '                     /product="Product name"',
+    '                     /gene="Gene name"',
+    '                     /label="Chosen label"',
+    'ORIGIN',
+    `        1 ${sequence.toLowerCase()}`,
+    '//',
+  ].join('\n');
+  const imported = parseImportedRecords(input, '', 'auto', 'linear', [], 'file');
+  const workspace = prepareArtifactDatabaseRestore({ records: omitUndefinedObjectProperties(imported) });
+  expect(workspace.payload.records[0].features.map(({ name }) => name)).toEqual(['promoter', 'Chosen label']);
+  expect(workspace.payload.records[0].features[0].metadata.note).toBe('A sentence that belongs in metadata.');
+  const checkpoint = JSON.parse(JSON.stringify(createArtifactDatabaseSnapshot(workspace.payload, workspace.artifactState)));
+  const [restored] = prepareArtifactDatabaseRestore(checkpoint).payload.records;
+  const [source, promoter, cds] = parseGenBank(toGenBankLite(restored, restored.topology))[0].features;
+  expect(source).toMatchObject({
+    name: 'source', start: 0, end: sequence.length,
+    metadata: {
+      motifOriginalFeatureKey: 'source',
+      motifQualifiers: [{ key: 'organism', value: 'Sample organism' }, { key: 'db_xref', value: 'taxon:1' }],
+    },
+  });
+  expect([promoter.name, cds.name]).toEqual(['promoter', 'Chosen label']);
+  const edited = { ...restored, sequence: restored.sequence + 'A' };
+  expect(parseGenBank(toGenBankLite(edited, edited.topology))[0].features[0].end).toBe(sequence.length + 1);
+});
 
 function joinedFeature(metadata: Record<string, unknown> = {}): Feature {
   return {
@@ -247,7 +312,7 @@ describe('multipart feature interchange exports', () => {
   it('keeps the record name in LOCUS so a re-import keeps the same name', () => {
     const source = { ...record(joinedFeature()), name: 'pET-28a(+)' };
     const genbank = toGenBankLite(source, source.topology);
-    // Only the name token changes: the same columns as before, 16 wide plus one space.
+    // Only the name token changes: the columns stay 16 wide plus one space.
     expect(genbank.split('\n')[0]).toMatch(/^LOCUS {7}pET-28a\(\+\) +\d+ bp /);
     expect(genbank.split('\n')[0].indexOf(' bp ')).toBe(12 + 16 + 1 + 11);
     expect(parseGenBank(genbank)[0].name).toBe('pET-28a(+)');
@@ -1050,9 +1115,9 @@ describe('INSDC feature keys in Basic GenBank', () => {
     expect(imported.map((feature) => feature.metadata.motifOriginalFeatureKey)).toEqual([
       '-10_signal', '-35_signal', 'tata_signal', 'gc_signal', 'caat_signal', 'attenuator', 'misc_signal', 'misc_signal', 'tata_signal', 'regulatory',
     ]);
-    // A name comes from the file's own qualifiers, else the key.
+    // The original key supplies the name when naming qualifiers are absent.
     expect(imported.map((feature) => feature.name)).toEqual([
-      '-10_signal', 'sigma70 box', 'tata_signal', 'gc_signal', 'caat_signal', 'trp attenuator', 'a key INSDC retired in 2014', 'misc_signal', 'tata_signal', 'regulatory',
+      '-10_signal', '-35_signal', 'tata_signal', 'gc_signal', 'caat_signal', 'trp attenuator', 'misc_signal', 'misc_signal', 'tata_signal', 'regulatory',
     ]);
 
     const first = toGenBankLite({ ...source, features: imported }, source.topology);
@@ -1205,7 +1270,7 @@ describe('a kept INSDC key wherever a feature type is shown', () => {
     ...parseFeatures([
       '     protein_bind    5..21',
       '                     /bound_moiety="lac repressor"',
-      '                     /note="lac operator"',
+      '                     /label="lac operator"',
       '     -10_signal      complement(30..35)',
     ].join('\n')),
     { id: 'made', name: 'made here', type: 'custom', start: 40, end: 44, strand: 1, color: '#888888', metadata: {} } as Feature,
@@ -1234,7 +1299,7 @@ describe('a kept INSDC key wherever a feature type is shown', () => {
     expect(text).toContain('; made here custom 41..44');
 
     const gffTypes = toGff3Lite(keyed).split('\n').filter((line) => line.includes('\tMotif\t')).map((line) => line.split('\t')[2]);
-    expect(gffTypes).toEqual(['protein_bind', 'regulatory', 'custom']);
+    expect(gffTypes).toEqual(['region', 'protein_bind', 'regulatory', 'custom']);
 
     const csvTypes = featuresToCsv([keyed]).split('\n').slice(1).map((line) => line.split(',')[6]);
     expect(csvTypes).toEqual(['protein_bind', 'regulatory', 'custom']);

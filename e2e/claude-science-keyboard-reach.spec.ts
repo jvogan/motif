@@ -37,7 +37,15 @@ test.describe('keyboard reach', () => {
 
   test('a small circular map gives its "+" tail a 24px target that opens the cluster list', async ({ page }) => {
     await openArtifact(page, 900, 680);
+    // Side by side below 1100px the Records list starts closed and the map is
+    // wider; the small map this case needs is the one beside the open list.
+    const records = page.locator('[data-pane-toggle="inventory"]');
+    if ((await records.getAttribute('aria-pressed')) !== 'true') await records.click();
+    await expect(records).toHaveAttribute('aria-pressed', 'true');
     await selectRecord(page, 'pBR322');
+    // The map draws unique cutters by default, whose labels all have room for a
+    // "+N" count. Every cutter crowds the labels until some keep only a bare "+".
+    await page.getByRole('combobox', { name: 'Restriction sites' }).selectOption('all');
     await expect(page.locator('.motif-pm-restriction-more-hit').first()).toBeAttached();
     const press = await page.evaluate(() => {
       const rect = [...document.querySelectorAll('.motif-pm-restriction-more-hit')]
@@ -54,7 +62,9 @@ test.describe('keyboard reach', () => {
     expect(press, 'a bare "+" tail with a square on pBR322 at 900x680').not.toBeNull();
     if (!press) return;
     expect(press.label).toMatch(/ \+$/);
-    expect(press.tailWidth).toBeLessThan(6);
+    // The bare "+" is still a sliver beside its target. The 12px type floor draws
+    // it 7.5px wide, so the bound is half the 24px target (12px), not 6px.
+    expect(press.tailWidth).toBeLessThan(12);
     expect(press.width).toBeGreaterThanOrEqual(24);
     expect(press.height).toBeGreaterThanOrEqual(24);
     await page.mouse.click(press.x, press.y);

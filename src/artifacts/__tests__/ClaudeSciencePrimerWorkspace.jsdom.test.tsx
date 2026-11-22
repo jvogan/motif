@@ -6,6 +6,7 @@ import { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ClaudeSciencePrimerWorkspace,
+  type ClaudeSciencePrimerExport,
   type ClaudeSciencePrimerHandoff,
   type ClaudeSciencePrimerPreparationContext,
   type ClaudeSciencePrimerWorkspaceProps,
@@ -18,14 +19,18 @@ import { materializePcrAmplicon } from '../claude-science-pcr-materialization';
 const primerFixtureSeed = 'ATGCGTACGATCCGTAAGCTGACCTAGTCGATGCTACGGTCAATCG';
 const sequence = primerFixtureSeed.repeat(24);
 
+function requestedExport({ filename }: ClaudeSciencePrimerExport) {
+  return { status: 'requested', channel: 'browser', filename, message: 'Download requested.' } as const;
+}
+
 function props(overrides: Partial<ClaudeSciencePrimerWorkspaceProps> = {}): ClaudeSciencePrimerWorkspaceProps {
   return {
     record: { id: 'record-1', name: 'Example insert', molecule: 'dna', sequence },
     selectedRange: { start: 350, end: 750 },
     onClose: vi.fn(),
     onSelectRange: vi.fn(),
-    onCopy: vi.fn(),
-    onExport: vi.fn(),
+    onCopy: vi.fn(() => true),
+    onExport: vi.fn(requestedExport),
     onSaveDesign: vi.fn(),
     onAddAnnotations: vi.fn(),
     onSimulatePcr: vi.fn(),
@@ -66,6 +71,13 @@ afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
 });
+
+// The secondary primer actions live in the footer's "More" menu: open it, then choose the item.
+async function clickMore(user: ReturnType<typeof userEvent.setup>, name: string) {
+  const details = screen.getByTestId('primer-more-menu').closest('details')!;
+  details.open = true;
+  await user.click(screen.getByRole('menuitem', { name }));
+}
 
 describe('ClaudeSciencePrimerWorkspace', () => {
   it.each(['pcr', 'cloning', 'verification'] as const)(
@@ -166,7 +178,7 @@ describe('ClaudeSciencePrimerWorkspace', () => {
     expect(acknowledgment.checked).toBe(true);
 
     await user.click(screen.getByText('Advanced constraints'));
-    const flankingWindow = screen.getByLabelText('Flanking scan nt');
+    const flankingWindow = screen.getByLabelText('Search flank nt');
     await user.clear(flankingWindow);
     await user.type(flankingWindow, '51');
 
@@ -202,7 +214,7 @@ describe('ClaudeSciencePrimerWorkspace', () => {
     expect(screen.getByLabelText('Forward tail preset')).toBeTruthy();
     await user.selectOptions(screen.getByLabelText('Forward tail preset'), 'GCGCGGTCTCAAATG');
     expect((screen.getByLabelText('Forward 5′ tail') as HTMLInputElement).value).toBe('GCGCGGTCTCAAATG');
-    expect(screen.getByText('Custom conditions')).toBeTruthy();
+    expect(screen.getByText('Custom settings')).toBeTruthy();
   });
 
   it('counts both 5′ tails in the selected amplicon length', async () => {
@@ -257,7 +269,7 @@ describe('ClaudeSciencePrimerWorkspace', () => {
     const context = screen.getByRole('note', { name: 'Cloning preparation context' });
     expect(context.textContent).toContain('Prepare insert for GoldenBraid TU');
     expect(context.textContent).toContain('host-verified BsaI boundaries');
-    expect(context.textContent).toContain('remain editable');
+    expect(context.textContent).toContain('Edit prefilled 5′ tails under Advanced constraints.');
     expect(screen.getByLabelText('Primer preparation worklist').textContent).toContain('Action 1 of 3');
     expect(screen.getByLabelText('Primer preparation worklist').textContent).toContain('0 complete · 3 remaining');
     expect((screen.getByRole('button', { name: 'Previous action' }) as HTMLButtonElement).disabled).toBe(true);
@@ -296,7 +308,7 @@ describe('ClaudeSciencePrimerWorkspace', () => {
       initialReverseTail: 'TTTTNGGGG',
     })} />);
 
-    await waitFor(() => expect(screen.getByText('Custom conditions')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('Custom settings')).toBeTruthy());
     expect(screen.getByRole('note').textContent).toContain('Prepare right boundary');
     expect((screen.getByLabelText('Target Tm °C') as HTMLInputElement).value).toBe('60');
     expect((screen.getByLabelText('Forward 5′ tail') as HTMLInputElement).value).toBe('CCCCNAAAA');
@@ -316,6 +328,88 @@ describe('ClaudeSciencePrimerWorkspace', () => {
     expect(options[1].getAttribute('aria-selected')).toBe('true');
     expect(onSelectRange).toHaveBeenCalledTimes(1);
     expect(onSelectRange.mock.calls[0][0]).toBeLessThan(onSelectRange.mock.calls[0][1]);
+  });
+
+  it('tells the host where the chosen pair binds, follows a new choice, and clears on close', async () => {
+    const user = userEvent.setup();
+    const onPairChange = vi.fn();
+    const onSelectRange = vi.fn();
+    const view = render(<ClaudeSciencePrimerWorkspace {...props({ onPairChange, onSelectRange })} />);
+    // Opening reports pair 1 without touching the host's selection.
+    await waitFor(() => expect(onPairChange).toHaveBeenCalled());
+    expect(onSelectRange).not.toHaveBeenCalled();
+    const first = onPairChange.mock.lastCall![0];
+    expect(first.recordId).toBe('record-1');
+    expect(first.forward.start).toBeLessThan(first.forward.end);
+    expect(first.reverse.start).toBeLessThan(first.reverse.end);
+    expect(first.forward.end).toBeLessThanOrEqual(first.reverse.start);
+
+    // Choosing pair 2 moves the sites and sends its amplicon to the host.
+    const options = within(screen.getByRole('listbox', { name: 'Ranked primer pairs' })).getAllByRole('option');
+    await user.click(options[1]);
+    const second = onPairChange.mock.lastCall![0];
+    expect(second).not.toEqual(first);
+    expect(onSelectRange).toHaveBeenLastCalledWith(second.forward.start, second.reverse.end);
+    expect(screen.getByRole('region', { name: 'Primer pair 2 evidence' }).textContent)
+      .toContain(sequence.slice(second.forward.start, second.forward.end));
+
+    view.unmount();
+    expect(onPairChange).toHaveBeenLastCalledWith(null);
+  });
+
+  it('selects a primer’s binding site on the host by its name, and keeps the chosen pair', async () => {
+    const user = userEvent.setup();
+    const onSelectPrimer = vi.fn();
+    // Like the artifact: the target is fixed when the workspace opens, and the
+    // host's selection follows whatever the workspace selects.
+    function Host() {
+      const [range, setRange] = useState<{ start: number; end: number } | null>({ start: 350, end: 750 });
+      return (
+        <ClaudeSciencePrimerWorkspace
+          {...props({
+            selectedRange: range,
+            targetRange: { start: 350, end: 750 },
+            onSelectRange: (start, end) => setRange({ start, end }),
+            onSelectPrimer: (site) => {
+              onSelectPrimer(site);
+              setRange({ start: site.start, end: site.end });
+            },
+          })}
+        />
+      );
+    }
+    render(<Host />);
+    const options = () => within(screen.getByRole('listbox', { name: 'Ranked primer pairs' })).getAllByRole('option');
+    await waitFor(() => expect(options().length).toBeGreaterThan(1));
+    await user.click(options()[1]);
+    const evidence = () => screen.getByRole('region', { name: 'Primer pair 2 evidence' });
+    const primer = (name: 'Forward' | 'Reverse') => within(evidence()).getByRole('button', { name: new RegExp(`^${name} `) });
+    expect(primer('Forward').getAttribute('aria-pressed')).toBe('false');
+
+    await user.click(primer('Forward'));
+    const forward = onSelectPrimer.mock.lastCall![0];
+    expect(forward).toMatchObject({ recordId: 'record-1', strand: 1, label: 'Forward primer' });
+    expect(evidence().textContent).toContain(sequence.slice(forward.start, forward.end));
+    // The host now selects the site: the name shows it, and pair 2 stays chosen.
+    await waitFor(() => expect(primer('Forward').getAttribute('aria-pressed')).toBe('true'));
+    expect(options()[1].getAttribute('aria-selected')).toBe('true');
+    expect(primer('Reverse').getAttribute('aria-pressed')).toBe('false');
+
+    await user.click(primer('Reverse'));
+    const reverse = onSelectPrimer.mock.lastCall![0];
+    expect(reverse).toMatchObject({ recordId: 'record-1', strand: -1, label: 'Reverse primer' });
+    // The reverse primer is the reverse complement of the bases it binds.
+    expect(evidence().textContent).toContain(reverseComplement(sequence.slice(reverse.start, reverse.end)));
+    await waitFor(() => expect(primer('Reverse').getAttribute('aria-pressed')).toBe('true'));
+    expect(options()[1].getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByRole('status').textContent ?? '').toContain('Reverse primer of pair 2 selected on the sequence.');
+  });
+
+  it('keeps the primer names as labels when there is no host to select in', async () => {
+    render(<ClaudeSciencePrimerWorkspace {...props()} />);
+    const evidence = await screen.findByRole('region', { name: 'Primer pair 1 evidence' });
+    expect(within(evidence).queryByRole('button', { name: /^Forward / })).toBeNull();
+    expect(evidence.querySelector('div.motif-cs-primer-oligo-name')?.textContent).toMatch(/^Forward\d/);
   });
 
   it('scrolls a chosen pair’s sequences into view without scrolling the chosen row away', async () => {
@@ -366,8 +460,8 @@ describe('ClaudeSciencePrimerWorkspace', () => {
   it('hands the selected pair to copy, export, annotations, PCR, and cloning callbacks', async () => {
     const user = userEvent.setup();
     const callbacks = {
-      onCopy: vi.fn(),
-      onExport: vi.fn(),
+      onCopy: vi.fn(() => true),
+      onExport: vi.fn(requestedExport),
       onSaveDesign: vi.fn(),
       onAddAnnotations: vi.fn(),
       onSimulatePcr: vi.fn(),
@@ -376,17 +470,17 @@ describe('ClaudeSciencePrimerWorkspace', () => {
     };
     render(<ClaudeSciencePrimerWorkspace {...props(callbacks)} />);
 
-    await user.click(screen.getByRole('button', { name: 'Copy pair' }));
+    await clickMore(user, 'Copy pair');
     await waitFor(() => expect(callbacks.onCopy).toHaveBeenCalledTimes(1));
-    await user.click(screen.getByRole('button', { name: 'Export FASTA' }));
+    await clickMore(user, 'Export FASTA');
     await waitFor(() => expect(callbacks.onExport).toHaveBeenCalledTimes(1));
     await user.click(screen.getByRole('button', { name: 'Save design' }));
     await waitFor(() => expect(callbacks.onSaveDesign).toHaveBeenCalledTimes(1));
-    await user.click(screen.getByRole('button', { name: 'Add annotations' }));
+    await clickMore(user, 'Add annotations');
     await waitFor(() => expect(callbacks.onAddAnnotations).toHaveBeenCalledTimes(1));
-    await user.click(screen.getByRole('button', { name: 'Simulate PCR' }));
+    await clickMore(user, 'Simulate PCR');
     await waitFor(() => expect(callbacks.onSimulatePcr).toHaveBeenCalledTimes(1));
-    await user.click(screen.getByRole('button', { name: 'Create amplicon record' }));
+    await clickMore(user, 'Create amplicon record');
     await waitFor(() => expect(callbacks.onCreateAmplicon).toHaveBeenCalledTimes(1));
     await user.click(screen.getByRole('button', { name: 'Use in cloning' }));
 
@@ -422,8 +516,8 @@ describe('ClaudeSciencePrimerWorkspace', () => {
     })} />);
 
     const context = screen.getByRole('note', { name: 'Cloning preparation context' });
-    expect(context.textContent).toContain('Simulate PCR saves a result only');
-    expect(context.textContent).toContain('keeps the source record unchanged');
+    expect(context.textContent).toContain('Simulate PCR: saves a PCR result.');
+    expect(context.textContent).toContain('Keeps the original record.');
     const evidenceAcknowledgment = screen.queryByTestId('primer-evidence-acknowledgment');
     if (evidenceAcknowledgment) await user.click(evidenceAcknowledgment);
     await user.click(screen.getByRole('button', { name: 'Save primer plan only' }));
@@ -462,7 +556,7 @@ describe('ClaudeSciencePrimerWorkspace', () => {
     })} />);
 
     const context = screen.getByRole('note', { name: 'Cloning preparation context' });
-    expect(context.textContent).toContain('No homology tail was inferred');
+    expect(context.textContent).toContain('Enter the 5′ tail under Advanced constraints before saving.');
     expect(context.textContent).toContain('Advanced constraints');
     expect(screen.getByRole('button', { name: 'Save primer plan only' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Create & use amplicon' })).toBeTruthy();
@@ -476,7 +570,7 @@ describe('ClaudeSciencePrimerWorkspace', () => {
     expect((screen.getByLabelText('Target end') as HTMLInputElement).value).toBe('340');
     await user.clear(screen.getByLabelText('Target end'));
     await user.type(screen.getByLabelText('Target end'), '20');
-    expect(screen.getByRole('alert').textContent).toContain('Use a non-wrapping target');
+    expect(screen.getByRole('alert').textContent).toContain('Use 1–');
     expect(screen.queryByRole('listbox')).toBeNull();
   });
 
@@ -505,7 +599,7 @@ describe('ClaudeSciencePrimerWorkspace', () => {
 describe('ClaudeSciencePrimerWorkspace 5′-tail structure', () => {
   it('shows a palindromic tail site as a warning on the pair, in its evidence, and in the FASTA export', async () => {
     const user = userEvent.setup();
-    const onExport = vi.fn();
+    const onExport = vi.fn(requestedExport);
     // XhoI's CTCGAG is its own reverse complement: GCGCCTCGAG pairs with itself
     // at −5.4 kcal/mol, past the −5 self-dimer cutoff, whatever it is attached to.
     render(<ClaudeSciencePrimerWorkspace {...props({ initialReverseTail: 'GCGCCTCGAG', onExport })} />);
@@ -521,7 +615,7 @@ describe('ClaudeSciencePrimerWorkspace 5′-tail structure', () => {
 
     const acknowledgment = screen.queryByTestId('primer-evidence-acknowledgment');
     if (acknowledgment) await user.click(acknowledgment);
-    await user.click(screen.getByRole('button', { name: 'Export FASTA' }));
+    await clickMore(user, 'Export FASTA');
     await waitFor(() => expect(onExport).toHaveBeenCalledTimes(1));
     const fasta: string = onExport.mock.calls[0][0].text;
     expect(fasta).toMatch(/>Example_insert_pair_1_reverse 5'-tail structure: self-dimer -\d+\.\d\d kcal\/mol via XhoI site CTCGAG, 3' end free/);
@@ -538,8 +632,8 @@ describe('ClaudeSciencePrimerWorkspace 5′-tail structure', () => {
       initialReverseTail: 'GCGCCTCGAG',
     })} />);
     const empty = document.querySelector('.motif-cs-primer-empty')?.textContent ?? '';
-    expect(empty).toContain('The 5′ tails are not the cause: this target gives no pair without them either.');
-    expect(empty).toMatch(/No forward primer passes \(rejected: .*\)\./);
+    expect(empty).toContain('Zero pairs with or without tails.');
+    expect(empty).toMatch(/No forward primers pass · .*\./);
     expect(empty).not.toContain('Rejections:');
   }, 60_000);
 
@@ -560,9 +654,9 @@ describe('ClaudeSciencePrimerWorkspace 5′-tail structure', () => {
     })} />);
 
     expect(screen.getByTestId('primer-tail-structure').getAttribute('data-state')).toBe('review');
-    expect(screen.getByTestId('primer-evidence-review').textContent).toContain('A 5′-tail structure pairs a primer’s 3′ end');
+    expect(screen.getByTestId('primer-evidence-review').textContent).toContain('A 5′ tail pairs a 3′ end');
     await user.click(screen.getByTestId('primer-evidence-acknowledgment'));
-    await user.click(screen.getByRole('button', { name: 'Create amplicon record' }));
+    await clickMore(user, 'Create amplicon record');
     await waitFor(() => expect(onCreateAmplicon).toHaveBeenCalledTimes(1));
     const handoff: ClaudeSciencePrimerHandoff = onCreateAmplicon.mock.calls[0][0];
     expect(handoff.evidenceReview?.reasonCodes).toContain(PRIMER_TAIL_STRUCTURE_3_PRIME_REVIEW_CODE);
@@ -585,4 +679,42 @@ describe('ClaudeSciencePrimerWorkspace 5′-tail structure', () => {
     expect(() => materialize(handoff.evidenceReview!.reasonCodes.filter((code) => code !== PRIMER_TAIL_STRUCTURE_3_PRIME_REVIEW_CODE)))
       .toThrow(/does not match the recomputed primer evidence/);
   }, 60_000);
+});
+
+describe('primer footer More menu', () => {
+  it('keeps two actions in the footer and folds the rest into one menu that closes after use', async () => {
+    const user = userEvent.setup();
+    const onCopy = vi.fn();
+    render(<ClaudeSciencePrimerWorkspace {...props({ onCopy })} />);
+    const footer = document.querySelector<HTMLElement>('.motif-cs-primer-footer-actions')!;
+    const direct = [...footer.querySelectorAll(':scope > button')].map((button) => button.textContent);
+    expect(direct).toEqual(['Save design', 'Use in cloning']);
+    const more = screen.getByTestId('primer-more-menu');
+    expect(more.textContent).toContain('More');
+    const details = more.closest('details')!;
+    const items = [...details.querySelectorAll('[role="menuitem"]')].map((item) => item.textContent);
+    expect(items).toEqual(['Copy pair', 'Export FASTA', 'Add annotations', 'Simulate PCR', 'Create amplicon record']);
+    await clickMore(user, 'Copy pair');
+    await waitFor(() => expect(onCopy).toHaveBeenCalledTimes(1));
+    expect(details.open).toBe(false);
+  });
+
+  it('closes on Escape without closing the window around it, and keeps the summary focused', async () => {
+    const user = userEvent.setup();
+    render(<ClaudeSciencePrimerWorkspace {...props()} />);
+    const more = screen.getByTestId('primer-more-menu');
+    const details = more.closest('details')!;
+    details.open = true;
+    const item = screen.getByRole('menuitem', { name: 'Export FASTA' });
+    item.focus();
+    await user.keyboard('{Escape}');
+    expect(details.open).toBe(false);
+    expect(details.getAttribute('data-motif-cs-escape-scope-when-open')).toBe('true');
+  });
+
+  it('says why an action is off through its title', () => {
+    render(<ClaudeSciencePrimerWorkspace {...props({ selectedRange: { start: 350, end: 351 } })} />);
+    const disabled = [...document.querySelectorAll<HTMLButtonElement>('.motif-cs-primer-footer-actions button:disabled')];
+    for (const button of disabled) expect(button.title, `${button.textContent} is disabled without a reason`).not.toBe('');
+  });
 });

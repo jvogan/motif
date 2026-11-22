@@ -128,14 +128,38 @@ function featureExtrema(ranges: readonly { start: number; end: number }[]): { st
   return { start, end };
 }
 
+function withSurvivingRanges(feature: Feature, subRanges: NonNullable<Feature['subRanges']>): Feature {
+  const firstStrand = (subRanges[0].strand ?? feature.strand) as Feature['strand'];
+  const strand = subRanges.every((range) => (range.strand ?? feature.strand) === firstStrand) ? firstStrand : 0;
+  return { ...feature, ...featureExtrema(subRanges)!, strand, subRanges };
+}
+
 /**
  * Move the positions a feature's qualifiers name (/transl_except, /anticodon, …)
  * through an edit. `base` returns null for an edited base, so an entry whose
  * codon the edit touches is dropped: that codon's bases are no longer the ones
  * the entry was written for.
  */
-function withEditedQualifiers<T extends Feature>(feature: T, base: (index: number) => number | null): T {
-  const metadata = remapPositionQualifiers(feature.metadata, { base });
+function withEditedQualifiers(
+  feature: Feature,
+  base: (index: number) => number | null,
+  changesRange: (range: { start: number; end: number }) => boolean,
+): Feature {
+  let metadata = remapPositionQualifiers(feature.metadata, { base });
+  const qualifiers = metadata.motifQualifiers;
+  const isTranslation = (entry: unknown): boolean => (
+    typeof entry === 'object' && entry !== null && 'key' in entry
+    && typeof entry.key === 'string' && entry.key.toLowerCase() === 'translation'
+  );
+  if ((feature.type === 'cds' || feature.type === 'orf')
+    && ('translation' in metadata || (Array.isArray(qualifiers) && qualifiers.some(isTranslation)))
+    && (feature.subRanges ?? [feature]).some(changesRange)) {
+    // The imported peptide describes the old bases. Translation tracks and
+    // exception validation must read the edited sequence without it.
+    metadata = { ...metadata };
+    delete metadata.translation;
+    if (Array.isArray(qualifiers)) metadata.motifQualifiers = qualifiers.filter((entry) => !isTranslation(entry));
+  }
   return metadata === feature.metadata ? feature : { ...feature, metadata };
 }
 
@@ -165,7 +189,11 @@ function shiftFeatures(
   delta: number,
 ): Feature[] {
   const insertIndex = editPos + 1;
-  return features.map((feature) => withEditedQualifiers(feature, (index) => (index >= insertIndex ? index + delta : index))).map((f) => {
+  return features.map((feature) => withEditedQualifiers(
+    feature,
+    (index) => (index >= insertIndex ? index + delta : index),
+    (range) => range.start < insertIndex && insertIndex < range.end,
+  )).map((f) => {
     const newStart = f.start > editPos ? f.start + delta : f.start;
     const newEnd = f.end > insertIndex ? f.end + delta : f.end;
     const newSubRanges = f.subRanges?.map((range) => ({
@@ -261,20 +289,42 @@ function transformReplacedFeatures(
   features: Feature[],
   editStart: number,
   deletedLength: number,
-  insertedLength: number,
+  inserted: string,
+  deleted: string,
 ): Feature[] {
   const deleteEnd = editStart + deletedLength;
-  return features.map((feature) => withEditedQualifiers(feature, (index) => (
-    index < editStart ? index : index >= deleteEnd ? index + insertedLength - deletedLength : null
-  ))).flatMap((feature) => {
+  const insertedLength = inserted.length;
+  const oldBases = deleted.toUpperCase();
+  const changed = oldBases !== inserted;
+  return features.map((feature) => withEditedQualifiers(
+    feature,
+    (index) => index < editStart ? index : index >= deleteEnd ? index + insertedLength - deletedLength : null,
+    (range) => {
+      if (deletedLength === 0) return range.start < editStart && editStart < range.end;
+      if (range.start >= deleteEnd || editStart >= range.end) return false;
+      if (changed) return true;
+      // Identical bases still change the product when a feature edge inside
+      // the replaced interval clamps to its end and the feature takes in bases.
+      const moved = transformReplacedRange(range, editStart, deletedLength, insertedLength);
+      return moved?.start !== range.start || moved?.end !== range.end;
+    },
+  )).flatMap((feature) => {
     if (feature.subRanges) {
+      let replacementOwner: { start: number; end: number } | undefined;
       const subRanges = feature.subRanges.flatMap((range) => {
         const transformed = transformReplacedRange(range, editStart, deletedLength, insertedLength);
-        return transformed ? [{ ...range, ...transformed }] : [];
+        if (!transformed) return [];
+        if (deletedLength > 0 && insertedLength > 0 && range.start < deleteEnd && editStart < range.end) {
+          // A replacement that spans a gap is carried by the first affected
+          // piece in biological order. Disjoint pieces keep their surviving bases.
+          if (!replacementOwner) replacementOwner = range;
+          else if (range.start >= replacementOwner.end) transformed.start = editStart + insertedLength;
+          else if (range.end <= replacementOwner.start) transformed.end = editStart;
+        }
+        return transformed.end > transformed.start ? [{ ...range, ...transformed }] : [];
       });
       if (subRanges.length === 0) return [];
-      const extrema = featureExtrema(subRanges)!;
-      return [{ ...feature, ...extrema, subRanges }];
+      return [withSurvivingRanges(feature, subRanges)];
     }
 
     const transformed = transformReplacedRange(feature, editStart, deletedLength, insertedLength);
@@ -352,7 +402,11 @@ export function applySubstitution(
   return {
     raw: newRaw,
     scars: [...filteredScars, scar],
-    features: changed ? features.map((feature) => withEditedQualifiers(feature, (index) => (index === pos ? null : index))) : [...features],
+    features: changed ? features.map((feature) => withEditedQualifiers(
+      feature,
+      (index) => (index === pos ? null : index),
+      (range) => range.start <= pos && pos < range.end,
+    )) : [...features],
   };
 }
 
@@ -520,9 +574,11 @@ export function applyDeletion(
   // clamp it to `pos`; if it falls after the deleted range, shift by -count.
   const endOfDeletion = pos + effectiveCount;
   const updatedFeatures = features
-    .map((feature) => withEditedQualifiers(feature, (index) => (
-      index < pos ? index : index >= endOfDeletion ? index - effectiveCount : null
-    )))
+    .map((feature) => withEditedQualifiers(
+      feature,
+      (index) => index < pos ? index : index >= endOfDeletion ? index - effectiveCount : null,
+      (range) => range.start < endOfDeletion && pos < range.end,
+    ))
     .map((f) => {
       const newStart = transformDeletedCoordinate(
         f.start,
@@ -556,13 +612,7 @@ export function applyDeletion(
 
       if (f.subRanges && (!newSubRanges || newSubRanges.length === 0)) return null;
       if (newSubRanges && newSubRanges.length > 0) {
-        const extrema = featureExtrema(newSubRanges)!;
-        return {
-          ...f,
-          start: extrema.start,
-          end: extrema.end,
-          subRanges: newSubRanges,
-        };
+        return withSurvivingRanges(f, newSubRanges);
       }
 
       return {
@@ -664,6 +714,6 @@ export function applyReplacement(
   return {
     raw: newRaw,
     scars: [...shiftedScars, ...replacementScars],
-    features: transformReplacedFeatures(features, pos, effectiveCount, normalizedBases.length),
+    features: transformReplacedFeatures(features, pos, effectiveCount, normalizedBases, deletedBases),
   };
 }

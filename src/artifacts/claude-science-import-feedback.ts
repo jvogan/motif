@@ -1,17 +1,19 @@
 /**
  * What an import tells the person who started it: which files or records were
- * skipped and why, and what the Add entry preflight line says about a paste.
+ * skipped and why, and what the Import records preflight line says about a paste.
  *
  * The strict normaliser (`normalizeSequenceStrict`) already knows the offending
- * character and its offset when it rejects a sequence. The UI used to discard that
- * and print one fixed sentence for every failure, whether the input was a PNG, a
- * CLUSTAL alignment, or a sequence with a single stray digit. These helpers turn
- * the normaliser's answer into a sentence the person can act on. None of them
+ * character and its offset when it rejects a sequence. Discarding that would leave
+ * one fixed sentence for every failure, whether the input was a PNG, a CLUSTAL
+ * alignment, or a sequence with a single stray digit. These helpers turn the
+ * normaliser's answer into a sentence the person can act on. None of them
  * changes what is accepted: every rejection here is a rejection the normaliser
  * already made.
  */
+import { GFF3_WITHOUT_SEQUENCE, isGff3, splitGff3 } from '../bio/gff3-parser';
 import { InvalidSequenceCharacterError, normalizeSequenceStrict } from '../bio/sequence-normalization';
 import type { SequenceType } from '../bio/types';
+import type { ArtifactTextEncoding } from './claude-science-file-import';
 
 /** One record an import parsed but could not use. `record` is unset for a bare sequence. */
 export interface ImportSkip {
@@ -30,7 +32,7 @@ export interface ImportOutcome {
   tone: 'status' | 'error';
   /**
    * Every skipped entry by name and reason, with no count standing in for the
-   * rest. The Add entry panel keeps this on screen after the notice closes.
+   * rest. The Import records panel keeps this on screen after the notice closes.
    */
   detail?: string;
 }
@@ -43,7 +45,10 @@ const CLUSTAL_HEADER = /^\s*CLUSTAL\b/u;
 /** The first `n` skipped entries named in a message; the rest are counted. */
 const MAX_LISTED_SKIPS = 3;
 
-export const CLUSTAL_IMPORT_REASON = 'a CLUSTAL alignment. Load it from Alignment → Open alignment workspace → Aligned file';
+export const CLUSTAL_IMPORT_REASON = 'a CLUSTAL alignment. Load it from Alignment → Open alignment → Aligned file';
+
+/** A ZIP that is not a Motif workspace export: its files cannot be read in place. */
+export const FOREIGN_ZIP_REASON = 'a ZIP archive. Unzip it and choose the FASTA or GenBank files inside';
 
 function withArticle(label: 'DNA' | 'RNA' | 'protein'): string {
   return label === 'RNA' ? 'an RNA' : `a ${label}`;
@@ -130,13 +135,19 @@ export function isClustalAlignment(text: string): boolean {
 }
 
 /**
- * True when decoded file text is binary rather than text: a NUL, or the U+FFFD a
- * UTF-8 decoder substitutes for bytes it cannot read (every PNG has one in its
- * first byte). Only the first 4 KB is examined.
+ * NULs are a binary-file signal after strict UTF-8 decoding. Bytes that were not
+ * UTF-8 are also binary when they hold another C0 control besides tab, line
+ * breaks and the old end-of-file mark, which legacy text encodings do not write.
  */
-export function looksLikeBinaryText(text: string): boolean {
-  const head = text.slice(0, 4096);
-  return head.includes('\u0000') || head.includes('\ufffd');
+export function looksLikeBinaryText(text: string, encoding: ArtifactTextEncoding = 'utf-8'): boolean {
+  if (text.includes('\u0000')) return true;
+  if (encoding === 'utf-8') return false;
+  for (let index = 0; index < text.length; index += 1) {
+    const code = text.charCodeAt(index);
+    // Tab, LF, VT, FF, CR and the DOS end-of-file mark (0x1a) occur in text.
+    if (code < 0x20 && (code < 0x09 || (code > 0x0d && code !== 0x1a))) return true;
+  }
+  return false;
 }
 
 /**
@@ -163,18 +174,26 @@ export function explainUnimportedPaste(text: string, skipped: readonly ImportSki
  * and the FASTA parser would then report a control character at some line and
  * column of the image, which tells the person nothing. `null` for readable text.
  */
-export function unreadableFileReason(file: { type?: string; name?: string }, text: string): string | null {
+export function unreadableFileReason(
+  file: { type?: string; name?: string },
+  text: string,
+  encoding: ArtifactTextEncoding = 'utf-8',
+): string | null {
   if (!text.trim()) return 'the file is empty';
+  if (isGff3(text) && !splitGff3(text)) return GFF3_WITHOUT_SEQUENCE;
   const unsupported = unsupportedFormatReason(file, text);
   if (unsupported) return unsupported;
-  if (looksLikeBinaryText(text) || /^(?:image|audio|video)\//u.test(file.type ?? '')) return 'not a sequence file';
+  // By name, not by the PK signature: a .docx or .xlsx starts with the same bytes
+  // and holds no sequence files to unzip.
+  if (/\.zip$/iu.test(file.name ?? '')) return FOREIGN_ZIP_REASON;
+  if (looksLikeBinaryText(text, encoding) || /^(?:image|audio|video)\//u.test(file.type ?? '')) return 'not a sequence file';
   return null;
 }
 
 /**
  * Formats that hold a real sequence but have no reader here yet. A valid 2,686 bp
- * EMBL flat file used to report "no sequence found", and a SnapGene file "not a
- * sequence file", which both read as a broken file rather than a missing reader.
+ * EMBL flat file reported as "no sequence found", or a SnapGene file as "not a
+ * sequence file", would read as a broken file rather than a missing reader.
  * EMBL starts with an `ID   ` line; a SnapGene file carries "SnapGene" in its first
  * bytes and uses the `.dna` extension. `null` for anything else.
  */
@@ -193,7 +212,7 @@ export function explainUnimportedFile(file: { type?: string; name?: string }, te
   const unreadable = unreadableFileReason(file, text);
   if (unreadable) return unreadable;
   if (isClustalAlignment(text)) return CLUSTAL_IMPORT_REASON;
-  if (/^\s*[[{]/u.test(text)) return 'not a Record JSON or Database JSON export';
+  if (/^\s*[[{]/u.test(text)) return 'not a Record JSON or Workspace JSON export';
   const recordSkip = skipped.find((skip) => skip.record);
   if (recordSkip) return `${recordSkip.record}: ${withoutFinalPeriod(recordSkip.reason)}`;
   return 'no sequence found';
@@ -214,8 +233,8 @@ function identityKey(record: ImportIdentity): string {
 
 /**
  * The name of the open record an import would repeat exactly (same name, same
- * topology, same residues ignoring case and whitespace), or `null`. Choosing the
- * same file twice used to add a second, indistinguishable row each time.
+ * topology, same residues ignoring case and whitespace), or `null`. Without it,
+ * choosing the same file twice would add a second, indistinguishable row each time.
  * A record that differs in any of the three is a new record, not a repeat.
  */
 export function duplicateOfOpenRecord(record: ImportIdentity, open: readonly ImportIdentity[]): string | null {
@@ -230,9 +249,9 @@ const SENTENCE_BREAK = /[.!?]["”)]?\s+[A-Z]/u;
 /**
  * A reason as it ends in the notice, after "<file name>: " and before any " · ". A
  * one-sentence clause drops its full stop there ("image.png: not a sequence file").
- * A reason of two sentences ends with one: the notice used to strip it too, so the
- * NCBI contig message read "…has no sequence. Download it with its sequence (NCBI
- * format "GenBank (full)"), then retry" with its second sentence left unfinished.
+ * A reason of two sentences ends with one: stripping it too would leave the second
+ * sentence of the NCBI contig message ("…has no sequence. Download it with its
+ * sequence (NCBI format "GenBank (full)"), then retry") unfinished.
  */
 function withoutFinalPeriod(reason: string): string {
   const clause = reason.trim().replace(/\.$/u, '');
@@ -244,11 +263,21 @@ function recordCount(count: number): string {
 }
 
 /**
- * The one message a multi-file import ends with. Every skipped file or record is
- * accounted for: the first few by name and reason, the rest by count. `detail`
- * names every one, for the panel status that stays after the notice closes. A batch
- * with anything skipped is an error, even when other files were imported,
- * because something the person chose is missing from the inventory.
+ * The import notice line for files that were not UTF-8. They are read as
+ * Windows-1252, which keeps a Latin-1 degree sign or accented author name
+ * intact instead of refusing the file or substituting U+FFFD. A file saved in
+ * another legacy encoding can still show a wrong letter, so the person is told.
+ */
+export function legacyEncodingNote(fileNames: readonly string[]): string | null {
+  if (fileNames.length === 0) return null;
+  const subject = fileNames.length === 1 ? `${fileNames[0]} is` : `${fileNames.length.toLocaleString()} files are`;
+  return `${subject} not UTF-8; read as Windows-1252, so check accented letters and symbols`;
+}
+
+/**
+ * The notice shows the first few skipped files or records and counts the rest.
+ * The panel keeps a longer bounded list with the remaining count. Anything
+ * skipped makes the outcome an error, including batches that imported records.
  */
 export function describeFileImportOutcome(added: number, skipped: readonly SkippedImport[]): ImportOutcome {
   if (skipped.length === 0) {
@@ -256,8 +285,9 @@ export function describeFileImportOutcome(added: number, skipped: readonly Skipp
       ? { message: `Imported ${recordCount(added)}`, tone: 'status' }
       : { message: 'No records found in the chosen files', tone: 'error' };
   }
-  const named = skipped.map((skip) => (
-    `${added > 0 ? 'skipped ' : ''}${skip.source}: ${withoutFinalPeriod(skip.reason)}`
+  const maxDetailedSkips = 50;
+  const named = skipped.slice(0, maxDetailedSkips).map((skip) => (
+    `${added > 0 ? 'skipped ' : ''}${clipImportText(skip.source)}: ${withoutFinalPeriod(clipImportText(skip.reason))}`
   ));
   const listed = named.slice(0, MAX_LISTED_SKIPS);
   const unlisted = skipped.length - listed.length;
@@ -267,11 +297,18 @@ export function describeFileImportOutcome(added: number, skipped: readonly Skipp
     ...listed,
     ...(unlisted > 0 ? [`${unlisted.toLocaleString()} more skipped`] : []),
   ];
+  const omitted = skipped.length - named.length;
   return {
     message: parts.join(' · '),
     tone: 'error',
-    ...(unlisted > 0 ? { detail: [...imported, ...named].join(' · ') } : {}),
+    ...(unlisted > 0 ? {
+      detail: [...imported, ...named, ...(omitted > 0 ? [`${omitted.toLocaleString()} more skipped`] : [])].join(' · '),
+    } : {}),
   };
+}
+
+function clipImportText(text: string): string {
+  return text.length <= 1_024 ? text : `${text.slice(0, 1_024)}…`;
 }
 
 function lengthRange(lengths: readonly number[], unit: string): string {
@@ -289,9 +326,9 @@ function unitFor(type: SequenceType): 'aa' | 'nt' | 'bp' {
 }
 
 /**
- * The Add entry preflight line: record count, molecule types, and lengths in each
- * type's own unit. A DNA + protein paste used to report every length in the first
- * record's unit ("· 16 bp" for 16 bp of DNA and 16 aa of protein).
+ * The Import records preflight line: record count, molecule types, and lengths in each
+ * type's own unit, so a DNA + protein paste of 16 bp and 16 aa reads "16 bp + 16 aa",
+ * not "16 bp" for both.
  */
 export function describeImportPreflight(
   entries: ReadonlyArray<{ type: SequenceType; length: number }>,

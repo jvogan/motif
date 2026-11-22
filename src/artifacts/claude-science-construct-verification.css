@@ -4,21 +4,21 @@
   container: motif-cs-verification / inline-size;
   min-width: 0;
   overflow: hidden;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
   background: var(--bg-primary);
   color: var(--text-primary);
-  font-size: 11px;
+  font-size: var(--fs-sm);
 }
 
 .motif-cs-construct-verification-verdict {
   --motif-cs-verification-state-color: var(--text-muted);
   display: grid;
-  grid-template-columns: 4px minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: stretch;
   min-width: 0;
   border-bottom: 1px solid var(--border-subtle);
-  background: color-mix(in srgb, var(--motif-cs-verification-state-color) 4%, var(--panel-bg));
+  background: var(--panel-bg);
 }
 
 .motif-cs-construct-verification-verdict[data-verdict="consistent"] {
@@ -33,31 +33,24 @@
   --motif-cs-verification-state-color: var(--red);
 }
 
-.motif-cs-construct-verification-rail {
-  background: var(--motif-cs-verification-state-color);
-}
-
 .motif-cs-construct-verification-heading {
   display: grid;
   align-content: center;
-  gap: 2px;
+  gap: var(--space-1);
   min-width: 0;
-  padding: 10px 12px;
+  padding: var(--space-3);
 }
 
-.motif-cs-construct-verification-eyebrow,
-.motif-cs-construct-verification-section-heading > span,
 .motif-cs-construct-verification-table th {
   color: var(--text-muted);
-  font-size: 9px;
-  font-weight: 740;
-  letter-spacing: 0.065em;
-  text-transform: uppercase;
+  font-size: var(--fs-xs);
+  font-weight: 600;
 }
 
 .motif-cs-construct-verification-heading strong {
   color: var(--motif-cs-verification-state-color);
-  font-size: 14px;
+  font-size: var(--fs-lg);
+  font-weight: 600;
   line-height: 1.25;
 }
 
@@ -65,7 +58,7 @@
   max-width: 72ch;
   margin: 0;
   color: var(--text-secondary);
-  font-size: 10.5px;
+  font-size: var(--fs-sm);
   line-height: 1.4;
   overflow-wrap: anywhere;
 }
@@ -77,7 +70,7 @@
   gap: 2px;
   min-width: 0;
   max-width: 220px;
-  padding: 10px 12px;
+  padding: var(--space-3);
   border-left: 1px solid var(--border-subtle);
   color: var(--text-muted);
   text-align: right;
@@ -87,7 +80,8 @@
   max-width: 100%;
   overflow: hidden;
   color: var(--text-primary);
-  font-size: 10.5px;
+  font-size: var(--fs-sm);
+  font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -103,7 +97,7 @@
   display: grid;
   gap: 2px;
   min-width: 0;
-  padding: 9px 11px;
+  padding: var(--space-2) var(--space-3);
   border-right: 1px solid var(--border-subtle);
 }
 
@@ -120,19 +114,21 @@
 
 .motif-cs-construct-verification-facts dt {
   color: var(--text-muted);
-  font-size: 9.5px;
+  font-size: var(--fs-xs);
 }
 
 .motif-cs-construct-verification-facts dd {
   color: var(--text-primary);
-  font: 650 11px/1.35 var(--font-mono);
+  font-size: var(--fs-md);
+  font-weight: 600;
+  line-height: 1.3;
   font-variant-numeric: tabular-nums;
 }
 
 .motif-cs-construct-verification-coverage {
   display: grid;
-  gap: 5px;
-  padding: 9px 11px;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
   border-bottom: 1px solid var(--border-subtle);
   background: var(--panel-bg);
 }
@@ -142,22 +138,21 @@
   justify-content: space-between;
   gap: 10px;
   color: var(--text-muted);
-  font-size: 9.5px;
+  font-size: var(--fs-xs);
 }
 
 .motif-cs-construct-verification-coverage-label strong {
   color: var(--text-primary);
-  font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
-  /* "1,300 bp · 86.7%" is one reading; in a 279px card it broke after the
-     "·" and left the percentage alone on a second line. The label wraps instead. */
+  /* "1,300 bp · 86.7%" is one reading, so it never breaks after the "·";
+     the label wraps instead. */
   white-space: nowrap;
 }
 
-/* Neutral ink, not the accent. In Warm Dark the accent coral sits ΔE 13 from
-   the failure red, so a Consistent run showed a full bar in what reads as the
-   Inconsistent colour. The verdict owns the status colours; this bar only
-   measures, and the percentage beside it says the value. */
+/* Neutral ink, not the accent: an accent close to the failure red would make a
+   Consistent run show a full bar in what reads as the Inconsistent colour. The
+   verdict owns the status colours; this bar only measures, and the percentage
+   beside it says the value. */
 .motif-cs-construct-verification-coverage progress {
   width: 100%;
   height: 5px;
@@ -197,18 +192,20 @@
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  min-height: 34px;
-  padding: 7px 11px;
+  min-height: var(--control-h);
+  padding: var(--space-1) var(--space-3);
   background: var(--panel-bg);
 }
 
 .motif-cs-construct-verification-section-heading > span {
-  color: var(--text-secondary);
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  font-weight: 600;
 }
 
 .motif-cs-construct-verification-section-heading > small {
   color: var(--text-muted);
-  font: 9.5px/1.3 var(--font-mono);
+  font-size: var(--fs-xs);
   white-space: nowrap;
 }
 
@@ -218,18 +215,18 @@
   gap: 6px;
   min-width: 0;
   color: var(--text-muted);
-  font-size: 9.5px;
+  font-size: var(--fs-xs);
 }
 
 .motif-cs-construct-verification-filter select {
-  min-height: 26px;
-  max-width: 160px;
-  padding: 3px 23px 3px 6px;
-  border: 1px solid var(--border);
+  min-height: var(--control-h-sm);
+  max-width: 180px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
-  background: var(--control-bg);
+  background: var(--bg-primary);
   color: var(--text-primary);
-  font-size: 10px;
+  font-size: var(--fs-sm);
 }
 
 .motif-cs-construct-verification-filter select:focus-visible,
@@ -250,8 +247,8 @@
 .motif-cs-construct-verification-reason {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
-  gap: 8px;
-  padding: 8px 11px;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
   border-top: 1px solid var(--border-subtle);
   content-visibility: auto;
   contain-intrinsic-size: auto 38px;
@@ -261,22 +258,38 @@
   border-top: 0;
 }
 
-.motif-cs-construct-verification-reason-code,
+.motif-cs-construct-verification-reason-code {
+  width: max-content;
+  max-width: 100%;
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+/* The code is stored lower case; show it as a sentence. */
+.motif-cs-construct-verification-reason-code::first-letter {
+  text-transform: uppercase;
+}
+
 .motif-cs-construct-verification-tag {
   width: max-content;
   max-width: 100%;
-  padding: 2px 5px;
-  border: 1px solid var(--border);
+  padding: 1px var(--space-2);
+  border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
   background: var(--control-bg);
   color: var(--text-secondary);
-  font: 650 9px/1.35 var(--font-mono);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  line-height: 1.4;
 }
 
 .motif-cs-construct-verification-reason > span:last-child {
   min-width: 0;
   color: var(--text-secondary);
-  line-height: 1.45;
+  font-size: var(--fs-sm);
+  line-height: 1.4;
   overflow-wrap: anywhere;
 }
 
@@ -295,7 +308,7 @@
 
 .motif-cs-construct-verification-table th,
 .motif-cs-construct-verification-table td {
-  padding: 7px 9px;
+  padding: var(--space-2);
   border-top: 1px solid var(--border-subtle);
   text-align: left;
   vertical-align: top;
@@ -318,7 +331,7 @@
 
 .motif-cs-construct-verification-table td[data-sequence] {
   color: var(--text-primary);
-  font-weight: 650;
+  font-weight: 600;
   overflow-wrap: anywhere;
 }
 
@@ -338,7 +351,7 @@
   background: none;
   color: var(--text-primary);
   font: inherit;
-  font-weight: 650;
+  font-weight: 600;
   text-decoration: underline;
   text-decoration-color: var(--text-muted);
   text-underline-offset: 2px;
@@ -385,23 +398,25 @@
 }
 
 .motif-cs-construct-verification-empty {
-  padding: 12px 11px;
+  padding: var(--space-3);
   color: var(--text-muted);
-  font-size: 10px;
-  line-height: 1.45;
+  font-size: var(--fs-sm);
+  line-height: 1.4;
 }
 
 .motif-cs-construct-verification-disclosure {
-  padding: 0 11px 9px;
+  padding: 0 var(--space-3) var(--space-2);
 }
 
 .motif-cs-construct-verification-disclosure > summary {
   width: max-content;
   max-width: 100%;
-  padding: 5px 0;
+  min-height: var(--control-h-sm);
+  display: flex;
+  align-items: center;
   color: var(--text-secondary);
-  font-size: 10px;
-  font-weight: 650;
+  font-size: var(--fs-sm);
+  font-weight: 600;
   cursor: pointer;
 }
 
@@ -435,12 +450,12 @@
 }
 
 .motif-cs-construct-verification-read > strong {
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
 }
 
 .motif-cs-construct-verification-read > span {
   color: var(--text-muted);
-  font: 9.5px/1.4 var(--font-mono);
+  font: var(--fs-xs)/1.4 var(--font-ui);
 }
 
 .motif-cs-construct-verification-provenance {
@@ -448,11 +463,11 @@
   justify-content: space-between;
   gap: 10px;
   min-width: 0;
-  padding: 6px 11px;
+  padding: var(--space-2) var(--space-3);
   border-top: 1px solid var(--border-subtle);
   background: var(--panel-bg);
   color: var(--text-muted);
-  font: 9px/1.35 var(--font-mono);
+  font: var(--fs-xs)/1.35 var(--font-mono);
 }
 
 .motif-cs-construct-verification-provenance > span {
@@ -460,52 +475,13 @@
   overflow-wrap: anywhere;
 }
 
-@media (max-width: 640px) {
-  .motif-cs-construct-verification-verdict {
-    grid-template-columns: 4px minmax(0, 1fr);
-  }
-
-  .motif-cs-construct-verification-reference {
-    grid-column: 2;
-    align-items: start;
-    justify-items: start;
-    max-width: none;
-    padding-top: 0;
-    border-left: 0;
-    text-align: left;
-  }
-
-  .motif-cs-construct-verification-facts {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .motif-cs-construct-verification-facts > div:nth-child(2n) {
-    border-right: 0;
-  }
-
-  .motif-cs-construct-verification-section-heading {
-    align-items: start;
-    flex-direction: column;
-  }
-
-  .motif-cs-construct-verification-filter {
-    width: 100%;
-    justify-content: space-between;
-  }
-
-  .motif-cs-construct-verification-filter select {
-    flex: 1 1 auto;
-    max-width: none;
-  }
-}
-
 @container motif-cs-verification (max-width: 560px) {
   .motif-cs-construct-verification-verdict {
-    grid-template-columns: 4px minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .motif-cs-construct-verification-reference {
-    grid-column: 2;
+    grid-column: 1;
     align-items: start;
     justify-items: start;
     max-width: none;
@@ -523,8 +499,7 @@
   }
 
   .motif-cs-construct-verification-section-heading {
-    align-items: start;
-    flex-direction: column;
+    flex-wrap: wrap;
   }
 
   .motif-cs-construct-verification-filter {

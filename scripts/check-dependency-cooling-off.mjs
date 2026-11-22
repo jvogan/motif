@@ -91,6 +91,18 @@ function changedEntries(current, baseline) {
   });
 }
 
+// The waiting period is explicit policy data. Zero means no waiting period; the
+// registry identity, publish-timestamp, and tarball checks still run for every
+// changed package. A missing, non-numeric, negative, or non-finite value fails
+// closed instead of silently disabling the window.
+export function readCoolingOffDays(policy) {
+  const days = policy?.coolingOffDays;
+  if (typeof days !== 'number' || !Number.isFinite(days) || days < 0) {
+    throw new Error('coolingOffDays must be a finite number of days that is zero or greater');
+  }
+  return days;
+}
+
 function exceptionMap(policy, now) {
   const exceptions = policy.coolingOffExceptions ?? [];
   if (!Array.isArray(exceptions)) throw new Error('coolingOffExceptions must be an array');
@@ -269,27 +281,31 @@ export async function checkDependencyCoolingOff(rootPath = root, options = {}) {
   const baseline = readBaselineLockfile(workspace, options);
   const now = options.now instanceof Date ? options.now.getTime() : Number(options.now ?? Date.now());
   if (!Number.isFinite(now)) throw new Error('Cooling-off checker requires a finite current timestamp');
+  const coolingOffDays = readCoolingOffDays(policy);
   const exceptionByIdentity = exceptionMap(policy, now);
   const changed = changedEntries(current, baseline);
-  const unique = [...new Map(changed.map(entry => [`${entry.name}@${entry.version}`, entry])).values()];
+  const metadataByIdentity = new Map();
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
   if (typeof fetchImpl !== 'function') throw new Error('Cooling-off checker requires fetch or an injected registry client');
   const checked = [];
-  for (const entry of unique) {
+  for (const entry of changed) {
     if (typeof entry.resolved !== 'string' || typeof entry.integrity !== 'string') throw new Error(`Changed dependency ${entry.name}@${entry.version} lacks a registry source or integrity`);
     const identity = `${entry.name}@${entry.version}`;
-    const metadata = await readRegistryMetadata(fetchImpl, policy.registry, entry);
+    const cached = metadataByIdentity.get(identity);
+    const metadata = cached ?? await readRegistryMetadata(fetchImpl, policy.registry, entry);
     const publishedMs = assertRegistryIdentity(entry, metadata, policy.registry);
+    if (cached) continue;
+    metadataByIdentity.set(identity, metadata);
     const ageDays = (now - publishedMs) / DAY_MS;
     if (ageDays < 0) throw new Error(`Registry publish timestamp is in the future for ${identity}`);
-    if (ageDays < Number(policy.coolingOffDays ?? 7) && !exceptionByIdentity.has(identity)) {
-      throw new Error(`${identity} is only ${ageDays.toFixed(2)} days old; cooling-off requires ${policy.coolingOffDays} days`);
+    if (ageDays < coolingOffDays && !exceptionByIdentity.has(identity)) {
+      throw new Error(`${identity} is only ${ageDays.toFixed(2)} days old; cooling-off requires ${coolingOffDays} days`);
     }
     checked.push({ identity, ageDays: Number(ageDays.toFixed(2)), exception: exceptionByIdentity.has(identity) });
   }
   return {
-    coolingOffDays: Number(policy.coolingOffDays ?? 7),
-    changedPackageCount: unique.length,
+    coolingOffDays,
+    changedPackageCount: metadataByIdentity.size,
     checked,
     baseline: options.baseLockfilePath
       ?? options.baseRef
@@ -302,7 +318,8 @@ export async function checkDependencyCoolingOff(rootPath = root, options = {}) {
 if (isDirectScriptExecution(process.argv[1], fileURLToPath(import.meta.url))) {
   try {
     const result = await checkDependencyCoolingOff();
-    console.log(`Dependency cooling-off passed: ${result.changedPackageCount} changed package version${result.changedPackageCount === 1 ? '' : 's'} checked; ${result.coolingOffDays}-day window.`);
+    const period = result.coolingOffDays === 0 ? 'no waiting period' : `${result.coolingOffDays}-day window`;
+    console.log(`Dependency cooling-off passed: ${result.changedPackageCount} changed package version${result.changedPackageCount === 1 ? '' : 's'} checked; ${period}.`);
   } catch (error) {
     console.error(`Dependency cooling-off failed: ${error instanceof Error ? error.message : String(error)}`);
     process.exitCode = 1;

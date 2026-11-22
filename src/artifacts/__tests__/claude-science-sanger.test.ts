@@ -75,13 +75,13 @@ describe('Claude Science Sanger trace contract', () => {
     expect(single(40)).toBe(0);
     expect(single(60)).toBe(0);
 
-    // Neither end may flatten. The old floor was reached at Q9 and the old ceiling
-    // at Q47, so every call below Q10 painted byte-identically to every other.
+    // Neither end may flatten. A floor reached at Q9 and a ceiling at Q47 would make
+    // every call below Q10 paint byte-identically to every other.
     expect(single(0)).not.toBe(single(9));
     expect(single(41)).toBe(single(60));
 
-    // Q20 is the threshold every Sanger workflow is built on, and it used to differ
-    // from Q19 by a contrast ratio of 1.007.
+    // Q20 is the threshold every Sanger workflow is built on, so it must stand apart
+    // from Q19: a contrast ratio of 1.007 would not.
     expect(single(19) - single(20)).toBeCloseTo(0.0055, 6);
 
     // Strictly monotonic across the washed range, in both modes.
@@ -139,7 +139,7 @@ describe('Claude Science Sanger trace contract', () => {
       .toEqual(normalized);
   });
 
-  it('round-trips channels and quality through the Database JSON record shape', () => {
+  it('round-trips channels and quality through the Workspace JSON record shape', () => {
     const record = normalizeRecord({ id: 'read-01', molecule: 'dna', seq: 'ACGT', sangerTrace: trace() }, 0);
     expect(record).not.toBeNull();
     const databaseRecords = createDefensiveRuntimeSnapshot([record!]);

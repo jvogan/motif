@@ -22,6 +22,6 @@ Motif currently has no hosted backend. Its local MCP server does not
 intentionally upload sequence data, and networking is off by default. Content
 supplied to Codex, Claude Science, or another host remains subject to that
 host's terms, privacy policy, organization settings, and data controls.
-Database JSON, workspace ZIP, generated HTML, and interchange exports are
+Workspace JSON, workspace ZIP, generated HTML, and interchange exports are
 ordinary unencrypted files; protect them according to the sensitivity of their
 contents. See [PRIVACY.md](PRIVACY.md) for the complete current data boundary.

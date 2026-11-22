@@ -12,6 +12,12 @@ export type FeatureLocationSegment = {
   strand: FeatureStrand;
 };
 
+export const MAX_FEATURE_SEQUENCE_RESIDUES = 250_000;
+
+export type FeatureSequenceProjection =
+  | { ok: true; segments: FeatureLocationSegment[]; length: number }
+  | { ok: false; code: 'invalid_location' | 'feature_sequence_limit' };
+
 export type FeatureCoordinateMapSpan = {
   /** Inclusive start in the source sequence. */
   start: number;
@@ -127,14 +133,14 @@ export function isMultipartFeature(feature: FeatureLocation): boolean {
 
 /** INSDC `order(...)` preserves order but does not authorize concatenation. */
 export function isOrderedFeatureLocation(feature: FeatureLocation): boolean {
-  return featureLocationSegments(feature).length > 1
-    && feature.metadata?.motifLocationOperator === 'order';
+  return feature.metadata?.motifLocationOperator === 'order'
+    && featureLocationSegments(feature).length > 1;
 }
 
 /** True when an older/unmarked reverse multipart array has no inferable order. */
 export function isAmbiguousFeatureLocation(feature: FeatureLocation): boolean {
-  return featureLocationSegments(feature).length > 1
-    && feature.metadata?.motifSubRangeOrderAmbiguous === true;
+  return feature.metadata?.motifSubRangeOrderAmbiguous === true
+    && featureLocationSegments(feature).length > 1;
 }
 
 /** A valid INSDC location retained verbatim but not projectable onto this record. */
@@ -147,6 +153,21 @@ export function isMaterializableFeatureLocation(feature: FeatureLocation): boole
   return !isQuarantinedFeatureLocation(feature)
     && !isOrderedFeatureLocation(feature)
     && !isAmbiguousFeatureLocation(feature);
+}
+
+export function projectFeatureSequence(feature: FeatureLocation, sequenceLength: number): FeatureSequenceProjection {
+  if (!isMaterializableFeatureLocation(feature)) return { ok: false, code: 'invalid_location' };
+  const segments = featureLocationSegments(feature);
+  if (segments.length === 0) return { ok: false, code: 'invalid_location' };
+  let length = 0;
+  for (const { start, end } of segments) {
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end > sequenceLength) {
+      return { ok: false, code: 'invalid_location' };
+    }
+    length += end - start;
+    if (length > MAX_FEATURE_SEQUENCE_RESIDUES) return { ok: false, code: 'feature_sequence_limit' };
+  }
+  return { ok: true, segments, length };
 }
 
 /**
@@ -162,11 +183,19 @@ export function extractFeatureSequence(
   feature: FeatureLocation,
   sequenceType?: SequenceType,
 ): string {
-  if (!isMaterializableFeatureLocation(feature)) return '';
+  return materializeFeatureSequence(sequence, projectFeatureSequence(feature, sequence.length), sequenceType);
+}
+
+export function materializeFeatureSequence(
+  sequence: string,
+  projection: FeatureSequenceProjection,
+  sequenceType?: SequenceType,
+): string {
+  if (!projection.ok) return '';
   const isNucleotide = sequenceType === 'dna' || sequenceType === 'rna';
   const isRna = sequenceType === 'rna';
 
-  return featureLocationSegments(feature).map((segment) => {
+  return projection.segments.map((segment) => {
     const part = sequence.slice(segment.start, segment.end);
     return isNucleotide && segment.strand === -1
       ? reverseComplement(part, isRna)

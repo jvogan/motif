@@ -32,6 +32,16 @@ function bsmBIPart(recordId: string, left: string, insert: string, right: string
 }
 
 describe('planArtifactGoldenGateDesign', () => {
+  it('shows a regenerated Type IIS site on a ready circular product', () => {
+    const plan = planArtifactGoldenGateDesign({
+      parts: [bsaIPart('left', 'GTCT', 'CA', 'TCTT'), bsaIPart('right', 'TCTT', 'GCGGAAGG', 'GTCT')],
+      enzyme: 'BsaI',
+    });
+    expect(plan.product?.sequence).toBe('GTCTCATCTTGCGGAAGG');
+    expect(plan.warnings).toContainEqual(expect.objectContaining({
+      message: 'Circular product contains 1 BsaI recognition site and can be cut again.',
+    }));
+  });
   it('applies a MoClo Plant profile and emits exact input/product provenance', () => {
     const promoter = bsaIPart('promoter', 'AATG', 'CCCCCCCC', 'GCTT');
     const backbone = bsaIPart('backbone', 'GCTT', 'ACTGACTGACTG', 'AATG');
@@ -517,6 +527,18 @@ describe('planArtifactGoldenGateDesign', () => {
 describe('planArtifactGibsonDesign', () => {
   const O1 = 'GGAATTCCGGAATTCCGGAA';
   const O2 = 'CCTTAAGGCCTTAAGGCCTT';
+
+  it('requires a known circular Gibson source to be linearized', () => {
+    const fragments: ArtifactCloningInput[] = [
+      { ...cloningInput('vector', `AAAAAAAA${O1}`), topology: 'circular' },
+      cloningInput('insert', `${O1}TTTTTTTT`),
+    ];
+    const plan = planArtifactGibsonDesign({ fragments, topology: 'linear' });
+    expect(plan.product).toBeNull();
+    expect(plan.errors).toContainEqual(expect.objectContaining({ code: 'circular_fragment', recordId: 'vector' }));
+    fragments[0] = { ...fragments[0], topology: 'linear' };
+    expect(planArtifactGibsonDesign({ fragments, topology: 'linear' }).product?.length).toBe(36);
+  });
 
   it('plans a linear product with visible overlap metrics and exact provenance', () => {
     const left = cloningInput('left', `AAAAAAAA${O1}`);

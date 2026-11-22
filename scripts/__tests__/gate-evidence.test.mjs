@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { assertCleanGateSource } from '../lib/gate-source.mjs';
 import { GATE_FIXTURES, GATE_FIXTURE_SCHEMA, isOptionalFixture } from '../lib/gate-fixtures.mjs';
-import { GATE_RECEIPT_SCHEMA, GATE_RUN_SCHEMA } from '../lib/gate-steps.mjs';
+import { GATE_RECEIPT_SCHEMA, GATE_RUN_SCHEMA, GATE_STEPS } from '../lib/gate-steps.mjs';
 import { fixtureOutcomes } from '../gate-fixture-reporter.mjs';
 import { runGate } from '../run-gate.mjs';
 import { reportGateCoverage } from '../report-gate-coverage.mjs';
@@ -34,18 +34,22 @@ const executedCheck = { status: 'executed', counts: { passed: 1, skipped: 0, fai
 const skippedCheck = { status: 'skipped', counts: { passed: 0, skipped: 1, failed: 0, missing: 0 } };
 const notApplicableCheck = { status: 'not-applicable', counts: { passed: 0, skipped: 0, failed: 0, missing: 0 } };
 const missingCheck = { status: 'missing', counts: { passed: 0, skipped: 0, failed: 0, missing: 0 } };
-function evidence(root, definitions = GATE_FIXTURES) {
+function evidence(root, definitions = GATE_FIXTURES, includeMsa = false) {
   const commit = git(root, 'rev-parse', 'HEAD');
   const runId = 'test-invocation';
-  const steps = [{ id: 'core-browser-workflows', command: ['npm', 'run', 'test:e2e'], label: 'Browser tests' }];
+  const steps = GATE_STEPS.filter(({ id }) => id === 'core-browser-workflows'
+    || (includeMsa && id === 'msa-browser-workflows'));
   put(root, 'test-results/gate-receipts/run.json', {
     schema: GATE_RUN_SCHEMA, runId, commit, expectedSteps: steps.map(step => step.id),
   });
-  put(root, 'test-results/gate-receipts/core-browser-workflows.json', {
-    schema: GATE_RECEIPT_SCHEMA, runId, commit, step: steps[0].id, command: steps[0].command, exitCode: 0,
-  });
+  for (const step of steps) {
+    put(root, `test-results/gate-receipts/${step.id}.json`, {
+      schema: GATE_RECEIPT_SCHEMA, runId, commit, step: step.id, command: step.command, exitCode: 0,
+    });
+  }
   const fixtures = {
     schema: GATE_FIXTURE_SCHEMA, runId, commit, step: 'core-browser-workflows', status: 'passed',
+    suite: { passed: 1, skipped: 0, failed: 0, missing: 0 },
     checks: definitions.map((definition) => ({
       id: definition.id, name: definition.name,
       ...structuredClone(isOptionalFixture(definition) ? skippedCheck : executedCheck),
@@ -111,6 +115,7 @@ describe('browser fixture outcomes', () => {
   });
   it('requires observed successful results and distinguishes absent, missing and skipped tests', () => {
     const root = workspace();
+    expect(outcome(root, []).status).toBe('missing');
     put(root, definition.file, '// fixture');
     expect(outcome(root, [], 'passed', { optional: true }).status).toBe('missing');
     expect(outcome(root, []).status).toBe('missing');
@@ -179,6 +184,32 @@ describe('coverage evidence verification', () => {
       expect(() => reportGateCoverage(env, root, steps, definitions)).toThrow(/fixture evidence/);
     });
   });
+  it('requires an actual passing result from the MSA suite and rejects an absent spec status', () => {
+    const root = workspace();
+    const { env, steps, fixtures } = evidence(root, GATE_FIXTURES, true);
+    const msa = { ...fixtures, step: 'msa-browser-workflows', checks: [],
+      suite: { passed: 0, skipped: 1, failed: 0, missing: 0 } };
+    put(root, 'test-results/gate-receipts/msa-fixtures.json', msa);
+    expect(() => reportGateCoverage(env, root, steps)).toThrow(/all skipped for msa-browser-workflows/u);
+    msa.suite.passed = 1;
+    put(root, 'test-results/gate-receipts/msa-fixtures.json', msa);
+    expect(reportGateCoverage(env, root, steps).browserSuites).toEqual({
+      core: fixtures.suite,
+      msa: msa.suite,
+    });
+    Object.assign(fixtures.checks[0], structuredClone(notApplicableCheck));
+    put(root, 'test-results/gate-receipts/fixtures.json', fixtures);
+    expect(() => reportGateCoverage(env, root, steps)).toThrow(/incomplete or unsuccessful/u);
+  });
+
+  it('keeps previous gate evidence when a dirty source tree rejects a new run', () => {
+    const root = workspace();
+    put(root, 'dist-motif/gate-coverage.json', 'previous evidence');
+    put(root, 'source.txt', 'edited');
+    expect(() => runGate({ rootDirectory: root, steps: [] })).toThrow(/clean committed source/u);
+    expect(readFileSync(join(root, 'dist-motif/gate-coverage.json'), 'utf8')).toBe('previous evidence');
+  });
+
   it('rejects edited source after a successful report and removes stale success output', () => {
     const root = workspace();
     const { env, steps } = evidence(root);

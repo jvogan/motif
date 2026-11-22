@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { RESTRICTION_ENZYMES_FULL } from '../enzyme-data';
+import { simulateGel } from '../gel-simulation';
 import {
   digestPreviewDetailed,
   restrictionDigestDetailed,
@@ -22,6 +23,56 @@ const byName = (name: string): RestrictionEnzyme => {
 };
 
 describe('physical restriction model', () => {
+  const bluntCut = (name: string, offset: number): RestrictionEnzyme => ({
+    name, recognitionSequence: 'ACGT', cutOffset: offset, complementCutOffset: offset, overhang: 'blunt',
+  });
+  const atStart = bluntCut('AtStart', 0);
+  const atEnd = bluntCut('AtEnd', 4);
+  const atMiddle = bluntCut('AtMiddle', 2);
+
+  it('merges coincident cuts at circular coordinate zero', () => {
+    const result = restrictionDigestDetailed('ACGT', ['AtStart', 'AtEnd'], 'circular', undefined, [atStart, atEnd]);
+    expect(result.issues).toEqual([]);
+    expect(result.cuts).toEqual([expect.objectContaining({
+      cutPosition: 0, topCutPosition: 0, bottomCutPosition: 0, enzymes: ['AtEnd', 'AtStart'],
+    })]);
+    expect(result.fragments).toMatchObject([{ startInOriginal: 0, endInOriginal: 4, length: 4, sequence: 'ACGT' }]);
+    // Either cut alone opens the 4 bp circle at the same bond.
+    for (const name of ['AtStart', 'AtEnd']) {
+      const alone = restrictionDigestDetailed('ACGT', [name], 'circular', undefined, [atStart, atEnd]);
+      expect(alone.issues).toEqual([]);
+      expect(alone.fragments).toMatchObject([{ startInOriginal: 0, endInOriginal: 4, length: 4, sequence: 'ACGT' }]);
+    }
+  });
+
+  it('linearizes a circle once and preserves cut order and length with two cuts', () => {
+    const catalog = [atStart, atMiddle];
+    const one = restrictionDigestDetailed('ACGT', ['AtMiddle'], 'circular', undefined, catalog);
+    expect(one.fragments).toMatchObject([{ startInOriginal: 2, endInOriginal: 6, length: 4, sequence: 'GTAC' }]);
+    const two = restrictionDigestDetailed('ACGT', ['AtMiddle', 'AtStart'], 'circular', undefined, catalog);
+    expect(two.fragments.map(({ startInOriginal, endInOriginal, length }) => [startInOriginal, endInOriginal, length]))
+      .toEqual([[0, 2, 2], [2, 4, 2]]);
+  });
+
+  it('omits empty linear fragments at both ends and groups equal sizes on the gel', () => {
+    const result = restrictionDigestDetailed('ACGT', ['AtEnd', 'AtStart', 'AtMiddle'], 'linear', undefined, [atStart, atEnd, atMiddle]);
+    expect(result.issues).toEqual([]);
+    expect(result.fragments).toMatchObject([
+      { length: 2, sequence: 'AC', leftEnzyme: 'AtStart', rightEnzyme: 'AtMiddle' },
+      { length: 2, sequence: 'GT', leftEnzyme: 'AtMiddle', rightEnzyme: 'AtEnd' },
+    ]);
+    expect(simulateGel([{ name: 'digest', fragments: result.fragments.map(({ length }) => length) }]).bands)
+      .toMatchObject([{ size: 2, lane: 1, intensity: 1 }]);
+  });
+
+  it('counts fragment bases from the cut outside a recognition motif', () => {
+    const result = restrictionDigestDetailed('GGTCTC' + 'A'.repeat(7), ['BsaI'], 'linear');
+    expect(result.issues).toEqual([]);
+    expect(result.sites).toMatchObject([{ position: 0, cutPosition: 7 }]);
+    expect(result.fragments.map(({ startInOriginal, endInOriginal, length }) => [startInOriginal, endInOriginal, length]))
+      .toEqual([[0, 7, 7], [7, 13, 6]]);
+  });
+
   it('returns a typed invalid-topology result at the digest boundary', () => {
     const result = restrictionDigestDetailed('AAAAGAATTC', ['EcoRI'], 'wrapped' as never);
     expect(result).toMatchObject({

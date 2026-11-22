@@ -23,8 +23,12 @@ export function buildMotifMcpApp({ template = templatePath, entry = entryPath, o
     platform: 'browser',
     format: 'iife',
     target: ['es2022'],
-    legalComments: 'none',
     minify: true,
+    keepNames: true,
+    lineLimit: 1000,
+    charset: 'utf8',
+    legalComments: 'eof',
+    sourcemap: false,
     write: false,
   }).outputFiles[0].text.replace(/<\/script/giu, '<\\/script');
 

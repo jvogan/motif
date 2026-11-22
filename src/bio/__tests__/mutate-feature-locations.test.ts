@@ -289,4 +289,135 @@ describe('mutation feature-location integrity', () => {
       },
     ]);
   });
+
+  it('uses the surviving piece’s strand after deleting a mixed-strand piece', () => {
+    const feature: Feature = {
+      ...joinedFeature(),
+      strand: 0,
+      subRanges: [{ start: 0, end: 3, strand: 1 }, { start: 9, end: 12, strand: -1 }],
+    };
+    for (const result of [
+      applyDeletion('ATGCCCGGGCCA', [], [feature], 0, 3),
+      applyReplacement('ATGCCCGGGCCA', [], [feature], 0, 3, ''),
+    ]) {
+      expect(result.features).toHaveLength(1);
+      expect(result.features[0]).toMatchObject({ start: 6, end: 9, strand: -1 });
+      expect(extractFeatureSequence(result.raw, result.features[0], 'dna')).toBe('TGG');
+    }
+  });
+
+  it('covers a replacement bridging two joined pieces only once', () => {
+    const result = applyReplacement('ATGCCCGGGCCA', [], [joinedFeature()], 2, 8, 'T');
+    expect(result.raw).toBe('ATTCA');
+    expect(result.features[0]).toMatchObject({
+      start: 0, end: 5,
+      subRanges: [{ start: 0, end: 3, strand: 1 }, { start: 3, end: 5, strand: 1 }],
+    });
+    expect(extractFeatureSequence(result.raw, result.features[0], 'dna')).toBe('ATTCA');
+  });
+
+  describe('an imported /translation', () => {
+    // join(1..6,13..21): exon ATGAAA, intron GTAAGT, exon TTTGAATAA, so the
+    // spliced product ATGAAATTTGAATAA translates to MKFE.
+    const raw = 'ATGAAAGTAAGTTTTGAATAA';
+    const cds = (type: Feature['type'] = 'cds'): Feature => ({
+      id: 'coding', name: 'coding', type, start: 0, end: 21, strand: 1, color: '#888888',
+      subRanges: [{ start: 0, end: 6, strand: 1 }, { start: 12, end: 21, strand: 1 }],
+      metadata: {
+        translation: 'MKFE',
+        note: 'kept',
+        motifQualifiers: [{ key: 'translation', value: 'MKFE' }, { key: 'note', value: 'kept' }],
+      },
+    });
+    const keepsTranslation = (feature: Feature) => {
+      const inQualifiers = (feature.metadata.motifQualifiers as { key: string }[]).some((entry) => entry.key === 'translation');
+      expect(feature.metadata.note).toBe('kept');
+      expect(inQualifiers).toBe('translation' in feature.metadata);
+      return inQualifiers;
+    };
+
+    it.each([
+      { label: 'an intron substitution', run: () => applySubstitution(raw, [], [cds()], 8, 'C'), keeps: true },
+      { label: 'an intron deletion', run: () => applyDeletion(raw, [], [cds()], 7, 3), keeps: true },
+      { label: 'an intron replacement', run: () => applyReplacement(raw, [], [cds()], 7, 3, 'CCCC'), keeps: true },
+      { label: 'deleting the whole intron', run: () => applyDeletion(raw, [], [cds()], 6, 6), keeps: true },
+      { label: 'an insertion before the CDS', run: () => applyInsertion(raw, [], [cds()], -1, 'C'), keeps: true },
+      { label: 'an insertion between pieces', run: () => applyInsertion(raw, [], [cds()], 5, 'C'), keeps: true },
+      { label: 'retyping the same bases inside an exon', run: () => applyReplacement(raw, [], [cds()], 3, 3, 'aaa'), keeps: true },
+      { label: 'a synonymous substitution', run: () => applySubstitution(raw, [], [cds()], 5, 'G'), keeps: false },
+      { label: 'a missense substitution', run: () => applySubstitution(raw, [], [cds()], 3, 'C'), keeps: false },
+      { label: 'an insertion inside an exon', run: () => applyInsertion(raw, [], [cds()], 3, 'C'), keeps: false },
+      { label: 'a deletion inside an exon', run: () => applyDeletion(raw, [], [cds()], 13, 3), keeps: false },
+      { label: 'a deletion across an exon edge', run: () => applyDeletion(raw, [], [cds()], 4, 4), keeps: false },
+      // Bases 6-7 are already AG, so the sequence is unchanged, but the first
+      // exon's end clamps to the replacement's end and takes in the G.
+      { label: 'identical bases across an exon edge', run: () => applyReplacement(raw, [], [cds()], 5, 2, 'AG'), keeps: false },
+    ])('is kept after $label only when the product is unchanged', ({ run, keeps }) => {
+      const result = run();
+      const before = extractFeatureSequence(raw, cds(), 'dna');
+      const after = extractFeatureSequence(result.raw, result.features[0], 'dna');
+      expect(after === before).toBe(keeps);
+      expect(keepsTranslation(result.features[0])).toBe(keeps);
+    });
+
+    it('is left alone on a feature that is not coding', () => {
+      const result = applySubstitution(raw, [], [cds('misc_feature')], 3, 'C');
+      expect(keepsTranslation(result.features[0])).toBe(true);
+    });
+  });
+
+  it('keeps strand 0 while surviving pieces still disagree and takes their shared strand once they agree', () => {
+    const feature: Feature = {
+      ...joinedFeature(),
+      end: 15,
+      strand: 0,
+      subRanges: [{ start: 0, end: 3, strand: 1 }, { start: 6, end: 9, strand: 1 }, { start: 12, end: 15, strand: -1 }],
+    };
+    const raw = 'ATGAAACCCTTTGGG';
+    expect(applyDeletion(raw, [], [feature], 0, 3).features[0].strand).toBe(0);
+    expect(applyDeletion(raw, [], [feature], 12, 3).features[0]).toMatchObject({ strand: 1, start: 0, end: 9 });
+  });
+
+  it('covers a replacement bridging two reverse pieces only once, in either stored order', () => {
+    const pieces = [{ start: 9, end: 12, strand: -1 as const }, { start: 0, end: 3, strand: -1 as const }];
+    for (const subRanges of [pieces, [...pieces].reverse()]) {
+      const result = applyReplacement('ATGCCCGGGCCA', [], [{ ...joinedFeature(), strand: -1, subRanges }], 2, 8, 'T');
+      expect(result.raw).toBe('ATTCA');
+      const [feature] = result.features;
+      expect(feature.subRanges!.filter((range) => range.start <= 2 && 2 < range.end)).toHaveLength(1);
+      expect(extractFeatureSequence(result.raw, feature, 'dna')).toHaveLength(5);
+    }
+    // Biological order: the reverse complement of AT + T + CA.
+    const result = applyReplacement('ATGCCCGGGCCA', [], [{ ...joinedFeature(), strand: -1, subRanges: pieces }], 2, 8, 'T');
+    expect(extractFeatureSequence(result.raw, result.features[0], 'dna')).toBe('TGAAT');
+  });
+
+  it('drops a joined piece the replacement covers entirely', () => {
+    const feature: Feature = {
+      ...joinedFeature(),
+      end: 15,
+      subRanges: [{ start: 0, end: 3, strand: 1 }, { start: 6, end: 9, strand: 1 }, { start: 12, end: 15, strand: 1 }],
+    };
+    const result = applyReplacement('ATGAAACCCTTTGGG', [], [feature], 2, 11, 'T');
+    expect(result.raw).toBe('ATTGG');
+    expect(result.features[0].subRanges).toEqual([{ start: 0, end: 3, strand: 1 }, { start: 3, end: 5, strand: 1 }]);
+    expect(extractFeatureSequence(result.raw, result.features[0], 'dna')).toBe('ATTGG');
+  });
+
+  it.each([
+    { label: 'immediately before', at: 2, count: 1, expected: [2, 5] },
+    { label: 'first base', at: 3, count: 1, expected: [3, 5] },
+    { label: 'inside', at: 4, count: 1, expected: [3, 5] },
+    { label: 'last base', at: 5, count: 1, expected: [3, 5] },
+    { label: 'immediately after', at: 6, count: 1, expected: [3, 6] },
+    { label: 'across the start', at: 2, count: 2, expected: [2, 4] },
+    { label: 'across the end', at: 5, count: 2, expected: [3, 5] },
+    { label: 'all bases', at: 3, count: 3, expected: null },
+  ])('remaps deletions $label of a reverse feature', ({ at, count, expected }) => {
+    const feature: Feature = {
+      id: 'reverse', name: 'Reverse', type: 'misc_feature', start: 3, end: 6, strand: -1, color: '#888888', metadata: {},
+    };
+    const result = applyDeletion('AAACCCGGG', [], [feature], at, count);
+    expect(result.features).toEqual(expected ? [{ ...feature, start: expected[0], end: expected[1] }] : []);
+  });
 });

@@ -1,4 +1,6 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useRef } from 'react';
+import { memo, useCallback, useLayoutEffect, useRef } from 'react';
+import { LargeFindLayer } from './ClaudeScienceFindBar';
+import type { FindMatch } from './claude-science-find';
 
 const numberFormatter = new Intl.NumberFormat();
 
@@ -13,6 +15,12 @@ type LargeSequenceViewerProps = {
   focusRequest: number;
   /** Receives a user's own textarea selection as [start, end) residue offsets. */
   onSelectRange?: (start: number, end: number) => void;
+  onClearSelection?: () => void;
+  /** Find matches to paint over the text while someone is finding. */
+  findMatches?: readonly FindMatch[];
+  findCurrent?: FindMatch | null;
+  /** A key that would type or delete, or a paste, reached the read-only text. */
+  onReadOnlyInput?: (kind: 'type' | 'paste') => void;
 };
 
 /**
@@ -27,6 +35,10 @@ export const LargeSequenceViewer = memo(function LargeSequenceViewer({
   selectedRange,
   focusRequest,
   onSelectRange,
+  onClearSelection,
+  findMatches,
+  findCurrent = null,
+  onReadOnlyInput,
 }: LargeSequenceViewerProps) {
   const valueRef = useRef<HTMLTextAreaElement | null>(null);
   // The range this component last put into the textarea itself, and the range
@@ -49,49 +61,70 @@ export const LargeSequenceViewer = memo(function LargeSequenceViewer({
 
   useLayoutEffect(() => {
     const control = valueRef.current;
-    if (!control || selectionStart === null || selectionEnd === null) return undefined;
+    if (!control) return undefined;
+    if (settleTimerRef.current !== null) {
+      window.clearTimeout(settleTimerRef.current);
+      settleTimerRef.current = null;
+    }
     const reported = reportedRangeRef.current;
     const focusRequested = appliedFocusRequestRef.current !== focusRequest;
     appliedFocusRequestRef.current = focusRequest;
+    if (selectionStart === null || selectionEnd === null) {
+      appliedRangeRef.current = null;
+      reportedRangeRef.current = null;
+      const end = control.selectionEnd;
+      if (control.selectionStart !== end) control.setSelectionRange(end, end);
+      return undefined;
+    }
     if (!focusRequested && reported && reported.start === selectionStart && reported.end === selectionEnd) {
       return undefined;
     }
     appliedRangeRef.current = { start: selectionStart, end: selectionEnd };
     reportedRangeRef.current = null;
     control.setSelectionRange(selectionStart, selectionEnd, 'forward');
-    const frame = window.requestAnimationFrame(() => {
-      const maxScroll = Math.max(0, control.scrollHeight - control.clientHeight);
-      const sequenceRatio = sequence.length > 0 ? selectionStart / sequence.length : 0;
-      const centeredTop = sequenceRatio * control.scrollHeight - control.clientHeight / 2;
-      control.scrollTo({ top: Math.max(0, Math.min(maxScroll, centeredTop)), behavior: 'auto' });
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [focusRequest, selectionEnd, selectionStart, sequence.length]);
+    // One jump, before paint, and only when the selection's start is off
+    // screen: a selection already in view stays where the reader sees it.
+    const maxScroll = Math.max(0, control.scrollHeight - control.clientHeight);
+    const sequenceRatio = sequence.length > 0 ? selectionStart / sequence.length : 0;
+    const startTop = sequenceRatio * control.scrollHeight;
+    if (startTop >= control.scrollTop && startTop < control.scrollTop + control.clientHeight) return undefined;
+    const centeredTop = startTop - control.clientHeight / 2;
+    control.scrollTo({ top: Math.max(0, Math.min(maxScroll, centeredTop)), behavior: 'auto' });
+    return undefined;
+  }, [focusRequest, selectionEnd, selectionStart, sequence]);
 
-  useEffect(() => () => {
+  useLayoutEffect(() => () => {
     if (settleTimerRef.current !== null) window.clearTimeout(settleTimerRef.current);
   }, []);
 
   const handleSelect = useCallback(() => {
-    if (!onSelectRange) return;
+    if (!onSelectRange && !onClearSelection) return;
+    // Only a selection the user is making in this field counts.
+    const control = valueRef.current;
+    if (!control || document.activeElement !== control) return;
     if (settleTimerRef.current !== null) window.clearTimeout(settleTimerRef.current);
-    settleTimerRef.current = window.setTimeout(() => {
+    const reportSelection = () => {
       settleTimerRef.current = null;
-      const control = valueRef.current;
-      // Only a selection the user is making in this field counts.
-      if (!control || document.activeElement !== control) return;
+      if (document.activeElement !== control) return;
       const start = control.selectionStart;
       const end = control.selectionEnd;
-      if (end <= start) return;
       const applied = appliedRangeRef.current;
-      if (applied && applied.start === start && applied.end === end) return;
       const reported = reportedRangeRef.current;
+      if (end <= start) {
+        appliedRangeRef.current = null;
+        reportedRangeRef.current = null;
+        if (applied || reported) onClearSelection?.();
+        return;
+      }
+      if (applied && applied.start === start && applied.end === end) return;
       if (reported && reported.start === start && reported.end === end) return;
       reportedRangeRef.current = { start, end };
       appliedRangeRef.current = null;
-      onSelectRange(start, end);
-    }, LARGE_SEQUENCE_SELECTION_SETTLE_MS);
-  }, [onSelectRange]);
+      onSelectRange?.(start, end);
+    };
+    if (control.selectionStart === control.selectionEnd) reportSelection();
+    else settleTimerRef.current = window.setTimeout(reportSelection, LARGE_SEQUENCE_SELECTION_SETTLE_MS);
+  }, [onClearSelection, onSelectRange]);
 
   return (
     <section
@@ -100,10 +133,9 @@ export const LargeSequenceViewer = memo(function LargeSequenceViewer({
       data-testid="large-sequence-viewer"
     >
       <div className="motif-cs-large-sequence-notice" role="status">
-        <strong id="motif-cs-large-sequence-title">Large-record density view</strong>
+        <strong id="motif-cs-large-sequence-title">Large record</strong>
         <span>
-          {lengthLabel} residues exceed the {thresholdLabel}-residue interactive Detail limit.
-          The full sequence remains selectable here and is preserved in every export.
+          Tracks, complement and editing turn off above {thresholdLabel} residues. This record has {lengthLabel}.
         </span>
         {selectionStart !== null && selectionEnd !== null ? (
           <span data-testid="large-sequence-selection">
@@ -125,7 +157,15 @@ export const LargeSequenceViewer = memo(function LargeSequenceViewer({
         value={sequence}
         wrap="soft"
         onSelect={handleSelect}
+        onKeyDown={(event) => {
+          if (event.metaKey || event.ctrlKey || event.altKey) return;
+          if ((event.key.length === 1 && event.key !== ' ') || event.key === 'Backspace' || event.key === 'Delete') onReadOnlyInput?.('type');
+        }}
+        onPaste={() => onReadOnlyInput?.('paste')}
       />
+      {findMatches && (findMatches.length > 0 || findCurrent) ? (
+        <LargeFindLayer textareaRef={valueRef} sequenceLength={sequence.length} matches={findMatches} current={findCurrent} />
+      ) : null}
     </section>
   );
 });

@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { openTool } from './tool-panel-aliases';
 
 const artifactUrl = process.env.MOTIF_ARTIFACT_URL;
 
@@ -41,8 +42,7 @@ test.describe('Claude Science guide RNA features', () => {
   test('adds a forward and a reverse guide as features on their own strands, once each, with undo', async ({ page }) => {
     const seq = (await page.evaluate(() => window.motifGetInventory().find((record) => record.name === 'pUC19')?.seq ?? '')).toUpperCase();
     expect(seq.length).toBe(2686);
-    const panel = page.locator('details[data-rail-tool="guide"]');
-    await panel.locator(':scope > summary').click();
+    const panel = await openTool(page, 'guide');
     const rows = panel.locator('.motif-cs-guide-row');
     await expect(rows).toHaveCount(30);
     const forwardRow = rows.filter({ has: page.locator('.motif-cs-guide-strand[data-strand="1"]') }).first();

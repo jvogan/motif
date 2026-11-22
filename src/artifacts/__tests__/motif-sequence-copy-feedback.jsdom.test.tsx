@@ -18,12 +18,13 @@ describe('copyText confirmation', () => {
   );
 
   it('confirms every successful copy through the workbench notice, not only the Export chip', () => {
-    // The chip was the only confirmation: hidden below the pane at 1024x768,
-    // 1280x720 and 1440x900, and 886-1298px from the button at 1920x1080. The
+    // The Export chip alone is not a confirmation: it is hidden below the pane at
+    // 1024x768, 1280x720 and 1440x900, and 886-1298px from the button at 1920x1080. The
     // notice is a role=status region painted over every pane and popover.
-    expect(copyText).toContain("else if (options?.notice !== false) showWorkbenchNotice(`${label} copied`);");
-    // Two arguments: the notice keeps its default status tone.
-    expect(copyText).not.toMatch(/showWorkbenchNotice\(`\$\{label\} copied`,/);
+    // The notice keeps the status tone, named, and sits over the status
+    // line's readout ('status' anchor) so it covers no base.
+    expect(copyText).toContain("else if (options?.notice !== false) showWorkbenchNotice(`${label} copied`, 'status', undefined, 'status');");
+    expect(copyText.match(/showWorkbenchNotice\(`\$\{label\} copied`/g)).toHaveLength(1);
     expect(copyText).toContain("setCopyStatus(ok ? `${label} copied` : 'Copy blocked');");
   });
 

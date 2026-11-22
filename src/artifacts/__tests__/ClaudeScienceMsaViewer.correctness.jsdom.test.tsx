@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 
 import { useState } from 'react';
-import { cleanup, createEvent, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, createEvent, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ClaudeScienceMsaViewer,
@@ -95,7 +95,7 @@ function ReferenceNumberingPersistenceHarness({ initialAlignment }: { initialAli
 
 function expectComparisonUnavailable(): void {
   expect(screen.getByTestId('msa-stats-bar').textContent).toContain('N/A avg to template');
-  expect((screen.getByLabelText('Compare against') as HTMLSelectElement).disabled).toBe(true);
+  expect((screen.getByLabelText('Comparison template') as HTMLSelectElement).disabled).toBe(true);
   expect((screen.getByLabelText('Previous variable column') as HTMLButtonElement).disabled).toBe(true);
   expect((screen.getByLabelText('Next variable column') as HTMLButtonElement).disabled).toBe(true);
   expect(screen.getByText('No comparable rows')).toBeTruthy();
@@ -209,7 +209,7 @@ describe('ClaudeScienceMsaViewer comparison correctness', () => {
   });
 
   it('names the population the stats bar counts, which is not the overlap', () => {
-    // Regression: the count was labelled "differences in overlap" while counting
+    // The count must not be labelled "differences in overlap" while counting
     // internal indels, which are by definition not overlap. This fixture has NO
     // substitution anywhere — every difference is a gap facing a residue — so the
     // count and the word are forced apart, which a fixture with mismatches in it
@@ -226,7 +226,7 @@ describe('ClaudeScienceMsaViewer comparison correctness', () => {
     renderViewer(alignment);
     const bar = screen.getByTestId('msa-stats-bar');
     expect(bar.textContent).toContain('3 columns differ from template');
-    // The number is right; the old label was not. Pin the claim, not the phrasing:
+    // Pin the claim, not the phrasing:
     // nothing in this bar may call an indel column part of an overlap.
     expect(bar.textContent).not.toMatch(/overlap/i);
     // The average beside it uses the same rule, so the two cannot drift apart:
@@ -542,10 +542,10 @@ describe('ClaudeScienceMsaViewer reference coordinates', () => {
   });
 
   it('keeps one result per numbering state instead of forking on every click', async () => {
-    // Regression: both buttons saved unconditionally, so "Use plain 1-based" was
-    // a third result rather than a way back to the first. Three round trips left
-    // seven results. One round trip would not have caught it — the count has to
-    // be watched across several.
+    // If both buttons saved unconditionally, "Use plain 1-based" would be a third
+    // result rather than a way back to the first, and three round trips would leave
+    // seven results. One round trip would not catch it — the count has to be
+    // watched across several.
     const alignment = alignmentWithRows('reference-numbering-cycle', [
       { id: 'reference', name: 'Reference', aligned: 'A-C' },
       { id: 'second', name: 'Second', aligned: 'ATC' },
@@ -664,6 +664,100 @@ describe('ClaudeScienceMsaViewer selection interactions', () => {
     expect(screen.getByTestId('msa-selection-identity').textContent).toBe('· 83% mean id');
   });
 
+  function renderDragSurface(kind: 'grid' | 'ruler') {
+    renderViewer(alignmentWithRows('edge-drag', alignment.rows.map((row) => ({
+      id: row.id, name: row.name, aligned: row.aligned.repeat(30),
+    }))));
+    const view = screen.getByTestId('msa-alignment-view');
+    const viewport = view.querySelector<HTMLElement>('.motif-cs-msa-matrix-scroll')!;
+    const surface = kind === 'ruler'
+      ? view.querySelector<HTMLElement>('.motif-cs-msa-ruler-window-clickable')!
+      : viewport;
+    const row = view.querySelector<HTMLElement>('[data-msa-row-id="reference"]')!;
+    const { cellWidth, labelWidth } = matrixGeometry();
+    const clientWidth = Math.floor(labelWidth + cellWidth * 8 - 0.5);
+    const gutter = 15;
+    const border = 2;
+    vi.spyOn(viewport, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, clientWidth + gutter + border * 2, 170));
+    Object.defineProperties(viewport, {
+      clientLeft: { configurable: true, value: border },
+      clientWidth: { configurable: true, value: clientWidth },
+      clientHeight: { configurable: true, value: 170 },
+      scrollHeight: { configurable: true, value: 1000 },
+    });
+    Object.defineProperty(document, 'elementFromPoint', {
+      configurable: true, value: (_x: number, y: number) => y >= 60 ? row : null,
+    });
+    const releasePointerCapture = vi.fn();
+    Object.defineProperties(surface, {
+      setPointerCapture: { configurable: true, value: vi.fn() },
+      hasPointerCapture: { configurable: true, value: () => true },
+      releasePointerCapture: { configurable: true, value: releasePointerCapture },
+    });
+    const press = { pointerId: 8, button: 0, buttons: 1, clientX: border + labelWidth + cellWidth / 2, clientY: kind === 'grid' ? 100 : 20 };
+    return { viewport, surface, press, edge: border + clientWidth, cellWidth, releasePointerCapture };
+  }
+
+  describe.each(['grid', 'ruler'] as const)('%s drag', (kind) => {
+    it.each(['blur', 'lostpointercapture', 'pointercancel', 'unpressed move'])('cancels on %s and keeps the range', (ending) => {
+      const { viewport, surface, press, edge, cellWidth, releasePointerCapture } = renderDragSurface(kind);
+      const frames = new Map<number, FrameRequestCallback>();
+      let frameId = 0;
+      vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+        frames.set(++frameId, callback);
+        return frameId;
+      });
+      vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((id) => { frames.delete(id); });
+      fireEvent.pointerDown(surface, press);
+      fireEvent.pointerMove(surface, { ...press, clientX: edge + 50, clientY: 200 });
+      expect(frames.size).toBeGreaterThan(0);
+      const readout = screen.getByTestId('msa-selection-readout');
+      const reached = readout.textContent?.match(/cols [^·]+/)?.[0];
+      expect(reached).toMatch(/^cols 1–(?:[2-9]|[1-9]\d+) \(/);
+      const scrollTop = viewport.scrollTop;
+      if (ending === 'blur') fireEvent.blur(window);
+      else if (ending === 'lostpointercapture') fireEvent.lostPointerCapture(surface, press);
+      else if (ending === 'pointercancel') fireEvent.pointerCancel(surface, press);
+      else fireEvent.pointerMove(surface, { ...press, buttons: 0, clientX: edge + 55, clientY: 201 });
+      expect(frames.size).toBe(0);
+      expect(releasePointerCapture).toHaveBeenCalledWith(8);
+
+      fireEvent.pointerMove(surface, { ...press, clientX: press.clientX + cellWidth });
+      fireEvent.pointerUp(surface, { ...press, buttons: 0 });
+      act(() => { for (const callback of [...frames.values()]) callback(0); });
+      expect(screen.getByTestId('msa-selection-readout').textContent).toContain(reached);
+      expect(screen.getByTestId('msa-selection-variable').textContent).not.toContain('…');
+      expect(viewport.scrollTop).toBe(scrollTop);
+      expect(frames.size).toBe(0);
+    });
+
+    it('rejects a gutter press', () => {
+      const { surface, press, edge } = renderDragSurface(kind);
+      fireEvent.pointerDown(surface, { ...press, clientX: edge + 8 });
+      fireEvent.pointerUp(surface, { ...press, buttons: 0, clientX: edge + 8 });
+      expect(screen.queryByTestId('msa-selection-readout')).toBeNull();
+    });
+
+    it('clamps an edge drag to the last visible column', () => {
+      const { surface, press, edge } = renderDragSurface(kind);
+      fireEvent.pointerDown(surface, press);
+      fireEvent.pointerMove(surface, { ...press, clientX: edge + 50 });
+      expect(screen.getByTestId('msa-selection-readout').textContent).toContain('cols 1–8 (8)');
+      fireEvent.pointerUp(surface, { ...press, buttons: 0, clientX: edge + 50 });
+      expect(screen.getByTestId('msa-selection-readout').textContent).toContain('cols 1–8 (8)');
+    });
+
+    it('keeps a touch drag going when a contact move reports no button', () => {
+      const { surface, press, edge } = renderDragSurface(kind);
+      const touch = { ...press, pointerType: 'touch' };
+      fireEvent.pointerDown(surface, touch);
+      fireEvent.pointerMove(surface, { ...touch, buttons: 0, clientX: edge + 50 });
+      expect(screen.getByTestId('msa-selection-readout').textContent).toContain('cols 1–8 (8)');
+      fireEvent.pointerUp(surface, { ...touch, buttons: 0, clientX: edge + 50 });
+      expect(screen.getByTestId('msa-selection-readout').textContent).toContain('cols 1–8 (8)');
+    });
+  });
+
   it('shows complete settled statistics immediately for keyboard selection', () => {
     renderViewer(alignment);
     selectColumnRangeWithKeyboard(1, 1);
@@ -711,7 +805,7 @@ describe('ClaudeScienceMsaViewer selection interactions', () => {
       { id: 'c', name: 'PAL_Zea_mays', aligned: 'ACGC' },
     ]));
 
-    const compare = screen.getByLabelText('Compare against') as HTMLSelectElement;
+    const compare = screen.getByLabelText('Comparison template') as HTMLSelectElement;
     const labels = [...compare.options].map((option) => option.textContent ?? '');
     expect(labels).toContain('Prunus_avium');
     expect(labels).toContain('Zea_mays');

@@ -22,6 +22,7 @@ import {
   type OverlapSearchResult,
 } from '../bio/gibson-assembly';
 import { reverseComplement } from '../bio/reverse-complement';
+import type { Topology } from '../bio/types';
 import { sha256HexSync } from './claude-science-sha256';
 import { materializeGoldenGateFlankSpacers } from './claude-science-golden-gate-normalization';
 
@@ -65,6 +66,7 @@ export type ArtifactCloningInput = {
   name: string;
   sequence: string;
   molecule: 'dna';
+  topology?: Topology;
   /**
    * Orientation applied after validating `sha256` against the normalized source
    * record. Omitted legacy inputs remain forward for compatibility.
@@ -1085,9 +1087,9 @@ export function planArtifactGoldenGateDesign(input: ArtifactGoldenGateProfileInp
       enzyme,
     )
     : null;
+  assembly?.warnings.forEach((message) => warnings.push(issue('warning', 'assembly_warning', message)));
   if (assembly && !assembly.success) {
     assembly.errors.forEach((message) => errors.push(issue('error', 'assembly_not_ready', message)));
-    assembly.warnings.forEach((message) => warnings.push(issue('warning', 'assembly_warning', message)));
     if (assembly.missingVectorOverhangs) {
       preparation.push({
         id: 'vector:destination',
@@ -1218,6 +1220,13 @@ export function planArtifactGibsonDesign(input: ArtifactGibsonDesignInput): Arti
   const rawFragments = Array.isArray(input?.fragments) ? input.fragments : [];
   const normalized = normalizeInputs(rawFragments);
   const errors = [...normalized.errors];
+  rawFragments.forEach((fragment) => {
+    if (fragment?.topology === 'circular' && typeof fragment.recordId === 'string') {
+      errors.push(issue('error', 'circular_fragment', 'Linearize the circular input before Gibson assembly.', {
+        recordId: fragment.recordId.trim(),
+      }));
+    }
+  });
   const warnings: ArtifactCloningIssue[] = [];
   const topology = input?.topology;
   if (topology !== 'linear' && topology !== 'circular') {

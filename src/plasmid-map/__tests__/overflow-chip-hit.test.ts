@@ -198,7 +198,7 @@ describe('overflow chip hit rect', () => {
     // "+25 features", not "+25 more": under "4,000 bp" the old wording read as 25
     // more base pairs.
     expect(feature?.text).toBe('+25 features');
-    expect(restriction?.text).toBe('34 unnamed sites');
+    expect(restriction?.text).toBe('+34 sites');
     expect(feature).not.toHaveProperty('hit');
     expect(restriction).not.toHaveProperty('hit');
   });
@@ -209,7 +209,7 @@ describe('overflow chip hit rect', () => {
     // LINEAR_ROW_TOP = 98; the rect must end above it.
     const chip = (linearLayout().overflows ?? []).find((c) => c.kind === 'restriction-labels');
 
-    expect(chip?.hit).toEqual({ x: 847.26, y: 64.34, width: 132.74, height: 18 });
+    expect(chip?.hit).toEqual({ x: 898.334, y: 64.34, width: 81.666, height: 18 });
     expect(chip!.hit.y + chip!.hit.height).toBe(82.34);
     expect(chip!.hit.y + chip!.hit.height).toBeLessThan(98);
   });
@@ -310,20 +310,12 @@ describe('overflow chip hit rect', () => {
     }
   });
 
-  it('is read by the Map Visibility dock as one named quantity, not a total', () => {
-    // The dock is the reason these fields exist and the only place outside the map
-    // that prints one. Everything above is about the layout; this is the half that
-    // could still be wrong while the layout is right — the sentence it writes is true
-    // of `unlabelled` alone, and of a sum only by the accident that the restriction
-    // chip's other part is 0 today.
-    const start = artifactSource.indexOf('const mapUnlabelledSiteCount');
-    expect(start, 'dock readout not found in motif-artifact.tsx').toBeGreaterThan(-1);
-    const read = artifactSource.slice(start, artifactSource.indexOf(';', start) + 1);
-
-    expect(read).toContain("overflow.kind === 'restriction-labels'");
-    expect(read).toContain('.unlabelled');
-    expect(read).not.toMatch(/hiddenBodies|\+/);
-    expect(artifactSource).toContain('{mapUnlabelledSiteCount.toLocaleString()} {mapRestrictionSitesOmitted > 0 ? \'selectable sites\' : \'sites\'} drawn without an enzyme name');
+  it('is said by the map overflow button, not again in the Sites tab', () => {
+    // The map dock strip prints the restriction chip as a focusable "+N sites"
+    // button, so the Sites tab does not repeat the count in a sentence of its own.
+    expect(artifactSource).not.toContain('mapUnlabelledSiteCount');
+    expect(artifactSource).not.toContain('drawn without an enzyme name');
+    expect(artifactSource).toContain("summary.kind === 'restriction-labels' ? 'restriction-sites' : null");
     expect(artifactSource).toContain('Density marks show all {visibleRestrictionSites.length.toLocaleString()} visible sites');
     // The sentence says what the reader can do rather than what "can be done".
     expect(artifactSource).toContain('You can select {interactiveMapRestrictionSites.length.toLocaleString()} of them on the map, evenly distributed.');

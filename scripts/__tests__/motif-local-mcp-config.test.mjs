@@ -1,11 +1,14 @@
 import { spawnSync } from 'node:child_process';
 import {
   chmodSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -22,6 +25,7 @@ import {
   installMotifLocalServer,
   readLocalMcpConfig,
   removeMotifLocalServer,
+  resolveNodeBinary,
   updateLocalMcpConfigFile,
   writeLocalMcpConfigAtomically,
 } from '../lib/motif-local-mcp-config.mjs';
@@ -32,7 +36,7 @@ const temporaryDirectories = [];
 function temporaryConfig(initialConfig) {
   const directory = mkdtempSync(join(tmpdir(), 'motif-local-mcp-test-'));
   temporaryDirectories.push(directory);
-  const configPath = join(directory, '.claude-science', 'mcp', 'local-mcp.json');
+  const configPath = join(directory, 'mcp', 'local-mcp.json');
   mkdirSync(dirname(configPath), { recursive: true });
   const bytes = `${JSON.stringify(initialConfig, null, 2)}\n`;
   writeFileSync(configPath, bytes, { mode: 0o644 });
@@ -90,6 +94,88 @@ describe('Motif Claude Science local connector configuration', () => {
     ]);
     expect(desired.args.at(-1)).toBe(`${root}/scripts/run-motif-claude-science-mcp.sh`);
     expect(desired.env).toEqual({ MOTIF_NODE_BIN: process.execPath, MOTIF_ROOT: root });
+  });
+
+  it('registers the stable package path across a versioned Node upgrade', () => {
+    const { directory } = temporaryConfig({ servers: [] });
+    const cellar = join(directory, 'Cellar', 'node@22');
+    const first = join(cellar, '22.13.0');
+    const next = join(cellar, '22.14.0');
+    for (const version of [first, next]) {
+      mkdirSync(join(version, 'bin'), { recursive: true });
+      writeFileSync(join(version, 'bin', 'node'), '', { mode: 0o755 });
+    }
+    const opt = join(directory, 'opt', 'node@22');
+    mkdirSync(dirname(opt));
+    symlinkSync(first, opt);
+    const nodeBinary = resolveNodeBinary({ environment: {}, current: join(first, 'bin', 'node') });
+    expect(nodeBinary).toBe(join(opt, 'bin', 'node'));
+
+    renameSync(opt, opt + '.previous');
+    symlinkSync(next, opt);
+    rmSync(first, { recursive: true });
+    expect(resolveNodeBinary({ environment: {}, current: join(next, 'bin', 'node') })).toBe(nodeBinary);
+    expect(realpathSync(nodeBinary)).toBe(realpathSync(join(next, 'bin', 'node')));
+  });
+
+  function checkFixture({ nodeExists = true, bootstrapError } = {}) {
+    const { directory } = temporaryConfig({ servers: [] });
+    const checkout = realpathSync(directory);
+    const nodeBinary = join(checkout, 'bin', 'node');
+    const entry = desiredMotifLocalServer(checkout, { nodeBinary });
+    const { configPath, bytes } = temporaryConfig({ servers: [entry] });
+    const marker = join(checkout, 'registered-node-used');
+    if (nodeExists) {
+      mkdirSync(join(checkout, 'bin'));
+      writeFileSync(nodeBinary, `#!/bin/bash\nprintf used > ${JSON.stringify(marker)}\nexec ${JSON.stringify(process.execPath)} "$@"\n`, { mode: 0o755 });
+      mkdirSync(join(checkout, 'scripts'));
+      mkdirSync(join(checkout, 'dist-motif', 'claude-science'), { recursive: true });
+      copyFileSync(join(root, 'scripts', 'run-motif-claude-science-mcp.sh'), entry.args.at(-1));
+      chmodSync(entry.args.at(-1), 0o755);
+      writeFileSync(join(checkout, 'dist-motif', 'motif-template.html'), 'fixture');
+      writeFileSync(join(checkout, 'dist-motif', 'claude-science', 'motif-mcp-app.html'), 'fixture');
+      const server = bootstrapError ? `console.error(${JSON.stringify(bootstrapError)}); process.exitCode = 1;` : `
+        import { createInterface } from 'node:readline';
+        createInterface({ input: process.stdin }).on('line', line => {
+          const { id, method } = JSON.parse(line);
+          if (method === 'initialize') {
+            console.log(JSON.stringify({
+              jsonrpc: '2.0', id,
+              result: { protocolVersion: '2025-06-18', serverInfo: { name: 'motif-claude-science' } },
+            }));
+          }
+        });
+      `;
+      writeFileSync(join(checkout, 'dist-motif', 'claude-science', 'motif-mcp-server.mjs'), server);
+    }
+    const result = spawnSync(process.execPath, [
+      join(root, 'scripts', 'configure-motif-claude-science-local.mjs'), '--check', '--config', configPath,
+    ], { cwd: root, encoding: 'utf8', timeout: 12_000 });
+    expect(readFileSync(configPath, 'utf8')).toBe(bytes);
+    expect(backupFiles(configPath)).toHaveLength(0);
+    return { result, marker };
+  }
+
+  it('initializes the registered launcher and Node from a different checkout', () => {
+    const { result, marker } = checkFixture();
+    expect(result.stderr).toBe('');
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('registered command initialized over stdio');
+    expect(readFileSync(marker, 'utf8')).toBe('used');
+  });
+
+  it('reports the missing registered Node before inspecting build files', () => {
+    const { result } = checkFixture({ nodeExists: false });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Registered MOTIF_NODE_BIN is missing');
+  });
+
+  it.each(['motif', 'motif-claude-science'])('reports a recognized %s bootstrap fault without exposing arbitrary stderr', (prefix) => {
+    const fault = 'Motif runtime resources have missing or inconsistent build identities.';
+    const { result } = checkFixture({ bootstrapError: `[${prefix}] Fatal error: ${fault}\nprivate-stderr-marker` });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(fault);
+    expect(result.stderr).not.toContain('private-stderr-marker');
   });
 
   it('preserves unrelated servers, unknown settings, and exact backup bytes', () => {

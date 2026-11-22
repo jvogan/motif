@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import { mkdir, readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
+import { openTool } from './tool-panel-aliases';
 
 const artifactUrl = process.env.MOTIF_ARTIFACT_URL;
 const fixtureDirectory = process.env.MOTIF_REAL_AB1_DIR;
@@ -38,8 +39,7 @@ test.describe('Claude Science real Sanger campaign', () => {
     expect(fixtureNames.length).toBeGreaterThanOrEqual(10);
     const fixturePaths = fixtureNames.map((name) => path.join(fixtureDirectory!, name));
     const beforeCount = await page.evaluate(() => window.motifGetInventory().length);
-    const alignmentTool = page.locator('details[data-rail-tool="alignment"]');
-    await alignmentTool.locator(':scope > summary').click();
+    const alignmentTool = await openTool(page, 'alignment');
     await alignmentTool.getByTestId('msa-open-button').click();
     const msaWindow = page.locator('.motif-cs-window').filter({ has: page.getByTestId('msa-workspace') });
     await msaWindow.getByLabel('Choose sequence files for alignment').setInputFiles(fixturePaths);
@@ -113,8 +113,7 @@ test.describe('Claude Science real Sanger campaign', () => {
     }), { id: templateId, name: template.name, sequence: template.sequence });
 
     const beforeCount = await page.evaluate(() => window.motifGetInventory().length);
-    const alignmentTool = page.locator('details[data-rail-tool="alignment"]');
-    await alignmentTool.locator(':scope > summary').click();
+    const alignmentTool = await openTool(page, 'alignment');
     await alignmentTool.getByTestId('msa-open-button').click();
     const msaWindow = page.locator('.motif-cs-window').filter({ has: page.getByTestId('msa-workspace') });
     await expect(msaWindow.getByTestId('msa-record-dropzone')).toBeVisible();

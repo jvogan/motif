@@ -3,7 +3,7 @@ import vectors from '../../../public/data/vectors.json';
 import { findRestrictionSites } from '../../bio/restriction-sites';
 import { resolveEnzymeUnion } from '../../bio/restriction-presets';
 import type { Feature } from '../../bio/types';
-import { computeMapLayout } from '../layout';
+import { computeMapLayout, RESTRICTION_LABEL_FONT_MODE } from '../layout';
 import { approxTextWidth, CIRCULAR_LABEL_BOX_HEIGHT_PX, type LabelFontMode } from '../geometry/labels';
 import { restrictionDensitySourcesForMap, restrictionSitesForInteractiveMap } from '../restriction-display';
 import type { MapLabelRender, MapLayout } from '../types';
@@ -46,7 +46,7 @@ function box(label: MapLabelRender, mode: LabelFontMode): Box {
 function visibleOverlapPairs(layout: MapLayout): string[] {
   const labels = [
     ...layout.features.filter((item) => item.label).map((item) => ({ family: 'feature', text: item.label!.text, box: box(item.label!, 'proportional') })),
-    ...layout.restrictions.filter((item) => item.label).map((item) => ({ family: 'restriction', text: item.label!.text, box: box(item.label!, 'monospace') })),
+    ...layout.restrictions.filter((item) => item.label).map((item) => ({ family: 'restriction', text: item.label!.text, box: box(item.label!, RESTRICTION_LABEL_FONT_MODE) })),
     ...layout.coordinates.filter((item) => item.label).map((item) => ({ family: 'coord', text: item.label!.text, box: box({ ...item.label!, leader: [], inside: true }, 'proportional') })),
   ];
   const pairs: string[] = [];
@@ -156,8 +156,8 @@ describe('live pUC19 responsive map labels', () => {
     // every cluster carries a label, and the labels still name only some of the
     // sites under them.
     // Stated beside the ring, not in it, so the sentence always has its noun.
-    expect(layout.overflowSummaries?.find((item) => item.kind === 'restriction-labels')?.text ?? '0 unnamed sites')
-      .toMatch(new RegExp(`^${unnamedSitesFromDrawnLabels(layout)} unnamed sites?$`));
+    expect(layout.overflowSummaries?.find((item) => item.kind === 'restriction-labels')?.text ?? '+0 sites')
+      .toMatch(new RegExp(`^\\+${unnamedSitesFromDrawnLabels(layout)} sites?$`));
   });
 
   it('keeps the dense pET-28a(+) cloning landmarks alongside bounded enzyme names', () => {

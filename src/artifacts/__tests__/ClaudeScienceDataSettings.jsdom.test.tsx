@@ -32,12 +32,17 @@ function renderSettings(overrides: Partial<React.ComponentProps<typeof ClaudeSci
 
 describe('ClaudeScienceDataSettings', () => {
   it.each([
-    { hasUnsavedChanges: true, backupDownloaded: false, chip: 'Unsaved changes' },
-    { hasUnsavedChanges: true, backupDownloaded: true, chip: 'Backup downloaded' },
-    { hasUnsavedChanges: false, backupDownloaded: false, chip: 'Backup current' },
-  ])('reads "$chip" on the backup chip', ({ hasUnsavedChanges, backupDownloaded, chip }) => {
-    const { getByTestId } = renderSettings({ hasUnsavedChanges, backupDownloaded });
+    { hasUnsavedChanges: true, backupStatus: null, chip: 'Unsaved changes' },
+    { hasUnsavedChanges: true, backupStatus: 'requested', chip: 'Backup requested' },
+    { hasUnsavedChanges: false, backupStatus: 'saved', chip: 'Backup saved' },
+  ] as const)('reads "$chip" on the backup chip', ({ hasUnsavedChanges, backupStatus, chip }) => {
+    const { getByTestId } = renderSettings({ hasUnsavedChanges, backupStatus });
     expect(getByTestId('data-backup-status').textContent).toBe(chip);
+  });
+
+  it('shows no backup chip when nothing needs backing up', () => {
+    const { queryByTestId } = renderSettings({ hasUnsavedChanges: false });
+    expect(queryByTestId('data-backup-status')).toBeNull();
   });
 
   it('presents explicit backup/restore controls, counts, and the session privacy boundary', async () => {
@@ -50,12 +55,12 @@ describe('ClaudeScienceDataSettings', () => {
     const onRestoreFile = vi.fn();
     const { getByTestId } = renderSettings({ onDownloadBackup, onRestoreFile });
 
-    expect(screen.getByText('3 records · 2 alignments · 1 note · 4 workflow results. Download a complete JSON backup before closing or reloading.')).toBeTruthy();
-    expect(screen.getByText(/Changes remain in this browser session/)).toBeTruthy();
-    expect(screen.getByText(/Nothing is uploaded automatically/)).toBeTruthy();
-    expect(screen.getByText(/plaintext JSON, not an encrypted vault/i)).toBeTruthy();
-    expect(getByTestId('library-mode-status').textContent).toContain('Move a reviewed backup');
-    expect(getByTestId('library-mode-status').textContent).toContain('Portable session');
+    // The counts appear once, under Clear workspace.
+    expect(screen.getByText('Back up before closing or reloading.')).toBeTruthy();
+    expect(screen.getAllByText(/3 records · 2 alignments · 1 note · 4 workflow results/)).toHaveLength(1);
+    expect(screen.getByText('3 records · 2 alignments · 1 note · 4 workflow results will be removed.')).toBeTruthy();
+    expect(screen.getByText(/Kept in this browser session\. Nothing is uploaded\. Backups are unencrypted JSON\./)).toBeTruthy();
+    expect(screen.queryByTestId('library-mode-status')).toBeNull();
 
     fireEvent.click(getByTestId('download-workspace-backup'));
     await waitFor(() => expect(onDownloadBackup).toHaveBeenCalledTimes(1));
@@ -70,12 +75,14 @@ describe('ClaudeScienceDataSettings', () => {
       backup,
       getByTestId('restore-workspace-backup'),
     ));
-    expect(getByTestId('data-recovery-status').textContent).toBe('workspace.json is valid. Review the confirmation to restore it.');
+    expect(getByTestId('data-recovery-status').textContent).toBe('workspace.json is valid. Review and confirm restore.');
   });
 
   it('includes typed analysis results in portable workspace counts when present', () => {
     renderSettings({ analysisResultCount: 3 });
-    expect(screen.getAllByText(/4 workflow results · 3 analysis results/)).toHaveLength(2);
+    // Once, under Clear workspace; the backup row does not repeat it.
+    expect(screen.getAllByText(/4 workflow results · 3 analysis results/)).toHaveLength(1);
+    expect(screen.getByText(/4 workflow results · 3 analysis results will be removed\./)).toBeTruthy();
   });
 
   it('uses an inline two-step clear confirmation with Cancel focused by default', async () => {
@@ -87,7 +94,11 @@ describe('ClaudeScienceDataSettings', () => {
     const confirmation = getByTestId('clear-workspace-confirmation');
     const cancel = getByTestId('clear-workspace-cancel');
     expect(confirmation.getAttribute('role')).toBe('group');
-    expect(confirmation.textContent).toContain('3 records · 2 alignments · 1 note · 4 workflow results');
+    // The counts stay in the line above the confirmation, not repeated in it;
+    // the group names that line first in its description.
+    expect(confirmation.textContent).not.toContain('3 records');
+    expect(confirmation.getAttribute('aria-describedby')).toBe('motif-cs-clear-workspace-counts motif-cs-clear-confirmation-description');
+    expect(document.getElementById('motif-cs-clear-workspace-counts')?.textContent).toBe('3 records · 2 alignments · 1 note · 4 workflow results will be removed.');
     expect(confirmation.textContent).toContain('Unsaved changes will be lost');
     await waitFor(() => expect(document.activeElement).toBe(cancel));
 
@@ -121,6 +132,6 @@ describe('ClaudeScienceDataSettings', () => {
     fireEvent.click(getByTestId('reset-display-preferences'));
     await waitFor(() => expect(onResetDisplayPreferences).toHaveBeenCalledTimes(1));
     expect(getByTestId('data-recovery-status').getAttribute('aria-live')).toBe('polite');
-    expect(getByTestId('data-recovery-status').textContent).toBe('Display preferences reset.');
+    expect(getByTestId('data-recovery-status').textContent).toBe('Display reset.');
   });
 });

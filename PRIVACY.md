@@ -34,7 +34,7 @@ using Motif with sensitive material.
 Motif may store display preferences and session state in browser storage on
 your computer. You can reset display preferences from the workbench.
 
-Portable HTML, Database JSON, workspace ZIP, FASTA, GenBank, CLUSTAL, CSV, and
+Portable HTML, Workspace JSON, workspace ZIP, FASTA, GenBank, CLUSTAL, CSV, and
 other exports are ordinary files. They are not encrypted by Motif. Anyone who
 can read those files may be able to read the biological records and notes they
 contain. You are responsible for choosing a safe location, applying suitable

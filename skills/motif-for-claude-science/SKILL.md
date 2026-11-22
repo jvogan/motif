@@ -41,5 +41,5 @@ MCP App.
 
 These tools validate and render data in an ephemeral workbench. They do not
 write a durable library, run external analysis software, expose a shell, or
-grant generic DOM/filesystem access. Database JSON and workspace ZIP created
+grant generic DOM/filesystem access. Workspace JSON and workspace ZIP created
 inside Motif are ordinary unencrypted user-owned checkpoints.

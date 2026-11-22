@@ -1,4 +1,4 @@
-import { getGoldenGatePartBoundary } from '../bio/golden-gate';
+import { getGoldenGatePartBoundary, scanGoldenGateSites } from '../bio/golden-gate';
 import {
   assessGoldenGateAssemblyFidelity,
   type GoldenGateFidelityAssessment,
@@ -954,6 +954,16 @@ export function planArtifactGoldenGateAssembly(input: {
     && parts.every((part) => part.status === 'ready')
     && junctions.every((junction) => junction.compatible)
     && candidateProduct !== null;
+  if (ready && enzyme && candidateProduct !== null) {
+    const scan = scanGoldenGateSites(candidateProduct, enzyme.name, { topology, includeOutOfBounds: true });
+    const count = scan.sites.length;
+    if (count > 0) {
+      warnings.push(issue(
+        'product_type_iis_site',
+        `Product contains ${scan.complete ? '' : 'at least '}${count} ${enzyme.name} recognition site${count === 1 ? '' : 's'} and can be cut again.`,
+      ));
+    }
+  }
 
   return {
     kind: 'golden_gate',
@@ -1419,8 +1429,8 @@ export function carryLigationPartFeatures<F extends CarriedFeatureShape>(
 /**
  * Carry a part's features onto an overlap-assembly product by locating the
  * part's own bases in it. Gibson shares each overlap between neighbours, so a
- * part's sequence still appears contiguously in the product and its features
- * move by where it landed; a part used reverse-complemented is flipped first. A
+ * part's sequence can be read contiguously, including through a circular
+ * product's origin. A part used reverse-complemented is flipped first. A
  * part contributes nothing when its sequence appears more than once or does not
  * appear: an ambiguous placement must not label bases it cannot prove. A
  * feature that does not lie inside its part (a location across a circular
@@ -1430,14 +1440,18 @@ export function carryOverlapPartFeatures<F extends CarriedFeatureShape>(
   parts: ReadonlyArray<{ sequence: string; features?: readonly F[]; orientation?: 'forward' | 'reverse' }>,
   productSequence: string,
   leftOut?: F[],
+  topology: Topology = 'linear',
 ): F[] {
   const product = productSequence.toUpperCase();
+  const searchable = topology === 'circular' ? product + product.slice(0, -1) : product;
   const carried: F[] = [];
   for (const part of parts.map(orientPart)) {
     const sequence = part.sequence.toUpperCase();
     if (!sequence || sequence.length > product.length) continue;
-    const at = product.indexOf(sequence);
-    if (at < 0 || product.indexOf(sequence, at + 1) >= 0) continue;
+    const at = searchable.indexOf(sequence);
+    if (at < 0 || at >= product.length) continue;
+    const other = searchable.indexOf(sequence, at + 1);
+    if (other >= 0 && other < product.length) continue;
     for (const feature of part.features ?? []) {
       if (isUnreviewedGuess(feature)) continue;
       const inside = Number.isInteger(feature.start) && Number.isInteger(feature.end)
@@ -1447,21 +1461,55 @@ export function carryOverlapPartFeatures<F extends CarriedFeatureShape>(
         leftOut?.push(feature);
         continue;
       }
-      // Drop keys whose value is undefined: a record input is validated as JSON,
-      // and a spread copy of a stored feature keeps `subRanges: undefined`.
-      const defined = Object.fromEntries(Object.entries(feature).filter(([, value]) => value !== undefined)) as F;
-      carried.push({
-        ...defined,
-        start: at + feature.start,
-        end: at + feature.end,
-        ...(feature.subRanges === undefined
-          ? {}
-          : { subRanges: feature.subRanges.map((range) => ({ ...range, start: at + range.start, end: at + range.end })) }),
-        ...carriedQualifiers(feature, { base: (index) => (index >= 0 && index < sequence.length ? at + index : null) }),
-      });
+      carried.push(carryPlacedFeature(feature, at, 0, sequence.length, product.length));
     }
   }
   return carried;
+}
+
+function carryPlacedFeature<F extends CarriedFeatureShape>(
+  feature: F,
+  shift: number,
+  sourceStart: number,
+  sourceEnd: number,
+  productLength: number,
+): F {
+  // A record input is validated as JSON, so drop undefined-valued keys.
+  const defined = Object.fromEntries(Object.entries(feature).filter(([, value]) => value !== undefined)) as F;
+  const qualifiers = carriedQualifiers(feature, {
+    base: (index) => index >= sourceStart && index < sourceEnd ? (index + shift) % productLength : null,
+  });
+  const start = feature.start + shift;
+  const end = feature.end + shift;
+  if (end <= productLength || start >= productLength) {
+    const offset = start >= productLength ? shift - productLength : shift;
+    return {
+      ...defined,
+      start: feature.start + offset,
+      end: feature.end + offset,
+      ...(feature.subRanges === undefined
+        ? {}
+        : { subRanges: feature.subRanges.map((range) => ({ ...range, start: range.start + offset, end: range.end + offset })) }),
+      ...qualifiers,
+    };
+  }
+
+  const subRanges = (feature.subRanges ?? [{ start: feature.start, end: feature.end }]).flatMap((range) => {
+    const start = range.start + shift;
+    const end = range.end + shift;
+    if (end <= productLength) return [{ ...range, start, end }];
+    if (start >= productLength) return [{ ...range, start: start - productLength, end: end - productLength }];
+    const tail = { ...range, start, end: productLength };
+    const head = { ...range, start: 0, end: end - productLength };
+    return ('strand' in range ? range.strand ?? feature.strand : feature.strand) === -1 ? [head, tail] : [tail, head];
+  });
+  return {
+    ...defined,
+    start: Math.min(...subRanges.map((range) => range.start)),
+    end: Math.max(...subRanges.map((range) => range.end)),
+    subRanges,
+    ...qualifiers,
+  };
 }
 
 /**
@@ -1473,9 +1521,8 @@ export function carryOverlapPartFeatures<F extends CarriedFeatureShape>(
  * A feature is carried only when it lies wholly inside its part's released
  * region: one that crosses a trim boundary — a recognition site, its spacer, or
  * the flank beyond it — is dropped rather than clipped, because those bases are
- * absent from the product. For a circular product the last part's trailing
- * overhang is the first part's leading overhang, so a feature reaching into it
- * is dropped too rather than wrapped. Each part is placed only when the product
+ * absent from the product. The last part's trailing overhang on a circular
+ * product maps to the retained copy at the origin. Each part is placed only when the product
  * really carries its released bases there; a part that fails that check
  * contributes nothing, so an unproven placement never labels bases. A feature
  * that crosses a trim boundary is pushed on `leftOut`; one wholly outside the
@@ -1531,7 +1578,6 @@ export function carryGoldenGatePartFeatures<F extends CarriedFeatureShape>(
         if (isUnreviewedGuess(feature)) continue;
         const inside = Number.isInteger(feature.start) && Number.isInteger(feature.end)
           && feature.start >= start && feature.end > feature.start && feature.end <= end
-          && feature.end + shift <= product.length
           && (feature.subRanges ?? []).every((range) => (
             range.start >= start && range.end > range.start && range.end <= end
           ));
@@ -1541,20 +1587,7 @@ export function carryGoldenGatePartFeatures<F extends CarriedFeatureShape>(
           if (featureOverlapsIntervals(feature, [[start, end]], part.sequence.length)) leftOut?.push(feature);
           continue;
         }
-        // Drop keys whose value is undefined: a record input is validated as
-        // JSON, and a spread copy of a stored feature keeps `subRanges: undefined`.
-        const defined = Object.fromEntries(Object.entries(feature).filter(([, value]) => value !== undefined)) as F;
-        carried.push({
-          ...defined,
-          start: feature.start + shift,
-          end: feature.end + shift,
-          ...(feature.subRanges === undefined
-            ? {}
-            : { subRanges: feature.subRanges.map((range) => ({ ...range, start: range.start + shift, end: range.end + shift })) }),
-          ...carriedQualifiers(feature, {
-            base: (index) => (index >= start && index < end && index + shift < product.length ? index + shift : null),
-          }),
-        });
+        carried.push(carryPlacedFeature(feature, shift, start, end, product.length));
       }
     }
     offset += piece.length - overhangLength;

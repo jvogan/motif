@@ -119,7 +119,7 @@ describe('ClaudeScienceSangerTraceViewer difference navigation', () => {
       <ClaudeScienceSangerTraceViewer alignment={alignment} records={records} templateRowId="template" jumpColumn={null} jumpToken={0} />,
     );
     const status = screen.getByTestId('sanger-call-status');
-    expect(status.textContent).toBe('Click a base or use the arrow keys to inspect a call.');
+    expect(status.textContent).toBe('Select a call with click, slider, or arrows.');
 
     view.rerender(
       <ClaudeScienceSangerTraceViewer alignment={alignment} records={records} templateRowId="template" jumpColumn={30} jumpToken={1} />,

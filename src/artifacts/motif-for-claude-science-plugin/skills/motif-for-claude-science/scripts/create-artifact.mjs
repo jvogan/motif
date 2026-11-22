@@ -73,7 +73,7 @@ const FEATURE_TYPES = new Set([
   'orf', 'gene', 'cds', 'promoter', 'terminator', 'rbs', 'origin', 'resistance',
   'restriction_site', 'primer_bind', 'misc_feature', 'mrna', 'rrna', 'trna', 'ncrna',
   'regulatory', 'repeat_region', 'sig_peptide', 'mat_peptide', 'transit_peptide',
-  'intron', 'exon', 'polya_signal', 'enhancer', 'custom',
+  'intron', 'exon', 'polya_signal', 'enhancer', 'custom', 'source', 'rep_origin', 'protein_bind',
 ]);
 const SAFE_FEATURE_COLOR = /^(?:#[0-9a-f]{3,8}|(?:rgb|hsl)a?\([\d\s.,%+\-/]+\)|[a-z]+)$/i;
 const SAFE_FEATURE_THEME_COLOR = /^(?:var\(--(?:accent|green|purple|amber|red|feature-neutral)(?:, #[0-9a-f]{6})?\)|color-mix\(in srgb, var\(--(?:accent|green|purple|amber|red|feature-neutral)(?:, #[0-9a-f]{6})?\) (?:7[2-9]|8\d|9[0-2])%, var\(--bg-primary\)\))$/i;
@@ -839,9 +839,12 @@ function validateAlignments(payload) {
   });
 }
 
-function activeExplicitRecordLengths(payload) {
+// The active records' lengths and the ids of the circular ones, keyed by the
+// ids the workbench gives them. A DNA record with no stated topology is circular.
+function activeExplicitRecordShapes(payload) {
   const records = payloadRecords(payload);
   const recordLengths = new Map();
+  const circularRecordIds = new Set();
   const explicitIds = new Set();
   const usedIds = new Set();
   records.forEach((record, index) => {
@@ -854,14 +857,19 @@ function activeExplicitRecordLengths(payload) {
       usedIds,
     );
     if (record.active === false) return;
-    recordLengths.set(id, normalizedSequenceLength(record.seq ?? record.sequence, record.molecule ?? record.type));
+    const sequence = record.seq ?? record.sequence;
+    const type = record.molecule ?? record.type;
+    recordLengths.set(id, normalizedSequenceLength(sequence, type));
+    if (record.topology === 'circular' || (record.topology === undefined && normalizedRecordType(type, sequence) === 'dna')) {
+      circularRecordIds.add(id);
+    }
   });
-  return recordLengths;
+  return { recordLengths, circularRecordIds };
 }
 
-function validateWorkspaceEnvelope(payload, recordLengths) {
+function validateWorkspaceEnvelope(payload, recordLengths, circularRecordIds) {
   try {
-    normalizeArtifactWorkspaceEnvelope(payload, recordLengths);
+    normalizeArtifactWorkspaceEnvelope(payload, recordLengths, circularRecordIds);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     throw new Error(`Payload workspace is invalid: ${detail}`);
@@ -1030,9 +1038,9 @@ export function validatePayload(payload) {
     throw new Error('A non-empty payload must contain at least one active record');
   }
 
-  const recordLengths = activeExplicitRecordLengths(payload);
+  const { recordLengths, circularRecordIds } = activeExplicitRecordShapes(payload);
   validateAlignments(payload);
-  validateWorkspaceEnvelope(payload, recordLengths);
+  validateWorkspaceEnvelope(payload, recordLengths, circularRecordIds);
   validateAnalysisCollections(payload, recordLengths);
 
   // Trace arrays have their own stricter cardinality/range validation above.

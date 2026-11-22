@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
+import { openTool } from './tool-panel-aliases';
 
 const artifactUrl = process.env.MOTIF_ARTIFACT_URL;
 
@@ -122,7 +123,7 @@ test.describe('Claude Science typed analysis result runtime', () => {
 
     const resultsPanel = page.locator('details[data-rail-tool="analysis-results"]');
     await expect(resultsPanel).toHaveAttribute('open', '');
-    await expect(resultsPanel.locator(':scope > summary')).toContainText('Results');
+    await expect(resultsPanel.locator(':scope > summary')).toContainText('Analysis results');
     await expect(resultsPanel.locator('.motif-cs-chip')).toHaveText('1');
     const resultRow = page.getByTestId('analysis-result-agent-safety-report');
     await expect(resultRow).toBeVisible();
@@ -146,8 +147,7 @@ test.describe('Claude Science typed analysis result runtime', () => {
       'Download requested for Agent safety report.txt. Verify the file before relying on it.',
     );
 
-    const settings = page.locator('details[data-rail-tool="settings"]');
-    await settings.locator(':scope > summary').click();
+    const settings = await openTool(page, 'settings');
     const downloadPromise = page.waitForEvent('download');
     await settings.getByTestId('download-workspace-backup').click();
     const download = await downloadPromise;

@@ -73,7 +73,7 @@ describe('ClaudeScienceConstructVerificationWorkspace draft', () => {
       <ClaudeScienceConstructVerificationWorkspace embedded records={records()} initialReferenceId="ref" onVerify={verify} onSave={vi.fn()} loadDraft={() => kept} onDraftChange={keep} />,
     );
     expect(screen.getByTestId('construct-verification-panel')).toBeTruthy();
-    expect(screen.getByTestId('construct-verification-status').textContent).toBe('Your unsaved run is restored. Review it, then save it to keep it in Results.');
+    expect(screen.getByTestId('construct-verification-status').textContent).toBe('Unsaved result restored. Review and save.');
     expect((screen.getByTestId('construct-verification-save') as HTMLButtonElement).disabled).toBe(false);
   });
 
@@ -90,6 +90,6 @@ describe('ClaudeScienceConstructVerificationWorkspace draft', () => {
       <ClaudeScienceConstructVerificationWorkspace embedded records={records(REFERENCE)} initialReferenceId="ref" onVerify={verify} onSave={vi.fn()} loadDraft={() => kept} onDraftChange={keep} />,
     );
     expect(screen.queryByTestId('construct-verification-panel')).toBeNull();
-    expect(screen.getByTestId('construct-verification-status').textContent).toBe('Your earlier run was discarded because its records changed. Run verification again.');
+    expect(screen.getByTestId('construct-verification-status').textContent).toBe('Inputs changed. Run verification again.');
   });
 });

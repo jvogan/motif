@@ -159,7 +159,7 @@ For every connected open:
 
 FASTA and raw-sequence imports default to linear topology unless topology is
 explicit. GenBank topology is preserved. Binary AB1/ABI files belong in the
-workbench's Add Entry or drag-and-drop flow; do not send binary bytes through
+workbench's Import records or drag-and-drop flow; do not send binary bytes through
 the connector's text input.
 
 ## Artifact and data boundaries
@@ -173,7 +173,7 @@ The local connector is an ephemeral viewer/export surface:
   and
 - it does not live-update a previously saved HTML snapshot.
 
-Inside the workbench, Database JSON is the directly restorable checkpoint.
+Inside the workbench, Workspace JSON is the directly restorable checkpoint.
 The workspace ZIP is a portable handoff containing the same `inventory.json`
 plus interchange exports; extract and restore `inventory.json` when recovering
 from a ZIP. Export and verify the resulting file before reload when edits
@@ -185,7 +185,7 @@ matter; a browser download request alone is not a confirmed save.
 - Host chrome says `motif-local`; only Motif identities are visible.
 - Opened workbench visibly says **Motif**.
 - Intended record name, type, topology, length, and sequence match the source.
-- Inventory, Sequence, Map, and Tools respond to mouse and keyboard.
+- Library, Sequence, Map, and Tools respond to mouse and keyboard.
 - Tools can minimize to the rail without covering the header.
 - The connector-created HTML workbench opens and responds interactively.
 - Optional live mounting is reported separately and is not required for a

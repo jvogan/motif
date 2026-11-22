@@ -1,9 +1,17 @@
 import { z } from 'zod';
+import { MAX_MOTIF_PRELOAD_BYTES } from '../../src/artifacts/motif-preload-limits.js';
 
 export const MOTIF_WORKBENCH_RESOURCE_URI = 'ui://motif/workbench.html' as const;
 export const MOTIF_WORKBENCH_RESULT_SCHEMA = 'motif.mcp.workbench.v1' as const;
 export const MOTIF_ARTIFACT_EXPORT_SCHEMA = 'motif.mcp.artifact-export.v1' as const;
 export const MAX_MOTIF_ARTIFACT_HTML_BYTES = 40 * 1024 * 1024;
+
+export class MotifPreloadSizeError extends Error {
+  constructor() {
+    super(`Motif preload exceeds ${MAX_MOTIF_PRELOAD_BYTES / 1_048_576} MiB. Split the workspace or reduce its size.`);
+    this.name = 'MotifPreloadSizeError';
+  }
+}
 
 export const motifWorkbenchPayloadSchema = z.record(z.string(), z.unknown());
 

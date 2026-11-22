@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 const here = dirname(fileURLToPath(import.meta.url));
 const artifactSource = readFileSync(resolve(here, '..', 'motif-artifact.tsx'), 'utf8');
 const artifactCss = readFileSync(resolve(here, '..', 'motif-artifact.css'), 'utf8');
+const findSource = readFileSync(resolve(here, '..', 'claude-science-find.ts'), 'utf8');
 const toolbarSource = readFileSync(resolve(here, '..', '..', 'components', 'plasmid-map', 'MapViewToolbar.tsx'), 'utf8');
 
 function sliceBetween(source: string, startNeedle: string, endNeedle: string): string {
@@ -18,10 +19,14 @@ function sliceBetween(source: string, startNeedle: string, endNeedle: string): s
 
 describe('Claude Science map workspace regression guards', () => {
   it('keeps motif, guide, and digest coordinates correct across a circular origin', () => {
-    expect(artifactSource).toContain("function findMotifHits(sequence: string, motif: string, sequenceType: SequenceType, topology: Topology = 'linear')");
-    expect(artifactSource).toContain("sequence + sequence.slice(0, Math.max(0, target.length - 1))");
+    expect(artifactSource).toContain('findSequenceMatches(sequence, searchMotif, sequenceType, topology)');
+    expect(findSource).toContain("topology: Topology = 'linear',");
+    expect(findSource).toContain('sequence + sequence.slice(0, Math.max(0, length - 1))');
     expect(artifactSource).toContain('motifHitContext(sequence, hit, cleanedMotifLength, 10, topology)');
-    expect(artifactSource).toContain('motifHits.flatMap((hit) => normalizeSpan(hit, hit + motifLength, sequence.length, topology))');
+    expect(artifactSource).toContain('forward: motifRectsByLine(forward, findLength, sequence.length, topology, basesPerLine),');
+    expect(artifactSource).toContain('reverse: motifRectsByLine(reverse, findLength, sequence.length, topology, basesPerLine),');
+    expect(artifactSource).toContain('const findCurrentRanges = findCurrent ? normalizeSpan(findCurrent.start, findCurrent.end, sequence.length, topology) : [];');
+    expect(artifactSource).toContain('Math.max(0, sortedHits[sortedHits.length - 1] + motifLength - sequenceLength)');
     expect(artifactSource).toContain('function collectCircularGuidesOnStrand(');
     expect(artifactSource).toContain("if (nuclease.targetsRna && sequenceType !== 'rna') return [];");
     expect(artifactSource).toContain("return findGuides(scopedSequence, sequenceType, nuclease, 'linear').map((guide) => {");
@@ -89,7 +94,7 @@ describe('Claude Science map workspace regression guards', () => {
 
     // Between 768px and 1535px the circular map frame can extend below its
     // column's visible edge, so keep the transient readout on the reachable top
-    // edge. This no longer has any relationship to toolbar placement.
+    // edge. This has no relationship to toolbar placement.
     const circular = sliceBetween(
       artifactCss,
       '.motif-cs-map-frame[data-map-mode="circular"] .motif-cs-map-hint {',
@@ -145,9 +150,9 @@ describe('Claude Science map workspace regression guards', () => {
     expect(linearSvg).toContain('.motif-cs-map-frame[data-map-mode="linear"] .motif-plasmid-map');
     expect(linearSvg).toMatch(/height:\s*auto;/);
 
-    // And the layout must not read back the height the frame now takes from it.
+    // And the layout must not read back the height the frame takes from it.
     // Simulated over the ResizeObserver's own update rule at a 560px pane with 22
-    // features and 65 sites, the pair collapsed 435.6 -> 338.3 -> 262.9 -> 200.7px
+    // features and 65 sites, the pair would collapse 435.6 -> 338.3 -> 262.9 -> 200.7px
     // across four passes, hiding a lane on each one, because a scaled-down
     // drawing always measures shorter than the layout that produced it.
     expect(artifactSource).toContain(
@@ -156,29 +161,28 @@ describe('Claude Science map workspace regression guards', () => {
     expect(artifactSource).not.toMatch(/^ {6}height: mapSize\.height,$/m);
   });
 
-  it('pins the map dock heads as a column footer only while they are collapsed', () => {
+  it('pins the map dock heads as a column footer, open or closed', () => {
     // These two heads are the end of the map workflow and sat below the column's visible
     // edge at every desktop size under 1536 — 138px at 900x700 down to 85px at 1440x1200.
     // The app's first sticky FOOTER; the ten that already exist are headers at `top: 0`.
-    const footer = sliceBetween(
-      artifactCss,
-      '.motif-cs-map-dock-strip:not(:has(> details[open])) {',
-      '}',
-    );
+    const marker = artifactCss.indexOf('Open or closed alike: an open body floats instead of joining the flow');
+    expect(marker, 'missing the sticky dock footer comment').toBeGreaterThanOrEqual(0);
+    const footer = sliceBetween(artifactCss.slice(marker), '.motif-cs-map-dock-strip {', '}');
     expect(footer).toMatch(/position:\s*sticky/);
     expect(footer).toMatch(/bottom:\s*-10px/);
     // Opaque, or the map scrolls through the footer that is meant to end it.
     expect(footer, 'a transparent sticky footer lets the map show through').toMatch(/background:\s*var\(--bg-primary\)/);
     expect(footer).toMatch(/z-index:/);
 
-    // The `:not(...)` is load-bearing, not decoration. Open, this element IS the whole
-    // panel body — pinning that to the bottom would cover the map rather than finish it.
+    // An open body floats, so the strip keeps its size and stays sticky; un-sticking
+    // it on open would move the head just pressed. Open only lifts it.
     const openState = sliceBetween(artifactCss, '.motif-cs-map-dock-strip:has(> details[open]) {', '}');
-    expect(openState, 'the open dock strip must not be sticky').not.toMatch(/position:\s*sticky/);
+    expect(openState, 'the open dock strip must keep the footer position').not.toMatch(/position:/);
+    expect(openState).toMatch(/z-index:\s*7/);
 
     // No breakpoint, deliberately: `bottom` engages only while an ancestor scrolls, so
     // 1920 — where the column hides 0px — needs no exemption and must not be given one.
-    const stickyIndex = artifactCss.indexOf('.motif-cs-map-dock-strip:not(:has(> details[open]))');
+    const stickyIndex = marker + artifactCss.slice(marker).indexOf('.motif-cs-map-dock-strip {');
     const enclosingMedia = artifactCss.lastIndexOf('@media', stickyIndex);
     const enclosingClose = artifactCss.lastIndexOf('\n}', stickyIndex);
     expect(

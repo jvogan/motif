@@ -2,11 +2,13 @@ import {
   useCallback,
   useEffect,
   useId,
+  useDeferredValue,
   useMemo,
   useRef,
   useState,
   type KeyboardEvent,
 } from 'react';
+import { ChevronDown } from 'lucide-react';
 import {
   ENZYME_TAIL_PRESETS,
   MAX_PRIMER_BINDING_LENGTH,
@@ -43,6 +45,7 @@ import {
   predictSelfDimer,
 } from '../bio/primer-thermodynamics';
 import type { Feature } from '../bio/types';
+import type { BrowserDownloadReceipt } from './claude-science-download';
 import './claude-science-primer-workspace.css';
 
 export type ClaudeSciencePrimerIntent = 'pcr' | 'cloning' | 'verification';
@@ -104,6 +107,24 @@ export type ClaudeSciencePrimerExport = ClaudeSciencePrimerHandoff & {
   text: string;
 };
 
+export type ClaudeSciencePrimerPairSites = {
+  recordId: string;
+  forward: { start: number; end: number };
+  reverse: { start: number; end: number };
+};
+
+/** One primer of the chosen pair, picked to select where it binds on the record. */
+export type ClaudeSciencePrimerSite = {
+  recordId: string;
+  /** 0-based start and exclusive end of the binding site on the top strand. */
+  start: number;
+  end: number;
+  /** 1 for the forward primer, which reads along the top strand; -1 for the reverse primer. */
+  strand: 1 | -1;
+  /** "Forward primer" or "Reverse primer". */
+  label: string;
+};
+
 export type ClaudeSciencePrimerWorkspaceProps = {
   record: ClaudeSciencePrimerRecord;
   /** Live host selection used for sequence context and the optional reset action. */
@@ -112,14 +133,25 @@ export type ClaudeSciencePrimerWorkspaceProps = {
   targetRange?: { start: number; end: number } | null;
   onClose: () => void;
   onSelectRange?: (start: number, end: number) => void;
-  onCopy?: (label: string, value: string) => void | Promise<void>;
-  onExport?: (payload: ClaudeSciencePrimerExport) => void | Promise<void>;
+  onCopy?: (label: string, value: string) => boolean | Promise<boolean>;
+  onExport?: (payload: ClaudeSciencePrimerExport) => BrowserDownloadReceipt | Promise<BrowserDownloadReceipt>;
   onSaveDesign?: (handoff: ClaudeSciencePrimerHandoff) => void | Promise<void>;
   onAddAnnotations?: (features: readonly Feature[], handoff: ClaudeSciencePrimerHandoff) => void | Promise<void>;
   onSimulatePcr?: (handoff: ClaudeSciencePrimerHandoff) => void | Promise<void>;
   /** Creates an exact linear amplicon record; distinct from result-only simulation. */
   onCreateAmplicon?: (handoff: ClaudeSciencePrimerHandoff) => void | Promise<void>;
   onUseForCloning?: (handoff: ClaudeSciencePrimerHandoff) => void | Promise<void>;
+  /**
+   * The chosen pair's two binding sites on the record, so the host can mark
+   * them on its sequence and map; null when no pair is chosen and when the
+   * workspace closes. It never changes the host's selection.
+   */
+  onPairChange?: (pair: ClaudeSciencePrimerPairSites | null) => void;
+  /**
+   * Selects one primer's binding site on the host's sequence and map, as a
+   * click on a feature selects its bases. The chosen pair stays chosen.
+   */
+  onSelectPrimer?: (site: ClaudeSciencePrimerSite) => void;
   initialIntent?: ClaudeSciencePrimerIntent;
   /** Verified preparation context supplied by the owning cloning workflow. */
   preparationContext?: ClaudeSciencePrimerPreparationContext | null;
@@ -151,7 +183,7 @@ const PRESETS: readonly PrimerPreset[] = [
   {
     id: 'standard',
     name: 'Standard PCR',
-    note: 'Balanced defaults for routine amplification',
+    note: 'Routine PCR',
     intent: 'pcr',
     minLength: 18,
     maxLength: 28,
@@ -164,7 +196,7 @@ const PRESETS: readonly PrimerPreset[] = [
   {
     id: 'colony',
     name: 'Colony PCR',
-    note: 'Compact primers for fast screening',
+    note: 'Shorter primers for colony PCR',
     intent: 'verification',
     minLength: 18,
     maxLength: 24,
@@ -177,7 +209,7 @@ const PRESETS: readonly PrimerPreset[] = [
   {
     id: 'cloning',
     name: 'Cloning',
-    note: 'Longer binding regions with room for 5′ tails',
+    note: 'Longer annealing regions, optional 5′ tails',
     intent: 'cloning',
     minLength: 20,
     maxLength: 32,
@@ -190,7 +222,7 @@ const PRESETS: readonly PrimerPreset[] = [
   {
     id: 'touchdown',
     name: 'Touchdown',
-    note: 'Tighter, higher-Tm specificity window',
+    note: 'Higher Tm, narrower tolerance',
     intent: 'pcr',
     minLength: 22,
     maxLength: 30,
@@ -307,19 +339,19 @@ function diagnosticMessage(result: PrimerPairResult, tails: PrimerTailDiagnosis)
   const tailLead = !tails.tailed || tails.pairsWithoutTails === null
     ? ''
     : tails.pairsWithoutTails > 0
-      ? `The 5′ tails block every pair: without them, ${tails.pairsWithoutTails.toLocaleString()} pair${tails.pairsWithoutTails === 1 ? '' : 's'} pass. `
-      : 'The 5′ tails are not the cause: this target gives no pair without them either. ';
+      ? `No pairs with 5′ tails. ${tails.pairsWithoutTails.toLocaleString()} pass without tails. `
+      : 'Zero pairs with or without tails. ';
   if (result.warnings && result.warnings.length > 0) {
-    return `${tailLead}${result.warnings.join(' ')} ${result.forwardCount + result.reverseCount === 0 ? 'No exact primer candidates were evaluated.' : 'Review the affected candidates before ordering.'}`;
+    return `${tailLead}${result.warnings.join(' ')} ${result.forwardCount + result.reverseCount === 0 ? 'Exact candidates unevaluated.' : 'Review flagged candidates before ordering.'}`;
   }
   if (result.forwardCount > 0 && result.reverseCount > 0) {
     const reasons: string[] = [];
-    if (result.rejections.tmDiff > 0) reasons.push(`${result.rejections.tmDiff.toLocaleString()} pairings exceeded ΔTm 5 °C`);
+    if (result.rejections.tmDiff > 0) reasons.push(`${result.rejections.tmDiff.toLocaleString()} exceeded ΔTm 5 °C`);
     if (result.rejections.productLength > 0) reasons.push(`${result.rejections.productLength.toLocaleString()} produced no amplicon`);
     if ((result.rejections.crossDimer ?? 0) > 0) reasons.push(`${result.rejections.crossDimer?.toLocaleString()} failed the cross-dimer cutoff`);
     return reasons.length > 0
-      ? `${tailLead}${result.forwardCount} forward and ${result.reverseCount} reverse candidates were found, but ${reasons.join(' and ')}.`
-      : `${tailLead}Forward and reverse candidates were found, but none formed a valid pair.`;
+      ? `${tailLead}${result.forwardCount} forward, ${result.reverseCount} reverse. Rejected pairs · ${reasons.join(', ')}.`
+      : `${tailLead}Candidates found. Zero valid pairs.`;
   }
 
   const failing = ([
@@ -329,11 +361,11 @@ function diagnosticMessage(result: PrimerPairResult, tails: PrimerTailDiagnosis)
     .filter(([, count]) => count === 0)
     .map(([direction, , rejections]) => {
       const reasons = directionRejections(rejections);
-      return reasons ? `No ${direction} primer passes (rejected: ${reasons}).` : '';
+      return reasons ? `No ${direction} primers pass · ${reasons}.` : '';
     })
     .filter(Boolean);
   if (failing.length > 0) return `${tailLead}${failing.join(' ')}`;
-  return `${tailLead}No pair fits this target. Widen the flank or move the target away from a sequence edge.`;
+  return `${tailLead}Widen the search flank or move the target inward.`;
 }
 
 function hasClamp(candidate: PrimerCandidate): boolean {
@@ -346,15 +378,15 @@ function qualityState(deltaG: number, cutoff: number, status: 'exact' | 'ambiguo
 
 function evidenceReviewLabel(code: string): string {
   switch (code) {
-    case 'cross-dimer-cutoff': return 'Cross-dimer ΔG is below the default −5 kcal/mol review cutoff.';
-    case 'cross-dimer-3-prime': return 'The strongest cross-dimer alignment involves a primer 3′ end.';
-    case 'cross-dimer-ambiguous': return 'Cross-dimer evidence includes ambiguous nucleotide symbols.';
-    case 'cross-dimer-work-limit': return 'Cross-dimer scoring reached its bounded work limit.';
-    case 'secondary-structure-ambiguous': return 'Hairpin or self-dimer evidence includes ambiguous symbols.';
-    case 'secondary-structure-work-limit': return 'Hairpin or self-dimer scoring reached its bounded work limit.';
-    case 'search-evidence-incomplete': return 'Candidate search or pool pairing was bounded; the returned ranking is not exhaustive.';
-    case PRIMER_TAIL_STRUCTURE_3_PRIME_REVIEW_CODE: return 'A 5′-tail structure pairs a primer’s 3′ end, so the primer can extend on itself or its partner.';
-    default: return 'Additional interaction evidence requires review.';
+    case 'cross-dimer-cutoff': return 'Cross-dimer ΔG below −5 kcal/mol review cutoff.';
+    case 'cross-dimer-3-prime': return 'Strongest cross-dimer pairs a 3′ end.';
+    case 'cross-dimer-ambiguous': return 'Cross-dimer includes ambiguous bases.';
+    case 'cross-dimer-work-limit': return 'Cross-dimer check reached its limit.';
+    case 'secondary-structure-ambiguous': return 'Hairpin or self-dimer includes ambiguous bases.';
+    case 'secondary-structure-work-limit': return 'Hairpin or self-dimer check reached its limit.';
+    case 'search-evidence-incomplete': return 'Search limit reached. Ranking covers evaluated pairs.';
+    case PRIMER_TAIL_STRUCTURE_3_PRIME_REVIEW_CODE: return 'A 5′ tail pairs a 3′ end. Self- or partner extension is possible.';
+    default: return 'Review additional interactions.';
   }
 }
 
@@ -380,6 +412,8 @@ export function ClaudeSciencePrimerWorkspace({
   onSimulatePcr,
   onCreateAmplicon,
   onUseForCloning,
+  onPairChange,
+  onSelectPrimer,
   initialIntent = 'pcr',
   preparationContext = null,
   preparationProgress = null,
@@ -522,14 +556,14 @@ export function ClaudeSciencePrimerWorkspace({
     ? `${statusId} ${validationMessageId}`
     : statusId;
   const validationMessage = useMemo(() => {
-    if (normalizedSequence.length < 24) return 'The record is too short for paired primer design.';
+    if (normalizedSequence.length < 24) return 'Choose a longer template.';
     if (targetRangeInvalid) {
-      return `Use a non-wrapping target inside 1–${normalizedSequence.length.toLocaleString()}.`;
+      return `Use 1–${normalizedSequence.length.toLocaleString()}, start ≤ end.`;
     }
-    if (lengthInvalid) return `Primer length must be ${MIN_PRIMER_BINDING_LENGTH}–${MAX_PRIMER_BINDING_LENGTH} nt, with minimum no larger than maximum.`;
-    if (targetTmInvalid) return 'Target Tm must be between 40 and 80 °C.';
-    if (gcInvalid) return 'GC range must be 0–100%, with minimum no larger than maximum.';
-    if (!/^[ACGTURYSWKMBDHVN]+$/.test(normalizedSequence)) return 'Primer design supports nucleotide records containing IUPAC DNA/RNA symbols only.';
+    if (lengthInvalid) return `Length ${MIN_PRIMER_BINDING_LENGTH}–${MAX_PRIMER_BINDING_LENGTH} nt. Minimum ≤ maximum.`;
+    if (targetTmInvalid) return 'Enter a Tm of 40–80 °C.';
+    if (gcInvalid) return 'GC 0–100%. Minimum ≤ maximum.';
+    if (!/^[ACGTURYSWKMBDHVN]+$/.test(normalizedSequence)) return 'Use IUPAC DNA or RNA symbols.';
     return '';
   }, [gcInvalid, lengthInvalid, normalizedSequence, targetRangeInvalid, targetTmInvalid]);
 
@@ -537,7 +571,7 @@ export function ClaudeSciencePrimerWorkspace({
     () => tmConditionPresetId === CUSTOM_PRIMER_TM_CONDITION_PRESET_ID
       ? {
           id: CUSTOM_PRIMER_TM_CONDITION_PRESET_ID,
-          name: 'Custom bounded screen',
+          name: 'Custom',
           description: 'Custom calculator concentrations; named proprietary formulations are not modeled because this engine exposes concentration terms only. Verify reaction-specific conditions externally.',
           options: {
             method: customTmMethod,
@@ -572,25 +606,30 @@ export function ClaudeSciencePrimerWorkspace({
     maxPairs: MAX_VISIBLE_PAIRS,
   }), [flankingWindow, forwardTail, maxGC, maxLength, minGC, minLength, requireGcClamp, reverseTail, targetEnd, targetStart, targetTm, tmConditionPreset, tmConditionPresetId, tmTolerance]);
 
+  // The design runs after the window has painted. The deferred copy starts
+  // empty, so the first frame shows the form and a pending line, and the search
+  // runs in a lower-priority render. Later edits keep the inputs responsive.
+  const designParameters = useDeferredValue<PrimerDesignParams | null>(parameters, null);
+  const designPending = !validationMessage && designParameters !== parameters;
   const result = useMemo<PrimerPairResult | null>(() => {
-    if (validationMessage) return null;
-    return designPrimerPairWithDiagnostics(normalizedSequence, parameters);
-  }, [normalizedSequence, parameters, validationMessage]);
+    if (validationMessage || !designParameters) return null;
+    return designPrimerPairWithDiagnostics(normalizedSequence, designParameters);
+  }, [normalizedSequence, designParameters, validationMessage]);
   const pairs = useMemo(() => result?.pairs ?? [], [result]);
   const selectedPair = pairs[selectedPairIndex] ?? pairs[0] ?? null;
-  const tailed = Boolean(parameters.forwardTail || parameters.reverseTail);
+  const tailed = Boolean(designParameters?.forwardTail || designParameters?.reverseTail);
   // Only a tailed zero-pair result pays for a second design: whether the same
   // target passes without tails is what tells the reader if the tails are the cause.
   const tailDiagnosis = useMemo<PrimerTailDiagnosis>(() => ({
     tailed,
-    pairsWithoutTails: result && tailed && result.pairs.length === 0
+    pairsWithoutTails: result && designParameters && tailed && result.pairs.length === 0
       ? designPrimerPairWithDiagnostics(normalizedSequence, {
-          ...parameters,
+          ...designParameters,
           forwardTail: undefined,
           reverseTail: undefined,
         }).pairs.length
       : null,
-  }), [normalizedSequence, parameters, result, tailed]);
+  }), [designParameters, normalizedSequence, result, tailed]);
   const tailWarnedPairs = useMemo(
     () => pairs.filter((pair) => primerPairTailStructureWarnings(pair).length > 0).length,
     [pairs],
@@ -603,6 +642,25 @@ export function ClaudeSciencePrimerWorkspace({
   useEffect(() => {
     if (selectedPairIndex >= pairs.length) setSelectedPairIndex(0);
   }, [pairs.length, selectedPairIndex]);
+
+  // Tell the host where the chosen pair binds, and that nothing is chosen once
+  // the workspace closes. Keyed on the pair's sites, not on its object.
+  const pairSiteStart = selectedPair?.forward.start;
+  const pairSiteForwardEnd = selectedPair?.forward.end;
+  const pairSiteReverseStart = selectedPair?.reverse.start;
+  const pairSiteEnd = selectedPair?.reverse.end;
+  useEffect(() => {
+    if (!onPairChange) return undefined;
+    onPairChange(pairSiteStart === undefined || pairSiteForwardEnd === undefined
+      || pairSiteReverseStart === undefined || pairSiteEnd === undefined
+      ? null
+      : {
+        recordId: record.id,
+        forward: { start: pairSiteStart, end: pairSiteForwardEnd },
+        reverse: { start: pairSiteReverseStart, end: pairSiteEnd },
+      });
+    return () => onPairChange(null);
+  }, [onPairChange, pairSiteEnd, pairSiteForwardEnd, pairSiteReverseStart, pairSiteStart, record.id]);
 
   const selectedDiagnostics = useMemo(() => {
     if (!selectedPair) return null;
@@ -647,20 +705,22 @@ export function ClaudeSciencePrimerWorkspace({
   const evidenceReviewRequired = evidenceReviewReasons.length > 0;
   const evidenceReviewKey = useMemo(() => JSON.stringify({
     pair: selectedPairKey,
-    parameters,
+    parameters: designParameters,
     reasonCodes: evidenceReviewReasons,
-  }), [evidenceReviewReasons, parameters, selectedPairKey]);
+  }), [evidenceReviewReasons, designParameters, selectedPairKey]);
   const evidenceAcknowledged = evidenceReviewRequired && acknowledgedEvidenceKey === evidenceReviewKey;
   const actionBlockedByReview = evidenceReviewRequired && !evidenceAcknowledged;
 
-  const handoff = useMemo<ClaudeSciencePrimerHandoff | null>(() => selectedPair ? ({
+  // No handoff while a new design is pending: the pair on screen belongs to the
+  // previous settings, so no action may carry it under the new ones.
+  const handoff = useMemo<ClaudeSciencePrimerHandoff | null>(() => selectedPair && designParameters && !designPending ? ({
     recordId: record.id,
     recordName: record.name,
     intent,
     target: { start: targetStart - 1, end: targetEnd },
     pair: selectedPair,
     pairNumber: Math.max(1, pairs.indexOf(selectedPair) + 1),
-    parameters,
+    parameters: designParameters,
     ...(result?.tmEvidence ? { tmEvidence: result.tmEvidence } : {}),
     evidenceReview: {
       schema: 'motif.primer.evidence-review.v1',
@@ -670,7 +730,7 @@ export function ClaudeSciencePrimerWorkspace({
       ...(evidenceReviewRequired && evidenceAcknowledged ? { acknowledgedAt: new Date().toISOString() } : {}),
     },
     ...(preparationContext ? { preparationContext: { ...preparationContext } } : {}),
-  }) : null, [evidenceAcknowledged, evidenceReviewReasons, evidenceReviewRequired, intent, pairs, parameters, preparationContext, record.id, record.name, result?.tmEvidence, selectedPair, targetEnd, targetStart]);
+  }) : null, [designParameters, designPending, evidenceAcknowledged, evidenceReviewReasons, evidenceReviewRequired, intent, pairs, preparationContext, record.id, record.name, result?.tmEvidence, selectedPair, targetEnd, targetStart]);
 
   const applyPreset = useCallback((preset: PrimerPreset) => {
     previewRangeKeyRef.current = null;
@@ -733,17 +793,35 @@ export function ClaudeSciencePrimerWorkspace({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [evidenceRevealRequest]);
 
-  const runAction = useCallback(async (label: string, action: (() => void | Promise<void>) | undefined) => {
+  // First open in a stacked (narrow) window: the settings fill the first
+  // screen, so the pairs and their sequences start below it. Once, when the
+  // first result lands and the user has not scrolled, start the view at the
+  // results; the settings stay one scroll up. Later redesigns never scroll.
+  const initialResultsRevealRef = useRef(false);
+  useEffect(() => {
+    if (initialResultsRevealRef.current || designPending || pairs.length === 0) return;
+    const frame = window.requestAnimationFrame(() => {
+      initialResultsRevealRef.current = true;
+      const results = resultsRef.current;
+      const body = results?.parentElement;
+      if (!results || !body || body.scrollTop !== 0 || body.scrollHeight <= body.clientHeight) return;
+      const offset = results.getBoundingClientRect().top - body.getBoundingClientRect().top;
+      if (offset > 1) body.scrollTop = offset;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [designPending, pairs.length]);
+
+  const runAction = useCallback(async (label: string, action: (() => string | void | Promise<string | void>) | undefined) => {
     if (!action || busyAction) return;
     if (actionBlockedByReview) {
-      setStatus('Review the flagged interaction evidence and acknowledge it before continuing.');
+      setStatus('Review and confirm flagged interactions to continue.');
       return;
     }
     setBusyAction(label);
     setStatus('');
     try {
-      await action();
-      setStatus(`${label} complete.`);
+      const message = await action();
+      setStatus(message ?? `${label} complete.`);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : `${label} failed.`);
     } finally {
@@ -754,17 +832,19 @@ export function ClaudeSciencePrimerWorkspace({
   const copyPair = useCallback(() => {
     if (!handoff || !onCopy) return;
     const value = `Forward\t${handoff.pair.forward.fullSequence}\nReverse\t${handoff.pair.reverse.fullSequence}`;
-    void runAction('Copy pair', () => onCopy(`Primer pair ${handoff.pairNumber}`, value));
+    void runAction('Copy pair', async () => (await onCopy(`Primer pair ${handoff.pairNumber}`, value))
+      ? 'Primer pair copied.'
+      : 'Copy blocked. Select and copy the primer sequences.');
   }, [handoff, onCopy, runAction]);
 
   const exportPair = useCallback(() => {
     if (!handoff || !onExport) return;
-    void runAction('Export FASTA', () => onExport({
+    void runAction('Export FASTA', async () => (await onExport({
       ...handoff,
       format: 'fasta',
       filename: filenameFor(record.name),
       text: fastaForPair(record.name, handoff.pair, handoff.pairNumber),
-    }));
+    })).message);
   }, [handoff, onExport, record.name, runAction]);
 
   const addAnnotations = useCallback(() => {
@@ -784,8 +864,20 @@ export function ClaudeSciencePrimerWorkspace({
       : `${selectedPair.productLength.toLocaleString()} bp amplicon`
     : '';
   const selectedSummary = selectedPair
-    ? `Pair ${selectedPairIndex + 1}: ${selectedAmpliconLabel}; melting temperatures differ by ${selectedPair.tmDifference.toFixed(1)} degrees Celsius.`
+    ? `Pair ${selectedPairIndex + 1} · ${selectedAmpliconLabel} · ΔTm ${selectedPair.tmDifference.toFixed(1)} °C`
     : '';
+
+  // A primer of the chosen pair selects its binding site on the host. The host
+  // selection then changes, so mark it as this workspace's own first, as
+  // choosePair does, or the change would send the list back to pair 1.
+  const choosePrimer = (strand: 1 | -1) => {
+    if (!selectedPair || !onSelectPrimer) return;
+    const candidate = strand === 1 ? selectedPair.forward : selectedPair.reverse;
+    const label = strand === 1 ? 'Forward primer' : 'Reverse primer';
+    previewRangeKeyRef.current = `${candidate.start}:${candidate.end}`;
+    onSelectPrimer({ recordId: record.id, start: candidate.start, end: candidate.end, strand, label });
+    setStatus(`${label} of pair ${selectedPairIndex + 1} selected on the sequence.`);
+  };
 
   const handlePairKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
     if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key) || pairs.length === 0) return;
@@ -801,6 +893,34 @@ export function ClaudeSciencePrimerWorkspace({
     workspaceRef.current?.querySelector<HTMLButtonElement>(`[data-pair-index="${next}"]`)?.focus();
   };
 
+  // Why every footer action is off right now, for the `title` of each disabled one.
+  const actionDisabledReason = busyAction
+    ? 'Another action is still running.'
+    : !handoff
+      ? 'Choose a primer pair first.'
+      : actionBlockedByReview
+        ? 'Confirm the flagged interactions first.'
+        : '';
+
+  // The "More" menu: a native disclosure, closed again by an action, Escape or a press outside.
+  const moreMenuRef = useRef<HTMLDetailsElement>(null);
+  const moreMenuSummaryRef = useRef<HTMLElement>(null);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const closeMoreMenu = useCallback((restoreFocus = false) => {
+    if (moreMenuRef.current?.open) moreMenuRef.current.open = false;
+    setMoreOpen(false);
+    if (restoreFocus) window.requestAnimationFrame(() => moreMenuSummaryRef.current?.focus({ preventScroll: true }));
+  }, []);
+  useEffect(() => {
+    if (!moreOpen) return undefined;
+    const closeFromOutside = (event: PointerEvent) => {
+      if (event.target instanceof Node && moreMenuRef.current?.contains(event.target)) return;
+      closeMoreMenu();
+    };
+    document.addEventListener('pointerdown', closeFromOutside, true);
+    return () => document.removeEventListener('pointerdown', closeFromOutside, true);
+  }, [closeMoreMenu, moreOpen]);
+
   const workspace = (
     <section
       ref={workspaceRef}
@@ -814,11 +934,10 @@ export function ClaudeSciencePrimerWorkspace({
     >
       {embedded ? null : <header className="motif-cs-primer-workspace-header">
         <div>
-          <div className="motif-cs-primer-eyebrow">Design workspace</div>
           <h2 id={titleId}>Primer design</h2>
           <p>{record.name} <span aria-hidden="true">·</span> {normalizedSequence.length.toLocaleString()} {record.molecule === 'rna' ? 'nt RNA' : 'bp DNA'}</p>
         </div>
-        <button ref={initialFocusRef} className="motif-cs-primer-icon-button" type="button" onClick={onClose} aria-label="Close primer design workspace">×</button>
+        <button ref={initialFocusRef} className="motif-cs-primer-icon-button" type="button" onClick={onClose} aria-label="Close primer design workspace" title="Close">×</button>
       </header>}
 
       <nav className="motif-cs-primer-presets" aria-label="Primer design presets">
@@ -835,21 +954,23 @@ export function ClaudeSciencePrimerWorkspace({
             {preset.name}
           </button>
         ))}
-        {presetId === 'custom' ? <span className="motif-cs-primer-custom-chip">Custom conditions</span> : null}
+        {presetId === 'custom' ? <span className="motif-cs-primer-custom-chip">Custom settings</span> : null}
       </nav>
 
       <div className="motif-cs-primer-workspace-body">
         <aside className="motif-cs-primer-settings" aria-label="Primer design settings">
           {preparationContext ? (
             <div className="motif-cs-primer-preparation-context" role="note" aria-label="Cloning preparation context" data-testid="primer-preparation-context">
-              <span>Cloning preparation</span>
+              <span>Preparation</span>
               <strong>{preparationContext.label}</strong>
               {preparationContext.detail ? <p>{preparationContext.detail}</p> : null}
-              {initialForwardTail || initialReverseTail ? <small>Starting 5′ tails are loaded in Advanced constraints and remain editable.</small> : null}
+              {initialForwardTail || initialReverseTail ? <small>Edit prefilled 5′ tails under Advanced constraints.</small> : null}
               {preparationContext.method === 'gibson' && !initialForwardTail && !initialReverseTail ? (
-                <small>No homology tail was inferred. Enter the intended 5′ tail in Advanced constraints before saving.</small>
+                <small>Enter the 5′ tail under Advanced constraints before saving.</small>
               ) : null}
-              <small>Simulate PCR saves a result only. Create &amp; use amplicon creates the exact linear PCR product, keeps the source record unchanged, replaces this prepared part, and rechecks the live cloning draft. Save primer plan only records the oligos without creating DNA.</small>
+              <small>Save primer plan only: records the oligos.</small>
+              <small>Simulate PCR: saves a PCR result.</small>
+              <small>Create &amp; use amplicon: creates a linear PCR record, replaces this draft part, and rechecks the design. Keeps the original record.</small>
               {preparationProgress ? (
                 <div className="motif-cs-primer-preparation-navigation" aria-label="Primer preparation worklist">
                   <span>
@@ -874,7 +995,7 @@ export function ClaudeSciencePrimerWorkspace({
           ) : null}
           <section className="motif-cs-primer-section">
             <div className="motif-cs-primer-section-heading">
-              <div><span>01</span><h3>Goal and target</h3></div>
+              <h3>Target</h3>
               <span>{(targetEnd - targetStart + 1).toLocaleString()} bp</span>
             </div>
             <fieldset className="motif-cs-primer-intent">
@@ -896,32 +1017,26 @@ export function ClaudeSciencePrimerWorkspace({
                 <input aria-invalid={targetRangeInvalid || undefined} aria-describedby={fieldDescription(targetRangeInvalid)} name="primer-target-end" type="number" inputMode="numeric" autoComplete="off" min={1} max={normalizedSequence.length} value={targetEnd} onChange={(event) => { setTargetEnd(Number(event.target.value)); markCustom(); }} />
               </label>
             </div>
-            {selectedRange ? (
-              <button className="motif-cs-primer-text-button" type="button" onClick={() => { previewRangeKeyRef.current = null; const next = defaultTarget(normalizedSequence.length, selectedRange); setTargetStart(next.start); setTargetEnd(next.end); setSelectedPairIndex(0); }}>
-                Use current selection ({selectedRange.start + 1}–{selectedRange.end})
-              </button>
-            ) : null}
+            {/* Always present, so the sections below keep their place: mounting it
+                when choosing a pair selects that pair's amplicon would push
+                Conditions and everything under it down 32px. */}
+            <button
+              className="motif-cs-primer-text-button"
+              type="button"
+              disabled={!selectedRange}
+              title={selectedRange ? undefined : 'Select a range on the sequence to use it as the target'}
+              onClick={() => { if (!selectedRange) return; previewRangeKeyRef.current = null; const next = defaultTarget(normalizedSequence.length, selectedRange); setTargetStart(next.start); setTargetEnd(next.end); setSelectedPairIndex(0); }}
+            >
+              {selectedRange ? `Use current selection (${selectedRange.start + 1}–${selectedRange.end})` : 'Use current selection'}
+            </button>
           </section>
 
           <section className="motif-cs-primer-section">
-            <div className="motif-cs-primer-section-heading"><div><span>02</span><h3>Conditions</h3></div></div>
+            <div className="motif-cs-primer-section-heading"><h3>Conditions</h3></div>
             <div className="motif-cs-primer-field-grid">
               <label>
                 <span>Target Tm <small>°C</small></span>
                 <input aria-invalid={targetTmInvalid || undefined} aria-describedby={fieldDescription(targetTmInvalid)} name="primer-target-tm" type="number" inputMode="decimal" autoComplete="off" min={40} max={80} step={1} value={targetTm} onChange={(event) => { setTargetTm(Number(event.target.value)); markCustom(); }} />
-              </label>
-              <label>
-                <span>Tm condition</span>
-                <select
-                  aria-describedby={statusId}
-                  aria-label="Tm condition preset"
-                  name="primer-tm-condition"
-                  value={tmConditionPresetId}
-                  onChange={(event) => { setTmConditionPresetId(event.target.value); setAcknowledgedEvidenceKey(''); markCustom(); }}
-                >
-                  <option value={CUSTOM_PRIMER_TM_CONDITION_PRESET_ID}>Custom bounded screen</option>
-                  {PRIMER_TM_CONDITION_PRESETS.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
-                </select>
               </label>
               <label>
                 <span>Tolerance <small>± °C</small></span>
@@ -935,11 +1050,24 @@ export function ClaudeSciencePrimerWorkspace({
                 <span>Maximum length</span>
                 <input aria-invalid={lengthInvalid || undefined} aria-describedby={fieldDescription(lengthInvalid)} name="primer-max-length" type="number" inputMode="numeric" autoComplete="off" min={MIN_PRIMER_BINDING_LENGTH} max={MAX_PRIMER_BINDING_LENGTH} step={1} value={maxLength} onChange={(event) => { setMaxLength(Number(event.target.value)); markCustom(); }} />
               </label>
+              <label className="motif-cs-primer-field-wide">
+                <span>Tm conditions</span>
+                <select
+                  aria-describedby={statusId}
+                  aria-label="Tm condition preset"
+                  name="primer-tm-condition"
+                  value={tmConditionPresetId}
+                  onChange={(event) => { setTmConditionPresetId(event.target.value); setAcknowledgedEvidenceKey(''); markCustom(); }}
+                >
+                  <option value={CUSTOM_PRIMER_TM_CONDITION_PRESET_ID}>Custom</option>
+                  {PRIMER_TM_CONDITION_PRESETS.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
+                </select>
+              </label>
             </div>
             {tmConditionPresetId === CUSTOM_PRIMER_TM_CONDITION_PRESET_ID ? (
               <div className="motif-cs-primer-custom-tm" data-testid="primer-custom-tm-options">
                 <p className="motif-cs-primer-help">
-                  Custom inputs are bounded to this calculator’s supported concentration ranges. dNTP is the total concentration across dATP, dCTP, dGTP, and dTTP; named proprietary formulations are not modeled because this engine exposes concentration terms only.
+                  Concentrations are bounded to supported ranges. dNTP is the total across all four.
                 </p>
                 <div className="motif-cs-primer-field-grid">
                   <label>
@@ -992,7 +1120,7 @@ export function ClaudeSciencePrimerWorkspace({
                   <input aria-invalid={gcInvalid || undefined} aria-describedby={fieldDescription(gcInvalid)} name="primer-max-gc" type="number" inputMode="decimal" autoComplete="off" min={0} max={100} value={maxGC} onChange={(event) => { setMaxGC(Number(event.target.value)); markCustom(); }} />
                 </label>
                 <label>
-                  <span>Flanking scan <small>nt</small></span>
+                  <span>Search flank <small>nt</small></span>
                   <input name="primer-flanking-window" type="number" inputMode="numeric" autoComplete="off" min={0} max={250} value={flankingWindow} onChange={(event) => { setFlankingWindow(clamp(Number(event.target.value), 0, 250)); markCustom(); }} />
                 </label>
                 <label className="motif-cs-primer-check-field">
@@ -1031,22 +1159,18 @@ export function ClaudeSciencePrimerWorkspace({
           </details>
         </aside>
 
-        <main className="motif-cs-primer-results" ref={resultsRef}>
+        <main className="motif-cs-primer-results" ref={resultsRef} aria-busy={designPending || undefined} data-pending={designPending || undefined}>
           <div className="motif-cs-primer-results-heading">
-            <div>
-              <span className="motif-cs-primer-eyebrow">Ranked candidates</span>
-              <h3>{validationMessage ? 'Check settings' : `${pairs.length} primer pair${pairs.length === 1 ? '' : 's'}`}</h3>
-            </div>
-            {!validationMessage && pairs.length > 0 ? <span className="motif-cs-primer-result-badge">Best ΔTm {pairs[0].tmDifference.toFixed(1)} °C</span> : null}
+            <h3>{validationMessage || designPending || pairs.length === 0 ? 'Primer pairs' : `${pairs.length} primer pair${pairs.length === 1 ? '' : 's'}`}</h3>
           </div>
 
           {result && result.warnings && result.warnings.length > 0 ? (
             <div className="motif-cs-primer-search-receipt" data-testid="primer-search-receipt">
-              <strong>Search receipt</strong>
-              <p>{result.warnings.join(' ')}</p>
+              <strong>Search limits</strong>
+              <p title={result.warnings.join(' ')}>Search limit reached. Review evaluated pairs.</p>
               {result.forwardPool.truncated || result.reversePool.truncated ? (
                 <small>
-                  Forward pool: {result.forwardPool.retainedCount.toLocaleString()} retained / {result.forwardPool.enumeratedCount.toLocaleString()} found · Reverse pool: {result.reversePool.retainedCount.toLocaleString()} retained / {result.reversePool.enumeratedCount.toLocaleString()} found.
+                  Forward {result.forwardPool.retainedCount.toLocaleString()} of {result.forwardPool.enumeratedCount.toLocaleString()} · Reverse {result.reversePool.retainedCount.toLocaleString()} of {result.reversePool.enumeratedCount.toLocaleString()} kept.
                 </small>
               ) : null}
             </div>
@@ -1054,13 +1178,15 @@ export function ClaudeSciencePrimerWorkspace({
 
           {validationMessage ? (
             <div className="motif-cs-primer-empty" role="alert" id={validationMessageId}><strong>Cannot design primers</strong><p>{validationMessage}</p></div>
+          ) : designPending && pairs.length === 0 ? (
+            <div className="motif-cs-primer-empty"><p>Finding pairs…</p></div>
           ) : pairs.length === 0 ? (
             <div className="motif-cs-primer-empty" role="status"><strong>No passing pair</strong><p>{result ? diagnosticMessage(result, tailDiagnosis) : 'Adjust the design conditions.'}</p></div>
           ) : (
             <>
               {tailWarnedPairs > 0 ? (
                 <p className="motif-cs-primer-tail-note" data-testid="primer-tail-note">
-                  5′-tail structure warning on {tailWarnedPairs} of {pairs.length} pairs. Annealing regions pass every structure check; warned pairs rank after clean ones.
+                  5′ tail structure on {tailWarnedPairs} of {pairs.length} pairs. Those rank after clean pairs.
                 </p>
               ) : null}
               <div className="motif-cs-primer-pair-list" role="listbox" aria-label="Ranked primer pairs" aria-describedby={statusId}>
@@ -1079,7 +1205,7 @@ export function ClaudeSciencePrimerWorkspace({
                       onClick={() => choosePair(index)}
                       onKeyDown={(event) => handlePairKeyDown(event, index)}
                     >
-                      <span className="motif-cs-primer-pair-rank">{String(index + 1).padStart(2, '0')}</span>
+                      <span className="motif-cs-primer-pair-rank">{index + 1}</span>
                       <span className="motif-cs-primer-pair-main">
                         <strong>{pair.productLength.toLocaleString()} bp</strong>
                         <small>
@@ -1091,9 +1217,10 @@ export function ClaudeSciencePrimerWorkspace({
                           ) : null}
                         </small>
                       </span>
-                      <span><small>F / R Tm</small><strong>{pair.forward.tm.toFixed(1)} / {pair.reverse.tm.toFixed(1)}°</strong></span>
-                      <span><small>ΔTm</small><strong>{pair.tmDifference.toFixed(1)} °C</strong></span>
-                      <span className="motif-cs-primer-pair-arrow" aria-hidden="true">›</span>
+                      <span className="motif-cs-primer-pair-temps">
+                        <span><small>Tm</small><strong>{pair.forward.tm.toFixed(1)} / {pair.reverse.tm.toFixed(1)} °C</strong></span>
+                        <span><small>ΔTm</small><strong>{pair.tmDifference.toFixed(1)} °C</strong></span>
+                      </span>
                     </button>
                   );
                 })}
@@ -1102,7 +1229,7 @@ export function ClaudeSciencePrimerWorkspace({
               {selectedPair && selectedDiagnostics ? (
                 <section className="motif-cs-primer-evidence" ref={evidenceRef} aria-label={`Primer pair ${selectedPairIndex + 1} evidence`}>
                   <div className="motif-cs-primer-evidence-heading">
-                    <div><span className="motif-cs-primer-eyebrow">Selected pair</span><h3>Pair {selectedPairIndex + 1}</h3></div>
+                    <h3>Pair {selectedPairIndex + 1}</h3>
                     <span>{selectedAmpliconLabel}</span>
                   </div>
 
@@ -1111,7 +1238,18 @@ export function ClaudeSciencePrimerWorkspace({
                     ['Reverse', selectedPair.reverse, selectedDiagnostics.reverseHairpin, selectedDiagnostics.reverseDimer],
                   ] as const).map(([label, candidate, hairpin, dimer]) => (
                     <div className="motif-cs-primer-oligo" key={label}>
-                      <div className="motif-cs-primer-oligo-name"><strong>{label}</strong><span>{candidate.start + 1}–{candidate.end}</span></div>
+                      {onSelectPrimer ? (
+                        <button
+                          className="motif-cs-primer-oligo-name"
+                          type="button"
+                          aria-label={`${label} primer ${candidate.start + 1}–${candidate.end}`}
+                          aria-pressed={selectedRange?.start === candidate.start && selectedRange.end === candidate.end}
+                          title={`Select where the ${label.toLowerCase()} primer binds on the sequence`}
+                          onClick={() => choosePrimer(label === 'Forward' ? 1 : -1)}
+                        ><strong>{label}</strong><span>{candidate.start + 1}–{candidate.end}</span></button>
+                      ) : (
+                        <div className="motif-cs-primer-oligo-name"><strong>{label}</strong><span>{candidate.start + 1}–{candidate.end}</span></div>
+                      )}
                       <code title={candidate.fullSequence}>{candidate.fullSequence}</code>
                       <div className="motif-cs-primer-metrics">
                         <Metric label="Tm" value={`${candidate.tm.toFixed(1)} °C`} />
@@ -1127,7 +1265,7 @@ export function ClaudeSciencePrimerWorkspace({
                   <div className="motif-cs-primer-cross-check" data-state={qualityState(selectedDiagnostics.crossDimer.deltaG, DEFAULT_MAX_DIMER_DG, selectedDiagnostics.crossDimer.status)}>
                     <span>Cross-dimer check</span>
                     <strong>ΔG {selectedDiagnostics.crossDimer.deltaG.toFixed(1)} kcal/mol{selectedDiagnostics.crossDimer.status === 'exact' ? '' : ' · review'}</strong>
-                    <small>{selectedDiagnostics.crossDimer.status !== 'exact' || selectedDiagnostics.crossDimer.deltaG < DEFAULT_MAX_DIMER_DG ? 'Review before ordering' : 'No strong pair interaction predicted'}</small>
+                    <small>{selectedDiagnostics.crossDimer.status !== 'exact' || selectedDiagnostics.crossDimer.deltaG < DEFAULT_MAX_DIMER_DG ? 'Review before ordering' : 'No strong interaction'}</small>
                   </div>
 
                   {selectedDiagnostics.tailWarnings.length > 0 ? (
@@ -1136,7 +1274,7 @@ export function ClaudeSciencePrimerWorkspace({
                       data-testid="primer-tail-structure"
                       data-state={selectedDiagnostics.tailWarnings.some((warning) => warning.threePrimeDeltaG !== null) ? 'review' : 'note'}
                     >
-                      <strong>5′-tail structure</strong>
+                      <strong>5′ tail structure</strong>
                       <ul>
                         {selectedDiagnostics.tailWarnings.map((warning) => <li key={`${warning.oligo}:${warning.kind}`}>{warning.message}</li>)}
                       </ul>
@@ -1145,7 +1283,7 @@ export function ClaudeSciencePrimerWorkspace({
 
                   {evidenceReviewRequired ? (
                     <div className="motif-cs-primer-evidence-review" role="group" aria-label="Interaction evidence review" data-testid="primer-evidence-review">
-                      <strong>Review required before downstream actions</strong>
+                      <strong>Review before continuing</strong>
                       <ul>
                         {evidenceReviewReasons.map((reason) => <li key={reason}>{evidenceReviewLabel(reason)}</li>)}
                       </ul>
@@ -1156,7 +1294,7 @@ export function ClaudeSciencePrimerWorkspace({
                           checked={evidenceAcknowledged}
                           onChange={(event) => setAcknowledgedEvidenceKey(event.target.checked ? evidenceReviewKey : '')}
                         />
-                        I reviewed the flagged evidence and accept this pair for the selected downstream action.
+                        I reviewed the flags and accept this pair.
                       </label>
                     </div>
                   ) : null}
@@ -1169,17 +1307,18 @@ export function ClaudeSciencePrimerWorkspace({
 
       <footer className="motif-cs-primer-workspace-footer">
         <div className="motif-cs-primer-live-status" id={statusId} role="status" aria-live="polite" aria-atomic="true">
-          {status || selectedSummary || 'Select a ranked pair to inspect its evidence.'}
+          {designPending
+            ? 'Finding pairs…'
+            : status
+              // A pair was just chosen or an action just ran, but the actions are still off: say why.
+              ? (actionBlockedByReview && !busyAction && !/flagged/.test(status) ? `${status} Confirm the flagged interactions to continue.` : status)
+              : (actionBlockedByReview ? 'Confirm the flagged interactions to continue.' : selectedSummary) || (validationMessage ? 'Fix the settings first.' : 'Choose a primer pair first.')}
         </div>
         <div className="motif-cs-primer-footer-actions">
-          <button type="button" disabled={!handoff || !onCopy || actionBlockedByReview || !!busyAction} onClick={copyPair}>Copy pair</button>
-          <button type="button" disabled={!handoff || !onExport || actionBlockedByReview || !!busyAction} onClick={exportPair}>Export FASTA</button>
-          <button type="button" disabled={!handoff || !onSaveDesign || actionBlockedByReview || !!busyAction} onClick={() => { if (handoff) void runAction('Save design', () => onSaveDesign?.(handoff)); }}>Save design</button>
-          <button type="button" disabled={!handoff || !onAddAnnotations || actionBlockedByReview || !!busyAction} onClick={addAnnotations}>Add annotations</button>
-          <button type="button" disabled={!handoff || !onSimulatePcr || actionBlockedByReview || !!busyAction} onClick={() => { if (handoff) void runAction('PCR simulation', () => onSimulatePcr?.(handoff)); }}>Simulate PCR</button>
           {preparationContext ? (
             <button
               type="button"
+              title={actionDisabledReason || undefined}
               disabled={!handoff || !onUseForCloning || actionBlockedByReview || !!busyAction}
               onClick={() => {
                 if (handoff) void runAction('Save primer plan only', () => onUseForCloning?.(handoff));
@@ -1188,16 +1327,53 @@ export function ClaudeSciencePrimerWorkspace({
           ) : (
             <button
               type="button"
-              disabled={!handoff || !onCreateAmplicon || actionBlockedByReview || !!busyAction}
-              onClick={() => {
-                if (handoff) void runAction('Create amplicon record', () => onCreateAmplicon?.(handoff));
-              }}
-            >Create amplicon record</button>
+              title={actionDisabledReason || undefined}
+              disabled={!handoff || !onSaveDesign || actionBlockedByReview || !!busyAction}
+              onClick={() => { if (handoff) void runAction('Save design', () => onSaveDesign?.(handoff)); }}
+            >Save design</button>
           )}
+          <details
+            ref={moreMenuRef}
+            className="motif-cs-primer-more"
+            data-motif-cs-escape-scope-when-open="true"
+            onToggle={(event) => setMoreOpen(event.currentTarget.open)}
+            onKeyDown={(event) => {
+              if (event.key !== 'Escape') return;
+              event.preventDefault();
+              event.stopPropagation();
+              closeMoreMenu(true);
+            }}
+          >
+            <summary ref={moreMenuSummaryRef} data-testid="primer-more-menu" aria-label="More primer actions" title="Copy, export, annotate, simulate PCR, create an amplicon record">
+              More
+              <ChevronDown size={12} aria-hidden="true" />
+            </summary>
+            <div className="motif-cs-primer-more-panel" role="menu" aria-label="More primer actions" data-motif-cs-escape-scope={moreOpen || undefined}>
+              <button role="menuitem" type="button" title={actionDisabledReason || undefined} disabled={!handoff || !onCopy || actionBlockedByReview || !!busyAction} onClick={() => { closeMoreMenu(); copyPair(); }}>Copy pair</button>
+              <button role="menuitem" type="button" title={actionDisabledReason || undefined} disabled={!handoff || !onExport || actionBlockedByReview || !!busyAction} onClick={() => { closeMoreMenu(); exportPair(); }}>Export FASTA</button>
+              {preparationContext ? (
+                <button role="menuitem" type="button" title={actionDisabledReason || undefined} disabled={!handoff || !onSaveDesign || actionBlockedByReview || !!busyAction} onClick={() => { closeMoreMenu(); if (handoff) void runAction('Save design', () => onSaveDesign?.(handoff)); }}>Save design</button>
+              ) : null}
+              <button role="menuitem" type="button" title={actionDisabledReason || undefined} disabled={!handoff || !onAddAnnotations || actionBlockedByReview || !!busyAction} onClick={() => { closeMoreMenu(); addAnnotations(); }}>Add annotations</button>
+              <button role="menuitem" type="button" title={actionDisabledReason || undefined} disabled={!handoff || !onSimulatePcr || actionBlockedByReview || !!busyAction} onClick={() => { closeMoreMenu(); if (handoff) void runAction('PCR simulation', () => onSimulatePcr?.(handoff)); }}>Simulate PCR</button>
+              {preparationContext ? null : (
+                <button
+                  role="menuitem"
+                  type="button"
+                  title={actionDisabledReason || undefined}
+                  disabled={!handoff || !onCreateAmplicon || actionBlockedByReview || !!busyAction}
+                  onClick={() => {
+                    closeMoreMenu();
+                    if (handoff) void runAction('Create amplicon record', () => onCreateAmplicon?.(handoff));
+                  }}
+                >Create amplicon record</button>
+              )}
+            </div>
+          </details>
           <button
             className="motif-cs-primer-primary-action"
             type="button"
-            title={preparationContext ? undefined : 'Creates the amplicon record, or reuses an identical one, and opens a cloning design with it as part 1.'}
+            title={actionDisabledReason || (preparationContext ? undefined : 'Creates the amplicon record, or reuses an identical one, and opens a cloning design with it as part 1.')}
             disabled={!handoff || !(preparationContext ? onCreateAmplicon : onUseForCloning) || actionBlockedByReview || !!busyAction}
             onClick={() => {
               if (!handoff) return;

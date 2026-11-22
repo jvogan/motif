@@ -1,3 +1,5 @@
+import { IUPAC_DNA_EXPANSIONS } from './nucleotide';
+import { reverseComplement } from './reverse-complement';
 import type { NucleotideComposition } from './types';
 
 /**
@@ -15,7 +17,14 @@ export function nucleotideComposition(seq: string): NucleotideComposition {
       case 'G': comp.G++; break;
       case 'C': comp.C++; break;
       case 'N': comp.N++; break;
-      default: comp.other++; break;
+      case 'S':
+        comp.S = (comp.S ?? 0) + 1;
+        comp.other++;
+        break;
+      default:
+        if (IUPAC_DNA_EXPANSIONS[ch]) comp.otherCalled = (comp.otherCalled ?? 0) + 1;
+        comp.other++;
+        break;
     }
   }
 
@@ -37,9 +46,9 @@ export function gcContent(seq: string): number {
  * derive multiple downstream metrics from it.
  */
 export function gcContentFromComposition(comp: NucleotideComposition): number {
-  const total = comp.A + comp.T + (comp.U ?? 0) + comp.G + comp.C;
-  if (total === 0) return 0;
-  return (comp.G + comp.C) / total;
+  const gc = comp.G + comp.C + (comp.S ?? 0);
+  const total = comp.A + comp.T + (comp.U ?? 0) + gc + (comp.otherCalled ?? 0);
+  return total > 0 ? gc / total : 0;
 }
 
 /**
@@ -74,6 +83,7 @@ export function gcContentWindow(
     throw new Error('step must be a positive integer.');
   }
 
+  if (upper.length === 0) return [];
   if (upper.length < windowSize) {
     return [{ position: 0, gc: gcContent(upper) }];
   }
@@ -81,9 +91,9 @@ export function gcContentWindow(
   const gcPrefix = new Uint32Array(upper.length + 1);
   const validPrefix = new Uint32Array(upper.length + 1);
   for (let i = 0; i < upper.length; i += 1) {
-    const ch = upper.charCodeAt(i);
-    const isGc = ch === 71 || ch === 67; // G or C
-    const isValid = isGc || ch === 65 || ch === 84 || ch === 85; // A, T, U
+    const ch = upper[i];
+    const isGc = ch === 'G' || ch === 'C' || ch === 'S';
+    const isValid = ch !== 'N' && IUPAC_DNA_EXPANSIONS[ch] !== undefined;
     gcPrefix[i + 1] = gcPrefix[i] + (isGc ? 1 : 0);
     validPrefix[i + 1] = validPrefix[i] + (isValid ? 1 : 0);
   }
@@ -176,7 +186,7 @@ export const DNA_MOLECULAR_WEIGHT_UI_DEFAULTS: Required<Omit<DnaMolecularWeightO
   ambiguity: 'reject',
 };
 
-const PHOSPHATE_DELTA_AVERAGE = 79.9663;
+const PHOSPHATE_DELTA_AVERAGE = 79.9799;
 const PHOSPHATE_DELTA_MONOISOTOPIC = 79.966331;
 const WATER_AVERAGE = 18.0153;
 const WATER_MONOISOTOPIC = 18.010565;
@@ -194,6 +204,19 @@ export function calculateDnaMolecularWeight(
   seq: string,
   options: DnaMolecularWeightOptions = {},
 ): DnaMolecularWeightResult {
+  const result = dnaMassBeforeRounding(seq, options);
+  return result.mass === null ? result : { ...result, mass: roundedMass(result.mass) };
+}
+
+/** Average mass of both DNA strands, rounded after adding their masses. */
+export function calculateDnaDuplexMolecularWeight(seq: string, topology: DnaTopology): number | null {
+  const options = { ambiguity: 'average', topology } as const;
+  const top = dnaMassBeforeRounding(seq, options).mass;
+  const bottom = dnaMassBeforeRounding(reverseComplement(seq), options).mass;
+  return top === null || bottom === null ? null : roundedMass(top + bottom);
+}
+
+function dnaMassBeforeRounding(seq: string, options: DnaMolecularWeightOptions): DnaMolecularWeightResult {
   const normalized = seq.toUpperCase().replace(/[ \t\r\n]/g, '').replace(/U/g, 'T');
   const mode = options.mode ?? DNA_MOLECULAR_WEIGHT_UI_DEFAULTS.mode;
   const fivePrime = options.fivePrime ?? DNA_MOLECULAR_WEIGHT_UI_DEFAULTS.fivePrime;
@@ -254,7 +277,7 @@ export function calculateDnaMolecularWeight(
     if (threePrime === 'phosphate') mass += phosphateDelta;
   }
   return {
-    mass: roundedMass(mass),
+    mass,
     status: hasAmbiguity ? 'ambiguous' : 'exact',
     sequence: normalized,
     ...(hasAmbiguity ? { message: 'Mass is an average over the supported IUPAC expansions; it is not an exact molecular composition.' } : {}),
@@ -298,12 +321,17 @@ export function molecularWeight(
 // with residue sums and were slightly off. The residue tables are correct;
 // this distinction affects documentation only.
 
-/** Average residue masses, Daltons. Source: ExPASy ProtParam. */
+/**
+ * Average residue masses, Daltons. U and O are the ExPASy FindMod averages
+ * (150.0388 and 237.3018), which use the same atomic weights as the rest of
+ * this table (C 12.011, N 14.00674; Se 78.96).
+ */
 const AA_MW_AVERAGE: Record<string, number> = {
   G:  57.052, A:  71.079, V:  99.133, L: 113.160, I: 113.160,
   P:  97.117, F: 147.177, W: 186.213, M: 131.199, S:  87.078,
   T: 101.105, C: 103.145, Y: 163.176, H: 137.141, D: 115.089,
   E: 129.116, N: 114.104, Q: 128.131, K: 128.174, R: 156.188,
+  U: 150.039, O: 237.302,
 };
 
 /** Monoisotopic residue masses, Daltons. */
@@ -312,6 +340,7 @@ const AA_MW_MONOISOTOPIC: Record<string, number> = {
   P:  97.0528, F: 147.0684, W: 186.0793, M: 131.0405, S:  87.0320,
   T: 101.0477, C: 103.0092, Y: 163.0633, H: 137.0589, D: 115.0269,
   E: 129.0426, N: 114.0429, Q: 128.0586, K: 128.0949, R: 156.1011,
+  U: 150.9536, O: 237.1477,
 };
 
 /** Fallback residue mass for unknown AAs. */

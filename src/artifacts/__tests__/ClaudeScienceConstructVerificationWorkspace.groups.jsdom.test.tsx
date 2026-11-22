@@ -51,7 +51,7 @@ describe('ClaudeScienceConstructVerificationWorkspace read groups', () => {
       <ClaudeScienceConstructVerificationWorkspace embedded records={records} initialReferenceId="ref-3" onVerify={vi.fn()} onSave={vi.fn()} />,
     );
     expect(checkedReadNames()).toEqual(['c3-f.ab1', 'c3-r.ab1']);
-    expect(screen.getByText(/2 of 4 reads selected/)).toBeTruthy();
+    expect(screen.getByText(/2\/4 reads · max/)).toBeTruthy();
     expect(screen.getByTestId('construct-verification-read-default').textContent).toBe('Reads in “Clone 3”, the reference\'s group, start selected.');
 
     // Groups are listed, the reference's own first.

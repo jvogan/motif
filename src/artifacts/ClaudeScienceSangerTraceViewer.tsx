@@ -22,6 +22,9 @@ const REVERSE_CHANNEL: Record<SangerBase, SangerBase> = { A: 'T', C: 'G', G: 'C'
 const TRACE_HEIGHT = 252;
 const STACKED_TRACE_HEIGHT = 176;
 const STACKED_LANE_HEIGHT = 216;
+/** Canvas text sizes in px: base letters and notices, then quality scores. Nothing draws below 12px. */
+const TRACE_BASE_FONT_PX = 13;
+const TRACE_SCORE_FONT_PX = 12;
 const MIN_CELL_WIDTH = 6;
 const MAX_CELL_WIDTH = 30;
 const DEFAULT_CELL_WIDTH = 12;
@@ -269,16 +272,16 @@ const CLEAN_CALL_SCORE = 40;
 /** A second, colourless channel for the two dye traces that hue alone cannot
  *  separate. Simulated over the shipped tokens (Viénot-Brettel-Mollon, then
  *  CIELAB ΔE76), two of the six pairs collapse for red-green colour vision, and
- *  both collapses are in the dark themes: C against G is ΔE 2.5 under
- *  protanopia in `dark` and 4.5 under deuteranopia, and A against T is 10.5 in
- *  `claude-dark`. A normal-vision reader never has to separate a pair below
- *  ΔE 42 in the same theme. Zoom does not rescue it either — the base letters
+ *  both collapses are in the dark theme: C against G is ΔE 2.5 under
+ *  protanopia and 4.5 under deuteranopia, and A against T is 14.9 under
+ *  protanopia. A normal-vision reader never has to separate a pair below
+ *  ΔE 61 in the same theme. Zoom does not rescue it either — the base letters
  *  that would name each curve only draw above 10px per column, and Fit puts an
  *  800-base read at 1.116px.
  *
  *  Dashing C and T leaves the two heaviest curves solid, and every collapsing
  *  pair is then separated by pattern rather than hue. The pairs still sharing a
- *  pattern are A/G, which stays at ΔE 29.9 or better in every simulation. The
+ *  pattern are A/G, which stays at ΔE 41.3 or better in every simulation. The
  *  legend swatches carry the same two patterns so the mapping is readable. */
 export const CHANNEL_DASH: Record<SangerBase, number[]> = {
   A: [],
@@ -291,12 +294,9 @@ export const CHANNEL_DASH: Record<SangerBase, number[]> = {
  * How much warning wash to paint over one base call. The scale runs DOWNWARD — a
  * call you can trust gets no ink, and the wash darkens as the call gets worse.
  *
- * It used to run the other way. `Math.max(0.035, Math.min(0.18, score / 260))`
- * put the most amber on the bases needing the least attention, and flattened both
- * ends: the floor was reached at Q9 and the ceiling at Q47, so every call below
- * Q10 painted byte-identically to every other one. Sampled at the 30px column cap
- * on a white ground, the whole scale spanned 1.24:1, and Q19 against Q20 — the
- * threshold every Sanger workflow is built on — was 1.007:1.
+ * The wash is linear in doubt below CLEAN_CALL_SCORE and never clamps at a low
+ * floor, so calls below Q10 stay distinguishable from each other and Q19 reads
+ * apart from Q20, the threshold every Sanger workflow is built on.
  */
 export function lowQualityShadeAlpha(score: number, ceiling: number): number {
   if (!Number.isFinite(score)) return 0;
@@ -402,7 +402,7 @@ function SangerStackedTraceCanvas({
     };
     context.fillStyle = background;
     context.fillRect(0, 0, viewportWidth, STACKED_TRACE_HEIGHT);
-    context.font = `11px ${monoFont}`;
+    context.font = `${TRACE_BASE_FONT_PX}px ${monoFont}`;
     context.textAlign = 'center';
     context.textBaseline = 'middle';
 
@@ -461,7 +461,7 @@ function SangerStackedTraceCanvas({
     if (traceAnchors.length < 2) {
       context.fillStyle = muted;
       context.textAlign = 'left';
-      context.fillText('No signal channels in this AB1 file.', 12, 106);
+      context.fillText('AB1 signal channels missing.', 12, 106);
       return;
     }
 
@@ -751,13 +751,11 @@ export function ClaudeScienceSangerTraceViewer({
       .sort((left, right) => left.sample - right.sample);
   }, [cellWidth, selected, selectedColumnByRaw]);
 
-  const scrollColumnIntoView = useCallback((column: number, behavior: ScrollBehavior = 'smooth') => {
+  // A jump to a column is one direct scroll in the same frame, never an animation.
+  const scrollColumnIntoView = useCallback((column: number, behavior: ScrollBehavior = 'auto') => {
     const scroller = scrollerRef.current;
     if (!scroller) return;
     const target = Math.max(0, Math.min(scroller.scrollWidth - scroller.clientWidth, ((column + 0.5) * cellWidth) - (scroller.clientWidth / 2)));
-    const resolvedBehavior = behavior === 'smooth' && (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false)
-      ? 'auto'
-      : behavior;
     // A range-key press updates the controlled position and scrolls the trace.
     // Chromium can deliver an older scroll event after the next key press. Do
     // not reinterpret that programmatic movement as a new manual position or
@@ -765,10 +763,10 @@ export function ClaudeScienceSangerTraceViewer({
     programmaticScrollLeftRef.current = Math.abs(scroller.scrollLeft - target) > 0.5
       ? target
       : null;
-    scroller.scrollTo({ left: target, behavior: resolvedBehavior });
+    scroller.scrollTo({ left: target, behavior });
   }, [cellWidth]);
 
-  const movePositionToColumn = useCallback((column: number, behavior: ScrollBehavior = 'smooth') => {
+  const movePositionToColumn = useCallback((column: number, behavior: ScrollBehavior = 'auto') => {
     const next = Math.max(0, Math.min(alignment.alignmentLength - 1, column));
     // View navigation must survive independently of whichever call is being inspected.
     setPositionColumn(next);
@@ -843,8 +841,8 @@ export function ClaudeScienceSangerTraceViewer({
     if (firstCoveredColumn >= alignment.alignmentLength) return;
     const frame = window.requestAnimationFrame(() => {
       // A jump that arrived with the mount (a variant opened from verification)
-      // says where to look. This frame fires after it and used to scroll the
-      // view back to column 1, leaving the selected call off screen.
+      // says where to look. This frame fires after it, so it must not scroll the
+      // view back to column 1 and leave the selected call off screen.
       if (handledJumpRef.current?.alignmentId === alignment.id) return;
       movePositionToColumn(firstCoveredColumn, 'auto');
     });
@@ -977,7 +975,7 @@ export function ClaudeScienceSangerTraceViewer({
     };
     context.fillStyle = background;
     context.fillRect(0, 0, viewportWidth, TRACE_HEIGHT);
-    context.font = `11px ${monoFont}`;
+    context.font = `${TRACE_BASE_FONT_PX}px ${monoFont}`;
     context.textAlign = 'center';
     context.textBaseline = 'middle';
 
@@ -1028,9 +1026,9 @@ export function ClaudeScienceSangerTraceViewer({
         context.fillText(readSymbol, localX, 44);
         if (showQuality && score !== undefined && cellWidth >= 16) {
           context.fillStyle = muted;
-          context.font = `9px ${monoFont}`;
+          context.font = `${TRACE_SCORE_FONT_PX}px ${monoFont}`;
           context.fillText(String(score), localX, 72);
-          context.font = `11px ${monoFont}`;
+          context.font = `${TRACE_BASE_FONT_PX}px ${monoFont}`;
         }
       }
     }
@@ -1038,7 +1036,7 @@ export function ClaudeScienceSangerTraceViewer({
     if (traceAnchors.length < 2) {
       context.fillStyle = muted;
       context.textAlign = 'left';
-      context.fillText('Peak locations or trace channels were not present in this AB1 file.', 14, 128);
+      context.fillText('AB1 peaks or channels missing.', 14, 128);
       return;
     }
 
@@ -1091,8 +1089,7 @@ export function ClaudeScienceSangerTraceViewer({
   if (!selected || !template) {
     return (
       <div className="motif-cs-sanger-empty" data-testid="sanger-trace-empty">
-        <strong>No aligned chromatogram</strong>
-        <span>Align an imported AB1 record with a template to review its calls, quality, and four dye channels.</span>
+        <span>Import an AB1 read, then align it to a template.</span>
       </div>
     );
   }
@@ -1107,7 +1104,7 @@ export function ClaudeScienceSangerTraceViewer({
     positionColumn ?? viewportCenterColumn,
   ));
   const callStatus = selectedColumn === null
-    ? 'Click a base or use the arrow keys to inspect a call.'
+    ? 'Select a call with click, slider, or arrows.'
     : `${traceTemplateCoordinateLabel(alignment, template, selectedColumn)} · alignment column ${(selectedColumn + 1).toLocaleString()} · read ${selected.row.aligned[selectedColumn] ?? '-'} · template ${template.aligned[selectedColumn] ?? '-'} · quality ${selectedQuality === undefined ? 'not reported' : `Q${selectedQuality}`}`;
   // The strip summarises the reads on screen: every lane when stacked, the
   // focused read alone in single view.
@@ -1154,16 +1151,16 @@ export function ClaudeScienceSangerTraceViewer({
             {linked.map((item) => <option key={item.row.id} value={item.row.id}>{item.row.name}</option>)}
           </select>
         </label>
-        {/* The label says which end of the scale is painted. "Quality" alone left
-            the direction to be guessed, and the wash used to run the other way. */}
-        <label className="motif-cs-sanger-quality-toggle" title="Shade calls below Q40 from the imported AB1 scores. The darker the shading, the less reliable the call.">
+        {/* The label says which end of the scale is painted, so the direction
+            is not left to be guessed. */}
+        <label className="motif-cs-sanger-quality-toggle" title="Shade calls below Q40. Darker means lower quality.">
           <input type="checkbox" checked={showQuality} onChange={(event) => setShowQuality(event.target.checked)} />
-          <span>Low quality</span>
+          <span>Shade below Q40</span>
         </label>
         <span className="motif-cs-chip">{selected.orientation}</span>
         <span><strong>{selected.trace.baseCalls.length.toLocaleString()}</strong> calls</span>
-        <span><strong>{qLabel(quality.mean)}</strong> mean</span>
-        <span><strong>{quality.q20Percent.toFixed(1)}%</strong> Q20+</span>
+        <span>Mean <strong>{qLabel(quality.mean)}</strong></span>
+        <span><strong>{quality.q20Percent.toFixed(1)}%</strong> calls ≥ Q20</span>
         <div className="motif-cs-sanger-toolbar-spacer" />
         <div className="motif-cs-sanger-zoom" role="group" aria-label="Chromatogram horizontal zoom">
           <button className="motif-cs-mini-button" type="button" disabled={cellWidth <= MIN_CELL_WIDTH} onClick={() => zoom(cellWidth - 2)} aria-label="Zoom chromatogram out">−</button>
@@ -1294,7 +1291,7 @@ export function ClaudeScienceSangerTraceViewer({
       </div>
       {selected.trace.warnings.length > 0 ? (
         <details className="motif-cs-sanger-warnings">
-          <summary>{selected.trace.warnings.length} import warning{selected.trace.warnings.length === 1 ? '' : 's'}</summary>
+          <summary>Import warnings · {selected.trace.warnings.length}</summary>
           <ul>{selected.trace.warnings.map((warning, index) => <li key={`${warning}-${index}`}>{warning}</li>)}</ul>
         </details>
       ) : null}

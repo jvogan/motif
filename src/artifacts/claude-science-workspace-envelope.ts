@@ -1,5 +1,6 @@
 import {
   normalizeArtifactDurableState,
+  RECORD_KEYED_ARTIFACT_STATE_FIELDS,
   type ArtifactDurableState,
 } from './claude-science-session';
 import {
@@ -19,15 +20,6 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
 }
-
-const RECORD_KEYED_ARTIFACT_STATE_FIELDS = [
-  'translationLayersByRecord',
-  'enzymeSourcesByRecord',
-  'hiddenEnzymesByRecord',
-  'hiddenFeatureTranslationsByRecord',
-  'restrictionLabelsByRecord',
-  'motifsByRecord',
-] as const;
 
 function assertArtifactStateRecordKeys(
   artifactState: unknown,
@@ -91,10 +83,12 @@ function assertAlignmentRecordKeys(
  * Canonical validation seam shared by portable producers and the workbench.
  * It deliberately returns normalized clones without mutating or widening the
  * caller's payload; producers can use it for validation-only acceptance parity.
+ * `circularRecordIds` names the circular records (see normalizeArtifactDurableState).
  */
 export function normalizeArtifactWorkspaceEnvelope(
   value: unknown,
   recordLengths: ReadonlyMap<string, number>,
+  circularRecordIds?: ReadonlySet<string>,
 ): NormalizedArtifactWorkspaceEnvelope {
   if (!isPlainObject(value)) throw new Error('Workspace payload must be a plain object.');
   const collections = normalizeArtifactWorkspaceCollections(value, { recordLengths });
@@ -102,6 +96,6 @@ export function normalizeArtifactWorkspaceEnvelope(
   assertArtifactStateRecordKeys(value.artifactState, recordLengths);
   return {
     ...collections,
-    artifactState: normalizeArtifactDurableState(value.artifactState, recordLengths),
+    artifactState: normalizeArtifactDurableState(value.artifactState, recordLengths, circularRecordIds),
   };
 }

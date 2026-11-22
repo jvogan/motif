@@ -100,6 +100,13 @@ describe('the record genetic code', () => {
   });
 });
 
+// The selected feature's code is set in the floating Translation window.
+function openTranslationWindow() {
+  const toggle = document.querySelector<HTMLButtonElement>('button[aria-label="Translations window off"]');
+  if (!toggle) throw new Error('no closed Translation window toggle');
+  act(() => toggle.click());
+}
+
 describe('a coding feature genetic code', () => {
   it('survives the Undo of the base edit made before it', async () => {
     await loadRecord('code-feature', true);
@@ -107,6 +114,7 @@ describe('a coding feature genetic code', () => {
     const edited = activeRecord().seq;
 
     selectCdsFeature();
+    openTranslationWindow();
     chooseCode('translation-table', 11);
     const tableOf = () => activeRecord().annotations?.find((feature) => feature.id === 'cds-1')?.metadata?.transl_table;
     expect(tableOf()).toBe(11);

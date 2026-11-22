@@ -1,15 +1,17 @@
 import { createHash } from 'node:crypto';
 import { describe, it, expect } from 'vitest';
-import { computeMapLayout, LINEAR_MIN_SCREEN_LABEL_PX, LINEAR_REC_LABEL_FONT_PX } from '../layout';
+import { computeMapLayout, LINEAR_MIN_SCREEN_LABEL_PX, LINEAR_REC_LABEL_FONT_PX, RESTRICTION_LABEL_FONT_MODE } from '../layout';
 import type { MapInput, MapLabelRender, MapLayout } from '../types';
 import type { LabelFontMode } from '../geometry/labels';
 import type { Feature, RestrictionSite } from '../../bio/types';
 import {
   approxTextWidth,
   fitsInline,
+  inlineBandThicknessPx,
   INLINE_PADDING_PX,
   LABEL_FONT_PX,
   LABEL_LINE_HEIGHT_PX,
+  labelInkHeightPx,
 } from '../geometry/labels';
 
 // ── factories ────────────────────────────────────────────────────────────────
@@ -229,7 +231,7 @@ function restrictionLabelOverlaps(layout: MapLayout): string[] {
       text: r.label!.text,
       box: labelBox(
         r.label!,
-        'monospace',
+        RESTRICTION_LABEL_FONT_MODE,
         layout.mode === 'linear' ? LINEAR_REC_LABEL_FONT_PX : undefined,
       ),
     }));
@@ -258,7 +260,7 @@ function outsideLabelRows(layout: MapLayout): {
   }[] = [];
   for (const f of layout.features) {
     if (f.label && !f.label.inside && f.label.leader.length > 1) {
-      rows.push({ key: `f:${f.id}`, side: f.label.anchor, anchorY: f.label.leader[0].y, labelY: f.label.y });
+      rows.push({ key: `f:${f.id}`, side: f.label.anchor, anchorY: outsideLeader(layout, f.label)[0].y, labelY: f.label.y });
     }
   }
   for (const r of layout.restrictions) {
@@ -378,16 +380,27 @@ function maxRadiusOfBox(layout: MapLayout, box: Box): number {
   );
 }
 
+/**
+ * The part of a circular feature leader outside the ring. A feature's leader runs in
+ * from just past the ring to the edge of its own band; the outside run is where it
+ * starts past the backbone, which is where the name's own placement begins.
+ */
+function outsideLeader(layout: MapLayout, label: MapLabelRender): readonly { x: number; y: number }[] {
+  const from = label.leader.findIndex((p) => Math.hypot(p.x - layout.center.x, p.y - layout.center.y) > layout.radius + 0.5);
+  return from <= 0 ? label.leader : label.leader.slice(from);
+}
+
 function radialLeaderDeviationDeg(layout: MapLayout, label: MapLabelRender): number {
-  if (label.leader.length < 2) return 0;
-  const start = label.leader[0];
-  const end = label.leader[1];
+  const leader = outsideLeader(layout, label);
+  if (leader.length < 2) return 0;
+  const start = leader[0];
+  const end = leader[1];
   const radial = { x: start.x - layout.center.x, y: start.y - layout.center.y };
-  const leader = { x: end.x - start.x, y: end.y - start.y };
+  const run = { x: end.x - start.x, y: end.y - start.y };
   const radialLen = Math.hypot(radial.x, radial.y);
-  const leaderLen = Math.hypot(leader.x, leader.y);
+  const leaderLen = Math.hypot(run.x, run.y);
   if (radialLen === 0 || leaderLen === 0) return 0;
-  const dot = (radial.x * leader.x + radial.y * leader.y) / (radialLen * leaderLen);
+  const dot = (radial.x * run.x + radial.y * run.y) / (radialLen * leaderLen);
   return Math.acos(Math.max(-1, Math.min(1, dot))) * (180 / Math.PI);
 }
 
@@ -822,7 +835,7 @@ describe('computeMapLayout: circular pUC19', () => {
       const endpoint = label.leader[label.leader.length - 1];
       expect(label.anchor).toBe('middle');
       expect(endpoint).not.toEqual({ x: label.x, y: label.y });
-      expect(polylineIntersectsBox(label.leader, labelBox(label, 'monospace'))).toBe(false);
+      expect(polylineIntersectsBox(label.leader, labelBox(label, RESTRICTION_LABEL_FONT_MODE))).toBe(false);
       expect(Math.hypot(endpoint.x - label.x, endpoint.y - label.y)).toBeGreaterThan(1);
       if (label.leader.length > 2) {
         expect(pointDistanceToRadialLine(layout, label.leader[0], label.leader[1])).toBeLessThanOrEqual(0.75);
@@ -936,7 +949,7 @@ describe('computeMapLayout: circular pUC19', () => {
     expect(visibleRestrictionLabels.length).toBeGreaterThan(0);
     expect(visibleRestrictionLabels.some((text) => text.includes(' +'))).toBe(true);
     for (const label of visibleRestrictionLabels) {
-      expect(approxTextWidth(label, undefined, 'monospace')).toBeLessThanOrEqual(capPx);
+      expect(approxTextWidth(label, undefined, RESTRICTION_LABEL_FONT_MODE)).toBeLessThanOrEqual(capPx);
     }
 
     // This used to assert no label contained ", ", using the separator as a proxy for
@@ -1018,10 +1031,12 @@ describe('computeMapLayout: circular pUC19', () => {
   it('emits fitted centerTitle metadata for circular titles only', () => {
     expect(layout.centerTitle?.lines).toHaveLength(1);
     // 18, not the old fixed 15: the name is the largest text in the ring, above the
-    // labels' 16 units, and grows with the ring. The length line keeps 14 here.
+    // labels' 16 units, and grows with the ring. The length line never drops below
+    // the labels' 16 units, so it stays 12px or more on screen wherever they do.
     expect(layout.centerTitle?.lines[0]).toEqual({ text: 'pUC19', fontSize: 18, baselineY: 298 });
-    expect(layout.centerTitle?.lenBaselineY).toBe(317);
-    expect(layout.centerTitle?.lenFontSize).toBe(14);
+    expect(layout.centerTitle?.lenBaselineY).toBe(319);
+    expect(layout.centerTitle?.lenFontSize).toBe(16);
+    expect(layout.centerTitle?.showLength).toBeUndefined();
 
     // A large ring takes the cap.
     const large = computeMapLayout(circularInput({ width: 1100, height: 1100 }));
@@ -1037,7 +1052,8 @@ describe('computeMapLayout: circular pUC19', () => {
       }),
     );
     expect(long.centerTitle?.lines).toHaveLength(2);
-    expect(long.centerTitle?.lines.every((line) => line.fontSize === 14)).toBe(true);
+    // Two lines never go below the labels' 16 units; what does not fit ellipsizes.
+    expect(long.centerTitle?.lines.every((line) => line.fontSize === 16)).toBe(true);
 
     const linear = computeMapLayout({
       ...circularInput({ topology: 'linear' }),
@@ -1047,6 +1063,51 @@ describe('computeMapLayout: circular pUC19', () => {
       height: 320,
     });
     expect(linear.centerTitle).toBeUndefined();
+  });
+
+  it('rides a name on its arc only when the band holds its whole ink', () => {
+    // A 16-unit name has 15.2 units of real ink, ascender to descender. On a
+    // 12-unit band the rule would pass every name with 0.0 to spare and every riding
+    // name would cross both edges of its band.
+    expect(labelInkHeightPx(16)).toBeCloseTo(15.2, 6);
+    expect(fitsInline('AmpR', 400, 16, 'proportional', 12)).toBe(false);
+    expect(fitsInline('AmpR', 400, 16, 'monospace', inlineBandThicknessPx(16, 'proportional'))).toBe(false);
+    expect(fitsInline('AmpR', 400, 16, 'monospace', inlineBandThicknessPx(16, 'monospace'))).toBe(true);
+
+    // Every name the circular layout rides on an arc sits on a band that holds it.
+    for (const [width, height] of [[620, 620], [700, 520], [900, 760], [1100, 900]] as const) {
+      for (const labelFontMode of ['proportional', 'monospace'] as const) {
+        const layout = computeMapLayout(circularInput({ width, height, display: { labelFontMode } }));
+        const riding = layout.features.filter((f) => f.label?.arcPath);
+        expect(riding.length).toBeGreaterThan(0);
+        for (const f of riding) {
+          const radii = f.segmentPaths.flatMap((d) => [...d.matchAll(/A\s*([\d.]+)/g)].map((m) => Number(m[1])));
+          const band = Math.max(...radii) - Math.min(...radii);
+          expect(band).toBeGreaterThanOrEqual(inlineBandThicknessPx(LABEL_FONT_PX, labelFontMode) - 0.01);
+        }
+      }
+    }
+  });
+
+  it('ends every outside feature leader on the feature it names', () => {
+    // A leader that stopped just past the ring would end well short of a short feature
+    // drawn on an inner lane and point at bare backbone, so each runs to the feature.
+    for (const [width, height] of [[620, 620], [700, 520], [900, 760], [398, 484]] as const) {
+      const layout = computeMapLayout(circularInput({ width, height }));
+      const led = layout.features.filter((f) => f.label && !f.label.inside && f.label.leader.length > 1);
+      expect(led.length).toBeGreaterThan(0);
+      for (const f of led) {
+        const radii = f.segmentPaths.flatMap((d) => [...d.matchAll(/A\s*([\d.]+)/g)].map((m) => Number(m[1])));
+        const foot = f.label!.leader[0];
+        const r = Math.hypot(foot.x - layout.center.x, foot.y - layout.center.y);
+        expect(Math.abs(r - Math.max(...radii))).toBeLessThan(0.01);
+        // ...inside the feature's own sweep, so it lands on the shape and not beside it.
+        const source = puc19Features.find((candidate) => candidate.id === f.id)!;
+        const angle = (((Math.atan2(foot.x - layout.center.x, layout.center.y - foot.y) * 180) / Math.PI) + 360) % 360;
+        expect(angle).toBeGreaterThanOrEqual((source.start / PUC19_LEN) * 360 - 0.01);
+        expect(angle).toBeLessThanOrEqual((source.end / PUC19_LEN) * 360 + 0.01);
+      }
+    }
   });
 
   it('keeps the circular pUC19 layout byte-stable', () => {
@@ -1086,8 +1147,20 @@ describe('computeMapLayout: circular pUC19', () => {
     // d942a3f6… on BOTH sides, so no label, arc or tick moved.
     // Rolled when each feature gained `startBp`, the base keyboard focus is ordered
     // by. Dropping that one key from every feature reproduces 3771be4e… exactly.
+    // The site summary's text is "+3 sites" (the summary carries no geometry on a ring,
+    // so only its text is in the hash).
+    // The length line is 16 units: `centerTitle` and `centerLabelRadius` carry it.
+    // `featureLaneOuterRadius` is part of the circular layout: it is the outer edge of
+    // the outermost feature lane, and the ruler band lies outside it.
+    // Feature bands are 19 units so a name riding its arc fits inside its band: every
+    // lane radius, arc path and riding-label arc follows, and the riding names are
+    // pinned by the band test below.
+    // Each outside feature leader runs on in to its own band's edge (pinned by the
+    // leader-foot test below); only leaders and the ruler numbers they cross follow.
+    // `featureLaneInnerRadius` is part of the circular layout: a selected range is a
+    // wedge that reaches just inside the innermost lane.
     expect(layoutHash(layout)).toBe(
-      'ca1a8ff809754ba7fa29796a72e3f3051c603d4dd9108cffd3f2b5bb73277e3c',
+      'dcc5d08c2a6d709e2f90a81d35e96ff0774b1f189e87e87020fd2c7d5f6f97b8',
     );
   });
 
@@ -1313,7 +1386,7 @@ describe('computeMapLayout: circular pUC19', () => {
       (label) =>
         !label.inside &&
         radialLeaderDeviationDeg(layout, label) <= 35 &&
-        leaderLength(label) <= layout.radius * 0.35 + LABEL_LINE_HEIGHT_PX,
+        leaderLength({ ...label, leader: [...outsideLeader(layout, label)] }) <= layout.radius * 0.35 + LABEL_LINE_HEIGHT_PX,
     ).length;
 
     // The measured SVG text box rejects the fifteenth synthetic name instead of
@@ -1598,8 +1671,11 @@ describe('computeMapLayout: linear + protein', () => {
         16,
       ),
     ).toBe(false);
-    expect(fitsInline(name, textW + INLINE_PADDING_PX, undefined, 'proportional', 11.99)).toBe(false);
-    expect(fitsInline(name, textW + INLINE_PADDING_PX, undefined, 'proportional', 12)).toBe(true);
+    // The radial rule holds a name's whole ink plus clear room to both edges.
+    const band = inlineBandThicknessPx();
+    expect(band).toBeCloseTo(18.533, 3);
+    expect(fitsInline(name, textW + INLINE_PADDING_PX, undefined, 'proportional', band - 0.01)).toBe(false);
+    expect(fitsInline(name, textW + INLINE_PADDING_PX, undefined, 'proportional', band)).toBe(true);
 
     const narrow = computeMapLayout({
       mode: 'linear',
@@ -1979,7 +2055,7 @@ describe('computeMapLayout: linear + protein', () => {
       expect(r.tick.y2).toBe(42);
     }
     expect(visibleRestrictionLabels).toBeLessThanOrEqual(8);
-    expect(layout.overflows?.[0]?.text).toMatch(/^\d+ unnamed( sites?)?$/);
+    expect(layout.overflows?.[0]?.text).toMatch(/^\+\d+( sites?)?$/);
   });
 
   it('uses the Type IIS enzyme as the compact linear cluster lead', () => {
@@ -2158,12 +2234,12 @@ describe('computeMapLayout: linear + protein', () => {
       height: 420,
     });
 
-    // A narrow dock no longer computes at a flat 720. It stops where a 13px
+    // A narrow dock does not compute at a flat 720. It stops where a 13px
     // enzyme name would scale below LINEAR_MIN_SCREEN_LABEL_PX, so this 400px
-    // pane lays out at 520 and draws at 400/520 = 0.769 — exactly 10 screen px,
-    // where the flat 720 gave 7.2. Lane geometry stays proportional; the ratio
-    // is smaller, not absent.
-    expect(layout.width).toBe(520);
+    // pane lays out at 433.3 and draws at 400/433.3 = 0.923 — exactly 12 screen
+    // px, where a flat 720 would give 7.2. Lane geometry stays proportional; the
+    // ratio is smaller, not absent.
+    expect(layout.width).toBeCloseTo(400 * 13 / 12, 6);
     expect(400 / layout.width).toBeCloseTo(LINEAR_MIN_SCREEN_LABEL_PX / LINEAR_REC_LABEL_FONT_PX, 3);
     expect(layout.width).toBeLessThan(720);
     expect(layout.features.filter((f) => f.label).map((f) => f.name)).toEqual(
@@ -2182,7 +2258,7 @@ describe('computeMapLayout: linear + protein', () => {
       features: denseLinearFeatures(22, 9276),
       restrictionSites: denseLinearSites(65, 9276),
       width: 400,
-      height: 670,
+      height: 760,
       fillAvailableHeight: true,
     });
     const rowTops = [...new Set(layout.features
@@ -2196,7 +2272,7 @@ describe('computeMapLayout: linear + protein', () => {
       layout.features.map((feature) => [feature.id, featureBodyBox(feature)] as const),
     );
 
-    expect(layout.height).toBe(670);
+    expect(layout.height).toBe(760);
     expect(layout.bg.height).toBeLessThan(layout.height);
     expect(rowTops.length).toBeGreaterThanOrEqual(3);
     // Rows need enough pitch for beside-label clearance, but the dock must not
@@ -2208,10 +2284,10 @@ describe('computeMapLayout: linear + protein', () => {
     // The point is that the pitch CAP is what stops the spread, not that the
     // spread happens to be some particular size. Spreading this stack over the
     // dock's full depth would exceed the 46px cap, and the cap is what holds it
-    // to `minPitch` instead. The old form pinned a lane count: at a 400px pane
-    // the readability floor now lays out at 520 rather than 720, which packs
-    // the same features into more lanes and moved this from 70.3 to 56.2
-    // without changing anything the assertion was there to protect.
+    // to `minPitch` instead. Pinning a lane count would be brittle: at a 400px pane
+    // the 12px readability floor lays out at 433 rather than 720, which
+    // packs the same features into more lanes, so the dock is 760 deep here to
+    // leave the cap something to stop.
     expect(stretchedPitch).toBeGreaterThan(46);
     expect(minPitch).toBeLessThan(stretchedPitch);
     expect(Math.abs(dockMargins.top - dockMargins.bottom)).toBeLessThanOrEqual(0.5);
@@ -2244,7 +2320,7 @@ describe('computeMapLayout: linear + protein', () => {
       height: 420,
     });
     const overflow = layout.overflows?.find((o) => o.kind === 'restriction-labels');
-    expect(overflow?.text).toMatch(/^\d+ unnamed( sites?)?$/);
+    expect(overflow?.text).toMatch(/^\+\d+( sites?)?$/);
     const overflowLeft = overflow!.x - approxTextWidth(overflow!.text);
     const sameRow = layout.restrictions
       .filter((r) => r.label?.y === overflow!.y)
@@ -2297,7 +2373,7 @@ describe('computeMapLayout: dense restriction culling', () => {
       expect(Math.max(...layout.restrictions.map((r) => r.tickIds.length))).toBeLessThan(100);
       expect(Math.max(...labeledBp) - Math.min(...labeledBp)).toBeGreaterThan(len * 0.6);
       expect([...(layout.overflowSummaries ?? []), ...(layout.overflows ?? [])]
-        .find((o) => o.kind === 'restriction-labels')?.text).toMatch(/^\d+ unnamed( sites?)?$/);
+        .find((o) => o.kind === 'restriction-labels')?.text).toMatch(/^\+\d+( sites?)?$/);
       for (const label of visibleLabels) {
         const overflow = label.label!.text.match(/\+(\d+)/);
         if (overflow) expect(Number(overflow[1])).toBeLessThan(100);

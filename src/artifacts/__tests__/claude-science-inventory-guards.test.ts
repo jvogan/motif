@@ -87,10 +87,10 @@ describe('Claude Science Inventory regression guards', () => {
     expect(importParser).toContain('}).filter((record) => Boolean(record.seq));');
     expect(inventoryList).toContain('record.group,');
     expect(inventoryList).toContain('record.organism,');
-    expect(inventoryList).toContain('placeholder="Filter inventory…"');
+    expect(inventoryList).toContain('placeholder="Filter records…"');
   });
 
-  it('keeps Add Entry in a fixed popover with explicit dismissal and focus return', () => {
+  it('keeps Import records in a fixed popover with explicit dismissal and focus return', () => {
     const importPanel = sliceBetween(
       artifactSource,
       'function ImportSequencePanel({',
@@ -109,7 +109,7 @@ describe('Claude Science Inventory regression guards', () => {
     expect(artifactSource).toContain('onClick={() => setImportPanelOpen((open) => !open)}');
     expect(artifactCss).toMatch(/\.motif-cs-sidebar \.motif-cs-import-slot\s*\{[\s\S]*?min-height:\s*36px/);
     expect(artifactCss).toMatch(/\.motif-cs-sidebar \.motif-cs-import-panel\[open\][\s\S]*?position:\s*fixed/);
-    expect(artifactCss).toMatch(/top:\s*113px/);
+    expect(artifactCss).toMatch(/top:\s*84px/);
     expect(artifactCss).toMatch(/width:\s*min\(344px, calc\(100vw - 64px\)\)/);
     expect(artifactCss).toMatch(/\.motif-cs-sidebar \.motif-cs-import-panel:not\(\[open\]\)\s*\{\s*display:\s*none/);
     expect(artifactCss).toMatch(/\.motif-cs-sidebar \.motif-cs-import-panel\[open\]\s*\{\s*display:\s*block/);
@@ -117,20 +117,26 @@ describe('Claude Science Inventory regression guards', () => {
 
   it('uses quiet full-surface active states without one-sided accent rails', () => {
     expect(artifactCss).toMatch(/\.motif-cs-record-tab\[data-active="true"\][\s\S]*?background:\s*var\(--bg-primary\)/);
-    expect(artifactCss).toMatch(/\.motif-cs-sidebar \.motif-cs-row\.motif-cs-row-compact\[data-active="true"\][\s\S]*?background:\s*color-mix\(in srgb, var\(--accent\) 10%, var\(--bg-primary\)\)[\s\S]*?box-shadow:\s*none/);
+    // The selector has one copy, so the pattern names the one shared rule body and
+    // cannot match lazily across to a later rule.
+    expect(artifactCss).toMatch(/\.motif-cs-sidebar \.motif-cs-row\.motif-cs-row-compact\[data-active="true"\] \{\s*background-color:\s*var\(--bg-selected\);\s*box-shadow:\s*none;/);
     expect(artifactCss).toMatch(/\.motif-cs-pane-toggle\[data-active="true"\][\s\S]*?box-shadow:\s*none/);
   });
 
-  it('underlines the selected record tab in the warm themes too', () => {
-    // Each warm theme draws the tab as a bordered pill, and that border shorthand
-    // (0,2,1) outranked the shared underline (0,2,0): the selected tab painted 0
-    // accent pixels in both, against 177 in Light and Dark.
-    for (const theme of ['claude-light', 'claude-dark']) {
-      expect(artifactCss).toContain(`html[data-theme="${theme}"] .motif-cs-record-tab {\n  margin: 4px 3px;\n  border: 1px solid`);
-      expect(artifactCss).toMatch(new RegExp(
-        `html\\[data-theme="${theme}"\\] \\.motif-cs-record-tab\\[data-active="true"\\] \\{\\s*border-bottom-color: var\\(--accent\\);\\s*box-shadow: inset 0 -2px 0 var\\(--accent\\);`,
-      ));
-    }
+  it('fills the selected record tab with the one "on" fill in every theme', () => {
+    // A theme-scoped tab rule would outrank the shared rule: its border shorthand
+    // (0,2,1) beats the shared rule (0,2,0). Both themes use the shared rules, so no
+    // theme-scoped tab rule may exist. The selected tab takes the same --bg-selected
+    // fill as the selected Records row, with no divider and no underline.
+    expect(artifactCss).not.toMatch(/html\[data-theme="[a-z-]+"\] \.motif-cs-record-tab(\[data-active="true"\])? \{/);
+    // The tab stands 28px tall on the strip's centre line with no
+    // underline, so it keeps no clear bottom border either.
+    const tab = /\.motif-cs-record-tab \{([^}]*)\}/.exec(artifactCss);
+    expect(tab).not.toBeNull();
+    expect(tab![1]).toMatch(/height: 28px;[^}]*border-right: 1px solid transparent;/);
+    expect(tab![1]).not.toMatch(/border-bottom/);
+    // The row and the tab share --bg-selected, the quiet accent tint.
+    expect(artifactCss).toMatch(/\.motif-cs-record-tab\[data-active="true"\] \{\s*background-color: var\(--bg-selected\);\s*color: var\(--text-primary\);\s*\}/);
   });
 
   it('keeps Inventory chrome fixed while only the record groups scroll', () => {
@@ -140,18 +146,17 @@ describe('Claude Science Inventory regression guards', () => {
   });
 
   it('keeps Inventory vertical in the split workspace', () => {
-    // The stylesheet carries MORE THAN ONE `@media (min-width: 768px) and
+    // The stylesheet carries MORE THAN ONE `@media (min-width: 900px) and
     // (max-width: 1535px)` block, so slicing from the first opener to the 1536
-    // breakpoint spans everything in between — including the `max-width: 767px`
+    // breakpoint would span everything in between — including the `max-width: 899px`
     // phone block, which is exactly where the record-tab overrides legitimately
-    // live. That made the negative assertion below fail on a stylesheet whose
-    // split-workspace rules were untouched. Select the block that actually
-    // carries the split-workspace inventory rules and brace-match to its own
-    // close, so this guard is immune to how many such blocks exist or where
-    // they sit.
+    // live, and the negative assertion below would fail on it. Select the block
+    // that actually carries the split-workspace inventory rules and brace-match
+    // to its own close, so this guard is immune to how many such blocks exist
+    // or where they sit.
     const splitWorkspace = mediaBlockContaining(
       artifactCss,
-      '@media (min-width: 768px) and (max-width: 1535px) {',
+      '@media (min-width: 900px) and (max-width: 1535px) {',
       '.motif-cs-sidebar .motif-cs-inventory-groups',
     );
 
@@ -164,25 +169,30 @@ describe('Claude Science Inventory regression guards', () => {
     expect(splitWorkspace).not.toContain('.motif-cs-record-strip');
   });
 
-  it('hides the record tab strip beside a docked Inventory at every width, and keeps one Add entry control', () => {
-    // The strip listed the Inventory's 13 records in the same order with the same
-    // selection, for 32px of full-width height; it was hidden only up to 767px.
-    // It still shows beside a floating or hidden Inventory.
-    expect(artifactSource).toContain("const recordStripHidden = paneVisibility.inventory && panePlacements.inventory === 'docked';");
+  it('hides the record tab strip beside a docked Inventory at every width, and keeps one Import records control', () => {
+    // Beside a docked Inventory the strip would list the same 13 records in the
+    // same order with the same selection, for 32px of full-width height.
+    // It shows beside a floating or hidden Inventory, and only with two or more
+    // records (or while the import panel it hosts is open).
+    expect(artifactSource).toContain("const recordStripHidden = (paneVisibility.inventory && panePlacements.inventory === 'docked')\n    || (payload.records.length < 2 && !importPanelOpen);");
     expect(artifactSource).toContain('<div className="motif-cs-record-strip" hidden={recordStripHidden || undefined}>');
     expect(artifactCss).toMatch(/\n\.motif-cs-record-strip\[hidden\] \{\s*display: none;/);
     expect(artifactCss).toMatch(/\n\.motif-cs-shell:has\(\.motif-cs-record-strip\[hidden\]\) \{\s*grid-template-rows: auto 1fr;/);
     expect(artifactCss).not.toContain('data-inventory-visible');
-    // Hiding the Inventory used to leave no visible way to add a record. The strip's
-    // "+" renders only while the Inventory is hidden: the Add entry panel finds its
+    // Hiding the Inventory must leave a visible way to add a record. The top bar's
+    // "+" renders only while the Inventory is hidden: the Import records panel finds its
     // trigger with querySelector('.motif-cs-add-entry-button'), so two at once would
-    // make one of them close and reopen the panel on a second click.
+    // make one of them close and reopen the panel on a second click. The button sits
+    // in the top bar, not the strip's row (there it reads as the bar wrapping); the
+    // strip still hosts the panel, under the same condition.
     const strip = sliceBetween(artifactSource, '<div className="motif-cs-record-strip"', '</div>\n\n      <main');
-    expect(strip).toContain('{paneVisibility.inventory ? null : (');
-    expect(strip).toContain('className="motif-cs-mini-button motif-cs-add-entry-button"');
-    expect(strip).toContain('{importSequencePanel}');
+    expect(strip).toContain('{paneVisibility.inventory ? null : importSequencePanel}');
+    expect(strip).not.toContain('motif-cs-add-entry-button');
+    const topbar = sliceBetween(artifactSource, '<div className="motif-cs-topbar-meta">', '</header>');
+    expect(topbar).toContain('{paneVisibility.inventory ? null : (');
+    expect(topbar).toContain('className="motif-cs-mini-button motif-cs-add-entry-button"');
     expect(artifactCss).toMatch(/\.motif-cs-record-strip \.motif-cs-import-panel\[open\] \{\s*position: fixed;/);
-    // Focus that used to go to the active tab goes to whichever record control shows.
+    // Focus goes to whichever record control shows, not only to the active tab.
     expect(artifactSource.match(/focusActiveRecordControl\(\)/g)?.length).toBeGreaterThanOrEqual(3);
     expect(artifactSource).not.toContain("document.querySelector<HTMLButtonElement>('.motif-cs-record-tab[data-active=\"true\"]')");
   });
@@ -191,11 +201,10 @@ describe('Claude Science Inventory regression guards', () => {
     // At laptop sizes this list is the only place a session meets its whole
     // vector inventory, and it hides 237px of it at 1440x900 and 303px at
     // 1024x768. `scrollbar-gutter: stable` reserves the lane; without a colour
-    // the bar fell through to the platform default and measured 1.72:1 against
-    // its own track in BOTH light themes and 2.66:1 in both dark ones, under the
-    // 3.0 non-text floor. Identical rgb across all four themes is the tell that
-    // it was never themed rather than themed badly. Measured HEADED — headless
-    // macOS Chromium reports a 0px gutter and no bar at all.
+    // the bar falls through to the platform default and measures 1.72:1 against
+    // its own track in light and 2.66:1 in dark, under the 3.0 non-text floor.
+    // Measured HEADED — headless macOS Chromium reports a 0px gutter and no bar
+    // at all.
     const list = sliceBetween(artifactCss, '.motif-cs-inventory-groups {', '}');
     expect(list).toContain('overflow: auto');
     expect(list).toContain('scrollbar-gutter: stable');
@@ -217,13 +226,33 @@ describe('Claude Science Inventory regression guards', () => {
     );
 
     expect(extremeTopbar).toContain('flex-wrap: nowrap;');
-    expect(extremeTopbar).toContain('.motif-cs-pane-toggle > span');
-    expect(extremeTopbar).toContain('display: none;');
+    // Labels stay visible at every width: only the brand leaves the row, below 470px.
+    expect(artifactCss).not.toMatch(/\.motif-cs-pane-toggle > span\s*\{[^}]*display:\s*none/);
+    expect(extremeTopbar).toMatch(/@media \(max-width: 469px\) \{\s*\.motif-cs-topbar > \.motif-cs-brand \{\s*display: none;\s*\}\s*\}/);
+    // At the 326px minimum the four labels fit beside the Annotate reserve with
+    // no sideways scroll: tighter padding and a narrower gap before Tools at
+    // 340px. The borders stay; they are what make an off toggle read as a button.
+    expect(extremeTopbar).toMatch(
+      /@media \(max-width: 340px\) \{\s*\.motif-cs-topbar \{\s*padding-left: 4px;\s*\}\s*\.motif-cs-pane-toggle \{\s*padding-inline: 2px;\s*\}\s*\.motif-cs-pane-toggle\[data-pane-toggle="tools"\] \{\s*margin-inline: 4px;\s*\}\s*\}/,
+    );
+    expect(extremeTopbar).not.toMatch(/border-inline-width:\s*0/);
+    expect(artifactCss).not.toMatch(/\.motif-cs-topbar \{[^}]*grid-template-columns/);
     expect(artifactSource).not.toContain('motif-cs-toggle-state');
     expect(artifactCss).not.toContain('motif-cs-toggle-state');
     expect(artifactSource).not.toContain('data-state={showTranslations');
     expect(artifactCss).toMatch(/\.motif-cs-pane-toggle\[data-active="true"\][\s\S]*?background:\s*transparent/);
     expect(artifactSource).not.toContain('<small className="motif-cs-pane-state">Rail</small>');
     expect(artifactSource).toContain("toolsDocked ? 'expanded' : 'rail'");
+  });
+
+  it('keeps the active look on the last open pane, whose toggle is disabled', () => {
+    const lastOpen = artifactCss.match(
+      /\.motif-cs-pane-toggle\[data-active="true"\]:disabled:focus-visible \{([^}]*)\}/,
+    )?.[1] ?? '';
+    expect(lastOpen).toContain('background-color: var(--bg-active);');
+    expect(lastOpen).toContain('border-color: transparent;');
+    expect(lastOpen).toContain('box-shadow: none;');
+    expect(lastOpen).toContain('opacity: 1;');
+    expect(lastOpen).not.toContain('background: transparent;');
   });
 });

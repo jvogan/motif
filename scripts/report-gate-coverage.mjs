@@ -44,11 +44,21 @@ export function reportGateCoverage(env = process.env, rootDirectory = root, step
     return receipt;
   });
 
-  const evidence = readJson(join(receiptDirectory, 'fixtures.json'), 'Browser fixture evidence');
-  if (evidence.schema !== GATE_FIXTURE_SCHEMA || evidence.runId !== run.runId
-    || evidence.commit !== commit || evidence.step !== 'core-browser-workflows' || evidence.status !== 'passed') {
-    throw new Error('Browser fixture evidence is stale or unsuccessful');
-  }
+  const readBrowserEvidence = (file, step) => {
+    const evidence = readJson(join(receiptDirectory, file), 'Browser fixture evidence');
+    const { passed, skipped, failed, missing } = evidence.suite ?? {};
+    if (evidence.schema !== GATE_FIXTURE_SCHEMA || evidence.runId !== run.runId
+      || evidence.commit !== commit || evidence.step !== step || evidence.status !== 'passed'
+      || ![passed, skipped, failed, missing].every(value => Number.isSafeInteger(value) && value >= 0)
+      || !passed || failed || missing) {
+      throw new Error(`Browser fixture evidence is stale, unsuccessful, or all skipped for ${step}`);
+    }
+    return evidence;
+  };
+  const evidence = readBrowserEvidence('fixtures.json', 'core-browser-workflows');
+  const msaEvidence = steps.some(({ id }) => id === 'msa-browser-workflows')
+    ? readBrowserEvidence('msa-fixtures.json', 'msa-browser-workflows')
+    : undefined;
   if (JSON.stringify(evidence.checks?.map(({ id }) => id)) !== JSON.stringify(fixtures.map(({ id }) => id))) {
     throw new Error('Browser fixture evidence does not match the declared checks');
   }
@@ -58,7 +68,7 @@ export function reportGateCoverage(env = process.env, rootDirectory = root, step
     const { passed, skipped, failed, missing } = check.counts ?? {};
     if (![passed, skipped, failed, missing].every(value => Number.isSafeInteger(value) && value >= 0)
       || failed || missing
-      || !['executed', 'skipped', 'not-applicable'].includes(check.status)
+      || !['executed', 'skipped', ...(optional ? ['not-applicable'] : [])].includes(check.status)
       || (check.status === 'executed' && (!passed || skipped))
       || (check.status === 'skipped' && !skipped)
       || (check.status === 'not-applicable' && (passed || skipped))) {
@@ -77,6 +87,10 @@ export function reportGateCoverage(env = process.env, rootDirectory = root, step
       step, label, command, startedAt, finishedAt, durationMs,
     })),
     fixtureChecks,
+    browserSuites: {
+      core: evidence.suite,
+      ...(msaEvidence ? { msa: msaEvidence.suite } : {}),
+    },
     note: 'Executed checks are supported by successful, exact-commit receipts. Fixture statuses come from browser test results for this invocation.',
   };
   mkdirSync(join(rootDirectory, 'dist-motif'), { recursive: true });

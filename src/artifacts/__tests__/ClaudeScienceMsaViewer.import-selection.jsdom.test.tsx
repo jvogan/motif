@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 
 import { useState } from 'react';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ClaudeScienceMsaViewer,
@@ -92,6 +92,145 @@ async function importFiles(files: File[]): Promise<void> {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.useRealTimers();
+});
+
+describe('Alignment async intake and run', () => {
+  const records: MsaRecord[] = [
+    { id: 'first', name: 'First', type: 'dna', sequence: 'ACGTACGT' },
+    { id: 'second', name: 'Second', type: 'dna', sequence: 'ACGTTCGT' },
+  ];
+  const props = (overrides: Partial<ClaudeScienceMsaViewerProps> = {}): ClaudeScienceMsaViewerProps => ({
+    records,
+    alignments: [],
+    activeRecordId: records[0].id,
+    activeAlignmentId: null,
+    viewPreferences: DEFAULT_CLAUDE_SCIENCE_MSA_VIEW_PREFERENCES,
+    onActiveAlignmentChange: vi.fn(),
+    onViewPreferencesChange: vi.fn(),
+    onSaveAlignment: vi.fn((alignment) => alignment),
+    onUpdateAlignmentTemplate: () => null,
+    onDeleteAlignment: vi.fn(),
+    onImportRecords: vi.fn(),
+    onCopy: async () => true,
+    onDownload: vi.fn(),
+    ...overrides,
+  });
+
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (reason: Error) => void;
+    const promise = new Promise<T>((accept, refuse) => {
+      resolve = accept;
+      reject = refuse;
+    });
+    return { promise, resolve, reject };
+  }
+
+  function chooseAlignedFile(name: string) {
+    const read = deferred<string>();
+    const file = new File([], name);
+    Object.defineProperty(file, 'text', { value: () => read.promise });
+    fireEvent.change(screen.getByLabelText('Choose a pre-aligned sequence file'), { target: { files: [file] } });
+    return read;
+  }
+
+  const draft = () => screen.getByLabelText<HTMLTextAreaElement>('Aligned FASTA or CLUSTAL');
+
+  it('keeps the latest aligned file when the previous read finishes last', async () => {
+    render(<ClaudeScienceMsaViewer {...props()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Aligned file' }));
+    const older = chooseAlignedFile('older.fasta');
+    const newer = chooseAlignedFile('newer.fasta');
+    await act(async () => newer.resolve('newer contents'));
+    await act(async () => older.resolve('older contents'));
+    expect(draft().value).toBe('newer contents');
+    expect(screen.getByPlaceholderText<HTMLInputElement>('Imported alignment').value).toBe('newer');
+    expect(screen.getByTestId('msa-source-link-status').textContent).toContain('newer.fasta');
+  });
+
+  it('keeps manually entered aligned text and ignores errors after switching sources', async () => {
+    render(<ClaudeScienceMsaViewer {...props()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Aligned file' }));
+    const pending = chooseAlignedFile('pending.fasta');
+    fireEvent.change(draft(), { target: { value: 'manual draft' } });
+    await act(async () => pending.resolve('file contents'));
+    expect(draft().value).toBe('manual draft');
+
+    const unreadable = chooseAlignedFile('unreadable.fasta');
+    fireEvent.click(screen.getByRole('button', { name: 'Workspace records' }));
+    await act(async () => unreadable.reject(new Error('read failed')));
+    expect(screen.queryByText('File unreadable. Choose the alignment file again.')).toBeNull();
+  });
+
+  it('fills aligned text while keeping a name entered during the read', async () => {
+    render(<ClaudeScienceMsaViewer {...props()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Aligned file' }));
+    const pending = chooseAlignedFile('pending.fasta');
+    const name = screen.getByPlaceholderText<HTMLInputElement>('Imported alignment');
+    fireEvent.change(name, { target: { value: 'Manual name' } });
+    await act(async () => pending.resolve('file contents'));
+    expect(draft().value).toBe('file contents');
+    expect(name.value).toBe('Manual name');
+  });
+
+  it('uses the current template revision and name when a record import finishes', async () => {
+    const read = deferred<Awaited<ReturnType<ClaudeScienceMsaViewerProps['onImportRecords']>>>();
+    const settings = props({ onImportRecords: () => read.promise });
+    const view = render(<ClaudeScienceMsaViewer {...settings} />);
+    fireEvent.click(screen.getByRole('checkbox', { name: /Second/ }));
+    fireEvent.change(screen.getByLabelText('Choose sequence files for alignment'), { target: { files: [new File([], 'read.fasta')] } });
+    const template = screen.getByLabelText<HTMLSelectElement>('Comparison template');
+    fireEvent.change(template, { target: { value: 'second' } });
+    const name = screen.getByPlaceholderText<HTMLInputElement>('Alignment name');
+    fireEvent.change(name, { target: { value: 'Manual name' } });
+    const imported = { ...traceRecord('read', 'ACGTACGA'), name: 'Read' };
+    view.rerender(<ClaudeScienceMsaViewer {...settings} records={[records[0], { ...records[1], name: 'Updated second' }, imported]} />);
+    await act(async () => read.resolve({ records: [imported], message: 'Imported read', tone: 'status' }));
+    expect(template.value).toBe('second');
+    expect(selectedRecordNames()).toEqual(['Updated second', 'Read']);
+    expect(name.value).toBe('Manual name');
+    expect(screen.getByTestId('msa-source-link-status').textContent).toContain('initial template Updated second');
+  });
+
+  it('ignores a record-file outcome that arrives after a newer record-file outcome', async () => {
+    const older = deferred<Awaited<ReturnType<ClaudeScienceMsaViewerProps['onImportRecords']>>>();
+    const newer = deferred<Awaited<ReturnType<ClaudeScienceMsaViewerProps['onImportRecords']>>>();
+    const onImportRecords = vi.fn().mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise);
+    render(<ClaudeScienceMsaViewer {...props({ onImportRecords })} />);
+    const picker = screen.getByLabelText('Choose sequence files for alignment');
+    fireEvent.change(picker, { target: { files: [new File([], 'older.fasta')] } });
+    fireEvent.change(picker, { target: { files: [new File([], 'newer.fasta')] } });
+    await act(async () => newer.resolve({ records: [], message: 'Newer outcome', tone: 'error' }));
+    await act(async () => older.reject(new Error('Older failure')));
+    expect(screen.getByTestId('msa-source-link-status').textContent).toBe('Newer outcome');
+  });
+
+  it('cancels a queued run on unmount', () => {
+    vi.useFakeTimers();
+    const settings = props();
+    const view = render(<ClaudeScienceMsaViewer {...settings} />);
+    fireEvent.click(screen.getByRole('checkbox', { name: /Second/ }));
+    fireEvent.click(screen.getByTestId('msa-run-button'));
+    view.unmount();
+    act(() => vi.advanceTimersByTime(1));
+    expect(settings.onSaveAlignment).not.toHaveBeenCalled();
+  });
+
+  it('rejects a queued run when a source sequence changes before it starts', () => {
+    vi.useFakeTimers();
+    const settings = props();
+    const view = render(<ClaudeScienceMsaViewer {...settings} />);
+    fireEvent.click(screen.getByRole('checkbox', { name: /Second/ }));
+    fireEvent.click(screen.getByTestId('msa-run-button'));
+    view.rerender(<ClaudeScienceMsaViewer {...settings} records={[records[0], { ...records[1], sequence: 'ACGTACGA' }]} />);
+    act(() => vi.advanceTimersByTime(1));
+    expect(settings.onSaveAlignment).not.toHaveBeenCalled();
+    expect(screen.getByRole('alert').textContent).toBe('Source records changed. Run the alignment again.');
+    fireEvent.click(screen.getByTestId('msa-run-button'));
+    act(() => vi.advanceTimersByTime(1));
+    expect(settings.onSaveAlignment).toHaveBeenCalledOnce();
+  });
 });
 
 describe('ClaudeScienceMsaViewer AB1 intake selection', () => {
@@ -119,7 +258,7 @@ describe('ClaudeScienceMsaViewer AB1 intake selection', () => {
     const unrelatedRow = within(screen.getByTestId('msa-record-list')).getByText('pUC19').closest('label');
     expect(unrelatedRow?.getAttribute('data-active')).toBeNull();
     expect((unrelatedRow?.querySelector('input') as HTMLInputElement).checked).toBe(false);
-    expect((screen.getByLabelText('Initial template') as HTMLSelectElement).value).toBe('plate-read-01');
+    expect((screen.getByLabelText('Comparison template') as HTMLSelectElement).value).toBe('plate-read-01');
     expect(screen.getByTestId('msa-source-link-status').textContent).toContain('selected 2 imported AB1 reads · initial template plate-read-01');
   });
 
@@ -144,7 +283,7 @@ describe('ClaudeScienceMsaViewer AB1 intake selection', () => {
     ]);
 
     await waitFor(() => expect(selectedRecordNames()).toEqual(['Chosen Sanger template', 'forward-read', 'second-read']));
-    expect((screen.getByLabelText('Initial template') as HTMLSelectElement).value).toBe('chosen-template');
+    expect((screen.getByLabelText('Comparison template') as HTMLSelectElement).value).toBe('chosen-template');
     expect(screen.getByTestId('msa-source-link-status').textContent).toContain('initial template Chosen Sanger template');
   });
 
@@ -158,7 +297,7 @@ describe('ClaudeScienceMsaViewer AB1 intake selection', () => {
       traceRecord('unusual-read-02', 'AACCTTAACCATTAACCTAC'.repeat(4)),
     ];
     render(<Harness initialRecords={initialRecords} importedRecords={reads} activeRecordId="starting-record" />);
-    fireEvent.change(screen.getByLabelText('Initial template'), { target: { value: 'manual-template' } });
+    fireEvent.change(screen.getByLabelText('Comparison template'), { target: { value: 'manual-template' } });
 
     await importFiles([
       new File(['trace-one'], 'unusual-read-01.ab1'),
@@ -166,7 +305,7 @@ describe('ClaudeScienceMsaViewer AB1 intake selection', () => {
     ]);
 
     await waitFor(() => expect(selectedRecordNames()).toEqual(['Manual template', 'unusual-read-01', 'unusual-read-02']));
-    expect((screen.getByLabelText('Initial template') as HTMLSelectElement).value).toBe('manual-template');
+    expect((screen.getByLabelText('Comparison template') as HTMLSelectElement).value).toBe('manual-template');
   });
 
   it('preserves the existing template-selection behavior for ordinary FASTA imports', async () => {
@@ -189,7 +328,7 @@ describe('ClaudeScienceMsaViewer AB1 intake selection', () => {
     ]);
 
     await waitFor(() => expect(selectedRecordNames()).toEqual(['Current template', 'FASTA A', 'FASTA B']));
-    expect((screen.getByLabelText('Initial template') as HTMLSelectElement).value).toBe('current-template');
+    expect((screen.getByLabelText('Comparison template') as HTMLSelectElement).value).toBe('current-template');
   });
 
   it('reserves one preview slot for the current template at the ten-record FASTA limit', async () => {
@@ -215,7 +354,7 @@ describe('ClaudeScienceMsaViewer AB1 intake selection', () => {
 
     await waitFor(() => expect(selectedRecordNames()).toHaveLength(10));
     expect(selectedRecordNames()).toEqual(['Current template', ...fastaRecords.slice(0, 9).map((record) => record.name)]);
-    expect((screen.getByLabelText('Initial template') as HTMLSelectElement).value).toBe('current-template');
+    expect((screen.getByLabelText('Comparison template') as HTMLSelectElement).value).toBe('current-template');
     expect(screen.getByTestId('msa-source-link-status').textContent).toContain('1 over the 10-record preview limit');
   });
 
@@ -228,13 +367,13 @@ describe('ClaudeScienceMsaViewer AB1 intake selection', () => {
       traceRecord(`plate-read-${index + 1}`, `${'AACCTTAACCATTAACCTAC'.repeat(3)}${index % 4 === 0 ? 'A' : 'C'}`)
     ));
     render(<Harness initialRecords={initialRecords} importedRecords={reads} activeRecordId="starting-record" />);
-    fireEvent.change(screen.getByLabelText('Initial template'), { target: { value: 'manual-template' } });
+    fireEvent.change(screen.getByLabelText('Comparison template'), { target: { value: 'manual-template' } });
 
     await importFiles(reads.map((record) => new File(['trace'], `${record.id}.ab1`)));
 
     await waitFor(() => expect(selectedRecordNames()).toHaveLength(10));
     expect(selectedRecordNames()).toEqual(['Manual template', ...reads.slice(0, 9).map((record) => record.name)]);
-    expect((screen.getByLabelText('Initial template') as HTMLSelectElement).value).toBe('manual-template');
+    expect((screen.getByLabelText('Comparison template') as HTMLSelectElement).value).toBe('manual-template');
     expect(screen.getByTestId('msa-source-link-status').textContent).toContain(
       'selected 9 imported AB1 reads · initial template Manual template',
     );
@@ -269,7 +408,7 @@ describe('ClaudeScienceMsaViewer AB1 intake selection', () => {
       const box = row.querySelector<HTMLInputElement>('input[type="checkbox"]');
       if (box && !box.checked && row.textContent?.startsWith('pUC19')) fireEvent.click(box);
     }
-    const template = screen.getByRole('combobox', { name: 'Initial template' });
+    const template = screen.getByRole('combobox', { name: 'Comparison template' });
     expect(within(template).getAllByRole('option').map((option) => option.textContent)).toEqual(
       expect.arrayContaining(['pUC19 (same name, 1 of 2)', 'pUC19 (same name, 2 of 2)']),
     );

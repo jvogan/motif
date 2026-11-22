@@ -4,6 +4,9 @@ import { mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { buildAbiFixture } from './fidelity-fixtures';
 import { selectRecord } from './record-selection';
+import { closeTool, closeToolsDrawer, openTool, openToolsDrawer, toolHead, toolPanel, toolsDrawerState } from './tools-drawer';
+import { exportTitleButton, openExportPanel } from './export-panel';
+import { chooseTheme } from './theme';
 
 const artifactUrl = process.env.MOTIF_ARTIFACT_URL;
 const outputDir = path.resolve('output/playwright/artifact-workflows');
@@ -48,18 +51,80 @@ test.describe('Claude Science artifact workflows', () => {
   }
 
   async function ensureDetailMode(page: Page) {
-    const detail = page.getByRole('button', { name: 'Detail' }).first();
+    const detail = page.getByRole('button', { name: 'Show tracks' }).first();
     if ((await detail.getAttribute('data-active')) !== 'true') await detail.click();
   }
 
   // AA track, primers and the two New-record actions live behind the selection
-  // dock's Create menu; Copy and + Feature stay buttons.
+  // dock's Create menu; Copy and Add feature stay buttons.
   async function openCreateMenu(page: Page) {
     const button = page.locator('.motif-cs-selection-actions').getByRole('button', { name: 'Create', exact: true });
     if ((await button.getAttribute('aria-expanded')) !== 'true') await button.click();
     const menu = page.getByRole('menu', { name: 'Create from the sequence' });
     await expect(menu).toBeVisible();
     return menu;
+  }
+
+  // The map opens on the enzymes that cut once; the Sites menu in the map's own
+  // toolbar draws the rest (Unique, All, None).
+  async function chooseMapSites(page: Page, mode: 'unique' | 'all' | 'none') {
+    const menu = page.getByRole('combobox', { name: 'Restriction sites', exact: true });
+    await menu.selectOption(mode);
+    await expect(menu).toHaveValue(mode);
+  }
+
+  // Below 1536px the top-bar Tools button opens a drawer instead of pinning the pane.
+  // A pane pinned in a wide window stays pinned as the window narrows, so pin it
+  // there and come back to the viewport the test asked for. Below 900px a pinned
+  // pane has no room beside the workspace: it is the closed drawer there, and the
+  // pin returns when the window widens. (Side by side with the Records pane open
+  // it also needs 1011px; no test pins in that band.)
+  async function pinTools(page: Page) {
+    const viewport = page.viewportSize()!;
+    const toggle = page.locator('[data-pane-toggle="tools"]');
+    const main = page.locator('.motif-cs-main');
+    if ((await main.getAttribute('data-tools-pinned')) !== 'true') {
+      if (viewport.width < 1536) await page.setViewportSize({ width: 1600, height: viewport.height });
+      if ((await toggle.getAttribute('aria-pressed')) !== 'true') await toggle.click();
+      await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+      if (viewport.width < 1536) await page.setViewportSize(viewport);
+    }
+    if (viewport.width < 900) {
+      await expect(page.locator('#motif-cs-tools-pane')).toHaveAttribute('data-tools-drawer', 'closed');
+      await expect(main).not.toHaveAttribute('data-tools-pinned', 'true');
+    } else {
+      await expect(main).toHaveAttribute('data-tools-pinned', 'true');
+    }
+  }
+
+  async function setToolsPinned(page: Page, pinned: boolean) {
+    const toggle = page.locator('[data-pane-toggle="tools"]');
+    const isPinned = (await toggle.getAttribute('aria-pressed')) === 'true';
+    if (pinned) await pinTools(page);
+    else if (isPinned) {
+      await toggle.click();
+      await expect(page.locator('.motif-cs-main')).not.toHaveAttribute('data-tools-pinned', 'true');
+    }
+  }
+
+  // After a workspace window launched from a tool closes, focus returns to that tool's head.
+  // From the Tools drawer the head is gone (the drawer shut with the window), so focus
+  // lands on the top-bar Tools button, never on the page body.
+  async function expectFocusBackAtTool(page: Page, head: Locator) {
+    if ((await toolsDrawerState(page)) === null) {
+      await expect(head).toBeFocused();
+      return;
+    }
+    await expect(page.locator('[data-pane-toggle="tools"]'), 'focus after closing a workspace launched from the Tools drawer').toBeFocused();
+    expect(await page.evaluate(() => document.activeElement === document.body)).toBe(false);
+  }
+
+  // The Records pane starts hidden with one record, and below 900px; the top-bar
+  // Records toggle brings it back (and its "Import records" button with it).
+  async function showRecordsPane(page: Page) {
+    const toggle = page.locator('[data-pane-toggle="inventory"]');
+    if ((await toggle.getAttribute('aria-pressed')) !== 'true') await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-pressed', 'true');
   }
 
   async function setRangeValueWithKeyboard(slider: Locator, target: number) {
@@ -88,8 +153,12 @@ test.describe('Claude Science artifact workflows', () => {
 
     const restrictionLabels = page.locator('.motif-cs-restriction-label');
     await expect(restrictionLabels.first()).toBeVisible();
+    const uniqueBefore = await restrictionLabels.count();
+    expect(uniqueBefore).toBeGreaterThan(0);
+    await chooseMapSites(page, 'all');
+    await expect.poll(() => restrictionLabels.count()).toBeGreaterThan(uniqueBefore);
     const visibleBefore = await restrictionLabels.count();
-    expect(visibleBefore).toBeGreaterThan(0);
+    expect(visibleBefore).toBeGreaterThan(uniqueBefore);
     const restrictionNames = await restrictionLabels.evaluateAll((nodes) => nodes.map((node) => node.getAttribute('aria-label')));
     expect(restrictionNames.every((name) => name?.includes(' bp, cut'))).toBe(true);
     expect(new Set(restrictionNames).size).toBe(restrictionNames.length);
@@ -111,11 +180,11 @@ test.describe('Claude Science artifact workflows', () => {
     const mapVisibility = page.locator('details').filter({ hasText: 'Map Visibility' }).first();
     if (!(await mapVisibility.getAttribute('open'))) await mapVisibility.locator('summary').click();
 
-    await page.getByRole('button', { name: 'Hide all restriction sites' }).click();
+    // Which sites are drawn is the map header's Sites menu; the panel has no copy of it.
+    await chooseMapSites(page, 'none');
     await expect(restrictionLabels).toHaveCount(0);
-    await expect(page.getByRole('button', { name: 'Show all restriction sites' })).toBeEnabled();
 
-    await page.getByRole('button', { name: 'Show all restriction sites' }).click();
+    await chooseMapSites(page, 'all');
     await expect(restrictionLabels.first()).toBeVisible();
     await ordinaryLabel.click();
     await page.mouse.move(2, 2);
@@ -180,6 +249,8 @@ test.describe('Claude Science artifact workflows', () => {
   test('Type IIS labels reveal the correct staggered cut bonds on hover and selection', async ({ page }) => {
     await openArtifact(page);
     await ensureDetailMode(page);
+    // BsmBI and Esp3I cut pUC19 twice, so the unique-cutter default does not draw them.
+    await chooseMapSites(page, 'all');
 
     const typeIISLabel = page.locator('.motif-cs-restriction-label[data-type-iis="true"]').filter({ hasText: /BsmBI|Esp3I/ }).first();
     await expect(typeIISLabel).toBeVisible();
@@ -208,20 +279,20 @@ test.describe('Claude Science artifact workflows', () => {
     const feature = page.locator('.motif-cs-feature-block').filter({ hasText: 'lacZ-alpha' }).first();
     await feature.click();
     let menu = await openCreateMenu(page);
-    await expect(menu.getByRole('menuitem', { name: 'Remove AA track' })).not.toHaveAttribute('aria-disabled', 'true');
+    await expect(menu.getByRole('menuitem', { name: 'Remove translation' })).not.toHaveAttribute('aria-disabled', 'true');
     await page.keyboard.press('Escape');
 
     await page.locator('.motif-cs-restriction-label').first().click();
     menu = await openCreateMenu(page);
-    await expect(menu.getByRole('menuitem', { name: 'Add AA track' })).toHaveAttribute('aria-disabled', 'true');
+    await expect(menu.getByRole('menuitem', { name: 'Pin translation' })).toHaveAttribute('aria-disabled', 'true');
     await page.keyboard.press('Escape');
 
     await feature.click();
     menu = await openCreateMenu(page);
-    await expect(menu.getByRole('menuitem', { name: 'Remove AA track' })).not.toHaveAttribute('aria-disabled', 'true');
+    await expect(menu.getByRole('menuitem', { name: 'Remove translation' })).not.toHaveAttribute('aria-disabled', 'true');
 
     const tracksBefore = await page.locator('.motif-cs-aa-track').count();
-    await menu.getByRole('menuitem', { name: 'Remove AA track' }).click();
+    await menu.getByRole('menuitem', { name: 'Remove translation' }).click();
     const tracksAfter = await page.locator('.motif-cs-aa-track').count();
     expect(tracksAfter).toBeLessThan(tracksBefore);
   });
@@ -249,7 +320,7 @@ test.describe('Claude Science artifact workflows', () => {
     expect(await columnScrollTop()).toBe(columnBefore);
     expect(await readerScrollTop()).toBe(300);
 
-    await page.locator('#motif-cs-export-panel > summary').dispatchEvent('click');
+    await exportTitleButton(page).dispatchEvent('click');
     await expect(page.locator('#motif-cs-export-panel')).not.toHaveAttribute('open', '');
     expect(await columnScrollTop()).toBe(columnBefore);
     expect(await readerScrollTop()).toBe(300);
@@ -290,7 +361,7 @@ test.describe('Claude Science artifact workflows', () => {
         };
       });
       expect(geometry).toEqual({ column: 0, title: true, button: true, bases: true, belowButton: true, inViewport: true });
-      for (const name of ['Summary', 'Sequence', 'FASTA', 'GenBank', 'Copy complement', 'Copy rev comp', 'New rev comp']) {
+      for (const name of ['Summary', 'Copy complement', 'Copy reverse complement']) {
         await body.getByRole('button', { name, exact: true }).click({ trial: true });
       }
 
@@ -305,7 +376,7 @@ test.describe('Claude Science artifact workflows', () => {
       await exportButton.click();
       await expect(exportPanel).not.toHaveAttribute('open', '');
       await exportButton.click();
-      await body.getByRole('button', { name: 'Close Export and copy' }).click();
+      await body.getByRole('button', { name: 'Close export' }).click();
       await expect(exportPanel).not.toHaveAttribute('open', '');
       await expect(exportButton).toBeFocused();
     });
@@ -332,6 +403,7 @@ test.describe('Claude Science artifact workflows', () => {
     await expect(annotations).toHaveAttribute('open', '');
     const mapEditorName = annotations.locator('input[name="feature-name"]');
     await expect(mapEditorName).toHaveValue('lacZ-alpha');
+    // In the Tools drawer, focus goes to the name field, not to "Back to tools".
     await expect(mapEditorName).toBeFocused();
 
     await openArtifact(page, 1180, 900);
@@ -342,7 +414,7 @@ test.describe('Claude Science artifact workflows', () => {
     await ribbon.dblclick();
     const ribbonEditorName = page.locator('details[data-rail-tool="annotations"] input[name="feature-name"]');
     await expect(ribbonEditorName).toHaveValue('lacZ-alpha');
-    await expect(ribbonEditorName).toBeFocused();
+    await expect(ribbonEditorName).toBeFocused(); // as above
   });
 
   test('off-page map selections remain visible in bounded annotation lists', async ({ page }) => {
@@ -370,7 +442,7 @@ test.describe('Claude Science artifact workflows', () => {
     // so this regression isolates list paging rather than SVG hit ordering.
     await offPageFeature.dispatchEvent('click');
     const annotationsPanel = page.locator('details[data-rail-tool="annotations"]');
-    if (!(await annotationsPanel.getAttribute('open'))) await annotationsPanel.locator(':scope > summary').click();
+    await openTool(page, 'annotations');
 
     const featureRows = annotationsPanel.locator('.motif-cs-feature-annotation-list > .motif-cs-row');
     const translationRows = annotationsPanel.locator('.motif-cs-translation-row-shell');
@@ -422,13 +494,14 @@ test.describe('Claude Science artifact workflows', () => {
 
     for (const viewport of [
       { label: 'wide', width: 1600, height: 700 },
-      { label: 'stacked', width: 900, height: 720 },
+      { label: 'stacked', width: 880, height: 720 },
     ] as const) {
       await openArtifact(page, viewport.width, viewport.height);
       if (viewport.label === 'stacked') {
+        // Below 900px the workspace is one column: Map and Sequence on separate rows.
         const sequenceBox = (await page.locator('.motif-cs-sequence-column').boundingBox())!;
         const mapBox = (await page.locator('.motif-cs-map-column').boundingBox())!;
-        expect(mapBox.y).toBeGreaterThan(sequenceBox.y);
+        expect(Math.abs(mapBox.y - sequenceBox.y)).toBeGreaterThan(100);
       }
 
       for (const topology of ['circular', 'linear'] as const) {
@@ -645,9 +718,9 @@ test.describe('Claude Science artifact workflows', () => {
 
         if (topology === 'circular' && featureInput.id === 'outer-forward') {
           await page.screenshot({ path: path.join(outputDir, 'map-arrow-selection-high-zoom-light.png'), fullPage: true });
-          await page.getByLabel('Theme').selectOption({ label: 'Warm Dark' });
-          await page.screenshot({ path: path.join(outputDir, 'map-arrow-selection-high-zoom-claude-dark.png'), fullPage: true });
-          await page.getByLabel('Theme').selectOption({ label: 'Light' });
+          await chooseTheme(page, 'dark');
+          await page.screenshot({ path: path.join(outputDir, 'map-arrow-selection-high-zoom-dark.png'), fullPage: true });
+          await chooseTheme(page, 'light');
         }
 
         await page.getByRole('button', { name: 'Fit map to pane' }).click();
@@ -657,9 +730,9 @@ test.describe('Claude Science artifact workflows', () => {
     }
   });
 
-  test('long import errors wrap inside the Add entry popover', async ({ page }) => {
+  test('long import errors wrap inside the Import records popover', async ({ page }) => {
     await openArtifact(page, 640, 700);
-    await page.getByRole('button', { name: 'Add entry' }).click();
+    await page.getByRole('button', { name: 'Import records' }).click();
     const importPanel = page.locator('.motif-cs-import-panel[open]');
     await importPanel.getByLabel('Sequence import input').fill([
       'LOCUS       TRUNCATED       100 bp    DNA     linear   SYN 01-JAN-2026',
@@ -667,7 +740,7 @@ test.describe('Claude Science artifact workflows', () => {
       'ORIGIN',
       '        1 gaattc',
     ].join('\n'));
-    await importPanel.getByRole('button', { name: 'Add or restore' }).click();
+    await importPanel.getByRole('button', { name: 'Import records' }).click();
     const status = importPanel.locator('.motif-cs-import-status');
     await expect(status).toContainText(/truncated|complete|length/i);
     const geometry = await importPanel.evaluate((panel) => {
@@ -691,10 +764,10 @@ test.describe('Claude Science artifact workflows', () => {
     expect(geometry.whiteSpace).toBe('normal');
   });
 
-  test('Add entry imports a numbered ORIGIN paste and names a stray character', async ({ page }) => {
+  test('Import records imports a numbered ORIGIN paste and names a stray character', async ({ page }) => {
     await openArtifact(page, 1280, 800);
     const inventoryCountBefore = await page.evaluate(() => window.motifGetInventory().length);
-    await page.getByRole('button', { name: 'Add entry' }).click();
+    await page.getByRole('button', { name: 'Import records' }).click();
     const importPanel = page.locator('.motif-cs-import-panel[open]');
     const input = importPanel.getByLabel('Sequence import input');
     const preflight = importPanel.getByTestId('import-preflight-summary');
@@ -705,7 +778,7 @@ test.describe('Claude Science artifact workflows', () => {
     await importPanel.getByLabel('Molecule').selectOption('dna');
     await input.fill('ATGCATGC1');
     await expect(preflight).toHaveText('“1” at position 9 is not a DNA residue.');
-    await importPanel.getByRole('button', { name: 'Add or restore' }).click();
+    await importPanel.getByRole('button', { name: 'Import records' }).click();
     await expect(status).toHaveText('“1” at position 9 is not a DNA residue.');
     await expect(status).toHaveAttribute('role', 'alert');
     await expect(preflight).toHaveCount(0);
@@ -717,22 +790,22 @@ test.describe('Claude Science artifact workflows', () => {
       '       61 ggtgatgtta atgggcacaa',
     ].join('\n'));
     await expect(preflight).toHaveText('1 record detected · DNA · 80 bp · line numbers removed');
-    await importPanel.getByRole('button', { name: 'Add or restore' }).click();
+    await importPanel.getByRole('button', { name: 'Import records' }).click();
     await expect.poll(() => page.evaluate(() => window.motifGetInventory().length)).toBe(inventoryCountBefore + 1);
     const added = await page.evaluate(() => window.motifGetInventory().at(-1));
     expect(added?.length).toBe(80);
   });
 
-  test('Add entry preflight gives each molecule its own unit', async ({ page }) => {
+  test('Import records preflight gives each molecule its own unit', async ({ page }) => {
     await openArtifact(page, 1280, 800);
-    await page.getByRole('button', { name: 'Add entry' }).click();
+    await page.getByRole('button', { name: 'Import records' }).click();
     const importPanel = page.locator('.motif-cs-import-panel[open]');
     await importPanel.getByLabel('Sequence import input').fill('>seqA\nATGCATGCATGCATGC\n>seqB\nMKTAYIAKQRQISFVK');
     await expect(importPanel.getByTestId('import-preflight-summary'))
       .toHaveText('2 records detected · DNA + PROTEIN · 16 bp + 16 aa');
   });
 
-  test('Add entry puts focus in the paste box from either trigger, and Escape returns it', async ({ page }) => {
+  test('Import records puts focus in the paste box from either trigger, and Escape returns it', async ({ page }) => {
     await openArtifact(page, 1280, 800);
     const panel = page.locator('#motif-cs-add-entry');
     const input = panel.getByLabel('Sequence import input');
@@ -746,10 +819,10 @@ test.describe('Claude Science artifact workflows', () => {
     await expect(panel).not.toHaveAttribute('open', '');
     await expect(plus).toBeFocused();
 
-    // The empty workspace's own "Add entry" button opens the same panel ~550 px
+    // The empty workspace's own "Import records" button opens the same panel ~550 px
     // away; focus used to stay on the button, 12 Shift+Tab stops from the box.
     await page.evaluate(() => (window as unknown as { motifClearWorkspace: () => void }).motifClearWorkspace());
-    const emptyStateButton = page.locator('.motif-cs-empty-sequence-state').getByRole('button', { name: 'Add entry' });
+    const emptyStateButton = page.locator('.motif-cs-empty-sequence-state').getByRole('button', { name: 'Import records' });
     await emptyStateButton.focus();
     await page.keyboard.press('Enter');
     await expect(panel).toHaveAttribute('open', '');
@@ -758,16 +831,16 @@ test.describe('Claude Science artifact workflows', () => {
     await expect(emptyStateButton).toBeFocused();
   });
 
-  test('Add entry rejects an invalid FASTA batch atomically and preserves the draft', async ({ page }) => {
+  test('Import records rejects an invalid FASTA batch atomically and preserves the draft', async ({ page }) => {
     await openArtifact(page, 820, 700);
     const inventoryCountBefore = await page.evaluate(() => window.motifGetInventory().length);
     const longHeader = `>${'x'.repeat(1_100)}\nATGC\n>valid-second-record\nATGC`;
 
-    await page.getByRole('button', { name: 'Add entry' }).click();
+    await page.getByRole('button', { name: 'Import records' }).click();
     const importPanel = page.locator('.motif-cs-import-panel[open]');
     const input = importPanel.getByLabel('Sequence import input');
     await input.fill(longHeader);
-    await importPanel.getByRole('button', { name: 'Add or restore' }).click();
+    await importPanel.getByRole('button', { name: 'Import records' }).click();
 
     await expect(importPanel).toHaveAttribute('open', '');
     await expect(input).toHaveValue(longHeader);
@@ -776,32 +849,29 @@ test.describe('Claude Science artifact workflows', () => {
     expect(await page.evaluate(() => window.motifGetInventory().length)).toBe(inventoryCountBefore);
   });
 
-  test('Add entry accepts an ordinary valid FASTA record atomically', async ({ page }) => {
+  test('Import records accepts an ordinary valid FASTA record atomically', async ({ page }) => {
     await openArtifact(page, 820, 700);
     const inventoryCountBefore = await page.evaluate(() => window.motifGetInventory().length);
 
-    await page.getByRole('button', { name: 'Add entry' }).click();
+    await page.getByRole('button', { name: 'Import records' }).click();
     const importPanel = page.locator('.motif-cs-import-panel');
     await importPanel.getByLabel('Sequence import input').fill(
       '>Wave3 Enzyme Probe\nAAAACCGGTCTCAAAATTTTCGTCTCGGGGAAAACCGAGACCAAAA',
     );
-    await importPanel.getByRole('button', { name: 'Add or restore' }).click();
+    await importPanel.getByRole('button', { name: 'Import records' }).click();
 
     await expect(importPanel).not.toHaveAttribute('open', '');
     expect(await page.evaluate(() => window.motifGetInventory().length)).toBe(inventoryCountBefore + 1);
-    await expect(page.locator('.motif-cs-record-tab[data-active="true"]')).toContainText('Wave3 Enzyme Probe');
+    await expect(page.locator('.motif-cs-record-tab[data-active="true"]')).toHaveText('Wave3');
     await expect(page.getByTestId('session-durability-status')).toHaveText('unsaved changes');
   });
 
   test('feature extraction and full or selected reverse complements create valid records', async ({ page }) => {
     await openArtifact(page, 1180, 900);
     await ensureDetailMode(page);
-    const toolsToggle = page.getByRole('button', { name: /Tools/ }).first();
-    if ((await toolsToggle.getAttribute('aria-pressed')) !== 'true') await toolsToggle.click();
     const inventoryCountBefore = await page.evaluate(() => window.motifGetInventory().length);
     const feature = page.locator('.motif-cs-feature-block').filter({ hasText: 'lacZ-alpha' }).first();
-    const annotationsPanel = page.locator('details[data-rail-tool="annotations"]');
-    await expect(annotationsPanel).toHaveAttribute('open', '');
+    const annotationsPanel = await openTool(page, 'annotations');
     const featureRow = annotationsPanel.locator('.motif-cs-feature-annotation-list > .motif-cs-row').filter({ hasText: 'lacZ-alpha' });
 
     await featureRow.click();
@@ -815,7 +885,7 @@ test.describe('Claude Science artifact workflows', () => {
     await expect(annotationsPanel.locator('#motif-cs-feature-range-error')).toBeVisible();
     await featureStart.fill('150');
     await featureEnd.fill('506');
-    await annotationsPanel.getByRole('button', { name: 'New record' }).click();
+    await annotationsPanel.getByRole('button', { name: 'Extract feature' }).click();
     expect(await page.evaluate(() => window.motifGetInventory().length)).toBe(inventoryCountBefore + 1);
     await expect(page.locator('.motif-cs-record-tab[data-active="true"]')).toContainText('lacZ-alpha');
 
@@ -838,19 +908,19 @@ test.describe('Claude Science artifact workflows', () => {
     const sequence = page.locator('.motif-cs-sequence');
     await sequence.focus();
     for (let index = 0; index < 9; index += 1) await page.keyboard.press('Shift+ArrowRight');
-    await expect(page.locator('.motif-cs-selection-name')).toHaveText('1-9 (9)');
+    await expect(page.locator('.motif-cs-selection-name')).toHaveText('1–9 · 9 bp');
 
-    await page.locator('.motif-cs-selection-actions').getByRole('button', { name: '+ Feature' }).click();
+    await page.locator('.motif-cs-selection-actions').getByRole('button', { name: 'Add feature' }).click();
     const annotations = page.locator('details[data-rail-tool="annotations"]');
     await expect(annotations).toHaveAttribute('open', '');
     await expect(annotations.locator('.motif-cs-annotation-editor-drawer')).toHaveAttribute('open', '');
-    await expect(annotations.locator('input[name="feature-name"]')).toBeFocused();
+    await expect(annotations.locator('input[name="feature-name"]')).toBeFocused(); // as above
     await expect(annotations.getByLabel('Start')).toHaveValue('1');
     await expect(annotations.getByLabel('End')).toHaveValue('9');
     expect(await page.evaluate(() => window.motifGetInventory?.()[0]?.annotations?.length ?? 0)).toBe(before);
 
     await annotations.locator('input[name="feature-name"]').fill('Explicit first-use feature');
-    await annotations.getByRole('button', { name: 'Add', exact: true }).click();
+    await annotations.locator('.motif-cs-feature-form').getByRole('button', { name: 'Add feature', exact: true }).click();
     expect(await page.evaluate(() => window.motifGetInventory?.()[0]?.annotations?.length ?? 0)).toBe(before + 1);
     await expect(annotations).toContainText('Explicit first-use feature');
   });
@@ -874,24 +944,97 @@ test.describe('Claude Science artifact workflows', () => {
         updatedAt: '2026-07-12T20:00:00.000Z',
       });
     });
+    // Below 900px the Records pane starts hidden; show it, so the focus target after a
+    // delete is checked with the pane shown here and hidden in the next test.
+    await showRecordsPane(page);
     await selectRecord(page, 'Mistaken duplicate');
     expect(await page.evaluate(() => window.motifRemoveRecords?.('keep-record'))).toBe(1);
     await expect(page.locator('.motif-cs-record-tab[data-active="true"]')).toContainText('Mistaken duplicate');
 
     const entry = page.locator('details[data-rail-tool="entry"]');
-    await entry.locator(':scope > summary').click();
-    await expect(entry).toContainText('Removes linked notes, alignments, and saved results.');
-    await entry.getByRole('button', { name: 'Delete entry Mistaken duplicate' }).click();
-    await expect(entry.getByRole('button', { name: 'Confirm delete entry Mistaken duplicate' })).toBeVisible();
+    await openTool(page, 'entry');
+    await expect(entry).toContainText('Also deletes its notes, alignments, and results.');
+    await entry.getByRole('button', { name: 'Delete record Mistaken duplicate' }).click();
+    await expect(entry.getByRole('button', { name: 'Confirm delete record Mistaken duplicate' })).toBeVisible();
     // Armed, the row names what goes with the entry.
-    await expect(entry).toContainText('Also removes 1 note.');
+    await expect(entry).toContainText('Also deletes 1 note.');
     expect(await page.evaluate(() => window.motifGetInventory?.().length)).toBe(2);
 
-    await entry.getByRole('button', { name: 'Confirm delete entry Mistaken duplicate' }).click();
+    await entry.getByRole('button', { name: 'Confirm delete record Mistaken duplicate' }).click();
     expect(await page.evaluate(() => window.motifGetInventory?.().map((record) => record.name))).toEqual(['Next record']);
     expect(await page.evaluate(() => window.motifGetNotes?.().length)).toBe(0);
     await expect(page.locator('.motif-cs-record-tab[data-active="true"]')).toContainText('Next record');
-    await expect(page.locator('.motif-cs-inventory-record-row[aria-current="true"]')).toBeFocused();
+    await expect(page.locator('.motif-cs-inventory-record-row[aria-current="true"]')).toContainText('Next record');
+    // Focus goes to the survivor's name in the Sequence heading, as it does with the Records pane hidden.
+    await expect(page.locator('.motif-cs-sequence-title .motif-cs-title-edit-trigger')).toBeFocused();
+    await expect(page.locator('.motif-cs-sequence-title .motif-cs-title-edit-trigger')).toHaveText('Next record');
+  });
+
+  test('confirming a delete with the Records pane hidden does not leave focus on a Delete button', async ({ page }) => {
+    // Below 900px the Records pane starts hidden, so the row that takes focus after a
+    // delete is not on screen. Focus must still land somewhere safe: left on the
+    // survivor's "Delete..." button, one more Enter arms the next deletion.
+    await openArtifact(page, 820, 760);
+    await page.evaluate(() => {
+      window.motifRenderInventory?.([
+        { id: 'keep-record', name: 'Keep record', molecule: 'dna', topology: 'linear', seq: 'AACCGGTT' },
+        { id: 'delete-record', name: 'Mistaken duplicate', molecule: 'dna', topology: 'linear', seq: 'AACCGGTA' },
+        { id: 'next-record', name: 'Next record', molecule: 'dna', topology: 'linear', seq: 'AACCGGTC' },
+      ]);
+    });
+    await selectRecord(page, 'Mistaken duplicate');
+    expect(await page.evaluate(() => window.motifRemoveRecords?.('keep-record'))).toBe(1);
+    const entry = await openTool(page, 'entry');
+    await entry.getByRole('button', { name: 'Delete record Mistaken duplicate' }).click();
+    await entry.getByRole('button', { name: 'Confirm delete record Mistaken duplicate' }).click();
+    await expect.poll(() => page.evaluate(() => window.motifGetInventory?.().length)).toBe(1);
+    // Focus does not stay on "Delete record <the last record>". It goes to the
+    // survivor's name in the Sequence heading, as it does with the Records pane shown.
+    const title = page.locator('.motif-cs-sequence-title .motif-cs-title-edit-trigger');
+    await expect(title).toBeFocused();
+    await expect(title).toHaveText('Next record');
+    await expect.poll(() => page.evaluate(() => (
+      document.activeElement?.getAttribute('aria-label') ?? ''
+    ))).not.toMatch(/^Delete record /);
+    // One more Enter renames; it does not arm a delete.
+    await page.keyboard.press('Enter');
+    await expect(page.getByRole('textbox', { name: 'Entry name' })).toBeFocused();
+    await page.keyboard.press('Escape');
+    expect(await page.evaluate(() => window.motifGetInventory?.().map((record) => record.name))).toEqual(['Next record']);
+  });
+
+  test('focus sent under the open Tools drawer closes it, and focus beside it leaves it open', async ({ page }) => {
+    // After a delete, focus goes to the next record's name in the Sequence heading.
+    // At phone width the open drawer covers that heading, so the drawer closes and
+    // the focused name shows; at 820px the heading is beside the drawer, which stays.
+    for (const { width, covered } of [{ width: 390, covered: true }, { width: 820, covered: false }]) {
+      await openArtifact(page, width, 760);
+      await page.evaluate(() => {
+        window.motifRenderInventory?.([
+          { id: 'keep-record', name: 'Keep record', molecule: 'dna', topology: 'linear', seq: 'AACCGGTT' },
+          { id: 'delete-record', name: 'Mistaken duplicate', molecule: 'dna', topology: 'linear', seq: 'AACCGGTA' },
+        ]);
+      });
+      await selectRecord(page, 'Mistaken duplicate');
+      const entry = await openTool(page, 'entry');
+      const pane = page.locator('#motif-cs-tools-pane');
+      await expect(pane).toHaveAttribute('data-tools-drawer', 'open');
+      const title = page.locator('.motif-cs-sequence-title .motif-cs-title-edit-trigger');
+      const titleCovered = () => title.evaluate((element) => {
+        const box = element.getBoundingClientRect();
+        const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+        return Boolean(hit?.closest('#motif-cs-tools-pane'));
+      });
+      // Precondition: the drawer covers the heading at phone width and not at 820px.
+      expect(await titleCovered(), `${width}px heading under the drawer`).toBe(covered);
+
+      await entry.getByRole('button', { name: 'Delete record Mistaken duplicate' }).click();
+      await entry.getByRole('button', { name: 'Confirm delete record Mistaken duplicate' }).click();
+      await expect(title).toBeFocused();
+      await expect(title).toHaveText('Keep record');
+      await expect(pane).toHaveAttribute('data-tools-drawer', covered ? 'closed' : 'open');
+      expect(await titleCovered(), `${width}px heading after the delete`).toBe(false);
+    }
   });
 
   test('Undo on the delete notice brings the entry back at its place with its linked note', async ({ page }) => {
@@ -915,9 +1058,9 @@ test.describe('Claude Science artifact workflows', () => {
     });
     await selectRecord(page, 'Middle record');
     const entry = page.locator('details[data-rail-tool="entry"]');
-    await entry.locator(':scope > summary').click();
-    await entry.getByRole('button', { name: 'Delete entry Middle record' }).click();
-    await entry.getByRole('button', { name: 'Confirm delete entry Middle record' }).click();
+    await openTool(page, 'entry');
+    await entry.getByRole('button', { name: 'Delete record Middle record' }).click();
+    await entry.getByRole('button', { name: 'Confirm delete record Middle record' }).click();
     expect(await page.evaluate(() => window.motifGetInventory?.().map((record) => record.name))).toEqual(['First record', 'Last record']);
     expect(await page.evaluate(() => window.motifGetNotes?.().length)).toBe(0);
     await expect(page.locator('.motif-cs-workbench-notice')).toContainText('Deleted Middle record and 1 note.');
@@ -948,9 +1091,9 @@ test.describe('Claude Science artifact workflows', () => {
     await expect(page.locator('.motif-cs-selection-name')).not.toHaveText('Drag to select a range');
 
     const entry = page.locator('details[data-rail-tool="entry"]');
-    await entry.locator(':scope > summary').click();
-    await entry.getByRole('button', { name: 'Delete entry Original record' }).click();
-    await entry.getByRole('button', { name: 'Confirm delete entry Original record' }).click();
+    await openTool(page, 'entry');
+    await entry.getByRole('button', { name: 'Delete record Original record' }).click();
+    await entry.getByRole('button', { name: 'Confirm delete record Original record' }).click();
     await expect.poll(() => page.evaluate(() => window.motifGetInventory?.().length)).toBe(0);
 
     expect(await page.evaluate(() => window.motifAddRecords?.({
@@ -983,7 +1126,13 @@ test.describe('Claude Science artifact workflows', () => {
     const name = page.locator('.motif-cs-selection-name');
     await expect(name).toHaveText('Drag to select a range');
     const copy = page.locator('.motif-cs-selection-actions').getByRole('button', { name: 'Copy', exact: true });
+    // Copy and Add feature are always in the bar, so a selection never shifts them;
+    // without a range they are disabled, not hidden.
+    const addFeature = page.locator('.motif-cs-selection-actions').getByRole('button', { name: 'Add feature' });
+    await expect(copy).toBeVisible();
     await expect(copy).toBeDisabled();
+    await expect(addFeature).toBeVisible();
+    await expect(addFeature).toBeDisabled();
 
     // And the instruction has to be true. Drag exactly what it describes.
     const bases = page.locator('.motif-cs-seq-bases').first();
@@ -998,22 +1147,26 @@ test.describe('Claude Science artifact workflows', () => {
     await page.mouse.up();
 
     await expect(name).not.toHaveText('Drag to select a range');
-    await expect(name).toHaveText(/^\d+-\d+ \(\d+\)$/);
-    await expect(page.locator('.motif-cs-selection-label .motif-cs-chip')).toContainText('bp');
+    // One readout carries the range and its length ("1–38 · 38 bp"); there is no separate length chip.
+    await expect(name).toHaveText(/^[\d,]+–[\d,]+ · [\d,]+ bp$/);
+    await expect(page.locator('.motif-cs-selection-label .motif-cs-chip')).toHaveCount(0);
     await expect(copy).toBeEnabled();
-    await expect(page.locator('.motif-cs-selection-actions').getByRole('button', { name: '+ Feature' })).toBeEnabled();
+    await expect(addFeature).toBeEnabled();
   });
 
   test('unavailable sequence actions say why, and a protein gets only the ones it can use', async ({ page }) => {
     await openArtifact(page, 1440, 1000);
     const dock = page.locator('.motif-cs-selection-actions');
     await expect(page.locator('.motif-cs-selection-name')).toHaveText('Drag to select a range');
-    await expect(dock.getByRole('button', { name: 'Copy', exact: true }))
-      .toHaveAttribute('title', 'Select a range or a feature to copy its sequence');
+    // With nothing selected the range actions stay in the bar, disabled, and say why.
+    await expect(dock.getByRole('button', { name: 'Copy', exact: true })).toBeDisabled();
+    await expect(dock.getByRole('button', { name: 'Copy', exact: true })).toHaveAttribute('title', 'Select a range or feature to copy');
+    await expect(dock.getByRole('button', { name: 'Add feature' })).toBeDisabled();
+    await expect(dock.getByRole('button', { name: 'Add feature' })).toHaveAttribute('title', 'Drag a range to add a feature');
     const menu = await openCreateMenu(page);
     const protein = menu.getByRole('menuitem', { name: 'New protein record' });
     await expect(protein).toHaveAttribute('aria-disabled', 'true');
-    await expect(protein).toHaveAccessibleDescription('Select a range or coding feature to translate it');
+    await expect(protein).toHaveAccessibleDescription('Select a range or coding feature');
     await page.keyboard.press('Escape');
 
     // Every Create action is nucleotide-only: a protein record shows none of
@@ -1028,12 +1181,13 @@ test.describe('Claude Science artifact workflows', () => {
       sites: [],
     }]));
     await expect(page.locator('.motif-cs-record-tab[data-active="true"]')).toContainText('Protein dock');
-    await expect(dock.getByRole('button', { name: 'Copy', exact: true })).toBeVisible();
-    await expect(dock.getByRole('button', { name: '+ Feature' })).toBeVisible();
+    // Copy and Add feature stay, disabled, until a range exists.
+    await expect(dock.getByRole('button', { name: 'Copy', exact: true })).toBeDisabled();
+    await expect(dock.getByRole('button', { name: 'Add feature' })).toBeDisabled();
     await expect(dock.getByRole('button', { name: 'Create', exact: true })).toHaveCount(0);
     await expect(page.locator('.motif-cs-seq-orientation')).toHaveCount(0);
     // A protein map draws features only; with none it says how to add one.
-    await expect(page.locator('.motif-cs-map-hint')).toHaveText('No features yet · select residues, then + Feature');
+    await expect(page.locator('.motif-cs-map-hint')).toHaveText('No features yet · select residues, then Add feature');
   });
 
   test('a sequence copy confirms on its button and in a visible notice', async ({ page }) => {
@@ -1053,7 +1207,7 @@ test.describe('Claude Science artifact workflows', () => {
     const sequence = page.locator('.motif-cs-sequence');
     await sequence.focus();
     for (let index = 0; index < 6; index += 1) await page.keyboard.press('Shift+ArrowRight');
-    await expect(page.locator('.motif-cs-selection-name')).toHaveText('1-6 (6)');
+    await expect(page.locator('.motif-cs-selection-name')).toHaveText('1–6 · 6 bp');
 
     const copy = page.locator('.motif-cs-selection-actions').getByRole('button', { name: 'Copy', exact: true });
     await copy.click();
@@ -1062,12 +1216,62 @@ test.describe('Claude Science artifact workflows', () => {
     const notice = page.locator('.motif-cs-workbench-notice');
     await expect(notice).toHaveText('Selection copied');
     await expect(notice).toHaveAttribute('role', 'status');
+    // The notice floats over content and lets clicks through: a click at the middle of
+    // its body lands on what lies under it. Only its own Dismiss button takes the pointer.
     const box = (await notice.boundingBox())!;
-    expect(await page.evaluate(({ x, y }) => Boolean(document.elementFromPoint(x, y)?.closest('.motif-cs-workbench-notice')), {
-      x: box.x + box.width / 2,
-      y: box.y + box.height / 2,
-    })).toBe(true);
+    const hitsNotice = ({ x, y }: { x: number; y: number }) => page.evaluate(({ x, y }) => ({
+      notice: Boolean(document.elementFromPoint(x, y)?.closest('.motif-cs-workbench-notice')),
+      dismiss: Boolean(document.elementFromPoint(x, y)?.closest('.motif-cs-workbench-notice-dismiss')),
+    }), { x, y });
+    const dismiss = notice.getByRole('button', { name: 'Dismiss notice' });
+    const dismissBox = (await dismiss.boundingBox())!;
+    const dismissCentre = { x: dismissBox.x + dismissBox.width / 2, y: dismissBox.y + dismissBox.height / 2 };
+    // A point of the body clear of Dismiss (its left edge, inside the padding).
+    const bodyPoint = { x: box.x + 3, y: box.y + box.height / 2 };
+    expect(await hitsNotice(bodyPoint), 'a click on the notice body reaches what is under it').toEqual({ notice: false, dismiss: false });
+    expect(await hitsNotice(dismissCentre), 'a click on Dismiss lands on Dismiss').toEqual({ notice: true, dismiss: true });
+    // It sits over content, not over the top bar.
+    const topbar = (await page.locator('.motif-cs-topbar').boundingBox())!;
+    expect(box.y, 'the notice starts below the top bar').toBeGreaterThanOrEqual(topbar.y + topbar.height - 1);
     await expect(page.locator('.motif-cs-selection-actions').getByRole('button', { name: 'Copy', exact: true })).toBeVisible();
+    await dismiss.click();
+    await expect(notice).toHaveCount(0);
+  });
+
+  test('a showing notice never takes the click meant for the top bar', async ({ page }) => {
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: { writeText: async () => {} },
+      });
+    });
+    for (const width of [400, 700, 1040]) {
+      await openArtifact(page, width, 900);
+      await page.locator('.motif-cs-sequence').focus();
+      for (let index = 0; index < 4; index += 1) await page.keyboard.press('Shift+ArrowRight');
+      await page.locator('.motif-cs-selection-actions').getByRole('button', { name: 'Copy', exact: true }).click();
+      const notice = page.locator('.motif-cs-workbench-notice');
+      await expect(notice, `${width}px`).toHaveText('Selection copied');
+      // The notice sits clear of the Records, Sequence and Map toggles (and, when its
+      // message is longer, Tools), so it never swallows their clicks while it is shown.
+      // A click at the centre of every top-bar toggle must reach that toggle.
+      const unreachable = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>('[data-pane-toggle]')]
+        .filter((toggle) => toggle.getClientRects().length > 0)
+        .filter((toggle) => {
+          const box = toggle.getBoundingClientRect();
+          const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+          return !hit?.closest('[data-pane-toggle]') || hit.closest('[data-pane-toggle]') !== toggle;
+        })
+        .map((toggle) => toggle.getAttribute('data-pane-toggle')));
+      expect(unreachable, `${width}px: top-bar toggles a click cannot reach`).toEqual([]);
+      // And the click works at once. It lasts several seconds, so the click gets a short
+      // timeout: waiting for the notice to expire would pass against the defect.
+      const toolsButton = page.locator('[data-pane-toggle="tools"]');
+      await toolsButton.click({ timeout: 1_500 });
+      await expect(toolsButton, `${width}px`).toHaveAttribute('aria-expanded', 'true');
+      await expect(page.locator('#motif-cs-tools-pane'), `${width}px`).toHaveAttribute('data-tools-drawer', 'open');
+      await closeToolsDrawer(page);
+    }
   });
 
   test('custom recognition motifs use one coherent centered blunt cut', async ({ page }) => {
@@ -1085,14 +1289,14 @@ test.describe('Claude Science artifact workflows', () => {
     const enzymeName = mapVisibility.getByLabel('Known or custom enzyme name');
     const enzymeRecognition = mapVisibility.getByLabel('Custom enzyme recognition sequence');
     await enzymeName.fill('Wave3I');
-    await mapVisibility.getByRole('button', { name: 'Add', exact: true }).click();
+    await mapVisibility.getByRole('button', { name: 'Add enzyme', exact: true }).click();
     await expect(enzymeName).toHaveAttribute('aria-invalid', 'true');
     await expect(enzymeRecognition).toHaveAttribute('aria-describedby', /^motif-cs-add-enzyme-status-/);
     await expect(mapVisibility.locator('[id^="motif-cs-add-enzyme-status-"]')).toContainText('recognition sequence');
     await enzymeRecognition.fill('TTTTCG');
-    await mapVisibility.getByRole('button', { name: 'Add', exact: true }).click();
+    await mapVisibility.getByRole('button', { name: 'Add enzyme', exact: true }).click();
 
-    await mapVisibility.getByRole('button', { name: /^Sites, / }).click();
+    await mapVisibility.getByRole('button', { name: 'By position' }).click();
     const customSite = mapVisibility.locator('.motif-cs-restriction-site-row').filter({ hasText: 'Wave3I' });
     await expect(customSite).toHaveCount(1);
     await expect(customSite).toContainText('17 · cut 20 · blunt');
@@ -1105,7 +1309,8 @@ test.describe('Claude Science artifact workflows', () => {
     await digest.getByLabel('Digest enzymes').fill('Wave3I');
     const fragments = digest.locator('.motif-cs-analysis-row-button');
     await expect(fragments).toHaveCount(2);
-    await expect(fragments.first()).toContainText('19 bp · 1-19');
+    // The row is worded like the selection it selects: "1–19 · 19 bp".
+    await expect(fragments.first()).toContainText('1–19 · 19 bp');
     await expect(fragments.first()).toContainText('Blunt');
   });
 
@@ -1120,15 +1325,14 @@ test.describe('Claude Science artifact workflows', () => {
     await filter.fill('EcoRI');
     await expect(mapVisibility.locator('.motif-cs-restriction-row')).toHaveCount(1);
     await expect(mapVisibility.locator('.motif-cs-restriction-row')).toContainText('EcoRI');
-    await expect(mapVisibility.getByRole('button', { name: 'Sites, 1' })).toBeVisible();
-    await mapVisibility.getByRole('button', { name: /^Sites, / }).click();
+    await mapVisibility.getByRole('button', { name: 'By position' }).click();
     const siteRows = mapVisibility.locator('.motif-cs-restriction-site-row');
     await expect(siteRows).toHaveCount(1);
     await expect(siteRows.first()).toContainText('EcoRI');
 
     await filter.fill('does-not-exist');
     await expect(mapVisibility).toContainText('No visible sites match this filter.');
-    await mapVisibility.getByRole('button', { name: /^Enzymes, / }).click();
+    await mapVisibility.getByRole('button', { name: 'By enzyme' }).click();
     await expect(mapVisibility).toContainText('No enzymes match this filter.');
     await filter.fill('');
     expect(await mapVisibility.locator('.motif-cs-restriction-row input:checked').count()).toBe(visibleBefore);
@@ -1139,25 +1343,17 @@ test.describe('Claude Science artifact workflows', () => {
     const mapVisibility = page.locator('details').filter({ hasText: 'Map Visibility' }).first();
     await mapVisibility.locator(':scope > summary').click();
 
-    const sourceGroups = mapVisibility.getByRole('group', { name: 'Combinable restriction enzyme source groups' });
-    const fullCatalog = mapVisibility.getByRole('group', { name: 'Full restriction enzyme catalog' });
-    const noteId = await sourceGroups.getAttribute('aria-describedby');
-    expect(noteId).toBeTruthy();
-    await expect(fullCatalog).toHaveAttribute('aria-describedby', noteId!);
-    await expect(page.locator(`[id="${noteId}"]`)).toHaveText(
-      'Source groups can be combined. Full list replaces them while selected; choosing a source group exits Full list.',
-    );
+    const sets = mapVisibility.getByRole('group', { name: 'Enzyme sets' });
+    const fullList = sets.getByRole('checkbox', { name: 'All 155' });
+    await fullList.check();
+    await expect(fullList).toBeChecked();
+    await expect(sets.getByRole('checkbox', { checked: true })).toHaveCount(1);
 
-    const fullList = fullCatalog.getByRole('button');
-    await fullList.click();
-    await expect(fullList).toHaveAttribute('aria-pressed', 'true');
-    await expect(sourceGroups.locator('[aria-pressed="true"]')).toHaveCount(0);
-
-    const common = sourceGroups.getByRole('button').filter({ hasText: 'Common' });
-    await common.click();
-    await expect(common).toHaveAttribute('aria-pressed', 'true');
-    await expect(fullList).toHaveAttribute('aria-pressed', 'false');
-    await expect(sourceGroups.locator('[aria-pressed="true"]')).toHaveCount(1);
+    const common = sets.getByRole('checkbox', { name: 'Common' });
+    await common.check();
+    await expect(common).toBeChecked();
+    await expect(fullList).not.toBeChecked();
+    await expect(sets.getByRole('checkbox', { checked: true })).toHaveCount(1);
   });
 
   test('Restriction Sites tool stays synchronized and works with the Map pane hidden', async ({ page }) => {
@@ -1167,41 +1363,48 @@ test.describe('Claude Science artifact workflows', () => {
     const toolSummary = tool.locator(':scope > summary');
     const mapVisibility = page.locator('details').filter({ hasText: 'Map Visibility' }).first();
     await mapVisibility.locator(':scope > summary').click();
-    await toolSummary.click();
+    // The map opens on the single cutters (15 of 76 sites on pUC19); the Tools list
+    // and Map Visibility must both say so, then follow the Sites menu to all of them.
+    const uniqueToolCount = (await toolSummary.locator('.motif-cs-chip').textContent())!.match(/^(\d+)\/(\d+)$/);
+    expect(uniqueToolCount).toBeTruthy();
+    expect(Number(uniqueToolCount![1])).toBeLessThan(Number(uniqueToolCount![2]));
+    await chooseMapSites(page, 'all');
+    await openTool(page, 'restriction-sites');
 
     const totalClusters = await page.locator('.motif-pm-restriction').count();
     expect(totalClusters).toBeGreaterThan(0);
-    const initialToolCount = (await toolSummary.locator('.motif-cs-chip').innerText()).match(/^(\d+)\/(\d+)$/);
+    const initialToolCount = (await toolSummary.locator('.motif-cs-chip').textContent())!.match(/^(\d+)\/(\d+)$/);
     expect(initialToolCount).toBeTruthy();
     const totalSites = Number(initialToolCount![2]);
     expect(Number(initialToolCount![1])).toBe(totalSites);
-    await expect(mapVisibility.locator(':scope > summary')).toContainText(`${totalSites} sites`);
+    await expect(mapVisibility.locator(':scope > summary')).toContainText(`of ${totalSites} shown`);
 
-    await tool.getByRole('button', { name: 'Hide all restriction sites', exact: true }).click();
+    // The Tools list holds no Sites switch of its own; it follows the header's menu.
+    await expect(tool.getByRole('button', { name: /all restriction sites$/ })).toHaveCount(0);
+    await chooseMapSites(page, 'none');
     await expect(page.locator('.motif-pm-restriction')).toHaveCount(0);
     await expect(page.locator('.motif-pm-restriction-density > *')).toHaveCount(0);
     await expect(toolSummary.locator('.motif-cs-chip')).toHaveText(`0/${totalSites}`);
-    await expect(mapVisibility.locator(':scope > summary')).toContainText(`0/${totalSites} sites`);
-    await expect(page.locator('.motif-cs-map-sites-toggle')).toHaveAttribute('aria-pressed', 'false');
+    await expect(mapVisibility.locator(':scope > summary')).toContainText(`0 of ${totalSites} shown`);
+    await expect(page.getByRole('combobox', { name: 'Restriction sites', exact: true })).toHaveValue('none');
 
-    await tool.getByRole('button', { name: 'Show all restriction sites', exact: true }).click();
+    await chooseMapSites(page, 'all');
     await expect(page.locator('.motif-pm-restriction').first()).toBeVisible();
     await expect(page.locator('.motif-pm-restriction-density > *').first()).toBeVisible();
     await expect(toolSummary.locator('.motif-cs-chip')).toHaveText(`${totalSites}/${totalSites}`);
 
-    const toolLabelToggle = tool.getByRole('button', { name: 'Hide restriction-site labels' });
-    await toolLabelToggle.click();
+    await tool.getByRole('checkbox', { name: 'Names on map' }).uncheck();
     await expect(page.locator('.motif-pm-restriction-label')).toHaveCount(0);
     await expect(page.locator('.motif-pm-restriction')).toHaveCount(totalClusters);
-    await expect(mapVisibility.getByRole('button', { name: 'Show restriction-site labels' })).toHaveAttribute('aria-pressed', 'false');
+    await expect(mapVisibility.getByRole('checkbox', { name: 'Names on map' })).not.toBeChecked();
 
-    await toolSummary.click();
+    await closeToolsDrawer(page);
     await page.getByRole('button', { name: 'Collapse map pane' }).click();
     await expect(page.locator('.motif-cs-main')).toHaveAttribute('data-map-hidden', 'true');
-    await toolSummary.click();
+    await openTool(page, 'restriction-sites');
     await expect(tool).toHaveAttribute('open', '');
 
-    await tool.getByRole('button', { name: /^Sites, / }).click();
+    await tool.getByRole('button', { name: 'By position' }).click();
     const firstSite = tool.locator('.motif-cs-restriction-site-row').first();
     const firstSiteTitle = await firstSite.getAttribute('title');
     expect(firstSiteTitle).toBeTruthy();
@@ -1210,137 +1413,28 @@ test.describe('Claude Science artifact workflows', () => {
     await expect(page.locator('.motif-cs-restriction-label[data-selected="true"]')).toHaveCount(1);
     await expect(page.locator('.motif-cs-seq-block[data-seq-focus="true"]')).toHaveCount(1);
 
-    await tool.getByRole('button', { name: 'Hide all restriction sites', exact: true }).click();
-    await expect(toolSummary.locator('.motif-cs-chip')).toHaveText(`0/${totalSites}`);
+    await tool.getByRole('button', { name: 'By enzyme' }).click();
+    await tool.getByRole('checkbox', { name: 'Hide EcoRI' }).click();
+    await expect(toolSummary.locator('.motif-cs-chip')).toHaveText(`${totalSites - 1}/${totalSites}`);
   });
 
   test('phone Restriction Sites popover uses the available width without clipping source names', async ({ page }) => {
     await openArtifact(page, 390, 760);
     const tool = page.locator('details[data-rail-tool="restriction-sites"]');
-    await tool.locator(':scope > summary').click();
+    await openTool(page, 'restriction-sites');
     const body = tool.locator(':scope > .motif-cs-tool-panel-body');
     await expect(body).toBeVisible();
     const bodyBox = (await body.boundingBox())!;
+    // On a phone the Tools drawer is the whole viewport width.
     expect(bodyBox.width).toBeGreaterThanOrEqual(320);
-    expect(bodyBox.x).toBeGreaterThanOrEqual(8);
-    expect(bodyBox.x + bodyBox.width).toBeLessThanOrEqual(342);
+    expect(bodyBox.x).toBeGreaterThanOrEqual(0);
+    expect(bodyBox.x + bodyBox.width).toBeLessThanOrEqual(390);
 
     const title = body.locator('.motif-cs-rail-popover-title strong');
-    await expect(title).toHaveText('Restriction Sites');
+    await expect(title).toHaveText('Restriction sites');
     expect(await title.evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
-    for (const label of await body.locator('.motif-cs-source-label').all()) {
+    for (const label of await body.locator('.motif-cs-restriction-check').all()) {
       expect(await label.evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
-    }
-  });
-
-  test('Warm themes distinguish active controls while preserving feature-colored selections', async ({ page }) => {
-    await openArtifact(page, 1600, 900);
-    const toolsToggle = page.getByRole('button', { name: /Tools/ }).first();
-    if ((await toolsToggle.getAttribute('aria-pressed')) !== 'true') await toolsToggle.click();
-    const tool = page.locator('details[data-rail-tool="restriction-sites"]');
-    if ((await tool.getAttribute('open')) === null) await tool.locator(':scope > summary').click();
-    const annotations = page.locator('details[data-rail-tool="annotations"]');
-    if ((await annotations.getAttribute('open')) === null) await annotations.locator(':scope > summary').click();
-    const feature = annotations.locator('.motif-cs-feature-annotation-list .motif-cs-row').first();
-    await feature.click();
-    await tool.getByRole('button', { name: /^Sites, / }).click();
-    const site = tool.locator('.motif-cs-restriction-site-row').first();
-    await site.click();
-    const settings = page.locator('details[data-rail-tool="settings"]');
-    if ((await settings.getAttribute('open')) === null) await settings.locator(':scope > summary').click();
-
-    for (const label of ['Warm Light', 'Warm Dark']) {
-      await page.getByLabel('Theme').selectOption({ label });
-      await page.waitForTimeout(150);
-      await feature.click();
-      await page.waitForTimeout(150);
-      const styles = await tool.evaluate((details) => {
-        const summary = details.querySelector<HTMLElement>(':scope > summary')!;
-        const source = details.querySelector<HTMLElement>('.motif-cs-restriction-source[data-active="true"]')!;
-        const sourceState = source.querySelector<HTMLElement>('.motif-cs-source-state')!;
-        const feature = document.querySelector<HTMLElement>('details[data-rail-tool="annotations"] .motif-cs-feature-annotation-list .motif-cs-row[data-active="true"]')!;
-        const featureMeta = feature.querySelector<HTMLElement>('.motif-cs-row-meta')!;
-        const featureSwatch = feature.querySelector<HTMLElement>('.motif-cs-swatch')!;
-        const activeTheme = document.querySelector<HTMLElement>('.motif-cs-theme-choice[data-active="true"]')!;
-        const activeThemeNote = activeTheme.querySelector<HTMLElement>('small')!;
-        const sample = (color: string) => {
-          const canvas = document.createElement('canvas');
-          canvas.width = 1;
-          canvas.height = 1;
-          const context = canvas.getContext('2d')!;
-          context.fillStyle = color;
-          context.fillRect(0, 0, 1, 1);
-          return Array.from(context.getImageData(0, 0, 1, 1).data);
-        };
-        const probe = document.createElement('span');
-        probe.style.color = 'var(--accent-contrast)';
-        document.body.append(probe);
-        const contrast = getComputedStyle(probe).color;
-        probe.style.color = 'var(--text-primary)';
-        const primary = getComputedStyle(probe).color;
-        probe.style.background = 'var(--bg-primary)';
-        const surface = getComputedStyle(probe).backgroundColor;
-        probe.remove();
-        return {
-          summaryBackground: sample(getComputedStyle(summary).backgroundColor),
-          summaryColor: sample(getComputedStyle(summary).color),
-          sourceBackground: sample(getComputedStyle(source).backgroundColor),
-          sourceColor: sample(getComputedStyle(source).color),
-          sourceStateColor: sample(getComputedStyle(sourceState).color),
-          featureBackground: sample(getComputedStyle(feature).backgroundColor),
-          featureColor: sample(getComputedStyle(feature).color),
-          featureMetaColor: sample(getComputedStyle(featureMeta).color),
-          featureSwatchBackground: sample(getComputedStyle(featureSwatch).backgroundColor),
-          activeThemeBackground: sample(getComputedStyle(activeTheme).backgroundColor),
-          activeThemeColor: sample(getComputedStyle(activeTheme).color),
-          activeThemeNoteColor: sample(getComputedStyle(activeThemeNote).color),
-          contrast: sample(contrast),
-          primary: sample(primary),
-          surface: sample(surface),
-        };
-      });
-      // Open panels and the selected theme use the solid accent. Enzyme sources
-      // deliberately use a quieter wash so their On/Off badge remains visible;
-      // a solid source row camouflaged that only non-colour state cue.
-      expect(styles.summaryBackground).toEqual(styles.activeThemeBackground);
-      expect(styles.sourceBackground).not.toEqual(styles.summaryBackground);
-      expect(styles.sourceBackground).not.toEqual(styles.surface);
-      expect(styles.featureBackground).not.toEqual(styles.sourceBackground);
-      expect(styles.featureBackground).not.toEqual(styles.surface);
-      expect(styles.summaryColor).toEqual(styles.contrast);
-      expect(styles.sourceColor).toEqual(styles.primary);
-      expect(styles.sourceStateColor).toEqual(styles.contrast);
-      expect(styles.featureColor).toEqual(styles.primary);
-      expect(styles.featureMetaColor).toEqual(styles.primary);
-      expect(styles.activeThemeColor).toEqual(styles.contrast);
-      expect(styles.activeThemeNoteColor).toEqual(styles.contrast);
-      expect(styles.featureSwatchBackground).not.toEqual(styles.featureBackground);
-
-      await site.click();
-      await page.waitForTimeout(150);
-      const siteStyles = await site.evaluate((row) => {
-        const meta = row.querySelector<HTMLElement>('.motif-cs-row-meta')!;
-        const normalize = (color: string) => {
-          const canvas = document.createElement('canvas');
-          canvas.width = 1;
-          canvas.height = 1;
-          const context = canvas.getContext('2d')!;
-          context.fillStyle = color;
-          context.fillRect(0, 0, 1, 1);
-          return Array.from(context.getImageData(0, 0, 1, 1).data);
-        };
-        const source = document.querySelector<HTMLElement>('.motif-cs-restriction-source[data-active="true"]')!;
-        return {
-          background: normalize(getComputedStyle(row).backgroundColor),
-          color: normalize(getComputedStyle(row).color),
-          metaColor: normalize(getComputedStyle(meta).color),
-          sourceBackground: normalize(getComputedStyle(source).backgroundColor),
-        };
-      });
-      expect(siteStyles.background).toEqual(styles.summaryBackground);
-      expect(siteStyles.background).not.toEqual(siteStyles.sourceBackground);
-      expect(siteStyles.color).toEqual(styles.contrast);
-      expect(siteStyles.metaColor).toEqual(styles.contrast);
     }
   });
 
@@ -1352,29 +1446,36 @@ test.describe('Claude Science artifact workflows', () => {
     await expect(frame.locator('.motif-pm-center text')).toHaveText(['pUC19', '2,686 bp']);
     await expect(frame.locator('.motif-pm-overflows')).toHaveCount(0);
 
-    const features = frame.locator('.motif-cs-map-overflow-button[data-kind="feature-labels"]');
-    const sites = frame.locator('.motif-cs-map-overflow-button[data-kind="restriction-labels"]');
+    // The counts sit in the map pane's control rows under the drawing, not in its frame.
+    const counts = page.locator('[data-pane-key="map"]').getByRole('group', { name: 'Unnamed on the map' });
+    await expect(frame.locator('.motif-cs-map-overflow-button')).toHaveCount(0);
+    const features = counts.locator('.motif-cs-map-overflow-button[data-kind="feature-labels"]');
+    const sites = counts.locator('.motif-cs-map-overflow-button[data-kind="restriction-labels"]');
     await expect(features).toHaveText(/^\+\d+ features?$/);
-    await expect(features).toHaveAttribute('title', /open Annotations/);
-    await expect(sites).toHaveText(/^\d+ unnamed sites?$/);
+    await expect(features).toHaveAttribute('title', /^Not named on the map: .+\. Click to list all features\.$/);
+    await expect(sites).toHaveText(/^\+\d+ sites?$/);
     await expect(sites).toHaveAttribute('title', /Opens Restriction Sites\.$/);
 
+    // The Tools drawer replaces its list with the opened tool, so focus goes to the
+    // panel's "Back to tools" control; the list's own head is hidden while it is open.
     await features.click();
     const annotations = page.locator('details[data-rail-tool="annotations"]');
     await expect(annotations).toHaveAttribute('open', '');
-    await expect(annotations.locator(':scope > summary')).toBeFocused();
+    await expect(annotations.getByRole('button', { name: 'Back to tools' })).toBeFocused();
 
+    await closeToolsDrawer(page);
     await sites.focus();
     await page.keyboard.press('Enter');
     const restriction = page.locator('details[data-rail-tool="restriction-sites"]');
     await expect(restriction).toHaveAttribute('open', '');
-    await expect(restriction.locator(':scope > summary')).toBeFocused();
+    await expect(restriction.getByRole('button', { name: 'Back to tools' })).toBeFocused();
   });
 
   test('a click inside the ring clears the selection, and only the backbone places a position', async ({ page }) => {
     await openArtifact(page, 1440, 900);
     const frame = page.locator('.motif-cs-map-frame');
-    const hint = frame.locator('.motif-cs-map-hint');
+    // The map's one status line states the selection; at rest it says what a click does.
+    const statusLine = page.locator('.motif-cs-map-selection-line');
     const selectionLabel = page.locator('.motif-cs-selection-label');
     const backbone = (await frame.locator('.motif-pm-backbone').boundingBox())!;
     const centre = { x: backbone.x + backbone.width / 2, y: backbone.y + backbone.height / 2 };
@@ -1383,7 +1484,8 @@ test.describe('Claude Science artifact workflows', () => {
     // The name at the centre is not a base: clicking it used to select "1-1".
     await frame.locator('.motif-pm-center-name').click();
     await expect(frame.locator('.motif-pm-selection')).toHaveCount(0);
-    await expect(hint.filter({ hasText: 'range' })).toHaveCount(0);
+    await expect(statusLine).toHaveAttribute('data-empty', 'true');
+    await expect(statusLine).toHaveText('Click a feature, or drag to select a range');
 
     // With a feature selected, a click in the empty disc clears it instead of
     // replacing it with a one-base range and scrolling the sequence there.
@@ -1391,11 +1493,24 @@ test.describe('Claude Science artifact workflows', () => {
     await expect(selectionLabel).toContainText('pMB1 ori');
     await page.mouse.click(centre.x - radius * 0.4, centre.y + radius * 0.1);
     await expect(selectionLabel).not.toContainText('pMB1 ori');
-    await expect(hint.filter({ hasText: 'range' })).toHaveCount(0);
+    await expect(statusLine).toHaveAttribute('data-empty', 'true');
+    await expect(statusLine).toHaveText('Click a feature, or drag to select a range');
 
-    // On the backbone a click still places one base.
-    await page.mouse.click(centre.x + radius, centre.y + 3);
-    await expect(hint).toContainText(/range [\d,]+-[\d,]+ \(1\)/);
+    // On the backbone a click still places one base. Ticks and feature arcs sit on
+    // the backbone too, so click where only the map background is under the pointer.
+    const backbonePoint = await page.evaluate(({ cx, cy, r }) => {
+      for (let degrees = 5; degrees < 360; degrees += 7) {
+        const x = cx + r * Math.cos((degrees * Math.PI) / 180);
+        const y = cy + r * Math.sin((degrees * Math.PI) / 180);
+        const hit = document.elementFromPoint(x, y);
+        if (hit?.classList.contains('motif-pm-bg')) return { x, y };
+      }
+      return null;
+    }, { cx: centre.x, cy: centre.y, r: radius });
+    expect(backbonePoint, 'a backbone point with only the map background under it').not.toBeNull();
+    await page.mouse.click(backbonePoint!.x, backbonePoint!.y);
+    await expect(statusLine).not.toHaveAttribute('data-empty', 'true');
+    await expect(statusLine).toHaveText(/^[\d,]+–[\d,]+ · 1 bp$/);
   });
 
   test('Escape closes an open map dock panel and gives focus back to its heading', async ({ page }) => {
@@ -1432,12 +1547,17 @@ test.describe('Claude Science artifact workflows', () => {
     // The pUC19 polylinker cluster holds HindIII and is named by its first single cutter, EcoRI,
     // not by HaeIII, whose site comes first but which cuts pUC19 many times.
     const cluster = frame.locator('.motif-pm-restriction').filter({ has: page.locator('title', { hasText: 'HindIII' }) }).first();
-    await expect(cluster.locator('.motif-pm-restriction-label')).toHaveText(/^EcoRI \+\d+$/);
-    const selectionLabel = page.locator('.motif-cs-selection-label');
+    await expect(cluster.locator('.motif-pm-restriction-label')).toHaveText(/^EcoRI(, [A-Za-z0-9]+)* \+\d+$/);
+    // The bar's readout names the site and its OWN position, not the cluster's:
+    // "EcoRI site · 396", "BamHI site · 417". Positions of the pUC19 polylinker's sites.
+    const selectionName = page.locator('.motif-cs-selection-name');
+    const polylinkerPosition: Record<string, number> = {
+      EcoRI: 396, SacI: 402, KpnI: 408, SmaI: 412, BamHI: 417, XbaI: 423, SalI: 429, PstI: 435, SphI: 441, HindIII: 447,
+    };
 
     // The name: that enzyme alone, and the selection bar says which.
     await cluster.locator('tspan[data-enzyme="EcoRI"]').click();
-    await expect(selectionLabel).toHaveText('EcoRI site');
+    await expect(selectionName).toHaveText('EcoRI site · 396');
 
     // The tail: the list of what the cluster holds, one row per enzyme plus the whole.
     await cluster.locator('tspan[data-label-more]').click();
@@ -1453,7 +1573,8 @@ test.describe('Claude Science artifact workflows', () => {
     const second = (await items.nth(1).locator('.motif-cs-map-enzyme-menu-name').textContent())!;
     await page.keyboard.press('Enter');
     await expect(menu).toHaveCount(0);
-    await expect(selectionLabel).toHaveText(`${second} site`);
+    expect(polylinkerPosition[second], `${second} is not a known polylinker enzyme`).toBeDefined();
+    await expect(selectionName).toHaveText(`${second} site · ${polylinkerPosition[second]}`);
     await expect(cluster).toBeFocused();
 
     // Enter on the cluster opens the same list; Escape closes it and hands focus back.
@@ -1466,6 +1587,8 @@ test.describe('Claude Science artifact workflows', () => {
 
   test('a dense plasmid names its restriction clusters instead of drawing anonymous ticks', async ({ page }) => {
     await openArtifact(page, 1600, 1000);
+    // Every site, not the single cutters the map opens on: this test is about crowding.
+    await chooseMapSites(page, 'all');
 
     const clusters = page.locator('.motif-pm-restriction');
     const names = page.locator('.motif-pm-restriction-label');
@@ -1482,7 +1605,7 @@ test.describe('Claude Science artifact workflows', () => {
     expect(sparse.clusters).toBe(23);
     expect(sparse.names).toBe(23);
     // Stated beside the ring, not in its centre, which carries the name and length only.
-    await expect(page.locator('.motif-cs-map-overflow-button[data-kind="restriction-labels"]')).toHaveText('35 unnamed sites');
+    await expect(page.locator('.motif-cs-map-overflow-button[data-kind="restriction-labels"]')).toHaveText('+35 sites');
     await expect(page.locator('.motif-cs-map-frame .motif-pm-overflows')).toHaveCount(0);
 
     // A dense record: 149 sites over 31 clusters. The map cannot name all 31, but
@@ -1490,10 +1613,11 @@ test.describe('Claude Science artifact workflows', () => {
     // names because a site-count threshold switched labelling off wholesale.
     await selectRecord(page, 'pET-28a(+)');
     await expect(page.locator('.motif-cs-record-tab[data-active="true"]')).toContainText('pET-28a(+)');
+    await chooseMapSites(page, 'all');
 
     const mapVisibility = page.locator('details').filter({ hasText: 'Map Visibility' }).first();
     await mapVisibility.locator(':scope > summary').click();
-    await expect(mapVisibility).toContainText('149 sites');
+    await expect(mapVisibility).toContainText('149 of 149 shown');
     // Measure label allocation in the ordinary collapsed map. Expanding Map
     // Visibility intentionally gives its controls the column and compresses the
     // drawing to a thumbnail; omissions in that inspection state are reported
@@ -1506,7 +1630,7 @@ test.describe('Claude Science artifact workflows', () => {
     expect(dense.names).toBeLessThanOrEqual(dense.clusters);
 
     // Whatever it could not name, it says so rather than going quiet.
-    await expect(page.locator('.motif-cs-map-overflow-button').filter({ hasText: /unnamed sites?$/ })).toHaveCount(1);
+    await expect(page.locator('.motif-cs-map-overflow-button').filter({ hasText: /^\+\d+ sites?$/ })).toHaveCount(1);
 
     // Naming the cut sites must not cost the map its features. A rescue pass places
     // grouped clusters over feature labels and deletes what it lands on; unbounded,
@@ -1514,25 +1638,26 @@ test.describe('Claude Science artifact workflows', () => {
     // terminator, five labels — to gain two enzyme names.
     const featureNames = page.locator('.motif-pm-feature-label');
     await expect(featureNames).toHaveCount(6);
-    for (const name of ['T7 prom.', 'RBS', '6xHis', 'T7 terminator']) {
+    for (const name of ['T7 prom', 'RBS', '6xHis', 'T7 terminator']) {
       await expect(featureNames.filter({ hasText: name })).toHaveCount(1);
     }
 
-    // The detailed panel keeps a labels-only control. The compact scissors
-    // controls the complete restriction-site layer — ticks and labels together.
+    // The Sites tab keeps a names-only control. The header's Sites menu controls
+    // the complete restriction-site layer — ticks and names together.
     await mapVisibility.locator(':scope > summary').click();
-    const labelToggle = mapVisibility.getByRole('button', { name: 'Hide restriction-site labels' });
-    const toolbarToggle = page.locator('.motif-cs-map-toolbar .motif-cs-map-sites-toggle');
-    await expect(labelToggle).toHaveText('Site labels');
-    await expect(toolbarToggle.locator('svg')).toHaveCount(1);
-    await expect(toolbarToggle).toHaveAttribute('aria-label', 'Restriction sites');
-    await expect(toolbarToggle).toHaveAttribute('aria-pressed', 'true');
+    const labelToggle = mapVisibility.getByRole('checkbox', { name: 'Names on map' });
+    const toolbarToggle = page.getByRole('combobox', { name: 'Restriction sites', exact: true });
+    await expect(labelToggle).toBeChecked();
+    await expect(toolbarToggle).toHaveValue('all');
 
     // Shrink to a laptop-sized window. This is the case that used to fail hardest:
     // the old threshold halved once the map's smaller dimension fell under 580px,
     // and the sparsest bundled vector then carried 26 sites, so EVERY record lost EVERY
     // name here — including the ones that looked healthy at 1600x1000.
-    await page.setViewportSize({ width: 1280, height: 900 });
+    // The open Map Visibility panel is an overlay, so it does not squeeze the map:
+    // at 1280x900 the map is 610px square-bound, and its height follows the window.
+    // A 1280x720 laptop window leaves it 565px, under the 580px threshold.
+    await page.setViewportSize({ width: 1280, height: 720 });
     await expect
       .poll(async () => {
         const box = (await page.locator('.motif-pm-container').boundingBox())!;
@@ -1542,7 +1667,7 @@ test.describe('Claude Science artifact workflows', () => {
 
     const denseSmall = await readMap();
     expect(denseSmall.names).toBeGreaterThanOrEqual(15);
-    await expect(labelToggle).toHaveText('Site labels');
+    await expect(labelToggle).toBeChecked();
 
     await selectRecord(page, 'pUC19');
     await expect(page.locator('.motif-cs-record-tab[data-active="true"]')).toContainText('pUC19');
@@ -1552,92 +1677,64 @@ test.describe('Claude Science artifact workflows', () => {
 
     await page.setViewportSize({ width: 1600, height: 1000 });
     await selectRecord(page, 'pUC19');
-    await expect(labelToggle).toHaveText('Site labels');
+    await expect(labelToggle).toBeChecked();
 
-    const activeToggleStyle = await toolbarToggle.evaluate((button) => {
-      const style = getComputedStyle(button);
-      return { backgroundColor: style.backgroundColor, color: style.color };
-    });
-    await toolbarToggle.click();
+    // The Sites menu shows its state in its own text, not in a colour.
+    const shownLabel = () => toolbarToggle.evaluate((select) => (select as HTMLSelectElement).selectedOptions[0].textContent);
+    expect(await shownLabel()).toBe('All');
+    await toolbarToggle.selectOption('none');
     await expect(page.locator('.motif-pm-restriction')).toHaveCount(0);
     await expect(page.locator('.motif-pm-restriction-density > *')).toHaveCount(0);
     await expect(page.locator('.motif-pm-restriction-label')).toHaveCount(0);
-    await expect(toolbarToggle.locator('svg')).toHaveCount(1);
-    await expect(toolbarToggle).toHaveAttribute('aria-label', 'Restriction sites');
-    await expect(toolbarToggle).toHaveAttribute('aria-pressed', 'false');
-    const inactiveHoveredStyle = await toolbarToggle.evaluate((button) => {
-      const style = getComputedStyle(button);
-      return { backgroundColor: style.backgroundColor, color: style.color };
-    });
-    expect(inactiveHoveredStyle).not.toEqual(activeToggleStyle);
-    await toolbarToggle.click();
+    await expect(toolbarToggle).toHaveValue('none');
+    expect(await shownLabel()).toBe('None');
+    await toolbarToggle.selectOption('all');
+    await expect(toolbarToggle).toHaveValue('all');
     await expect(page.locator('.motif-pm-restriction').first()).toBeVisible();
     await expect(page.locator('.motif-pm-restriction-density > *').first()).toBeVisible();
     await expect(page.locator('.motif-pm-restriction-label').first()).toBeVisible();
   });
 
-  test('the single-cutter count is a filter, not just a number', async ({ page }) => {
+  test('the Sites menu narrows the map to the single cutters and back', async ({ page }) => {
     await openArtifact(page, 1600, 1000);
     await expect(page.locator('.motif-cs-record-tab[data-active="true"]')).toContainText('pUC19');
 
     const mapVisibility = page.locator('details').filter({ hasText: 'Map Visibility' }).first();
     await mapVisibility.locator(':scope > summary').click();
-    await expect(mapVisibility).toContainText('76/76 sites');
+    // The map opens on the single cutters, and the Sites menu says so.
+    const menu = page.getByRole('combobox', { name: 'Restriction sites', exact: true });
+    await expect(mapVisibility.locator(':scope > summary')).toContainText('15 of 76 shown');
+    await expect(menu).toHaveValue('unique');
+    // The Sites tab holds no second switch for the same choice.
+    await expect(mapVisibility.locator('button', { hasText: 'single-cutters' })).toHaveCount(0);
+    await chooseMapSites(page, 'all');
+    await expect(mapVisibility.locator(':scope > summary')).toContainText('76 of 76 shown');
 
     const ticks = page.locator('.motif-pm-tick');
     const names = page.locator('.motif-pm-restriction-label');
-    // Located by its label, which is stable, rather than by accessible name: the
-    // name flips to "Show every enzyme again" when the filter is on, so a
-    // name-based locator stops matching the moment the control does its job.
-    const filter = mapVisibility.locator('button', { hasText: 'single-cutters' });
-
-    // The map opens with every site the enabled sources can find. Getting to the
-    // view a cloning workflow actually wants used to cost 11 checkbox clicks, and
-    // this count sat beside those buttons as muted text that could not act.
-    await expect(filter).toHaveText('15 single-cutters');
-    await expect(filter).toHaveAttribute('aria-label', 'Show only the 15 enzymes that cut once');
-    await expect(filter).toHaveAttribute('aria-pressed', 'false');
     const crowded = { ticks: await ticks.count(), names: await names.count() };
     expect(crowded.ticks).toBeGreaterThanOrEqual(90);
 
-    await filter.click();
-    await expect(filter).toHaveAttribute('aria-pressed', 'true');
-    await expect(filter).toHaveAttribute('aria-label', 'Show every enzyme again');
-    await expect(mapVisibility).toContainText('15/76 sites');
+    await chooseMapSites(page, 'unique');
+    await expect(mapVisibility.locator(':scope > summary')).toContainText('15 of 76 shown');
     expect(await ticks.count()).toBeLessThanOrEqual(20);
     // With only the single cutters left, whatever the map cannot name is some of those
-    // 15 sites. (This used to assert the count vanished, through a selector that
-    // matched no element at any time: with Map Visibility open the drawing shrinks and
-    // drops labels, so single cutters can still go unnamed.)
+    // 15 sites.
     const unnamedSites = page.locator('.motif-cs-map-overflow-button[data-kind="restriction-labels"]');
     if (await unnamedSites.count()) {
-      expect(Number((await unnamedSites.textContent())?.match(/^(\d+) unnamed/)?.[1])).toBeLessThanOrEqual(15);
+      expect(Number((await unnamedSites.textContent())?.match(/^\+(\d+) sites?$/)?.[1])).toBeLessThanOrEqual(15);
     }
 
-    // Releasing restores the previous set exactly.
-    await filter.click();
-    await expect(filter).toHaveAttribute('aria-pressed', 'false');
-    await expect(mapVisibility).toContainText('76/76 sites');
+    await chooseMapSites(page, 'all');
+    await expect(mapVisibility.locator(':scope > summary')).toContainText('76 of 76 shown');
     expect(await ticks.count()).toBe(crowded.ticks);
     expect(await names.count()).toBe(crowded.names);
 
-    // "Restore" must mean the set the user had, not everything. Hiding TaqI by
-    // hand and then using the filter twice has to leave TaqI hidden — a filter
-    // that quietly re-showed it would undo a choice the user made deliberately.
-    await mapVisibility.getByRole('checkbox', { name: 'Hide TaqI' }).click();
-    await expect(mapVisibility.getByRole('checkbox', { name: 'Show TaqI' })).toHaveCount(1);
-    await filter.click();
-    await expect(filter).toHaveAttribute('aria-pressed', 'true');
-    await filter.click();
-    await expect(filter).toHaveAttribute('aria-pressed', 'false');
-    await expect(mapVisibility.getByRole('checkbox', { name: 'Show TaqI' })).toHaveCount(1);
-
-    // The pressed state describes the map, so hiding a single cutter on top of the
-    // filter has to release it: that is no longer the single-cutter view.
-    await filter.click();
-    await expect(filter).toHaveAttribute('aria-pressed', 'true');
+    // The menu describes the map, so hiding a single cutter on top of Unique has to
+    // leave it: that is no longer the single-cutter view.
+    await chooseMapSites(page, 'unique');
     await mapVisibility.getByRole('checkbox', { name: 'Hide EcoRI' }).click();
-    await expect(filter).toHaveAttribute('aria-pressed', 'false');
+    await expect(menu).toHaveValue('custom');
   });
 
   test('the collapsed tool rail says what each icon is, by hover and by keyboard', async ({ page }) => {
@@ -1645,9 +1742,11 @@ test.describe('Claude Science artifact workflows', () => {
     // comparison is byte equality, and over the map drawing (1440x1000 is side by
     // side) a flyout composite re-rasters the drawing's antialiased edges: 48 pixels
     // off by at most 24/255 with no name painted anywhere near.
-    await openArtifact(page, 1100, 1000);
+    // The icon rail only exists from 1536px; below that the unpinned tools are a drawer.
+    await openArtifact(page, 1600, 1000);
     const rail = page.locator('.motif-cs-inspector');
     await expect(rail).toHaveAttribute('data-tools-pinned', 'false');
+    await expect(rail).not.toHaveAttribute('data-tools-drawer', /.*/);
 
     const heads = rail.locator('.motif-cs-panel-head');
     await expect(heads).toHaveCount(16);
@@ -1688,7 +1787,7 @@ test.describe('Claude Science artifact workflows', () => {
     await page.mouse.move(20, 300);
     await page.locator('details[data-rail-tool="guide"] > .motif-cs-panel-head').focus();
     await page.keyboard.press('Shift');
-    expect(await flyout('guide')).toBe('"Guide RNA (CRISPR)" / ""');
+    expect(await flyout('guide')).toBe('"Guide RNA — CRISPR" / ""');
 
     // The alignment tool is where the chromatogram viewer lives, and its rail
     // title was the only place a first screen could say so.
@@ -1739,7 +1838,7 @@ test.describe('Claude Science artifact workflows', () => {
     // its icon, and a scroll must clear it rather than leave it by another icon.
     // 600px, not 700: beside the docked Inventory the record strip is hidden,
     // and the rail fits without scrolling down to about 677px.
-    await page.setViewportSize({ width: 1440, height: 600 });
+    await page.setViewportSize({ width: 1600, height: 600 });
     await expect
       .poll(() => page.$eval('.motif-cs-inspector', (el) => getComputedStyle(el).overflowY))
       .toBe('auto');
@@ -1766,8 +1865,7 @@ test.describe('Claude Science artifact workflows', () => {
 
   test('the locked gel workspace says what would unlock it', async ({ page }) => {
     await openArtifact(page, 1440, 1000);
-    const cloning = page.locator('details[data-rail-tool="cloning"]');
-    await cloning.locator(':scope > summary').click();
+    await openTool(page, 'cloning');
 
     // Every bundled record is a circular plasmid and none has a saved digest,
     // so no lane qualifies. The note used to be a bare "0 gel lane sources"
@@ -1805,7 +1903,7 @@ test.describe('Claude Science artifact workflows', () => {
     await expect(notice).toHaveAttribute('role', 'alert');
     await expect(notice).toHaveAttribute('data-tone', 'error');
     await expect(page.locator('.motif-cs-dropzone-card')).toHaveCount(0);
-    // The Add entry status line keeps a copy after the notice times out. The
+    // The Import records status line keeps a copy after the notice times out. The
     // notice already announced it, so the copy is not a second live region.
     const panelStatus = page.locator('#motif-cs-import-status');
     await expect(panelStatus).toHaveText(`Imported 1 record · skipped broken.gb: ${noOrigin}`);
@@ -1832,11 +1930,11 @@ test.describe('Claude Science artifact workflows', () => {
 
     // Choosing a file again used to add a second, identical row every time.
     await picker.setInputFiles([good]);
-    await expect(notice).toHaveText('good.fasta: good is already in the inventory');
+    await expect(notice).toHaveText('good.fasta: ok1 is already in the library');
     await expect.poll(inventory).toBe(before + 3);
   });
 
-  test('a clean file pick closes Add entry and scrolls the Inventory to the new record', async ({ page }) => {
+  test('a clean file pick closes Import records and scrolls the Inventory to the new record', async ({ page }) => {
     await openArtifact(page, 1440, 900);
     const inventory = () => page.evaluate(() => window.motifGetInventory().length);
     const panel = page.locator('#motif-cs-add-entry');
@@ -1856,9 +1954,10 @@ test.describe('Claude Science artifact workflows', () => {
     await picker.setInputFiles(Array.from({ length: 8 }, (_, index) => genBank(index + 1)));
     await expect.poll(inventory).toBe(before + 8);
     await expect(panel).not.toHaveAttribute('open', '');
-    await expect.poll(() => page.evaluate(() => document.activeElement?.getAttribute('aria-label'))).toBe('Add entry');
+    await expect.poll(() => page.evaluate(() => document.activeElement?.getAttribute('aria-label'))).toBe('Import records');
+    // An import opens the first record it added, and the list scrolls to it.
     const activeRow = page.locator('.motif-cs-inventory-record-row[data-active]');
-    await expect(activeRow).toContainText('pick8');
+    await expect(activeRow).toContainText('pick1');
     await expect(activeRow).toBeInViewport({ ratio: 1 });
 
     // A pick with a skipped file keeps the panel open, since its status line is
@@ -1869,6 +1968,200 @@ test.describe('Claude Science artifact workflows', () => {
     await expect.poll(inventory).toBe(before + 9);
     await expect(page.locator('#motif-cs-import-status')).toContainText('skipped broken.gb');
     await expect(panel).toHaveAttribute('open', '');
+  });
+
+  test('a failed pick reports under Choose files and covers none of the import buttons', async ({ page }) => {
+    for (const width of [400, 700]) {
+      await openArtifact(page, width, 860);
+      const panel = page.locator('#motif-cs-add-entry');
+      await page.locator('.motif-cs-add-entry-button').first().click();
+      await expect(panel).toHaveAttribute('open', '');
+      const chooser = page.waitForEvent('filechooser');
+      await panel.getByRole('button', { name: 'Choose files', exact: true }).click();
+      await (await chooser).setFiles([{ name: 'broken.gb', mimeType: 'text/plain', buffer: Buffer.from('LOCUS broken\n') }]);
+      // Said once, in the panel's status line, which announces it.
+      const status = page.locator('#motif-cs-import-status');
+      await expect(status).toContainText('broken.gb:');
+      await expect(status).toHaveAttribute('role', 'alert');
+      await expect(page.locator('.motif-cs-workbench-notice:not(.motif-cs-pane-notice)')).toHaveCount(0);
+      for (const name of ['Choose files', 'Import records', 'Clear']) {
+        const button = panel.getByRole('button', { name, exact: true });
+        await expect(button).toBeInViewport({ ratio: 1 });
+      }
+    }
+    // A clean pick closes the panel and its line, so the notice still confirms it.
+    const panel = page.locator('#motif-cs-add-entry');
+    const chooser = page.waitForEvent('filechooser');
+    await panel.getByRole('button', { name: 'Choose files', exact: true }).click();
+    await (await chooser).setFiles([{ name: 'clean.fasta', mimeType: 'text/plain', buffer: Buffer.from('>clean1\nACGTACGTACGTACGTACGTACGT\n') }]);
+    await expect(panel).not.toHaveAttribute('open', '');
+    await expect(page.locator('.motif-cs-workbench-notice')).toHaveText('Imported 1 record');
+  });
+
+  test('a file dropped on the open import panel reports once, under Choose files, and covers no button', async ({ page }) => {
+    const drops = [
+      { name: 'notes.txt', bytes: [...Buffer.from('just some notes')] },
+      { name: 'seqs.zip', bytes: [0x50, 0x4b, 0x03, 0x04, ...Buffer.from('a.fa>a\nACGT\n')] },
+      { name: 'empty.fa', bytes: [] as number[] },
+    ];
+    for (const width of [400, 700, 1040]) {
+      await openArtifact(page, width, 860);
+      const panel = page.locator('#motif-cs-add-entry');
+      await page.locator('.motif-cs-add-entry-button').first().click();
+      await expect(panel).toHaveAttribute('open', '');
+      for (const drop of drops) {
+        await page.evaluate(({ name, bytes }) => {
+          const transfer = new DataTransfer();
+          transfer.items.add(new File([new Uint8Array(bytes)], name, { type: name.endsWith('.zip') ? 'application/zip' : 'text/plain' }));
+          document.querySelector('#motif-cs-add-entry')?.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer }));
+        }, drop);
+        // Said once: in the status line, which announces it, and in no floating notice.
+        const status = page.locator('#motif-cs-import-status');
+        await expect(status, `${drop.name} at ${width}px`).toContainText(drop.name);
+        await expect(status).not.toHaveAttribute('aria-live', 'off');
+        await expect(page.locator('.motif-cs-workbench-notice:not(.motif-cs-pane-notice)')).toHaveCount(0);
+        await expect(panel).toHaveAttribute('open', '');
+        for (const name of ['Choose files', 'Import records']) {
+          const button = panel.getByRole('button', { name, exact: true });
+          const covered = await button.evaluate((element) => {
+            const box = element.getBoundingClientRect();
+            const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+            return hit !== null && hit !== element && !element.contains(hit);
+          });
+          expect(covered, `${name} covered after ${drop.name} at ${width}px`).toBe(false);
+        }
+      }
+    }
+    // A clean drop closes the panel, and the notice confirms it, as a clean pick does.
+    await page.evaluate(() => {
+      const transfer = new DataTransfer();
+      transfer.items.add(new File(['>dropped_clean\nACGTACGTACGTACGTACGTACGT\n'], 'clean.fa', { type: 'text/plain' }));
+      document.querySelector('#motif-cs-add-entry')?.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer }));
+    });
+    await expect(page.locator('#motif-cs-add-entry')).not.toHaveAttribute('open', '');
+    await expect(page.locator('.motif-cs-workbench-notice')).toHaveText('Imported 1 record');
+    // Focus was in the closing panel, so it goes back to Import records, not to the page.
+    await expect(page.locator('.motif-cs-add-entry-button').first()).toBeFocused();
+    // Reopened, the panel says what the clean drop did, not the earlier error.
+    await page.locator('.motif-cs-add-entry-button').first().click();
+    await expect(page.locator('#motif-cs-import-status')).toHaveText('Imported 1 record');
+    await expect(page.locator('#motif-cs-import-status')).not.toHaveAttribute('data-error', 'true');
+  });
+
+  test('the Annotations title and the ORF detail lines are not cut off in the Tools drawer', async ({ page }) => {
+    for (const width of [700, 1040]) {
+      await openArtifact(page, width, 860);
+      const annotations = await openTool(page, 'annotations');
+      const title = annotations.locator('.motif-cs-rail-popover-title strong');
+      await expect(title).toHaveText('Annotations');
+      expect(await title.evaluate((element) => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(0);
+      await expect(annotations.locator('.motif-cs-rail-popover-actions > span')).toHaveText('8\u00a0features · 2\u00a0translations');
+      await closeTool(page, 'annotations');
+      const analysis = await openTool(page, 'analysis');
+      await expect(analysis.locator('.motif-cs-orf-select').first()).toBeVisible();
+      const cut = await analysis.locator('.motif-cs-orf-select small').evaluateAll((lines) => lines.filter((line) => line.scrollWidth > line.clientWidth + 1).length);
+      expect(cut).toBe(0);
+    }
+  });
+
+  // Docked, the Records pane is 210px wide at every window width. Beside the 28px Pop out and
+  // Collapse buttons the title keeps the 62px it needs, and Collapse ends inside the pane's edge.
+  test('the docked Records title reads in full beside its controls', async ({ page }) => {
+    test.setTimeout(90_000);
+    const cases: Array<{ width: number; theme: 'light' | 'dark'; oneRecord?: boolean }> = [];
+    for (const width of [900, 1040, 1440, 1920]) for (const theme of ['light', 'dark'] as const) cases.push({ width, theme });
+    cases.push({ width: 1040, theme: 'light', oneRecord: true });
+    for (const { width, theme, oneRecord } of cases) {
+      const label = `${width}px, ${theme}${oneRecord ? ', one record' : ''}`;
+      await openArtifact(page, width, 860);
+      if (theme === 'dark') {
+        const settings = await openTool(page, 'settings');
+        await settings.locator('label[data-theme-choice="dark"]').click();
+        await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+        await closeTool(page, 'settings');
+        if ((await toolsDrawerState(page)) === 'open') await closeToolsDrawer(page);
+      }
+      if (oneRecord) {
+        await page.evaluate(() => window.motifReplaceWorkspace?.({ records: [{
+          id: 'only-record', name: 'Only record', molecule: 'dna', topology: 'linear', seq: 'ATGGAATTCTAA', active: true,
+        }] }, { discardUnsavedChanges: true }));
+      }
+      // Beside a side-by-side split narrower than 1100px (1040x860) the list
+      // starts closed; the title is measured with it open.
+      await showRecordsPane(page);
+      const pane = page.locator('[data-pane-key="inventory"]');
+      await expect(pane).toHaveAttribute('data-pane-placement', 'docked');
+      const head = pane.locator(':scope > .motif-cs-pane-title');
+      const title = head.locator(':scope > div > span');
+      await expect(title).toHaveText('Library');
+      expect(await title.evaluate((element) => element.scrollWidth - element.clientWidth), `title cut at ${label}`).toBeLessThanOrEqual(0);
+      const paneBox = (await pane.boundingBox())!;
+      const importButton = head.getByRole('button', { name: 'Import records', exact: true });
+      await expect(importButton).toHaveText('Import', { useInnerText: true });
+      for (const control of [importButton, head.getByRole('button', { name: 'Pop out Library pane' }), head.getByRole('button', { name: 'Collapse library pane' })]) {
+        const box = (await control.boundingBox())!;
+        expect(box.height, `control height at ${label}`).toBeGreaterThanOrEqual(28);
+        expect(box.width, `control width at ${label}`).toBeGreaterThanOrEqual(28);
+        expect(box.x + box.width, `control inside the pane at ${label}`).toBeLessThanOrEqual(paneBox.x + paneBox.width);
+      }
+    }
+  });
+
+  test('choosing primer pair 2 keeps the workspace sections in place', async ({ page }) => {
+    for (const width of [400, 1040]) {
+      await openArtifact(page, width, 860);
+      const primerPanel = await openTool(page, 'primer-design');
+      await primerPanel.getByTestId('open-primer-workspace').click();
+      const workspace = page.getByTestId('primer-workspace');
+      await expect(workspace).toBeVisible();
+      const section = (name: string) => workspace.locator('.motif-cs-primer-section').filter({ has: page.getByRole('heading', { name, exact: true }) });
+      // Offsets inside the settings column, so a scroll to the chosen pair does not count.
+      const gap = async () => (await section('Conditions').boundingBox())!.y - (await section('Target').boundingBox())!.y;
+      const use = workspace.getByRole('button', { name: /^Use current selection/ });
+      await expect(use).toBeDisabled();
+      const before = await gap();
+      const pair2 = workspace.locator('[data-pair-index="1"]');
+      await pair2.scrollIntoViewIfNeeded();
+      await pair2.click();
+      await expect(use).toBeEnabled();
+      await expect(use).toHaveText(/^Use current selection \(\d[\d,]*–\d[\d,]*\)$/);
+      expect(await gap()).toBe(before);
+    }
+  });
+
+  test('a rejected custom enzyme answers under Add enzyme without moving the fields', async ({ page }) => {
+    await openArtifact(page, 700, 900);
+    const panel = await openTool(page, 'restriction-sites');
+    const name = panel.locator('input[name="custom-enzyme-name"]');
+    const add = panel.getByRole('button', { name: 'Add enzyme', exact: true });
+    await name.scrollIntoViewIfNeeded();
+    await name.fill('MyEnz');
+    await panel.locator('input[name="custom-enzyme-recognition"]').fill('GAXTC');
+    const [nameBefore, addBefore] = [(await name.boundingBox())!, (await add.boundingBox())!];
+    await add.click();
+    const status = panel.locator('[id^="motif-cs-add-enzyme-status-"]');
+    await expect(status).toContainText('invalid character');
+    expect((await name.boundingBox())!.y).toBe(nameBefore.y);
+    expect((await add.boundingBox())!.y).toBe(addBefore.y);
+    expect((await status.boundingBox())!.y).toBeGreaterThanOrEqual(addBefore.y + addBefore.height);
+  });
+
+  test('saving digest fragments adds the Derived group below the open record, which keeps its row', async ({ page }) => {
+    await openArtifact(page, 1040, 820);
+    // At 1040x820 the list starts closed beside the side-by-side split.
+    await showRecordsPane(page);
+    const activeRow = page.locator('.motif-cs-inventory-record-row[data-active]');
+    await expect(activeRow).toContainText('pUC19');
+    const before = (await activeRow.boundingBox())!;
+    const digest = page.locator('.motif-cs-map-dock-strip > details').filter({ hasText: 'Digest Preview' });
+    await digest.locator(':scope > summary').click();
+    const save = digest.getByTestId('digest-open-gel');
+    await expect(save).toHaveText(/^Save \d+ fragments, open gel$/);
+    await save.click();
+    await expect(page.getByTestId('gel-workspace')).toBeVisible();
+    await expect(page.locator('.motif-cs-inventory-group-head').last()).toContainText('Derived');
+    await expect(activeRow).toContainText('pUC19');
+    expect((await activeRow.boundingBox())!.y).toBe(before.y);
   });
 
   test('digest recipes reject unknown enzymes and survive map-source changes', async ({ page }) => {
@@ -1890,7 +2183,7 @@ test.describe('Claude Science artifact workflows', () => {
 
     const mapVisibility = page.locator('details').filter({ hasText: 'Map Visibility' }).first();
     await mapVisibility.locator(':scope > summary').click();
-    await mapVisibility.getByRole('button', { name: 'Full list, 155 enzymes' }).click();
+    await mapVisibility.getByRole('checkbox', { name: 'All 155' }).check();
     await digest.locator(':scope > summary').click();
     await expect(enzymeInput).toHaveValue('EcoRI');
     await expect(digest.locator(':scope > summary')).toContainText('1 cut · linearized');
@@ -1902,7 +2195,8 @@ test.describe('Claude Science artifact workflows', () => {
     await digest.locator(':scope > summary').click();
     const enzymeInput = digest.getByRole('combobox', { name: 'Digest enzymes' });
     await enzymeInput.fill('NdeI');
-    await expect(digest.locator('.motif-cs-digest-scope')).toContainText('Whole record · pUC19');
+    // The recipe row does not repeat the record's name; the Records row names it.
+    await expect(digest.locator('.motif-cs-digest-recipe-row')).not.toContainText('pUC19');
 
     await selectRecord(page, 'pBR322');
     if ((await digest.getAttribute('open')) === null) await digest.locator(':scope > summary').click();
@@ -1977,16 +2271,16 @@ test.describe('Claude Science artifact workflows', () => {
     ]);
 
     const history = page.locator('details[data-rail-tool="workflows"]');
-    await history.locator(':scope > summary').click();
+    await openTool(page, 'workflows');
     await expect(history.getByTestId('workflow-result-list')).toContainText('EcoRI digest of Digest source');
     await history.getByRole('button', { name: 'Reveal output', exact: true }).click();
 
     const entry = page.locator('details[data-rail-tool="entry"]');
-    await entry.locator(':scope > summary').click();
+    await openTool(page, 'entry');
     await expect(entry.locator('.motif-cs-record-ends')).toContainText(/Left end|Right end/);
     await expect(entry.locator('.motif-cs-record-ends')).toContainText(/blunt|AATT/);
 
-    await history.locator(':scope > summary').click();
+    await openTool(page, 'workflows');
     await history.getByRole('button', { name: /Remove EcoRI digest of Digest source/ }).click();
     await history.getByRole('button', { name: 'Remove result' }).click();
     expect(await page.evaluate(() => window.motifGetWorkflowResults?.().length)).toBe(0);
@@ -2020,7 +2314,7 @@ test.describe('Claude Science artifact workflows', () => {
     await digest.getByTestId('digest-open-gel').click();
 
     const gelWorkspace = page.getByTestId('gel-workspace');
-    const gelWindow = page.getByRole('dialog', { name: 'Gel Preview' });
+    const gelWindow = page.getByRole('dialog', { name: 'Gel preview' });
     await expect(gelWindow).toBeVisible();
     await expect(gelWorkspace.getByTestId('gel-digest-sources').getByRole('checkbox')).toBeChecked();
     await expect(gelWorkspace).toContainText('1 of 12 lanes');
@@ -2038,14 +2332,20 @@ test.describe('Claude Science artifact workflows', () => {
     const header = gelWindow.locator('.motif-cs-window-head');
     const beforeMove = (await header.boundingBox())!;
     await header.focus();
+    // The window opens against the right edge, where Alt+ArrowRight has no room to move
+    // it, so it is moved left first and Alt+ArrowRight is checked from there.
+    await header.press('Alt+ArrowLeft');
+    const leftOfStart = (await header.boundingBox())!;
+    expect(leftOfStart.x).toBeLessThanOrEqual(beforeMove.x - 9);
     await header.press('Alt+ArrowRight');
     const afterMove = (await header.boundingBox())!;
-    expect(afterMove.x).toBeGreaterThanOrEqual(beforeMove.x + 9);
+    expect(afterMove.x).toBeGreaterThanOrEqual(leftOfStart.x + 9);
 
-    await gelWindow.getByRole('button', { name: 'Collapse Gel Preview' }).click();
+    await gelWindow.getByRole('button', { name: 'Collapse Gel preview' }).click();
     await expect(gelWindow).toHaveAttribute('data-collapsed', 'true');
-    await expect(gelWorkspace).toHaveCount(0);
-    await gelWindow.getByRole('button', { name: 'Expand Gel Preview' }).click();
+    // Collapsing hides the body; the workspace stays mounted so nothing typed in it is lost.
+    await expect(gelWorkspace).toBeHidden();
+    await gelWindow.getByRole('button', { name: 'Expand Gel preview' }).click();
     await expect(gelWorkspace).toBeVisible();
 
     await gelWorkspace.getByTestId('gel-record-sources').getByRole('checkbox', { name: /Linear comparator/ }).check();
@@ -2058,8 +2358,8 @@ test.describe('Claude Science artifact workflows', () => {
     await gelWorkspace.getByTestId('gel-save-result').click();
     await expect(gelWorkspace.getByTestId('gel-save-result')).toBeDisabled();
     await expect(gelWorkspace.getByTestId('gel-save-result')).toHaveText('Saved');
-    await expect(gelWorkspace.locator('.motif-cs-gel-status')).toHaveText('Gel result saved in Workflow Results.');
-    await expect(page.getByText('Gel result saved in Workflow Results.', { exact: true })).toHaveCount(1);
+    await expect(gelWorkspace.locator('.motif-cs-gel-status')).toHaveText('Gel result saved in Workflow results.');
+    await expect(page.getByText('Gel result saved in Workflow results.', { exact: true })).toHaveCount(1);
     await expect(page.locator('.motif-cs-workbench-notice:visible')).toHaveCount(0);
 
     const afterSave = await page.evaluate(() => window.motifGetWorkflowResults?.().map((result) => ({
@@ -2078,40 +2378,137 @@ test.describe('Claude Science artifact workflows', () => {
       parameters: expect.objectContaining({ ladderPreset: '100bp', agarosePercent: 1.8 }),
     });
 
-    await gelWindow.getByRole('button', { name: 'Close Gel Preview' }).click();
+    await gelWindow.getByRole('button', { name: 'Close Gel preview' }).click();
     const history = page.locator('details[data-rail-tool="workflows"]');
-    await history.locator(':scope > summary').click();
+    await openTool(page, 'workflows');
     await expect(history.getByTestId('workflow-result-list').locator('.motif-cs-workflow-row')).toHaveCount(2);
     await expect(history).toContainText('EcoRI digest of Gel digest source');
     await expect(history).toContainText('EcoRI comparison gel');
   });
 
-  test('phone gel setup exposes an explicit jump to the below-fold preview', async ({ page }) => {
-    // At 700px the pUC19 gel preview starts 20px below the workspace's visible area.
-    await openArtifact(page, 390, 700);
+  test('the gel shows its whole plate, lane labels included, at 400 and 700px wide', async ({ page }) => {
+    // From 600px the setup stands beside the preview, so the whole plate and its lane labels show
+    // above the footer; under 600px (a window is the whole panel) the preview comes first and the
+    // setup follows.
+    for (const [width, height, sideBySide] of [[700, 860, true], [400, 860, false]] as const) {
+      await openArtifact(page, width, height);
+      const digest = page.locator('details').filter({ hasText: 'Digest Preview' }).first();
+      await digest.locator(':scope > summary').click();
+      await digest.getByTestId('digest-open-gel').click();
+
+      const gel = page.getByTestId('gel-workspace');
+      await expect(gel.getByTestId('gel-plate')).toBeVisible();
+      const layout = (await gel.locator('.motif-cs-gel-workspace-layout').boundingBox())!;
+      const preview = (await gel.locator('.motif-cs-gel-preview-column').boundingBox())!;
+      const setup = (await gel.locator('.motif-cs-gel-setup').boundingBox())!;
+      if (sideBySide) {
+        expect(setup.x + setup.width).toBeLessThanOrEqual(preview.x + 1);
+      } else {
+        expect(preview.y).toBeLessThanOrEqual(layout.y + 1);
+        expect(setup.y).toBeGreaterThanOrEqual(preview.y + preview.height - 1);
+      }
+      const labels = gel.locator('.motif-cs-gel-lane-label');
+      expect(await labels.count()).toBeGreaterThan(1);
+      for (const label of await labels.all()) {
+        const box = (await label.boundingBox())!;
+        expect(box.y, `${width}px: a lane label starts above the layout`).toBeGreaterThanOrEqual(layout.y - 1);
+        expect(box.y + box.height, `${width}px: a lane label ends under the footer`).toBeLessThanOrEqual(layout.y + layout.height + 1);
+      }
+      await expect(gel.getByRole('button', { name: 'View preview ↓' })).toHaveCount(0);
+    }
+  });
+
+  test('tool windows open on one top edge under the top bar, and Translation leaves the find bar usable', async ({ page }) => {
+    // Every tool window opens on the same top edge, and at 1040x860 the Translation window stays
+    // clear of the find bar, so its Previous, Next and Done take clicks.
+    await openArtifact(page, 1040, 860);
+    await page.locator('.motif-cs-find-button').click();
+    const find = page.getByRole('search', { name: 'Find in sequence' });
+    await expect(find).toBeVisible();
+    // Previous and Next stay disabled until a query has two or more matches.
+    await find.getByRole('searchbox', { name: 'Find in sequence' }).fill('GCGC');
+    await expect(find.getByRole('button', { name: 'Next match', exact: true })).toBeEnabled();
+    await page.getByRole('button', { name: /Translations window/ }).click();
+    const translation = page.getByRole('dialog', { name: 'Translation' });
+    await expect(translation).toBeVisible();
+    // A trial click fails when another element would receive the pointer.
+    await find.getByRole('searchbox', { name: 'Find in sequence' }).click({ trial: true });
+    for (const name of ['Previous match', 'Next match', 'Done']) {
+      await find.getByRole('button', { name, exact: true }).click({ trial: true });
+    }
+
+    // From 900px Translation sits in the flow at the foot of the Sequence column, under the
+    // sequence and inside the viewport, not on the top edge the floating windows share.
+    const flow = await translation.evaluate((win) => {
+      const box = win.getBoundingClientRect();
+      const panel = document.querySelector('[data-pane-key="sequence"] > .motif-cs-sequence-panel')!.getBoundingClientRect();
+      return { inFlow: win.hasAttribute('data-in-flow'), top: box.top, bottom: box.bottom, left: box.left, right: box.right, panelBottom: panel.bottom, panelLeft: panel.left, panelRight: panel.right };
+    });
+    expect(flow.inFlow).toBe(true);
+    expect(flow.top, 'Translation starts under the sequence').toBeGreaterThanOrEqual(flow.panelBottom);
+    expect(Math.abs(flow.left - flow.panelLeft)).toBeLessThanOrEqual(1);
+    expect(Math.abs(flow.right - flow.panelRight)).toBeLessThanOrEqual(1);
+    expect(flow.bottom, 'Translation bottom edge').toBeLessThanOrEqual(860 - 8);
+
+    const topBar = (await page.locator('.motif-cs-topbar').boundingBox())!;
+    const heights = new Map<string, number>();
+    const check = async (title: string) => {
+      const box = (await page.getByRole('dialog', { name: title }).boundingBox())!;
+      expect(box.y, `${title} top edge`).toBe(topBar.y + topBar.height + 8);
+      expect(box.y + box.height, `${title} bottom edge`).toBeLessThanOrEqual(860 - 8);
+      heights.set(title, Math.round(box.height));
+    };
+
+    await openArtifact(page, 1040, 860);
+    await openTool(page, 'alignment');
+    await page.getByTestId('msa-open-button').click();
+    await check('Alignment');
+
+    await openArtifact(page, 1040, 860);
     const digest = page.locator('details').filter({ hasText: 'Digest Preview' }).first();
     await digest.locator(':scope > summary').click();
     await digest.getByTestId('digest-open-gel').click();
+    await check('Gel preview');
+    expect(heights.get('Alignment')).toBe(heights.get('Gel preview'));
+  });
 
-    const gel = page.getByTestId('gel-workspace');
-    const layout = gel.locator('.motif-cs-gel-workspace-layout');
-    const preview = gel.locator('.motif-cs-gel-preview-column');
-    const before = await Promise.all([layout.boundingBox(), preview.boundingBox()]);
-    expect(before[0]).toBeTruthy();
-    expect(before[1]!.y).toBeGreaterThanOrEqual(before[0]!.y + before[0]!.height);
+  test('Translation opens beside a Tools pane pinned after the page loaded', async ({ page }) => {
+    // The default is worked out when the window opens, not once at load while Tools is
+    // a rail: pinning Tools first and then opening Translation puts none of the window over
+    // the pane.
+    await openArtifact(page, 1600, 860);
+    await page.locator('[data-pane-toggle="tools"]').click();
+    const tools = page.locator('.motif-cs-inspector[data-tools-pinned="true"]');
+    await expect(tools).toBeVisible();
+    await page.getByRole('button', { name: /Translations window/ }).click();
+    const translation = page.getByRole('dialog', { name: 'Translation' });
+    await expect(translation).toBeVisible();
+    const box = (await translation.boundingBox())!;
+    const pane = (await tools.boundingBox())!;
+    expect(box.x + box.width, 'the window ends left of the pinned Tools pane').toBeLessThanOrEqual(pane.x + 1);
+  });
 
-    await gel.getByRole('button', { name: 'View preview ↓' }).click();
-    await expect.poll(() => layout.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
-    await expect(preview).toBeFocused();
-    const after = await Promise.all([layout.boundingBox(), preview.boundingBox()]);
-    expect(after[1]!.y).toBeGreaterThanOrEqual(after[0]!.y - 1);
-    expect(after[1]!.y).toBeLessThan(after[0]!.y + after[0]!.height);
+  test('an open Translation window moves clear when Tools is pinned beside it', async ({ page }) => {
+    // Opened first against the right edge, the window moves left when Tools is pinned, so it
+    // covers none of the pane.
+    await openArtifact(page, 1600, 860);
+    await page.getByRole('button', { name: /Translations window/ }).click();
+    const translation = page.getByRole('dialog', { name: 'Translation' });
+    await expect(translation).toBeVisible();
+    await page.locator('[data-pane-toggle="tools"]').click();
+    const tools = page.locator('.motif-cs-inspector[data-tools-pinned="true"]');
+    await expect(tools).toBeVisible();
+    const pane = (await tools.boundingBox())!;
+    await expect.poll(async () => {
+      const box = (await translation.boundingBox())!;
+      return box.x + box.width;
+    }, { message: 'the open window ends left of the pinned Tools pane' }).toBeLessThanOrEqual(pane.x + 1);
   });
 
   test('phone assembly keeps method navigation and save controls reachable without horizontal overflow', async ({ page }) => {
     await openArtifact(page, 390, 760);
     const cloning = page.locator('details[data-rail-tool="cloning"]');
-    await cloning.locator(':scope > summary').click();
+    await openTool(page, 'cloning');
     await cloning.getByTestId('open-assembly-workspace').click();
 
     const assembly = page.getByTestId('assembly-workspace');
@@ -2126,7 +2523,7 @@ test.describe('Claude Science artifact workflows', () => {
     const body = assembly.locator('.motif-cs-assembly-body');
     await expect.poll(() => body.evaluate((element) => getComputedStyle(element).overflowY)).toMatch(/auto|scroll/);
     const goldenGate = assembly.getByRole('tab', { name: 'Golden Gate' });
-    const ligation = assembly.getByRole('tab', { name: 'Traditional ligation' });
+    const ligation = assembly.getByRole('tab', { name: 'Ligation' });
     await goldenGate.focus();
     await page.keyboard.press('ArrowRight');
     await expect(ligation).toBeFocused();
@@ -2215,7 +2612,7 @@ test.describe('Claude Science artifact workflows', () => {
     expect(backbone && insert).toBeTruthy();
 
     const cloning = page.locator('details[data-rail-tool="cloning"]');
-    await cloning.locator(':scope > summary').click();
+    await openTool(page, 'cloning');
     await cloning.getByTestId('open-assembly-workspace').click();
     const assembly = page.getByTestId('assembly-workspace');
     await assembly.getByTestId('assembly-mode-ligation').click();
@@ -2250,7 +2647,7 @@ test.describe('Claude Science artifact workflows', () => {
   test('cloning workflow: blocked plans stay honest and a valid BsaI product saves atomically once', async ({ page }) => {
     await openArtifact(page, 1440, 900);
     const cloning = page.locator('details[data-rail-tool="cloning"]');
-    await cloning.locator(':scope > summary').click();
+    await openTool(page, 'cloning');
     await cloning.getByTestId('open-assembly-workspace').click();
 
     let assembly = page.getByTestId('assembly-workspace');
@@ -2260,16 +2657,17 @@ test.describe('Claude Science artifact workflows', () => {
     await expect(assembly.getByTestId('assembly-save-product')).toBeDisabled();
     await expect(assembly.getByTestId('assembly-save-result')).toHaveText('Save blocked result');
 
-    await assemblyWindow.getByRole('button', { name: 'Maximize Quick Assembly' }).click();
+    await assemblyWindow.getByRole('button', { name: 'Maximize Quick assembly' }).click();
     await expect(assemblyWindow).toHaveAttribute('data-maximized', 'true');
     const maximized = (await assemblyWindow.boundingBox())!;
-    const toolsRail = (await page.locator('.motif-cs-inspector[data-tools-pinned="false"]').boundingBox())!;
+    // Below 1536px the Tools pane is a closed drawer that takes no width, so the
+    // maximized window runs to the right edge of the panel.
     expect(maximized.x).toBeLessThanOrEqual(12);
-    expect(toolsRail.x - (maximized.x + maximized.width)).toBeLessThanOrEqual(12);
+    expect(1440 - (maximized.x + maximized.width)).toBeLessThanOrEqual(12);
     expect(maximized.height).toBeGreaterThanOrEqual(880);
-    await assemblyWindow.getByRole('button', { name: 'Restore Quick Assembly' }).click();
+    await assemblyWindow.getByRole('button', { name: 'Restore Quick assembly' }).click();
     await expect(assemblyWindow).not.toHaveAttribute('data-maximized', 'true');
-    await assemblyWindow.getByRole('button', { name: 'Close Quick Assembly' }).click();
+    await assemblyWindow.getByRole('button', { name: 'Close Quick assembly' }).click();
 
     await page.evaluate(() => window.motifRenderInventory?.([
       {
@@ -2289,7 +2687,7 @@ test.describe('Claude Science artifact workflows', () => {
       },
     ]));
 
-    await cloning.locator(':scope > summary').click();
+    await openTool(page, 'cloning');
     await cloning.getByTestId('open-assembly-workspace').click();
     assembly = page.getByTestId('assembly-workspace');
     assemblyWindow = page.locator('.motif-cs-window').filter({ has: assembly });
@@ -2332,7 +2730,7 @@ test.describe('Claude Science artifact workflows', () => {
       workflows: window.motifGetWorkflowResults?.().length,
     }))).toEqual({ records: 3, workflows: 1 });
 
-    await assemblyWindow.getByRole('button', { name: 'Close Quick Assembly' }).click();
+    await assemblyWindow.getByRole('button', { name: 'Close Quick assembly' }).click();
     await page.evaluate(() => {
       const workspace = window.motifGetWorkspace?.() as {
         workflowResults?: Array<{ inputSha256s?: string[] }>;
@@ -2342,7 +2740,7 @@ test.describe('Claude Science artifact workflows', () => {
       });
       window.motifReplaceWorkspace?.(workspace as never);
     });
-    await cloning.locator(':scope > summary').click();
+    await openTool(page, 'cloning');
     await cloning.getByTestId('open-assembly-workspace').click();
     assembly = page.getByTestId('assembly-workspace');
     assemblyWindow = page.locator('.motif-cs-window').filter({ has: assembly });
@@ -2386,7 +2784,7 @@ test.describe('Claude Science artifact workflows', () => {
     ]));
 
     const cloning = page.locator('details[data-rail-tool="cloning"]');
-    await cloning.locator(':scope > summary').click();
+    await openTool(page, 'cloning');
     await cloning.getByTestId('open-assembly-workspace').click();
     const assembly = page.getByTestId('assembly-workspace');
     await assembly.getByLabel('Part 2').selectOption('fidelity-backbone');
@@ -2395,7 +2793,7 @@ test.describe('Claude Science artifact workflows', () => {
     const sidebar = assembly.locator('.motif-cs-assembly-sidebar');
     const receipt = assembly.getByTestId('assembly-fidelity-receipt');
     await expect(receipt).toContainText('source SHA-256');
-    await expect(receipt).toContainText('100.0% estimated whole-assembly fidelity');
+    await expect(receipt).toContainText('Estimated fidelity 100.0%');
 
     const assertContained = async () => {
       await receipt.scrollIntoViewIfNeeded();
@@ -2442,7 +2840,7 @@ test.describe('Claude Science artifact workflows', () => {
     }))), parts);
 
     const cloning = page.locator('details[data-rail-tool="cloning"]');
-    await cloning.locator(':scope > summary').click();
+    await openTool(page, 'cloning');
     await cloning.getByTestId('open-cloning-design-workspace').click();
     const design = page.getByTestId('cloning-design-workspace');
     await design.getByRole('tab', { name: /Gibson/ }).click();
@@ -2451,7 +2849,7 @@ test.describe('Claude Science artifact workflows', () => {
       await design.getByTestId('cloning-design-add-part').click();
     }
     await expect(design.getByTestId('cloning-design-plan-status')).toHaveAttribute('data-state', 'ready');
-    await design.getByRole('textbox', { name: 'Design Name' }).fill('Overlap product');
+    await design.getByRole('textbox', { name: 'Design name' }).fill('Overlap product');
     await design.getByRole('button', { name: 'Save product' }).click();
     await expect(design.getByRole('button', { name: 'Product saved' })).toBeVisible();
 
@@ -2493,13 +2891,13 @@ test.describe('Claude Science artifact workflows', () => {
         { id: `body-${index}`, name: `Body ${index + 1}`, type: 'cds', start: 13, end: 33, strand: 1 },
         // Half inside the recognition site the enzyme cuts away.
         ...(index === 0 ? [{ id: 'flank', name: 'Crosses the cut', type: 'misc', start: 3, end: 15, strand: 1 }] : []),
-        // The trailing overhang a circular product drops.
+        // The trailing overhang a circular product shares with the first part's leading one.
         ...(index === 2 ? [{ id: 'tail', name: 'Trailing overhang', type: 'misc', start: 40, end: 45, strand: 1 }] : []),
       ],
     }))), parts);
 
     const cloning = page.locator('details[data-rail-tool="cloning"]');
-    await cloning.locator(':scope > summary').click();
+    await openTool(page, 'cloning');
     await cloning.getByTestId('open-assembly-workspace').click();
     const assembly = page.getByTestId('assembly-workspace');
     await assembly.getByLabel('Record to add').selectOption('gg-part-2');
@@ -2514,15 +2912,23 @@ test.describe('Claude Science artifact workflows', () => {
         length: (record.seq ?? '').length,
         topology: record.topology,
         features: (record.annotations ?? []).map((feature) => [feature.name, feature.start, feature.end]),
+        tailPieces: ((record.annotations ?? []).find((feature) => feature.name === 'Trailing overhang') as
+          { subRanges?: Array<{ start: number; end: number }> } | undefined)
+          ?.subRanges?.map((piece) => [piece.start, piece.end]),
       };
     });
     expect(product.length).toBe(102);
     expect(product.topology).toBe('circular');
+    // The last part's trailing overhang is the same 4 bases as the first part's
+    // leading overhang, read around the circle, so its feature is kept there:
+    // its last body base (101) and the 4 shared bases (0 to 3), across the origin.
     expect(product.features).toEqual([
       ['Body 1', 6, 26],
       ['Body 2', 40, 60],
       ['Body 3', 74, 94],
+      ['Trailing overhang', 0, 102],
     ]);
+    expect(product.tailPieces).toEqual([[101, 102], [0, 4]]);
   });
 
   for (const method of ['Gibson', 'Golden Gate'] as const) {
@@ -2557,7 +2963,7 @@ test.describe('Claude Science artifact workflows', () => {
       }))), [seqs, features] as const);
 
       const cloning = page.locator('details[data-rail-tool="cloning"]');
-      await cloning.locator(':scope > summary').click();
+      await openTool(page, 'cloning');
       await cloning.getByTestId('open-cloning-design-workspace').click();
       const design = page.getByTestId('cloning-design-workspace');
       if (method === 'Gibson') await design.getByRole('tab', { name: /Gibson/ }).click();
@@ -2567,7 +2973,7 @@ test.describe('Claude Science artifact workflows', () => {
       }
       await design.getByRole('button', { name: 'Use Flip part 2 in reverse complement orientation' }).click();
       await expect(design.getByTestId('cloning-design-plan-status')).toHaveAttribute('data-state', 'ready');
-      await design.getByRole('textbox', { name: 'Design Name' }).fill('Flipped product');
+      await design.getByRole('textbox', { name: 'Design name' }).fill('Flipped product');
       await design.getByRole('button', { name: 'Save product' }).click();
       await expect(design.getByRole('button', { name: 'Product saved' })).toBeVisible();
 
@@ -2608,7 +3014,7 @@ test.describe('Claude Science artifact workflows', () => {
     }))), seqs);
 
     const cloning = page.locator('details[data-rail-tool="cloning"]');
-    await cloning.locator(':scope > summary').click();
+    await openTool(page, 'cloning');
     await cloning.getByTestId('open-cloning-design-workspace').click();
     const design = page.getByTestId('cloning-design-workspace');
     await design.getByRole('tab', { name: /Gibson/ }).click();
@@ -2618,7 +3024,7 @@ test.describe('Claude Science artifact workflows', () => {
     }
     await design.getByRole('button', { name: 'Use Sec part 2 in reverse complement orientation' }).click();
     await expect(design.getByTestId('cloning-design-plan-status')).toHaveAttribute('data-state', 'ready');
-    await design.getByRole('textbox', { name: 'Design Name' }).fill('Sec product');
+    await design.getByRole('textbox', { name: 'Design name' }).fill('Sec product');
     await design.getByRole('button', { name: 'Save product' }).click();
     await expect(design.getByRole('button', { name: 'Product saved' })).toBeVisible();
 
@@ -2776,7 +3182,7 @@ test.describe('Claude Science artifact workflows', () => {
     ]));
 
     const cloning = page.locator('details[data-rail-tool="cloning"]');
-    await cloning.locator(':scope > summary').click();
+    await openTool(page, 'cloning');
     await cloning.getByTestId('open-cloning-design-workspace').click();
 
     const design = page.getByTestId('cloning-design-workspace');
@@ -2799,10 +3205,10 @@ test.describe('Claude Science artifact workflows', () => {
     await expect(design.getByLabel('Golden Gate profile')).toHaveCount(0);
     await expect(design.getByLabel('Type IIS enzyme')).toHaveCount(0);
     await expect(design.getByTestId('cloning-design-organization-help')).toContainText('Reaction: BsaI');
-    await expect(design.getByText('GoldenBraid 3.0 Reference')).toBeVisible();
+    await expect(design.getByText('GoldenBraid 3.0 reference')).toBeVisible();
     await expect(design.getByRole('button', { name: 'Apply suggested order' })).toBeEnabled();
     await design.getByRole('button', { name: 'Move GB promoter up' }).click();
-    await design.getByRole('textbox', { name: 'Design Name' }).fill('GoldenBraid lineage check');
+    await design.getByRole('textbox', { name: 'Design name' }).fill('GoldenBraid lineage check');
     await design.getByRole('button', { name: 'Save product' }).click();
     const savedLineage = await page.evaluate(() => {
       const product = window.motifGetInventory?.().find((record) => record.name === 'GoldenBraid lineage check');
@@ -2834,8 +3240,8 @@ test.describe('Claude Science artifact workflows', () => {
     await expect(design.getByRole('tab', { name: /Gibson/ })).toHaveAttribute('aria-selected', 'true');
     await expect(design.getByTestId('gibson-junction-lanes')).toBeVisible();
     await expect(design.getByTestId('cloning-design-plan-status')).toHaveAttribute('data-state', 'needs_preparation');
-    await expect(design.getByText('Preparation Checklist')).toBeVisible();
-    await design.getByRole('textbox', { name: 'Design Name' }).fill('Draft preserved through primer work');
+    await expect(design.getByText('Preparation checklist')).toBeVisible();
+    await design.getByRole('textbox', { name: 'Design name' }).fill('Draft preserved through primer work');
     const primerHandoff = design.getByRole('button', { name: 'Open primer workspace' }).first();
     await primerHandoff.scrollIntoViewIfNeeded();
     await primerHandoff.click();
@@ -2856,16 +3262,16 @@ test.describe('Claude Science artifact workflows', () => {
     await expect(primer.getByLabel('Target end')).toHaveValue(String('GGTCTCNGATGATGAAATTTTGAGNGAGACC'.length));
     await expect(primer.getByRole('note', { name: 'Cloning preparation context' })).toContainText('forward in the assembly');
     await page.screenshot({ path: path.join(outputDir, 'cloning-primer-handoff-light.png') });
-    await page.locator('select[name="artifact-theme"]').selectOption('claude-dark');
-    await expect(page.locator('html')).toHaveAttribute('data-theme', 'claude-dark');
-    await page.screenshot({ path: path.join(outputDir, 'cloning-primer-handoff-claude-dark.png') });
-    await primerWindow.getByRole('button', { name: 'Close Primer Design' }).click();
+    await chooseTheme(page, 'dark');
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+    await page.screenshot({ path: path.join(outputDir, 'cloning-primer-handoff-dark.png') });
+    await primerWindow.getByRole('button', { name: 'Close Primer design' }).click();
     await expect(primerWindow).toHaveCount(0);
     await expect(designWindow).not.toHaveAttribute('data-inactive');
-    await expect(design.getByRole('textbox', { name: 'Design Name' })).toHaveValue('Draft preserved through primer work');
+    await expect(design.getByRole('textbox', { name: 'Design name' })).toHaveValue('Draft preserved through primer work');
     await expect(design.getByLabel('Part 1')).toHaveValue('gb-promoter');
     await expect(design.getByRole('tab', { name: /Gibson/ })).toHaveAttribute('aria-selected', 'true');
-    await page.screenshot({ path: path.join(outputDir, 'cloning-draft-restored-claude-dark.png') });
+    await page.screenshot({ path: path.join(outputDir, 'cloning-draft-restored-dark.png') });
   });
 
   test('recursive GoldenBraid keeps complementary sources separate from its typed destination', async ({ page }) => {
@@ -2899,14 +3305,14 @@ test.describe('Claude Science artifact workflows', () => {
     ]));
 
     const cloning = page.locator('details[data-rail-tool="cloning"]');
-    await cloning.locator(':scope > summary').click();
+    await openTool(page, 'cloning');
     await cloning.getByTestId('open-cloning-design-workspace').click();
     const design = page.getByTestId('cloning-design-workspace');
 
     await design.getByPlaceholder('Name, group, or tag…').fill('module two');
     await design.getByPlaceholder('Name, group, or tag…').press('Enter');
     await design.getByLabel('Assembly route').selectOption('golden_braid_alpha_omega');
-    await expect(design.getByRole('heading', { name: 'Source Modules' })).toBeVisible();
+    await expect(design.getByRole('heading', { name: 'Source modules' })).toBeVisible();
     await expect(design.getByLabel('GoldenBraid source type for Alpha module one')).toHaveValue('1');
     await expect(design.getByLabel('GoldenBraid source type for Alpha module two')).toHaveValue('2');
     await design.getByLabel('GoldenBraid destination vector').selectOption('gb-omega-vector');
@@ -2920,7 +3326,7 @@ test.describe('Claude Science artifact workflows', () => {
     await expect(design.getByTestId('cloning-design-organization-help')).toContainText('Reaction: Esp3I');
     await expect(design.getByTestId('cloning-design-plan-status')).toHaveAttribute('data-state', 'ready');
 
-    await design.getByRole('textbox', { name: 'Design Name' }).fill('Alpha to omega stack');
+    await design.getByRole('textbox', { name: 'Design name' }).fill('Alpha to omega stack');
     await design.getByRole('button', { name: 'Save product' }).click();
     const saved = await page.evaluate(() => ({
       product: window.motifGetInventory?.().find((record) => record.name === 'Alpha to omega stack'),
@@ -2940,7 +3346,7 @@ test.describe('Claude Science artifact workflows', () => {
       enzyme: 'Esp3I',
     });
     await page.screenshot({ path: path.join(outputDir, 'cloning-goldenbraid-alpha-omega-light.png') });
-    await page.locator('select[name="artifact-theme"]').selectOption('claude-dark');
+    await chooseTheme(page, 'dark');
     await page.screenshot({ path: path.join(outputDir, 'cloning-goldenbraid-alpha-omega-dark.png') });
   });
 
@@ -2982,10 +3388,10 @@ test.describe('Claude Science artifact workflows', () => {
     await design.getByPlaceholder('Name, group, or tag…').press('Enter');
     await design.getByRole('tab', { name: /Gibson/ }).click();
 
-    const reviewHeading = design.getByText('Preparation Checklist');
+    const reviewHeading = design.getByText('Preparation checklist');
     await reviewHeading.scrollIntoViewIfNeeded();
     await expect(reviewHeading).toBeVisible();
-    const designName = design.getByRole('textbox', { name: 'Design Name' });
+    const designName = design.getByRole('textbox', { name: 'Design name' });
     await designName.scrollIntoViewIfNeeded();
     await expect(designName).toBeVisible();
     await designName.fill('Narrow Gibson plan');
@@ -3049,7 +3455,7 @@ test.describe('Claude Science artifact workflows', () => {
     const mapVisibility = page.locator('details').filter({ hasText: 'Map Visibility' }).first();
     await mapVisibility.locator(':scope > summary').click();
     await expect(mapVisibility).toContainText('Restriction enzymes act on DNA; RNA is not converted implicitly.');
-    await expect(mapVisibility.locator('.motif-cs-restriction-source')).toHaveCount(0);
+    await expect(mapVisibility.locator('.motif-cs-restriction-check')).toHaveCount(0);
 
     const digest = page.locator('details').filter({ hasText: 'Digest Preview' }).first();
     await digest.locator(':scope > summary').click();
@@ -3062,11 +3468,14 @@ test.describe('Claude Science artifact workflows', () => {
     const mapVisibility = page.locator('details').filter({ hasText: 'Map Visibility' }).first();
     if (!(await mapVisibility.getAttribute('open'))) await mapVisibility.locator('summary').click();
 
-    const activeSources = page.locator('.motif-cs-restriction-source[aria-pressed="true"]');
-    while (await activeSources.count()) await activeSources.first().click();
+    const sets = mapVisibility.getByRole('group', { name: 'Enzyme sets' });
+    const activeSources = sets.getByRole('checkbox', { checked: true });
+    while (await activeSources.count()) await activeSources.first().uncheck();
 
-    await expect(page.locator('.motif-cs-restriction-source[aria-pressed="true"]')).toHaveCount(0);
-    await expect(page.getByRole('button', { name: 'Show all restriction sites' })).toBeDisabled();
+    // Asking the Sites menu for every site does not turn a set back on.
+    await page.getByRole('combobox', { name: 'Restriction sites', exact: true }).selectOption('all');
+    await expect(sets.getByRole('checkbox', { checked: true })).toHaveCount(0);
+    await expect(page.locator('.motif-pm-restriction')).toHaveCount(0);
   });
 
   test('hiding restriction sites changes the map but not the exports or the summary', async ({ page }) => {
@@ -3077,15 +3486,16 @@ test.describe('Claude Science artifact workflows', () => {
     await openArtifact(page);
 
     const sitesCsvRowCount = async () => {
-      const panel = page.locator('.motif-cs-sequence-tools-panel');
-      // An open <details> reports open as "", which is falsy — testing truthiness
-      // here closes the panel on the second call.
-      if ((await panel.getAttribute('open')) === null) await panel.locator(':scope > summary').click();
+      const panel = await openExportPanel(page);
       await panel.locator('select[name="export-format"]').selectOption('sites-csv');
       const downloadPromise = page.waitForEvent('download');
       await panel.getByRole('button', { name: 'Download' }).click();
       const file = await (await downloadPromise).path();
       if (!file) throw new Error('restriction-site CSV download produced no file');
+      // The popover hangs from the title-row Export button, over the map's
+      // controls; close it before reaching for them.
+      await page.keyboard.press('Escape');
+      await expect(panel).not.toHaveAttribute('open', '');
       return (await readFile(file, 'utf8')).trim().split('\n').length - 1;
     };
     const cutterCounts = async () => page.evaluate(() => {
@@ -3107,7 +3517,9 @@ test.describe('Claude Science artifact workflows', () => {
     if (!(await mapVisibility.getAttribute('open'))) await mapVisibility.locator('summary').click();
     const restrictionLabels = page.locator('.motif-cs-restriction-label');
     expect(await restrictionLabels.count()).toBeGreaterThan(0);
-    await page.getByRole('button', { name: 'Hide all restriction sites' }).click();
+    // The map opens on the single cutters; draw every site, then hide them all.
+    await chooseMapSites(page, 'all');
+    await chooseMapSites(page, 'none');
     // The control did its visible job — otherwise the assertions below pass on a
     // click that never landed.
     await expect(restrictionLabels).toHaveCount(0);
@@ -3119,7 +3531,7 @@ test.describe('Claude Science artifact workflows', () => {
   test('primer edits clear invalid results and recompute valid pairs immediately', async ({ page }) => {
     await openArtifact(page, 1180, 900);
     const primerPanel = page.locator('details[data-rail-tool="primer-design"]');
-    await primerPanel.locator(':scope > summary').click();
+    await openTool(page, 'primer-design');
     await primerPanel.getByTestId('open-primer-workspace').click();
     const workspace = page.getByTestId('primer-workspace');
     await expect(workspace.locator('.motif-cs-primer-pair-row').first()).toBeVisible();
@@ -3127,7 +3539,7 @@ test.describe('Claude Science artifact workflows', () => {
     await workspace.getByLabel('Target start').fill('200');
     await workspace.getByLabel('Target end').fill('100');
     await expect(workspace.locator('.motif-cs-primer-pair-row')).toHaveCount(0);
-    await expect(workspace.getByRole('alert')).toContainText('Use a non-wrapping target');
+    await expect(workspace.getByRole('alert')).toContainText('start ≤ end');
     await expect(workspace.getByRole('button', { name: 'Save design' })).toBeDisabled();
 
     await workspace.getByLabel('Target end').fill('300');
@@ -3136,24 +3548,19 @@ test.describe('Claude Science artifact workflows', () => {
     await expect(workspace.getByRole('button', { name: 'Save design' })).toBeEnabled();
   });
 
-  test('a Tools rail popover closes on outside pointer before Export is opened', async ({ page }) => {
+  test('an open Tools drawer closes on outside pointer before Export is opened', async ({ page }) => {
     await openArtifact(page, 640, 700);
-    const toolsToggle = page.getByRole('button', { name: /Tools/ }).first();
-    if ((await toolsToggle.getAttribute('aria-pressed')) === 'true') await toolsToggle.click();
 
     const primerPanel = page.locator('details[data-rail-tool="primer-design"]');
-    await primerPanel.locator(':scope > summary').click();
+    await openTool(page, 'primer-design');
     await expect(primerPanel).toHaveAttribute('open', '');
     await expect(primerPanel.locator('.motif-cs-tool-panel-body')).toBeVisible();
 
-    await page.locator('.motif-cs-sidebar > .motif-cs-pane-title').click({ position: { x: 10, y: 10 } });
+    await page.locator('.motif-cs-main').click({ position: { x: 4, y: 4 } });
     await expect(primerPanel).not.toHaveAttribute('open', '');
+    expect(await toolsDrawerState(page)).toBe('closed');
 
-    const exportPanel = page.locator('.motif-cs-sequence-tools-panel');
-    const exportSummary = exportPanel.locator(':scope > summary');
-    await exportSummary.scrollIntoViewIfNeeded();
-    await exportSummary.click();
-    await expect(exportPanel).toHaveAttribute('open', '');
+    await openExportPanel(page);
   });
 
   test('collapsed Tools rail exposes explicit stable names for every icon control', async ({ page }) => {
@@ -3163,23 +3570,26 @@ test.describe('Claude Science artifact workflows', () => {
       await rail.getByRole('button', { name: 'Minimize tools panel to rail' }).click();
     }
     await expect(rail).toHaveAttribute('data-tools-pinned', 'false');
+    // Below 1536px the unpinned tools are a drawer that the Tools button opens.
+    await page.locator('[data-pane-toggle="tools"]').click();
+    await expect(rail).toHaveAttribute('data-tools-drawer', 'open');
 
     const expectedNames = [
-      'Entry Details',
+      'Record details',
       'Annotations',
       'Notes',
-      'Inspector',
-      'Restriction Sites',
-      'Pattern Search',
+      'Selection details',
+      'Restriction sites',
+      'Sequence search',
       'Translation',
-      'Primer Design',
+      'Primer design',
       'Guide RNA',
       'Analysis',
-      'Cloning',
-      'Construct Verification',
-      'Results',
-      'Workflow Results',
       'Alignment',
+      'Cloning',
+      'Construct verification',
+      'Analysis results',
+      'Workflow results',
       'Settings',
     ];
     const heads = rail.locator('details[data-rail-tool] > summary[data-rail-label]');
@@ -3187,27 +3597,30 @@ test.describe('Claude Science artifact workflows', () => {
     for (const name of expectedNames) {
       await expect(rail.getByRole('button', { name, exact: true })).toHaveCount(1);
     }
-    const entry = rail.getByRole('button', { name: 'Entry Details', exact: true });
+    const entry = rail.getByRole('button', { name: 'Record details', exact: true });
     await expect(entry).toHaveAttribute('aria-expanded', 'false');
     await entry.click();
-    await expect(entry).toHaveAttribute('aria-expanded', 'true');
+    // The opened tool replaces the list in the drawer, so its head leaves the
+    // accessibility tree; the head still carries the state.
+    await expect(toolHead(page, 'entry')).toHaveAttribute('aria-expanded', 'true');
+    await expect(toolPanel(page, 'entry')).toHaveAttribute('open', '');
   });
 
   test('no Tools rail popover heading paints over the first line beneath it', async ({ page }) => {
-    await openArtifact(page, 1440, 900);
-    const toolsToggle = page.getByRole('button', { name: /Tools/ }).first();
-    if ((await toolsToggle.getAttribute('aria-pressed')) === 'true') await toolsToggle.click();
+    // The rail's popovers exist from 1536px; below that the drawer shows each tool under a Back row.
+    await openArtifact(page, 1600, 900);
 
-    const tools = await page.locator('details[data-rail-tool]').evaluateAll((panels) =>
-      panels.map((panel) => (panel as HTMLElement).dataset.railTool!),
-    );
+    // Every tool with a popover; Translation's row opens the Translation window instead.
+    const tools = await page.locator('details[data-rail-tool]').evaluateAll((panels) => panels
+      .filter((panel) => panel.querySelector(':scope > :not(summary)'))
+      .map((panel) => (panel as HTMLElement).dataset.railTool!));
     expect(tools.length).toBeGreaterThan(8);
+    expect(tools).not.toContain('translation');
 
     const overprinting: string[] = [];
     const measured: string[] = [];
     for (const tool of tools) {
-      const panel = page.locator(`details[data-rail-tool="${tool}"]`);
-      if (!(await panel.getAttribute('open'))) await panel.locator(':scope > summary').click();
+      const panel = await openTool(page, tool);
 
       // The heading is sticky with an opaque background, so anything laid out above
       // its bottom edge is painted over rather than merely crowded. A grid body that
@@ -3238,7 +3651,8 @@ test.describe('Claude Science artifact workflows', () => {
   });
 
   test('no Tools rail popover covers the alignment window controls that would close it', async ({ page }) => {
-    await openArtifact(page, 1440, 980);
+    // The rail and its popovers exist from 1536px; below that Tools is a drawer.
+    await openArtifact(page, 1600, 980);
     const toolsToggle = page.getByRole('button', { name: /Tools/ }).first();
     if ((await toolsToggle.getAttribute('aria-pressed')) === 'true') await toolsToggle.click();
 
@@ -3281,9 +3695,14 @@ test.describe('Claude Science artifact workflows', () => {
       };
     });
 
+    // Every tool with a popover; Translation's row opens the Translation window instead
+    // (which would also close the Alignment window parked below).
     const railTools = await page.locator('.motif-cs-inspector[data-tools-pinned="false"] details[data-rail-tool]')
-      .evaluateAll((panels) => panels.map((panel) => (panel as HTMLElement).dataset.railTool!));
+      .evaluateAll((panels) => panels
+        .filter((panel) => panel.querySelector(':scope > :not(summary)'))
+        .map((panel) => (panel as HTMLElement).dataset.railTool!));
     expect(railTools.length).toBeGreaterThan(8);
+    expect(railTools).not.toContain('translation');
 
     // The stylesheet's resting offset and its bottom gutter, read from the rule
     // rather than restated here, so this test tracks a stylesheet edit.
@@ -3297,7 +3716,7 @@ test.describe('Claude Science artifact workflows', () => {
     // pane's own control row crosses its column, and either way it covers none
     // of them; its height bound is still one the drag-resize can read.
     const settings = page.locator('details[data-rail-tool="settings"]');
-    await settings.locator(':scope > summary').click();
+    await openTool(page, 'settings');
     const unobstructed = (await readPlacement())!;
     expect(unobstructed.top).toBeGreaterThanOrEqual(resting);
     expect(unobstructed.paneCovered, `popover buries pane controls: ${unobstructed.paneCovered.join(' + ')}`).toEqual([]);
@@ -3384,7 +3803,7 @@ test.describe('Claude Science artifact workflows', () => {
 
     const repeats: string[] = [];
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      await settings.locator(':scope > summary').click();
+      await openTool(page, 'settings');
       const placement = (await readPlacement())!;
       repeats.push(`${placement.top}/${placement.maxHeight}`);
       await settings.locator(':scope > summary').click();
@@ -3408,7 +3827,8 @@ test.describe('Claude Science artifact workflows', () => {
   });
 
   test('a rail icon whose workspace is open shows it as on and brings the workspace forward', async ({ page }) => {
-    await openArtifact(page, 1440, 900);
+    // The rail icon exists from 1536px; below that Tools is a drawer.
+    await openArtifact(page, 1600, 900);
     const toolsToggle = page.getByRole('button', { name: /Tools/ }).first();
     if ((await toolsToggle.getAttribute('aria-pressed')) === 'true') await toolsToggle.click();
     const primer = page.locator('details[data-rail-tool="primer-design"]');
@@ -3417,7 +3837,7 @@ test.describe('Claude Science artifact workflows', () => {
     await head.click();
     await expect(primer).toHaveAttribute('open', '');
     await primer.getByTestId('open-primer-workspace').click();
-    const workspace = page.getByRole('dialog', { name: 'Primer Design' });
+    const workspace = page.getByRole('dialog', { name: 'Primer design' });
     await expect(workspace).toBeVisible();
     await expect(head).toHaveAttribute('data-workspace-open', 'true');
 
@@ -3449,7 +3869,7 @@ test.describe('Claude Science artifact workflows', () => {
     if ((await toolsToggle.getAttribute('aria-pressed')) === 'true') await toolsToggle.click();
 
     const panel = page.locator('details[data-rail-tool="annotations"]');
-    if (!(await panel.getAttribute('open'))) await panel.locator(':scope > summary').click();
+    await openTool(page, 'annotations');
     const list = panel.locator('.motif-cs-feature-annotation-list');
     await expect(list).toBeVisible();
 
@@ -3497,12 +3917,13 @@ test.describe('Claude Science artifact workflows', () => {
   });
 
   test('a Tools rail popover grows leftward, shrinks rightward, and docks without stale dimensions', async ({ page }) => {
-    await openArtifact(page, 1180, 820);
+    // The rail popover, and its resize grip, exist from 1536px; the drawer has neither.
+    await openArtifact(page, 1600, 820);
     const toolsToggle = page.getByRole('button', { name: /Tools/ }).first();
     if ((await toolsToggle.getAttribute('aria-pressed')) === 'true') await toolsToggle.click();
 
     const primerPanel = page.locator('details[data-rail-tool="primer-design"]');
-    if (!(await primerPanel.getAttribute('open'))) await primerPanel.locator(':scope > summary').click();
+    await openTool(page, 'primer-design');
     const panelBody = primerPanel.locator('.motif-cs-tool-panel-body');
     const resizeHandle = panelBody.getByTestId('rail-popover-resize');
     await expect(resizeHandle).toBeVisible();
@@ -3600,16 +4021,18 @@ test.describe('Claude Science artifact workflows', () => {
       }
     };
 
-    const beforeTranslation = await geometry();
-    await row('translation').click();
-    await expect(inspector.locator('details[data-rail-tool="translation"]')).toHaveAttribute('open', '');
+    // Translation opens its window rather than a panel here (the translation-row spec
+    // covers it), so the first panel opened below the stable rows is Primer design.
+    const beforePanels = await geometry();
+    await row('primer-design').click();
+    await expect(inspector.locator('details[data-rail-tool="primer-design"]')).toHaveAttribute('open', '');
     await page.waitForTimeout(50);
-    expectStable(beforeTranslation, await geometry());
+    expectStable(beforePanels, await geometry());
 
     await row('pattern-search').click();
     await expect(inspector.locator('details[data-rail-tool="pattern-search"]')).toHaveAttribute('open', '');
     await page.waitForTimeout(50);
-    expectStable(beforeTranslation, await geometry());
+    expectStable(beforePanels, await geometry());
 
     const titleBeforeScroll = (await paneTitle.boundingBox())!;
     const guideRow = row('guide');
@@ -3622,24 +4045,33 @@ test.describe('Claude Science artifact workflows', () => {
     expect(Math.abs(titleAfterScroll.width - titleBeforeScroll.width)).toBeLessThan(1);
     expect(Math.abs(titleAfterScroll.height - titleBeforeScroll.height)).toBeLessThan(1);
 
+    // Below 1536px the tools are a drawer, not a pinned pane. It holds its edge,
+    // width and height as a tool replaces the list and as Back returns it.
     await openArtifact(page, 1180, 820);
-    if ((await toolsToggle.getAttribute('aria-pressed')) !== 'true') await toolsToggle.click();
-    const compactTitleBefore = (await paneTitle.boundingBox())!;
-    await row('guide').scrollIntoViewIfNeeded();
-    await row('guide').click();
-    await expect(inspector.locator('details[data-rail-tool="guide"]')).toHaveAttribute('open', '');
-    const compactTitleAfter = (await paneTitle.boundingBox())!;
-    expect(Math.abs(compactTitleAfter.y - compactTitleBefore.y)).toBeLessThan(1);
-    expect(Math.abs(compactTitleAfter.height - compactTitleBefore.height)).toBeLessThan(1);
+    await openToolsDrawer(page);
+    const drawer = page.locator('#motif-cs-tools-pane');
+    const drawerBefore = (await drawer.boundingBox())!;
+    const guide = await openTool(page, 'guide');
+    await expect(guide).toHaveAttribute('open', '');
+    const drawerOpen = (await drawer.boundingBox())!;
+    await closeTool(page, 'guide');
+    const drawerBack = (await drawer.boundingBox())!;
+    for (const after of [drawerOpen, drawerBack]) {
+      expect(Math.abs(after.x - drawerBefore.x)).toBeLessThan(1);
+      expect(Math.abs(after.y - drawerBefore.y)).toBeLessThan(1);
+      expect(Math.abs(after.width - drawerBefore.width)).toBeLessThan(1);
+      expect(Math.abs(after.height - drawerBefore.height)).toBeLessThan(1);
+    }
   });
 
   test('a short Tools rail popover keeps its resize grip on the visible corner after growing', async ({ page }) => {
-    await openArtifact(page, 1180, 820);
+    // The rail popover, and its resize grip, exist from 1536px; the drawer has neither.
+    await openArtifact(page, 1600, 820);
     const toolsToggle = page.getByRole('button', { name: /Tools/ }).first();
     if ((await toolsToggle.getAttribute('aria-pressed')) === 'true') await toolsToggle.click();
 
     const workflows = page.locator('details[data-rail-tool="workflows"]');
-    await workflows.locator(':scope > summary').click();
+    await openTool(page, 'workflows');
     const panelBody = workflows.locator('.motif-cs-tool-panel-body');
     const resizeHandle = panelBody.getByTestId('rail-popover-resize');
     await expect(resizeHandle).toBeVisible();
@@ -3700,7 +4132,7 @@ test.describe('Claude Science artifact workflows', () => {
     await expect(page.locator('.motif-cs-shell')).toBeVisible();
   });
 
-  test('Database JSON restores transactionally from Add entry and file drop', async ({ page }) => {
+  test('Workspace JSON restores transactionally from Import records and file drop', async ({ page }) => {
     await openArtifact(page, 1180, 900);
     const restoredDatabase = {
       schema: 'motif.claude-science.inventory.v1',
@@ -3777,10 +4209,10 @@ test.describe('Claude Science artifact workflows', () => {
       },
     };
 
-    await page.getByRole('button', { name: 'Add entry' }).click();
+    await page.getByRole('button', { name: 'Import records' }).click();
     const importPanel = page.locator('.motif-cs-import-panel[open]');
     await importPanel.getByLabel('Sequence import input').fill(JSON.stringify(restoredDatabase));
-    await importPanel.getByRole('button', { name: 'Add or restore' }).click();
+    await importPanel.getByRole('button', { name: 'Review restore' }).click();
     const restoreDialog = page.getByRole('alertdialog', { name: 'Replace this workspace?' });
     await expect(restoreDialog).toBeVisible();
     await expect(restoreDialog.getByRole('button', { name: 'Cancel' })).toBeFocused();
@@ -3789,29 +4221,30 @@ test.describe('Claude Science artifact workflows', () => {
     await expect(page.locator('.motif-cs-add-entry-button')).toBeFocused();
     await expect(page.locator('.motif-cs-record-tab[data-active="true"]')).toContainText('pUC19');
 
-    await page.getByRole('button', { name: 'Add entry' }).click();
+    await page.getByRole('button', { name: 'Import records' }).click();
     const reopenedImportPanel = page.locator('.motif-cs-import-panel[open]');
     await expect(reopenedImportPanel.getByLabel('Sequence import input')).toHaveValue(JSON.stringify(restoredDatabase));
-    await reopenedImportPanel.getByRole('button', { name: 'Add or restore' }).click();
+    await reopenedImportPanel.getByRole('button', { name: 'Review restore' }).click();
     await expect(restoreDialog).toBeVisible();
     await restoreDialog.getByRole('button', { name: 'Replace workspace' }).click();
     await expect(page.locator('.motif-cs-record-tab[data-active="true"]')).toContainText('Restored record');
     await expect(page.getByTestId('session-durability-status')).toHaveText('session only');
-    await expect(page.locator('.motif-cs-workbench-notice')).toContainText('Database JSON restored · 1 record');
+    await expect(page.locator('.motif-cs-workbench-notice')).toContainText('Workspace JSON restored · 1 record');
     await expect(page.locator('.motif-cs-dropzone')).toHaveCount(0);
     await expect(page.locator('.motif-cs-workbench-notice')).toBeHidden({ timeout: 4_000 });
     expect(await page.evaluate(() => window.motifGetAlignments())).toHaveLength(1);
 
-    await page.getByRole('button', { name: 'Add entry' }).click();
+    // One restored record leaves the Records pane hidden.
+    await showRecordsPane(page);
+    await page.getByRole('button', { name: 'Import records' }).click();
     const clearedImportPanel = page.locator('.motif-cs-import-panel[open]');
     await expect(clearedImportPanel.getByLabel('Sequence import input')).toHaveValue('');
     await expect(clearedImportPanel.locator('.motif-cs-import-status')).toHaveCount(0);
     await page.locator('.motif-cs-add-entry-button').click();
 
-    const exportPanel = page.locator('.motif-cs-sequence-tools-panel');
-    await exportPanel.locator(':scope > summary').click();
+    const exportPanel = await openExportPanel(page);
     await exportPanel.locator('select[name="export-format"]').selectOption('inventory-json');
-    const roundTripped = JSON.parse(await exportPanel.getByLabel('Selected export preview').inputValue());
+    const roundTripped = JSON.parse(await exportPanel.getByLabel('Export preview').inputValue());
     expect(roundTripped.selectedRecordId).toBe('restored-record');
     expect(roundTripped.schema).toBe('motif.claude-science.inventory.v2');
     expect(roundTripped.records[0].translationTableId).toBe(11);
@@ -3876,7 +4309,7 @@ test.describe('Claude Science artifact workflows', () => {
     await expect(page.getByTestId('session-durability-status')).toHaveText('restored checkpoint');
   });
 
-  test('a dropped batch with more than three skipped files lists every reason in Add entry', async ({ page }) => {
+  test('a dropped batch with more than three skipped files lists every reason in Import records', async ({ page }) => {
     await openArtifact(page, 1440, 900);
     const before = await page.evaluate(() => window.motifGetInventory().length);
     await page.evaluate(() => {
@@ -3896,7 +4329,7 @@ test.describe('Claude Science artifact workflows', () => {
     await expect.poll(() => page.evaluate(() => window.motifGetInventory().length)).toBe(before + 1);
     const notice = page.locator('.motif-cs-workbench-notice');
     await expect(notice).toContainText('2 more skipped');
-    await notice.getByRole('button', { name: 'Show every skipped file in Add entry' }).click();
+    await notice.getByRole('button', { name: 'Show every skipped file in Import records' }).click();
     const status = page.locator('#motif-cs-import-status');
     await expect(status).toBeVisible();
     for (const name of ['empty.fa', 'notes.txt', 'more-notes.txt', 'corrupt.gb', 'readme.txt']) {
@@ -3910,10 +4343,10 @@ test.describe('Claude Science artifact workflows', () => {
     await sequence.focus();
     await page.keyboard.press('Shift+ArrowRight');
     await page.keyboard.press('Shift+ArrowRight');
-    await expect(page.locator('.motif-cs-selection-name')).toHaveText('1-2 (2)');
+    await expect(page.locator('.motif-cs-selection-name')).toHaveText('1–2 · 2 bp');
 
     const notesPanel = page.locator('[data-rail-tool="notes"]');
-    await notesPanel.locator(':scope > summary').click();
+    await openTool(page, 'notes');
     await notesPanel.locator('.motif-cs-annotation-editor-drawer > summary').click();
     await expect(notesPanel.getByLabel('Scope')).toHaveValue('range');
     await notesPanel.getByLabel('Title').fill('Selected bases');
@@ -3931,7 +4364,7 @@ test.describe('Claude Science artifact workflows', () => {
     });
     const noteRow = notesPanel.locator('[data-testid^="note-"]').filter({ hasText: 'Selected bases' });
     await noteRow.getByRole('button', { name: 'Reveal' }).click();
-    await expect(page.locator('.motif-cs-selection-name')).toHaveText('1-2 (2)');
+    await expect(page.locator('.motif-cs-selection-name')).toHaveText('1–2 · 2 bp');
 
     const noteBody = await notesPanel.locator('.motif-cs-tool-panel-body').boundingBox();
     expect(noteBody).toBeTruthy();
@@ -3981,7 +4414,7 @@ test.describe('Claude Science artifact workflows', () => {
     await expect(page.locator('[data-testid="artifact-runtime-error-shell"]')).toHaveCount(0);
 
     const settings = page.locator('[data-rail-tool="settings"]');
-    await settings.locator(':scope > summary').click();
+    await openTool(page, 'settings');
     const downloadPromise = page.waitForEvent('download');
     await settings.getByTestId('download-workspace-backup').click();
     expect((await downloadPromise).suggestedFilename()).toBe('motif-workspace-backup.json');
@@ -3995,6 +4428,7 @@ test.describe('Claude Science artifact workflows', () => {
     await restoreDialog.getByRole('button', { name: 'Cancel' }).click();
     expect(await page.evaluate(() => window.motifGetInventory?.().length)).toBe(13);
     await expect(settings).toHaveAttribute('open', '');
+    // Cancelling returns focus to the button that opened the dialog, in the drawer too.
     await expect(settings.getByTestId('restore-workspace-backup')).toBeFocused();
 
     const themeBefore = await page.locator('html').getAttribute('data-theme');
@@ -4033,8 +4467,7 @@ test.describe('Claude Science artifact workflows', () => {
     expect(warning.defaultPrevented).toBe(true);
     expect(warning.dispatched).toBe(false);
 
-    const exportPanel = page.locator('.motif-cs-sequence-tools-panel');
-    await exportPanel.locator(':scope > summary').click();
+    const exportPanel = await openExportPanel(page);
     await exportPanel.locator('select[name="export-format"]').selectOption('inventory-json');
     const downloadPromise = page.waitForEvent('download');
     await exportPanel.getByRole('button', { name: 'Download' }).click();
@@ -4065,7 +4498,7 @@ test.describe('Claude Science artifact workflows', () => {
     // the chips say so and the close-tab warning stays on.
     await openArtifact(page, 1180, 900);
     const settings = page.locator('details[data-rail-tool="settings"]');
-    await settings.locator(':scope > summary').click();
+    await openTool(page, 'settings');
     const dataChip = page.getByTestId('data-backup-status');
     const exportChip = page.getByTestId('session-durability-status');
     const closeWarns = () => page.evaluate(() => {
@@ -4088,8 +4521,8 @@ test.describe('Claude Science artifact workflows', () => {
     const download = await downloadPromise;
     const saved = JSON.parse(await readFile((await download.path())!, 'utf8')) as { records: Array<{ id: string }> };
     expect(saved.records.map((record) => record.id)).toContain('before-backup');
-    await expect(dataChip).toHaveText('Backup downloaded');
-    await expect(exportChip).toHaveText('backup downloaded');
+    await expect(dataChip).toHaveText('Backup requested');
+    await expect(exportChip).toHaveText('backup requested');
     expect(await closeWarns()).toBe(true);
 
     await addRecord('after-backup');
@@ -4110,12 +4543,12 @@ test.describe('Claude Science artifact workflows', () => {
     const densityView = page.getByTestId('large-sequence-viewer');
     await expect(densityView).toBeVisible();
     await expect(densityView.locator('textarea')).toHaveValue(sequence);
-    await expect(page.getByRole('button', { name: 'Detail sequence view' })).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Show tracks' })).toBeDisabled();
     expect(await page.locator('.motif-cs-sequence-panel *').count()).toBeLessThan(250);
     await expect(page.locator('.motif-cs-protein-aa')).toHaveCount(0);
     await expect(page.locator('.motif-cs-protein-readout')).toHaveCount(0);
     await expect(page.locator('.motif-cs-sequence-tools-panel')).not.toHaveAttribute('open', '');
-    await expect(page.getByRole('dialog', { name: 'Translations' })).toHaveCount(0);
+    await expect(page.getByRole('dialog', { name: 'Translation' })).toHaveCount(0);
 
     const mapDensity = page.locator('.motif-pm-restriction-density');
     await expect(mapDensity).toHaveAttribute('data-binned', 'true');
@@ -4134,8 +4567,8 @@ test.describe('Claude Science artifact workflows', () => {
     await expect(page.locator('.motif-cs-map-hint')).toContainText(/512 of .* sites selectable/);
 
     const restrictionTool = page.locator('details[data-rail-tool="restriction-sites"]');
-    await restrictionTool.locator(':scope > summary').click();
-    await restrictionTool.getByRole('button', { name: /^Sites, / }).click();
+    await openTool(page, 'restriction-sites');
+    await restrictionTool.getByRole('button', { name: 'By position' }).click();
     const denseSiteRows = restrictionTool.locator('.motif-cs-restriction-site-row');
     await expect(denseSiteRows).toHaveCount(160);
     await expect(restrictionTool.locator('.motif-cs-restriction-site-row:disabled')).toHaveCount(0);
@@ -4144,13 +4577,15 @@ test.describe('Claude Science artifact workflows', () => {
     await expect(exactSiteOutsideMapBudget).toHaveAttribute('aria-pressed', 'true');
     await expect(page.locator('details[data-rail-tool="inspector"]')).toContainText(/bp · 1 hit/);
 
+    // One record leaves the Records pane hidden; open it to measure its row.
+    await showRecordsPane(page);
     const inventoryRow = page.locator('.motif-cs-sidebar .motif-cs-row-compact').first();
     await expect(inventoryRow).toBeVisible();
     expect((await inventoryRow.boundingBox())!.height).toBeLessThanOrEqual(48);
 
     const domBeforeTranslation = await page.locator('*').count();
     await page.getByRole('button', { name: 'Translations window off' }).click();
-    const translationDialog = page.getByRole('dialog', { name: 'Translations' });
+    const translationDialog = page.getByRole('dialog', { name: 'Translation' });
     await expect(translationDialog).toBeVisible();
     await expect(translationDialog.locator('.motif-cs-protein-readout-dense')).toHaveCount(1);
     await expect(translationDialog.locator('[data-residue-index]')).toHaveCount(0);
@@ -4161,14 +4596,13 @@ test.describe('Claude Science artifact workflows', () => {
     await page.evaluate(() => {
       (window as unknown as { motifRenderInventory: (records: unknown[]) => void }).motifRenderInventory([]);
     });
-    const exportPanel = page.locator('.motif-cs-sequence-tools-panel');
-    await exportPanel.locator(':scope > summary').click();
+    const exportPanel = await openExportPanel(page);
     const format = exportPanel.locator('select[name="export-format"]');
     await expect(format).toHaveValue('inventory-json');
     const options = await format.locator('option').allTextContents();
     expect(options.some((label) => label.startsWith('Active record -'))).toBe(false);
-    await expect(exportPanel.getByRole('button', { name: 'Sequence' })).toBeDisabled();
-    const emptyDatabase = JSON.parse(await exportPanel.getByLabel('Selected export preview').inputValue());
+    await expect(exportPanel.getByRole('button', { name: 'Summary' })).toBeDisabled();
+    const emptyDatabase = JSON.parse(await exportPanel.getByLabel('Export preview').inputValue());
     expect(emptyDatabase.records).toEqual([]);
   });
 
@@ -4216,11 +4650,10 @@ test.describe('Claude Science artifact workflows', () => {
   test('desktop themes have no automatic WCAG A/AA violations', async ({ page }) => {
     test.slow();
     await openArtifact(page, 1180, 900);
-    const toolsToggle = page.getByRole('button', { name: /Tools/ }).first();
-    if ((await toolsToggle.getAttribute('aria-pressed')) !== 'true') await toolsToggle.click();
-    await expect(page.locator('details[data-rail-tool="annotations"]')).toHaveAttribute('open', '');
-    for (const theme of ['light', 'dark', 'claude-light', 'claude-dark']) {
-      await page.locator('select[name="artifact-theme"]').selectOption(theme);
+    // Audit with the Tools drawer open on Annotations, so its rows are in the page.
+    await openTool(page, 'annotations');
+    for (const theme of ['light', 'dark'] as const) {
+      await chooseTheme(page, theme);
       await page.waitForTimeout(180);
       const results = await new AxeBuilder({ page })
         .include('.motif-cs-shell')
@@ -4235,45 +4668,88 @@ test.describe('Claude Science artifact workflows', () => {
     await page.goto(artifactUrl!);
     await expect(page.locator('.motif-cs-shell')).toBeVisible();
 
-    await page.locator('select[name="artifact-theme"]').selectOption('claude-dark');
-    await expect(page.locator('html')).toHaveAttribute('data-theme', 'claude-dark');
-    await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute('content', '#1f1f1f');
+    // Motif offers two themes, named exactly Light and Dark, in Settings. The top bar has
+    // no theme select: its icon button only flips to the other theme.
+    await expect(page.getByRole('combobox', { name: 'Theme' })).toHaveCount(0);
+    await expect(page.locator('.motif-cs-topbar select')).toHaveCount(0);
+    const appearance = await openTool(page, 'settings');
+    expect(await appearance.locator('label[data-theme-choice]').evaluateAll((labels) => (
+      labels.map((label) => [(label as HTMLElement).dataset.themeChoice, label.textContent?.trim()])
+    ))).toEqual([['light', 'Light'], ['dark', 'Dark']]);
+    await closeTool(page, 'settings');
+    await closeToolsDrawer(page);
+
+    await chooseTheme(page, 'dark');
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+    // The meta colour follows Dark's own --workspace-bg rather than a pinned hex.
+    const darkWorkspaceBg = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--workspace-bg').trim());
+    expect(darkWorkspaceBg).toMatch(/^#[0-9a-f]{6}$/i);
+    await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute('content', darkWorkspaceBg);
     await page.reload();
     await expect(page.locator('.motif-cs-shell')).toBeVisible();
-    await expect(page.locator('html')).toHaveAttribute('data-theme', 'claude-dark');
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
 
     const settings = page.locator('details[data-rail-tool="settings"]');
-    await settings.locator(':scope > summary').click();
-    const warmDark = settings.getByRole('radio', { name: /Warm Dark/ });
-    await expect(warmDark).toBeChecked();
+    await openTool(page, 'settings');
+    const themeRadios = settings.locator('input[type="radio"][name="settings-theme"]');
+    await expect(themeRadios).toHaveCount(2);
+    expect(await themeRadios.evaluateAll((radios) => radios.map((radio) => (radio as HTMLInputElement).value)))
+      .toEqual(['light', 'dark']);
+    const dark = settings.getByRole('radio', { name: /^Dark/ });
+    await expect(dark).toBeChecked();
 
-    await warmDark.focus();
+    await dark.focus();
     await page.keyboard.press('ArrowLeft');
-    await expect(settings.getByRole('radio', { name: /Warm Light/ })).toBeChecked();
-    await expect(page.locator('html')).toHaveAttribute('data-theme', 'claude-light');
+    await expect(settings.getByRole('radio', { name: /^Light/ })).toBeChecked();
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
     await page.keyboard.press('ArrowRight');
-    await expect(warmDark).toBeChecked();
+    await expect(dark).toBeChecked();
 
     await settings.getByRole('button', { name: 'Reset display' }).click();
-    await expect(page.locator('html')).toHaveAttribute('data-theme', 'claude-dark');
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
     await expect.poll(async () => page.evaluate(() => {
       const raw = window.localStorage.getItem('motif.workspace-layout.v1');
       return raw ? JSON.parse(raw).theme : null;
-    })).toBe('warm-dark');
+    })).toBe('dark');
   });
+
+  for (const [stored, expected] of [
+    ['warm-dark', 'dark'],
+    ['warm-light', 'light'],
+    ['sepia', 'light'],
+  ] as const) {
+    test(`a stored theme of "${stored}" opens in ${expected}`, async ({ page }) => {
+      await page.addInitScript((value) => {
+        try {
+          if (!window.sessionStorage.getItem('theme-seeded')) {
+            window.localStorage.setItem('motif.workspace-layout.v1', JSON.stringify({ theme: value }));
+            window.sessionStorage.setItem('theme-seeded', '1');
+          }
+        } catch {
+          // Storage can be unavailable; the test then fails on the theme below.
+        }
+      }, stored);
+      await page.setViewportSize({ width: 1180, height: 900 });
+      await page.goto(artifactUrl!);
+      await expect(page.locator('.motif-cs-shell')).toBeVisible();
+      await expect(page.locator('html')).toHaveAttribute('data-theme', expected);
+      const settings = await openTool(page, 'settings');
+      await expect(settings.locator(`input[name="settings-theme"][value="${expected}"]`)).toBeChecked();
+    });
+  }
 
   test('Settings identifies the active theme and resets panes without dismissing the workflow', async ({ page }) => {
     await openArtifact(page, 1180, 900);
     const inventoryToggle = page.locator('[data-pane-toggle="inventory"]');
     await inventoryToggle.click();
     await expect(inventoryToggle).toHaveAttribute('aria-pressed', 'false');
-    await page.locator('select[name="artifact-theme"]').selectOption('claude-dark');
+    await chooseTheme(page, 'dark');
 
     const settings = page.locator('details[data-rail-tool="settings"]');
     const settingsSummary = settings.locator(':scope > summary');
-    await settingsSummary.click();
+    await openTool(page, 'settings');
     await expect(settings).toHaveAttribute('open', '');
-    await expect.soft(settingsSummary.locator('.motif-cs-chip')).toHaveText('Warm Dark', { timeout: 1_000 });
+    await expect.soft(settingsSummary.locator('.motif-cs-chip')).toHaveText('Dark', { timeout: 1_000 });
 
     const reset = settings.getByRole('button', { name: 'Reset display' });
     await reset.focus();
@@ -4284,12 +4760,12 @@ test.describe('Claude Science artifact workflows', () => {
     await expect.soft(resetStatus).toBeVisible({ timeout: 1_000 });
     await expect.soft(resetStatus).toHaveAttribute('role', 'status', { timeout: 1_000 });
     await expect.soft(resetStatus).toHaveAttribute('aria-live', 'polite', { timeout: 1_000 });
-    await expect.soft(resetStatus).toContainText(/display preferences reset/i, { timeout: 1_000 });
+    await expect.soft(resetStatus).toContainText(/display reset/i, { timeout: 1_000 });
 
     await expect(inventoryToggle).toHaveAttribute('aria-pressed', 'true');
-    await expect(page.locator('select[name="artifact-theme"]')).toHaveValue('claude-dark');
-    await expect(page.locator('html')).toHaveAttribute('data-theme', 'claude-dark');
-    await expect.soft(settingsSummary.locator('.motif-cs-chip')).toHaveText('Warm Dark', { timeout: 1_000 });
+    await expect(settings.locator('input[name="settings-theme"][value="dark"]')).toBeChecked();
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+    await expect.soft(settingsSummary.locator('.motif-cs-chip')).toHaveText('Dark', { timeout: 1_000 });
     await page.screenshot({ path: path.join(outputDir, 'settings-reset-keeps-theme-and-focus.png'), fullPage: true });
   });
 
@@ -4302,9 +4778,9 @@ test.describe('Claude Science artifact workflows', () => {
       test.setTimeout(60_000);
       await openArtifact(page, settingsViewport.width, settingsViewport.height);
       const settings = page.locator('details[data-rail-tool="settings"]');
-      await settings.locator(':scope > summary').click();
+      await openTool(page, 'settings');
 
-      for (const theme of ['light', 'dark', 'claude-light', 'claude-dark'] as const) {
+      for (const theme of ['light', 'dark'] as const) {
         await settings.locator(`label[data-theme-choice="${theme}"]`).click();
         await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
         await page.waitForTimeout(180);
@@ -4315,7 +4791,7 @@ test.describe('Claude Science artifact workflows', () => {
           .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
           .analyze();
         expect(results.violations, `${theme} settings accessibility violations at ${settingsViewport.width}px`).toEqual([]);
-        if (theme === 'claude-light' || theme === 'claude-dark') {
+        if (theme === 'dark') {
           await page.screenshot({
             path: path.join(outputDir, `settings-${theme}-${settingsViewport.width}x${settingsViewport.height}.png`),
             fullPage: true,
@@ -4327,13 +4803,17 @@ test.describe('Claude Science artifact workflows', () => {
 
   test('floating Translation window moves, resizes, and restores focus', async ({ page }) => {
     await openArtifact(page, 1180, 820);
+    // From 900px the window sits in the Sequence column's flow; with the Sequence pane
+    // hidden it floats, and that is the window this test moves and resizes.
+    await page.locator('[data-pane-toggle="sequence"]').click();
+    await expect(page.locator('[data-pane-key="sequence"]')).toBeHidden();
     const toggle = page.getByRole('button', { name: 'Translations window off' });
     await toggle.click();
 
-    const dialog = page.getByRole('dialog', { name: 'Translations' });
+    const dialog = page.getByRole('dialog', { name: 'Translation' });
     await expect(dialog).toBeVisible();
     const header = dialog.locator('.motif-cs-window-head');
-    const resizeHandle = dialog.getByRole('button', { name: /Resize Translations window in 2 dimensions/ });
+    const resizeHandle = dialog.getByRole('button', { name: /Resize Translation window in 2 dimensions/ });
     const beforeMove = (await dialog.boundingBox())!;
     const cornerHandleBox = (await resizeHandle.boundingBox())!;
     expect(Math.abs((cornerHandleBox.x + cornerHandleBox.width) - (beforeMove.x + beforeMove.width))).toBeLessThan(2);
@@ -4342,15 +4822,16 @@ test.describe('Claude Science artifact workflows', () => {
       document.elementFromPoint(x, y)?.closest('.motif-cs-window-resize') !== null
     ), { x: beforeMove.x + beforeMove.width - 4, y: beforeMove.y + beforeMove.height - 4 });
     expect(ownsVisibleCorner).toBe(true);
-    expect(beforeMove.x + beforeMove.width).toBeLessThanOrEqual(1180 - 48 - 7);
+    expect(beforeMove.x + beforeMove.width).toBeLessThanOrEqual(1180 - 7);
     const headerBox = (await header.boundingBox())!;
     await page.mouse.move(headerBox.x + headerBox.width / 2, headerBox.y + headerBox.height / 2);
     await page.mouse.down();
-    await page.mouse.move(headerBox.x + headerBox.width / 2 - 90, headerBox.y + headerBox.height / 2 - 60, { steps: 6 });
+    // The window opens 48px from the top, so it has 40px of headroom: a 30px drag up stays inside it.
+    await page.mouse.move(headerBox.x + headerBox.width / 2 - 90, headerBox.y + headerBox.height / 2 - 30, { steps: 6 });
     await page.mouse.up();
     const afterMove = (await dialog.boundingBox())!;
     expect(afterMove.x).toBeLessThan(beforeMove.x - 60);
-    expect(afterMove.y).toBeLessThan(beforeMove.y - 40);
+    expect(afterMove.y).toBeLessThan(beforeMove.y - 20);
 
     const resizeBox = (await resizeHandle.boundingBox())!;
     await page.mouse.move(resizeBox.x + resizeBox.width / 2, resizeBox.y + resizeBox.height / 2);
@@ -4376,7 +4857,7 @@ test.describe('Claude Science artifact workflows', () => {
     await page.mouse.up();
     const afterBoundaryResize = (await dialog.boundingBox())!;
     expect(Math.abs(afterBoundaryResize.x - beforeBoundaryResize.x)).toBeLessThan(2);
-    expect(afterBoundaryResize.x + afterBoundaryResize.width).toBeLessThanOrEqual(1180 - 48 - 7);
+    expect(afterBoundaryResize.x + afterBoundaryResize.width).toBeLessThanOrEqual(1180 - 7);
 
     const blurHandle = (await resizeHandle.boundingBox())!;
     await page.mouse.move(blurHandle.x + blurHandle.width / 2, blurHandle.y + blurHandle.height / 2);
@@ -4398,9 +4879,9 @@ test.describe('Claude Science artifact workflows', () => {
   });
 
   test('compact pinned workspace scrolls every pane and releases a hidden Map lane', async ({ page }) => {
-    await openArtifact(page, 820, 620);
-    const toolsToggle = page.getByRole('button', { name: /Tools/ }).first();
-    if ((await toolsToggle.getAttribute('aria-pressed')) !== 'true') await toolsToggle.click();
+    // The two-row compact band starts at 900px; below that the workspace is one column.
+    await openArtifact(page, 900, 820);
+    await pinTools(page);
 
     const main = page.locator('.motif-cs-main');
     await expect(main).toHaveAttribute('data-tools-pinned', 'true');
@@ -4410,7 +4891,7 @@ test.describe('Claude Science artifact workflows', () => {
       const overflow = await page.locator(selector).evaluate((element) => getComputedStyle(element).overflow);
       expect(['auto', 'scroll']).toContain(overflow);
     }
-    await page.screenshot({ path: path.join(outputDir, 'compact-pinned-820x620.png'), fullPage: true });
+    await page.screenshot({ path: path.join(outputDir, 'compact-pinned-900x820.png'), fullPage: true });
 
     await page.locator('.motif-cs-pane-switcher .motif-cs-pane-toggle').filter({ hasText: 'Map' }).click();
     await expect(main).toHaveAttribute('data-map-hidden', 'true');
@@ -4419,19 +4900,194 @@ test.describe('Claude Science artifact workflows', () => {
     const toolsBox = await page.locator('.motif-cs-inspector').boundingBox();
     expect(mainBox && sequenceBox && toolsBox).toBeTruthy();
     expect(sequenceBox!.x + sequenceBox!.width).toBeGreaterThan(toolsBox!.x - 12);
-    await page.screenshot({ path: path.join(outputDir, 'compact-map-hidden-820x620.png'), fullPage: true });
+    await page.screenshot({ path: path.join(outputDir, 'compact-map-hidden-900x820.png'), fullPage: true });
   });
 
-  test('selection actions stay in a stable scrollable dock at narrow pane widths', async ({ page }) => {
+  test('selection actions stay in one row that never scrolls at narrow pane widths', async ({ page }) => {
     await openArtifact(page, 680, 760);
+    // Nothing selected: the bar is one hint with Copy, Add feature and Create beside it.
+    // Copy and Add feature need a range, so they are disabled, not out of the bar,
+    // and a selection changes their state without moving anything.
+    await expect(page.locator('.motif-cs-selection-bar')).toHaveAttribute('data-empty', 'true');
+    const copyButton = page.locator('.motif-cs-selection-actions').getByRole('button', { name: 'Copy', exact: true });
+    await expect(copyButton).toBeVisible();
+    await expect(copyButton).toBeDisabled();
+    await page.locator('.motif-cs-feature-block').first().click();
     const actionDock = page.locator('.motif-cs-selection-actions');
+    await expect(actionDock).toBeVisible();
+    await expect(copyButton).toBeEnabled();
     const styles = await actionDock.evaluate((element) => {
       const computed = getComputedStyle(element);
       return { overflowX: computed.overflowX, flexWrap: computed.flexWrap };
     });
-    expect(styles.overflowX).toBe('auto');
+    expect(styles.overflowX).toBe('visible');
     expect(styles.flexWrap).toBe('nowrap');
   });
+
+  // The sequence pane spends two rows of controls before the first base. Its whole chrome is
+  // the title row and one toolbar row; the selection readout is the status
+  // line at the foot. Rows are distinct vertical centres, 8px apart, of the
+  // painted controls above the sequence view.
+  for (const { width, height } of [{ width: 1280, height: 820 }, { width: 1440, height: 900 }, { width: 700, height: 860 }, { width: 660, height: 788 }]) {
+    test(`the sequence pane has two rows of chrome above its first base at ${width}x${height}`, async ({ page }) => {
+      await openArtifact(page, width, height);
+      const geometry = await page.evaluate(() => {
+        const pane = document.querySelector('[data-pane-key="sequence"]')!;
+        const limit = pane.querySelector('.motif-cs-sequence')!.getBoundingClientRect().top;
+        const rows: number[] = [];
+        for (const control of pane.querySelectorAll('button, input, select, [role=button], label, .motif-cs-selection-label')) {
+          const box = control.getBoundingClientRect();
+          const style = getComputedStyle(control);
+          if (box.width < 1 || box.height < 1 || style.visibility === 'hidden' || box.bottom > limit + 1) continue;
+          const middle = Math.round(box.top + box.height / 2);
+          if (!rows.some((row) => Math.abs(row - middle) < 8)) rows.push(middle);
+        }
+        const first = [...pane.querySelectorAll('.motif-cs-seq-bases')].find((line) => line.getBoundingClientRect().height > 0)!;
+        return {
+          rows: rows.length,
+          firstBaseBelowPaneTop: Math.round(first.getBoundingClientRect().top - pane.getBoundingClientRect().top),
+          pageScrollWidth: document.scrollingElement!.scrollWidth,
+        };
+      });
+      expect(geometry.rows).toBeLessThanOrEqual(2);
+      // 80px under the pane's top edge is y=120 where the pane starts at y=40.
+      expect(geometry.firstBaseBelowPaneTop).toBeLessThanOrEqual(80);
+      expect(geometry.pageScrollWidth).toBeLessThanOrEqual(width);
+      // Copy, Add feature and Create stay painted buttons in the status line.
+      const actions = page.locator('.motif-cs-selection-bar .motif-cs-selection-actions');
+      for (const name of ['Copy', 'Add feature', 'Create']) {
+        await expect(actions.getByRole('button', { name, exact: true })).toBeVisible();
+      }
+    });
+  }
+
+  // Find, Tracks and Complement keep their words wherever the toolbar row
+  // has room for them; an icon stands in only where the row would wrap. At
+  // 1440x900 the 470px pane shows Find with its word, and at 1440x900 and
+  // 1280x820 the two switches keep theirs. Under 560px
+  // of pane the switches drop their tracks and keep their words down to 404px;
+  // Find gives up its word first, under 440px.
+  for (const { width, height, find, switches } of [
+    { width: 1440, height: 900, find: true, switches: true },
+    { width: 1280, height: 820, find: false, switches: true },
+    { width: 700, height: 860, find: true, switches: true },
+    { width: 400, height: 700, find: false, switches: false },
+  ]) {
+    test(`the toolbar keeps its labels where its row has room at ${width}x${height}`, async ({ page }) => {
+      await openArtifact(page, width, height);
+      const toolbar = await page.evaluate(() => {
+        const pane = document.querySelector('[data-pane-key="sequence"]')!;
+        const shown = (selector: string) => (pane.querySelector(`${selector} .motif-cs-toolbar-label`)!.getBoundingClientRect().width > 2);
+        const row = pane.querySelector('.motif-cs-edit-toolbar')!;
+        const tops = new Set([...row.children].map((child) => Math.round(child.getBoundingClientRect().top)));
+        return {
+          find: shown('.motif-cs-find-button'),
+          findWidth: Math.round(pane.querySelector('.motif-cs-find-button')!.getBoundingClientRect().width),
+          tracks: shown('.motif-cs-detail-toggle'),
+          complement: shown('.motif-cs-ds-toggle'),
+          rows: tops.size,
+        };
+      });
+      expect(toolbar.find).toBe(find);
+      if (find) expect(toolbar.findWidth).toBeGreaterThanOrEqual(60);
+      expect(toolbar.tracks).toBe(switches);
+      expect(toolbar.complement).toBe(switches);
+      // Labels never cost the toolbar a second row where they are shown.
+      if (width > 420) expect(toolbar.rows).toBe(1);
+      // Icon or word, each keeps its accessible name and tooltip.
+      const pane = page.locator('[data-pane-key="sequence"]');
+      await expect(pane.getByRole('button', { name: 'Find', exact: true })).toHaveAttribute('title', /Find in sequence/);
+      await expect(pane.getByRole('button', { name: 'Show tracks', exact: true })).toHaveAttribute('title', /.+/);
+      await expect(pane.getByRole('button', { name: 'Complement strand', exact: true })).toHaveAttribute('title', /.+/);
+    });
+  }
+
+  // The title row never cuts a word. With the Tools drawer open at 1440x900 the
+  // facts give way in order: the name first, then " · circular" goes whole, then
+  // the length, and none reads cut mid-word. Export never sits over the name's side.
+  for (const { width, height, drawer, whole } of [
+    { width: 1440, height: 900, drawer: true, whole: true },
+    { width: 1280, height: 820, drawer: true, whole: false },
+    { width: 700, height: 860, drawer: false, whole: true },
+    { width: 400, height: 700, drawer: false, whole: true },
+  ]) {
+    test(`the sequence title cuts no word at ${width}x${height}${drawer ? ' with the Tools drawer open' : ''}`, async ({ page }) => {
+      await openArtifact(page, width, height);
+      if (drawer) {
+        await page.getByRole('button', { name: 'Tools', exact: true }).click();
+        await expect(page.locator('[data-pane-key="tools"]')).toHaveAttribute('data-tools-drawer', 'open');
+      }
+      const title = await page.evaluate(() => {
+        const row = document.querySelector('[data-pane-key="sequence"] .motif-cs-sequence-title')!;
+        const meta = row.querySelector('.motif-cs-sequence-meta')!;
+        const box = meta.getBoundingClientRect();
+        const pieces: { text: string; state: string }[] = [];
+        const walker = document.createTreeWalker(meta, NodeFilter.SHOW_TEXT);
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          let offset = 0;
+          for (const part of (node.textContent ?? '').split(/(?= · )/)) {
+            const range = document.createRange();
+            range.setStart(node, offset);
+            range.setEnd(node, offset + part.length);
+            offset += part.length;
+            if (!part.trim()) continue;
+            const r = range.getBoundingClientRect();
+            const inside = r.left >= box.left - 0.5 && r.right <= box.right + 0.5 && r.top >= box.top - 0.5 && r.bottom <= box.bottom + 0.5;
+            const outside = r.right <= box.left || r.left >= box.right || r.top >= box.bottom || r.bottom <= box.top;
+            pieces.push({ text: part.trim(), state: inside ? 'shown' : outside ? 'dropped' : 'cut' });
+          }
+        }
+        const name = row.querySelector<HTMLElement>('.motif-cs-title-edit-trigger')!;
+        const exportButton = [...row.querySelectorAll('button')].find((button) => button.textContent?.trim() === 'Export')!;
+        return {
+          pieces,
+          nameCut: name.scrollWidth > name.clientWidth + 1,
+          headRight: row.firstElementChild!.getBoundingClientRect().right,
+          exportLeft: exportButton.getBoundingClientRect().left,
+          rowHeight: row.getBoundingClientRect().height,
+        };
+      });
+      expect(title.nameCut, 'the record name reads whole').toBe(false);
+      expect(title.pieces.map((piece) => piece.text)).toEqual(['2,686 bp', '· circular']);
+      for (const piece of title.pieces) expect(piece.state, `"${piece.text}" is shown or dropped whole`).not.toBe('cut');
+      if (whole) expect(title.pieces.map((piece) => piece.state)).toEqual(['shown', 'shown']);
+      // The length goes only after the topology.
+      if (title.pieces[0].state === 'dropped') expect(title.pieces[1].state).toBe('dropped');
+      expect(title.exportLeft, 'Export starts after the name side ends').toBeGreaterThanOrEqual(title.headRight);
+      // Side by side the row is the Map header's 30px (28px of controls and 2px
+      // under them); stacked it stays 28px.
+      expect(title.rowHeight).toBe(width >= 900 ? 30 : 28);
+    });
+  }
+
+  // The status line is pinned to the visible bottom edge of the sequence pane,
+  // also where the panes stack and the workbench scrolls (700x860). Its
+  // readout is 13px; and at the end of the scroll the sequence
+  // view ends above it, so the last line is never under it.
+  for (const { width, height } of [{ width: 700, height: 860 }, { width: 660, height: 788 }, { width: 400, height: 700 }, { width: 1280, height: 820 }, { width: 1440, height: 900 }]) {
+    test(`the status line stays inside the window at ${width}x${height}`, async ({ page }) => {
+      await openArtifact(page, width, height);
+      const bar = page.locator('[data-pane-key="sequence"] .motif-cs-selection-bar');
+      const inside = async () => bar.evaluate((node) => {
+        const box = node.getBoundingClientRect();
+        return box.top >= 0 && box.bottom <= window.innerHeight + 0.5 && box.height > 0;
+      });
+      expect(await inside()).toBe(true);
+      await page.locator('[data-pane-key="sequence"] .motif-cs-feature-block').first().click();
+      await expect(bar).not.toHaveAttribute('data-empty', /.*/);
+      expect(await inside()).toBe(true);
+      expect(await bar.locator('.motif-cs-selection-name').evaluate((node) => getComputedStyle(node).fontSize)).toBe('13px');
+      const end = await page.evaluate(() => {
+        const main = document.querySelector('.motif-cs-main')!;
+        main.scrollTop = main.scrollHeight;
+        const view = document.querySelector('[data-pane-key="sequence"] .motif-cs-sequence')!.getBoundingClientRect();
+        const status = document.querySelector('[data-pane-key="sequence"] .motif-cs-selection-bar')!.getBoundingClientRect();
+        return { viewBottom: view.bottom, statusTop: status.top, statusBottom: status.bottom, height: window.innerHeight };
+      });
+      expect(end.viewBottom).toBeLessThanOrEqual(end.statusTop + 1);
+      expect(end.statusBottom).toBeLessThanOrEqual(end.height + 0.5);
+    });
+  }
 
   test('no sequence-panel width leaves a selection action unreachable', async ({ page }) => {
     // The dock used to be a strip with no scroller of its own inside a bar that
@@ -4469,7 +5125,8 @@ test.describe('Claude Science artifact workflows', () => {
           buttons: buttons.length,
         };
       });
-      // Copy, + Feature and the Create menu; the rest sit inside Create.
+      // Copy, Add feature and the Create menu; the rest sit inside Create. Copy and
+      // Add feature are always in the bar, so all three are painted at every width.
       expect(geometry.buttons, `buttons at ${width}px`).toBeGreaterThanOrEqual(3);
       expect(geometry.stripOverhang, `strip escapes the bar at ${width}px`).toBeLessThanOrEqual(1);
       expect(geometry.lastOverhang, `last action clipped at ${width}px`).toBeLessThanOrEqual(1);
@@ -4494,98 +5151,132 @@ test.describe('Claude Science artifact workflows', () => {
     const mapFrame = (await page.locator('.motif-cs-map-frame[data-map-mode="circular"]').boundingBox())!;
     expect(mapFrame.height).toBeLessThanOrEqual(460);
 
-    const toolbarGeometry = await page.locator('.motif-cs-edit-toolbar').evaluate((toolbar) => {
+    const measureToolbar = () => page.locator('.motif-cs-edit-toolbar').evaluate((toolbar) => {
       const computed = getComputedStyle(toolbar);
       const groups = Array.from(toolbar.children, (child) => child.getBoundingClientRect());
+      const controls = Array.from(toolbar.querySelectorAll('button, input, select'))
+        .filter((control) => {
+          const rect = control.getBoundingClientRect();
+          const style = getComputedStyle(control);
+          return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+        })
+        .map((control) => {
+          const rect = control.getBoundingClientRect();
+          return { name: control.getAttribute('aria-label') ?? control.textContent?.trim() ?? '', left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, height: rect.height };
+        });
+      const overlaps: string[] = [];
+      controls.forEach((a, index) => {
+        for (const b of controls.slice(index + 1)) {
+          const across = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+          const down = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+          if (across > 0.5 && down > 0.5) overlaps.push(`${a.name} / ${b.name}`);
+        }
+      });
       return {
         clientWidth: toolbar.clientWidth,
         scrollWidth: toolbar.scrollWidth,
         overflowX: computed.overflowX,
         flexWrap: computed.flexWrap,
         groupTops: groups.map((rect) => Math.round(rect.top)),
+        groupEdges: groups.map((rect) => [Math.round(rect.left), Math.round(rect.right)]),
+        controlCount: controls.length,
+        shortControls: controls.filter((control) => control.height < 28).map((control) => `${control.name} ${control.height}px`),
+        overlaps,
       };
     });
-    // Narrower than its two groups, the toolbar puts the display switches on a
-    // second line. On one scrolling line it hid "Complement" (69px at 390x844).
-    expect(toolbarGeometry.overflowX).toBe('auto');
-    expect(toolbarGeometry.flexWrap).toBe('wrap');
-    expect(toolbarGeometry.groupTops[1] - toolbarGeometry.groupTops[0]).toBeGreaterThanOrEqual(26);
-    expect(toolbarGeometry.scrollWidth).toBeLessThanOrEqual(toolbarGeometry.clientWidth + 1);
+    // Typing mode is one compact button, so at 320px and 390px the edit controls
+    // and the display switches share one line (at 320x568 the switches start 44.66px
+    // after the edit controls end, every control 28px tall). The row may still wrap
+    // rather than scroll: a scrolling line could hide "Complement".
+    const expectOneLineToolbar = (geometry: Awaited<ReturnType<typeof measureToolbar>>, size: string) => {
+      expect(geometry.overflowX, size).toBe('visible');
+      expect(geometry.flexWrap, size).toBe('wrap');
+      expect(geometry.groupTops, `${size}: both toolbar groups on one line`).toHaveLength(2);
+      expect(geometry.groupTops[1], `${size}: both toolbar groups on one line`).toBe(geometry.groupTops[0]);
+      expect(geometry.groupEdges[1][0], `${size}: the switches start after the edit controls end`).toBeGreaterThanOrEqual(geometry.groupEdges[0][1]);
+      expect(geometry.controlCount, size).toBe(6);
+      expect(geometry.overlaps, `${size}: overlapping toolbar controls`).toEqual([]);
+      expect(geometry.shortControls, `${size}: toolbar controls under 28px tall`).toEqual([]);
+      expect(geometry.scrollWidth, size).toBeLessThanOrEqual(geometry.clientWidth + 1);
+    };
+    expectOneLineToolbar(await measureToolbar(), '320x568');
 
     const actionGeometry = await page.locator('.motif-cs-selection-actions').evaluate((actions) => ({
       clientWidth: actions.clientWidth,
       scrollWidth: actions.scrollWidth,
       overflowX: getComputedStyle(actions).overflowX,
     }));
-    expect(actionGeometry.overflowX).toBe('auto');
-    expect(actionGeometry.scrollWidth <= actionGeometry.clientWidth + 1 || actionGeometry.overflowX === 'auto').toBe(true);
+    expect(actionGeometry.overflowX).toBe('visible');
+    expect(actionGeometry.scrollWidth).toBeLessThanOrEqual(actionGeometry.clientWidth + 1);
 
-    await expect(page.getByRole('button', { name: 'Replace typing mode' })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Insert typing mode' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Typing mode: Replace. Switch to Insert' })).toBeVisible();
+    await expect(page.locator('button.motif-cs-edit-mode-toggle')).toHaveAttribute('data-mode', 'replace');
     // Detail is one switch, so there is no Standard button to find. Its
     // pressed state is what the reader reads, and it must survive the wrap.
     await expect(page.getByRole('button', { name: 'Standard sequence view' })).toHaveCount(0);
-    const detailSwitch = page.getByRole('button', { name: 'Detail sequence view' });
+    const detailSwitch = page.getByRole('button', { name: 'Show tracks' });
     await expect(detailSwitch).toBeVisible();
     await expect(detailSwitch).toHaveAttribute('aria-pressed', /true|false/);
     await expect(page.getByRole('button', { name: 'Complement strand' })).toBeVisible();
+
+    await openArtifact(page, 390, 844);
+    expectOneLineToolbar(await measureToolbar(), '390x844');
   });
 
   test('phone Tools drawer stays anchored and returns cleanly to its rail', async ({ page }) => {
     await openArtifact(page, 390, 760);
-    const toolsToggle = page.getByRole('button', { name: /Tools/ }).first();
-    if ((await toolsToggle.getAttribute('aria-pressed')) !== 'true') await toolsToggle.click();
+    const toolsToggle = page.locator('[data-pane-toggle="tools"]');
+    const exportTrigger = exportTitleButton(page);
+    await exportTrigger.scrollIntoViewIfNeeded();
+    await openToolsDrawer(page);
 
+    // Below 1536px Tools is a drawer: under the top bar, to the bottom edge, and
+    // the whole width of a phone.
     const drawer = page.locator('.motif-cs-inspector');
-    const exportSummary = page.locator('.motif-cs-sequence-tools-panel > summary');
-    await exportSummary.scrollIntoViewIfNeeded();
     const topbarBox = (await page.locator('.motif-cs-topbar').boundingBox())!;
     const drawerBox = (await drawer.boundingBox())!;
     expect(drawerBox.y).toBeCloseTo(topbarBox.y + topbarBox.height, 0);
     expect(drawerBox.y + drawerBox.height).toBeCloseTo(760, 0);
+    expect(Math.round(drawerBox.width)).toBe(390);
 
-    const minimize = drawer.getByRole('button', { name: 'Minimize tools panel to rail' });
-    await expect(minimize).toBeVisible();
-    await minimize.click();
-    await expect(toolsToggle).toHaveAttribute('aria-pressed', 'false');
+    const close = drawer.getByRole('button', { name: 'Close tools' });
+    await expect(close).toBeVisible();
+    await close.click();
+    await expect(toolsToggle).toHaveAttribute('aria-expanded', 'false');
+    await expect(drawer).toBeHidden();
 
-    const railBox = (await drawer.boundingBox())!;
-    expect(railBox.width).toBeCloseTo(toolsRailWidth, 0);
-    expect(railBox.y).toBeCloseTo(topbarBox.y + topbarBox.height, 0);
-    const summaryBox = (await exportSummary.boundingBox())!;
+    // Shut, it takes no room: the workspace under it is reachable again.
+    const triggerBox = (await exportTrigger.boundingBox())!;
     expect(await page.evaluate(({ x, y }) => {
       const hit = document.elementFromPoint(x, y);
-      return Boolean(hit?.closest('.motif-cs-sequence-tools-panel > summary'));
-    }, { x: summaryBox.x + summaryBox.width / 2, y: summaryBox.y + summaryBox.height / 2 })).toBe(true);
-    await exportSummary.click();
+      return Boolean(hit?.closest('.motif-cs-sequence-title [aria-controls="motif-cs-export-panel"]'));
+    }, { x: triggerBox.x + triggerBox.width / 2, y: triggerBox.y + triggerBox.height / 2 })).toBe(true);
+    await exportTrigger.click();
     await expect(page.locator('.motif-cs-sequence-tools-panel')).toHaveAttribute('open', '');
   });
 
   test('683x384 preserves useful Sequence space and scrolls to the lower pane row', async ({ page }) => {
     await openArtifact(page, 683, 384);
     const main = page.locator('.motif-cs-main');
-    const initial = await main.evaluate((element) => {
+    // Below 900px the workspace is one scrolling column: Map on the first row, Sequence below it.
+    const visibleHeight = (selector: string) => main.evaluate((element, paneSelector) => {
       const mainRect = element.getBoundingClientRect();
-      const sequenceRect = element.querySelector<HTMLElement>('.motif-cs-sequence-column')!.getBoundingClientRect();
-      return {
-        clientHeight: element.clientHeight,
-        scrollHeight: element.scrollHeight,
-        overflowY: getComputedStyle(element).overflowY,
-        visibleSequenceHeight: Math.max(0, Math.min(mainRect.bottom, sequenceRect.bottom) - Math.max(mainRect.top, sequenceRect.top)),
-      };
-    });
+      const paneRect = element.querySelector<HTMLElement>(paneSelector)!.getBoundingClientRect();
+      return Math.max(0, Math.min(mainRect.bottom, paneRect.bottom) - Math.max(mainRect.top, paneRect.top));
+    }, selector);
+    const initial = await main.evaluate((element) => ({
+      clientHeight: element.clientHeight,
+      scrollHeight: element.scrollHeight,
+      overflowY: getComputedStyle(element).overflowY,
+    }));
     expect(initial.overflowY).toBe('auto');
     expect(initial.scrollHeight).toBeGreaterThan(initial.clientHeight);
-    expect(initial.visibleSequenceHeight).toBeGreaterThan(40);
+    expect(await visibleHeight('.motif-cs-map-column')).toBeGreaterThan(40);
 
     await main.evaluate((element) => { element.scrollTop = element.scrollHeight; });
     await expect.poll(() => main.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
-    const lowerRowVisibleHeight = await main.evaluate((element) => {
-      const mainRect = element.getBoundingClientRect();
-      const mapRect = element.querySelector<HTMLElement>('.motif-cs-map-column')!.getBoundingClientRect();
-      return Math.max(0, Math.min(mainRect.bottom, mapRect.bottom) - Math.max(mainRect.top, mapRect.top));
-    });
-    expect(lowerRowVisibleHeight).toBeGreaterThan(40);
+    // The lower row, Sequence, keeps useful room once scrolled to.
+    expect(await visibleHeight('.motif-cs-sequence-column')).toBeGreaterThan(40);
   });
 
   test('hiding Sequence leaves the desktop layout free of horizontal overflow', async ({ page }) => {
@@ -4611,19 +5302,19 @@ test.describe('Claude Science artifact workflows', () => {
     await page.keyboard.press('Shift+ArrowRight');
     await page.keyboard.press('Shift+ArrowRight');
 
-    await expect(page.locator('.motif-cs-selection-name')).toHaveText('1-2 (2)');
+    await expect(page.locator('.motif-cs-selection-name')).toHaveText('1–2 · 2 bp');
     await expect(page.locator('.motif-cs-selection-bar')).not.toHaveAttribute('data-empty', 'true');
     await expect(page.locator('.motif-cs-seq-hl').first()).toBeVisible();
     await expect(sequence).toBeFocused();
   });
 
   test('compact resize handles keep rendered geometry and ARIA in sync', async ({ page }) => {
-    await openArtifact(page, 640, 500);
-    const toolsToggle = page.getByRole('button', { name: /Tools/ }).first();
-    if ((await toolsToggle.getAttribute('aria-pressed')) !== 'true') await toolsToggle.click();
+    // Two rows with a pinned Tools pane: from 900px wide, in a window taller than it is wide.
+    await openArtifact(page, 900, 820);
+    await pinTools(page);
 
     const inventory = page.locator('.motif-cs-sidebar');
-    const inventoryResize = page.getByRole('separator', { name: 'Resize inventory pane' });
+    const inventoryResize = page.getByRole('separator', { name: 'Resize library pane' });
     await expect(inventoryResize).toBeVisible();
     await expect(inventoryResize).toHaveAttribute('aria-valuemax', '280');
     const inventoryBefore = (await inventory.boundingBox())!;
@@ -4724,10 +5415,10 @@ test.describe('Claude Science artifact workflows', () => {
     const inspector = page.locator('.motif-cs-inspector[data-tools-pinned="true"]');
     const patternPanel = inspector.locator('details[data-rail-tool="pattern-search"]');
     await patternPanel.locator(':scope > summary').scrollIntoViewIfNeeded();
-    await patternPanel.locator(':scope > summary').click();
+    await openTool(page, 'pattern-search');
     await patternPanel.locator('input[name="motif-search"]').fill('GAATTC');
     await patternPanel.locator('.motif-cs-motif-hit-row').first().click();
-    await expect(page.locator('.motif-cs-selection-name')).toHaveText('396-401 (6)');
+    await expect(page.locator('.motif-cs-selection-name')).toHaveText('396–401 · 6 bp');
 
     const sequence = page.locator('.motif-cs-sequence-column');
     const sequenceScroller = sequence.locator('.motif-cs-sequence');
@@ -4770,7 +5461,7 @@ test.describe('Claude Science artifact workflows', () => {
     expect(mapAfter.width).toBeGreaterThan(mapBefore.width + 160);
     expect(mapAfter.width).toBeGreaterThan(900);
     expect(Math.abs(focusAfter - focusBefore)).toBeLessThanOrEqual(3);
-    await expect(page.locator('.motif-cs-selection-name')).toHaveText('396-401 (6)');
+    await expect(page.locator('.motif-cs-selection-name')).toHaveText('396–401 · 6 bp');
     await expect(focusedBlock).toBeInViewport();
 
     const main = page.locator('.motif-cs-main');
@@ -4789,10 +5480,10 @@ test.describe('Claude Science artifact workflows', () => {
     const inspector = page.locator('.motif-cs-inspector[data-tools-pinned="true"]');
     const patternPanel = inspector.locator('details[data-rail-tool="pattern-search"]');
     await patternPanel.locator(':scope > summary').scrollIntoViewIfNeeded();
-    await patternPanel.locator(':scope > summary').click();
+    await openTool(page, 'pattern-search');
     await patternPanel.locator('input[name="motif-search"]').fill('GAATTC');
     await patternPanel.locator('.motif-cs-motif-hit-row').first().click();
-    await expect(page.locator('.motif-cs-selection-name')).toHaveText('396-401 (6)');
+    await expect(page.locator('.motif-cs-selection-name')).toHaveText('396–401 · 6 bp');
 
     const sequence = page.locator('.motif-cs-sequence-column');
     const sequenceScroller = sequence.locator('.motif-cs-sequence');
@@ -4830,11 +5521,11 @@ test.describe('Claude Science artifact workflows', () => {
     expect(sequenceAfter).toBeLessThan(sequenceBefore - 160);
     expect(mapAfter).toBeGreaterThan(mapBefore + 160);
     expect(Math.abs((await focusOffset()) - focusBefore)).toBeLessThanOrEqual(3);
-    await expect(page.locator('.motif-cs-selection-name')).toHaveText('396-401 (6)');
+    await expect(page.locator('.motif-cs-selection-name')).toHaveText('396–401 · 6 bp');
     await expect(focusedBlock).toBeInViewport();
   });
 
-  test('a new Pattern Search selection supersedes a pending pane-resize anchor', async ({ page }) => {
+  test('a new Sequence search selection supersedes a pending pane-resize anchor', async ({ page }) => {
     await openArtifact(page, 1800, 1200);
 
     const inventoryToggle = page.locator('[data-pane-toggle="inventory"]');
@@ -4845,7 +5536,7 @@ test.describe('Claude Science artifact workflows', () => {
     const inspector = page.locator('.motif-cs-inspector[data-tools-pinned="true"]');
     const patternPanel = inspector.locator('details[data-rail-tool="pattern-search"]');
     await patternPanel.locator(':scope > summary').scrollIntoViewIfNeeded();
-    await patternPanel.locator(':scope > summary').click();
+    await openTool(page, 'pattern-search');
     await patternPanel.locator('input[name="motif-search"]').fill('ATG');
     const hits = patternPanel.locator('.motif-cs-motif-hit-row');
     await expect.poll(() => hits.count()).toBeGreaterThan(8);
@@ -4868,7 +5559,7 @@ test.describe('Claude Science artifact workflows', () => {
     }));
 
     await expect(page.locator('.motif-cs-selection-name')).toHaveText(
-      `${nextPosition}-${nextPosition + 2} (3)`,
+      `${nextPosition.toLocaleString('en-US')}–${(nextPosition + 2).toLocaleString('en-US')} · 3 bp`,
     );
     const focusedBlock = page.locator('.motif-cs-sequence [data-seq-focus="true"]');
     await expect(focusedBlock).toBeInViewport();
@@ -4876,12 +5567,11 @@ test.describe('Claude Science artifact workflows', () => {
   });
 
   test('pane resize modes clean up on blur and Escape docking', async ({ page }) => {
-    await openArtifact(page, 640, 500);
-    const toolsToggle = page.getByRole('button', { name: /Tools/ }).first();
-    if ((await toolsToggle.getAttribute('aria-pressed')) !== 'true') await toolsToggle.click();
+    await openArtifact(page, 900, 820);
+    await pinTools(page);
 
     const inventory = page.locator('[data-pane-key="inventory"]');
-    const inventoryResize = page.getByRole('separator', { name: 'Resize inventory pane' });
+    const inventoryResize = page.getByRole('separator', { name: 'Resize library pane' });
     const inventoryHandle = (await inventoryResize.boundingBox())!;
     await page.mouse.move(inventoryHandle.x + inventoryHandle.width / 2, inventoryHandle.y + inventoryHandle.height / 2);
     await page.mouse.down();
@@ -4913,7 +5603,7 @@ test.describe('Claude Science artifact workflows', () => {
     await expect(page.locator('body')).not.toHaveAttribute('data-motif-cs-stacked-resizing');
     await page.mouse.up();
 
-    await inventory.getByRole('button', { name: 'Pop out Inventory pane' }).click();
+    await inventory.getByRole('button', { name: 'Pop out Library pane' }).click();
     const floatingHeader = inventory.locator(':scope > .motif-cs-pane-title');
     await floatingHeader.focus();
     const floatingHeaderBox = (await floatingHeader.boundingBox())!;
@@ -4927,12 +5617,12 @@ test.describe('Claude Science artifact workflows', () => {
     await page.mouse.up();
   });
 
-  test('640px two-row layout exposes only the resize axes rendered on screen', async ({ page }) => {
-    await openArtifact(page, 640, 700);
+  test('900px two-row layout exposes only the resize axes rendered on screen', async ({ page }) => {
+    await openArtifact(page, 900, 820);
 
-    await expect(page.getByRole('separator', { name: 'Resize stacked inventory pane' })).toBeHidden();
+    await expect(page.getByRole('separator', { name: 'Resize stacked library pane' })).toBeHidden();
     const inventory = page.locator('.motif-cs-sidebar');
-    const inventoryResize = page.getByRole('separator', { name: 'Resize inventory pane' });
+    const inventoryResize = page.getByRole('separator', { name: 'Resize library pane' });
     await expect(inventoryResize).toBeVisible();
     await expect(inventoryResize).toHaveAttribute('aria-orientation', 'vertical');
     await expect(inventoryResize).toHaveAttribute('title', /Left and Right Arrow/);
@@ -4951,12 +5641,13 @@ test.describe('Claude Science artifact workflows', () => {
   });
 
   test('Tools rail preserves the intermediate two-row workspace and gives Map the released width', async ({ page }) => {
-    // 820 tall: 700 and 900 stay stacked; from 960 wide a landscape window puts
-    // Sequence beside Map, which the next test covers.
-    for (const width of [700, 900]) {
+    // 820 tall: 900 and 920 stay stacked; from 900 wide a landscape window puts
+    // Sequence beside Map, which the next test covers. Unpinned, Tools below
+    // 1536px is a closed drawer, which takes no width.
+    for (const width of [900, 920]) {
       await openArtifact(page, width, 820);
-      const toolsToggle = page.getByRole('button', { name: /Tools/ }).first();
-      if ((await toolsToggle.getAttribute('aria-pressed')) !== 'true') await toolsToggle.click();
+      await pinTools(page);
+      const toolsToggle = page.locator('[data-pane-toggle="tools"]');
 
       const inventory = page.locator('.motif-cs-sidebar');
       const sequence = page.locator('.motif-cs-sequence-column');
@@ -4974,28 +5665,26 @@ test.describe('Claude Science artifact workflows', () => {
 
       await toolsToggle.click();
       await expect(page.locator('.motif-cs-main')).not.toHaveAttribute('data-tools-pinned', 'true');
-      const rail = {
+      const released = {
         inventory: (await inventory.boundingBox())!,
         sequence: (await sequence.boundingBox())!,
         map: (await map.boundingBox())!,
-        tools: (await tools.boundingBox())!,
       };
-      expect(Math.abs(rail.inventory.y - pinned.inventory.y)).toBeLessThanOrEqual(2);
-      expect(Math.abs(rail.inventory.width - pinned.inventory.width)).toBeLessThanOrEqual(2);
-      expect(Math.abs(rail.sequence.y - pinned.sequence.y)).toBeLessThanOrEqual(2);
-      expect(Math.abs(rail.map.y - pinned.map.y)).toBeLessThanOrEqual(2);
-      expect(rail.map.width).toBeGreaterThan(pinned.map.width + 150);
-      expect(Math.round(rail.tools.width)).toBe(toolsRailWidth);
-      await expect(toolsToggle).toHaveAttribute('aria-label', /^Tools rail/);
+      expect(Math.abs(released.inventory.y - pinned.inventory.y)).toBeLessThanOrEqual(2);
+      expect(Math.abs(released.inventory.width - pinned.inventory.width)).toBeLessThanOrEqual(2);
+      expect(Math.abs(released.sequence.y - pinned.sequence.y)).toBeLessThanOrEqual(2);
+      expect(Math.abs(released.map.y - pinned.map.y)).toBeLessThanOrEqual(2);
+      expect(released.map.width).toBeGreaterThan(pinned.map.width + 150);
+      await expect(tools).toBeHidden();
+      await expect(toolsToggle).toHaveAttribute('aria-expanded', 'false');
       await expect(toolsToggle.locator('.motif-cs-pane-state')).toHaveCount(0);
       await expect(page.getByRole('separator', { name: 'Resize stacked sequence pane' })).toBeVisible();
 
       if (width === 900) {
-        await page.screenshot({ path: path.join(outputDir, 'stable-tools-rail-900x820.png'), fullPage: true });
+        await page.screenshot({ path: path.join(outputDir, 'stable-tools-released-900x820.png'), fullPage: true });
       }
 
-      await toolsToggle.click();
-      await expect(page.locator('.motif-cs-main')).toHaveAttribute('data-tools-pinned', 'true');
+      await pinTools(page);
       const reopened = {
         inventory: (await inventory.boundingBox())!,
         sequence: (await sequence.boundingBox())!,
@@ -5017,6 +5706,8 @@ test.describe('Claude Science artifact workflows', () => {
       await openArtifact(page, width, height);
       const main = page.locator('.motif-cs-main');
       await expect(main).toHaveAttribute('data-workspace-arrangement', 'side-by-side');
+      // Below 1100px the list starts closed beside the split; open, it is the full row.
+      if (width < 1100) await showRecordsPane(page);
       const inventory = page.locator('.motif-cs-sidebar');
       const sequence = page.locator('.motif-cs-sequence-column');
       const map = page.locator('.motif-cs-map-column');
@@ -5033,8 +5724,7 @@ test.describe('Claude Science artifact workflows', () => {
       await expect(page.getByRole('separator', { name: 'Resize stacked sequence pane' })).toBeHidden();
 
       const toolsToggle = page.locator('[data-pane-toggle="tools"]');
-      await toolsToggle.click();
-      await expect(main).toHaveAttribute('data-tools-pinned', 'true');
+      await pinTools(page);
       const tools = (await page.locator('.motif-cs-inspector').boundingBox())!;
       const pinned = { sequence: (await sequence.boundingBox())!, map: (await map.boundingBox())! };
       expect(Math.abs(pinned.map.y - rail.map.y)).toBeLessThanOrEqual(2);
@@ -5061,7 +5751,7 @@ test.describe('Claude Science artifact workflows', () => {
   });
 
   test('hiding Inventory keeps a stacked workspace stacked', async ({ page }) => {
-    await openArtifact(page, 900, 700);
+    await openArtifact(page, 900, 820);
     const main = page.locator('.motif-cs-main');
     await expect(main).toHaveAttribute('data-workspace-arrangement', 'stacked');
     const map = page.locator('.motif-cs-map-column');
@@ -5084,7 +5774,7 @@ test.describe('Claude Science artifact workflows', () => {
     // The row used to be a flat 240px against 389px of column content, so the
     // column scrolled inside the row: wheeling to the end of the bases carried on
     // into the column and took the title and the edit toolbar with it.
-    await openArtifact(page, 900, 800);
+    await openArtifact(page, 900, 820);
     await expect(page.locator('.motif-cs-main')).toHaveAttribute('data-workspace-arrangement', 'stacked');
     const column = page.locator('.motif-cs-sequence-column');
     const overflow = () => column.evaluate((element) => element.scrollHeight - element.clientHeight);
@@ -5129,7 +5819,7 @@ test.describe('Claude Science artifact workflows', () => {
     await expect(compactPaneControls.first()).toHaveAttribute('draggable', 'true');
     await expect(page.locator('.motif-cs-pane-switcher')).toHaveAttribute('aria-label', /Drag buttons to reorder/);
 
-    const inventoryControl = compactPaneControls.filter({ hasText: 'Inventory' });
+    const inventoryControl = compactPaneControls.filter({ hasText: 'Library' });
     const mapControl = compactPaneControls.filter({ hasText: 'Map' });
     const sequenceBeforeDrag = (await page.locator('.motif-cs-sequence-column').boundingBox())!;
     const inventoryBeforeDrag = (await page.locator('.motif-cs-sidebar').boundingBox())!;
@@ -5164,7 +5854,7 @@ test.describe('Claude Science artifact workflows', () => {
   test('collapsing a pane restores focus and the last pane collapse is announced', async ({ page }) => {
     await openArtifact(page, 1536, 820);
     const inventoryToggle = page.locator('[data-pane-toggle="inventory"]');
-    await page.getByRole('button', { name: 'Collapse inventory pane' }).click();
+    await page.getByRole('button', { name: 'Collapse library pane' }).click();
     await expect(inventoryToggle).toBeFocused();
     await expect(inventoryToggle).toHaveAttribute('aria-pressed', 'false');
 
@@ -5232,14 +5922,13 @@ test.describe('Claude Science artifact workflows', () => {
   test('all nonempty pane combinations remain bounded with Tools expanded or railed', async ({ page }) => {
     test.setTimeout(60_000);
     const paneKeys = [
-      { label: 'Inventory', selector: '.motif-cs-sidebar' },
+      { label: 'Library', selector: '.motif-cs-sidebar' },
       { label: 'Sequence', selector: '.motif-cs-sequence-column' },
       { label: 'Map', selector: '.motif-cs-map-column' },
     ] as const;
 
     for (const width of [640, 820, 1180, 1535, 1536, 1600]) {
       await openArtifact(page, width, 820);
-      const toolsToggle = page.getByRole('button', { name: /Tools/ }).first();
       for (let mask = 1; mask < 8; mask += 1) {
         // Open desired panes before closing others so the at-least-one-visible
         // guard never blocks a legitimate transition between single-pane states.
@@ -5253,8 +5942,7 @@ test.describe('Claude Science artifact workflows', () => {
         }
 
         for (const toolsPinned of [true, false]) {
-          const isPinned = (await toolsToggle.getAttribute('aria-pressed')) === 'true';
-          if (isPinned !== toolsPinned) await toolsToggle.click();
+          await setToolsPinned(page, toolsPinned);
 
           const geometry = await page.locator('.motif-cs-main').evaluate((main, selectors) => {
             const mainRect = main.getBoundingClientRect();
@@ -5275,14 +5963,19 @@ test.describe('Claude Science artifact workflows', () => {
           }, [...paneKeys.map((pane) => pane.selector), '.motif-cs-inspector']);
 
           expect(geometry.scrollWidth, `${width}px mask ${mask} tools ${toolsPinned ? 'open' : 'rail'}`).toBeLessThanOrEqual(geometry.clientWidth + 2);
-          expect(geometry.scrollHeight, `${width}px mask ${mask} tools ${toolsPinned ? 'open' : 'rail'}`).toBeLessThanOrEqual(geometry.clientHeight + 2);
+          // Below 900px the workspace is one scrolling column, so it is taller than its box by design.
+          if (width >= 900) {
+            expect(geometry.scrollHeight, `${width}px mask ${mask} tools ${toolsPinned ? 'open' : 'rail'}`).toBeLessThanOrEqual(geometry.clientHeight + 2);
+          }
           for (const pane of geometry.panes) {
             expect(pane.width, `${pane.selector} width at ${width}px mask ${mask}`).toBeGreaterThan(40);
             expect(pane.height, `${pane.selector} height at ${width}px mask ${mask}`).toBeGreaterThan(40);
             expect(pane.left).toBeGreaterThanOrEqual(geometry.main.left - 2);
             expect(pane.right).toBeLessThanOrEqual(geometry.main.right + 2);
-            expect(pane.top).toBeGreaterThanOrEqual(geometry.main.top - 2);
-            expect(pane.bottom).toBeLessThanOrEqual(geometry.main.bottom + 2);
+            if (width >= 900) {
+              expect(pane.top).toBeGreaterThanOrEqual(geometry.main.top - 2);
+              expect(pane.bottom).toBeLessThanOrEqual(geometry.main.bottom + 2);
+            }
           }
           for (let first = 0; first < geometry.panes.length; first += 1) {
             for (let second = first + 1; second < geometry.panes.length; second += 1) {
@@ -5302,27 +5995,26 @@ test.describe('Claude Science artifact workflows', () => {
   });
 
   for (const width of [640, 767]) {
-    test(`Export and copy remains pointer-clickable at ${width}px with Tools pinned or railed`, async ({ page }) => {
+    test(`Export remains pointer-clickable at ${width}px with Tools pinned or railed`, async ({ page }) => {
       for (const toolsPinned of [false, true]) {
         await openArtifact(page, width, 700);
-        const toolsToggle = page.getByRole('button', { name: /Tools/ }).first();
-        const isPinned = (await toolsToggle.getAttribute('aria-pressed')) === 'true';
-        if (isPinned !== toolsPinned) await toolsToggle.click();
+        await setToolsPinned(page, toolsPinned);
 
+        // One Export: the title-row button. There is no summary row under the bases.
         const panel = page.locator('.motif-cs-sequence-tools-panel');
-        const summary = panel.locator(':scope > summary');
-        await summary.scrollIntoViewIfNeeded();
-        await expect(summary).toBeVisible();
-        const summaryBox = (await summary.boundingBox())!;
+        const trigger = exportTitleButton(page);
+        await trigger.scrollIntoViewIfNeeded();
+        await expect(trigger).toBeVisible();
+        const triggerBox = (await trigger.boundingBox())!;
         const ownsHitTarget = await page.evaluate(({ x, y }) => {
           const hit = document.elementFromPoint(x, y);
-          return Boolean(hit?.closest('.motif-cs-sequence-tools-panel > summary'));
-        }, { x: summaryBox.x + summaryBox.width / 2, y: summaryBox.y + summaryBox.height / 2 });
-        expect(ownsHitTarget, `${width}px Tools ${toolsPinned ? 'pinned' : 'rail'} summary hit target`).toBe(true);
+          return Boolean(hit?.closest('.motif-cs-sequence-title [aria-controls="motif-cs-export-panel"]'));
+        }, { x: triggerBox.x + triggerBox.width / 2, y: triggerBox.y + triggerBox.height / 2 });
+        expect(ownsHitTarget, `${width}px Tools ${toolsPinned ? 'pinned' : 'rail'} Export hit target`).toBe(true);
 
-        await summary.click();
+        await trigger.click();
         await expect(panel).toHaveAttribute('open', '');
-        await summary.click();
+        await trigger.click();
         await expect(panel).not.toHaveAttribute('open', '');
       }
     });
@@ -5333,18 +6025,16 @@ test.describe('Claude Science artifact workflows', () => {
     { width: 640, toolsPinned: false },
     { width: 390, toolsPinned: false },
   ]) {
-    test(`opening Export and copy reveals pointer-reachable controls at ${width}px with Tools ${toolsPinned ? 'pinned' : 'railed'}`, async ({ page }) => {
+    test(`opening Export reveals pointer-reachable controls at ${width}px with Tools ${toolsPinned ? 'pinned' : 'railed'}`, async ({ page }) => {
       await openArtifact(page, width, width === 640 ? 700 : 760);
-      const toolsToggle = page.getByRole('button', { name: /Tools/ }).first();
-      const isPinned = (await toolsToggle.getAttribute('aria-pressed')) === 'true';
-      if (isPinned !== toolsPinned) await toolsToggle.click();
+      await setToolsPinned(page, toolsPinned);
 
       const column = page.locator('.motif-cs-sequence-column');
       const panel = page.locator('.motif-cs-sequence-tools-panel');
-      const summary = panel.locator(':scope > summary');
-      await summary.scrollIntoViewIfNeeded();
+      const trigger = exportTitleButton(page);
+      await trigger.scrollIntoViewIfNeeded();
       const scrollBefore = await column.evaluate((element) => element.scrollTop);
-      await summary.click();
+      await trigger.click();
       await expect(panel).toHaveAttribute('open', '');
 
       const summaryCopy = panel.getByRole('button', { name: 'Summary', exact: true });
@@ -5358,14 +6048,8 @@ test.describe('Claude Science artifact workflows', () => {
       }, { x: copyBox.x + copyBox.width / 2, y: copyBox.y + copyBox.height / 2 })).toBe(true);
       await summaryCopy.click({ trial: true });
 
-      const genbankCopy = panel.getByRole('button', { name: 'GenBank', exact: true });
-      await expect(genbankCopy).toBeVisible();
-      const genbankBox = (await genbankCopy.boundingBox())!;
-      expect(await page.evaluate(({ x, y }) => {
-        const hit = document.elementFromPoint(x, y);
-        return Boolean(hit?.closest('button')?.textContent?.includes('GenBank'));
-      }, { x: genbankBox.x + genbankBox.width / 2, y: genbankBox.y + genbankBox.height / 2 })).toBe(true);
-      await genbankCopy.click({ trial: true });
+      // GenBank is copied with Format plus Copy; the Copy row holds Summary only.
+      await expect(panel.locator('.motif-cs-export-row').first().getByRole('button', { name: 'GenBank', exact: true })).toHaveCount(0);
 
       const compactExportGeometry = await panel.evaluate((element) => {
         const body = element.querySelector<HTMLElement>('.motif-cs-export-body')!;
@@ -5414,12 +6098,8 @@ test.describe('Claude Science artifact workflows', () => {
       expect(compactExportGeometry.rows.filter((row) => row.labelClipped).map((row) => row.labelText)).toEqual([]);
       expect(compactExportGeometry.buttons.map((button) => button.name)).toEqual([
         'Summary',
-        'Sequence',
-        'FASTA',
-        'GenBank',
         'Copy complement',
-        'Copy rev comp',
-        'New rev comp',
+        'Copy reverse complement',
       ]);
       expect(compactExportGeometry.buttons.every((button) => button.insideViewport && button.ownsCenter)).toBe(true);
 
@@ -5429,7 +6109,7 @@ test.describe('Claude Science artifact workflows', () => {
       if (width === 640 && !toolsPinned) {
         await page.screenshot({ path: path.join(outputDir, 'export-controls-640x700-railed.png'), fullPage: true });
       }
-      for (const action of ['Copy complement', 'Copy rev comp', 'New rev comp']) {
+      for (const action of ['Copy complement', 'Copy reverse complement']) {
         const button = panel.getByRole('button', { name: action, exact: true });
         await button.scrollIntoViewIfNeeded();
         await expect(button).toBeVisible();
@@ -5445,12 +6125,12 @@ test.describe('Claude Science artifact workflows', () => {
       }, { x: formatBox.x + formatBox.width / 2, y: formatBox.y + formatBox.height / 2 })).toBe(true);
       await format.click({ trial: true });
 
-      const preview = panel.getByLabel('Selected export preview');
+      const preview = panel.getByLabel('Export preview');
       await preview.scrollIntoViewIfNeeded();
       const previewBox = (await preview.boundingBox())!;
       expect(await page.evaluate(({ x, y }) => {
         const hit = document.elementFromPoint(x, y);
-        return Boolean(hit?.closest('textarea[aria-label="Selected export preview"]'));
+        return Boolean(hit?.closest('textarea[aria-label="Export preview"]'));
       }, { x: previewBox.x + previewBox.width / 2, y: previewBox.y + Math.min(previewBox.height / 2, 12) })).toBe(true);
       await preview.click({ trial: true });
     });
@@ -5462,12 +6142,12 @@ test.describe('Claude Science artifact workflows', () => {
     if ((await toolsToggle.getAttribute('aria-pressed')) === 'true') await toolsToggle.click();
 
     const panel = page.locator('.motif-cs-sequence-tools-panel');
-    const summary = panel.locator(':scope > summary');
-    await summary.scrollIntoViewIfNeeded();
-    await summary.click();
+    const trigger = exportTitleButton(page);
+    await trigger.scrollIntoViewIfNeeded();
+    await trigger.click();
     await expect(panel).toHaveAttribute('open', '');
 
-    const immediateActions = ['Summary', 'Sequence', 'FASTA', 'GenBank', 'Copy complement', 'Copy rev comp', 'New rev comp'];
+    const immediateActions = ['Summary', 'Copy complement', 'Copy reverse complement'];
     const unreachable = () => panel.evaluate((element, names) => {
       const body = element.querySelector<HTMLElement>('.motif-cs-export-body')!.getBoundingClientRect();
       const offScreen = body.top < 0 || body.left < 0 || body.bottom > innerHeight + 1 || body.right > innerWidth + 1;
@@ -5504,14 +6184,14 @@ test.describe('Claude Science artifact workflows', () => {
 
   test('intermediate-height layout keeps Inventory resizable and Map stable when Tools collapses', async ({ page }) => {
     await openArtifact(page, 1180, 560);
-    const toolsToggle = page.getByRole('button', { name: /Tools/ }).first();
-    if ((await toolsToggle.getAttribute('aria-pressed')) !== 'true') await toolsToggle.click();
+    await pinTools(page);
+    const toolsToggle = page.locator('[data-pane-toggle="tools"]');
 
     const inventory = page.locator('.motif-cs-sidebar');
     const sequence = page.locator('.motif-cs-sequence-column');
     const map = page.locator('.motif-cs-map-column');
     const tools = page.locator('.motif-cs-inspector');
-    const inventoryResize = page.getByRole('separator', { name: 'Resize inventory pane' });
+    const inventoryResize = page.getByRole('separator', { name: 'Resize library pane' });
     const inventoryBefore = (await inventory.boundingBox())!;
     const inventoryHandle = (await inventoryResize.boundingBox())!;
     await page.mouse.move(inventoryHandle.x + inventoryHandle.width / 2, inventoryHandle.y + inventoryHandle.height / 2);
@@ -5526,12 +6206,12 @@ test.describe('Claude Science artifact workflows', () => {
       map: (await map.boundingBox())!,
       tools: (await tools.boundingBox())!,
     };
+    // Unpinned, Tools below 1536px is a closed drawer, which takes no width.
     await toolsToggle.click();
     const rail = {
       inventory: (await inventory.boundingBox())!,
       sequence: (await sequence.boundingBox())!,
       map: (await map.boundingBox())!,
-      tools: (await tools.boundingBox())!,
     };
     expect(Math.abs(rail.inventory.y - pinned.inventory.y)).toBeLessThanOrEqual(2);
     expect(Math.abs(rail.sequence.y - pinned.sequence.y)).toBeLessThanOrEqual(2);
@@ -5541,36 +6221,114 @@ test.describe('Claude Science artifact workflows', () => {
     await expect(page.locator('.motif-cs-main')).toHaveAttribute('data-workspace-arrangement', 'side-by-side');
     expect(rail.map.width).toBeGreaterThan(pinned.map.width + 100);
     expect(rail.sequence.width).toBeGreaterThan(pinned.sequence.width + 60);
-    expect(Math.round(rail.tools.width)).toBe(toolsRailWidth);
+    await expect(tools).toBeHidden();
     const mapFrame = (await page.locator('.motif-cs-map-frame').boundingBox())!;
     expect(mapFrame.height).toBeGreaterThanOrEqual(120);
     await expect(page.locator('.motif-cs-map-frame .motif-pm-backbone').first()).toBeVisible();
-    await page.screenshot({ path: path.join(outputDir, 'stable-tools-rail-1180x560.png'), fullPage: true });
+    await page.screenshot({ path: path.join(outputDir, 'stable-tools-released-1180x560.png'), fullPage: true });
   });
 
-  test('narrow Map-hidden layout keeps Sequence useful and Tools in a second row', async ({ page }) => {
+  test('narrow layout keeps a pinned Tools pane off the Map and Sequence until Tools is opened', async ({ page }) => {
+    // Pinned at 1600px, then narrowed to 640px: there is no room beside the
+    // workspace, so the pinned pane is the closed drawer instead of a pane fixed
+    // over the right of the Map and Sequence.
     await openArtifact(page, 640, 500);
-    const toolsToggle = page.getByRole('button', { name: /Tools/ }).first();
-    if ((await toolsToggle.getAttribute('aria-pressed')) !== 'true') await toolsToggle.click();
-    await page.locator('.motif-cs-pane-switcher .motif-cs-pane-toggle').filter({ hasText: 'Map' }).click();
+    await pinTools(page);
+    const main = page.locator('.motif-cs-main');
+    const tools = page.locator('.motif-cs-inspector');
+    const toolsButton = page.locator('[data-pane-toggle="tools"]');
+    const toolsPane = page.locator('#motif-cs-tools-pane');
+    const map = page.locator('.motif-cs-map-column');
+    const sequence = page.locator('.motif-cs-sequence-column');
+    const overlap = (a: { x: number; y: number; width: number; height: number }, b: typeof a) => (
+      Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x) > 1
+      && Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y) > 1
+    );
+    const expectToolsClear = async (label: string) => {
+      await expect(toolsPane, label).toHaveAttribute('data-tools-drawer', 'closed');
+      await expect(tools, label).toBeHidden();
+      const mainWidth = await main.evaluate((element) => element.clientWidth);
+      for (const pane of [map, sequence]) {
+        if (!(await pane.isVisible())) continue;
+        const box = (await pane.boundingBox())!;
+        expect(Math.round(box.width), label).toBe(mainWidth);
+        // Nothing is drawn over the pane: its centre and both top corners hit the pane itself.
+        const hits = await pane.evaluate((element) => {
+          const rect = element.getBoundingClientRect();
+          const top = Math.max(rect.top, 0) + 12;
+          return [
+            [rect.left + 4, top],
+            [rect.right - 4, top],
+            [rect.left + rect.width / 2, Math.min(rect.top + rect.height / 2, innerHeight - 4)],
+          ].map(([x, y]) => Boolean(document.elementFromPoint(x, y)?.closest('.motif-cs-pane') === element));
+        });
+        expect(hits, label).toEqual([true, true, true]);
+      }
+    };
 
-    const mainBox = (await page.locator('.motif-cs-main').boundingBox())!;
-    const sequenceBox = (await page.locator('.motif-cs-sequence-column').boundingBox())!;
-    const toolsBox = (await page.locator('.motif-cs-inspector').boundingBox())!;
-    expect(sequenceBox.width).toBeGreaterThan(380);
-    expect(toolsBox.y).toBeGreaterThan(sequenceBox.y + sequenceBox.height - 2);
-    expect(Math.round(toolsBox.width)).toBe(Math.round(mainBox.width));
-    await expect(page.getByRole('separator', { name: 'Resize stacked sequence pane' })).toBeVisible();
+    await expect(map).toBeVisible();
+    await expectToolsClear('pinned, Map shown');
+    await page.screenshot({ path: path.join(outputDir, 'narrow-pinned-tools-640x500.png') });
+
+    // Opened, it overlays the workspace and closes with Escape or the Tools button.
+    await toolsButton.click();
+    await expect(toolsButton).toHaveAttribute('aria-expanded', 'true');
+    await expect(toolsPane).toHaveAttribute('data-tools-drawer', 'open');
+    await expect(tools).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(toolsButton).toBeFocused();
+    await expectToolsClear('after Escape');
+    await toolsButton.click();
+    await expect(toolsPane).toHaveAttribute('data-tools-drawer', 'open');
+    await toolsButton.click();
+    await expect(toolsButton).toHaveAttribute('aria-expanded', 'false');
+    await expectToolsClear('after the Tools button');
+
+    // With Map hidden, Sequence keeps the whole width and stays clear.
+    await page.locator('.motif-cs-pane-switcher .motif-cs-pane-toggle').filter({ hasText: 'Map' }).click();
+    await expect(map).toBeHidden();
+    expect((await sequence.boundingBox())!.width).toBeGreaterThan(380);
+    await expectToolsClear('pinned, Map hidden');
+
+    // The pin is kept: wider, Tools is pinned beside the workspace again, and
+    // narrow again it is the closed drawer.
+    await page.setViewportSize({ width: 1180, height: 500 });
+    await expect(main).toHaveAttribute('data-tools-pinned', 'true');
+    await expect(toolsButton).toHaveAttribute('aria-pressed', 'true');
+    const wideMain = (await main.boundingBox())!;
+    const wideTools = (await tools.boundingBox())!;
+    expect(overlap(wideTools, (await sequence.boundingBox())!)).toBe(false);
+    expect(wideTools.x + wideTools.width).toBeLessThanOrEqual(wideMain.x + wideMain.width + 1);
+    await page.setViewportSize({ width: 640, height: 500 });
+    await expectToolsClear('narrowed again');
+
+    // Side by side with the Records pane open, a pinned pane needs its own minimum
+    // beside the canvases' minimums. Short of that it is the closed drawer rather
+    // than a pane cut off at the right edge; with room it fits inside the window.
+    await page.locator('.motif-cs-pane-switcher .motif-cs-pane-toggle').filter({ hasText: 'Map' }).click();
+    await page.setViewportSize({ width: 940, height: 700 });
+    await expect(main).toHaveAttribute('data-workspace-arrangement', 'side-by-side');
+    // Below 1100px the list starts closed beside the split; this case is about it open.
+    await showRecordsPane(page);
+    await expect(page.locator('.motif-cs-sidebar')).toBeVisible();
+    await expect(toolsPane).toHaveAttribute('data-tools-drawer', 'closed');
+    await expect(tools).toBeHidden();
+    expect((await map.boundingBox())!.x + (await map.boundingBox())!.width).toBeLessThanOrEqual(940 + 1);
+    for (const width of [1011, 1024]) {
+      await page.setViewportSize({ width, height: 700 });
+      await expect(main).toHaveAttribute('data-tools-pinned', 'true');
+      const row = { map: (await map.boundingBox())!, tools: (await tools.boundingBox())! };
+      expect(row.tools.x + row.tools.width, `${width}px`).toBeLessThanOrEqual(width + 1);
+      expect(row.tools.x, `${width}px`).toBeGreaterThanOrEqual(row.map.x + row.map.width - 1);
+      expect(row.map.width, `${width}px`).toBeGreaterThanOrEqual(299);
+    }
   });
 
-  test('short hybrid layout keeps the rail fixed and its row divider operable', async ({ page }) => {
+  test('short hybrid layout keeps its row divider operable with Tools shut', async ({ page }) => {
     await openArtifact(page, 900, 360);
     const main = page.locator('.motif-cs-main');
-    const rail = page.locator('.motif-cs-inspector');
-    const mainBox = (await main.boundingBox())!;
-    const railBox = (await rail.boundingBox())!;
-    expect(Math.round(railBox.y)).toBe(Math.round(mainBox.y));
-    expect(Math.round(railBox.height)).toBe(Math.round(mainBox.height));
+    // Below 1536px there is no rail: Tools is a closed drawer that takes no room.
+    await expect(page.locator('.motif-cs-inspector')).toBeHidden();
     expect(await main.evaluate((element) => getComputedStyle(element).overflow)).toBe('hidden');
 
     const sequenceColumn = page.locator('.motif-cs-sequence-column');
@@ -5584,17 +6342,25 @@ test.describe('Claude Science artifact workflows', () => {
     expect(mapFrame.y + mapFrame.height).toBeLessThanOrEqual(mapColumn.y + mapColumn.height + 1);
     await expect(page.locator('.motif-cs-map-frame .motif-pm-backbone').first()).toBeVisible();
 
-    const rowResize = page.getByRole('separator', { name: 'Resize stacked sequence pane' });
-    await expect(rowResize).toBeVisible();
-    const beforeHeight = Math.round((await sequenceColumn.boundingBox())!.height);
-    await expect(rowResize).toHaveAttribute('aria-valuenow', String(beforeHeight));
-    await rowResize.focus();
-    await page.keyboard.press('ArrowUp');
-    expect(Math.round((await sequenceColumn.boundingBox())!.height)).toBeLessThan(beforeHeight);
+    // From 900px wide a short window is side by side, so the divider between the
+    // Sequence and Map columns is the one that has to work.
+    const columnResize = page.getByRole('separator', { name: 'Resize sequence and map panes' });
+    await expect(columnResize).toBeVisible();
+    await expect(columnResize).toHaveAttribute('aria-orientation', 'vertical');
+    const beforeWidth = Math.round((await sequenceColumn.boundingBox())!.width);
+    await columnResize.focus();
+    await page.keyboard.press('ArrowRight');
+    const widened = Math.round((await sequenceColumn.boundingBox())!.width);
+    expect(widened).toBeGreaterThan(beforeWidth);
+    await page.keyboard.press('ArrowLeft');
+    await page.keyboard.press('ArrowLeft');
+    expect(Math.round((await sequenceColumn.boundingBox())!.width)).toBeLessThan(widened);
   });
 
   test('very short compact workspaces scroll to the lower pane row', async ({ page }) => {
     await openArtifact(page, 900, 280);
+    // Side by side below 1100px the list starts closed; this case keeps it open.
+    await showRecordsPane(page);
     const main = page.locator('.motif-cs-main');
     const before = await main.evaluate((element) => ({
       clientHeight: element.clientHeight,
@@ -5619,6 +6385,11 @@ test.describe('Claude Science artifact workflows', () => {
     // 268px radius), where `range` is the right answer.
     await openArtifact(page, 1024, 960);
     const mapFrame = page.locator('.motif-cs-map-frame');
+    // The map's status line states a selected range ("1,200–1,800 · 601 bp") and is
+    // marked empty while nothing is selected; the zoom readout stays in the hint.
+    const statusLine = page.locator('.motif-cs-map-selection-line');
+    // A drag across the origin appends "· across the origin".
+    const rangeReadout = /^[\d,]+–[\d,]+ · [\d,]+ bp(?: · across the origin)?$/;
     const viewport = page.locator('.motif-cs-map-frame .motif-pm-viewport');
     const svg = page.locator('.motif-cs-map-frame svg.motif-plasmid-map');
     const viewportOffset = () => viewport.evaluate((element) => {
@@ -5638,10 +6409,13 @@ test.describe('Claude Science artifact workflows', () => {
       const focusRect = focus?.getBoundingClientRect();
       return {
         lineStart: Number(bases?.dataset.lineStart),
+        // A map selection scrolls the sequence only when its line is not fully in view,
+        // and the line then lands about 8px under the scroller's top. So: the whole
+        // line is on screen, and not flush against the top edge.
         visible: Boolean(
           focusRect
-          && focusRect.top >= viewportRect.top + 24
-          && focusRect.bottom <= viewportRect.bottom - 24
+          && focusRect.top >= viewportRect.top + 4
+          && focusRect.bottom <= viewportRect.bottom
         ),
       };
     });
@@ -5660,14 +6434,16 @@ test.describe('Claude Science artifact workflows', () => {
 
     await page.getByRole('button', { name: 'Fit map to pane' }).click();
     await expect(viewport).not.toHaveAttribute('transform', /scale/);
-    // At Fit the whole map is in view, so the plain wheel is not the map's: it is
-    // left unprevented for the page, and the drawing does not move.
+    // At Fit the plain wheel is the map's too: it is prevented and pans the drawing,
+    // and Fit is enabled until it brings the view home again.
     const fitWheelPrevented = await svg.evaluate((element, point) => {
       const event = new WheelEvent('wheel', { deltaY: 180, clientX: point.x, clientY: point.y, bubbles: true, cancelable: true });
       element.dispatchEvent(event);
       return event.defaultPrevented;
     }, center);
-    expect(fitWheelPrevented).toBe(false);
+    expect(fitWheelPrevented).toBe(true);
+    await expect(viewport).toHaveAttribute('transform', /translate/);
+    await page.getByRole('button', { name: 'Fit map to pane' }).click();
     await expect(viewport).not.toHaveAttribute('transform', /translate/);
     await expect(page.getByRole('button', { name: 'Fit map to pane' })).toBeDisabled();
 
@@ -5698,12 +6474,10 @@ test.describe('Claude Science artifact workflows', () => {
     await page.mouse.move(zoomedOutsideRing.x + 420, zoomedOutsideRing.y + 180, { steps: 12 });
     await page.mouse.up();
     const zoomedPositive = await viewportOffset();
-    // Thresholds are a share of the rendered viewBox, not the absolute 80/100 they
-    // used to be. Pan travel is bounded by `bg.width * MAP_PAN_MARGIN_SCALE`, so it
-    // scales with the map, and the old constants were read off a map that stood
-    // taller than its column and was clipped top and bottom. The contract being
-    // asserted is unchanged: a drag outside the ring pans, and pans the way it was
-    // dragged.
+    // Thresholds are a share of the rendered viewBox, not absolute 80/100 values.
+    // Pan travel is bounded by the one pan clamp (clampMapViewport), so it scales
+    // with the map. The contract being asserted: a drag outside the ring pans, and
+    // pans the way it was dragged.
     const zoomedBox = await page.evaluate(() => {
       const [, , w, h] = document.querySelector('.motif-cs-map-frame svg.motif-plasmid-map')!
         .getAttribute('viewBox')!.split(' ').map(Number);
@@ -5730,7 +6504,7 @@ test.describe('Claude Science artifact workflows', () => {
     await expect(viewport).toHaveAttribute('transform', /translate/);
     const circularPositive = await viewportOffset();
     // Same re-derivation as above, and at zoom 1 the bound is exactly
-    // `bg.width * MAP_PAN_MARGIN_SCALE` — a share of the map, so the assertion is
+    // set by clampMapViewport from the visible frame — a share of the map, so the assertion is
     // one too.
     const restBox = await page.evaluate(() => {
       const [, , w, h] = document.querySelector('.motif-cs-map-frame svg.motif-plasmid-map')!
@@ -5739,8 +6513,8 @@ test.describe('Claude Science artifact workflows', () => {
     });
     expect(circularPositive.x).toBeGreaterThan(restBox.w * 0.2);
     expect(circularPositive.y).toBeGreaterThan(restBox.h * 0.2);
-    // The pan made no range. At Fit the readout has nothing else to say, so it may be absent.
-    await expect(mapFrame.locator('.motif-cs-map-hint').filter({ hasText: 'range' })).toHaveCount(0);
+    // The pan made no range: the status line is still at rest.
+    await expect(statusLine).toHaveAttribute('data-empty', 'true');
 
     await page.getByRole('button', { name: 'Fit map to pane' }).click();
     const outsideRingRight = {
@@ -5767,15 +6541,16 @@ test.describe('Claude Science artifact workflows', () => {
     await page.mouse.down();
     await page.mouse.move(circularCenter.x + radius * 0.45, circularCenter.y, { steps: 8 });
     await page.mouse.up();
-    const clockwise = await mapFrame.locator('.motif-cs-map-hint').textContent();
-    expect(clockwise).toContain('range');
+    await expect(statusLine).toHaveText(rangeReadout);
+    const clockwise = await statusLine.textContent();
 
     await page.mouse.move(insideRing.x, insideRing.y);
     await page.mouse.down();
     await page.mouse.move(circularCenter.x - radius * 0.45, circularCenter.y, { steps: 8 });
     await page.mouse.up();
-    const counterclockwise = await mapFrame.locator('.motif-cs-map-hint').textContent();
-    expect(counterclockwise).toContain('range');
+    await expect(statusLine).toHaveText(rangeReadout);
+    await expect(statusLine).not.toHaveText(clockwise ?? '');
+    const counterclockwise = await statusLine.textContent();
     expect(counterclockwise).not.toBe(clockwise);
     await expect.poll(async () => {
       const focus = await sequenceFocus();
@@ -5801,26 +6576,43 @@ test.describe('Claude Science artifact workflows', () => {
       x: linearSvgBox.x + linearSvgBox.width / 2,
       y: linearSvgBox.y + linearSvgBox.height - 10,
     };
+    // A Line drawing is drag space everywhere: a plain drag on blank canvas selects
+    // by x and leaves the view where it is. The middle button pans from there.
     await page.mouse.move(blankCanvas.x, blankCanvas.y);
-    await expect(mapFrame).toHaveAttribute('data-map-pointer-action', 'pan');
+    await expect(mapFrame).toHaveAttribute('data-map-pointer-action', 'range');
     await page.mouse.down();
-    await page.mouse.move(blankCanvas.x + 260, blankCanvas.y + 360, { steps: 12 });
+    await page.mouse.move(blankCanvas.x + 120, blankCanvas.y, { steps: 8 });
     await page.mouse.up();
+    await expect(viewport).not.toHaveAttribute('transform');
+    await expect(statusLine).toHaveText(rangeReadout);
+    const blankRange = await statusLine.textContent();
+    await page.mouse.move(blankCanvas.x, blankCanvas.y);
+    await page.mouse.down({ button: 'middle' });
+    await page.mouse.move(blankCanvas.x + 260, blankCanvas.y + 360, { steps: 12 });
+    await page.mouse.up({ button: 'middle' });
     await expect(viewport).toHaveAttribute('transform', /translate/);
     const linearPositive = await viewportOffset();
     expect(linearPositive.x).toBeGreaterThan(100);
     expect(linearPositive.y).toBeGreaterThan(140);
-    await expect(mapFrame.locator('.motif-cs-map-hint').filter({ hasText: 'range' })).toHaveCount(0);
+    await expect(statusLine).toHaveText(blankRange!);
 
     await page.getByRole('button', { name: 'Fit map to pane' }).click();
     await page.mouse.move(blankCanvas.x, blankCanvas.y);
-    await expect(mapFrame).toHaveAttribute('data-map-pointer-action', 'pan');
-    await page.mouse.down();
+    await expect(mapFrame).toHaveAttribute('data-map-pointer-action', 'range');
+    await page.mouse.down({ button: 'middle' });
     await page.mouse.move(blankCanvas.x - 260, blankCanvas.y - 360, { steps: 12 });
-    await page.mouse.up();
+    await page.mouse.up({ button: 'middle' });
     const linearNegative = await viewportOffset();
     expect(linearNegative.x).toBeLessThan(-100);
-    expect(linearNegative.y).toBeLessThan(-140);
+    // The one pan clamp keeps the axis inside the visible frame: an upward drag lifts
+    // it to the frame's top edge and no further (it never travels out of view).
+    expect(linearNegative.y).toBeLessThan(-10);
+    const liftedAxis = await mapFrame.evaluate((frame) => {
+      const axis = frame.querySelector('.motif-pm-backbone')!.getBoundingClientRect();
+      const drawing = frame.querySelector('svg.motif-plasmid-map')!.getBoundingClientRect();
+      return { axis: axis.top + axis.height / 2, top: Math.max(drawing.top, frame.getBoundingClientRect().top) };
+    });
+    expect(Math.abs(liftedAxis.axis - liftedAxis.top)).toBeLessThanOrEqual(2);
 
     await page.getByRole('button', { name: 'Fit map to pane' }).click();
     const lowerFeatureRow = (await mapFrame.locator('.motif-pm-feature[data-feature-id="linear-lane-3"]').boundingBox())!;
@@ -5832,7 +6624,7 @@ test.describe('Claude Science artifact workflows', () => {
     await page.mouse.down();
     await page.mouse.move(axisEnd, lowerSelectionY, { steps: 8 });
     await page.mouse.up();
-    await expect(mapFrame.locator('.motif-cs-map-hint')).toContainText('range');
+    await expect(statusLine).toHaveText(rangeReadout);
     await expect.poll(async () => {
       const focus = await sequenceFocus();
       return focus.visible && focus.lineStart >= 2_100 && focus.lineStart <= 2_300;
@@ -5849,24 +6641,29 @@ test.describe('Claude Science artifact workflows', () => {
       const mapColumn = page.locator('.motif-cs-map-column');
       const mapFrame = mapColumn.locator('.motif-cs-map-frame');
       const toolbar = mapColumn.locator('.motif-cs-map-toolbar');
-      const drawing = toolbar.locator('.motif-cs-map-mode-toggle');
+      const drawing = toolbar.getByRole('group', { name: 'Map shape' });
+      const circle = drawing.getByRole('button', { name: 'Circle', exact: true });
+      const line = drawing.getByRole('button', { name: 'Line', exact: true });
       await toolbar.scrollIntoViewIfNeeded();
 
       await expect(toolbar).toBeVisible();
-      await expect(drawing).toHaveAttribute('aria-label', 'Draw map as line');
-      await expect(drawing.locator('svg')).toHaveCount(1);
+      // The pair shows the drawing in place, not the action a press would take.
+      await expect(circle).toHaveAttribute('aria-pressed', 'true');
+      await expect(line).toHaveAttribute('aria-pressed', 'false');
       const circularBox = (await toolbar.boundingBox())!;
 
-      await drawing.click();
+      await line.click();
       await expect(mapFrame).toHaveAttribute('data-map-mode', 'linear');
-      await expect(drawing).toHaveAttribute('aria-label', 'Draw map as circle');
+      await expect(line).toHaveAttribute('aria-pressed', 'true');
+      await expect(circle).toHaveAttribute('aria-pressed', 'false');
       const linearBox = (await toolbar.boundingBox())!;
-      expect(Math.abs(linearBox.x - circularBox.x)).toBeLessThan(1);
-      expect(Math.abs(linearBox.y - circularBox.y)).toBeLessThan(1);
+      // The pressed segment moves and the group holds its place.
+      expect(Math.abs(linearBox.x - circularBox.x), 'toolbar x moved when the drawing toggled').toBeLessThan(1);
+      expect(Math.abs(linearBox.y - circularBox.y), 'toolbar y moved when the drawing toggled').toBeLessThan(1);
 
-      await drawing.click();
+      await circle.click();
       await expect(mapFrame).toHaveAttribute('data-map-mode', 'circular');
-      await expect(drawing).toHaveAttribute('aria-label', 'Draw map as line');
+      await expect(circle).toHaveAttribute('aria-pressed', 'true');
     }
 
     // Opening the dock changes the content below the canvas, but not the
@@ -5875,7 +6672,7 @@ test.describe('Claude Science artifact workflows', () => {
     const mapColumn = page.locator('.motif-cs-map-column');
     const mapFrame = mapColumn.locator('.motif-cs-map-frame');
     const toolbar = mapColumn.locator('.motif-cs-map-toolbar');
-    const drawing = toolbar.locator('.motif-cs-map-mode-toggle');
+    const drawing = toolbar.getByRole('group', { name: 'Map shape' }).getByRole('button', { name: 'Line', exact: true });
     const mapVisibility = mapColumn.locator('.motif-cs-map-visibility-panel');
     await mapVisibility.locator(':scope > summary').click();
     await toolbar.scrollIntoViewIfNeeded();
@@ -5883,8 +6680,71 @@ test.describe('Claude Science artifact workflows', () => {
     await drawing.click();
     await expect(mapFrame).toHaveAttribute('data-map-mode', 'linear');
     const linearOpenBox = (await toolbar.boundingBox())!;
-    expect(Math.abs(linearOpenBox.x - circularOpenBox.x)).toBeLessThan(1);
-    expect(Math.abs(linearOpenBox.y - circularOpenBox.y)).toBeLessThan(1);
+    expect(Math.abs(linearOpenBox.x - circularOpenBox.x), 'toolbar x moved when the drawing toggled (dock open)').toBeLessThan(1);
+    expect(Math.abs(linearOpenBox.y - circularOpenBox.y), 'toolbar y moved when the drawing toggled (dock open)').toBeLessThan(1);
+  });
+
+  test('the map shape is a Circle and Line pair whose pressed segment is the drawing', async ({ page }) => {
+    await openArtifact(page, 1040, 820);
+    const toolbar = page.locator('.motif-cs-map-column .motif-cs-map-toolbar');
+    const mapFrame = page.locator('.motif-cs-map-frame');
+    const shape = toolbar.getByRole('group', { name: 'Map shape' });
+    const circle = shape.getByRole('button', { name: 'Circle', exact: true });
+    const line = shape.getByRole('button', { name: 'Line', exact: true });
+    const durability = page.getByTestId('session-durability-status');
+    const editState = page.locator('.motif-cs-edit-state');
+    await expect(shape).toBeVisible();
+    await expect(circle).toHaveAttribute('aria-pressed', 'true');
+    await expect(line).toHaveAttribute('aria-pressed', 'false');
+    const savedState = await durability.textContent();
+
+    // Both segments are full-height targets, and the pair keeps every other
+    // control in the heading where it was.
+    for (const segment of [circle, line]) expect((await segment.boundingBox())!.height).toBeGreaterThanOrEqual(28);
+    const others = async () => toolbar.evaluate((group) => [...group.querySelectorAll('button, select')]
+      .filter((control) => !control.closest('[role="group"][aria-label="Map shape"]'))
+      .map((control) => { const r = control.getBoundingClientRect(); return [r.x, r.y, r.width, r.height].map(Math.round).join(','); }));
+    const before = await others();
+
+    // A pressed segment does nothing; the other one switches the drawing.
+    await circle.click();
+    await expect(mapFrame).toHaveAttribute('data-map-mode', 'circular');
+    await line.click();
+    await expect(mapFrame).toHaveAttribute('data-map-mode', 'linear');
+    await expect(line).toHaveAttribute('aria-pressed', 'true');
+    await expect(circle).toHaveAttribute('aria-pressed', 'false');
+    expect(await others()).toEqual(before);
+
+    // The keyboard reaches both segments: Tab moves between them, Enter and
+    // Space press.
+    await line.focus();
+    await page.keyboard.press('Shift+Tab');
+    await expect(circle).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(mapFrame).toHaveAttribute('data-map-mode', 'circular');
+    await expect(circle).toHaveAttribute('aria-pressed', 'true');
+    await page.keyboard.press('Tab');
+    await expect(line).toBeFocused();
+    await page.keyboard.press('Space');
+    await expect(mapFrame).toHaveAttribute('data-map-mode', 'linear');
+    await line.focus();
+    await page.keyboard.press('Shift+Tab');
+    await page.keyboard.press('Space');
+    await expect(mapFrame).toHaveAttribute('data-map-mode', 'circular');
+    expect(await others()).toEqual(before);
+
+    // A view change: the record is not marked changed.
+    await expect(durability).toHaveText(savedState ?? '');
+    if (await editState.count()) await expect(editState).toHaveAttribute('data-idle', 'true');
+
+    // A linear record shows Line pressed and Circle unavailable, with the reason.
+    await page.evaluate(() => window.motifRenderInventory?.([{
+      id: 'shape-linear', name: 'Shape linear', molecule: 'dna', topology: 'linear', sequence: 'ATGC'.repeat(300),
+    }]));
+    await expect(mapFrame).toHaveAttribute('data-map-mode', 'linear');
+    await expect(line).toHaveAttribute('aria-pressed', 'true');
+    await expect(circle).toBeDisabled();
+    await expect(circle).toHaveAttribute('title', 'A linear molecule has two ends and cannot be drawn as a circle; convert it in Record details to draw it as one');
   });
 
   test('an inventory row names a topology only where there are two to tell apart', async ({ page }) => {
@@ -5894,6 +6754,7 @@ test.describe('Claude Science artifact workflows', () => {
         { id: 'p1', name: 'GFP variant', type: 'protein', topology: 'linear', sequence: 'MVSKGEELFTGVVPILVELDGDVNGHKFSVSGEGEGDAT' },
         { id: 'd1', name: 'Ring vector', type: 'dna', topology: 'circular', sequence: 'ATGCGTACGTTAGCCATGGCTAGCTAGCTAGCATCGATC' },
         { id: 'd2', name: 'Cut vector', type: 'dna', topology: 'linear', sequence: 'ATGCGTACGTTAGCCATGGCTAGCTAGCTAGCATCGATC' },
+        { id: 'r1', name: 'Message strand', type: 'rna', topology: 'linear', sequence: 'AUGCGUACGUUAGCCAUGGCUAGCUAGCUAGCAUCGAUC' },
       ]);
     });
     const meta = (name: string) => page.locator('.motif-cs-inventory-record-row')
@@ -5902,31 +6763,35 @@ test.describe('Claude Science artifact workflows', () => {
     // Every protein in this app is linear, so the word names the only value it
     // could have had. A nucleotide's topology changes what the tools do at the
     // origin, and this row is the only place that says it.
-    await expect(meta('GFP variant')).toHaveText('protein · 39 aa');
-    await expect(meta('Ring vector')).toHaveText('dna · circular · 39 bp');
-    await expect(meta('Cut vector')).toHaveText('dna · linear · 39 bp');
+    // Size then topology; the type only when it is not DNA (it would repeat "dna" on
+    // every row of a DNA list).
+    await expect(meta('GFP variant')).toHaveText('39 aa · protein');
+    await expect(meta('Ring vector')).toHaveText('39 bp · circular');
+    await expect(meta('Cut vector')).toHaveText('39 bp · linear');
+    await expect(meta('Message strand')).toHaveText('39 nt · linear · RNA');
   });
 
   test('the map subtitle names the topology only when the drawing contradicts it', async ({ page }) => {
-    // The word is noise beside a picture of a ring and a button that says
-    // "Draw map as line". It is load-bearing in exactly one state: the record
-    // is circular and the drawing is a line, where nothing else on screen
-    // says the molecule was not converted.
+    // The word is noise beside a picture of a ring and a pressed "Circle"
+    // segment. It is load-bearing in exactly one state: the record is circular
+    // and the drawing is a line, where nothing else on screen says the
+    // molecule was not converted. The length is not repeated here: the Records
+    // row, the Sequence header and the ring's centre give it.
     await openArtifact(page, 1440, 1000);
     const subtitle = page.locator('.motif-cs-map-column > .motif-cs-pane-title small');
     const mapFrame = page.locator('.motif-cs-map-frame');
-    const drawing = page.locator('.motif-cs-map-column .motif-cs-map-toolbar .motif-cs-map-mode-toggle');
+    const shape = page.locator('.motif-cs-map-column .motif-cs-map-toolbar').getByRole('group', { name: 'Map shape' });
 
     await expect(mapFrame).toHaveAttribute('data-map-mode', 'circular');
-    await expect(subtitle).toHaveText('2,686 bp');
+    await expect(subtitle).toHaveCount(0);
 
-    await drawing.click();
+    await shape.getByRole('button', { name: 'Line', exact: true }).click();
     await expect(mapFrame).toHaveAttribute('data-map-mode', 'linear');
-    await expect(subtitle).toHaveText('circular · 2,686 bp');
+    await expect(subtitle).toHaveText('circular record');
 
-    await drawing.click();
+    await shape.getByRole('button', { name: 'Circle', exact: true }).click();
     await expect(mapFrame).toHaveAttribute('data-map-mode', 'circular');
-    await expect(subtitle).toHaveText('2,686 bp');
+    await expect(subtitle).toHaveCount(0);
   });
 
   test('high zoom keeps range bands compact and Fit preserves the selection', async ({ page }) => {
@@ -6007,8 +6872,9 @@ test.describe('Claude Science artifact workflows', () => {
     await page.getByRole('button', { name: 'Fit map to pane' }).click();
     await expect(viewport).not.toHaveAttribute('transform');
     await expect(mapFrame.locator('.motif-pm-selection')).toHaveCount(circularSelectionPaths);
-    await expect(mapFrame.locator('.motif-cs-map-hint')).toContainText('range');
-    await expect(mapFrame.locator('.motif-cs-map-hint')).not.toContainText('%');
+    await expect(page.locator('.motif-cs-map-selection-line')).toHaveText(/^[\d,]+–[\d,]+ · [\d,]+ bp(?: · across the origin)?$/);
+    // The corner carries only the zoom, and at Fit there is none to report (it may be absent).
+    await expect(mapFrame.locator('.motif-cs-map-hint').filter({ hasText: '%' })).toHaveCount(0);
 
     await page.evaluate(() => window.motifRenderInventory?.([{
       id: 'high-zoom-range-linear',
@@ -6041,25 +6907,26 @@ test.describe('Claude Science artifact workflows', () => {
     const linearRangePoint = await findPointerActionPoint('range');
     await page.mouse.move(linearRangePoint.x, linearRangePoint.y);
     await expect(mapFrame).toHaveAttribute('data-map-pointer-action', 'range');
-    const linearPanPoint = await findPointerActionPoint('pan');
-    await page.mouse.move(linearPanPoint.x, linearPanPoint.y);
-    await expect(mapFrame).toHaveAttribute('data-map-pointer-action', 'pan');
+    // A Line drawing has no pan zone: every visible point of it is drag space.
+    await expect(findPointerActionPoint('pan')).rejects.toThrow('no visible pan interaction point');
 
     await page.getByRole('button', { name: 'Fit map to pane' }).click();
     await expect(viewport).not.toHaveAttribute('transform');
     await expect(mapFrame.locator('.motif-pm-selection')).toHaveCount(linearSelectionPaths);
-    await expect(mapFrame.locator('.motif-cs-map-hint')).toContainText('range');
-    await expect(mapFrame.locator('.motif-cs-map-hint')).not.toContainText('%');
+    await expect(page.locator('.motif-cs-map-selection-line')).toHaveText(/^[\d,]+–[\d,]+ · [\d,]+ bp(?: · across the origin)?$/);
+    // The corner carries only the zoom, and at Fit there is none to report (it may be absent).
+    await expect(mapFrame.locator('.motif-cs-map-hint').filter({ hasText: '%' })).toHaveCount(0);
   });
 
   test('the map keeps saying what is selected while the view is zoomed', async ({ page }) => {
-    // The status corner reports two independent facts — the view transform and the
-    // selection — and they used to share one slot through a ternary the zoom badge
-    // always won. So zooming left the selection drawn on the map and unnamed, while
-    // the paths stayed live. A pan alone was enough; the badge could still read 100%.
+    // Two independent facts, the view transform and the selection, each have their
+    // own place: the corner reports the zoom, and the status line under the map
+    // states the selection, so neither can replace the other and zooming never
+    // leaves the selection drawn on the map and unnamed.
     await openArtifact(page, 1180, 900);
     const mapFrame = page.locator('.motif-cs-map-frame');
     const hint = mapFrame.locator('.motif-cs-map-hint');
+    const statusLine = page.locator('.motif-cs-map-selection-line');
     const svg = mapFrame.locator('svg.motif-plasmid-map');
     const svgBox = (await svg.boundingBox())!;
     const centre = { x: svgBox.x + svgBox.width / 2, y: svgBox.y + svgBox.height / 2 };
@@ -6070,26 +6937,27 @@ test.describe('Claude Science artifact workflows', () => {
     await page.mouse.move(centre.x + radius, centre.y, { steps: 8 });
     await page.mouse.up();
 
-    const atFit = (await hint.textContent()) ?? '';
-    expect(atFit).toContain('range');
-    expect(atFit).not.toContain('%');
+    await expect(statusLine).toHaveText(/^[\d,]+–[\d,]+ · [\d,]+ bp(?: · across the origin)?$/);
+    const atFit = (await statusLine.textContent()) ?? '';
+    // At fit the corner has no zoom to report, and never repeats the selection.
+    await expect(hint.filter({ hasText: '%' })).toHaveCount(0);
+    await expect(hint.filter({ hasText: atFit })).toHaveCount(0);
     const selectionPaths = await mapFrame.locator('.motif-pm-selection').count();
     expect(selectionPaths).toBeGreaterThan(0);
 
     for (let i = 0; i < 4; i += 1) await page.getByRole('button', { name: 'Zoom in' }).click();
     await expect(mapFrame.locator('.motif-pm-viewport')).toHaveAttribute('transform', /scale\((?!1\))/);
 
-    // Both facts, not one of them, joined in that order. The shape is written out
-    // literally rather than built from whatever produces the percentage — an
-    // expectation assembled from the same expression as the value under test moves
-    // with it and passes either way.
-    const zoomed = (await hint.textContent()) ?? '';
-    expect(zoomed).toMatch(/^\d+% · range \d/);
-    // ...and the range half is byte-identical to the fitted reading: zoom changes how
-    // the map is drawn, not what is selected. Restoring the ternary drops this half
-    // and fails here.
-    expect(zoomed.split(' · ')).toHaveLength(2);
-    expect(zoomed.split(' · ')[1]).toBe(atFit);
+    // Both facts, each in its own place. The shape is written out literally rather
+    // than built from whatever produces the percentage — an expectation assembled
+    // from the same expression as the value under test moves with it and passes
+    // either way.
+    await expect(hint).toHaveText(/^\d+%/);
+    expect(await hint.textContent()).not.toContain(atFit);
+    // ...and the status line is byte-identical to the fitted reading: zoom changes
+    // how the map is drawn, not what is selected, and a zoom badge never displaces it.
+    expect(await statusLine.textContent()).toBe(atFit);
+    await expect(statusLine).not.toHaveAttribute('data-empty', 'true');
     expect(await mapFrame.locator('.motif-pm-selection').count()).toBe(selectionPaths);
   });
 
@@ -6116,11 +6984,10 @@ test.describe('Claude Science artifact workflows', () => {
     // involved are numerically identical at the default fit.
     // Read the record length rather than assuming one: an oracle that hardcodes
     // a length reports the implementation as broken whenever the fixture changes.
+    // The ring's centre carries it; the Map header does not repeat it.
     const sequenceLength = await page.evaluate(() => {
-      const text = [...document.querySelectorAll('.motif-cs-panel-meta, .motif-cs-pane-title')]
-        .map((node) => node.textContent ?? '')
-        .find((value) => /[\d,]+\s*bp/.test(value));
-      const match = text?.match(/([\d,]+)\s*bp/);
+      const text = document.querySelector('.motif-cs-map-frame .motif-pm-center-len')?.textContent ?? '';
+      const match = text.match(/([\d,]+)\s*bp/);
       return match ? Number(match[1].replace(/,/g, '')) : null;
     });
     expect(sequenceLength, 'could not read the record length for the oracle').toBeGreaterThan(100);
@@ -6143,7 +7010,7 @@ test.describe('Claude Science artifact workflows', () => {
 
     const clickedBase = async () => {
       const meta = await page.locator('.motif-cs-selection-name').textContent();
-      const match = (meta ?? '').trim().match(/^([\d,]+)-/);
+      const match = (meta ?? '').trim().match(/^([\d,]+)–/);
       return match ? Number(match[1].replace(/,/g, '')) : null;
     };
 
@@ -6253,34 +7120,46 @@ test.describe('Claude Science artifact workflows', () => {
     await page.mouse.move(endX, y, { steps: 8 });
     await page.mouse.up();
 
-    const hint = mapFrame.locator('.motif-cs-map-hint');
-    await expect(hint).toContainText('range');
+    // The range is read on the map's own status line, under the frame: a line of its
+    // own, so it cannot sit under the zoom controls or the drawing.
+    const statusLine = page.locator('.motif-cs-map-selection-line');
+    await expect(statusLine).toHaveText(/^[\d,]+–[\d,]+ · [\d,]+ bp$/);
     const toolbarBox = (await page.locator('.motif-cs-map-column .motif-cs-map-toolbar').boundingBox())!;
     const frameBox = (await mapFrame.boundingBox())!;
-    const hintBox = (await hint.boundingBox())!;
+    const statusBox = (await statusLine.boundingBox())!;
     expect(toolbarBox.y + toolbarBox.height).toBeLessThanOrEqual(frameBox.y + 1);
-    expect(hintBox.x).toBeGreaterThanOrEqual(svgBox!.x + 8);
-    expect(hintBox.x + hintBox.width).toBeLessThanOrEqual(svgBox!.x + svgBox!.width - 8);
+    expect(statusBox.y).toBeGreaterThanOrEqual(frameBox.y + frameBox.height - 1);
+    expect(statusBox.x).toBeGreaterThanOrEqual(svgBox!.x - 1);
+    expect(statusBox.x + statusBox.width).toBeLessThanOrEqual(svgBox!.x + svgBox!.width + 1);
+    // The reading is whole: not cut to an ellipsis.
+    expect(await statusLine.evaluate((element) => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(1);
+    for (const name of ['Zoom in', 'Zoom out']) {
+      const control = await page.getByRole('button', { name, exact: true }).boundingBox();
+      if (!control) continue;
+      const overlaps = control.x < statusBox.x + statusBox.width && control.x + control.width > statusBox.x
+        && control.y < statusBox.y + statusBox.height && control.y + control.height > statusBox.y;
+      expect(overlaps, `${name} under the range readout`).toBe(false);
+    }
     await mapFrame.screenshot({ path: path.join(outputDir, 'linear-range-status-640x700.png') });
   });
 
   test('Alignment launcher stays readable, unobstructed, and keyboard-operable across pinned, rail, and phone layouts', async ({ page, browserName }) => {
+    // Pinned tools (a pane pinned in a wide window, then narrowed) and the Tools drawer.
     for (const viewport of [
-      { width: 1180, height: 820 },
-      { width: 640, height: 760 },
-      { width: 390, height: 760 },
+      { width: 1180, height: 820, pinned: true },
+      { width: 640, height: 760, pinned: false },
+      { width: 390, height: 760, pinned: false },
     ]) {
       await openArtifact(page, viewport.width, viewport.height);
-      const toolsToggle = page.getByRole('button', { name: /Tools/ }).first();
-      if ((await toolsToggle.getAttribute('aria-pressed')) !== 'true') await toolsToggle.click();
+      if (viewport.pinned) await pinTools(page);
 
       const alignmentTool = page.locator('details[data-rail-tool="alignment"]');
       const alignmentSummary = alignmentTool.locator(':scope > summary');
-      await alignmentSummary.scrollIntoViewIfNeeded();
-      if (!(await alignmentTool.getAttribute('open'))) await alignmentSummary.click();
+      if (viewport.pinned) await alignmentSummary.scrollIntoViewIfNeeded();
+      await openTool(page, 'alignment');
       const launcher = alignmentTool.getByTestId('msa-open-button');
       await launcher.scrollIntoViewIfNeeded();
-      await expect(launcher).toHaveAccessibleName('Open alignment workspace');
+      await expect(launcher).toHaveAccessibleName('Open alignment');
 
       const geometry = await page.evaluate(() => {
         const body = document.querySelector<HTMLElement>('.motif-cs-alignment-tool-body')!;
@@ -6301,7 +7180,8 @@ test.describe('Claude Science artifact workflows', () => {
           launcherScrollWidth: launch.scrollWidth,
           introBeforeLauncher: introRect.bottom <= launchRect.top + 1,
           launcherBeforeBoundary: launchRect.bottom <= boundaryRect.top + 1,
-          boundaryBeforeSettings: boundaryRect.bottom <= settingsRect.top + 1,
+          // In the drawer an open tool replaces the list, so the Settings row is not drawn at all.
+          boundaryBeforeSettings: settingsRect.width === 0 || boundaryRect.bottom <= settingsRect.top + 1,
           containedHorizontally: launchRect.left >= bodyRect.left - 1 && launchRect.right <= bodyRect.right + 1,
           launcherHit: Boolean(hit?.closest('[data-testid="msa-open-button"]')),
         };
@@ -6316,24 +7196,23 @@ test.describe('Claude Science artifact workflows', () => {
       await page.screenshot({ path: path.join(msaOutputDir, `alignment-launcher-${viewport.width}x${viewport.height}.png`) });
     }
 
+    // The rail (from 1536px, a popover) and the drawer, in a dark theme.
     for (const viewport of [
-      { width: 1180, height: 820 },
-      { width: 640, height: 760 },
+      { width: 1600, height: 900, rail: true },
+      { width: 1180, height: 820, rail: false },
+      { width: 640, height: 760, rail: false },
     ]) {
       await openArtifact(page, viewport.width, viewport.height);
-      await page.locator('select[name="artifact-theme"]').evaluate((select) => {
-        const themeSelect = select as HTMLSelectElement;
-        themeSelect.value = 'claude-dark';
-        themeSelect.dispatchEvent(new Event('change', { bubbles: true }));
-      });
-      await expect(page.locator('html')).toHaveAttribute('data-theme', 'claude-dark');
-      const toolsToggle = page.getByRole('button', { name: /Tools/ }).first();
-      if ((await toolsToggle.getAttribute('aria-pressed')) === 'true') await toolsToggle.click();
+      await chooseTheme(page, 'dark');
 
       const alignmentTool = page.locator('details[data-rail-tool="alignment"]');
       const alignmentSummary = alignmentTool.locator(':scope > summary');
-      await alignmentSummary.scrollIntoViewIfNeeded();
-      await alignmentSummary.click();
+      if (viewport.rail) {
+        await alignmentSummary.scrollIntoViewIfNeeded();
+        await alignmentSummary.click();
+      } else {
+        await openTool(page, 'alignment');
+      }
       const body = alignmentTool.locator('.motif-cs-alignment-tool-body');
       const launcher = alignmentTool.getByTestId('msa-open-button');
       await expect(body).toBeVisible();
@@ -6355,24 +7234,37 @@ test.describe('Claude Science artifact workflows', () => {
       expect(railGeometry.launcherScrollWidth).toBeLessThanOrEqual(railGeometry.launcherClientWidth + 1);
       expect(railGeometry.separated).toBe(true);
 
-      await alignmentSummary.focus();
+      // The rail's head is the first stop; in the drawer the head is hidden under an open tool
+      // and focus starts on the panel's Back control.
+      if (viewport.rail) await alignmentSummary.focus();
+      else await expect(alignmentTool.getByTestId('rail-popover-close')).toBeFocused();
       // WebKit follows the macOS full-keyboard-access preference and may skip
       // non-text controls on Tab, so focus the same controls directly there;
       // Enter activation and focus restoration are still exercised below.
-      if (browserName === 'webkit') await alignmentTool.getByTestId('rail-popover-close').focus();
-      else await page.keyboard.press('Tab');
-      await expect(alignmentTool.getByTestId('rail-popover-close')).toBeFocused();
+      if (viewport.rail) {
+        if (browserName === 'webkit') await alignmentTool.getByTestId('rail-popover-close').focus();
+        else await page.keyboard.press('Tab');
+        await expect(alignmentTool.getByTestId('rail-popover-close')).toBeFocused();
+      }
       if (browserName === 'webkit') await launcher.focus();
       else await page.keyboard.press('Tab');
       await expect(launcher).toBeFocused();
       await page.keyboard.press('Enter');
       await expect(page.getByTestId('msa-workspace')).toBeVisible();
       await page.keyboard.press('Escape');
-      await expect(alignmentSummary).toBeFocused();
+      if (viewport.rail) {
+        await expect(alignmentSummary).toBeFocused();
+      } else {
+        // The drawer closed when the window opened, so the control that launched it is
+        // gone: focus lands on the top-bar Tools button, not on the page body.
+        await expect(
+          page.locator('[data-pane-toggle="tools"]'),
+          'focus after closing a workspace launched from the Tools drawer',
+        ).toBeFocused();
+      }
 
-      const settings = page.locator('details[data-rail-tool="settings"]');
-      await settings.locator(':scope > summary').click();
-      await expect(settings).toHaveAttribute('open', '');
+      await openTool(page, 'settings');
+      await expect(page.locator('details[data-rail-tool="settings"]')).toHaveAttribute('open', '');
       await page.screenshot({ path: path.join(msaOutputDir, `alignment-rail-dark-settings-${viewport.width}x${viewport.height}.png`) });
     }
   });
@@ -6388,7 +7280,7 @@ test.describe('Claude Science artifact workflows', () => {
     });
 
     const alignmentTool = page.locator('details[data-rail-tool="alignment"]');
-    await alignmentTool.locator(':scope > summary').click();
+    await openTool(page, 'alignment');
     await alignmentTool.getByTestId('msa-open-button').click();
     const recordList = page.getByTestId('msa-record-list');
     const selectedOptions = recordList.locator('.motif-cs-msa-record-option[data-active="true"]');
@@ -6397,7 +7289,8 @@ test.describe('Claude Science artifact workflows', () => {
     await expect(selectedOptions.nth(1)).toContainText('Example_variant_B_ins3');
     await expect(recordList.locator('.motif-cs-msa-record-option').filter({ hasText: 'pUC19' }).locator('input')).not.toBeChecked();
 
-    await page.getByLabel('Filter records').fill('pUC19');
+    // The Records pane filter carries the same name, so scope to the alignment workspace.
+    await page.getByTestId('msa-workspace').getByLabel('Filter records').fill('pUC19');
     await expect(recordList.locator('.motif-cs-msa-record-option').nth(0)).toContainText('Example_variant_A');
     await expect(recordList.locator('.motif-cs-msa-record-option').nth(1)).toContainText('Example_variant_B_ins3');
     await expect(recordList.locator('.motif-cs-msa-record-option').filter({ hasText: 'pUC19' })).toBeVisible();
@@ -6414,7 +7307,7 @@ test.describe('Claude Science artifact workflows', () => {
   test('MSA accepts direct multi-file sequence drops, selects the new records, and keeps the shell importer out of the path', async ({ page }) => {
     await openArtifact(page, 1180, 820);
     const alignmentTool = page.locator('details[data-rail-tool="alignment"]');
-    await alignmentTool.locator(':scope > summary').click();
+    await openTool(page, 'alignment');
     await alignmentTool.getByTestId('msa-open-button').click();
     const workspace = page.getByTestId('msa-workspace');
     await expect(page.getByTestId('msa-record-dropzone')).toContainText('Drop sequence files');
@@ -6430,7 +7323,7 @@ test.describe('Claude Science artifact workflows', () => {
         dataTransfer: transfer,
       }));
     });
-    await expect(page.getByTestId('msa-drop-overlay')).toContainText('Add and select sequence files');
+    await expect(page.getByTestId('msa-drop-overlay')).toContainText('Drop sequence files');
     await page.evaluate(() => {
       const transfer = new DataTransfer();
       transfer.items.add(new File(['>drop_read_F\nAACCGGTTAACCGGTT'], 'drop-read-f.fasta', { type: 'text/plain' }));
@@ -6448,8 +7341,8 @@ test.describe('Claude Science artifact workflows', () => {
     await expect(page.getByTestId('msa-selected-only')).toHaveAttribute('aria-pressed', 'true');
     const selected = page.getByTestId('msa-record-list').locator('.motif-cs-msa-record-option[data-active="true"]');
     await expect(selected).toHaveCount(3);
-    await expect(selected.nth(1)).toContainText('drop-read-f');
-    await expect(selected.nth(2)).toContainText('drop-read-r');
+    await expect(selected.nth(1)).toContainText('drop_read_F');
+    await expect(selected.nth(2)).toContainText('drop_read_R');
     await expect(workspace.locator('.motif-cs-msa-intake-status')).toContainText('Imported 2 records');
     await expect(page.getByLabel('Choose sequence files for alignment')).toHaveAttribute('multiple', '');
     await page.screenshot({ path: path.join(msaOutputDir, 'direct-multifile-drop-selected.png') });
@@ -6470,20 +7363,20 @@ test.describe('Claude Science artifact workflows', () => {
   test('Construct Verification says how to add a read and imports one from its own button', async ({ page }) => {
     await openArtifact(page, 1440, 900);
     const tool = page.locator('details[data-rail-tool="construct-verification"]');
-    await tool.locator(':scope > summary').click();
+    await openTool(page, 'construct-verification');
     const open = tool.getByTestId('open-construct-verification');
     const note = tool.getByTestId('construct-verification-source-note');
     await expect(note).toContainText('no Sanger reads yet');
-    await expect(note).toContainText('Import .ab1 traces here');
+    await expect(note).toContainText('Import .ab1 or .abi traces');
     // With a reference and no reads the workspace still opens; it has its own import.
     await expect(open).toBeEnabled();
     await expect(open).not.toHaveAttribute('title');
     await open.click();
     const workspace = page.getByTestId('construct-verification-workspace');
     await expect(workspace).toBeVisible();
-    await page.getByRole('button', { name: 'Close Construct Verification', exact: true }).click();
+    await page.getByRole('button', { name: 'Close Construct verification', exact: true }).click();
     await expect(workspace).toHaveCount(0);
-    await tool.locator(':scope > summary').click();
+    await openTool(page, 'construct-verification');
     await expect(open).toBeVisible();
 
     const beforeCount = await page.evaluate(() => window.motifGetInventory().length);
@@ -6506,12 +7399,17 @@ test.describe('Claude Science artifact workflows', () => {
       analysis: 'Add or select a record to see its length, mass and ORFs.',
       guide: 'Add or select a DNA or RNA record to find guide sites.',
       'restriction-sites': 'Add or select a DNA record to inspect restriction sites.',
-      translation: 'Add or select a DNA or RNA record to translate it.',
     };
+    // Translation has no panel: its row opens the Translation window, and with no
+    // record it is disabled, as the top-bar Translation button is, and says why.
+    const translationHead = page.locator('details[data-rail-tool="translation"] > summary');
+    await expect(translationHead.locator('.motif-cs-chip')).toHaveCount(0);
+    await expect(translationHead).toHaveAttribute('aria-disabled', 'true');
+    await expect(translationHead).toHaveAttribute('title', 'Add a DNA or RNA record to enable translations');
     for (const [tool, note] of Object.entries(expected)) {
       const panel = page.locator(`details[data-rail-tool="${tool}"]`);
       await expect(panel.locator(':scope > summary .motif-cs-chip')).toHaveCount(0);
-      await panel.locator(':scope > summary').click();
+      await openTool(page, tool);
       await expect(panel.locator(':scope > .motif-cs-tool-panel-body')).toContainText(note);
       await expect(panel.locator(':scope > .motif-cs-tool-panel-body')).not.toContainText(/\b0 (hits|bp)\b|0\.0%|0\.00 Da/);
       await page.keyboard.press('Escape');
@@ -6519,21 +7417,150 @@ test.describe('Claude Science artifact workflows', () => {
     await expect(page.locator('details[data-rail-tool="analysis"]').getByRole('button', { name: 'Copy stats' })).toHaveCount(0);
   });
 
+  test('Export in an empty workspace says what it needs once, and the greyed rows point at that sentence', async ({ page }) => {
+    for (const width of [400, 700, 1040]) {
+      await openArtifact(page, width, 900);
+      await page.evaluate(() => window.motifRenderInventory([]));
+      await expect.poll(() => page.evaluate(() => window.motifGetInventory().length)).toBe(0);
+      const trigger = page.locator('.motif-cs-title-actions').getByRole('button', { name: 'Export', exact: true });
+      await expect(trigger).toHaveAttribute('title', /need a record/);
+      await trigger.click();
+      const body = page.locator('.motif-cs-export-body');
+      await expect(body).toBeVisible();
+      // One sentence, not one per button.
+      const note = body.getByTestId('export-needs-record');
+      await expect(note).toHaveCount(1);
+      await expect(note).toContainText('Sequence actions need a record');
+      for (const group of ['Copy', 'Strand']) {
+        const row = body.getByRole('group', { name: group, exact: true });
+        await expect(row).toHaveAttribute('aria-describedby', 'motif-cs-export-needs-record');
+        const buttons = row.getByRole('button');
+        for (let index = 0; index < await buttons.count(); index += 1) await expect(buttons.nth(index)).toBeDisabled();
+      }
+      // The workspace formats do not need a record and stay usable.
+      await expect(body.getByRole('button', { name: 'Download', exact: true })).toBeEnabled();
+      // The sentence sits inside the popover and clear of the first row.
+      const noteBox = (await note.boundingBox())!;
+      const bodyBox = (await body.boundingBox())!;
+      const firstRow = (await body.locator('.motif-cs-export-row').first().boundingBox())!;
+      expect(noteBox.y + noteBox.height).toBeLessThanOrEqual(firstRow.y + 1);
+      expect(noteBox.x).toBeGreaterThanOrEqual(bodyBox.x);
+      expect(noteBox.x + noteBox.width).toBeLessThanOrEqual(bodyBox.x + bodyBox.width + 1);
+    }
+    // With a record there is no sentence and no group wiring.
+    await openArtifact(page, 1040, 900);
+    await page.locator('.motif-cs-title-actions').getByRole('button', { name: 'Export', exact: true }).click();
+    const body = page.locator('.motif-cs-export-body');
+    await expect(body).toBeVisible();
+    await expect(body.getByTestId('export-needs-record')).toHaveCount(0);
+    await expect(body.getByRole('group', { name: 'Copy', exact: true })).toHaveCount(0);
+    await expect(body.getByRole('button', { name: 'Summary', exact: true })).toBeEnabled();
+  });
+
+  test('the ORF list reaches every ORF its count names, a page at a time, and the last row selects its range', async ({ page }) => {
+    await openArtifact(page, 700, 900);
+    // A seeded pseudo-random 9 kb record has a few hundred ORFs, more than one page.
+    await page.evaluate(() => {
+      let seed = 7;
+      const seq = Array.from({ length: 9_000 }, () => {
+        seed = (seed * 1_103_515_245 + 12_345) % 2_147_483_648;
+        return 'ACGT'[Math.floor(seed / 65_536) % 4];
+      }).join('');
+      window.motifRenderInventory([{ id: 'many-orfs', name: 'Many ORFs', molecule: 'dna', topology: 'linear', seq, annotations: [] }]);
+    });
+    await expect.poll(() => page.evaluate(() => window.motifGetInventory().length)).toBe(1);
+    const panel = await openTool(page, 'analysis');
+    const chip = panel.locator(':scope > summary .motif-cs-chip');
+    await expect(chip).toHaveText(/^\d+ ORFs ≥10 aa$/);
+    const total = Number((await chip.innerText()).split(' ')[0]);
+    expect(total).toBeGreaterThan(120);
+    const rows = panel.locator('.motif-cs-orf-select');
+    const note = panel.locator('.motif-cs-orf-list-note');
+    await expect(rows).toHaveCount(120);
+    await expect(note).toHaveText(`Showing 120 of ${total}: the longest ORF per stop.`);
+    const more = panel.getByRole('button', { name: /^Show \d+ more ORFs$/ });
+    // The press puts ORF 121 at the top of the list's scroller, so the new rows
+    // do not join below its scrolled end, out of view.
+    await more.click();
+    await expect(rows).toHaveCount(Math.min(total, 240));
+    const listBox = (await panel.getByRole('region', { name: 'ORFs', exact: true }).boundingBox())!;
+    const firstNew = (await rows.nth(120).boundingBox())!;
+    expect(firstNew.y).toBeGreaterThanOrEqual(listBox.y - 1);
+    expect(firstNew.y + firstNew.height).toBeLessThanOrEqual(listBox.y + listBox.height + 1);
+    while (await more.count()) await more.click();
+    await expect(rows).toHaveCount(total);
+    await expect(note).toHaveText(`All ${total}: the longest ORF per stop.`);
+    const last = rows.last();
+    await expect(last).toContainText(`ORF ${total} ·`);
+    await last.scrollIntoViewIfNeeded();
+    const [start, end] = (await last.locator('small').innerText()).split(' · ')[0].split('-').map(Number);
+    await last.click();
+    await expect(page.locator('.motif-cs-selection-bar')).toContainText(`${start.toLocaleString('en-US')}–${end.toLocaleString('en-US')}`);
+  });
+
+  test('pinned, the ORF rows scroll inside the Analysis panel, which does not push the next tool off screen', async ({ page }) => {
+    // All 66 of pUC19's rows scroll inside the pinned Analysis panel, so the panel keeps its
+    // height and the Alignment head stays on screen.
+    await openArtifact(page, 1600, 900);
+    await pinTools(page);
+    const panel = await openTool(page, 'analysis');
+    const list = panel.getByRole('region', { name: 'ORFs', exact: true });
+    const rows = list.locator('.motif-cs-orf-select');
+    await expect(rows).toHaveCount(66);
+    // The note above the rows and its count stay outside the scroller.
+    const note = panel.locator('.motif-cs-orf-list-note');
+    await expect(note).toHaveText('All 66: the longest ORF per stop.');
+    await expect(list.locator('.motif-cs-orf-list-note')).toHaveCount(0);
+    const size = await list.evaluate((el) => ({ scroll: el.scrollHeight, client: el.clientHeight, scrollWidth: el.scrollWidth, clientWidth: el.clientWidth }));
+    expect(size.scroll).toBeGreaterThan(size.client);
+    expect(size.client).toBeLessThanOrEqual(360);
+    expect(size.scrollWidth).toBeLessThanOrEqual(size.clientWidth);
+    // A capped grid could squeeze every row to its 42px floor so that the lines overlap.
+    const squeezed = await list.locator('.motif-cs-analysis-row').evaluateAll((items) => items.filter((item, index) => (
+      item.scrollHeight > item.clientHeight + 1
+      || (index > 0 && item.getBoundingClientRect().top < items[index - 1].getBoundingClientRect().bottom - 1)
+    )).length);
+    expect(squeezed).toBe(0);
+    expect((await panel.boundingBox())!.height).toBeLessThan(1_400);
+    const alignmentHead = page.locator('details[data-rail-tool="alignment"] > .motif-cs-panel-head');
+    expect((await alignmentHead.boundingBox())!.y).toBeLessThan(2 * 900);
+    // Tab reaches the list after the genetic code. Its focus ring is drawn inside its
+    // edge, so the panel does not clip it.
+    await panel.locator('select[name="analysis-translation-table"]').focus();
+    await page.keyboard.press('Tab');
+    await expect(list).toBeFocused();
+    expect(await list.evaluate((el) => getComputedStyle(el).outlineOffset)).toBe('-2px');
+    // The list scrolls from the keyboard, and ORF 66 at its end selects with Enter.
+    await page.keyboard.press('End');
+    await expect.poll(() => list.evaluate((el) => el.scrollTop + el.clientHeight >= el.scrollHeight - 2)).toBe(true);
+    const last = rows.last();
+    await expect(last).toContainText('ORF 66 ·');
+    const listBox = (await list.boundingBox())!;
+    const lastBox = (await last.boundingBox())!;
+    expect(lastBox.y).toBeGreaterThanOrEqual(listBox.y - 1);
+    expect(lastBox.y + lastBox.height).toBeLessThanOrEqual(listBox.y + listBox.height + 1);
+    const [start, end] = (await last.locator('small').innerText()).split(' · ')[0].split('-').map(Number);
+    await last.focus();
+    await page.keyboard.press('Enter');
+    await expect(page.locator('.motif-cs-selection-bar')).toContainText(`${start.toLocaleString('en-US')}–${end.toLocaleString('en-US')}`);
+  });
+
   test('Results and Workflow Results each say where the other saves go and open each other', async ({ page }) => {
     await openArtifact(page, 1440, 900);
     const results = page.locator('details[data-rail-tool="analysis-results"]');
     const workflows = page.locator('details[data-rail-tool="workflows"]');
-    await results.locator(':scope > summary').click();
-    await expect(results.getByTestId('results-elsewhere')).toHaveText('Digests, gels and quick assemblies are in Workflow Results.');
-    await results.getByRole('button', { name: 'Open Workflow Results', exact: true }).click();
+    await openTool(page, 'analysis-results');
+    await expect(results.getByTestId('results-elsewhere')).toHaveText('Digests, gels and quick assemblies are in Workflow results.');
+    await results.getByRole('button', { name: 'Open Workflow results', exact: true }).click();
     await expect(workflows).toHaveJSProperty('open', true);
     await expect(results).toHaveJSProperty('open', false);
-    await expect(workflows.locator(':scope > summary')).toBeFocused();
-    await expect(workflows.getByTestId('workflow-results-elsewhere')).toHaveText('Primer designs, PCR, assembly plans and verification are in Results.');
-    await workflows.getByRole('button', { name: 'Open Results', exact: true }).click();
+    // In the Tools drawer the opened tool replaces the list, so focus lands on its Back control.
+    await expect(workflows.getByRole('button', { name: 'Back to tools' })).toBeFocused();
+    await expect(workflows.getByTestId('workflow-results-elsewhere')).toHaveText('Primer designs, PCR, assembly plans and verification are in Analysis results.');
+    await workflows.getByRole('button', { name: 'Open Analysis results', exact: true }).click();
     await expect(results).toHaveJSProperty('open', true);
     await expect(workflows).toHaveJSProperty('open', false);
-    await expect(results.locator(':scope > summary')).toBeFocused();
+    await expect(results.getByRole('button', { name: 'Back to tools' })).toBeFocused();
   });
 
   test('the Cloning panel opens Digest Preview for restriction cloning, bringing back a hidden map', async ({ page }) => {
@@ -6541,7 +7568,7 @@ test.describe('Claude Science artifact workflows', () => {
     await page.locator('[data-pane-toggle="map"]').click();
     await expect(page.locator('.motif-cs-map-dock-strip')).toHaveCount(0);
     const cloning = page.locator('details[data-rail-tool="cloning"]');
-    await cloning.locator(':scope > summary').click();
+    await openTool(page, 'cloning');
     await expect(cloning.getByText('Restriction cloning', { exact: true })).toBeVisible();
     await cloning.getByTestId('open-digest-preview').click();
     const digest = page.locator('.motif-cs-map-dock-strip > details').filter({ hasText: 'Digest Preview' });
@@ -6555,7 +7582,7 @@ test.describe('Claude Science artifact workflows', () => {
     await openArtifact(page, 1180, 820);
     const fixtureBytes = buildAbiFixture();
     const alignmentTool = page.locator('details[data-rail-tool="alignment"]');
-    await alignmentTool.locator(':scope > summary').click();
+    await openTool(page, 'alignment');
     await alignmentTool.getByTestId('msa-open-button').click();
     const workspace = page.getByTestId('msa-workspace');
     const beforeCount = await page.evaluate(() => window.motifGetInventory().length);
@@ -6571,7 +7598,7 @@ test.describe('Claude Science artifact workflows', () => {
     await expect(selected.nth(0)).toContainText('plate-read-a');
     await expect(selected.nth(1)).toContainText('plate-read-b');
     expect((await selected.allTextContents()).join('\n')).not.toContain('pUC19');
-    await expect(workspace.getByLabel('Initial template').locator('option:checked')).toHaveText('plate-read-a');
+    await expect(workspace.getByLabel('Comparison template').locator('option:checked')).toHaveText('plate-read-a');
     await expect(workspace.getByTestId('msa-source-link-status')).toContainText('selected 2 imported AB1 reads');
     await page.screenshot({ path: path.join(msaOutputDir, 'direct-ab1-import-selection.png') });
   });
@@ -6579,7 +7606,7 @@ test.describe('Claude Science artifact workflows', () => {
   test('MSA routes one aligned-file drop to a review step without flattening gaps into inventory records', async ({ page }) => {
     await openArtifact(page, 900, 560);
     const alignmentTool = page.locator('details[data-rail-tool="alignment"]');
-    await alignmentTool.locator(':scope > summary').click();
+    await openTool(page, 'alignment');
     await alignmentTool.getByTestId('msa-open-button').click();
     await page.getByRole('button', { name: 'Aligned file' }).click();
     const beforeCount = await page.evaluate(() => window.motifGetInventory().length);
@@ -6596,7 +7623,7 @@ test.describe('Claude Science artifact workflows', () => {
 
     await expect(page.getByLabel('Aligned FASTA or CLUSTAL')).toHaveValue(/ACGT--ACGT/);
     await expect(page.locator('.motif-cs-msa-import-fields select').nth(1)).toHaveValue('mafft');
-    await expect(page.getByTestId('msa-workspace').locator('.motif-cs-msa-intake-status')).toContainText('Review the molecule and engine');
+    await expect(page.getByTestId('msa-workspace').locator('.motif-cs-msa-intake-status')).toContainText('Check molecule type and engine');
     expect(await page.evaluate(() => window.motifGetInventory().length)).toBe(beforeCount);
     await expect(page.getByLabel('Choose a pre-aligned sequence file')).toHaveAttribute('type', 'file');
     await page.screenshot({ path: path.join(msaOutputDir, 'direct-aligned-file-review.png') });
@@ -6668,7 +7695,7 @@ test.describe('Claude Science artifact workflows', () => {
     });
 
     const alignmentTool = page.locator('details[data-rail-tool="alignment"]');
-    await alignmentTool.locator(':scope > summary').click();
+    await openTool(page, 'alignment');
     await alignmentTool.getByTestId('msa-open-button').click();
     const localOptions = page.locator('.motif-cs-msa-local-options');
     await expect(localOptions).toBeVisible();
@@ -6677,7 +7704,8 @@ test.describe('Claude Science artifact workflows', () => {
     await page.screenshot({ path: path.join(msaOutputDir, 'local-sanger-source-options.png') });
     await page.getByTestId('msa-run-button').click();
     await expect(page.getByTestId('msa-stats-bar')).toContainText('100% conserved');
-    await expect(page.locator('.motif-cs-msa-export-row')).toContainText('Auto-oriented 1 AB1 read');
+    // The alignment's note, which records the auto-orientation, is listed in its provenance.
+    await expect(page.getByTestId('msa-provenance')).toContainText('Auto-oriented 1 AB1 read');
     await page.getByRole('button', { name: 'Traces' }).click();
     const traceViewer = page.getByTestId('sanger-trace-viewer');
     await expect(traceViewer.locator('.motif-cs-sanger-toolbar .motif-cs-chip')).toHaveText('reverse');
@@ -6691,7 +7719,7 @@ test.describe('Claude Science artifact workflows', () => {
     await openArtifact(page, 1440, 1000);
     const alignmentTool = page.locator('details[data-rail-tool="alignment"]');
     const alignmentSummary = alignmentTool.locator(':scope > summary');
-    await alignmentSummary.click();
+    await openTool(page, 'alignment');
     await alignmentTool.getByTestId('msa-open-button').click();
 
     const windowPanel = page.locator('.motif-cs-window').filter({ has: page.getByTestId('msa-workspace') });
@@ -6764,17 +7792,15 @@ test.describe('Claude Science artifact workflows', () => {
 
     await page.keyboard.press('Escape');
     await expect(windowPanel).toBeHidden();
-    await expect(alignmentSummary).toBeFocused();
-    if (!(await alignmentTool.getAttribute('open'))) await alignmentSummary.click();
+    await expectFocusBackAtTool(page, alignmentSummary);
+    await openTool(page, 'alignment');
     await alignmentTool.getByTestId('msa-open-button').click();
     await expect(windowPanel.getByRole('button', { name: templateButtonName!, exact: true })).toHaveAttribute('aria-pressed', 'true');
-    await expect(windowPanel.locator('.motif-cs-window-head small')).toHaveText('1 in session');
     expect(await page.evaluate(() => window.motifGetAlignments()[0]?.referenceRowId)).toBe(expectedTemplateId);
     await page.keyboard.press('Escape');
-    const exportPanel = page.locator('.motif-cs-sequence-tools-panel');
-    if (!(await exportPanel.getAttribute('open'))) await exportPanel.locator(':scope > summary').click();
+    const exportPanel = await openExportPanel(page);
     await exportPanel.locator('select[name="export-format"]').selectOption('inventory-json');
-    const databaseExport = JSON.parse(await exportPanel.getByLabel('Selected export preview').inputValue());
+    const databaseExport = JSON.parse(await exportPanel.getByLabel('Export preview').inputValue());
     expect(databaseExport.alignments[0].referenceRowId).toBe(expectedTemplateId);
   });
 
@@ -6792,30 +7818,29 @@ test.describe('Claude Science artifact workflows', () => {
       engine: { id: 'mafft', label: 'MAFFT', version: '7.526', mode: 'local-command' },
     }));
 
-    const dialog = page.getByRole('dialog', { name: 'Multiple Sequence Alignment' });
+    const dialog = page.getByRole('dialog', { name: 'Alignment' });
     await expect(dialog).toBeVisible();
     const normalRect = (await dialog.boundingBox())!;
-    const maximize = dialog.getByRole('button', { name: 'Maximize Multiple Sequence Alignment' });
+    const maximize = dialog.getByRole('button', { name: 'Maximize Alignment' });
     await expect(maximize).toBeVisible();
     await maximize.click();
-    const restore = dialog.getByRole('button', { name: 'Restore Multiple Sequence Alignment' });
+    const restore = dialog.getByRole('button', { name: 'Restore Alignment' });
     await expect(restore).toBeVisible();
 
     const maximizedAt1180 = (await dialog.boundingBox())!;
-    const toolsRailAt1180 = (await page.locator('.motif-cs-inspector[data-tools-pinned="false"]').boundingBox())!;
+    // Below 1536px a closed Tools drawer takes no width, so the window runs to the right edge.
     expect(maximizedAt1180.x).toBeLessThanOrEqual(12);
     expect(maximizedAt1180.y).toBeLessThanOrEqual(12);
-    expect(toolsRailAt1180.x - (maximizedAt1180.x + maximizedAt1180.width)).toBeLessThanOrEqual(12);
+    expect(1180 - (maximizedAt1180.x + maximizedAt1180.width)).toBeLessThanOrEqual(12);
     expect(820 - (maximizedAt1180.y + maximizedAt1180.height)).toBeLessThanOrEqual(12);
 
     await page.setViewportSize({ width: 1440, height: 1000 });
     await expect.poll(async () => {
       const box = (await dialog.boundingBox())!;
-      const rail = (await page.locator('.motif-cs-inspector[data-tools-pinned="false"]').boundingBox())!;
       return {
         left: Math.round(box.x),
         top: Math.round(box.y),
-        rightGap: Math.round(rail.x - box.x - box.width),
+        rightGap: Math.round(1440 - box.x - box.width),
         bottomGap: Math.round(1000 - box.y - box.height),
       };
     }).toEqual({ left: 8, top: 8, rightGap: 8, bottomGap: 8 });
@@ -6848,15 +7873,18 @@ test.describe('Claude Science artifact workflows', () => {
     });
     await page.setViewportSize({ width: 390, height: 760 });
 
-    const dialog = page.getByRole('dialog', { name: 'Multiple Sequence Alignment' });
+    const dialog = page.getByRole('dialog', { name: 'Alignment' });
     const settings = page.locator('details[data-rail-tool="settings"]');
-    await settings.locator(':scope > summary').click();
+    await openTool(page, 'settings');
     await expect(settings).toHaveAttribute('open', '');
-    await settings.getByRole('button', { name: 'Close Settings' }).click();
+    // The drawer covers the window; send the tool back and shut the drawer.
+    await closeToolsDrawer(page);
     await expect(settings).not.toHaveAttribute('open', '');
     const body = dialog.locator('.motif-cs-window-body');
     const toolbar = dialog.getByTestId('msa-result-toolbar');
-    const exportTrigger = dialog.getByTestId('msa-export-menu-button');
+    // At phone width Export, Go to, Edit inputs and Delete sit behind the one More menu,
+    // which is what stays in the sticky toolbar (the workspace is under 560px wide).
+    const exportTrigger = dialog.getByTestId('msa-more-menu-button');
     // Scroll as far as this panel allows and assert the toolbar holds its place
     // either way. The body used to be guaranteed to overflow at phone width, so
     // this test could require scrollTop > 0; the controls now fit, and pinning a
@@ -6887,7 +7915,7 @@ test.describe('Claude Science artifact workflows', () => {
     expect(toolbarGeometry.top).toBeGreaterThanOrEqual(toolbarGeometry.bodyTop - 1);
     expect(toolbarGeometry.bottom).toBeLessThanOrEqual(toolbarGeometry.bodyBottom + 1);
 
-    const textButton = toolbar.getByRole('button', { name: 'Text' });
+    const textButton = toolbar.getByRole('button', { name: 'Text', exact: true });
     const hitTest = await textButton.evaluate((button) => {
       const rect = button.getBoundingClientRect();
       const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
@@ -6924,7 +7952,7 @@ test.describe('Claude Science artifact workflows', () => {
 
     const alignmentTool = page.locator('details[data-rail-tool="alignment"]');
     const alignmentSummary = alignmentTool.locator(':scope > summary');
-    const dialog = page.getByRole('dialog', { name: 'Multiple Sequence Alignment' });
+    const dialog = page.getByRole('dialog', { name: 'Alignment' });
     const viewButton = dialog.getByTestId('msa-view-menu-button');
     await expect(viewButton).toHaveAttribute('aria-expanded', 'false');
     await viewButton.click();
@@ -6963,8 +7991,8 @@ test.describe('Claude Science artifact workflows', () => {
     await expect(viewButton).toBeFocused();
     await page.keyboard.press('Escape');
     await expect(dialog).toBeHidden();
-    await expect(alignmentSummary).toBeFocused();
-    if (!(await alignmentTool.getAttribute('open'))) await alignmentSummary.click();
+    await expectFocusBackAtTool(page, alignmentSummary);
+    await openTool(page, 'alignment');
     await alignmentTool.getByTestId('msa-open-button').click();
 
     await expect(dialog.locator('.motif-cs-msa-overview-row')).toHaveCount(0);
@@ -6994,10 +8022,34 @@ test.describe('Claude Science artifact workflows', () => {
     await expect(viewButton).toBeFocused();
   });
 
+  test('collapsing the Alignment window keeps its draft text, name and settings', async ({ page }) => {
+    await openArtifact(page, 1180, 820);
+    const alignmentTool = await openTool(page, 'alignment');
+    await alignmentTool.getByTestId('msa-open-button').click();
+    const windowPanel = page.locator('.motif-cs-window').filter({ has: page.getByTestId('msa-workspace') });
+    await windowPanel.getByRole('button', { name: 'Aligned file', exact: true }).click();
+    const draft = windowPanel.getByRole('textbox', { name: 'Aligned FASTA or CLUSTAL' });
+    const name = windowPanel.locator('input[name="imported-alignment-name"]');
+    await draft.fill('>a\nACGT--ACGT\n>b\nACGTTTACGT');
+    await name.fill('Draft that must survive');
+
+    await windowPanel.getByRole('button', { name: /^Collapse / }).click();
+    await expect(windowPanel).toHaveAttribute('data-collapsed', 'true');
+    // Hidden, not gone, and no shortcut reaches into it while it is hidden.
+    await expect(draft).toBeHidden();
+    await page.keyboard.press('/');
+    await expect(draft).toBeHidden();
+
+    await windowPanel.getByRole('button', { name: /^Expand / }).click();
+    await expect(draft).toBeVisible();
+    await expect(draft).toHaveValue('>a\nACGT--ACGT\n>b\nACGTTTACGT');
+    await expect(name).toHaveValue('Draft that must survive');
+  });
+
   test('MSA Edit inputs preserves setup and creates distinguishable, selectable results', async ({ page }) => {
     await openArtifact(page, 1180, 820);
     const alignmentTool = page.locator('details[data-rail-tool="alignment"]');
-    await alignmentTool.locator(':scope > summary').click();
+    await openTool(page, 'alignment');
     await alignmentTool.getByTestId('msa-open-button').click();
 
     const windowPanel = page.locator('.motif-cs-window').filter({ has: page.getByTestId('msa-workspace') });
@@ -7047,7 +8099,6 @@ test.describe('Claude Science artifact workflows', () => {
     await page.setViewportSize({ width: 1180, height: 820 });
 
     await page.getByTestId('msa-run-button').click();
-    await expect(windowPanel.locator('.motif-cs-window-head small')).toHaveText('2 in session');
     const saved = await page.evaluate(() => window.motifGetAlignments());
     expect(saved).toHaveLength(2);
     expect(saved[1].name).toBe(`${saved[0].name} 2`);
@@ -7104,11 +8155,15 @@ test.describe('Claude Science artifact workflows', () => {
     await viewButton.click();
     await windowPanel.getByTestId('msa-row-sort-toolbar').selectOption('name');
     await windowPanel.getByTestId('msa-view-menu').getByRole('checkbox', { name: 'Residue colors' }).check();
-    await windowPanel.getByRole('button', { name: 'Increase alignment font size' }).click();
-    await windowPanel.getByRole('button', { name: 'Text' }).click();
+    // The row reads "Text size N px"; one step larger than the default is what must be restored.
+    const fontRow = windowPanel.locator('.motif-cs-msa-view-font-row > span');
+    const defaultSize = Number((await fontRow.textContent())!.match(/(\d+) px/)![1]);
+    await windowPanel.getByRole('button', { name: 'Larger text' }).click();
+    await expect(fontRow).toHaveText(`Text size ${defaultSize + 1} px`);
+    await windowPanel.getByRole('button', { name: 'Text', exact: true }).click();
     const exportMenuButton = windowPanel.getByTestId('msa-export-menu-button');
     await exportMenuButton.click();
-    const exportFormat = windowPanel.getByRole('combobox', { name: 'Export', exact: true });
+    const exportFormat = windowPanel.getByRole('combobox', { name: 'Format', exact: true });
     await exportFormat.selectOption('json');
 
     // With a menu open, the first Escape dismisses the menu; only once nothing
@@ -7117,12 +8172,12 @@ test.describe('Claude Science artifact workflows', () => {
     await expect(windowPanel.getByTestId('msa-export-menu')).toBeHidden();
     await page.keyboard.press('Escape');
     await expect(windowPanel).toBeHidden();
-    await expect(alignmentSummary).toBeFocused();
-    if (!(await alignmentTool.getAttribute('open'))) await alignmentSummary.click();
+    await expectFocusBackAtTool(page, alignmentSummary);
+    await openTool(page, 'alignment');
     await alignmentTool.getByTestId('msa-open-button').click();
 
     await expect(picker).toHaveValue('view-state-second');
-    await expect(windowPanel.getByRole('button', { name: 'Text' })).toHaveAttribute('aria-pressed', 'true');
+    await expect(windowPanel.getByRole('button', { name: 'Text', exact: true })).toHaveAttribute('aria-pressed', 'true');
     await exportMenuButton.click();
     await expect(windowPanel.getByTestId('msa-export-menu')).toBeVisible();
     await expect(exportFormat).toHaveValue('json');
@@ -7132,7 +8187,7 @@ test.describe('Claude Science artifact workflows', () => {
     await viewButton.click();
     await expect(windowPanel.getByTestId('msa-row-sort-toolbar')).toHaveValue('name');
     await expect(windowPanel.getByTestId('msa-view-menu').getByRole('checkbox', { name: 'Residue colors' })).toBeChecked();
-    await expect(windowPanel.locator('.motif-cs-msa-view-font-row > span')).toHaveText('Aa 12 px');
+    await expect(windowPanel.locator('.motif-cs-msa-view-font-row > span')).toHaveText(`Text size ${defaultSize + 1} px`);
   });
 
   test('MSA picker disambiguates duplicate preloaded and runtime result names', async ({ page }) => {
@@ -7222,7 +8277,7 @@ test.describe('Claude Science artifact workflows', () => {
     } as never));
 
     const alignmentTool = page.locator('details[data-rail-tool="alignment"]');
-    await alignmentTool.locator(':scope > summary').click();
+    await openTool(page, 'alignment');
     await alignmentTool.getByTestId('msa-open-button').click();
     const windowPanel = page.locator('.motif-cs-window').filter({ has: page.getByTestId('msa-workspace') });
     const picker = windowPanel.locator('.motif-cs-msa-alignment-picker select');
@@ -7283,7 +8338,7 @@ test.describe('Claude Science artifact workflows', () => {
     } as never));
 
     const alignmentTool = page.locator('details[data-rail-tool="alignment"]');
-    await alignmentTool.locator(':scope > summary').click();
+    await openTool(page, 'alignment');
     await alignmentTool.getByTestId('msa-open-button').click();
     const windowPanel = page.locator('.motif-cs-window').filter({ has: page.getByTestId('msa-workspace') });
     const provenance = windowPanel.getByTestId('msa-provenance');
@@ -7382,7 +8437,7 @@ test.describe('Claude Science artifact workflows', () => {
       engine: { id: 'mafft', label: 'MAFFT', version: '7.526', mode: 'local-command' },
     }));
 
-    const dialog = page.getByRole('dialog', { name: 'Multiple Sequence Alignment' });
+    const dialog = page.getByRole('dialog', { name: 'Alignment' });
     await dialog.getByTestId('msa-goto-menu-button').click();
     const coordinateSystem = dialog.getByTestId('msa-coordinate-system');
     const coordinateInput = dialog.getByTestId('msa-coordinate-input');
@@ -7513,7 +8568,7 @@ test.describe('Claude Science artifact workflows', () => {
   test('MSA aligned-FASTA import records honest provenance and rejects malformed replacement atomically', async ({ page }) => {
     await openArtifact(page, 900, 460);
     const alignmentTool = page.locator('details[data-rail-tool="alignment"]');
-    await alignmentTool.locator(':scope > summary').click();
+    await openTool(page, 'alignment');
     await alignmentTool.getByTestId('msa-open-button').click();
     await page.getByRole('button', { name: 'Aligned file' }).click();
     await expect(page.locator('.motif-cs-msa-import-fields select').nth(1)).toHaveValue('imported');
@@ -7535,16 +8590,22 @@ test.describe('Claude Science artifact workflows', () => {
     expect(saved).toHaveLength(1);
     expect(saved[0].engine).toMatchObject({ id: 'clustal-omega', label: 'Clustal Omega', version: '1.2.4', mode: 'local-command' });
 
-    await page.getByRole('button', { name: 'Text' }).click();
+    await page.getByRole('button', { name: 'Text', exact: true }).click();
     await page.getByTestId('msa-export-menu-button').click();
-    await page.getByTestId('msa-workspace').getByRole('combobox', { name: 'Export', exact: true }).selectOption('clustal');
+    await page.getByTestId('msa-workspace').getByRole('combobox', { name: 'Format', exact: true }).selectOption('clustal');
     await page.getByTestId('msa-export-menu-button').click();
     await expect(page.getByTestId('msa-export-menu')).toBeHidden();
     const exportedClustal = await page.getByLabel('CLUSTAL alignment text').inputValue();
     expect(exportedClustal).toMatch(/sample_A\s+ACGT--ACGT/);
     // Once a result exists the source banner collapses out of the way, and
-    // "Edit inputs" is the affordance that brings it back.
-    await page.getByTestId('msa-edit-inputs').click();
+    // "Edit inputs" is the affordance that brings it back. In a window under 880px wide
+    // it sits behind the toolbar's More menu, so that opens first; wider, it is inline.
+    const editInputs = page.getByTestId('msa-edit-inputs');
+    if (!(await editInputs.isVisible())) {
+      await page.getByTestId('msa-more-menu-button').click();
+      await expect(editInputs).toBeVisible();
+    }
+    await editInputs.click();
     await page.getByTestId('msa-workspace').getByRole('button', { name: 'Aligned file' }).click();
     await page.locator('.motif-cs-msa-import-fields input').first().fill('Round-tripped CLUSTAL');
     await page.locator('.motif-cs-msa-import-fields select').nth(1).selectOption('imported');
@@ -7556,15 +8617,24 @@ test.describe('Claude Science artifact workflows', () => {
     expect(roundTripped).toHaveLength(2);
     expect(roundTripped[1].rows.map((row: { aligned: string }) => row.aligned)).toEqual(roundTripped[0].rows.map((row: { aligned: string }) => row.aligned));
 
-    await page.getByRole('button', { name: 'Delete this alignment from the session' }).click();
+    // In a window under 1000px wide Delete sits behind the toolbar's More menu.
+    const deleteAlignment = page.getByRole('button', { name: 'Delete alignment' });
+    const showDeleteAlignment = async () => {
+      if (await deleteAlignment.isVisible()) return;
+      await page.getByTestId('msa-more-menu-button').click();
+      await expect(deleteAlignment).toBeVisible();
+    };
+    await showDeleteAlignment();
+    await deleteAlignment.click();
     const deleteConfirmation = page.getByRole('group', { name: 'Confirm alignment deletion' });
     await expect(deleteConfirmation).toBeVisible();
     await expect(deleteConfirmation.getByRole('button', { name: 'Cancel' })).toBeFocused();
     expect(await page.evaluate(() => window.motifGetAlignments().length)).toBe(2);
     await deleteConfirmation.getByRole('button', { name: 'Cancel' }).click();
-    await expect(page.getByRole('button', { name: 'Delete this alignment from the session' })).toBeFocused();
+    await expect(deleteAlignment).toBeFocused();
     expect(await page.evaluate(() => window.motifGetAlignments().length)).toBe(2);
-    await page.getByRole('button', { name: 'Delete this alignment from the session' }).click();
+    await showDeleteAlignment();
+    await deleteAlignment.click();
     await page.getByTestId('msa-confirm-delete').click();
     expect(await page.evaluate(() => window.motifGetAlignments().length)).toBe(1);
     await expect(page.locator('.motif-cs-msa-alignment-picker select')).toBeFocused();
@@ -7584,9 +8654,9 @@ test.describe('Claude Science artifact workflows', () => {
     expect(invalidResult).toEqual({ before: 1, after: 1, code: 'MOTIF_INVALID_ALIGNMENT_INPUT' });
   });
 
-  test('MSA imported viewer stays contained and accessible on a Warm Dark phone', async ({ page }) => {
+  test('MSA imported viewer stays contained and accessible on a Dark phone', async ({ page }) => {
     await openArtifact(page, 1180, 900);
-    await page.locator('select[name="artifact-theme"]').selectOption('claude-dark');
+    await chooseTheme(page, 'dark');
     await page.evaluate(() => {
       const reference = 'ACGT'.repeat(30);
       const variantB = reference.split('');
@@ -7613,6 +8683,8 @@ test.describe('Claude Science artifact workflows', () => {
     // where its chip renders the engine label, so toHaveText passed against
     // markup nobody can see — inside the test named for staying accessible at
     // phone width. The provenance summary is where a reader actually finds it.
+    // At phone width the provenance trigger sits in the toolbar's More menu.
+    await windowPanel.getByTestId('msa-more-menu-button').click();
     const provenance = windowPanel.getByTestId('msa-provenance').locator('summary');
     await expect(provenance).toBeVisible();
     await expect(provenance).toContainText('MAFFT');
@@ -7631,16 +8703,17 @@ test.describe('Claude Science artifact workflows', () => {
     expect(geometry.right).toBeLessThanOrEqual(geometry.viewportWidth);
     expect(geometry.bottom).toBeLessThanOrEqual(geometry.viewportHeight);
 
-    await page.screenshot({ path: path.join(msaOutputDir, 'msa-claude-dark-viewer-390x760.png') });
-    await page.getByRole('button', { name: 'Text' }).click();
+    await page.screenshot({ path: path.join(msaOutputDir, 'msa-dark-viewer-390x760.png') });
+    await page.getByRole('button', { name: 'Text', exact: true }).click();
     await expect(page.getByLabel('Aligned FASTA alignment text')).toHaveValue(/>Example_reference/);
+    await windowPanel.getByTestId('msa-more-menu-button').click();
     await windowPanel.getByTestId('msa-export-menu-button').click();
-    await windowPanel.getByRole('combobox', { name: 'Export', exact: true }).selectOption('clustal');
+    await windowPanel.getByRole('combobox', { name: 'Format', exact: true }).selectOption('clustal');
     await expect(page.getByLabel('CLUSTAL alignment text')).toHaveValue(/CLUSTAL W/);
 
     const accessibility = await new AxeBuilder({ page }).include('.motif-cs-window').analyze();
     expect(accessibility.violations).toEqual([]);
-    await page.screenshot({ path: path.join(msaOutputDir, 'msa-claude-dark-390x760.png') });
+    await page.screenshot({ path: path.join(msaOutputDir, 'msa-dark-390x760.png') });
   });
 
   test('MSA 100-row density preserves suffixes, semantics, and panel-owned scrolling', async ({ page }) => {
@@ -7813,7 +8886,7 @@ test.describe('Claude Science artifact workflows', () => {
 
   test('aligned AB1 reads expose interactive forward and reverse chromatograms', async ({ page }) => {
     await openArtifact(page, 1180, 820);
-    await page.locator('select[name="artifact-theme"]').selectOption('claude-light');
+    await chooseTheme(page, 'light');
     await page.evaluate(() => {
       const template = 'ACGTTGCA'.repeat(15);
       const mutate = (sequence: string, index: number, base: string) => `${sequence.slice(0, index)}${base}${sequence.slice(index + 1)}`;
@@ -7926,7 +8999,7 @@ test.describe('Claude Science artifact workflows', () => {
 
     const accessibility = await new AxeBuilder({ page }).include('.motif-cs-window').analyze();
     expect(accessibility.violations).toEqual([]);
-    await page.screenshot({ path: path.join(msaOutputDir, 'sanger-traces-claude-light.png') });
+    await page.screenshot({ path: path.join(msaOutputDir, 'sanger-traces-1180x820.png') });
 
     await page.setViewportSize({ width: 390, height: 760 });
     await expect(traceViewer).toBeVisible();
@@ -7934,8 +9007,8 @@ test.describe('Claude Science artifact workflows', () => {
     await page.screenshot({ path: path.join(msaOutputDir, 'sanger-traces-phone.png') });
 
     await page.setViewportSize({ width: 900, height: 760 });
-    for (const theme of ['light', 'dark', 'claude-light', 'claude-dark'] as const) {
-      await page.locator('select[name="artifact-theme"]').selectOption(theme);
+    for (const theme of ['light', 'dark'] as const) {
+      await chooseTheme(page, theme);
       await page.waitForTimeout(80);
       await expect(traceViewer).toBeVisible();
       await page.screenshot({ path: path.join(msaOutputDir, `sanger-traces-${theme}.png`) });
@@ -7946,8 +9019,10 @@ test.describe('Claude Science artifact workflows', () => {
     // The compact toolbar lets the complete selected lane and footer fit in a
     // 600px panel. Use a shorter viewport so this test still exercises the
     // nested-stack wheel hand-off instead of asserting overflow that is absent.
-    await openArtifact(page, 1180, 680);
-    await page.locator('select[name="artifact-theme"]').selectOption('claude-light');
+    // The Alignment window opens 56px short of the viewport's height, so 586px
+    // gives it 530px.
+    await openArtifact(page, 1180, 586);
+    await chooseTheme(page, 'light');
     await page.evaluate(() => {
       const template = 'ACGTTGCA'.repeat(45);
       const complement: Record<string, string> = { A: 'T', C: 'G', G: 'C', T: 'A' };
@@ -8055,7 +9130,7 @@ test.describe('Claude Science artifact workflows', () => {
     await windowBody.evaluate((element) => { element.scrollTop = 0; });
     await setRangeValueWithKeyboard(traceViewer.getByRole('slider', { name: 'Alignment column' }), 300);
     await traceViewer.getByRole('button', { name: 'Zoom chromatogram in' }).click();
-    const qualityToggle = traceViewer.getByRole('checkbox', { name: 'Low quality' });
+    const qualityToggle = traceViewer.getByRole('checkbox', { name: 'Shade below Q40' });
     await qualityToggle.uncheck();
 
     await page.getByRole('button', { name: 'Viewer', exact: true }).click();
@@ -8071,7 +9146,7 @@ test.describe('Claude Science artifact workflows', () => {
 
     const accessibility = await new AxeBuilder({ page }).include('.motif-cs-window').analyze();
     expect(accessibility.violations).toEqual([]);
-    await page.screenshot({ path: path.join(msaOutputDir, 'sanger-stacked-eight-claude-light.png') });
+    await page.screenshot({ path: path.join(msaOutputDir, 'sanger-stacked-eight-light.png') });
 
     await page.setViewportSize({ width: 390, height: 760 });
     await expect(traceViewer).toBeVisible();
@@ -8087,15 +9162,15 @@ test.describe('Claude Science artifact workflows', () => {
     await page.screenshot({ path: path.join(msaOutputDir, 'sanger-stacked-eight-phone.png') });
 
     await page.setViewportSize({ width: 900, height: 760 });
-    await page.locator('select[name="artifact-theme"]').selectOption('claude-dark');
+    await chooseTheme(page, 'dark');
     await page.waitForTimeout(80);
-    await page.screenshot({ path: path.join(msaOutputDir, 'sanger-stacked-eight-claude-dark.png') });
+    await page.screenshot({ path: path.join(msaOutputDir, 'sanger-stacked-eight-dark.png') });
   });
 
-  for (const theme of ['light', 'dark', 'claude-light', 'claude-dark'] as const) {
+  for (const theme of ['light', 'dark'] as const) {
     test(`MSA viewer remains legible and accessible in ${theme}`, async ({ page }) => {
       await openArtifact(page, 1180, 760);
-      await page.locator('select[name="artifact-theme"]').selectOption(theme);
+      await chooseTheme(page, theme);
       await page.setViewportSize({ width: 820, height: 760 });
       await page.evaluate(() => window.motifAddAlignments({
         id: 'theme-alignment',
@@ -8134,8 +9209,7 @@ test.describe('Claude Science artifact workflows', () => {
   ]) {
     test(`keeps pane geometry coherent at ${viewport.width}x${viewport.height}`, async ({ page }) => {
       await openArtifact(page, viewport.width, viewport.height);
-      const toolsToggle = page.getByRole('button', { name: /Tools/ }).first();
-      if ((await toolsToggle.getAttribute('aria-pressed')) !== 'true') await toolsToggle.click();
+      await pinTools(page);
       const main = page.locator('.motif-cs-main');
       const dimensions = await main.evaluate((element) => ({
         clientWidth: element.clientWidth,
@@ -8144,7 +9218,10 @@ test.describe('Claude Science artifact workflows', () => {
         scrollHeight: element.scrollHeight,
       }));
       expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.clientWidth + 2);
-      expect(dimensions.scrollHeight).toBeLessThanOrEqual(dimensions.clientHeight + 2);
+      // Below 900px the workspace is one scrolling column, taller than its box by design.
+      if (viewport.width >= 900) {
+        expect(dimensions.scrollHeight).toBeLessThanOrEqual(dimensions.clientHeight + 2);
+      }
       await page.screenshot({
         path: path.join(outputDir, `layout-${viewport.width}x${viewport.height}.png`),
         fullPage: true,
@@ -8159,7 +9236,7 @@ test.describe('Claude Science artifact workflows', () => {
     await page.keyboard.press('Shift+ArrowRight');
     await page.keyboard.press('Shift+ArrowRight');
     const selectionName = page.locator('.motif-cs-selection-name');
-    await expect(selectionName).toHaveText('1-2 (2)');
+    await expect(selectionName).toHaveText('1–2 · 2 bp');
 
     const surface = page.locator('[data-map-interaction-surface]');
     const backbone = (await page.locator('.motif-pm-backbone').boundingBox())!;
@@ -8191,7 +9268,7 @@ test.describe('Claude Science artifact workflows', () => {
     await page.mouse.move(2, 2);
     await page.mouse.up();
 
-    await expect(selectionName).toHaveText('1-2 (2)');
+    await expect(selectionName).toHaveText('1–2 · 2 bp');
   });
 
   test('canceling a moved map gesture clears its state without suppressing the next click', async ({ page }) => {
@@ -8274,7 +9351,8 @@ test.describe('Claude Science artifact workflows', () => {
       }
       return null;
     });
-    const readout = async () => (await page.locator('.motif-cs-selection-bar').first().innerText()).split('\n')[0];
+    // The bar's readout is its own element: the bar's first line is the 5′→3′ strand marker.
+    const readout = async () => (await page.locator('.motif-cs-selection-name').first().innerText()).trim();
 
     await openArtifact(page, 1440, 1000);
     const arc = await featurePoint();
@@ -8299,7 +9377,7 @@ test.describe('Claude Science artifact workflows', () => {
     }
     await page.mouse.up();
     await expect.poll(readout, { message: 'a drag from a feature arc did not select a range' })
-      .toMatch(/^\d[\d,]*-\d/);
+      .toMatch(/^\d[\d,]*–\d[\d,]* · [\d,]+ bp$/);
     await expect(page.locator('.motif-pm-feature[data-selected]')).toHaveCount(0);
   });
 
@@ -8320,17 +9398,20 @@ test.describe('Claude Science artifact workflows', () => {
       motifGetInventory: () => { seq: string }[];
     }).motifGetInventory()[0].seq.length);
 
-    const cases: { text: string; inserted: number; notice?: RegExp }[] = [
+    const cases: { text: string; inserted: number; notice?: RegExp; status?: string }[] = [
       { text: '>gi|12345|ref|NM_001\nATGCATGC', inserted: 8, notice: /Pasted 8 bases\. Ignored 1 structure line\./ },
       // A clean paste says nothing about its text, but it is the first edit to
       // this record on a fresh load, and a first edit always announces itself.
       { text: 'ATGCATGC', inserted: 8, notice: /^Inserted ATGCATGC at [\d,]+\.Undo$/ },
       { text: 'LOCUS  X  10 bp DNA\nORIGIN\n        1 tcgcgcgttt\n//', inserted: 10, notice: /Pasted 10 bases\. Ignored 3 structure lines\./ },
-      { text: 'MKVLIAAGGL', inserted: 7, notice: /3 characters were not DNA/ },
-      { text: 'ZZZZ', inserted: 0, notice: /Nothing in the pasted text was DNA/ },
+      // A protein: M, K, V, A and G are ambiguity codes, so the status names only L and I.
+      { text: 'MKVLIAAGGL', inserted: 0, status: 'Not pasted: L and I are not DNA bases.' },
+      // RNA: each U is read as T, and all six bases are inserted.
+      { text: 'AUGAUG', inserted: 6, notice: /^Inserted ATGATG at [\d,]+\.Undo$/, status: 'U read as T.' },
+      { text: 'ZZZZ', inserted: 0, status: 'Not pasted: Z is not a DNA base.' },
     ];
 
-    for (const { text, inserted, notice } of cases) {
+    for (const { text, inserted, notice, status } of cases) {
       // One case per fresh load: an insert would move the caret and shift the next.
       await openArtifact(page, 1440, 1000);
       await page.locator('.motif-cs-sequence').first().click({ position: { x: 60, y: 40 } });
@@ -8344,6 +9425,7 @@ test.describe('Claude Science artifact workflows', () => {
 
       if (notice) await expect(page.locator('.motif-cs-workbench-notice')).toContainText(notice);
       else await expect(page.locator('.motif-cs-workbench-notice')).toHaveCount(0);
+      if (status) await expect(page.locator('.motif-cs-selection-label .motif-cs-edit-hint')).toHaveText(status);
     }
   });
 
@@ -8451,7 +9533,7 @@ test.describe('Claude Science artifact workflows', () => {
     });
 
     await expect(page.locator('.motif-cs-workbench-notice')).toContainText(
-      'This paste contains 2 FASTA records. The sequence editor changes one active record, so nothing was pasted. Use Add entry to import multiple records.',
+      'This paste contains 2 FASTA records. The sequence editor changes one active record, so nothing was pasted. Use Import records to import several.',
     );
     await expect.poll(() => page.evaluate(() => {
       const record = window.motifGetInventory()[0];
@@ -8492,10 +9574,10 @@ test.describe('Claude Science artifact workflows', () => {
     }
   });
 
-  for (const theme of ['light', 'dark', 'claude-light', 'claude-dark'] as const) {
+  for (const theme of ['light', 'dark'] as const) {
     test(`renders the ${theme} appearance preset`, async ({ page }) => {
       await openArtifact(page, 1180, 900);
-      await page.locator('select[name="artifact-theme"]').selectOption(theme);
+      await chooseTheme(page, theme);
       await page.waitForTimeout(180);
       await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
       await page.screenshot({ path: path.join(outputDir, `theme-${theme}-1180x900.png`), fullPage: true });

@@ -481,6 +481,7 @@ export function simulateSelectedPrimerPair(
   }
   validateExactPrimerCandidate(selection.pair.forward, 'forward');
   validateExactPrimerCandidate(selection.pair.reverse, 'reverse');
+  const tmOptions = normalizedPrimerDesignParameterPair(sourceRecord, selection)?.forward.tmOptions;
   const simulation = simulatePCR(
     sourceRecord.sequence,
     selection.pair.forward.fullSequence,
@@ -491,6 +492,7 @@ export function simulateSelectedPrimerPair(
       forward: { start: selection.pair.forward.start, end: selection.pair.forward.end },
       reverse: { start: selection.pair.reverse.start, end: selection.pair.reverse.end },
     },
+    tmOptions ? { tmOptions } : undefined,
   );
   if (!simulation) {
     throw new PcrMaterializationError('The selected primer pair does not produce an exact amplicon on this template.');

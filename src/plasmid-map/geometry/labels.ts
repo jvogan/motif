@@ -28,8 +28,24 @@ export const LABEL_MONO_CHAR_EM = 0.64;
 export const LABEL_LINE_HEIGHT_PX = 15;
 /** Measured Chromium SVG ink box for the 16px circular-map face. */
 export const CIRCULAR_LABEL_BOX_HEIGHT_PX = 18;
-/** Conservative vertical glyph extent used for radial inline-band clearance. */
-export const LABEL_CAP_HEIGHT_PX = 11.6;
+/**
+ * Real glyph ink of a name, in em, from its top to its bottom: the tallest
+ * ascender, digit or capital above the baseline, and the deepest descender or
+ * parenthesis below it. Measured in Chromium with the map's faces: the UI face
+ * reaches 11.92 above and 2.97 below at 16px ("bGH poly(A) signal"), the mono
+ * face 12.73 above ("f1 ori", whose digits stand taller than its capitals) and
+ * 3.18 below. A name riding its arc is centred on the band by this box, so the
+ * band has to hold all of it.
+ */
+export const LABEL_INK_ASCENT_EM: Record<LabelFontMode, number> = { proportional: 0.75, monospace: 0.8 };
+export const LABEL_INK_DESCENT_EM = 0.2;
+/**
+ * Room kept between a riding name's ink box and each edge of its band, in layout
+ * units: half of the 1px outline plus three quarters of a pixel of air at the 0.75
+ * floor of the map's scale (1.25 / 0.75). The air absorbs the baseline's rounding
+ * on a curved path, which can move real ink more than a unit off centre in Chromium.
+ */
+export const INLINE_RADIAL_CLEARANCE_PX = 5 / 3;
 /** Total slack subtracted from a segment's extent before an inline label is allowed. */
 export const INLINE_PADDING_PX = 14;
 
@@ -92,12 +108,33 @@ export function fitsInline(
   mode: LabelFontMode = 'proportional',
   bandThicknessPx: number = Infinity,
 ): boolean {
-  const scaledCapHeight = LABEL_CAP_HEIGHT_PX * (fontPx / LABEL_FONT_PX);
-  const radialPad = 0.4 * (fontPx / LABEL_FONT_PX);
   return (
     approxTextWidth(text, fontPx, mode) + inlinePaddingPx(fontPx) <= extentPx &&
-    bandThicknessPx >= scaledCapHeight + radialPad
+    bandThicknessPx >= inlineBandThicknessPx(fontPx, mode)
   );
+}
+
+/** Height of a name's real ink at `fontPx`, top of its tallest glyph to bottom of its deepest. */
+export function labelInkHeightPx(fontPx: number = LABEL_FONT_PX, mode: LabelFontMode = 'proportional'): number {
+  return (LABEL_INK_ASCENT_EM[mode] + LABEL_INK_DESCENT_EM) * fontPx;
+}
+
+/**
+ * The thinnest band a name may ride: its whole ink plus clear room to each edge.
+ * Smaller than this and the name goes outside on a leader instead.
+ */
+export function inlineBandThicknessPx(fontPx: number = LABEL_FONT_PX, mode: LabelFontMode = 'proportional'): number {
+  return labelInkHeightPx(fontPx, mode) + 2 * INLINE_RADIAL_CLEARANCE_PX;
+}
+
+/**
+ * How far to move a riding name off the band's centre line so its ink box, not its
+ * x-height, is centred: SVG's "middle" baseline sits half an x-height (0.263em in
+ * both faces) above the alphabetic one, while the ink box is centred
+ * (ascent - descent) / 2 above it. Positive moves the text toward its ascenders.
+ */
+export function inlineInkCentreShiftPx(fontPx: number = LABEL_FONT_PX, mode: LabelFontMode = 'proportional'): number {
+  return ((LABEL_INK_ASCENT_EM[mode] - LABEL_INK_DESCENT_EM) / 2 - 0.263) * fontPx;
 }
 
 /** One label competing for space along the packing axis. */

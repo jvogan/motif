@@ -10,7 +10,12 @@ import {
   scarRangeOverlayInput,
   variantRangeOverlayInput,
 } from '../range-overlays';
-import { selectionOverlayPaths } from '../selection-overlay';
+import {
+  circularSelectionEdgePath,
+  linearSelectionColumnPath,
+  linearSelectionEdgePaths,
+  selectionOverlayPaths,
+} from '../selection-overlay';
 import { makeSequenceMotifRule } from '../../bio/sequence-formatting';
 import type { Feature, RestrictionSite } from '../../bio/types';
 
@@ -122,6 +127,58 @@ describe('exportMapLayoutSvg', () => {
     expect(darkSvg).not.toContain('color-mix(');
   });
 
+  it('draws no text below 12px, the length line included', () => {
+    const layout = computeMapLayout({
+      mode: 'circular',
+      name: 'pExport',
+      length: 1200,
+      topology: 'circular',
+      sequenceType: 'dna',
+      features: [feature('feat-a', 100, 260, 'AmpR')],
+      restrictionSites: [site('EcoRI', 40), site('BamHI', 600)],
+      width: 420,
+      height: 420,
+    });
+    const svg = exportMapLayoutSvg(layout, { selectionPaths: selectionOverlayPaths(layout, [{ start: 100, end: 260 }]) });
+    const sizes = [...svg.matchAll(/font-size="([\d.]+)"/g)].map((match) => Number(match[1]));
+    expect(sizes.length).toBeGreaterThanOrEqual(4);
+    expect(Math.min(...sizes)).toBeGreaterThanOrEqual(12);
+    const lengthLine = svg.match(/<text[^>]*font-size="([\d.]+)"[^>]*>1200 bp<\/text>/);
+    expect(Number(lengthLine?.[1])).toBeGreaterThanOrEqual(12);
+    // The selected range is a light wash with no outline, at the live map's 0.06.
+    expect(svg).toMatch(/fill-opacity="0\.06"\/>/);
+    expect(svg).not.toMatch(/stroke-width="1\.5"/);
+    // Its boundary lines, when given, draw 1.5 wide in the label colour, and the
+    // wash itself still carries no stroke.
+    const edged = exportMapLayoutSvg(layout, {
+      selectionPaths: selectionOverlayPaths(layout, [{ start: 100, end: 260 }]),
+      selectionEdgePaths: [circularSelectionEdgePath(layout, 100), circularSelectionEdgePath(layout, 260)],
+    });
+    expect(edged.match(/<path [^>]*fill-opacity="0\.06"\/>/g)).toHaveLength(1);
+    expect(edged.match(/<path [^>]*fill-opacity="0\.06"\/>/)?.[0]).not.toContain('stroke');
+    // Stroked along a radial fade in the label colour, filled solid (the marker).
+    const strokes = [...edged.matchAll(/<path [^>]*fill="#0f172a" stroke="url\(#([\w-]+-edge)\)" stroke-width="1\.5"[^>]*\/>/g)];
+    expect(strokes).toHaveLength(2);
+    const fades = [...edged.matchAll(/<radialGradient id="([\w-]+-edge)" gradientUnits="userSpaceOnUse"[^>]*><stop [^>]*stop-color="#0f172a" stop-opacity="0\.15"\/><stop [^>]*stop-color="#0f172a" stop-opacity="1"\/><\/radialGradient>/g)].map((match) => match[1]);
+    expect(fades).toContain(strokes[0][1]);
+  });
+
+  it('gives each exported selection fade its own gradient ids', () => {
+    const at = (length: number, start: number) => {
+      const layout = computeMapLayout({ mode: 'circular', name: 'Fade', length, topology: 'circular', sequenceType: 'dna', features: [], restrictionSites: [], width: 420, height: 420 });
+      return exportMapLayoutSvg(layout, {
+        selectionPaths: selectionOverlayPaths(layout, [{ start, end: start + 100 }]),
+        selectionEdgePaths: [circularSelectionEdgePath(layout, start), circularSelectionEdgePath(layout, start + 100)],
+      });
+    };
+    const ids = (svg: string) => [...svg.matchAll(/ id="(motif-export-selection-[\w-]+)"/g)].map((m) => m[1]);
+    expect(ids(at(1200, 100))).toHaveLength(2);
+    expect(ids(at(1200, 100))).toEqual(ids(at(1200, 100)));
+    expect(ids(at(1200, 400)).some((id) => ids(at(1200, 100)).includes(id))).toBe(false);
+    expect(ids(at(1500, 100)).some((id) => ids(at(1200, 100)).includes(id))).toBe(false);
+    expect(ids(at(1200, 100)).every((id) => !id.startsWith('motif-map-selection-'))).toBe(true);
+  });
+
   it('serializes linear protein maps without restriction clutter', () => {
     const layout = computeMapLayout({
       mode: 'linear',
@@ -165,6 +222,46 @@ describe('exportMapLayoutSvg', () => {
       expect(svg).not.toContain('color-mix(');
       if (sequenceType === 'dna') expect(svg).toContain('BamHI');
       else expect(svg).not.toContain('BamHI');
+    }
+  });
+
+  it('draws a Line view selection as the live map does: wash, two lines, two backbone triangles', () => {
+    const layout = computeMapLayout({
+      mode: 'linear',
+      name: 'Line selection',
+      length: 1800,
+      topology: 'linear',
+      sequenceType: 'dna',
+      features: [feature('lin-feature', 120, 360, 'lin feature')],
+      restrictionSites: [site('BamHI', 500)],
+      width: 720,
+      height: 320,
+    });
+    // The live map's wash is one column over the lines' extent.
+    const selectionPaths = selectionOverlayPaths(layout, [{ start: 300, end: 900 }])
+      .map((d) => linearSelectionColumnPath(layout, d));
+    const selectionEdgePaths = selectionPaths.flatMap((d) => linearSelectionEdgePaths(layout, d));
+    expect(selectionEdgePaths).toHaveLength(2);
+    const svg = exportMapLayoutSvg(layout, { selectionPaths, selectionEdgePaths });
+    const washes = [...svg.matchAll(/<path d="([^"]*)"[^>]*fill-opacity="0\.06"\/>/g)].map((m) => m[1]);
+    expect(washes).toHaveLength(1);
+    const yRange = (d: string, pairs = Infinity) => {
+      const ys = (d.match(/-?[\d.]+/g) ?? []).map(Number).filter((_, i) => i % 2 === 1).slice(0, pairs);
+      return [Math.min(...ys), Math.max(...ys)];
+    };
+    const lineRange = yRange(selectionEdgePaths[0], 2);
+    expect(yRange(washes[0])).toEqual(lineRange);
+    expect(lineRange[1] - lineRange[0]).toBeGreaterThan(18);
+    const edges = svg.match(/<path d="([^"]*)" fill="#0f172a" stroke="url\(#[\w-]+-edge\)" stroke-width="1\.5"[^>]*\/>/g) ?? [];
+    expect(edges).toHaveLength(2);
+    // Solid from the backbone through the marker, then fading to 0.15 at the far end.
+    expect(svg).toMatch(new RegExp(`<linearGradient id="[\\w-]+-edge" gradientUnits="userSpaceOnUse" x1="0" y1="${Math.round(layout.center.y * 1000) / 1000}" x2="0" y2="[\\d.]+"><stop offset="0" stop-color="#0f172a" stop-opacity="1"/><stop offset="[\\d.]+" stop-color="#0f172a" stop-opacity="1"/><stop offset="1" stop-color="#0f172a" stop-opacity="0\\.15"/></linearGradient>`));
+    // Each is a line and a closed triangle whose tip is on the backbone.
+    for (const edge of edges) {
+      expect(edge.match(/ M /g)).toHaveLength(1);
+      expect(edge).toContain(` M `);
+      expect(edge).toMatch(new RegExp(` M -?[\\d.]+ ${Math.round(layout.center.y * 1000) / 1000} L `));
+      expect(edge).toMatch(/ Z"/);
     }
   });
 

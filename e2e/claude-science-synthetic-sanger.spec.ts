@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { buildSyntheticSangerPlate } from './synthetic-abif';
+import { openTool } from './tool-panel-aliases';
 
 const artifactUrl = process.env.MOTIF_ARTIFACT_URL;
 const outputDirectory = path.resolve('output/playwright/synthetic-sanger-campaign');
@@ -49,8 +50,7 @@ test.describe('Claude Science synthetic Sanger plate', () => {
     }));
 
     const beforeCount = await page.evaluate(() => window.motifGetInventory().length);
-    const alignmentTool = page.locator('details[data-rail-tool="alignment"]');
-    await alignmentTool.locator(':scope > summary').click();
+    const alignmentTool = await openTool(page, 'alignment');
     await alignmentTool.getByTestId('msa-open-button').click();
     const msaWindow = page.locator('.motif-cs-window').filter({ has: page.getByTestId('msa-workspace') });
     await msaWindow.getByLabel('Choose sequence files for alignment').setInputFiles(fixturePaths);

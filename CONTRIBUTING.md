@@ -54,7 +54,7 @@ reachable.
   APIs, output files, and provenance identifiers.
 - Do not introduce raw HTML insertion from user-controlled data.
 - Do not expose shell, eval, generic filesystem, or generic DOM bridges.
-- Treat Database JSON and workspace ZIP files as ordinary, unencrypted
+- Treat Workspace JSON and workspace ZIP files as ordinary, unencrypted
   checkpoints.
 - Keep model-facing connector tools narrow, typed, and bounded.
 

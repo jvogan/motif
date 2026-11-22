@@ -64,15 +64,5 @@ if [[ "${MOTIF_MCP_TRACE:-}" == "1" || "${MOTIF_MCP_TRACE:-}" == "true" ]]; then
   RUNTIME_ENV+=("MOTIF_MCP_TRACE=${MOTIF_MCP_TRACE}")
 fi
 
-run_node_with_clean_environment() {
-  "$ENV_BIN" -i "${RUNTIME_ENV[@]}" "$NODE_BIN" "$@"
-}
-
-NODE_SUPPORTED="$(run_node_with_clean_environment -p 'const [major, minor] = process.versions.node.split(".").map(Number); Number(major >= 24 || (major === 22 && minor >= 13))' 2>/dev/null || true)"
-if [[ "$NODE_SUPPORTED" != "1" ]]; then
-  echo "[motif-claude-science] Node.js 22.13 or newer (22.x) or 24 or newer is required." >&2
-  exit 1
-fi
-
 cd "$ROOT"
 exec "$ENV_BIN" -i "${RUNTIME_ENV[@]}" "$NODE_BIN" "$SERVER"

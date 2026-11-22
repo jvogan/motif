@@ -50,15 +50,13 @@ describe('Claude Science rail popover regression guards', () => {
   });
 
   it('caps the features list at nothing, in every Tools placement rather than one', () => {
-    // `c999493` removed a `max-height: min(24vh, 190px)` from this list — but as an
-    // ADDITION at higher specificity, under
-    // `.motif-cs-inspector[data-tools-pinned="false"]`. The base rule stayed in force
-    // for every state that selector does not match, so the pinned docked column and
-    // the floated Tools pane kept the entire defect while a fix was on record.
-    // Measured in the pinned state before this change: clientHeight 189 against
-    // scrollHeight 288, 3 of 8 rows unreachable, identically at 1440x900, 1440x980,
-    // 1920x1080 and 2560x1400 — the same numbers the earlier fix's own comment
-    // records as already solved.
+    // A `max-height: min(24vh, 190px)` on this list must be removed from the base
+    // rule, not overridden at higher specificity under
+    // `.motif-cs-inspector[data-tools-pinned="false"]`: the base rule would stay in
+    // force for every state that selector does not match, so the pinned docked
+    // column and the floated Tools pane would keep the whole defect. With the cap in
+    // the pinned state: clientHeight 189 against scrollHeight 288, 3 of 8 rows
+    // unreachable, identically at 1440x900, 1440x980, 1920x1080 and 2560x1400.
     const baseRule = artifactCss.slice(
       artifactCss.indexOf('.motif-cs-feature-annotation-list {'),
       artifactCss.indexOf('}', artifactCss.indexOf('.motif-cs-feature-annotation-list {')),
@@ -100,7 +98,10 @@ describe('Claude Science rail popover regression guards', () => {
     expect(compactLayout).toMatch(
       /\.motif-cs-inspector\[data-tools-pinned="false"\]\s*\{[\s\S]*?z-index:\s*70;/,
     );
-    expect(artifactSource).toContain('rightInset={toolsRail ? TOOLS_RAIL_WIDTH : 0}');
+    expect(artifactSource).toContain('rightInset={windowRightInset}');
+    // Only the wide layout has a rail; below 1536px a window keeps no inset for it.
+    expect(artifactSource).toContain('const windowRightInset = toolsRail && !toolsDrawer ? TOOLS_RAIL_WIDTH : 0;');
+    expect(artifactSource).not.toContain('rightInset={toolsRail ? TOOLS_RAIL_WIDTH : 0}');
     expect(artifactSource).toContain('viewportWidth - safeRightInset - w - 8');
     expect(artifactCss).not.toContain('.motif-cs-window-resize {\n    right: 58px;');
   });
@@ -120,7 +121,7 @@ describe('Claude Science rail popover regression guards', () => {
     expect(artifactSource).toContain('const canDelete = active;');
     expect(artifactSource).toContain("if (layerId.startsWith('feat:'))");
     expect(artifactSource).toContain('setHiddenFeatureTranslationsByRecord');
-    expect(artifactSource).toContain('aria-label={`Delete pinned translation ${track.label}`}');
+    expect(artifactSource).toContain('aria-label={`Remove track ${track.label}`}');
     expect(artifactSource).toContain('onDeleteTranslationTrack(track.id);');
     expect(artifactSource).toContain("fallback?.focus({ preventScroll: true })");
     expect(artifactCss).toContain('.motif-cs-translation-row-delete');
@@ -132,7 +133,7 @@ describe('Claude Science rail popover regression guards', () => {
     expect(artifactSource).toContain('className="motif-cs-motif-hit-position"');
     expect(artifactSource).toContain('className="motif-cs-motif-hit-context"');
     expect(artifactSource).toContain('<mark>{context.match}</mark>');
-    expect(artifactSource).toContain('aria-label={`Jump to motif hit at ${hit + 1}: ${contextLabel}`}');
+    expect(artifactSource).toContain("aria-label={`Jump to motif hit at ${hit + 1}${strand === -1 ? ', reverse strand' : ''}: ${contextLabel}`}");
     expect(artifactCss).toContain('.motif-cs-motif-hit-list');
     expect(artifactCss).toContain('.motif-cs-motif-hit-context mark');
     expect(artifactSource).not.toContain('className="motif-cs-hit-chip"');
@@ -150,24 +151,33 @@ describe('Claude Science rail popover regression guards', () => {
     expect(artifactCss).toContain('.motif-cs-guide-scope[data-scoped="true"] strong');
   });
 
-  it('offers shared translation controls in the rail and a detachable window', () => {
-    expect(artifactSource).toContain('data-rail-tool="translation"');
-    expect(artifactSource).toContain('<TranslationPanel');
-    expect(artifactSource).toContain('onOpenFloating={openTranslationsWindow}');
-    expect(artifactSource).toContain('>Add AA track</button>');
-    expect(artifactSource).toContain('>New protein</button>');
-    expect(artifactSource).toContain('>Pop out</button>');
-    expect(artifactCss).toContain('.motif-cs-translation-tool-body > .motif-cs-translation-body');
+  it('opens the Translation window from the Translation row, which has no panel of its own', () => {
+    const rowStart = artifactSource.indexOf('<details className="motif-cs-panel" name="motif-cs-tools" data-rail-tool="translation">');
+    expect(rowStart).toBeGreaterThan(0);
+    const row = artifactSource.slice(rowStart, artifactSource.indexOf('</details>', rowStart));
+    expect(row).toContain('onClick={openTranslationsFromTools}');
+    expect(row).toContain('aria-haspopup="dialog"');
+    // Unavailable without a DNA or RNA record, as the top-bar Translation button is.
+    expect(row).toContain('aria-disabled={!isEditable || undefined}');
+    expect(row).not.toContain('<TranslationPanel');
+    expect(row).not.toContain('motif-cs-tool-panel-body');
+    // The row and the top-bar button open the same window the same way.
+    expect(artifactSource).toMatch(/const openTranslationsFromTools = useCallback\(\(event: ReactMouseEvent<HTMLElement>\) => \{\s*event\.preventDefault\(\);\s*if \(!isEditable\) return;\s*if \(!showTranslations\) \{\s*openTranslationsWindow\(\);/);
+    expect(artifactSource.match(/<TranslationPanel\b/g)).toHaveLength(1);
+    expect(artifactSource).toContain('>Pin translation</button>');
+    expect(artifactSource).toContain('>Create protein</button>');
+    expect(artifactSource).not.toContain('>Open window</button>');
+    expect(artifactCss).toMatch(/summary\.motif-cs-panel-head\[aria-disabled="true"\] \{\s*cursor: default;\s*opacity: 0\.62;/);
   });
 
   it('materializes selected feature and translation annotations as derived records', () => {
     expect(artifactSource).toContain('const addSelectedFeatureRecord = useCallback(() => {');
     expect(artifactSource).toContain("operation: 'extract_feature'");
     expect(artifactSource).toContain('onCreateRecord={addSelectedFeatureRecord}');
-    expect(artifactSource).toContain("'Extract the selected feature as a new inventory entry'");
+    expect(artifactSource).toContain("'Extract the selected feature to a record'");
     expect(artifactSource).toContain('const addTranslationTrackRecord = useCallback((track: InlineTranslationTrack) => {');
     expect(artifactSource).toContain('onAddRecord={() => addTranslationTrackRecord(selectedTranslationLayer)}');
-    expect(artifactSource).toMatch(/function TranslationLayerEditor\([\s\S]*?>New protein<\/button>/);
+    expect(artifactSource).toMatch(/function TranslationLayerEditor\([\s\S]*?>Create protein<\/button>/);
     expect(artifactSource).toContain('&& CODING_FEATURE_TYPES.has(selectedFeature.type)');
     expect(artifactSource).toContain('? addSelectionTranslationRecord');
     expect(artifactSource).toContain('onCreateProteinRecord={');
@@ -196,7 +206,7 @@ describe('Claude Science rail popover regression guards', () => {
 
   it('invalidates primer results when a same-length sequence edit changes the template', () => {
     expect(primerWorkspaceSource).toContain('[record.sequence]');
-    expect(primerWorkspaceSource).toContain('[normalizedSequence, parameters, validationMessage]');
+    expect(primerWorkspaceSource).toContain('[normalizedSequence, designParameters, validationMessage]');
   });
 
   it('invalidates actionable primer pairs whenever design inputs change', () => {
@@ -241,7 +251,7 @@ describe('Claude Science rail popover regression guards', () => {
 
   it('fails closed on wrapped primer targets while preserving circular translation scopes', () => {
     expect(primerWorkspaceSource).toContain('selectedRange.end > selectedRange.start');
-    expect(primerWorkspaceSource).toContain('Use a non-wrapping target inside');
+    expect(primerWorkspaceSource).toContain('Use 1–${normalizedSequence.length.toLocaleString()}, start ≤ end.');
     expect(artifactSource).toContain('topology={topology}');
     expect(artifactSource).toContain("endIndex1 < startIndex1 && topology !== 'circular'");
     expect(artifactSource).toContain('const internalEndIndex = endIndex1 < startIndex1 ? sequenceLength + endIndex1 : endIndex1;');
@@ -249,8 +259,11 @@ describe('Claude Science rail popover regression guards', () => {
   });
 
   it('distinguishes reverse-complement copy and record creation actions', () => {
-    expect(artifactSource).toMatch(/>\s*Copy rev comp\s*<\/button>/);
-    expect(artifactSource).toContain('>New rev comp</button>');
+    expect(artifactSource).toMatch(/>\s*Copy reverse complement\s*<\/button>/);
+    // Export copies; Create > New reverse complement record makes the record,
+    // so the Export popover does not repeat it.
+    expect(artifactSource).not.toContain('>Create reverse complement</button>');
+    expect(artifactSource).toContain("label: 'New reverse complement record',");
     expect(artifactSource).not.toContain('>Rev comp</button>\n            <button className="motif-cs-mini-button" type="button" onClick={onAddReverseComplement}');
   });
 
@@ -258,14 +271,16 @@ describe('Claude Science rail popover regression guards', () => {
     expect(artifactCss).toMatch(/\.motif-cs-inspector\[data-tools-pinned="true"\] details\[open\] > \.motif-cs-panel-head\s*\{[\s\S]*?box-shadow:\s*inset 0 0 0 1px/);
     expect(artifactCss).toMatch(/\.motif-cs-inspector\[data-tools-pinned="false"\] \.motif-cs-panel\[open\] > \.motif-cs-panel-head\s*\{[\s\S]*?border-color:[\s\S]*?box-shadow:\s*none/);
     expect(artifactCss).toMatch(/\.motif-cs-row\[data-active="true"\]\s*\{[\s\S]*?box-shadow:\s*none/);
-    expect(artifactCss).toMatch(/\.motif-cs-theme-choice\[data-active="true"\]\s*\{[\s\S]*?box-shadow:\s*none/);
+    // The selected theme wears the one "on" fill, never a one-sided accent bar.
+    // (Its accent ring is guarded in control-finish-guards.test.ts.)
+    expect(artifactCss).toMatch(/\.motif-cs-theme-choice\[data-active="true"\]\s*\{[\s\S]*?background:\s*var\(--bg-active\);[\s\S]*?box-shadow:\s*none;/);
     expect(artifactCss).toMatch(/\.motif-cs-inspector\[data-tools-pinned="true"\] \.motif-cs-panel-head > span:first-of-type\s*\{[\s\S]*?white-space:\s*normal/);
     expect(artifactCss).toMatch(/\.motif-cs-motif-hit-context\s*\{[\s\S]*?white-space:\s*normal[\s\S]*?overflow-wrap:\s*anywhere/);
   });
 
   it('gives workflow history a distinct rail icon from analysis', () => {
     const workflowStart = artifactSource.indexOf('data-rail-tool="workflows"');
-    const workflowEnd = artifactSource.indexOf('data-rail-tool="alignment"', workflowStart);
+    const workflowEnd = artifactSource.indexOf('data-rail-tool="settings"', workflowStart);
     const workflowPanel = artifactSource.slice(workflowStart, workflowEnd);
     expect(workflowPanel).toContain('<History className="motif-cs-panel-icon"');
     expect(workflowPanel).not.toContain('<Activity className="motif-cs-panel-icon"');
@@ -283,7 +298,8 @@ describe('Claude Science rail popover regression guards', () => {
     expect(artifactSource).toContain('type="radio"');
     expect(artifactSource).toContain('name="settings-theme"');
     expect(dataSettingsSource).toContain('Reset display');
-    expect(artifactSource).toContain('Download a workspace backup to carry records, alignments, notes, results');
+    expect(artifactSource).not.toContain('motif-cs-share-note');
+    expect(artifactSource).not.toContain('<small>{option.description}</small>');
     expect(artifactCss).toContain('.motif-cs-about-block');
     expect(artifactCss).toContain('.motif-cs-theme-grid');
   });
@@ -303,29 +319,29 @@ describe('Claude Science rail popover regression guards', () => {
     expect(artifactSource).toContain("handle.addEventListener('lostpointercapture', endLostPointerCapture);");
     expect(artifactSource).toContain('widthDelta = event.key === \'ArrowLeft\' ? step');
     // The popover is bounded by the viewport and the rail offset, and nothing else.
-    // This used to assert a second copy of the declaration inside the 1280px block,
-    // which was byte-identical to the base rule and did nothing — the base rule reads
-    // the offset through var(), so it re-resolves on its own. Assert the two halves
-    // that carry the behaviour instead: the bound itself, and the breakpoint moving
+    // The base rule reads the offset through var(), so it re-resolves on its own and
+    // needs no second copy of the declaration inside the 1280px block. Assert the two
+    // halves that carry the behaviour: the bound itself, and the breakpoint moving
     // the offset it is measured from.
     expect(railBody).toMatch(/max-height:\s*calc\(100vh - var\(--rail-popover-fixed-top\) - 22px\)/);
-    // A constant term would have to come back as min(viewport, Npx), and it would cap
+    // A constant term would have to be written as min(viewport, Npx), and it would cap
     // the drag below the viewport at every size — the drag reads its limit straight off
-    // the computed max-height, so a flat 600px was what stopped the pointer.
+    // the computed max-height, so a flat 600px would stop the pointer.
     expect(railBody).not.toMatch(/max-height:\s*min\(/);
     expect(artifactCss).toMatch(/@media \(max-width: 1280px\)[\s\S]*?--rail-popover-fixed-top:\s*132px/);
   });
 
   it('does not restate a control that the open panel already shows', () => {
     // A rail popover title carries a meta only when it says something the panel
-    // body does not. Translation and Settings both said what a control a few
-    // dozen pixels below already showed - the pressed reading frame, the
-    // checked theme - so the title said it a second time and the summary chip
+    // body does not. Translation and Settings must not say what a control a few
+    // dozen pixels below already shows - the pressed reading frame, the
+    // checked theme - or the title would say it a second time and the summary chip
     // a third. Measured at 1280x720 and 1440x900: the control and the title are
     // on screen together in both, 169px apart for the frame group and 46px for
     // the theme grid. The chip is the only one of the three that earns its
     // place, because it is what a shut panel shows.
-    expect(artifactSource).toContain('<RailPopoverTitle title="Translation" />');
+    // Translation has no popover: its row opens the Translation window.
+    expect(artifactSource).not.toContain('<RailPopoverTitle title="Translation"');
     expect(artifactSource).toContain('<RailPopoverTitle title="Settings" />');
     expect(artifactSource).not.toContain('title="Translation" meta=');
     expect(artifactSource).not.toContain('title="Settings" meta=');
@@ -333,7 +349,7 @@ describe('Claude Science rail popover regression guards', () => {
     expect(artifactSource).toContain('<span className="motif-cs-chip">+{translateFrame + 1}</span>');
     expect(artifactSource).toContain('<span className="motif-cs-chip">{activeThemeLabel}</span>');
     // And the controls that carry the state stay where they are.
-    expect(artifactSource).toContain('<div className="motif-cs-segmented" role="group" aria-label="Reading frame">');
+    expect(artifactSource).toMatch(/<div className="motif-cs-segmented" role="group" aria-label="Reading frame"[ >]/);
     expect(artifactSource).toContain('data-active={theme === option.id || undefined}');
   });
 
@@ -344,5 +360,14 @@ describe('Claude Science rail popover regression guards', () => {
     expect(artifactSource).toContain('useEffect(() => () => stopActiveDrag(false), [stopActiveDrag]);');
     expect(artifactSource).toContain('stopActiveDrag(true);');
     expect(artifactSource).toContain('dragCleanupRef.current = removeDragListeners;');
+  });
+
+  it('lists Alignment in the Sequence group, not under Results', () => {
+    const sequenceGroup = artifactSource.indexOf('<div className="motif-cs-tools-group">Sequence</div>');
+    const buildGroup = artifactSource.indexOf('<div className="motif-cs-tools-group">Build</div>');
+    const alignment = artifactSource.indexOf('data-rail-tool="alignment"');
+    expect(sequenceGroup).toBeGreaterThan(0);
+    expect(alignment).toBeGreaterThan(sequenceGroup);
+    expect(alignment).toBeLessThan(buildGroup);
   });
 });

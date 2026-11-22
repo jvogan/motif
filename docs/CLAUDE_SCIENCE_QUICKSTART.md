@@ -190,7 +190,7 @@ record names/IDs, and runtime build ID, then open it in the right pane.
 
 The expected record is `MOTIFDEMO`, linear DNA, 180 bp, with `source` and
 `demo_cds` features spanning 1–180. Clicking the generated HTML once is normal.
-Confirm a visible **Motif** identity and these values before testing Inventory,
+Confirm a visible **Motif** identity and these values before testing Library,
 Sequence, Map, and Tools with mouse and keyboard. This HTML is interactive but
 immutable; regenerate it after changing the input or Motif build. Settings
 shows the version and runtime build ID embedded in the open file.
@@ -253,7 +253,7 @@ Claude Science.
 
 The connector is a bounded viewer/export surface. It does not run a shell or
 external alignment tools, write a hidden sequence database, or upload data to
-a Motif service. Workbench Database JSON and workspace ZIP exports are ordinary
+a Motif service. Workbench Workspace JSON and workspace ZIP exports are ordinary
 unencrypted user-owned files; handle them according to the sensitivity of the
 sequence data they contain. Verify the downloaded file exists and can be
 reopened before treating it as a checkpoint.

@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
+import { closeToolsDrawer, openTool } from './tool-panel-aliases';
 
 // Real-mouse interaction coverage for the MSA viewer: selection, hover readout,
 // context menu, colour/shade schemes, histogram tracks, and layout across widths.
@@ -451,8 +452,9 @@ test.describe('Motif MSA viewer interactions', () => {
     // The window listens in capture on window and stops propagation, so without
     // an explicit guard it closed itself and left the panel covering the space.
     await setup(page);
-    const panel = page.locator('.motif-cs-inspector details[name="motif-cs-tools"]').first();
-    await panel.locator(':scope > summary').click();
+    // Below 1536px the tools are a drawer over the window; its first tool is
+    // Record details. Escape closes the drawer, and the panel with it.
+    const panel = await openTool(page, 'entry');
     await expect(panel).toHaveAttribute('open', '');
 
     await page.keyboard.press('Escape');
@@ -482,6 +484,26 @@ test.describe('Motif MSA viewer interactions', () => {
     await expect(rulerRows.locator('.motif-cs-msa-ruler-label')).toContainText('Alignment / template');
   });
 
+  test('the template row keeps its identity figure inside its own box', async ({ page }) => {
+    // The "100.0%" figure sits inside the row's box beside the "Template" label, so nothing clips it.
+    for (const width of [700, 1040, 1440]) {
+      await setup(page, width);
+      const rows = await page.locator('.motif-cs-msa-row-meta').evaluateAll((metas) => metas.map((meta) => {
+        const box = meta.getBoundingClientRect();
+        const stats = Array.from(meta.querySelectorAll('.motif-cs-msa-row-stat'));
+        const last = stats[stats.length - 1]?.getBoundingClientRect();
+        return {
+          template: Boolean(meta.querySelector('.motif-cs-msa-template-badge')),
+          identity: stats[stats.length - 1]?.textContent ?? '',
+          past: last ? last.right - box.right : 0,
+        };
+      }));
+      const template = rows.find((row) => row.template);
+      expect(template?.identity, `template row at ${width}px`).toBe('100.0%');
+      for (const row of rows) expect(row.past, `${row.identity} at ${width}px`).toBeLessThanOrEqual(0.5);
+    }
+  });
+
   test('a gapped template keeps its own position axis', async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 900 });
     await page.addInitScript(() => { window.localStorage.clear(); window.sessionStorage.clear(); });
@@ -508,7 +530,9 @@ test.describe('Motif MSA viewer interactions', () => {
     // Docked tools use the same markup as the rail popover but sit beside the
     // window rather than over it, and their own Escape handler is not registered.
     // Deferring to them there would leave Escape doing nothing at all.
-    await setup(page);
+    // Tools can be pinned beside the window only from 1536px; below that they are
+    // a drawer over it, which the test above covers.
+    await setup(page, 1600, 980);
     await page.locator('[data-pane-toggle="tools"]').click();
     await expect(page.locator('.motif-cs-inspector')).toHaveAttribute('data-tools-pinned', 'true');
 
@@ -1394,7 +1418,7 @@ test.describe('Motif MSA viewer interactions', () => {
     // Wait for the floating window's initial-focus frame before moving focus to
     // its row grip. This test owns template pinning; the adjacent keyboard test
     // separately verifies that an explicitly focused grip handles Arrow keys.
-    await expect(page.getByRole('dialog', { name: 'Multiple Sequence Alignment' })).toBeFocused();
+    await expect(page.getByRole('dialog', { name: 'Alignment' })).toBeFocused();
     // Establish a manual order: step the first movable row down one slot.
     const movedId = await rowIdAt(page, 1);
     if (!movedId) throw new Error('no row id');
@@ -1449,9 +1473,11 @@ test.describe('Motif MSA viewer interactions', () => {
     await page.getByTestId('msa-zoom-fit').click();
     const value = await page.getByTestId('msa-zoom-value').textContent();
     expect(Number((value ?? '').replace('%', ''))).toBeLessThan(100);
-    await expect(page.getByTestId('msa-horizontal-scroll-row')).toHaveCount(0);
-    // A non-default zoom exposes the 100% reset control.
-    await expect(page.getByTestId('msa-zoom-reset')).toBeVisible();
+    // The pan lane stays mounted, idle and disabled, so the status line does not move.
+    await expect(page.getByTestId('msa-horizontal-scroll-row')).toHaveAttribute('data-idle', 'true');
+    await expect(page.getByTestId('msa-horizontal-scroll')).toBeDisabled();
+    // A non-default zoom enables the 100% reset control.
+    await expect(page.getByTestId('msa-zoom-reset')).toBeEnabled();
   });
 
   test('panning to the end brings the final column fully into view', async ({ page }) => {
@@ -1770,21 +1796,25 @@ test.describe('Motif MSA viewer interactions', () => {
   });
 
   test('the zoom controls wrap within the frame at a narrow width', async ({ page }) => {
-    await setupDna(page, 440, 760);
-    // Blocks mode reveals the full control set (100% reset + Blocks chip).
-    await page.getByTestId('msa-zoom-range').fill('35');
-    await expect(page.getByTestId('msa-blocks-chip')).toBeVisible();
-    const frame = await page.locator('.motif-cs-msa-matrix-frame').boundingBox();
-    if (!frame) throw new Error('frame missing');
-    for (const id of ['msa-zoom-range', 'msa-zoom-value', 'msa-zoom-fit', 'msa-zoom-reset', 'msa-blocks-chip']) {
-      const b = await page.getByTestId(id).boundingBox();
-      if (!b) throw new Error(`${id} missing`);
-      // Every control stays inside the frame instead of being clipped by overflow.
-      expect(b.x + b.width).toBeLessThanOrEqual(frame.x + frame.width + 1);
+    // The control set fits on one line at 440px (34px tall), so it only
+    // crowds, and wraps, from 400px down.
+    for (const width of [400, 360]) {
+      await setupDna(page, width, 760);
+      // Blocks mode reveals the full control set (100% reset + Blocks chip).
+      await page.getByTestId('msa-zoom-range').fill('35');
+      await expect(page.getByTestId('msa-blocks-chip')).toBeVisible();
+      const frame = await page.locator('.motif-cs-msa-matrix-frame').boundingBox();
+      if (!frame) throw new Error('frame missing');
+      for (const id of ['msa-zoom-range', 'msa-zoom-value', 'msa-zoom-fit', 'msa-zoom-reset', 'msa-blocks-chip']) {
+        const b = await page.getByTestId(id).boundingBox();
+        if (!b) throw new Error(`${id} missing`);
+        // Every control stays inside the frame instead of being clipped by overflow.
+        expect(b.x + b.width, `${id} at ${width}px`).toBeLessThanOrEqual(frame.x + frame.width + 1);
+      }
+      // The crowded set wrapped onto a second line rather than overflowing.
+      const row = await page.getByTestId('msa-zoom-row').boundingBox();
+      expect(row!.height, `zoom row at ${width}px`).toBeGreaterThan(40);
     }
-    // The crowded set wrapped onto a second line rather than overflowing.
-    const row = await page.getByTestId('msa-zoom-row').boundingBox();
-    expect(row!.height).toBeGreaterThan(40);
   });
 
   test('zoom and the visible-column readout share one status line', async ({ page }) => {
@@ -1809,7 +1839,7 @@ test.describe('Motif MSA viewer interactions', () => {
     for (const name of ['Copy', 'Download', 'Save PNG', 'Save SVG']) {
       await expect(panel.getByRole('button', { name, exact: true })).toBeVisible();
     }
-    await expect(panel.getByRole('combobox', { name: 'Export', exact: true })).toBeVisible();
+    await expect(panel.getByRole('combobox', { name: 'Format', exact: true })).toBeVisible();
     await expect(page.getByTestId('msa-export-image-scope')).toBeVisible();
 
     // Escape dismisses the menu and returns focus to its trigger; the window
@@ -2137,10 +2167,11 @@ test.describe('Motif MSA viewer interactions', () => {
       await expect(page.getByTestId('msa-alignment-view')).toBeVisible();
     };
 
-    // max(940, round((1440 - 40) * 0.78)) x min(820, 900 - 150). Pinned,
+    // max(940, round((1440 - 40) * 0.78)) x min(760, 900 - 56): the room under the
+    // 48px top edge and above the 8px bottom gap, to the workflow cap. Pinned,
     // so a change to either responsive default has to come past this test rather
     // than through it.
-    const defaultSize = { w: 1092, h: 750 };
+    const defaultSize = { w: 1092, h: 760 };
     expect(await size()).toEqual(defaultSize);
 
     const grip = await page.evaluate(() => {
@@ -2161,10 +2192,12 @@ test.describe('Motif MSA viewer interactions', () => {
     await reopen();
     expect(await size(), 'a deliberately chosen window size must survive a reopen').toEqual({ w: 280, h: 180 });
 
-    const settings = page.locator('details[data-rail-tool="settings"]');
-    await settings.locator(':scope > summary').click();
+    const settings = await openTool(page, 'settings');
     await settings.getByRole('button', { name: 'Reset display' }).click();
     await expect.poll(size, { message: 'Reset display left the OPEN window at its floor' }).toEqual(defaultSize);
+    // The Tools drawer stays over the window's right edge, where its close button
+    // is, until it is dismissed.
+    await closeToolsDrawer(page);
 
     await reopen();
     expect(await size(), 'the reset must clear the remembered size, not just the rendered one').toEqual(defaultSize);

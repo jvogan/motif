@@ -148,7 +148,7 @@ function motifMaxLength(rule: Pick<SequenceMotifRule, 'pattern'>): number {
 
 function hasTerminalAnchor(rule: Pick<SequenceMotifRule, 'pattern'>): boolean {
   const clean = rule.pattern.replace(/\s+/g, '');
-  return isPrositePattern(clean) && (clean.startsWith('<') || clean.endsWith('>'));
+  return isPrositePattern(clean) && (clean.startsWith('<') || />\.?$/.test(clean));
 }
 
 export function commentOverlayRange(comment: Pick<MapCommentRangeSource, 'start' | 'end'>, length: number): SelectionRange | null {

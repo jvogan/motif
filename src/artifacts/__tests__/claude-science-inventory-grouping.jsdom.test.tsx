@@ -41,7 +41,7 @@ describe('inventory grouping of imported records', () => {
     render(<InventoryList records={records} selectedRecordId="bundled" onSelect={() => undefined} />);
     expect(groupOf('WITHSOURCE')).toBe('Imported');
     expect(groupOf('NOSOURCE')).toBe('Imported');
-    expect(groupOf('fasta one')).toBe('Imported');
+    expect(groupOf('fasta')).toBe('Imported');
     expect(groupOf('bundled')).toBe('Vectors / DNA');
   });
 });

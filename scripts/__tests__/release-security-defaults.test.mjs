@@ -58,6 +58,20 @@ describe('release security defaults', () => {
     expect(npmrc).toMatch(/^\s*ignore-scripts\s*=\s*true\s*$/mu);
   });
 
+  it('sets no dependency waiting period while keeping the other dependency controls', () => {
+    const policy = JSON.parse(readFileSync(resolve(root, 'security/dependency-policy.json'), 'utf8'));
+    const npmrc = readFileSync(resolve(root, '.npmrc'), 'utf8');
+    expect(policy.coolingOffDays).toBe(0);
+    expect(policy.coolingOffExceptions).toEqual([]);
+    expect(npmrc).toMatch(/^\s*min-release-age\s*=\s*0\s*$/mu);
+    expect(Number(/^\s*min-release-age\s*=\s*(\d+)\s*$/mu.exec(npmrc)?.[1])).toBe(policy.coolingOffDays);
+    expect(policy.directDependenciesMustBeExact).toBe(true);
+    expect(policy.registry).toBe('https://registry.npmjs.org/');
+    expect(Object.keys(policy.allowedLifecycleScripts).length).toBeGreaterThan(0);
+    expect(Object.keys(policy.ownedPreparations).length).toBeGreaterThan(0);
+    expect(npmrc).toMatch(/^\s*ignore-scripts\s*=\s*true\s*$/mu);
+  });
+
   it('includes the MCP stdio fallback in release-version alignment', () => {
     expect(checkReleaseAlignment()).toMatchObject({ version: '0.4.0', surfaces: 10 });
   });

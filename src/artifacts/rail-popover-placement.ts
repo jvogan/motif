@@ -1,12 +1,11 @@
 /**
  * Placement solver for the tools-rail popovers.
  *
- * The rail popovers used to open at a literal CSS position — `top: 84px;
- * right: 58px` — with no idea what was underneath them. Measured with a
- * floating window open, all 15 of them landed squarely on that window's
- * Maximize / Collapse / Close cluster, 45 of 45 control instances covered, and
- * there was no way out: the popover is right-anchored and not draggable, so the
- * user could not move either thing out of the other's way.
+ * A literal CSS position — `top: 84px; right: 58px` — knows nothing about what
+ * is underneath a popover. With a floating window open, every rail popover
+ * would land squarely on that window's Maximize / Collapse / Close cluster, with
+ * no way out: the popover is right-anchored and not draggable, so the user could
+ * not move either thing out of the other's way.
  *
  * Obstacles are TIERED, which is what makes this more than a constant nudge:
  *   'hard' — must never be covered. A window's title bar (which carries
@@ -358,9 +357,9 @@ export const PANE_CONTROL_ROWS: ReadonlyArray<{ selector: string; yields?: Reado
   { selector: '.motif-cs-pane-title', yields: { map: 2 } },
   // The sequence record title: Export, Pop out, Collapse.
   { selector: '.motif-cs-title-row' },
-  // Undo, Redo, Replace/Insert, Detail, Complement.
+  // Undo, Redo, Replace/Insert, Show tracks, Complement.
   { selector: '.motif-cs-edit-toolbar' },
-  // Copy, Add AA track, + Feature, Primers, + RC, + Prot.
+  // Copy, Add feature, Create.
   { selector: '.motif-cs-selection-bar' },
   // In case the map toolbar ever leaves its title row.
   { selector: '.motif-cs-map-toolbar', yields: { map: 2 } },

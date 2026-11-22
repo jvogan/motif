@@ -22,14 +22,14 @@ function sliceBetween(startNeedle: string, endNeedle: string): string {
 
 describe('Claude Science accessibility and interaction guards', () => {
   it('names the state a sequence-view click will produce', () => {
-    // Detail is now one switch rather than a Standard/Detail pair, so the click
-    // does flip. What the old two-button guard was protecting — that the view
-    // state is readable rather than implicit — is carried by aria-pressed and
-    // data-active, which is what both assistive tech and the tests read. The
+    // Detail is one switch, so the click flips it. The view state is readable
+    // rather than implicit: aria-pressed and data-active carry it, which is what
+    // both assistive tech and the tests read. The
     // handler must still branch on the EFFECTIVE mode, or a large record that
     // is forced to standard would toggle away from a state it is not in.
-    expect(artifactSource).toContain(
-      "onClick={() => setSequenceViewMode(effectiveSequenceViewMode === 'detail' ? 'standard' : 'detail')}",
+    // The click announces the change first, so the rows on screen keep their place.
+    expect(artifactSource).toMatch(
+      /onClick=\{\(event\) => \{\s*window\.dispatchEvent\(new Event\(SEQUENCE_VIEW_CHANGE_EVENT\)\);\s*setSequenceViewMode\(effectiveSequenceViewMode === 'detail' \? 'standard' : 'detail'\);\s*returnFocusAfterPointerClick\(event\);\s*\}\}/,
     );
     expect(artifactSource).toContain("aria-pressed={effectiveSequenceViewMode === 'detail'}");
     expect(artifactSource).toContain("data-active={effectiveSequenceViewMode === 'detail' || undefined}");
@@ -56,20 +56,20 @@ describe('Claude Science accessibility and interaction guards', () => {
     // cost is 2 Tab + Enter + 2 Tab, and all fifteen tools then follow in order.
     expect(artifactSource).toContain('<a className="motif-cs-skip-link" href="#motif-cs-tools-pane">Skip to tools</a>');
 
-    // The href and the id must agree. They did not in the first draft of this
-    // fix -- the link pointed at #motif-cs-tools while the pane was
-    // #motif-cs-tools-pane -- and nothing failed anywhere. Enter simply moved
-    // focus nowhere: no console error, no missing target, the link still looked
-    // right in the DOM. Only walking the focus afterwards caught it, so pin the
-    // pair rather than the two strings independently.
+    // The href and the id must agree. If the link pointed at #motif-cs-tools
+    // while the pane was #motif-cs-tools-pane, nothing would fail anywhere: Enter
+    // would simply move focus nowhere, with no console error, no missing target
+    // and a link that still looks right in the DOM. Only walking the focus
+    // afterwards catches it, so pin the pair rather than the two strings
+    // independently.
     const skipHref = artifactSource.match(/className="motif-cs-skip-link" href="#([\w-]+)">Skip to tools/)?.[1];
     expect(skipHref, 'Skip to tools link is missing its href').toBeTruthy();
     expect(artifactSource, `no element carries id="${skipHref}" -- the skip link points at nothing`)
       .toContain(`id="${skipHref}"`);
 
     // An href jump moves focus only if the target is focusable, so the rail
-    // needs tabIndex -1 in EVERY placement. It previously had one only while
-    // floating, which is the placement the link is least needed in.
+    // needs tabIndex -1 in EVERY placement, not only while floating, which is the
+    // placement the link is least needed in.
     const railPane = sliceBetween('key="tools-pane"', 'className="motif-cs-pane-title"');
     expect(railPane).toContain('id="motif-cs-tools-pane"');
     expect(railPane).toContain('tabIndex={-1}');
@@ -105,19 +105,18 @@ describe('Claude Science accessibility and interaction guards', () => {
   });
 
   it('keeps both pane splitters and map features visibly focusable', () => {
-    // The filed premise was that these show NO focus indicator because they
-    // compute `outline: none 0px`. That reading is right and the conclusion is
-    // wrong: every one of them sets `outline: none` deliberately and paints its
-    // indicator into background / ::after / stroke instead. Measured by pixel
+    // These elements compute `outline: none 0px`, which can look like NO focus
+    // indicator. Every one of them sets `outline: none` deliberately and paints
+    // its indicator into background / ::after / stroke instead. Measured by pixel
     // diff between rest and a real Tab, at 1440x900:
-    //   vertical splitter   23.13% of its pixels repaint  -- was already fine
-    //   stacked splitter     1.65% -> 9.36% after this fix
-    //   map feature arc      1.08% -> 27.46% after this fix
-    // So only the latter two were real, and a probe reading outline and
-    // box-shadow alone cannot tell any of the three apart.
+    //   vertical splitter   23.13% of its pixels repaint
+    //   stacked splitter     9.36% of its pixels repaint
+    //   map feature arc     27.46% of its pixels repaint
+    // A probe reading outline and box-shadow alone cannot tell any of the three
+    // apart from an element with no indicator.
 
-    // Vertical splitter: full-length accent stripe plus accent grip. Unchanged,
-    // guarded so the refutation does not get "fixed" by a later reviewer.
+    // Vertical splitter: full-length accent stripe plus accent grip. Guarded so
+    // an outline-only probe does not get it "fixed".
     expect(artifactCss).toMatch(
       /\.motif-cs-resize-handle:hover,\s*\.motif-cs-resize-handle:focus-visible,[\s\S]*?background:\s*\n?\s*linear-gradient\(to right, transparent 0 2px, var\(--accent\) 2px 4px/,
     );
@@ -186,7 +185,12 @@ describe('Claude Science accessibility and interaction guards', () => {
   it('supports keyboard sequence selection with explicit custom-textbox semantics', () => {
     const sequenceText = sliceBetween('function SequenceText({', "if (typeof document !== 'undefined') {");
     expect(sequenceText).toContain('const handleSequenceKeyDown = useCallback');
-    expect(sequenceText).toContain("event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey");
+    // Shift with any movement key (arrows, Home/End, Page keys, and the line,
+    // record and 10-base keys) extends the selection from its anchor.
+    expect(sequenceText).toContain('const move = sequenceMoveForKey(event, mac);');
+    expect(sequenceText).toContain('if (event.shiftKey) {');
+    expect(sequenceText).toContain(': extendSelectionTarget(move, extent, layout);');
+    expect(sequenceText).toContain('? extendSelectionAcrossOrigin(move, extent, layout)');
     expect(sequenceText).toContain('role="textbox"');
     expect(sequenceText).toContain('aria-multiline="true"');
     expect(sequenceText).toContain('aria-readonly={!editable}');

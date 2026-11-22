@@ -3,9 +3,9 @@ import vectors from '../../../public/data/vectors.json';
 import { findRestrictionSites } from '../../bio/restriction-sites';
 import { resolveEnzymeUnion } from '../../bio/restriction-presets';
 import type { Feature } from '../../bio/types';
-import { computeMapLayout } from '../layout';
+import { computeMapLayout, RESTRICTION_LABEL_FONT_MODE } from '../layout';
 import { restrictionDensitySourcesForMap, restrictionSitesForInteractiveMap } from '../restriction-display';
-import { approxTextWidth, CIRCULAR_LABEL_BOX_HEIGHT_PX, type LabelFontMode } from '../geometry/labels';
+import { approxTextWidth, CIRCULAR_LABEL_BOX_HEIGHT_PX, LABEL_FONT_PX, type LabelFontMode } from '../geometry/labels';
 import type { MapLabelRender, MapLayout } from '../types';
 
 /**
@@ -141,7 +141,7 @@ describe('circular labels evicted by the collision cascade are re-packed', () =>
     expect(named).toHaveLength(23);
     // 23 of the 25 clusters carry a label, but those labels name only 29 of the 117
     // sites; the rest sit behind a "+N" tail. See unnamedClusterSites in layout.ts.
-    expect(chipText(layout, 'restriction-labels')).toBe('88 unnamed sites');
+    expect(chipText(layout, 'restriction-labels')).toBe('+88 sites');
     // repin:repack-cascade:end
   });
 
@@ -160,7 +160,7 @@ describe('circular labels evicted by the collision cascade are re-packed', () =>
     // Every cluster is labelled and the chip still fires: labelling all 23 names 41 of
     // the 76 sites, and a count of clusters without a label would be 0 here, so the map
     // would say nothing about the 35 ticks a reader cannot put a name to.
-    expect(chipText(layout, 'restriction-labels')).toBe('35 unnamed sites');
+    expect(chipText(layout, 'restriction-labels')).toBe('+35 sites');
     // repin:repack-features:end
   });
 
@@ -176,7 +176,7 @@ describe('circular labels evicted by the collision cascade are re-packed', () =>
     expect(named).toHaveLength(22);
     // The 7 unlabelled clusters and the "+N" tails under the 22 labels leave 118 of
     // the 147 sites unnamed.
-    expect(chipText(layout, 'restriction-labels')).toBe('118 unnamed sites');
+    expect(chipText(layout, 'restriction-labels')).toBe('+118 sites');
     // repin:repack-clusters:end
   });
 
@@ -199,7 +199,7 @@ describe('circular labels evicted by the collision cascade are re-packed', () =>
         const layout = circularLayout(name, width, height);
         const boxes = [
           ...layout.features.filter((item) => item.label).map((item) => labelBox(item.label!, 'proportional')),
-          ...layout.restrictions.filter((item) => item.label).map((item) => labelBox(item.label!, 'monospace')),
+          ...layout.restrictions.filter((item) => item.label).map((item) => labelBox(item.label!, RESTRICTION_LABEL_FONT_MODE)),
         ];
         for (let i = 0; i < boxes.length; i += 1) {
           for (let j = i + 1; j < boxes.length; j += 1) {
@@ -238,14 +238,14 @@ describe('circular labels evicted by the collision cascade are re-packed', () =>
       'pET-28a(+) 1032x260: lac operator leader through T7 prom.',
       'pET-28a(+) 1032x260: 6xHis leader through T7 te…',
       'pET-28a(+) 1212x310: T7 prom. leader through lac operator',
-      'pET-28a(+) 1298x358: lac op… leader through T7 prom.',
-      'pET-28a(+) 1372x379: lac op… leader through RBS',
+      'pET-28a(+) 1298x358: T7 prom. leader through lac operator',
+      'pET-28a(+) 1372x379: lac operator leader through RBS',
       'pETDuet-1 1032x260: T7 prom. leader through lac operator 2',
       'pETDuet-1 1032x260: lac operator 1 leader through RBS',
       'pETDuet-1 1212x310: T7 prom. leader through lac operator 2',
       'pETDuet-1 1212x310: RBS leader through lac operator 1',
       'pETDuet-1 1298x358: RBS leader through T7 prom.',
-      'pETDuet-1 1372x379: T7 prom. leader through lac op…',
+      'pETDuet-1 1372x379: T7 prom. leader through lac operator 2',
       'pETDuet-1 1372x379: RBS leader through lac op…',
       'pETDuet-1 780x890: lac operator 2 leader through T7 prom.',
       'pETDuet-1 955x920: RBS leader through lac operator 1',
@@ -262,7 +262,7 @@ describe('circular labels evicted by the collision cascade are re-packed', () =>
         const layout = circularLayout(name, width, height);
         const items = [
           ...layout.features.filter((item) => item.label).map((item) => ({ box: labelBox(item.label!, 'proportional'), leader: item.label!.leader })),
-          ...layout.restrictions.filter((item) => item.label).map((item) => ({ box: labelBox(item.label!, 'monospace'), leader: item.label!.leader })),
+          ...layout.restrictions.filter((item) => item.label).map((item) => ({ box: labelBox(item.label!, RESTRICTION_LABEL_FONT_MODE), leader: item.label!.leader })),
         ];
         for (const item of items) {
           if (item.leader.length > 1) leaders += 1;
@@ -354,4 +354,56 @@ describe('the cloning-site cluster outranks the feature names around it', () => 
       expect(unnamed, name).toEqual([]);
     }
   }, 120_000);
+});
+
+describe("a leader's run inside the ring", () => {
+  // The leader guards in layout.test.ts measure the part of a leader outside the ring.
+  // Leaders run on in to their feature, so the part inside crosses the ruler band and
+  // the lanes outside its feature, where names ride their arcs.
+  it('never crosses the ink of a name riding an arc', () => {
+    const halfInk = LABEL_FONT_PX * 0.36;
+    const panes: [number, number][] = [...PANES, [680, 428], [610, 666], [706, 746], [956, 926], [456, 582]];
+    const crossings: string[] = [];
+    let inner = 0;
+    for (const record of vectors) {
+      for (const [width, height] of panes) {
+        const layout = circularLayout(record.name, width, height);
+        const { x: cx, y: cy } = layout.center;
+        const R = layout.radius;
+        const deg = (x: number, y: number) => Math.atan2(x - cx, cy - y) * (180 / Math.PI);
+        const riding = layout.features.filter((f) => f.label?.arcPath).map((f) => {
+          const label = f.label!;
+          const r = Math.hypot(label.x - cx, label.y - cy);
+          return { id: f.id, text: label.text, r, a: deg(label.x, label.y), half: ((approxTextWidth(label.text) / r) * (180 / Math.PI)) / 2 };
+        });
+        for (const f of layout.features) {
+          const leader = f.label && !f.label.inside ? f.label.leader : [];
+          for (let i = 1; i < leader.length; i += 1) {
+            let hit: string | null = null;
+            for (let k = 0; k <= 40 && !hit; k += 1) {
+              const x = leader[i - 1].x + ((leader[i].x - leader[i - 1].x) * k) / 40;
+              const y = leader[i - 1].y + ((leader[i].y - leader[i - 1].y) * k) / 40;
+              const r = Math.hypot(x - cx, y - cy);
+              if (r >= R - 0.5) continue;
+              inner += 1;
+              const a = deg(x, y);
+              for (const name of riding) {
+                if (name.id === f.id) continue;
+                const da = Math.abs(((a - name.a + 540) % 360) - 180);
+                if (Math.abs(r - name.r) < halfInk && da < name.half) hit = name.text;
+              }
+            }
+            if (hit) {
+              crossings.push(`${record.name} ${width}x${height}: ${f.label!.text} leader through ${hit}`);
+              break;
+            }
+          }
+        }
+      }
+    }
+    expect(inner).toBeGreaterThan(1000);
+    // pUC19's primer sits wholly under the lacZ-alpha name on the narrow panes; its leader
+    // steps aside between the lanes and crosses lacZ-alpha's band clear of the name.
+    expect(crossings).toEqual([]);
+  });
 });

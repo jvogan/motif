@@ -58,7 +58,7 @@ describe('Inventory record rows', () => {
   });
 
   it('are one Tab stop, on the selected record', () => {
-    // Each row used to be its own stop: 13 of them for the bundled records.
+    // A row is not its own stop: that would be 13 stops for the bundled records.
     const { rows } = renderInventory();
     expect(rows().map((row) => row.tabIndex)).toEqual([0, -1, -1, -1]);
   });
@@ -75,13 +75,66 @@ describe('Inventory record rows', () => {
     expect(visit('ArrowDown')).toBe('pAlpha-2');
     expect(visit('ArrowDown')).toBe('pBeta-1');
     expect(visit('End')).toBe('pBeta-2');
-    // They wrap, as the record tabs do.
+    // Down wraps from the last row to the first, as the record tabs do.
     expect(visit('ArrowDown')).toBe('pAlpha-1');
-    expect(visit('ArrowUp')).toBe('pBeta-2');
+    expect(visit('End')).toBe('pBeta-2');
     expect(visit('Home')).toBe('pAlpha-1');
-    // The tab strip's own keys work here too.
+    // The tab strip's own keys work here too, and Left wraps as the tabs do.
     expect(visit('ArrowRight')).toBe('pAlpha-2');
     expect(visit('ArrowLeft')).toBe('pAlpha-1');
+    expect(visit('ArrowLeft')).toBe('pBeta-2');
+  });
+
+  it('are reached from the filter with Down or Enter, and Up from the first row or Escape goes back', () => {
+    const { container, rows, selectedName, focusedName, press } = renderInventory();
+    const filter = container.querySelector<HTMLInputElement>('input[name="inventory-filter"]')!;
+    const type = (value: string) => act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(filter, value);
+      filter.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    // Down lands on the open record's row and does not change the selection.
+    act(() => rows()[1].click());
+    act(() => filter.focus());
+    press('ArrowDown');
+    expect(focusedName()).toBe('pAlpha-2');
+    expect(selectedName()).toBe('pAlpha-2');
+    press('Escape');
+    expect(document.activeElement).toBe(filter);
+
+    // With the open record filtered out, Enter lands on the first row left.
+    type('beta');
+    press('Enter');
+    expect(focusedName()).toBe('pBeta-1');
+    expect(selectedName()).toBeUndefined();
+    // Up from the first row goes back to the filter rather than wrapping.
+    press('ArrowUp');
+    expect(document.activeElement).toBe(filter);
+
+    // A filter that matches nothing leaves focus where it is.
+    type('zzz');
+    press('ArrowDown');
+    expect(document.activeElement).toBe(filter);
+  });
+
+  it('claim Escape after entering from the filter, and leave it to the page on a clicked row', () => {
+    const { container, rows, press } = renderInventory();
+    const filter = container.querySelector<HTMLInputElement>('input[name="inventory-filter"]')!;
+    let reached = false;
+    const listener = (event: KeyboardEvent) => { reached = !event.defaultPrevented; };
+    window.addEventListener('keydown', listener);
+    act(() => filter.focus());
+    press('ArrowDown');
+    press('Escape');
+    expect(reached).toBe(false);
+    expect(document.activeElement).toBe(filter);
+    // A row focused another way (a click, or Tab) leaves Escape to the page, which
+    // closes the Translation window or clears the selection.
+    act(() => rows()[0].focus());
+    press('Escape');
+    window.removeEventListener('keydown', listener);
+    expect(reached).toBe(true);
+    expect(document.activeElement).toBe(rows()[0]);
   });
 
   it('keep a Tab stop when a filter hides the selected record', () => {

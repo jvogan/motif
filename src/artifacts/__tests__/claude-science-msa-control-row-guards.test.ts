@@ -16,12 +16,11 @@ import { describe, expect, it } from 'vitest';
  *
  * These guards read the stylesheet, so they hold wherever the declaration moves.
  * The markup assertions come first: they fail if a row gains a wrapper the
- * levelling rule does not name, which is how the defect got in.
+ * levelling rule does not name.
  */
 
 const here = dirname(fileURLToPath(import.meta.url));
 const overlayCss = readFileSync(resolve(here, '..', 'claude-science-msa.css'), 'utf8');
-const artifactCss = readFileSync(resolve(here, '..', 'motif-artifact.css'), 'utf8');
 const viewer = readFileSync(resolve(here, '..', 'ClaudeScienceMsaViewer.tsx'), 'utf8');
 
 const ROW_HEIGHT_PX = 30;
@@ -141,15 +140,18 @@ describe('Claude Science MSA control rows', () => {
   });
 
   it('sizes the status-bar stepper to the shared button height', () => {
-    const base = artifactCss.match(/\n\.motif-cs-mini-button \{\n\s*min-height: (\d+)px;/);
-    expect(base, 'mini-button lost its base height').not.toBeNull();
+    // This workspace levels every small button to the 28px control token, so the
+    // stepper must use the same token or one row would carry two heights.
+    const level = rules(overlayCss).find((rule) => rule.selectors.includes('.motif-cs-msa-workspace .motif-cs-mini-button'));
+    expect(level, 'nothing levels the small buttons in this workspace').toBeDefined();
+    expect(level!.body).toMatch(/min-height\s*:\s*var\(--control-h-sm\)/);
     const stepper = rules(overlayCss).find((rule) => rule.selectors.some((one) => (
       one.includes('.motif-cs-msa-statusbar')
       && one.includes('.motif-cs-msa-difference-nav')
       && one.endsWith('.motif-cs-mini-button')
     )));
     expect(stepper, 'nothing sizes the status-bar stepper').toBeDefined();
-    expect(stepper!.body).toMatch(new RegExp(`width\\s*:\\s*${base![1]}px`));
-    expect(stepper!.body).toMatch(new RegExp(`min-height\\s*:\\s*${base![1]}px`));
+    expect(stepper!.body).toMatch(/width\s*:\s*var\(--control-h-sm\)/);
+    expect(stepper!.body).toMatch(/min-height\s*:\s*var\(--control-h-sm\)/);
   });
 });

@@ -7,6 +7,7 @@ import { CHANNEL_DASH } from '../ClaudeScienceSangerTraceViewer';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const artifactSource = readFileSync(resolve(here, '..', 'motif-artifact.tsx'), 'utf8');
+const fileImportSource = readFileSync(resolve(here, '..', 'claude-science-file-import.ts'), 'utf8');
 const msaSource = readFileSync(resolve(here, '..', 'ClaudeScienceMsaViewer.tsx'), 'utf8');
 const traceSource = readFileSync(resolve(here, '..', 'ClaudeScienceSangerTraceViewer.tsx'), 'utf8');
 const artifactCss = readFileSync(resolve(here, '..', 'motif-artifact.css'), 'utf8');
@@ -22,8 +23,9 @@ const helperSource = readFileSync(resolve(
 
 describe('Claude Science Sanger workflow guards', () => {
   it('reads AB1 as bounded binary data and carries the complete JSON-safe trace into a record', () => {
-    expect(artifactSource).toContain("if (/\\.(?:ab1|abi)$/i.test(file.name))");
-    expect(artifactSource).toContain('if (file.size > ABI_IMPORT_LIMITS.maxFileBytes)');
+    expect(fileImportSource).toContain("return /\\.(?:ab1|abi)$/i.test(file.name);");
+    expect(fileImportSource).toContain('const limit = isAbiImportFile(file) ? ABI_IMPORT_LIMITS.maxFileBytes : selectionLimit;');
+    expect(artifactSource).toMatch(/if \(isAbiImportFile\(file\)\) \{\s*if \(file\.size > maxImportBytes\)/);
     expect(artifactSource).toContain('parseAbiImport(await file.arrayBuffer(), baseName)');
     expect(artifactSource).toContain('sangerTrace: parsed.sangerTrace');
     expect(artifactSource).toContain("operation: 'import_ab1'");
@@ -70,7 +72,10 @@ describe('Claude Science Sanger workflow guards', () => {
     expect(traceSource).toContain('if (canvas.width !== pixelWidth) canvas.width = pixelWidth;');
     expect(traceSource).toContain('traceCenteredScrollLeft(');
     expect(traceSource).toContain('traceFitCellWidth(');
-    expect(traceSource).toContain("window.matchMedia?.('(prefers-reduced-motion: reduce)').matches");
+    // A jump to a column is one direct scroll in the same frame, never an animation.
+    expect(traceSource).toContain('scroller.scrollTo({ left: target, behavior });');
+    expect(traceSource).toContain("behavior: ScrollBehavior = 'auto'");
+    expect(traceSource).not.toContain("'smooth'");
     expect(traceSource).toContain('onPointerDown={chooseColumn}');
     expect(traceSource).toContain("event.key !== 'ArrowLeft' && event.key !== 'ArrowRight'");
     expect(traceSource).toContain('type="range"');
@@ -143,9 +148,7 @@ describe('Claude Science Sanger workflow guards', () => {
    than silently in a dark theme. */
 const THEME_BLOCKS: Record<string, string> = {
   light: 'html[data-theme="light"]',
-  'claude-light': 'html[data-theme="claude-light"]',
   dark: 'html[data-theme="dark"]',
-  'claude-dark': 'html[data-theme="claude-dark"]',
 };
 
 function themeTokens(selector: string): Record<string, string> {
@@ -258,10 +261,35 @@ describe('Sanger chromatogram channels stay separable without hue', () => {
     // The two solid channels must not pick up a pattern the canvas never draws.
     expect(artifactCss).not.toContain('.motif-cs-sanger-legend [data-base="A"] i');
     expect(artifactCss).not.toContain('.motif-cs-sanger-legend [data-base="G"] i');
-    // The legend is no longer a colour key alone. This reads traceSource: the
+    // The legend is a channel key, not a colour key alone. This reads traceSource: the
     // label lives in the viewer, and asserting it against motif-artifact.tsx
-    // passed vacuously.
+    // would pass vacuously.
     expect(traceSource).toContain('aria-label="Chromatogram channel key"');
     expect(traceSource).not.toContain('aria-label="Chromatogram channel colors"');
+  });
+
+  it('keeps the open read header figures at 4.5:1 or more on its accent tint in both themes', () => {
+    const block = (selector: string) => {
+      const start = artifactCss.indexOf(`${selector} {`);
+      expect(start, selector).toBeGreaterThanOrEqual(0);
+      return artifactCss.slice(start, artifactCss.indexOf('}', start));
+    };
+    const header = block('.motif-cs-sanger-lane[data-active] .motif-cs-sanger-lane-header');
+    expect(header).toMatch(/background:\s*color-mix\(in srgb, var\(--accent\) 7%, var\(--bg-secondary\)\)/);
+    const textToken = header.match(/\n\s*color:\s*var\((--[\w-]+)\)/)?.[1]
+      ?? block('.motif-cs-sanger-lane-header').match(/\n\s*color:\s*var\((--[\w-]+)\)/)?.[1];
+    expect(textToken).toBeDefined();
+    const hex = (value: string) => [1, 3, 5].map((i) => Number.parseInt(value.slice(i, i + 2), 16));
+    const channel = (v: number) => { const c = v / 255; return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
+    const luminance = (rgb: number[]) => 0.2126 * channel(rgb[0]) + 0.7152 * channel(rgb[1]) + 0.0722 * channel(rgb[2]);
+    for (const selector of [':root,\nhtml[data-theme="light"]', 'html[data-theme="dark"]']) {
+      const theme = block(selector);
+      const token = (name: string) => hex(theme.match(new RegExp(`${name}:\\s*(#[0-9a-f]{6})`))![1]);
+      const accent = token('--accent');
+      const surface = token('--bg-secondary');
+      const tint = accent.map((value, i) => Math.round(value * 0.07 + surface[i] * 0.93));
+      const [hi, lo] = [luminance(token(textToken!)), luminance(tint)].sort((a, b) => b - a);
+      expect((hi + 0.05) / (lo + 0.05), selector).toBeGreaterThanOrEqual(4.5);
+    }
   });
 });

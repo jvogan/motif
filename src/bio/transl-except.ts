@@ -1,9 +1,11 @@
 import { resolveTranslationTable } from './codon-tables';
 import {
-  extractFeatureSequence,
   featureLocationSegments,
+  materializeFeatureSequence,
+  projectFeatureSequence,
   type FeatureCoordinateMapSpan,
   type FeatureLocation,
+  type FeatureLocationSegment,
 } from './feature-location';
 import { translateCompleteCds } from './translate';
 import type { CodonTable } from './types';
@@ -229,14 +231,11 @@ function parseQualifier(rawQualifier: string): {
   return { exceptions, diagnostics };
 }
 
-function sourceCoordinateOrder(feature: FeatureLocation, sequenceLength: number): number[] | null {
-  if (feature.strand !== 1 && feature.strand !== -1) return null;
-  const segments = featureLocationSegments(feature);
-  if (segments.length === 0) return null;
+function sourceCoordinateOrder(segments: readonly FeatureLocationSegment[], strand: 1 | -1): number[] | null {
   const coordinates: number[] = [];
   const seen = new Set<number>();
   for (const segment of segments) {
-    if (segment.start < 0 || segment.end > sequenceLength || segment.end <= segment.start || segment.strand !== feature.strand) return null;
+    if (segment.strand !== strand) return null;
     const part = segment.strand === 1
       ? Array.from({ length: segment.end - segment.start }, (_, offset) => segment.start + offset)
       : Array.from({ length: segment.end - segment.start }, (_, offset) => segment.end - 1 - offset);
@@ -247,20 +246,6 @@ function sourceCoordinateOrder(feature: FeatureLocation, sequenceLength: number)
     }
   }
   return coordinates;
-}
-
-/**
- * `complement(...)` in a transl_except location describes the orientation of
- * the biological CDS location, not merely a convenient way to spell genomic
- * coordinates. Mixed or directionless feature pieces therefore have no
- * single orientation to validate against and are rejected by the location
- * check above.
- */
-function featureBiologicalStrand(feature: FeatureLocation): 1 | -1 | null {
-  if (feature.strand !== 1 && feature.strand !== -1) return null;
-  const segments = featureLocationSegments(feature);
-  if (segments.length === 0 || segments.some((segment) => segment.strand !== feature.strand)) return null;
-  return feature.strand;
 }
 
 function parseCodonStart(value: unknown): 1 | 2 | 3 | null {
@@ -307,13 +292,13 @@ export function materializeTranslationExceptions(
   if (!table) {
     return { ok: false, sequence: '', sourceProtein: null, materializedProtein: null, exceptions: parsed.exceptions, receipt: null, diagnostics: [diagnostic('malformed', 'transl_except materialization requires a supported NCBI translation table.', rawQualifier)] };
   }
-  const coordinates = sourceCoordinateOrder(options.feature, options.sequence.length);
+  const projection = projectFeatureSequence(options.feature, options.sequence.length);
+  const biologicalStrand = options.feature.strand;
+  const coordinates = projection.ok && biologicalStrand !== 0
+    ? sourceCoordinateOrder(projection.segments, biologicalStrand)
+    : null;
   if (!coordinates) {
     return { ok: false, sequence: '', sourceProtein: null, materializedProtein: null, exceptions: parsed.exceptions, receipt: null, diagnostics: [diagnostic('invalid_feature_location', 'The CDS location is not a bounded, oriented, non-overlapping local feature.', rawQualifier)] };
-  }
-  const biologicalStrand = featureBiologicalStrand(options.feature);
-  if (biologicalStrand === null) {
-    return { ok: false, sequence: '', sourceProtein: null, materializedProtein: null, exceptions: parsed.exceptions, receipt: null, diagnostics: [diagnostic('invalid_feature_location', 'The CDS location does not have one consistent biological strand for transl_except validation.', rawQualifier)] };
   }
   const orientationDiagnostics = parsed.exceptions
     .filter((exception) => exception.complement !== (biologicalStrand === -1))
@@ -325,7 +310,7 @@ export function materializeTranslationExceptions(
   if (orientationDiagnostics.length > 0) {
     return { ok: false, sequence: '', sourceProtein: null, materializedProtein: null, exceptions: parsed.exceptions, receipt: null, diagnostics: orientationDiagnostics };
   }
-  const sequence = extractFeatureSequence(options.sequence, options.feature, 'dna');
+  const sequence = materializeFeatureSequence(options.sequence, projection, 'dna');
   const frame = codonStart - 1;
   if (sequence.length <= frame || (sequence.length - frame) % 3 !== 0) {
     return { ok: false, sequence, sourceProtein: null, materializedProtein: null, exceptions: parsed.exceptions, receipt: null, diagnostics: [diagnostic('invalid_cds_frame', 'The CDS sequence after codon_start is not a complete number of codons.', rawQualifier)] };

@@ -108,9 +108,9 @@ export type ClaudeScienceConstructVerificationSavePayload = Readonly<{
 
 /**
  * An unsaved (or just-saved) run, kept by the host while the window is closed.
- * Opening Alignment closes this window, and the run used to live only in its
- * component state, so it was lost without a word. The draft is tied to the
- * records it was made from and is dropped if any of them changed meanwhile.
+ * Opening Alignment closes this window, so a run kept only in component state
+ * would be lost without a word. The draft is tied to the records it was made
+ * from and is dropped if any of them changed meanwhile.
  */
 export type ClaudeScienceConstructVerificationDraft = Readonly<{
   recordSignature: string;
@@ -286,7 +286,7 @@ function depthDraftMatches(text: string, depth: number): boolean {
 
 function boundedErrorMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
-  const normalized = message.trim() || 'Construct verification could not be completed.';
+  const normalized = message.trim() || 'Verification failed. Check the selected records.';
   return normalized.length <= 320 ? normalized : `${normalized.slice(0, 319)}…`;
 }
 
@@ -352,11 +352,11 @@ export function ClaudeScienceConstructVerificationWorkspace({
   const [completedRun, setCompletedRun] = useState<CompletedRun | null>(() => restore.draft?.completedRun ?? null);
   const [saved, setSaved] = useState(() => restore.draft?.saved ?? false);
   const [statusMessage, setStatusMessage] = useState(() => {
-    if (restore.discarded) return 'Your earlier run was discarded because its records changed. Run verification again.';
+    if (restore.discarded) return 'Inputs changed. Run verification again.';
     if (!restore.draft?.completedRun) return '';
     return restore.draft.saved
-      ? 'Showing your last run, already saved to Results.'
-      : 'Your unsaved run is restored. Review it, then save it to keep it in Results.';
+      ? 'Showing saved verification.'
+      : 'Unsaved result restored. Review and save.';
   });
   const appliedSignatureRef = useRef(recordSignature);
   const onDraftChangeRef = useRef(onDraftChange);
@@ -571,15 +571,15 @@ export function ClaudeScienceConstructVerificationWorkspace({
 
     const reference = recordById.get(form.referenceId);
     if (!reference || isTraceBacked(reference)) {
-      setErrorMessage('Choose a predicted DNA reference before verification.');
+      setErrorMessage('Choose reference DNA.');
       return;
     }
     if (!selectedReads.length) {
-      setErrorMessage('Select at least one imported Sanger read before verification.');
+      setErrorMessage('Select a Sanger read.');
       return;
     }
     if (selectedReads.length > MAX_SELECTED_READS) {
-      setErrorMessage(`Select no more than ${MAX_SELECTED_READS.toLocaleString()} Sanger reads per verification run.`);
+      setErrorMessage(`Select up to ${MAX_SELECTED_READS.toLocaleString()} Sanger reads.`);
       return;
     }
 
@@ -599,7 +599,7 @@ export function ClaudeScienceConstructVerificationWorkspace({
     try {
       const result = onVerify(request);
       setCompletedRun({ result, snapshot });
-      setStatusMessage('Verification complete. Review the evidence before saving.');
+      setStatusMessage('Review the result, then save.');
     } catch (error) {
       setErrorMessage(boundedErrorMessage(error));
     }
@@ -614,9 +614,9 @@ export function ClaudeScienceConstructVerificationWorkspace({
         snapshot: completedRun.snapshot,
       }));
       setSaved(true);
-      setStatusMessage('Verification saved to Results with its frozen evidence snapshot.');
+      setStatusMessage('Verification and evidence saved to Results.');
     } catch (error) {
-      setErrorMessage(boundedErrorMessage(`Verification not saved. ${boundedErrorMessage(error)}`));
+      setErrorMessage(boundedErrorMessage(`Save failed. ${boundedErrorMessage(error)}`));
     }
   };
 
@@ -631,6 +631,15 @@ export function ClaudeScienceConstructVerificationWorkspace({
   const showReadGroups = readGroups.length > 1 || (readGroups[0] !== undefined && readGroups[0].key !== '');
   const referenceGroupLabel = reference?.group?.trim();
   const runDisabled = !reference || isTraceBacked(reference) || eligibleReads.length === 0 || selectedCount === 0;
+  // What the reader needs next, in order. The action bar and the empty result
+  // both show it, so a disabled Run always says why.
+  const nextRequirement = !reference || isTraceBacked(reference)
+    ? 'Choose reference DNA.'
+    : eligibleReads.length === 0
+      ? 'Import AB1 reads to run.'
+      : selectedCount === 0
+        ? 'Select a Sanger read.'
+        : '';
   const resultReadNames = useMemo(
     () => Object.fromEntries(records.map((record) => [record.id, record.name])),
     [records],
@@ -648,7 +657,7 @@ export function ClaudeScienceConstructVerificationWorkspace({
         ? constructVerificationTraceTarget({ result: completedResult, variant, reference: runReference, records: recordById })
         : null;
       if (!target) {
-        setErrorMessage('The reads that cover this position could not be laid out against the reference, so Traces cannot open here.');
+        setErrorMessage('Read mapping failed here. Run verification again.');
         return;
       }
       onInspectVariant(target);
@@ -671,9 +680,8 @@ export function ClaudeScienceConstructVerificationWorkspace({
       {embedded ? null : (
         <header className="motif-cs-verification-workspace-header">
           <div>
-            <span>Evidence workspace</span>
             <h2 id={titleId}>Construct verification</h2>
-            <p>Compare imported Sanger base calls with the predicted DNA record.</p>
+            <p>Compare Sanger reads with reference DNA.</p>
           </div>
           {onClose ? (
             <button
@@ -681,6 +689,7 @@ export function ClaudeScienceConstructVerificationWorkspace({
               type="button"
               onClick={onClose}
               aria-label="Close construct verification workspace"
+              title="Close"
             >×</button>
           ) : null}
         </header>
@@ -688,17 +697,12 @@ export function ClaudeScienceConstructVerificationWorkspace({
 
       <div className="motif-cs-verification-workspace-body">
         <form className="motif-cs-verification-setup" onSubmit={runVerification}>
-          <div className="motif-cs-verification-intro">
-            <span>Predicted vs observed</span>
-            <strong>Define the acceptance evidence</strong>
-            <p>Motif uses the entire predicted construct as the required region. Adjustments invalidate the prior run until you verify again.</p>
-          </div>
+          {embedded ? <p className="motif-cs-verification-intro">Compare Sanger reads with reference DNA.</p> : null}
 
           <section className="motif-cs-verification-form-section" aria-labelledby={`${criteriaId}-reference`}>
-            <div className="motif-cs-verification-section-index" aria-hidden="true">01</div>
             <div className="motif-cs-verification-section-content">
               <label className="motif-cs-verification-field" htmlFor={`${criteriaId}-reference-select`}>
-                <span id={`${criteriaId}-reference`}>Predicted reference</span>
+                <span id={`${criteriaId}-reference`}>Reference DNA</span>
                 <select
                   ref={initialFocusRef}
                   id={`${criteriaId}-reference-select`}
@@ -707,7 +711,7 @@ export function ClaudeScienceConstructVerificationWorkspace({
                   disabled={!referenceRecords.length}
                   onChange={(event) => updateReference(event.target.value)}
                 >
-                  {!referenceRecords.length ? <option value="">No predicted DNA references</option> : null}
+                  {!referenceRecords.length ? <option value="">No reference DNA</option> : null}
                   {referenceRecords.map((record) => (
                     <option key={record.id} value={record.id}>
                       {record.name}
@@ -717,32 +721,32 @@ export function ClaudeScienceConstructVerificationWorkspace({
               </label>
               {reference ? (
                 <p className="motif-cs-verification-record-detail">
-                  {reference.sequence.length.toLocaleString()} bp · {reference.topology} · sequence hash recorded
+                  {reference.sequence.length.toLocaleString()} bp · {reference.topology}
                 </p>
               ) : (
-                <p className="motif-cs-verification-record-detail">Add a DNA record to define the predicted construct.</p>
+                <p className="motif-cs-verification-record-detail">Add reference DNA.</p>
               )}
             </div>
           </section>
 
           <fieldset className="motif-cs-verification-form-section motif-cs-verification-read-fieldset">
-            <legend className="motif-cs-verification-sr-only">Imported Sanger evidence</legend>
-            <div className="motif-cs-verification-section-index" aria-hidden="true">02</div>
+            <legend className="motif-cs-verification-sr-only">Sanger reads</legend>
             <div className="motif-cs-verification-section-content">
               <div className="motif-cs-verification-read-heading">
                 <div>
-                  <strong>Imported Sanger evidence</strong>
+                  <strong>Sanger reads</strong>
                   <span id={`${criteriaId}-read-limit`}>
-                    {selectedCount.toLocaleString()} of {eligibleReads.length.toLocaleString()} reads selected · maximum {MAX_SELECTED_READS.toLocaleString()} per run
+                    {selectedCount.toLocaleString()}/{eligibleReads.length.toLocaleString()} reads · max {MAX_SELECTED_READS.toLocaleString()}
+                    {readSelectionAtLimit && eligibleReads.length > MAX_SELECTED_READS ? '. Deselect one to add another.' : ''}
                   </span>
                 </div>
                 <div className="motif-cs-verification-read-actions" role="group" aria-label="Sanger read selection actions">
-                  <button type="button" onClick={selectAllReads} disabled={!eligibleReads.length || allReadsSelected}>
-                    {eligibleReads.length > MAX_SELECTED_READS ? `First ${MAX_SELECTED_READS.toLocaleString()}` : 'All'}
+                  <button type="button" onClick={selectAllReads} disabled={!eligibleReads.length || allReadsSelected} title={!eligibleReads.length ? 'Import AB1 reads first' : allReadsSelected ? 'Every read is selected' : undefined}>
+                    {eligibleReads.length > MAX_SELECTED_READS ? `Select first ${MAX_SELECTED_READS.toLocaleString()}` : 'Select all'}
                   </button>
-                  <button type="button" onClick={clearReads} disabled={!selectedCount}>Clear</button>
+                  <button type="button" onClick={clearReads} disabled={!selectedCount} title={!selectedCount ? 'No reads are selected' : undefined}>Clear reads</button>
                   {onImportReads && eligibleReads.length ? (
-                    <button type="button" data-testid="construct-verification-import-more" onClick={() => importInputRef.current?.click()}>Import…</button>
+                    <button type="button" data-testid="construct-verification-import-more" onClick={() => importInputRef.current?.click()}>Import AB1</button>
                   ) : null}
                 </div>
               </div>
@@ -775,7 +779,7 @@ export function ClaudeScienceConstructVerificationWorkspace({
                   className="motif-cs-verification-read-list"
                   data-testid="construct-verification-read-list"
                   role="region"
-                  aria-label="Available imported Sanger reads"
+                  aria-label="Available Sanger reads"
                 >
                   {readGroups.map((group) => (
                     <div key={group.key || 'ungrouped'} className="motif-cs-verification-read-group" role="group" aria-label={`${group.label}: ${group.reads.length.toLocaleString()} read${group.reads.length === 1 ? '' : 's'}`}>
@@ -800,13 +804,13 @@ export function ClaudeScienceConstructVerificationWorkspace({
                               checked={checked}
                               disabled={disabledByLimit}
                               aria-describedby={`${criteriaId}-read-limit`}
-                              title={disabledByLimit ? 'Deselect another read to include this evidence.' : undefined}
+                              title={disabledByLimit ? 'Deselect another read to add this one.' : undefined}
                               onChange={(event) => updateReadSelection(read.id, event.target.checked)}
                             />
                             <span>
                               <strong>{read.name}</strong>
                               <small>
-                                {read.sangerTrace.baseCalls.length.toLocaleString()} calls · {read.sangerEvidenceSha256 ? 'evidence hash recorded' : 'evidence hash unavailable'}
+                                {read.sangerTrace.baseCalls.length.toLocaleString()} calls{read.sangerEvidenceSha256 ? '' : ' · Evidence hash missing'}
                               </small>
                             </span>
                           </label>
@@ -817,7 +821,7 @@ export function ClaudeScienceConstructVerificationWorkspace({
                 </div>
               ) : (
                 <div className="motif-cs-verification-empty-evidence" role="note">
-                  <p>No trace-backed DNA records are available besides the selected reference. Import Sanger evidence to run verification.</p>
+                  <p>Import AB1 reads to verify this reference.</p>
                   {onImportReads ? (
                     <button
                       type="button"
@@ -832,11 +836,10 @@ export function ClaudeScienceConstructVerificationWorkspace({
           </fieldset>
 
           <section className="motif-cs-verification-form-section" aria-labelledby={`${criteriaId}-acceptance`}>
-            <div className="motif-cs-verification-section-index" aria-hidden="true">03</div>
             <div className="motif-cs-verification-section-content">
               <div className="motif-cs-verification-acceptance-heading">
-                <strong id={`${criteriaId}-acceptance`}>Full-reference acceptance</strong>
-                <span>Every reference base is required</span>
+                <strong id={`${criteriaId}-acceptance`}>Acceptance criteria</strong>
+                <span>Every reference base required</span>
               </div>
               <div className="motif-cs-verification-criteria-grid">
                 <label className="motif-cs-verification-field">
@@ -862,7 +865,7 @@ export function ClaudeScienceConstructVerificationWorkspace({
                   />
                   <span>
                     <strong>Require both strands</strong>
-                    <small>Forward and reverse evidence at every required base</small>
+                    <small>Forward and reverse at each base</small>
                   </span>
                 </label>
               </div>
@@ -880,7 +883,7 @@ export function ClaudeScienceConstructVerificationWorkspace({
                   {statusMessage}
                 </p>
               ) : (
-                <p>Run explicitly after reviewing the evidence and criteria.</p>
+                <p>{nextRequirement || 'Run verification, then review the result.'}</p>
               )}
             </div>
             <div className="motif-cs-verification-buttons">
@@ -889,12 +892,14 @@ export function ClaudeScienceConstructVerificationWorkspace({
                 type="button"
                 onClick={saveVerification}
                 disabled={!completedRun || saved}
+                title={!completedRun ? 'Run verification first' : saved ? 'This result is saved' : undefined}
                 data-testid="construct-verification-save"
               >{saved ? 'Saved' : 'Save verification'}</button>
               <button
                 className="motif-cs-verification-primary-button"
                 type="submit"
                 disabled={runDisabled}
+                title={runDisabled ? nextRequirement || undefined : undefined}
                 data-testid="construct-verification-run"
               >Run verification</button>
             </div>
@@ -912,14 +917,12 @@ export function ClaudeScienceConstructVerificationWorkspace({
             />
           ) : (
             <div className="motif-cs-verification-awaiting" data-testid="construct-verification-awaiting">
-              <span aria-hidden="true">OBSERVED / PREDICTED</span>
-              <strong>Evidence has not been evaluated</strong>
-              <p>Select trace-backed records and run verification. Motif will retain the complete result locally for review, then save only on explicit confirmation.</p>
+              <strong>{nextRequirement ? 'No result yet' : 'Ready to verify'}</strong>
               <dl>
-                <div><dt>Reference</dt><dd>{reference?.name ?? 'Not selected'}</dd></div>
+                <div><dt>Reference DNA</dt><dd>{reference?.name ?? 'Not selected'}</dd></div>
                 <div><dt>Sanger reads</dt><dd>{selectedCount.toLocaleString()}</dd></div>
-                <div><dt>Required depth</dt><dd>{form.minDepth.toLocaleString()}×</dd></div>
-                <div><dt>Strands</dt><dd>{form.requireBothStrands ? 'Forward + reverse' : 'Either accepted'}</dd></div>
+                <div><dt>Minimum depth</dt><dd>{form.minDepth.toLocaleString()}×</dd></div>
+                <div><dt>Strands</dt><dd>{form.requireBothStrands ? 'Both' : 'Either'}</dd></div>
               </dl>
             </div>
           )}

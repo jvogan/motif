@@ -50,14 +50,20 @@ origins, integrity values, lifecycle metadata, binding files, and the bundled
 inventory. `npm run security:lifecycle` then runs the Motif-owned deterministic
 esbuild preparation through the bounded helper; an unknown package, version,
 manifest, binary, or binding fails before any dependency lifecycle script runs.
-`npm run build:motif` produces the dependency-free release bundle. The checked-in
-`.npmrc` asks npm versions that support `min-release-age` to keep new dependency
-resolutions seven days old; `npm run security:cooling-off` independently checks
-changed lockfile entries against the public registry. It is intentionally
-separate from dependency installation, so ordinary installs do not make
-hundreds of timestamp requests. A temporary exception must name one exact
-package/version and include rationale, reviewer, and a future expiry in
-`security/dependency-policy.json`.
+`npm run build:motif` produces the dependency-free release bundle.
+
+There is no dependency waiting period: `coolingOffDays` in
+`security/dependency-policy.json` and `min-release-age` in `.npmrc` are both
+`0`, so a new release can be adopted as soon as it is published. This matters
+for security fixes. The lifecycle allowlist, exact direct-dependency pins, and
+`--ignore-scripts` are unchanged and still apply to every release.
+`npm run security:cooling-off` still runs and checks each changed lockfile entry
+against the public registry for its source, tarball, and publish timestamp. It
+is intentionally separate from dependency installation, so ordinary installs do
+not make hundreds of timestamp requests. To bring a waiting period back, raise
+both numbers together and update the test that pins them. A temporary exception
+(`coolingOffExceptions`) must name one exact package/version and include
+rationale, reviewer, and a future expiry in `security/dependency-policy.json`.
 
 The maintainer Node 26/npm 11 toolchain exposes `min-release-age`,
 `allowScripts`, and `strict-allow-scripts`; CI is pinned to Node 22/npm 10,

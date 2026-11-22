@@ -68,6 +68,11 @@ describe('public payload validator parity', () => {
     expect(validatorOutcomes(payload)).toEqual(expected);
   });
 
+  it.each(['source', 'rep_origin', 'protein_bind'])('accepts the imported feature kind %s', (type) => {
+    const payload = { records: [{ ...baseRecord, features: [{ type, start: 0, end: 2 }] }] };
+    expect(validatorOutcomes(payload)).toEqual([true, true, true]);
+  });
+
   it('keeps custom enzyme physical and methylation metadata in parity', () => {
     const valid = {
       records: [baseRecord],

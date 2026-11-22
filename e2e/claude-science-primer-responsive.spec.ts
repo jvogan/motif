@@ -1,16 +1,19 @@
 import { expect, test } from '@playwright/test';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
+import { openTool } from './tool-panel-aliases';
+import { chooseTheme } from './theme';
 
 const artifactUrl = process.env.MOTIF_ARTIFACT_URL;
-const footerActionNames = [
+// Two actions sit in the footer; the other five live in its "More" menu. The order is the
+// order a keyboard user reaches them: Save design, More, the menu items, Use in cloning.
+const footerButtonNames = ['Save design', 'Use in cloning'] as const;
+const moreMenuItemNames = [
   'Copy pair',
   'Export FASTA',
-  'Save design',
   'Add annotations',
   'Simulate PCR',
   'Create amplicon record',
-  'Use in cloning',
 ] as const;
 const evidenceOutputDir = path.resolve(process.cwd(), 'output', 'playwright', 'primer-review');
 mkdirSync(evidenceOutputDir, { recursive: true });
@@ -21,7 +24,7 @@ test.describe('Claude Science primer workspace responsive footer', () => {
 
   for (const viewport of [
     { width: 760, height: 600, theme: 'light' },
-    { width: 390, height: 650, theme: 'claude-dark' },
+    { width: 390, height: 650, theme: 'dark' },
   ] as const) {
     test(`keeps review evidence legible and actions reachable at ${viewport.width}x${viewport.height}`, async ({ page }) => {
       const consoleErrors: string[] = [];
@@ -35,14 +38,8 @@ test.describe('Claude Science primer workspace responsive footer', () => {
         window.sessionStorage.clear();
       });
       await page.goto(artifactUrl!);
-      await page.locator('select[name="artifact-theme"]').evaluate((select, theme) => {
-        const themeSelect = select as HTMLSelectElement;
-        themeSelect.value = theme;
-        themeSelect.dispatchEvent(new Event('change', { bubbles: true }));
-      }, viewport.theme);
-      await expect(page.locator('html')).toHaveAttribute('data-theme', viewport.theme);
-      const primerPanel = page.locator('details[data-rail-tool="primer-design"]');
-      await primerPanel.locator(':scope > summary').click();
+      await chooseTheme(page, viewport.theme);
+      const primerPanel = await openTool(page, 'primer-design');
       await primerPanel.getByTestId('open-primer-workspace').click();
 
       const workspace = page.getByTestId('primer-workspace');
@@ -100,8 +97,7 @@ test.describe('Claude Science primer workspace responsive footer', () => {
     await page.goto(artifactUrl!);
     await expect(page.locator('.motif-cs-shell')).toBeVisible();
 
-    const primerPanel = page.locator('details[data-rail-tool="primer-design"]');
-    await primerPanel.locator(':scope > summary').click();
+    const primerPanel = await openTool(page, 'primer-design');
     await primerPanel.getByTestId('open-primer-workspace').click();
 
     const workspace = page.getByTestId('primer-workspace');
@@ -112,8 +108,8 @@ test.describe('Claude Science primer workspace responsive footer', () => {
 
     const footerBox = await footer.boundingBox();
     expect(footerBox).not.toBeNull();
-    for (const name of footerActionNames) {
-      const action = footer.getByRole('button', { name, exact: true });
+    const more = footer.getByTestId('primer-more-menu');
+    const inFooter = async (name: string, action: ReturnType<typeof footer.getByRole>) => {
       await expect(action).toBeVisible();
       await expect(action).toBeEnabled();
       await expect(action).toBeInViewport({ ratio: 1 });
@@ -123,7 +119,11 @@ test.describe('Claude Science primer workspace responsive footer', () => {
       expect(actionBox!.x + actionBox!.width, `${name} should stay inside the footer's right edge`).toBeLessThanOrEqual(
         footerBox!.x + footerBox!.width + 1,
       );
-    }
+    };
+    for (const name of footerButtonNames) await inFooter(name, footer.getByRole('button', { name, exact: true }));
+    await expect(more).toBeVisible();
+    await more.click();
+    for (const name of moreMenuItemNames) await inFooter(name, footer.getByRole('menuitem', { name, exact: true }));
     expect(await actionRow.evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
 
     await page.evaluate(() => {
@@ -143,16 +143,33 @@ test.describe('Claude Science primer workspace responsive footer', () => {
       }, { capture: true });
     });
 
-    for (const name of footerActionNames) {
-      await footer.getByRole('button', { name, exact: true }).click();
+    // The audit listener swallows each click, but a press outside the menu still closes it, so the
+    // menu is reopened before each of its items.
+    const openMore = async () => {
+      if (!(await more.evaluate((summary) => (summary.closest('details') as HTMLDetailsElement).open))) await more.click();
+    };
+    const everyAction = [
+      footer.getByRole('button', { name: 'Save design', exact: true }),
+      ...moreMenuItemNames.map((name) => footer.getByRole('menuitem', { name, exact: true })),
+      footer.getByRole('button', { name: 'Use in cloning', exact: true }),
+    ];
+    const labels = ['Save design', ...moreMenuItemNames, 'Use in cloning'];
+    for (const [index, action] of everyAction.entries()) {
+      // Indexes 1 to 5 are the menu items; their role does not exist while the menu is shut.
+      if (index >= 1 && index <= moreMenuItemNames.length) await openMore();
+      await action.click();
     }
-    await footer.getByRole('button', { name: footerActionNames[0], exact: true }).focus();
-    for (let index = 0; index < footerActionNames.length; index += 1) {
-      await expect(footer.getByRole('button', { name: footerActionNames[index], exact: true })).toBeFocused();
-      if (index < footerActionNames.length - 1) await page.keyboard.press('Tab');
+    await openMore();
+    // Keyboard path: Save design, then the More summary, the five items, Use in cloning.
+    await everyAction[0].focus();
+    await expect(everyAction[0]).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(more).toBeFocused();
+    for (let index = 1; index < everyAction.length; index += 1) {
+      await page.keyboard.press('Tab');
+      await expect(everyAction[index]).toBeFocused();
     }
-    for (const name of footerActionNames) {
-      const action = footer.getByRole('button', { name, exact: true });
+    for (const action of everyAction) {
       await action.focus();
       await expect(action).toBeFocused();
       await action.press('Enter');
@@ -164,8 +181,8 @@ test.describe('Claude Science primer workspace responsive footer', () => {
       }
     ).__motifPrimerFooterActivations ?? []);
     expect(activations).toEqual([
-      ...footerActionNames.map((label) => ({ label, input: 'mouse', trusted: true })),
-      ...footerActionNames.map((label) => ({ label, input: 'keyboard', trusted: true })),
+      ...labels.map((label) => ({ label, input: 'mouse', trusted: true })),
+      ...labels.map((label) => ({ label, input: 'keyboard', trusted: true })),
     ]);
   });
 
@@ -179,8 +196,7 @@ test.describe('Claude Science primer workspace responsive footer', () => {
       await page.goto(artifactUrl!);
       await expect(page.locator('.motif-cs-shell')).toBeVisible();
 
-      const primerPanel = page.locator('details[data-rail-tool="primer-design"]');
-      await primerPanel.locator(':scope > summary').click();
+      const primerPanel = await openTool(page, 'primer-design');
       await primerPanel.getByTestId('open-primer-workspace').click();
 
       const workspace = page.getByTestId('primer-workspace');

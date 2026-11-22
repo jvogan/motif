@@ -62,7 +62,7 @@ A passing DOM assertion is not proof that a control is legible or reachable.
   and commit messages; avoid competitor comparisons and machine-specific or
   private-repository references.
 - Preserve `data-testid`, keyboard, focus, and ARIA contracts when changing UI.
-- Treat Database JSON and workspace ZIP as portable checkpoints, not encrypted
+- Treat Workspace JSON and workspace ZIP as portable checkpoints, not encrypted
   durable storage.
 - Connector or remote-mutation changes require an explicit, separately
   reviewed integration change. Keep model-facing tools narrow and typed;

@@ -63,7 +63,7 @@ describe('Escape that closes a popover stops there', () => {
     await press(field, 'ArrowRight');
     await press(field, 'ArrowDown', { shiftKey: true });
     const selected = selectionLabel();
-    expect(selected).toBe('1-60 (60)');
+    expect(selected).toBe('1–60 · 60 bp');
 
     const panel = document.querySelector<HTMLDetailsElement>('.motif-cs-inspector details[name="motif-cs-tools"][data-rail-tool="restriction-sites"]');
     expect(panel).not.toBeNull();
@@ -134,7 +134,7 @@ function selectProposedFeature() {
   act(() => row.click());
 }
 
-function reviewButton(name: 'Accept' | 'Dismiss') {
+function reviewButton(name: 'Accept feature' | 'Dismiss proposal') {
   const review = document.querySelector('[data-testid="proposed-annotation-review"]');
   const match = Array.from(review?.querySelectorAll('button') ?? []).find((candidate) => candidate.textContent === name);
   if (!match) throw new Error(`no ${name} button`);
@@ -153,7 +153,7 @@ describe('proposal review decisions are on the edit history', () => {
     expect(activeSeq().slice(0, 3)).toBe('GTG');
 
     selectProposedFeature();
-    act(() => reviewButton('Dismiss').click());
+    act(() => reviewButton('Dismiss proposal').click());
     expect(activeRecord().annotations ?? []).toEqual([]);
     expect(autoAnnotation()).toMatchObject({ pendingCount: 0, dismissedCount: 1 });
 
@@ -176,7 +176,7 @@ describe('proposal review decisions are on the edit history', () => {
     await press(field, 'g');
 
     selectProposedFeature();
-    act(() => reviewButton('Accept').click());
+    act(() => reviewButton('Accept feature').click());
     const accepted = activeRecord().annotations?.[0];
     expect((accepted?.metadata?.motifProposal as Record<string, unknown>).status).toBe('accepted');
     expect(autoAnnotation()).toMatchObject({ pendingCount: 0, acceptedCount: 1 });
@@ -195,8 +195,8 @@ function recordInput(id: string) {
 }
 
 function deleteActiveEntry(name: string) {
-  act(() => button(`Delete entry ${name}`).click());
-  act(() => button(`Confirm delete entry ${name}`).click());
+  act(() => button(`Delete record ${name}`).click());
+  act(() => button(`Confirm delete record ${name}`).click());
   const undo = notice()?.querySelector<HTMLButtonElement>(`button[aria-label="Undo deleting ${name}"]`);
   expect(undo).toBeTruthy();
   return undo!;

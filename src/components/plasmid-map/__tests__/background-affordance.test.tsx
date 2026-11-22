@@ -106,6 +106,30 @@ describe('the map background claims only the gestures it can perform', () => {
     }
   });
 
+  it('scopes every other map grab cursor to the hand pan the host arms', () => {
+    // The hand pan (middle button, Space, the toolbar's hand) shows over the whole
+    // drawing, so its rules name the container, not the background. The host sets
+    // data-map-pan to grab while the pan is armed and to grabbing while it is active
+    // (mapHandPanCursor).
+    const handRules = stylesheets.flatMap(({ name, code }) =>
+      code.split('}').map((chunk) => {
+        const brace = chunk.lastIndexOf('{');
+        return brace < 0 ? null : { name, selector: chunk.slice(0, brace).split(/[;{}]/).pop()!.trim(), body: chunk.slice(brace + 1) };
+      }).filter((rule): rule is { name: string; selector: string; body: string } => (
+        !!rule && /motif-pm-/.test(rule.selector) && !rule.selector.includes('motif-pm-bg') && /cursor\s*:\s*grab/.test(rule.body)
+      )),
+    );
+
+    expect(handRules.length).toBe(2);
+    for (const rule of handRules) {
+      // One selector per line; a comma inside :not() is not a list separator.
+      for (const part of rule.selector.split(/,\s*\n/)) {
+        expect(part, `${rule.name} has a map grab cursor the host does not arm`).toMatch(/\.motif-cs-map-frame\[data-map-pan(="grabbing")?\]/);
+      }
+    }
+    expect(handRules.map((rule) => /grabbing/.test(rule.body))).toEqual([false, true]);
+  });
+
   it('detects an unscoped grab rule while accepting the host pan state', () => {
     const reintroduced = `
       .motif-pm-bg { cursor: grab; touch-action: none; }

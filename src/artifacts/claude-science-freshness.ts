@@ -10,7 +10,7 @@
 import type { Topology } from '../bio/types';
 import type { ArtifactAnalysisResult } from './claude-science-analysis-results';
 import type { ArtifactAlignment } from './claude-science-msa';
-import { SHA256_HEX_PATTERN, sha256HexSync } from './claude-science-sha256';
+import { cachedSequenceSha256, SHA256_HEX_PATTERN } from './claude-science-sha256';
 import type { ArtifactWorkflowResult } from './claude-science-workspace-collections';
 
 export type ScientificFreshnessState = 'fresh' | 'stale' | 'unverified';
@@ -153,15 +153,17 @@ function finishEvaluation(reasons: ScientificFreshnessReason[]): ScientificFresh
   return { state, reasons, affectedRecordIds };
 }
 
-/** Hash current sequences once, then reuse this Map for any number of results. */
+/** Index current records and hash sequences on the first provenance lookup. */
 export function createScientificFreshnessRecordIndex(
   records: readonly ScientificFreshnessRecord[],
 ): Map<string, ScientificFreshnessRecordSnapshot> {
   const index = new Map<string, ScientificFreshnessRecordSnapshot>();
   for (const record of records) {
+    const sequence = record.sequence;
+    let sequenceSha256: string | undefined;
     index.set(record.id, {
       id: record.id,
-      sequenceSha256: sha256HexSync(record.sequence),
+      get sequenceSha256() { return sequenceSha256 ??= cachedSequenceSha256(sequence); },
       topology: record.topology,
       ...(record.overhang5 === undefined ? {} : { overhang5: normalizedEndSequence(record.overhang5) }),
       ...(record.overhang3 === undefined ? {} : { overhang3: normalizedEndSequence(record.overhang3) }),

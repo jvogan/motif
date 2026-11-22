@@ -13,18 +13,23 @@ import {
   symlinkSync,
   utimesSync,
   writeFileSync,
+  statSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildSync } from 'esbuild';
 import {
+  checkPluginSourceInventory,
   copyBundledConnectorLicenses,
   copyPublicPluginDocs,
   createDeterministicZipBuffer,
   parseBuildArgs,
+  preloadDestination,
+  readBuildPayload,
   runBuild,
   validatePluginSource,
+  writePrivateArtifact,
 } from './build-claude-science-artifact.mjs';
 import { buildMotifMcpApp } from './build-motif-mcp-app.mjs';
 import {
@@ -166,10 +171,12 @@ check('plugin source has a matching, bounded manifest and skill', () => {
   assert.ok(manifest.name.length <= 64);
   assert.ok(manifest.description.length < 256);
   assert.ok(skillDescription.length > 0 && skillDescription.length <= 200);
-  assert.match(skill, /For a dependable visual result, call `motif_create_workbench_artifact`/u);
+  assert.match(skill, /For a dependable visual result, call `motif_create_workbench_artifact` once/u);
   assert.match(skill, /Use `motif_open_workbench` first only when the current host is already known to\s+mount the live MCP App/u);
   assert.match(skill, /A request to open, show, reload, or retry an existing construct is a display\s+request/u);
   assert.match(skill, /Reuse the exact latest sequence, annotations, colors, and provenance/u);
+  assert.match(skill, /Use the names a scientist expects, in one or two words\./u);
+  assert.match(skill, /Put descriptions in `metadata\.note` and reserve\s+`name` for the label\./u);
   assert.match(manifest.version, /^\d+\.\d+\.\d+$/);
   assert.equal(manifest.version, packageVersion);
   assert.equal(manifest.version, artifactVersion);
@@ -347,6 +354,19 @@ check('payload helper applies canonical notes and durable-state validation', () 
   }), /DNA and RNA records only/i);
   const sidecarOnly = { name: 'Workspace label', notes: [] };
   assert.equal(validatePayload(sidecarOnly), sidecarOnly);
+  // A layer across the origin ends past the record length: a circular record
+  // (stated, or DNA with no topology) holds it, a linear record does not.
+  const acrossOrigin = (topology) => ({
+    records: [{ id: 'ring', type: 'dna', sequence: 'ATGGAATTCTAA', ...(topology ? { topology } : {}) }],
+    artifactState: {
+      translationLayersByRecord: { ring: [{ id: 'across', label: 'Across', start: 9, end: 15, strand: 1, frame: 0 }] },
+    },
+  });
+  for (const topology of ['circular', undefined]) {
+    const payload = acrossOrigin(topology);
+    assert.equal(validatePayload(payload), payload);
+  }
+  assert.throws(() => validatePayload(acrossOrigin('linear')), /Payload workspace is invalid.*linear record/i);
 
   const malformed = [
     { notes: { malformed: true } },
@@ -496,6 +516,67 @@ check('default build arguments never select an external handoff', () => {
   assert.match(buildSource, /const finalDistHtml = join\(outDir, 'motif-artifact\.html'\)/);
   assert.match(buildSource, /const pluginName = 'motif-for-claude-science'/);
   assert.match(buildSource, /use --handoff for an external copy/);
+});
+
+check('payload build writes a single private HTML without modifying distributables', () => {
+  const fixture = mkdtempSync(join(tmpdir(), 'motif-preloaded-artifact-'));
+  try {
+    const dist = join(root, 'dist-motif');
+    const snapshot = () => [
+      'motif-artifact.html', 'motif-template.html', 'motif-for-claude-science.zip',
+      'motif-for-claude-science-release.zip',
+    ].map(file => existsSync(join(dist, file)) ? readFileSync(join(dist, file)) : null);
+    const before = snapshot();
+    const sentinel = 'private-packaging-fixture-marker';
+    const payload = join(fixture, 'input.json');
+    const html = join(fixture, 'private.html');
+    writeFileSync(payload, JSON.stringify({ records: [], inventory: { title: sentinel } }));
+    assert.throws(() => preloadDestination({ payloadPath: payload, outPath: join(dist, 'motif-template.html') }), /outside the distributable/u);
+    runBuild(['--payload', payload, '--handoff', html]);
+    assert.match(readFileSync(html, 'utf8'), /private-packaging-fixture-marker/u);
+    assert.deepEqual(readdirSync(fixture).sort(), ['input.json', 'private.html']);
+    if (process.platform !== 'win32') assert.equal(statSync(html).mode & 0o777, 0o600);
+    assert.deepEqual(snapshot(), before);
+    writeFileSync(payload, JSON.stringify({ schema: 'unexpected' }));
+    assert.throws(() => readBuildPayload(payload), /records|schema/iu);
+    assert.throws(() => readBuildPayload(fixture), /regular JSON file/u);
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+check('rerunning a payload export replaces the private HTML at the same path', () => {
+  const fixture = mkdtempSync(join(tmpdir(), 'motif-owner-only-rerun-'));
+  try {
+    const html = join(fixture, 'private.html');
+    writePrivateArtifact(html, '<p>first export</p>');
+    writePrivateArtifact(html, '<p>second export</p>');
+    assert.equal(readFileSync(html, 'utf8'), '<p>second export</p>');
+    assert.deepEqual(readdirSync(fixture), ['private.html']);
+    if (process.platform !== 'win32') assert.equal(statSync(html).mode & 0o777, 0o600);
+    const target = join(fixture, 'target.html');
+    const linked = join(fixture, 'linked.html');
+    writeFileSync(target, 'unrelated');
+    symlinkSync(target, linked);
+    assert.throws(() => writePrivateArtifact(linked, '<p>export</p>'), /symbolic links/u);
+    assert.equal(readFileSync(target, 'utf8'), 'unrelated');
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+check('plugin source inventories and ZIP entry names reject unexpected files', () => {
+  const fixture = mkdtempSync(join(tmpdir(), 'motif-plugin-inventory-'));
+  try {
+    writeFileSync(join(fixture, 'expected.txt'), 'fixture');
+    assert.doesNotThrow(() => checkPluginSourceInventory(fixture, ['expected.txt']));
+    writeFileSync(join(fixture, 'extra.txt'), 'unreviewed');
+    assert.throws(() => checkPluginSourceInventory(fixture, ['expected.txt']), /reviewed source inventory/u);
+    writeFileSync(join(fixture, 'NUL.txt'), 'nonportable');
+    assert.throws(() => createDeterministicZipBuffer(fixture), /nonportable path/u);
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
 });
 
 check('ZIP bytes are deterministic across file order and timestamp changes', () => {

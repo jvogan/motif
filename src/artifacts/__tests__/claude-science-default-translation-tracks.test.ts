@@ -58,4 +58,21 @@ describe('which features draw a default translation track', () => {
     expect(draws(CLEAN, { ...feature('cds', 2, 17), strand: 0 })).toBe(false);
     expect(draws(CLEAN, { ...feature('gene', 2, 17), strand: 0 })).toBe(false);
   });
+
+  it('draws a joined CDS or ORF whose pieces share its strand, and no order(), ambiguous or mixed-strand join', () => {
+    const sequence = CLEAN.repeat(4);
+    const joined = (overrides: Partial<Feature> = {}, metadata: Record<string, unknown> = {}): Feature => ({
+      ...feature('cds', 0, 40, 1, metadata),
+      subRanges: [{ start: 0, end: 12, strand: 1 }, { start: 20, end: 40, strand: 1 }],
+      ...overrides,
+    });
+    expect(draws(sequence, joined())).toBe(true);
+    expect(draws(sequence, joined({ type: 'orf' }))).toBe(true);
+    expect(draws(sequence, joined({}, { motifLocationOperator: 'order' }))).toBe(false);
+    expect(draws(sequence, joined({ strand: -1, subRanges: [{ start: 20, end: 40, strand: -1 }, { start: 0, end: 12, strand: -1 }] }, { motifSubRangeOrderAmbiguous: true }))).toBe(false);
+    expect(draws(sequence, joined({ subRanges: [{ start: 0, end: 12, strand: 1 }, { start: 20, end: 40, strand: -1 }] }))).toBe(false);
+    expect(draws(sequence, joined({ type: 'gene' }))).toBe(false);
+    expect(draws(sequence, joined({ subRanges: [{ start: 0, end: 12, strand: 1 }, { start: 20, end: 400, strand: 1 }] }))).toBe(false);
+  });
 });
+

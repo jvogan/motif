@@ -50,10 +50,13 @@ import {
   capitalWidthPadPx,
   arcExtentPx,
   fitsInline,
+  inlineBandThicknessPx,
+  inlineInkCentreShiftPx,
   deCollideAlongAxis,
   buildLeaderPolyline,
   cmpKey,
   CIRCULAR_LABEL_BOX_HEIGHT_PX,
+  LABEL_FONT_PX,
   LABEL_LINE_HEIGHT_PX,
 } from './geometry/labels';
 import type { AxisLabelItem, LabelFontMode } from './geometry/labels';
@@ -64,15 +67,30 @@ import {
   type RadialTierLabelPlacement,
 } from './geometry/radial-labels';
 
-// Restriction labels always render in `.motif-pm-restriction-label`'s mono face,
-// independent of the feature/coordinate font mode. Their geometry must use the
-// same advance or the browser can reveal overlaps the proportional estimate missed.
-const RESTRICTION_LABEL_FONT_MODE: LabelFontMode = 'monospace';
+// Enzyme names render in the map's one UI face, like every other map name
+// (`.motif-pm-restriction-label`), but the layout still reserves their room at the
+// monospace advance: it is wider than the UI face for enzyme names, so every box the
+// packer weighs holds the ink the browser draws. The pinned density tests rest on
+// this measuring face.
+export const RESTRICTION_LABEL_FONT_MODE: LabelFontMode = 'monospace';
 
 // ── Circular constants (px) ──────────────────────────────────────────────────
 const CIRCULAR_MIN_GUTTER = 42; // floor for the outer restriction-label band
 const CIRCULAR_GUTTER_FRACTION = 0.11; // share of the half-extent reserved outside R
-const LANE_THICKNESS = 12; // feature arc band thickness
+// Feature arc band thickness. A name rides its arc only when the band holds the
+// name's whole ink plus clear room to both edges (inlineBandThicknessPx: 18.5 for
+// the 16px UI face, 19.3 for mono), so the band is that, rounded up, and never
+// thinner than this floor.
+const LANE_THICKNESS = 19;
+// Arrowheads keep a fixed 12-unit length, so a thicker band reads as a blunter point
+// rather than a longer one.
+const FEATURE_ARROW_MAX_LEN = 12;
+// Arc room padded onto each end of a feature when lanes are packed, so neighbours on
+// one lane keep twice this between them. Arrowheads are inscribed in their own
+// feature's sweep, so a visible gap is all a lane needs; a larger pad pushes a feature
+// 7 bp past its neighbour (pUC19's reverse primer after lacZ-alpha) a lane inward and
+// draws short features at three or four radii.
+const LANE_END_PAD = 3;
 const LANE_GAP = 4; // radial gap between concentric lanes
 const FEATURE_BACKBONE_INSET = 22; // lane 0 sits this far inside the backbone,
 // leaving a coordinate-ruler band (ticks + bp numbers) between the ring and the
@@ -105,6 +123,12 @@ const REC_LABEL_RADIAL_SLOT_PX = 120; // readable radial slot; excess names stay
  */
 const CIRCULAR_REC_LABEL_MAX_WIDTH_PX = 171;
 const LABEL_BAND_MARGIN = 10; // fitted viewBox padding around outside labels
+// |sin| of a label's angle from 12 o'clock at which an outside feature name may use the
+// pane's free side room (0.2 is about 12 degrees off the vertical axis).
+const FEATURE_OUTSIDE_SIDE_ROOM_MIN_SIN = 0.2;
+// At and above this short side the outside names have no width cap, so the side-room
+// pass has nothing to add.
+const CIRCULAR_SIDE_ROOM_MAX_BASE_SIDE = 480;
 // SVG glyph ink extends a little beyond the nominal text metrics used by the
 // pure layout. Reserve a small halo so screen-space boxes stay separated after
 // the fitted viewBox is scaled into a narrow pane.
@@ -131,6 +155,24 @@ const CLONING_SITE_CLUSTER_MIN_SITES = 8; // see cloningSiteClusterId
 const CIRCULAR_LANE_MIN_THICKNESS = 4; // thinnest a compressed feature arc may get
 const CIRCULAR_LANE_MIN_GAP = 4; // thinnest radial gap between compressed lanes
 const CIRCULAR_COORD_BAND_MIN = 10; // coord ruler yields to this before lanes overflow
+// A small ring (display.smallRing, set for a pane too small for the full-size drawing;
+// see SMALL_MAP_PANE_RING_PX in readable-layout.ts) is drawn as a miniature. All of these are shares of the ring's own radius, so the miniature looks
+// the same whatever the scale the pane applies.
+const SMALL_RING_COORD_BAND_SHARE = 0.05; // gap between backbone and the first lane
+const SMALL_RING_COORD_BAND_MIN = 4;
+const SMALL_RING_LANE_SHARE = 0.11; // arc thickness; 19 units on the 340px ring
+const SMALL_RING_LANE_GAP_SHARE = 0.25; // of the arc thickness
+const SMALL_RING_LANE_MIN_GAP = 2;
+const SMALL_RING_NAME_MIN_SHARE = 0.35; // the empty disc that holds the name
+const SMALL_RING_NAME_MAX_SHARE = 0.7;
+const SMALL_RING_RADIUS_PER_LABEL = 15; // one outside name per this much radius
+const SMALL_RING_MAX_TIER = 2; // outside names sit on the first three tiers only
+const SMALL_RING_MAX_ANGLE_SHIFT_DEG = 8; // a name stays beside what it names
+const SMALL_RING_MAX_LEADER_TURN_DEG = 16; // a longer leader drops its name
+const SMALL_RING_OUTSIDE_NAME_RADIUS_SHARE = 1; // widest whole outside name, x radius
+// The least room between one name and another name or leader: 2px on screen at the
+// smallest scale a miniature is drawn at (12px names from 16-unit ones).
+const SMALL_RING_NAME_GAP = 2 * (16 / 12);
 const CIRCULAR_ELLIPSIS_MIN_VISIBLE_CHARS = 7;
 const CIRCULAR_ELLIPSIS_MIN_RETAINED_RATIO = 0.4;
 const CIRCULAR_AUTO_FEATURE_LABEL_BUDGET = 36;
@@ -146,11 +188,11 @@ const CENTER_TITLE_FONT_MIN = 18;
 const CENTER_TITLE_FONT_MAX = 26;
 // A name too wide for the empty disc at the ring's size steps down to this, the size
 // every name had before, and from there fits exactly as it used to.
-const CENTER_TITLE_FONT_FLOOR = 15;
+const CENTER_TITLE_FONT_FLOOR = LABEL_FONT_PX; // never below the outside labels, which stay 12px or more on screen
 const CENTER_TITLE_FONT_PER_RADIUS = 0.06;
 const CENTER_TITLE_LINE_HEIGHT_RATIO = 1.15; // baseline-to-baseline in the 2-line case
 const CENTER_TITLE_WIDTH_RATIO = 1.3;
-const CENTER_TITLE_LENGTH_FONT = 14;
+const CENTER_TITLE_LENGTH_FONT = LABEL_FONT_PX;
 const CENTER_TITLE_LENGTH_RATIO = 0.72;
 const CENTER_TITLE_DESCENT_PAD = 4;
 const CENTER_TITLE_WIDE_CHARS = new Set(['m', 'w', 'M', 'W', '—', '@', '%']);
@@ -189,7 +231,7 @@ const LINEAR_MIN_LAYOUT_WIDTH = 720; // narrow docks use the same proportional l
  * counts the rest. Fewer names at a size that can be read beats every name at a
  * size that cannot.
  */
-export const LINEAR_MIN_SCREEN_LABEL_PX = 10;
+export const LINEAR_MIN_SCREEN_LABEL_PX = 12;
 const LINEAR_COORD_LABEL_Y = 14;
 const LINEAR_AXIS_Y = 24; // baseline y; top coordinate ruler
 const LINEAR_COORD_TICK_LEN = 5; // coordinate tick length (down from the axis)
@@ -321,12 +363,64 @@ export function computeMapLayout(input: MapInput): MapLayout {
     width: Number.isFinite(input.width) && input.width > 0 ? input.width : 1,
     height: Number.isFinite(input.height) && input.height > 0 ? input.height : 1,
   };
+  return resolveMapMode(safe) === 'circular' ? computeCircularWithSideRoom(safe) : computeLinearLayout(safe);
+}
+
+/** The drawing computeMapLayout gives this input. */
+export function resolveMapMode(input: Pick<MapInput, 'mode' | 'topology' | 'sequenceType'>): MapMode {
   // Defensive: protein is always linear even if a caller mis-set input.mode.
-  const mode: MapMode =
-    safe.sequenceType === 'protein'
-      ? 'linear'
-      : safe.mode ?? mapModeForBlock(safe.topology, safe.sequenceType);
-  return mode === 'circular' ? computeCircularLayout(safe) : computeLinearLayout(safe);
+  return input.sequenceType === 'protein'
+    ? 'linear'
+    : input.mode ?? mapModeForBlock(input.topology, input.sequenceType);
+}
+
+/**
+ * The backbone radius a circular map starts from in a width x height pane, before
+ * anything about the record (its feature count, the room its names take) changes it.
+ */
+function circularPaneRadius(width: number, height: number, display: MapDisplayOptions): number {
+  const baseSide = Math.min(width, height);
+  const outsideGutterScale = clampFinite(display.circularOutsideGutterScale, 0.18, 1.4, 1);
+  const baseGutter = Math.max(
+    CIRCULAR_MIN_GUTTER * outsideGutterScale,
+    baseSide * CIRCULAR_GUTTER_FRACTION * outsideGutterScale,
+  );
+  return Math.max(MIN_INNER_RADIUS + LANE_THICKNESS, baseSide / 2 - baseGutter);
+}
+
+/**
+ * The ring diameter, in CSS px, a circular map with no names around it gets in a
+ * width x height pane. It depends on the pane and the display options only, never on
+ * the record.
+ */
+export function circularPaneRingDiameter(width: number, height: number, display: MapDisplayOptions = {}): number {
+  return 2 * circularPaneRadius(width, height, display);
+}
+
+/**
+ * Lay out a circular map twice when the pane is wider than it is tall: once with the
+ * short-side name budget and once letting names beside the ring use the free side room.
+ * The wider names win only when they cost no label: every feature and cut site named
+ * by the short budget is still named. Otherwise the short budget stands, so the set of
+ * names on the ring still depends on the pane only through min(width, height).
+ */
+function computeCircularWithSideRoom(input: MapInput): MapLayout {
+  const base = computeCircularLayout(input, false);
+  if (!(input.width > input.height) || Math.min(input.width, input.height) >= CIRCULAR_SIDE_ROOM_MAX_BASE_SIDE) {
+    return base;
+  }
+  const wide = computeCircularLayout(input, true);
+  const named = (layout: MapLayout) => {
+    const ids = new Set<string>();
+    for (const feature of layout.features) if (feature.label) ids.add(`f:${feature.id}`);
+    for (const site of layout.restrictions) {
+      if (site.label) for (const tickId of site.tickIds) ids.add(`r:${tickId}`);
+    }
+    return ids;
+  };
+  const wideNamed = named(wide);
+  for (const id of named(base)) if (!wideNamed.has(id)) return base;
+  return wide;
 }
 
 // ── Center title fit (circular) ─────────────────────────────────────────────
@@ -435,26 +529,41 @@ function computeCenterTitle(
   cy: number,
   fontMode: LabelFontMode = 'proportional',
   clearRadius: number = radius,
+  lengthLabel = '',
 ): MapCenterTitle {
-  const maxWidth = radius * CENTER_TITLE_WIDTH_RATIO;
   const clearWidth = 2 * Math.max(0, clearRadius - CENTER_LABEL_PAD);
+  // A long name never runs over the feature arcs: past the floor size it ellipsizes.
+  // A short one (eight characters or fewer) stays whole: a stub such as "pU…" names
+  // nothing, and the record's name is what the centre is for.
+  const maxWidth = name.length <= 8
+    ? radius * CENTER_TITLE_WIDTH_RATIO
+    : Math.min(radius * CENTER_TITLE_WIDTH_RATIO, clearWidth);
   let font = centerTitleFontForRadius(radius);
   while (font > CENTER_TITLE_FONT_FLOOR && estimateCenterTextWidth(name, font, fontMode) > clearWidth) font -= 1;
   const lenFontSize = Math.max(CENTER_TITLE_LENGTH_FONT, Math.round(font * CENTER_TITLE_LENGTH_RATIO));
   const nameBaselineY = round(cy - 2);
+  // The length line is dropped when it would cross the feature arcs; the pane title
+  // states the length too.
+  const withLength = (title: MapCenterTitle): MapCenterTitle => {
+    if (!lengthLabel) return title;
+    const halfW = approxTextWidth(lengthLabel, title.lenFontSize, fontMode) / 2;
+    const dy = title.lenBaselineY + CENTER_TITLE_DESCENT_PAD - cy;
+    const clear = Math.max(0, clearRadius - CENTER_LABEL_PAD);
+    return halfW * halfW + dy * dy <= clear * clear ? title : { ...title, showLength: false };
+  };
   const single: MapCenterTitle = {
     lines: [{ text: name, fontSize: font, baselineY: nameBaselineY }],
     lenBaselineY: round(cy - 2 + Math.round(font * 0.3) + lenFontSize),
     lenFontSize,
   };
   if (!(maxWidth > 0) || estimateCenterTextWidth(name, font, fontMode) <= maxWidth) {
-    return single;
+    return withLength(single);
   }
-  const lineFont = font - 1;
+  const lineFont = Math.max(CENTER_TITLE_FONT_FLOOR, font - 1);
   const split = splitBalanced(name, lineFont, fontMode);
   if (!split) {
     // One unbreakable token — ellipsize a single line at the size reached.
-    return {
+    return withLength({
       ...single,
       lines: [
         {
@@ -463,13 +572,13 @@ function computeCenterTitle(
           baselineY: nameBaselineY,
         },
       ],
-    };
+    });
   }
   // Two centered lines a notch smaller; nudge the block up and push the length
   // line down so it clears the second title line.
   const lineHeight = Math.round(lineFont * CENTER_TITLE_LINE_HEIGHT_RATIO);
   const secondBaselineY = round(cy - 2 + Math.round(lineFont * 0.5));
-  return {
+  return withLength({
     lines: [
       {
         text: ellipsizeCenterTitleLine(split[0], maxWidth, lineFont, fontMode),
@@ -484,7 +593,7 @@ function computeCenterTitle(
     ],
     lenBaselineY: round(secondBaselineY + Math.round(lineFont * 0.3) + lenFontSize),
     lenFontSize,
-  };
+  });
 }
 
 function centerTitleGuard(
@@ -498,8 +607,9 @@ function centerTitleGuard(
     (max, line) => Math.max(max, estimateCenterTextWidth(line.text, line.fontSize, fontMode)),
     0,
   );
+  const showLength = centerTitle.showLength !== false;
   const halfW =
-    Math.max(titleWidth, approxTextWidth(lengthLabel, lenFont, fontMode)) / 2 + CENTER_LABEL_PAD;
+    Math.max(titleWidth, showLength ? approxTextWidth(lengthLabel, lenFont, fontMode) : 0) / 2 + CENTER_LABEL_PAD;
   const titleMinY = centerTitle.lines.reduce(
     (min, line) => Math.min(min, line.baselineY - line.fontSize),
     Infinity,
@@ -511,18 +621,159 @@ function centerTitleGuard(
   return {
     minX: round(cx - halfW),
     maxX: round(cx + halfW),
-    minY: round(Math.min(titleMinY, centerTitle.lenBaselineY - lenFont)),
-    maxY: round(Math.max(titleMaxY, centerTitle.lenBaselineY + CENTER_TITLE_DESCENT_PAD)),
+    minY: round(showLength ? Math.min(titleMinY, centerTitle.lenBaselineY - lenFont) : titleMinY),
+    maxY: round(showLength ? Math.max(titleMaxY, centerTitle.lenBaselineY + CENTER_TITLE_DESCENT_PAD) : titleMaxY),
   };
+}
+
+/**
+ * The radius of the empty disc a small ring keeps for its name: the corner of the
+ * name's box at the ring's type size, held between a third and three fifths of the
+ * ring. A longer name is then fitted to that disc by computeCenterTitle.
+ */
+function smallRingNameReserve(name: string, radius: number, fontMode: LabelFontMode): number {
+  const corner = (font: number) => Math.hypot(
+    estimateCenterTextWidth(name, font, fontMode) / 2 + CENTER_LABEL_PAD,
+    font + CENTER_TITLE_DESCENT_PAD,
+  );
+  // Step down to the floor size before giving up room the lanes need, as
+  // computeCenterTitle does for the drawn name.
+  let font = centerTitleFontForRadius(radius);
+  while (font > CENTER_TITLE_FONT_FLOOR && corner(font) > radius * SMALL_RING_NAME_MAX_SHARE) font -= 1;
+  return clamp(corner(font), radius * SMALL_RING_NAME_MIN_SHARE, radius * SMALL_RING_NAME_MAX_SHARE);
+}
+
+/**
+ * Remove every outside name on a small ring whose leader enters the name's disc,
+ * crosses the name's box, or turns more than SMALL_RING_MAX_LEADER_TURN_DEG round the
+ * ring between its two ends. Returns how many feature names it removed; a removed
+ * site name shows up in the site count the caller takes afterwards.
+ */
+function dropSmallRingLongLeaders(
+  features: MapFeatureRender[],
+  restrictions: MapRestrictionRender[],
+  center: Pt,
+  nameRadius: number,
+  centerGuard: BBox,
+): { features: number; restrictions: number } {
+  const angleOf = (p: Pt) => Math.atan2(p.x - center.x, center.y - p.y) * (180 / Math.PI);
+  const tooLong = (label: MapLabelRender | null): boolean => {
+    if (!label || label.inside || label.leader.length < 2) return false;
+    const leader = label.leader;
+    if (polylineIntersectsBBox(leader, centerGuard)) return true;
+    if (leader.some((p) => Math.hypot(p.x - center.x, p.y - center.y) < nameRadius)) return true;
+    const turn = Math.abs(((angleOf(leader[leader.length - 1]) - angleOf(leader[0]) + 540) % 360) - 180);
+    return turn > SMALL_RING_MAX_LEADER_TURN_DEG;
+  };
+  const dropped = { features: 0, restrictions: 0 };
+  for (const feature of features) {
+    if (!tooLong(feature.label)) continue;
+    feature.label = null;
+    dropped.features += 1;
+  }
+  for (const site of restrictions) {
+    if (!tooLong(site.label)) continue;
+    site.label = null;
+    site.labelSegments = undefined;
+    dropped.restrictions += 1;
+  }
+  return dropped;
+}
+
+/**
+ * The box a straight name on a small ring paints: its full glyph cell, 1.2em high with
+ * 0.24em below the baseline, and the width its capitals take. The placer's 18-unit row
+ * stops at an 'auto' name's baseline, so that row alone lets a name hanging just under
+ * another one pass while their painted text overlaps by a pixel or two.
+ */
+function smallRingNamePaintedBox(label: MapLabelRender, fontMode: LabelFontMode): BBox {
+  const width = approxTextWidth(label.text, undefined, fontMode) + capitalWidthPadPx(label.text, undefined, fontMode);
+  const cell = LABEL_FONT_PX * 1.2;
+  const descent = LABEL_FONT_PX * 0.24;
+  if (label.rotate) return expandBBox(labelBBoxForRender(label, fontMode), descent);
+  const minX = label.anchor === 'start' ? label.x : label.anchor === 'end' ? label.x - width : label.x - width / 2;
+  const minY = label.baseline === 'middle'
+    ? label.y - cell / 2
+    : label.baseline === 'hanging'
+      ? label.y - descent
+      : label.y - (cell - descent);
+  return { minX, minY, maxX: minX + width, maxY: minY + cell };
+}
+
+/**
+ * Leave off every small-ring name that would still touch another once every name and
+ * leader is final: a leader through another name's box grown by
+ * SMALL_RING_NAME_GAP, two boxes closer than SMALL_RING_NAME_GAP, or two leaders that
+ * cross. The placer tried every tier and side it allows before this; what is left is
+ * settled in the miniature's own order, features before cut sites and larger features
+ * first, so the lower-priority name of each conflict is the one counted instead.
+ */
+function dropSmallRingNameConflicts(
+  features: MapFeatureRender[],
+  restrictions: MapRestrictionRender[],
+  featureSpan: (id: string) => number,
+  featureFontMode: LabelFontMode,
+): { features: number; restrictions: number } {
+  type Named = { box: BBox; grown: BBox; leader: readonly Pt[]; drop: () => void; isFeature: boolean };
+  const named: Named[] = [];
+  const featureOrder = features
+    .filter((feature) => feature.label && !feature.label.arcPath)
+    .sort((a, b) => featureSpan(b.id) - featureSpan(a.id) || cmpKey(a.id, b.id));
+  for (const feature of featureOrder) {
+    const box = smallRingNamePaintedBox(feature.label!, featureFontMode);
+    named.push({
+      box,
+      grown: expandBBox(box, SMALL_RING_NAME_GAP),
+      leader: feature.label!.leader,
+      isFeature: true,
+      drop: () => { feature.label = null; },
+    });
+  }
+  for (const site of restrictions) {
+    if (!site.label || site.label.arcPath) continue;
+    // Measured against the painted text, as the feature names are: the fixed-pitch
+    // estimate the placer uses for a site is wider than the site name paints, and
+    // would drop site names that fit.
+    const box = smallRingNamePaintedBox(site.label, featureFontMode);
+    named.push({
+      box,
+      grown: expandBBox(box, SMALL_RING_NAME_GAP),
+      leader: site.label.leader,
+      isFeature: false,
+      drop: () => {
+        site.label = null;
+        site.labelSegments = undefined;
+      },
+    });
+  }
+  const clashes = (a: Named, b: Named): boolean => (
+    bboxIntersects(a.grown, b.box)
+    || (a.leader.length > 1 && polylineIntersectsBBox(a.leader, b.grown))
+    || (b.leader.length > 1 && polylineIntersectsBBox(b.leader, a.grown))
+    || (a.leader.length > 1 && b.leader.length > 1 && polylinesIntersect(a.leader, b.leader))
+  );
+  const kept: Named[] = [];
+  const dropped = { features: 0, restrictions: 0 };
+  for (const entry of named) {
+    if (!kept.some((other) => clashes(entry, other))) {
+      kept.push(entry);
+      continue;
+    }
+    entry.drop();
+    if (entry.isFeature) dropped.features += 1;
+    else dropped.restrictions += 1;
+  }
+  return dropped;
 }
 
 // =============================================================================
 // Circular projection — concentric feature lanes inside a backbone ring.
 // =============================================================================
-function computeCircularLayout(input: MapInput): MapLayout {
+function computeCircularLayout(input: MapInput, useSideRoom: boolean): MapLayout {
   const { width, height, features, restrictionSites } = input;
   const length = Math.max(0, input.length);
   const display = input.display ?? {};
+  const smallRing = display.smallRing === true;
   const showFeatureLabels = display.showFeatureLabels !== false;
   const showRestrictionLabels = display.showRestrictionLabels !== false;
   const labelFontMode: LabelFontMode = display.labelFontMode ?? 'proportional';
@@ -543,13 +794,8 @@ function computeCircularLayout(input: MapInput): MapLayout {
   const cx = layoutWidth / 2;
   const cy = layoutHeight / 2;
   const baseSide = Math.min(width, height);
-  const outsideGutterScale = clampFinite(display.circularOutsideGutterScale, 0.18, 1.4, 1);
-  const baseGutter = Math.max(
-    CIRCULAR_MIN_GUTTER * outsideGutterScale,
-    baseSide * CIRCULAR_GUTTER_FRACTION * outsideGutterScale,
-  );
-  const baseRadius = Math.max(MIN_INNER_RADIUS + LANE_THICKNESS, baseSide / 2 - baseGutter);
-  const R = Math.max(MIN_INNER_RADIUS + LANE_THICKNESS, baseRadius + radiusGrowth);
+  const baseRadius = circularPaneRadius(width, height, display);
+  const R =Math.max(MIN_INNER_RADIUS + LANE_THICKNESS, baseRadius + radiusGrowth);
   const center = { x: round(cx), y: round(cy) };
   const radius = round(R);
   // Lane packing over each feature's normalized (non-wrapping) segments. Packed
@@ -557,7 +803,7 @@ function computeCircularLayout(input: MapInput): MapLayout {
   // overlapping features must stack (below).
   const segByFeature = new Map<string, MapFeatureSegment[]>();
   const laneItems: LaneItem[] = [];
-  const lanePadBp = circularLanePadBp(length, R, LANE_THICKNESS + LANE_GAP + 2);
+  const lanePadBp = circularLanePadBp(length, R, LANE_END_PAD);
   for (const f of features) {
     const segs = featureSegments(f, length, 'circular');
     segByFeature.set(f.id, segs);
@@ -565,7 +811,13 @@ function computeCircularLayout(input: MapInput): MapLayout {
   }
   const packing = packLanes(laneItems);
   const nestedFeatureIds = detectNestedCircularFeatureIds(segByFeature, packing.laneById);
-  const featureLabelBudget = circularFeatureLabelBudget(features.length, display, baseSide);
+  // A small ring has room for a few names around it. Features take them first, largest
+  // first; cut sites get what is left, and every site keeps its tick.
+  const smallRingLabelSlots = smallRing ? Math.max(2, Math.floor(R / SMALL_RING_RADIUS_PER_LABEL)) : Infinity;
+  const featureLabelBudget = Math.min(
+    circularFeatureLabelBudget(features.length, display, baseSide),
+    smallRingLabelSlots,
+  );
   const featureLabelKeep = circularFeatureLabelKeepSet(features, segByFeature, length, featureLabelBudget);
 
   // Coordinate ruler band between the ring and the outermost feature lane. A
@@ -582,11 +834,15 @@ function computeCircularLayout(input: MapInput): MapLayout {
   const laneFloorDepth =
     packing.laneCount * CIRCULAR_LANE_MIN_THICKNESS +
     Math.max(0, packing.laneCount - 1) * CIRCULAR_LANE_MIN_GAP;
-  const coordBand = Math.min(
-    coordBandIdeal,
-    Math.max(CIRCULAR_COORD_BAND_MIN, R - MIN_INNER_RADIUS - laneFloorDepth),
-  );
-  const coordLabelsFit = coordBand >= coordLabelWidth + 4;
+  // A small ring has no ruler numbers: its arcs sit just inside the backbone, which
+  // leaves the middle clear for the name. The ruler ticks stay.
+  const coordBand = smallRing
+    ? Math.max(SMALL_RING_COORD_BAND_MIN, R * SMALL_RING_COORD_BAND_SHARE)
+    : Math.min(
+        coordBandIdeal,
+        Math.max(CIRCULAR_COORD_BAND_MIN, R - MIN_INNER_RADIUS - laneFloorDepth),
+      );
+  const coordLabelsFit = !smallRing && coordBand >= coordLabelWidth + 4;
   const coordLabelInset = coordBand / 2; // center the number in the band (clears ring + lanes)
   const coordTickLenR = Math.min(COORD_TICK_LEN, coordBand * 0.4);
 
@@ -594,14 +850,24 @@ function computeCircularLayout(input: MapInput): MapLayout {
   // BEFORE dropping any lane, so deep lanes get DISTINCT descending radii instead
   // of collapsing onto a shared floor (the old laneOuterR clamp bug). laneBand(lane)
   // returns null for overflow lanes beyond what the floor stack fits.
-  const radialDepth = R - coordBand - MIN_INNER_RADIUS;
+  // On a small ring the lanes stop short of a disc that holds the name, and their
+  // thickness is a share of the ring; lanes that do not fit are counted, not drawn.
+  const smallRingNameRadius = smallRing ? smallRingNameReserve(input.name, R, labelFontMode) : 0;
+  const radialDepth = smallRing
+    ? R - coordBand - smallRingNameRadius - FEATURE_INSIDE_LABEL_GAP
+    : R - coordBand - MIN_INNER_RADIUS;
+  const fullLaneThickness = Math.max(LANE_THICKNESS, Math.ceil(inlineBandThicknessPx(LABEL_FONT_PX, labelFontMode)));
+  const laneThickness = smallRing
+    ? clamp(Math.round(R * SMALL_RING_LANE_SHARE), CIRCULAR_LANE_MIN_THICKNESS, fullLaneThickness)
+    : fullLaneThickness;
+  const inlineInkShift = inlineInkCentreShiftPx(LABEL_FONT_PX, labelFontMode);
   const laneMetrics = fitLaneStack(
     packing.laneCount,
     radialDepth,
-    LANE_THICKNESS,
-    LANE_GAP,
+    laneThickness,
+    smallRing ? Math.max(SMALL_RING_LANE_MIN_GAP, Math.round(laneThickness * SMALL_RING_LANE_GAP_SHARE)) : LANE_GAP,
     CIRCULAR_LANE_MIN_THICKNESS,
-    CIRCULAR_LANE_MIN_GAP,
+    smallRing ? SMALL_RING_LANE_MIN_GAP : CIRCULAR_LANE_MIN_GAP,
   );
   const laneBand = (
     lane: number,
@@ -624,7 +890,9 @@ function computeCircularLayout(input: MapInput): MapLayout {
     max: cy + featureInsideOuterR - FEATURE_INSIDE_LABEL_CAP_PAD,
   };
 
-  const centerTitle = computeCenterTitle(input.name, radius, center.y, labelFontMode, featureInsideOuterR);
+  const centerTitle = computeCenterTitle(
+    input.name, radius, center.y, labelFontMode, featureInsideOuterR, `${length.toLocaleString('en-US')} bp`,
+  );
   const centerGuard = centerTitleGuard(centerTitle, `${length} bp`, center.x, labelFontMode);
 
   const insideFeatureLabelGeometry = (
@@ -720,19 +988,103 @@ function computeCircularLayout(input: MapInput): MapLayout {
   >();
   const featureOutside: AxisLabelItem[] = [];
   const featureOutsideMeta = new Map<string, { name: string; anchor: Pt; angleDeg: number; width: number }>();
+  // The whole name of each outside name the short-side budget shortened, for the
+  // free-margin pass after every label is placed.
+  const shortenedOutsideNames = new Map<string, { name: string; width: number }>();
+  // Where a feature's outside leader ends: the outer edge of its own band at its middle,
+  // reached radially from the point just past the ring where outside leaders start.
+  const featureLeaderFoot = new Map<string, Pt>();
+  const featureLeaderRing = new Map<string, Pt>();
+  const featureLeaderElbow = new Map<string, Pt>();
+  // A short feature's own sweep, so its leader can land beside a riding name it would cross.
+  const featureFootSpan = new Map<string, { outerR: number; startDeg: number; endDeg: number }>();
+  // The sweep and band of every name riding its arc.
+  const ridingNameSpans: { innerR: number; startDeg: number; endDeg: number }[] = [];
+  // A name rides the middle of its arc unless a shorter feature on an inner lane sits
+  // under that middle: that feature's leader runs out through this band, so the name
+  // moves along its own arc to the free stretch nearest the middle that holds it.
+  const ridingNameAngle = (
+    id: string,
+    lane: number,
+    segs: readonly MapFeatureSegment[],
+    midAngle: number,
+    sweepDeg: number,
+  ): number => {
+    if (segs.length !== 1) return midAngle;
+    const a0 = bpToAngle(segs[0].start, length);
+    const a1 = bpToAngle(segs[0].end, length);
+    const blocked: [number, number][] = [];
+    for (const other of features) {
+      if (other.id === id) continue;
+      const otherLane = packing.laneById.get(other.id);
+      if (otherLane === undefined || otherLane <= lane) continue;
+      for (const seg of segByFeature.get(other.id) ?? []) {
+        const b0 = bpToAngle(seg.start, length) - 1;
+        const b1 = bpToAngle(seg.end, length) + 1;
+        if (b1 > a0 && b0 < a1) blocked.push([b0, b1]);
+      }
+    }
+    const clear = (centre: number) => centre - sweepDeg / 2 >= a0 && centre + sweepDeg / 2 <= a1
+      && blocked.every(([b0, b1]) => centre + sweepDeg / 2 <= b0 || centre - sweepDeg / 2 >= b1);
+    if (blocked.length === 0 || clear(midAngle)) return midAngle;
+    let best: number | null = null;
+    for (let i = 0; i <= 64; i += 1) {
+      const centre = a0 + sweepDeg / 2 + ((a1 - a0 - sweepDeg) * i) / 64;
+      if (clear(centre) && (best === null || Math.abs(centre - midAngle) < Math.abs(best - midAngle))) best = centre;
+    }
+    return best ?? midAngle;
+  };
   const narrowFeatureOutsideMaxWidth = baseSide < 480
     ? Math.max(58, baseSide * 0.18)
     : Infinity;
+  // An outside label may use the horizontal room the pane really has beside the ring at
+  // its angle, not just a share of the short side: a wide, short pane leaves its side
+  // margins empty otherwise. Measured from the first outside tier to the pane edge.
+  // The pane is scaled to fit the drawing's height, outside names above and below the
+  // ring included, so its half-width in layout units is that half-height times the
+  // pane's aspect.
+  const outsideLabelRadius =
+    R + REC_TICK_INNER_OFFSET + REC_TICK_LEN + RADIAL_LABEL_MIN_LEADER_GAP +
+    CIRCULAR_LABEL_LEADER_TEXT_PAD + outsideGutterGrowth;
+  const paneHalfWidth =
+    Math.max(layoutHeight / 2, outsideLabelRadius + CIRCULAR_LABEL_BOX_HEIGHT_PX + LABEL_BAND_MARGIN) *
+    (width / height);
+  // Only beside the ring: above and below it, outside names run sideways into each
+  // other, so there the short-side budget still holds.
+  const featureOutsideMaxWidthAt = (angleDeg: number): number => {
+    if (!Number.isFinite(narrowFeatureOutsideMaxWidth)) return Infinity;
+    if (!useSideRoom) return narrowFeatureOutsideMaxWidth;
+    const side = Math.abs(Math.sin((angleDeg * Math.PI) / 180));
+    if (side < FEATURE_OUTSIDE_SIDE_ROOM_MIN_SIN) return narrowFeatureOutsideMaxWidth;
+    const free = paneHalfWidth - LABEL_BAND_MARGIN - outsideLabelRadius * side;
+    return Math.max(narrowFeatureOutsideMaxWidth, Math.floor(free));
+  };
   const queueFeatureOutside = (
     item: AxisLabelItem,
     meta: { name: string; outsideAnchor: Pt; angleDeg: number; textW: number },
   ): void => {
     if (featureOutsideMeta.has(item.key)) return;
-    const compact = Number.isFinite(narrowFeatureOutsideMaxWidth) && meta.textW > narrowFeatureOutsideMaxWidth
-      ? meaningfulEllipsizeToWidth(meta.name, narrowFeatureOutsideMaxWidth, labelFontMode)
+    // A small ring draws a name whole or not at all: a cut stub such as "lac pro…"
+    // names nothing at that size, and the overflow count still reports the feature.
+    if (smallRing) {
+      const roomAt = featureOutsideMaxWidthAt(meta.angleDeg);
+      const wholeMaxWidth = Math.max(R * SMALL_RING_OUTSIDE_NAME_RADIUS_SHARE, Number.isFinite(roomAt) ? roomAt : 0);
+      if (meta.textW > wholeMaxWidth) {
+        featureHiddenLabels += 1;
+        return;
+      }
+    }
+    // A name that fits the free room is drawn whole; one that does not keeps the
+    // short-side budget, so a long name never widens into its neighbours.
+    const outsideMaxWidth = smallRing || meta.textW <= featureOutsideMaxWidthAt(meta.angleDeg)
+      ? Infinity
+      : narrowFeatureOutsideMaxWidth;
+    const compact = Number.isFinite(outsideMaxWidth) && meta.textW > outsideMaxWidth
+      ? meaningfulEllipsizeToWidth(meta.name, outsideMaxWidth, labelFontMode)
       : null;
     const displayName = compact?.text ?? meta.name;
     const displayWidth = compact?.width ?? meta.textW;
+    if (compact) shortenedOutsideNames.set(item.key, { name: meta.name, width: meta.textW });
     featureOutside.push({
       key: item.key,
       primary: meta.angleDeg,
@@ -811,6 +1163,7 @@ function computeCircularLayout(input: MapInput): MapLayout {
       );
       const arrowLenPx = Math.min(
         laneMetrics.size,
+        FEATURE_ARROW_MAX_LEN,
         termExtentPx * FEATURE_ARROW_MAX_EXTENT_SHARE,
       );
       terminalTipDeltaDeg = arcDeltaDeg(arrowLenPx, centerR) * (forward ? 1 : -1);
@@ -841,6 +1194,16 @@ function computeCircularLayout(input: MapInput): MapLayout {
       ...segs.map((s) => arcExtentPx(centerR, bpToAngle(s.end, length) - bpToAngle(s.start, length))),
     );
     const outsidePriority = circularFeatureLabelPriority(f, segs, length);
+    featureLeaderFoot.set(f.id, roundPt(pointOnCircle(cx, cy, outerR, midAngle)));
+    featureLeaderRing.set(f.id, roundPt(pointOnCircle(cx, cy, R + REC_TICK_INNER_OFFSET + REC_TICK_LEN + 1, midAngle)));
+    featureLeaderElbow.set(f.id, roundPt(pointOnCircle(cx, cy, R - coordBand / 2, midAngle)));
+    if (segs.length === 1) {
+      featureFootSpan.set(f.id, {
+        outerR,
+        startDeg: bpToAngle(segs[0].start, length),
+        endDeg: bpToAngle(segs[0].end, length),
+      });
+    }
 
     let label: MapLabelRender | null = null;
     if (showFeatureLabels && name) {
@@ -854,16 +1217,18 @@ function computeCircularLayout(input: MapInput): MapLayout {
           { name, outsideAnchor, angleDeg: midAngle, textW },
         );
       } else if (labelFitsInline(name, maxSegExtent, undefined, outerR - innerR)) {
-        const p = pointOnCircle(cx, cy, centerR, midAngle);
         const arcSweepDeg = arcDeltaDeg(textW, centerR) + ARC_LABEL_PAD_DEG * 2;
-        const arcPath = describeInlineLabelArc(cx, cy, centerR, midAngle, arcSweepDeg) ?? undefined;
+        const labelAngle = ridingNameAngle(f.id, lane, segs, midAngle, arcSweepDeg);
+        const p = pointOnCircle(cx, cy, centerR, labelAngle);
+        const arcPath = describeInlineLabelArc(cx, cy, centerR, labelAngle, arcSweepDeg, inlineInkShift) ?? undefined;
+        ridingNameSpans.push({ innerR, startDeg: labelAngle - arcSweepDeg / 2, endDeg: labelAngle + arcSweepDeg / 2 });
         label = {
           text: name,
           x: round(p.x),
           y: round(p.y),
           anchor: 'middle',
           baseline: 'middle',
-          rotate: round(tangentialRotation(midAngle)),
+          rotate: round(tangentialRotation(labelAngle)),
           arcPath,
           leader: [],
           inside: true,
@@ -972,7 +1337,12 @@ function computeCircularLayout(input: MapInput): MapLayout {
       namedEnzymes: readonly string[];
     }
   >();
-  const recLabelCap = showRestrictionLabels ? circularRecCap(R, clusters.length, display) : 0;
+  const recLabelCap = showRestrictionLabels
+    ? Math.min(
+        circularRecCap(R, clusters.length, display),
+        Math.max(0, smallRingLabelSlots - featureLabelKeep.size),
+      )
+    : 0;
   const circularRecLabelMaxWidth = baseSide < 480
     ? Math.max(88, baseSide * 0.27)
     : CIRCULAR_REC_LABEL_MAX_WIDTH_PX;
@@ -994,13 +1364,16 @@ function computeCircularLayout(input: MapInput): MapLayout {
       positions: clusterPositions(c),
       title: restrictionTitle(c),
     });
-    if (showRestrictionLabels && labeledRecIds.has(c.id)) {
+    const label = showRestrictionLabels && labeledRecIds.has(c.id)
+      ? circularClusterLabel(c, circularRecLabelMaxWidth, RESTRICTION_LABEL_FONT_MODE)
+      : null;
+    // On a small ring an enzyme name is whole or absent, as a feature name is.
+    if (label && !(smallRing && label.text.includes('…'))) {
       recItems.push({
         key: c.id,
         primary: angle,
         priority: c.ticks.length * 1000 + (clusters.length - i), // bigger cluster + earlier wins
       });
-      const label = circularClusterLabel(c, circularRecLabelMaxWidth, RESTRICTION_LABEL_FONT_MODE);
       recMeta.set(c.id, {
         anchor: p2,
         angleDeg: angle,
@@ -1101,13 +1474,17 @@ function computeCircularLayout(input: MapInput): MapLayout {
   // collision halo occasionally need one more outer row than the generic
   // leader-fraction budget, while compact maps still summarize instead of
   // inflating their fitted viewBox.
-  const restrictionRadialMaxTier = baseSide >= 600 && clusters.length <= 24
-    ? radialGeometryMaxTier + 2
-    : radialGeometryMaxTier;
-  const featureRadialMaxTier = circularFeatureRadialMaxTier(
-    radialGeometryMaxTier,
-    featureOutsideCandidates.length,
-  );
+  // A small ring keeps every outside name near the ring and beside what it names, so
+  // leaders stay short; a name with no such spot is counted instead.
+  const restrictionRadialMaxTier = smallRing
+    ? SMALL_RING_MAX_TIER
+    : baseSide >= 600 && clusters.length <= 24
+      ? radialGeometryMaxTier + 2
+      : radialGeometryMaxTier;
+  const featureRadialMaxTier = smallRing
+    ? SMALL_RING_MAX_TIER
+    : circularFeatureRadialMaxTier(radialGeometryMaxTier, featureOutsideCandidates.length);
+  const angleShift = (deg: number): number => (smallRing ? Math.min(deg, SMALL_RING_MAX_ANGLE_SHIFT_DEG) : deg);
   const featureOutsideObstacles = circularRadialLabelObstacles({
     centerGuard,
     featureGlyphBoxes,
@@ -1141,7 +1518,7 @@ function computeCircularLayout(input: MapInput): MapLayout {
       maxTier: featureRadialMaxTier,
       maxPushes: featureRadialMaxTier,
       allowGrouping: false,
-      maxAngleShiftDeg: RADIAL_LABEL_ANGULAR_THRESHOLD_DEG * 2,
+      maxAngleShiftDeg: angleShift(RADIAL_LABEL_ANGULAR_THRESHOLD_DEG * 2),
       // On a small, curated feature inventory the tick boxes are a deliberately
       // conservative proxy: they extend through the empty radial gap and can
       // reject a short RBS even though its glyph clears the painted tick. Keep
@@ -1188,7 +1565,7 @@ function computeCircularLayout(input: MapInput): MapLayout {
         maxTier: featureRadialMaxTier,
         maxPushes: featureRadialMaxTier,
         allowGrouping: false,
-        maxAngleShiftDeg: RADIAL_LABEL_ANGULAR_THRESHOLD_DEG * 4,
+        maxAngleShiftDeg: angleShift(RADIAL_LABEL_ANGULAR_THRESHOLD_DEG * 4),
         // The fallback is specifically allowed to cross decorative ruler/site
         // ticks; keep every real text box and painted feature glyph protected.
         obstacles: [...featureGlyphBoxes, ...featureFallbackObstacles.leaderTextObstacles],
@@ -1243,7 +1620,7 @@ function computeCircularLayout(input: MapInput): MapLayout {
       maxTier: restrictionRadialMaxTier,
       maxPushes: restrictionRadialMaxTier,
       allowGrouping: false,
-      maxAngleShiftDeg: RADIAL_LABEL_ANGULAR_THRESHOLD_DEG * (baseSide < 480 ? 4 : 2),
+      maxAngleShiftDeg: angleShift(RADIAL_LABEL_ANGULAR_THRESHOLD_DEG * (baseSide < 480 ? 4 : 2)),
       obstacles: restrictionOutsideObstacles.labelObstacles,
       leaderObstacles: restrictionOutsideObstacles.leaderObstacles,
       minClearanceRadius: R + 2,
@@ -1296,7 +1673,7 @@ function computeCircularLayout(input: MapInput): MapLayout {
         maxTier: restrictionRadialMaxTier,
         maxPushes: restrictionRadialMaxTier,
         allowGrouping: false,
-        maxAngleShiftDeg: RADIAL_LABEL_ANGULAR_THRESHOLD_DEG * (baseSide < 480 ? 4 : 2),
+        maxAngleShiftDeg: angleShift(RADIAL_LABEL_ANGULAR_THRESHOLD_DEG * (baseSide < 480 ? 4 : 2)),
         obstacles: groupedRestrictionFallbackObstacles.labelObstacles,
         leaderObstacles: preferCompleteRestrictionInventory
           ? [centerGuard]
@@ -1377,7 +1754,7 @@ function computeCircularLayout(input: MapInput): MapLayout {
         allowGrouping: false,
         // The wide angular search the feature fallback uses: at this point another
         // outer tier would grow the fitted viewBox and shrink the drawn ring.
-        maxAngleShiftDeg: RADIAL_LABEL_ANGULAR_THRESHOLD_DEG * 4,
+        maxAngleShiftDeg: angleShift(RADIAL_LABEL_ANGULAR_THRESHOLD_DEG * 4),
         obstacles: settledObstacles.labelObstacles,
         leaderObstacles: settledObstacles.leaderObstacles,
         minClearanceRadius: R + 2,
@@ -1426,7 +1803,7 @@ function computeCircularLayout(input: MapInput): MapLayout {
         maxTier: restrictionRadialMaxTier,
         maxPushes: restrictionRadialMaxTier,
         allowGrouping: false,
-        maxAngleShiftDeg: RADIAL_LABEL_ANGULAR_THRESHOLD_DEG * (baseSide < 480 ? 4 : 2),
+        maxAngleShiftDeg: angleShift(RADIAL_LABEL_ANGULAR_THRESHOLD_DEG * (baseSide < 480 ? 4 : 2)),
         obstacles: settledObstacles.labelObstacles,
         leaderObstacles: settledObstacles.leaderObstacles,
         minClearanceRadius: R + 2,
@@ -1437,6 +1814,197 @@ function computeCircularLayout(input: MapInput): MapLayout {
       writeCircularOutsideLabel,
       restrictionCollisionClearance,
     );
+  }
+
+  // An outside name's leader starts just past the ring at the name's angle. Finish it
+  // on the feature it names, radially in to its band's outer edge, so no leader stops
+  // on bare backbone 60 to 100px short of its shape. After every pass that weighs a
+  // feature name against the sites, which this inner run cannot reach, and before the
+  // ruler pass again, so a ruler number the longer leader crosses yields to it.
+  const placerLeaders = new Map<string, readonly Pt[]>();
+  const originLabel = coordinates[0]?.bp === 0 ? coordinates[0].label : null;
+  const originBox = originLabel ? labelBBoxForRender(originLabel, labelFontMode) : null;
+  for (const render of featureRenders) {
+    let foot = featureLeaderFoot.get(render.id);
+    const ring = featureLeaderRing.get(render.id);
+    let elbow = featureLeaderElbow.get(render.id);
+    let detour: Pt[] | null = null;
+    // A feature on an inner lane reaches its leader through the lanes outside it. Where
+    // that run would cross a name riding one of them, land the leader on the nearest
+    // part of the feature's own sweep that clears the name instead of its middle.
+    const span = featureFootSpan.get(render.id);
+    if (foot && elbow && span && render.label && !render.label.inside && !render.label.arcPath) {
+      const blocked = (deg: number) => ridingNameSpans.some((name) => (
+        name.innerR >= span.outerR - 0.01 && Math.abs(((deg - (name.startDeg + name.endDeg) / 2 + 540) % 360) - 180) <= (name.endDeg - name.startDeg) / 2 + 1
+      ));
+      const mid = (span.startDeg + span.endDeg) / 2;
+      if (blocked(mid)) {
+        const inset = Math.min((span.endDeg - span.startDeg) / 2, 0.5);
+        const steps = 24;
+        let best: number | null = null;
+        for (let i = 0; i <= steps; i += 1) {
+          const deg = span.startDeg + inset + ((span.endDeg - span.startDeg - 2 * inset) * i) / steps;
+          if (!blocked(deg) && (best === null || Math.abs(deg - mid) < Math.abs(best - mid))) best = deg;
+        }
+        if (best !== null) {
+          foot = roundPt(pointOnCircle(cx, cy, span.outerR, best));
+          elbow = roundPt(pointOnCircle(cx, cy, R - coordBand / 2, best));
+        } else {
+          // Every part of the sweep sits under a riding name (a short feature under a
+          // long one). Step aside in the gap between the lanes to the nearer spoke clear
+          // of the name, and cross the band outside there, where it carries no ink.
+          let clear: number | null = null;
+          for (let step = 0.25; step <= 90 && clear === null; step += 0.25) {
+            if (!blocked(mid + step)) clear = mid + step;
+            else if (!blocked(mid - step)) clear = mid - step;
+          }
+          const above = ridingNameSpans
+            .filter((name) => name.innerR >= span.outerR - 0.01 && Math.abs(((mid - (name.startDeg + name.endDeg) / 2 + 540) % 360) - 180) <= (name.endDeg - name.startDeg) / 2 + 1)
+            .reduce((r, name) => Math.min(r, name.innerR), Infinity);
+          if (clear !== null && Number.isFinite(above)) {
+            const gapR = (span.outerR + above) / 2;
+            detour = [roundPt(pointOnCircle(cx, cy, gapR, mid)), roundPt(pointOnCircle(cx, cy, gapR, clear))];
+            elbow = roundPt(pointOnCircle(cx, cy, R - coordBand / 2, clear));
+          }
+        }
+      }
+    }
+    const label = render.label;
+    if (!foot || !ring || !elbow || !label || label.inside || label.arcPath || label.leader.length < 2) continue;
+    const start = label.leader[0];
+    const startDeg = Math.atan2(start.x - cx, cy - start.y) * (180 / Math.PI);
+    // A name the placer slid sideways bends once, in the ruler band inside the ring, and
+    // crosses the backbone and the site ticks on its own radial spoke.
+    const crossing = roundPt(pointOnCircle(cx, cy, R, startDeg));
+    const leaderFrom = (footPt: Pt, elbowPt: Pt): Pt[] => {
+      const footDeg = Math.atan2(footPt.x - cx, cy - footPt.y) * (180 / Math.PI);
+      const onSpoke = Math.abs(((startDeg - footDeg + 540) % 360) - 180) < 0.05;
+      return onSpoke ? [footPt, ...label.leader] : [footPt, elbowPt, crossing, ...label.leader];
+    };
+    let leader = detour ? [foot, ...detour, elbow, crossing, ...label.leader] : leaderFrom(foot, elbow);
+    // "0" orients the whole map, so a leader never takes it away: one that would cross it
+    // bends nearer the ring or nearer the lanes instead, and if its radial run is what
+    // crosses, it lands on another part of its feature's sweep.
+    if (originBox && polylineIntersectsBBox(leader, originBox)) {
+      const footDegs: number[] = [Math.atan2(foot.x - cx, cy - foot.y) * (180 / Math.PI)];
+      if (span) {
+        const steps = 24;
+        const mid = (span.startDeg + span.endDeg) / 2;
+        const inset = Math.min((span.endDeg - span.startDeg) / 2, 0.5);
+        const sweep: number[] = [];
+        for (let i = 0; i <= steps; i += 1) sweep.push(span.startDeg + inset + ((span.endDeg - span.startDeg - 2 * inset) * i) / steps);
+        sweep.sort((a, b) => Math.abs(a - mid) - Math.abs(b - mid));
+        footDegs.push(...sweep);
+      }
+      const elbowRadii = [R - coordBand / 2, R - coordTickLenR / 2, R - coordBand + coordTickLenR / 2];
+      let found = false;
+      search: for (const deg of footDegs) {
+        const footPt = deg === footDegs[0] ? foot : roundPt(pointOnCircle(cx, cy, span!.outerR, deg));
+        for (const elbowR of elbowRadii) {
+          const candidate = leaderFrom(footPt, roundPt(pointOnCircle(cx, cy, elbowR, deg)));
+          if (!polylineIntersectsBBox(candidate, originBox)) {
+            leader = candidate;
+            found = true;
+            break search;
+          }
+        }
+      }
+      // A foot on one side of "0" and a name on the other: run under (or over) "0" along
+      // the band, then out on the name's own spoke.
+      if (!found) {
+        const footDeg = footDegs[0];
+        for (const elbowR of [R - coordBand + coordTickLenR / 2, R - coordTickLenR / 2]) {
+          const candidate = [
+            foot,
+            roundPt(pointOnCircle(cx, cy, elbowR, footDeg)),
+            roundPt(pointOnCircle(cx, cy, elbowR, startDeg)),
+            crossing,
+            ...label.leader,
+          ];
+          if (!polylineIntersectsBBox(candidate, originBox)) {
+            leader = candidate;
+            found = true;
+            break;
+          }
+        }
+      }
+      // A name on the same spoke as "0": step aside under it, on the foot's side, to a
+      // spoke that clears it, and cross the ring there.
+      if (!found) {
+        const innerR = R - coordBand + coordTickLenR / 2;
+        const side = foot.x >= (originBox.minX + originBox.maxX) / 2 ? 1 : -1;
+        const clearX = side > 0 ? originBox.maxX + 1 - cx : cx - originBox.minX + 1;
+        const jogDeg = side * Math.asin(Math.min(1, clearX / innerR)) * (180 / Math.PI);
+        const candidate = [
+          foot,
+          roundPt(pointOnCircle(cx, cy, innerR, footDegs[0])),
+          roundPt(pointOnCircle(cx, cy, innerR, jogDeg)),
+          roundPt(pointOnCircle(cx, cy, R, jogDeg)),
+          ...label.leader,
+        ];
+        if (!polylineIntersectsBBox(candidate, originBox)) leader = candidate;
+      }
+    }
+    render.label = { ...label, leader };
+    placerLeaders.set(render.id, label.leader);
+  }
+
+  // A name the placer slid past a neighbour's spoke bends across that neighbour's leader
+  // in the ruler band. A feature on an inner lane can bend lower instead: along the gap
+  // under the lane above it, which carries no ink and passes under the neighbour's foot,
+  // then out on the name's own spoke. Kept only when it crosses no leader and no name.
+  for (const render of featureRenders) {
+    const label = render.label;
+    const placed = placerLeaders.get(render.id);
+    if (!label || !placed || render.lane < 1 || render.lane >= laneMetrics.visibleCount) continue;
+    const others = [...featureRenders, ...restrictionRenders]
+      .filter((other) => other !== render && other.label && other.label.leader.length > 1)
+      .map((other) => other.label!.leader);
+    if (!others.some((leader) => polylinesIntersect(label.leader, leader))) continue;
+    const foot = label.leader[0];
+    const footDeg = Math.atan2(foot.x - cx, cy - foot.y) * (180 / Math.PI);
+    const spokeDeg = Math.atan2(placed[0].x - cx, cy - placed[0].y) * (180 / Math.PI);
+    const turn = ((spokeDeg - footDeg + 540) % 360) - 180;
+    const gapR = R - coordBand - render.lane * laneMetrics.pitch + (laneMetrics.pitch - laneMetrics.size) / 2;
+    const ridden = ridingNameSpans.some((name) => (
+      name.innerR >= gapR && Math.abs(((spokeDeg - (name.startDeg + name.endDeg) / 2 + 540) % 360) - 180) <= (name.endDeg - name.startDeg) / 2 + 1
+    ));
+    if (ridden || Math.abs(turn) < 0.5) continue;
+    const steps = Math.max(1, Math.ceil(Math.abs(turn) / 4));
+    const along: Pt[] = [];
+    for (let i = 0; i <= steps; i += 1) along.push(roundPt(pointOnCircle(cx, cy, gapR, footDeg + (turn * i) / steps)));
+    const candidate = [foot, ...along, roundPt(pointOnCircle(cx, cy, R, spokeDeg)), ...placed];
+    const names = [
+      centerGuard,
+      ...featureRenders.filter((other) => other !== render && other.label).map((other) => labelBBoxForRender(other.label!, labelFontMode)),
+      ...restrictionRenders.filter((other) => other.label).map((other) => labelBBoxForRender(other.label!, RESTRICTION_LABEL_FONT_MODE)),
+      ...coordinates.filter((c) => c.label).map((c) => labelBBoxForRender(c.label!, labelFontMode)),
+    ];
+    if (others.some((leader) => polylinesIntersect(candidate, leader))) continue;
+    if (names.some((box) => polylineIntersectsBBox(candidate, box))) continue;
+    render.label = { ...label, leader: candidate };
+  }
+  dropCoordinateLabelsConflictingWithFeatureLeaders(featureRenders, coordinates, labelFontMode);
+
+  // A small ring drops any name whose finished leader would run into the middle, cross
+  // the record's name, or swing far round the ring from what it names. The name is
+  // counted in the overflow summary below instead.
+  if (smallRing) {
+    const dropped = dropSmallRingLongLeaders(
+      featureRenders,
+      restrictionRenders,
+      { x: cx, y: cy },
+      smallRingNameRadius,
+      centerGuard,
+    );
+    featureHiddenLabels += dropped.features;
+    const spanById = new Map(features.map((f) => [f.id, f.end >= f.start ? f.end - f.start : length - f.start + f.end]));
+    featureHiddenLabels += dropSmallRingNameConflicts(
+      featureRenders,
+      restrictionRenders,
+      (id) => spanById.get(id) ?? 0,
+      labelFontMode,
+    ).features;
   }
 
   if (showRestrictionLabels) {
@@ -1477,7 +2045,7 @@ function computeCircularLayout(input: MapInput): MapLayout {
     overflowSummaries.push({
       id: 'circular-restriction-overflow',
       kind: 'restriction-labels',
-      text: `${recUnnamedSites} unnamed ${plural(recUnnamedSites, 'site', 'sites')}`,
+      text: `+${recUnnamedSites} ${plural(recUnnamedSites, 'site', 'sites')}`,
       title: restrictionOverflowTitle(recUnnamedSites, recTotalSites),
       // Every site keeps its density tick, so nothing here is undrawn — only unnamed.
       hiddenBodies: 0,
@@ -1512,6 +2080,19 @@ function computeCircularLayout(input: MapInput): MapLayout {
           maxY: layoutHeight,
         }
       : { minX: cx - ringExtent, minY: cy - ringExtent, maxX: cx + ringExtent, maxY: cy + ringExtent };
+
+  restoreShortenedNamesIntoFreeMargin({
+    featureRenders,
+    restrictionRenders,
+    coordinates,
+    featureGlyphBoxes,
+    shortenedOutsideNames,
+    coreBounds,
+    center: { x: cx, y: cy },
+    ringExtent,
+    paneAspect: width / height,
+    labelFontMode,
+  });
   const { viewBox, contentViewBox, bg } = fitViewBox(
     coreBounds,
     featureRenders,
@@ -1536,6 +2117,8 @@ function computeCircularLayout(input: MapInput): MapLayout {
     length: input.length,
     centerTitle,
     centerLabelRadius,
+    featureLaneOuterRadius: round(R - coordBand),
+    featureLaneInnerRadius: round(deepestVisibleBand?.innerR ?? fallbackVisibleInnerR),
     topology: input.topology,
     sequenceType: input.sequenceType,
     features: featureRenders,
@@ -1543,6 +2126,7 @@ function computeCircularLayout(input: MapInput): MapLayout {
     restrictions: restrictionRenders,
     coordinates,
     ...(overflowSummaries.length > 0 ? { overflowSummaries } : {}),
+    ...(smallRing ? { smallRing: true as const } : {}),
     budgets,
   };
 }
@@ -3274,6 +3858,94 @@ function fitViewBox(
 }
 
 /**
+ * A pane wider than its drawing leaves free margin beside the ring: the drawing is
+ * scaled by its height, so its fitted box may widen up to the pane's aspect before
+ * the ring gets any smaller. An outside name the short-side budget shortened is
+ * written whole when the part it adds clears every label, leader, glyph and the
+ * ring, and the widened box still fits that aspect. The name keeps its inner edge,
+ * where its leader ends, and grows away from the ring, so nothing it already
+ * cleared moves. Shortest additions go first, so the margin restores the most names.
+ */
+function restoreShortenedNamesIntoFreeMargin({
+  featureRenders,
+  restrictionRenders,
+  coordinates,
+  featureGlyphBoxes,
+  shortenedOutsideNames,
+  coreBounds,
+  center,
+  ringExtent,
+  paneAspect,
+  labelFontMode,
+}: {
+  featureRenders: MapFeatureRender[];
+  restrictionRenders: readonly MapRestrictionRender[];
+  coordinates: readonly MapCoordinateTick[];
+  featureGlyphBoxes: readonly BBox[];
+  shortenedOutsideNames: ReadonlyMap<string, { name: string; width: number }>;
+  coreBounds: BBox;
+  center: Pt;
+  ringExtent: number;
+  paneAspect: number;
+  labelFontMode: LabelFontMode;
+}): void {
+  if (shortenedOutsideNames.size === 0 || !(paneAspect > 0)) return;
+  const candidates = featureRenders
+    .map((render) => {
+      const label = render.label;
+      const whole = shortenedOutsideNames.get(render.id);
+      if (!label || !whole || label.inside || label.arcPath || (label.rotate ?? 0) !== 0) return null;
+      if (label.anchor !== 'middle' || label.text === whole.name || !label.text.endsWith('…')) return null;
+      return { render, label, whole, grow: whole.width - approxTextWidth(label.text, undefined, labelFontMode) };
+    })
+    .filter((c): c is NonNullable<typeof c> => c !== null && c.grow > 0)
+    .sort((a, b) => a.grow - b.grow);
+  if (candidates.length === 0) return;
+
+  const content = (): BBox => {
+    const bb: BBox = { ...coreBounds };
+    for (const f of featureRenders) growByLabel(bb, f.label, labelFontMode);
+    for (const r of restrictionRenders) growByLabel(bb, r.label, RESTRICTION_LABEL_FONT_MODE);
+    for (const c of coordinates) growByLabel(bb, c.label, labelFontMode);
+    return bb;
+  };
+  const clearance = CIRCULAR_VISIBLE_LABEL_CLEARANCE_PX;
+  for (const { render, label, whole } of candidates) {
+    const outward = label.x >= center.x ? 1 : -1;
+    const shown = labelBBoxForRender(label, labelFontMode);
+    const innerEdge = outward > 0 ? shown.minX : shown.maxX;
+    const x = round(innerEdge + (outward * whole.width) / 2);
+    const next: MapLabelRender = { ...label, text: whole.name, x };
+    const grown = labelBBoxForRender(next, labelFontMode);
+    // Only the added part needs checking: the shown name already cleared the rest.
+    const added: BBox = outward > 0
+      ? { minX: shown.maxX, maxX: grown.maxX, minY: grown.minY, maxY: grown.maxY }
+      : { minX: grown.minX, maxX: shown.minX, minY: grown.minY, maxY: grown.maxY };
+    const nearestX = clamp(center.x, added.minX, added.maxX);
+    const nearestY = clamp(center.y, added.minY, added.maxY);
+    if (Math.hypot(nearestX - center.x, nearestY - center.y) <= ringExtent + clearance) continue;
+    const padded = expandBBox(added, clearance);
+    const hitsText = [
+      ...featureRenders.filter((f) => f !== render && f.label).map((f) => labelBBoxForRender(f.label!, labelFontMode)),
+      ...restrictionRenders.filter((r) => r.label).map((r) => labelBBoxForRender(r.label!, RESTRICTION_LABEL_FONT_MODE)),
+      ...coordinates.filter((c) => c.label).map((c) => labelBBoxForRender(c.label!, labelFontMode)),
+      ...featureGlyphBoxes,
+    ].some((box) => bboxIntersects(box, padded));
+    if (hitsText) continue;
+    const hitsLeader = [...featureRenders, ...restrictionRenders].some((other) => (
+      other !== render && other.label && other.label.leader.length > 1 && polylineIntersectsBBox(other.label.leader, padded)
+    ));
+    if (hitsLeader) continue;
+    const before = content();
+    render.label = next;
+    const after = content();
+    const LABEL_PAD = LABEL_BAND_MARGIN * 2;
+    const widthBudget = (before.maxY - before.minY + LABEL_PAD) * paneAspect - LABEL_PAD;
+    if (after.maxX - after.minX > widthBudget + 0.5) render.label = label;
+  }
+}
+
+/**
  * Biological midpoint bp of a feature: walk half the total drawn length from the
  * first segment, so origin-wrap / multi-subrange features get a mid that actually
  * lands on the molecule (used for reveal/scroll + deterministic hit ordering).
@@ -3781,7 +4453,7 @@ function restrictionOverflowText(
   maxWidthPx: number,
   fontPx: number,
 ): string {
-  const full = `${unnamedSites} unnamed ${plural(unnamedSites, 'site', 'sites')}`;
+  const full = `+${unnamedSites} ${plural(unnamedSites, 'site', 'sites')}`;
   if (overflowHitRect(full, 0, 0, 'middle', fontPx).width <= maxWidthPx) return full;
   // Out of room: spend the noun, never the count. The chip takes part in no collision
   // pass — it is placed after every label and nothing dodges it — so its own width is
@@ -3794,7 +4466,7 @@ function restrictionOverflowText(
   // units off it. Across the five bundled vectors at six viewports the margin costs
   // the noun on 2 maps that would have fitted, and saves it on the 2 where the full
   // sentence painted over a name.
-  return `${unnamedSites} unnamed`;
+  return `+${unnamedSites}`;
 }
 
 function restrictionOverflowTitle(unnamedSites: number, totalSites: number): string {
@@ -4238,7 +4910,8 @@ function dropCoordinateLabelsConflictingWithFeatureLeaders(
 
   for (const coordinate of coordinates) {
     const label = coordinate.label;
-    if (!label) continue;
+    // "0" orients the map: the leaders are routed around it instead (see the leader feet).
+    if (!label || coordinate.bp === 0) continue;
     const labelBox = labelBBoxForRender(label, labelFontMode);
     if (featureLeaders.some((leader) => polylineIntersectsBBox(leader, labelBox))) {
       coordinate.label = null;
@@ -4603,14 +5276,18 @@ const ARC_LABEL_PAD_DEG = 1; // slight breathing room past the raw text width
 function describeInlineLabelArc(
   cx: number,
   cy: number,
-  r: number,
+  centreR: number,
   midAngleDeg: number,
   sweepDeg: number,
+  inkShift = 0,
 ): string | null {
-  if (!(r > 0) || !(sweepDeg >= ARC_LABEL_MIN_SWEEP_DEG) || sweepDeg > ARC_LABEL_MAX_SWEEP_DEG) return null;
+  if (!(centreR > 0) || !(sweepDeg >= ARC_LABEL_MIN_SWEEP_DEG) || sweepDeg > ARC_LABEL_MAX_SWEEP_DEG) return null;
   const half = sweepDeg / 2;
   const norm = ((midAngleDeg % 360) + 360) % 360;
   const bottom = norm > 90 && norm < 270;
+  // A name's ascenders point out from the ring on the top half and in toward the
+  // centre on the flipped bottom half; move the baseline arc so the ink box is centred.
+  const r = centreR + (bottom ? -inkShift : inkShift);
   const startA = bottom ? midAngleDeg + half : midAngleDeg - half;
   const endA = bottom ? midAngleDeg - half : midAngleDeg + half;
   const sweepFlag = bottom ? 0 : 1;

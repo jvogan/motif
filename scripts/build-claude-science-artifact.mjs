@@ -1,21 +1,31 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
+  closeSync,
+  constants,
   copyFileSync,
   cpSync,
   chmodSync,
   existsSync,
+  fstatSync,
+  renameSync,
+  lstatSync,
   mkdirSync,
+  mkdtempSync,
+  openSync,
+  readSync,
   readFileSync,
   realpathSync,
   readdirSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { deflateRawSync } from 'node:zlib';
 import { buildSync } from 'esbuild';
+
 import { validatePayload as validateArtifactPayload } from '../src/artifacts/motif-for-claude-science-plugin/skills/motif-for-claude-science/scripts/create-artifact.mjs';
 import { stampMotifBuildIdentity } from './motif-build-identity.mjs';
 import { createDeterministicSbom } from './generate-sbom.mjs';
@@ -25,6 +35,7 @@ import {
   RELEASE_MANIFEST_FILENAME,
 } from './lib/motif-release-bundle.mjs';
 
+const MAX_MOTIF_PRELOAD_BYTES = 32 * 1024 * 1024;
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const outDir = join(root, 'dist-motif');
 const distHtml = join(outDir, 'motif.html');
@@ -34,6 +45,14 @@ const standaloneSkillSourcePath = join(root, 'src/artifacts/motif-for-claude-sci
 const standaloneSkillDistPath = join(outDir, 'motif-for-claude-science-skill/SKILL.md');
 const pluginName = 'motif-for-claude-science';
 const pluginSourcePath = join(root, 'src/artifacts/motif-for-claude-science-plugin');
+const pluginSkill = `skills/${pluginName}`;
+const pluginSourceFiles = [
+  '.claude-plugin/plugin.json', '.mcp.json', 'CHANGELOG.md', 'LICENSE', 'README.md', 'THIRD_PARTY_NOTICES.md',
+  `${pluginSkill}/SKILL.md`,
+  ...['analysis-validator', 'create-artifact', 'run-msa', 'workspace-validator'].map(name => (
+    `${pluginSkill}/scripts/${name}.mjs`
+  )),
+];
 const pluginDistPath = join(outDir, pluginName);
 const pluginResourcePath = join(
   pluginDistPath,
@@ -82,7 +101,7 @@ Usage:
   node scripts/build-claude-science-artifact.mjs [options]
 
 Options:
-  --payload <json>   Preload the standalone HTML and plugin resource with JSON.
+  --payload <json>   Write only a private preloaded HTML file; requires --out or --handoff.
   --out <html>       Write an additional repo-local standalone HTML file.
   --handoff <html>   Explicitly copy the HTML and complete plugin bundle elsewhere.
   --help             Show this help.
@@ -131,11 +150,11 @@ function pathIsInside(parentPath, candidatePath) {
   return local === '' || (!local.startsWith(`..${sep}`) && local !== '..' && !isAbsolute(local));
 }
 
-function inlineAssetTags(html) {
+function inlineAssetTags(html, assetDirectory = outDir) {
   let inlined = html.replace(
     /<link rel="stylesheet" crossorigin href="([^"]+)">/g,
     (_match, href) => {
-      const cssPath = join(outDir, href.replace(/^\.\//, ''));
+      const cssPath = join(assetDirectory, href.replace(/^\.\//, ''));
       const css = readFileSync(cssPath, 'utf8');
       return `<style>\n${css}\n</style>`;
     },
@@ -144,7 +163,7 @@ function inlineAssetTags(html) {
   inlined = inlined.replace(
     /<script type="module" crossorigin src="([^"]+)"><\/script>/g,
     (_match, src) => {
-      const jsPath = join(outDir, src.replace(/^\.\//, ''));
+      const jsPath = join(assetDirectory, src.replace(/^\.\//, ''));
       const js = readFileSync(jsPath, 'utf8');
       return `<script type="module">\n${js}\n</script>`;
     },
@@ -153,13 +172,101 @@ function inlineAssetTags(html) {
   return inlined;
 }
 
-function jsonForScriptTag(value) {
-  return JSON.stringify(value)
+function containsPath(parent, candidate) {
+  const local = relative(parent, candidate);
+  return local === '' || (local !== '..' && !local.startsWith(`..${sep}`) && !isAbsolute(local));
+}
+
+function canonicalBuildDestination(path) {
+  const absolute = resolve(path);
+  // macOS uses fixed system aliases for these temporary directories.
+  if (process.platform === 'darwin' && /^\/(?:tmp|var)(?:\/|$)/u.test(absolute)) {
+    return '/private' + absolute;
+  }
+  return absolute;
+}
+
+function checkWritePath(path) {
+  for (let entry = path; ; entry = dirname(entry)) {
+    const stat = lstatSync(entry, { throwIfNoEntry: false });
+    if (stat?.isSymbolicLink()) throw new Error('Build destinations cannot use symbolic links.');
+    if (stat && (entry === path ? !stat.isFile() : !stat.isDirectory())) {
+      throw new Error('Build destination is not a regular file path.');
+    }
+    if (dirname(entry) === entry) return;
+  }
+}
+
+export function preloadDestination({ payloadPath, outPath, handoffPath }) {
+  if (!payloadPath) return null;
+  if (Boolean(outPath) === Boolean(handoffPath)) {
+    throw new Error('Use exactly one of --out or --handoff with --payload.');
+  }
+  const destination = canonicalBuildDestination(outPath ?? handoffPath);
+  if (containsPath(outDir, destination) || !/\.html$/iu.test(destination)) {
+    throw new Error('Private payload output must be an HTML file outside the distributable directory.');
+  }
+  if (destination === canonicalBuildDestination(payloadPath)) throw new Error('Payload input and output must be different files.');
+  checkWritePath(destination);
+  return destination;
+}
+
+/**
+ * Write a preloaded artifact readable only by its owner. Rerunning an export
+ * replaces the previous file at the same path in one rename, so a reader never
+ * sees a partial file. Symbolic links and non-file destinations are refused.
+ */
+export function writePrivateArtifact(requestedDestination, html) {
+  const destination = canonicalBuildDestination(requestedDestination);
+  checkWritePath(destination);
+  mkdirSync(dirname(destination), { recursive: true });
+  const upload = mkdtempSync(join(dirname(destination), '.motif-preload-'));
+  try {
+    const staged = join(upload, 'artifact.html');
+    writeFileSync(staged, html, { flag: 'wx', mode: 0o600 });
+    renameSync(staged, destination);
+  } finally {
+    rmSync(upload, { recursive: true, force: true });
+  }
+}
+
+export function readBuildPayload(path) {
+  const limit = MAX_MOTIF_PRELOAD_BYTES;
+  const fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size > limit) throw new Error('Build payload must be a regular JSON file of at most 32 MiB.');
+    const bytes = Buffer.allocUnsafe(stat.size + 1);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const count = readSync(fd, bytes, offset, bytes.length - offset, null);
+      if (!count) break;
+      offset += count;
+    }
+    if (offset !== stat.size) throw new Error('Build payload changed while it was read.');
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, offset));
+    return validateArtifactPayload(JSON.parse(text));
+  } finally {
+    closeSync(fd);
+  }
+}
+
+export function checkPluginSourceInventory(directory, expected) {
+  const actual = listFilesRecursively(directory).map(file => file.archivePath);
+  if (JSON.stringify(actual.sort()) !== JSON.stringify([...expected].sort())) {
+    throw new Error('Plugin source files do not match the reviewed source inventory.');
+  }
+}
+
+export function jsonForScriptTag(value) {
+  const json = JSON.stringify(value)
     .replace(/</g, '\\u003C')
     .replace(/>/g, '\\u003E')
     .replace(/&/g, '\\u0026')
     .replace(/\u2028/g, '\\u2028')
     .replace(/\u2029/g, '\\u2029');
+  if (Buffer.byteLength(json) > MAX_MOTIF_PRELOAD_BYTES) throw new Error('Escaped preload exceeds 32 MiB.');
+  return json;
 }
 
 function injectPayload(html, payloadJson) {
@@ -178,6 +285,15 @@ function writeStandaloneSkillCopy(skillPath) {
   copyFileSync(standaloneSkillSourcePath, skillPath);
 }
 
+export function stampConnectorBinding(app, server, version) {
+  const identity = createHash('sha256')
+    .update(version).update('\0').update(server).update('\0').update(app)
+    .digest('hex');
+  const marker = '<meta name="motif-build-id"';
+  if (!app.includes(marker)) throw new Error('Motif MCP App is missing its runtime build identity.');
+  return app.replace(marker, `<meta name="motif-connector-binding" content="${identity}">\n${marker}`);
+}
+
 function runConnectorBuild() {
   for (const script of ['build-motif-mcp-server.mjs', 'build-motif-mcp-app.mjs']) {
     const result = spawnSync(process.execPath, [join(root, 'scripts', script)], {
@@ -188,6 +304,9 @@ function runConnectorBuild() {
       throw new Error(`Motif Claude Science connector build failed in ${script}.`);
     }
   }
+  const { version } = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+  const app = readFileSync(connectorAppPath, 'utf8');
+  writeFileSync(connectorAppPath, stampConnectorBinding(app, readFileSync(connectorServerPath, 'utf8'), version));
 }
 
 function sha256(data) {
@@ -231,6 +350,23 @@ export function createDeterministicZipBuffer(directory, { compression = 'store' 
     throw new Error(`Unsupported ZIP compression method: ${compression}`);
   }
   const files = listFilesRecursively(directory);
+  const portablePaths = new Map();
+  for (const { archivePath } of files) {
+    const segments = archivePath.split('/');
+    let prefix = '';
+    for (const segment of segments) {
+      if (/[<>:"\\|?*\u0000-\u001f]|[. ]$/u.test(segment)
+        || /^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/iu.test(segment)) {
+        throw new Error('ZIP contains a nonportable path name.');
+      }
+      prefix = prefix ? `${prefix}/${segment}` : segment;
+      const portable = prefix.normalize('NFC').toLowerCase();
+      if (portablePaths.has(portable) && portablePaths.get(portable) !== prefix) {
+        throw new Error('ZIP contains conflicting portable paths.');
+      }
+      portablePaths.set(portable, prefix);
+    }
+  }
   const localParts = [];
   const centralParts = [];
   let localOffset = 0;
@@ -401,6 +537,9 @@ function createReleaseConnectorInventory() {
     if (!lockEntry) throw new Error(`Connector inventory package is missing from the lockfile: ${packageName}`);
     const packageManifestPath = join(root, 'node_modules', ...entry.packagePath, 'package.json');
     const packageManifest = JSON.parse(readFileSync(packageManifestPath, 'utf8'));
+    if (packageManifest.name !== packageName || packageManifest.version !== lockEntry.version) {
+      throw new Error(`Installed connector package differs from the lockfile: ${packageName}`);
+    }
     const licensePath = join(root, 'node_modules', ...entry.packagePath, 'LICENSE');
     return {
       name: packageName,
@@ -505,7 +644,11 @@ function writeReleaseBundle(runtimeBuildId) {
 function writePluginBundle(html) {
   validatePluginSource();
   rmSync(pluginDistPath, { recursive: true, force: true });
-  cpSync(pluginSourcePath, pluginDistPath, { recursive: true });
+  for (const path of pluginSourceFiles) {
+    const destination = join(pluginDistPath, path);
+    mkdirSync(dirname(destination), { recursive: true });
+    copyFileSync(join(pluginSourcePath, path), destination);
+  }
   mkdirSync(dirname(pluginResourcePath), { recursive: true });
   writeFileSync(pluginResourcePath, html);
   mkdirSync(connectorPluginPath, { recursive: true });
@@ -544,6 +687,15 @@ function copyPluginHandoff(handoffDirectory) {
   copyFileSync(pluginChecksumPath, join(handoffDirectory, `${pluginName}.checksums.json`));
 }
 
+function buildHtml(directory) {
+  const build = spawnSync(
+    process.execPath,
+    [join(root, 'node_modules/vite/bin/vite.js'), 'build', '--config', 'vite.claude-science.config.ts', '--configLoader', 'runner', '--outDir', directory],
+    { cwd: root, stdio: 'inherit' },
+  );
+  if (build.status !== 0) throw new Error(`Motif HTML build failed with status ${build.status ?? 'unknown'}.`);
+}
+
 export function runBuild(args = process.argv.slice(2)) {
   const options = parseBuildArgs(args);
   if (options.help) {
@@ -552,22 +704,38 @@ export function runBuild(args = process.argv.slice(2)) {
   }
 
   const payloadPath = options.payloadPath ? resolve(options.payloadPath) : null;
-  const requestedOutPath = options.outPath ? resolve(options.outPath) : null;
-  const handoffPath = options.handoffPath ? resolve(options.handoffPath) : null;
+  const requestedOutPath = options.outPath ? canonicalBuildDestination(options.outPath) : null;
+  const handoffPath = options.handoffPath ? canonicalBuildDestination(options.handoffPath) : null;
 
   if (requestedOutPath && !pathIsInside(root, requestedOutPath)) {
     throw new Error('An --out path must stay inside the repository; use --handoff for an external copy');
   }
-  const build = spawnSync(
-    process.platform === 'win32' ? 'npx.cmd' : 'npx',
-    ['vite', 'build', '--config', 'vite.claude-science.config.ts', '--configLoader', 'runner'],
-    { cwd: root, stdio: 'inherit' },
-  );
-
-  if (build.status !== 0) {
-    process.exitCode = build.status ?? 1;
-    return;
+  const privateDestination = preloadDestination({ payloadPath, outPath: requestedOutPath, handoffPath });
+  if (privateDestination) {
+    const payload = readBuildPayload(payloadPath);
+    const scratch = mkdtempSync(join(tmpdir(), 'motif-preload-build-'));
+    try {
+      buildHtml(scratch);
+      const html = inlineAssetTags(readFileSync(join(scratch, 'motif.html'), 'utf8'), scratch);
+      const { html: template } = stampMotifBuildIdentity(html);
+      const json = jsonForScriptTag(payload);
+      writePrivateArtifact(privateDestination, injectPayload(template, json));
+      console.log(`Wrote private artifact ${privateDestination}`);
+      return;
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
   }
+  for (const path of [requestedOutPath, handoffPath].filter(Boolean)) {
+    if ((path !== finalDistHtml && containsPath(outDir, path)) || !/\.html$/iu.test(path)) {
+      throw new Error('Additional artifact output collides with the distributable directory or is not HTML.');
+    }
+    checkWritePath(path);
+    if (path !== finalDistHtml) checkWritePath(join(dirname(path), 'motif-for-claude-science-skill/SKILL.md'));
+  }
+  checkPluginSourceInventory(pluginSourcePath, pluginSourceFiles);
+  checkWritePath(finalDistHtml);
+  buildHtml(outDir);
 
   const { html: template, runtimeBuildId } = stampMotifBuildIdentity(
     inlineAssetTags(readFileSync(distHtml, 'utf8')),
@@ -575,12 +743,7 @@ export function runBuild(args = process.argv.slice(2)) {
   writeFileSync(templateHtml, template);
   runConnectorBuild();
 
-  let html = template;
-  if (payloadPath) {
-    const payload = validateArtifactPayload(JSON.parse(readFileSync(payloadPath, 'utf8')));
-    html = injectPayload(html, jsonForScriptTag(payload));
-  }
-
+  const html = template;
   writeFileSync(finalDistHtml, html);
   const finalPath = requestedOutPath ?? finalDistHtml;
   if (finalPath !== finalDistHtml) {

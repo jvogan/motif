@@ -57,7 +57,7 @@ function durableState() {
   return rest;
 }
 
-function chooseCreateItem(label: 'Add AA track' | 'Remove AA track') {
+function chooseCreateItem(label: 'Pin translation' | 'Remove translation') {
   const menuButton = Array.from(document.querySelectorAll<HTMLButtonElement>('button[aria-haspopup="menu"]'))
     .find((candidate) => candidate.textContent?.trim() === 'Create');
   if (!menuButton) throw new Error('no Create menu');
@@ -90,7 +90,7 @@ describe('pinned translation layers and the edit history', () => {
     expect(editedSeq).not.toBe(BASE_SEQUENCE);
 
     await selectFirstLine();
-    chooseCreateItem('Add AA track');
+    chooseCreateItem('Pin translation');
     const [pinned] = layers('layer-history-repro');
     expect(pinned).toBeTruthy();
 
@@ -117,7 +117,7 @@ describe('pinned translation layers and the edit history', () => {
   it('a layer pinned before a base edit survives Undo of that edit', async () => {
     await loadRecord('layer-history-survives');
     await selectFirstLine();
-    chooseCreateItem('Add AA track');
+    chooseCreateItem('Pin translation');
     const pinnedBefore = layers('layer-history-survives');
     expect(pinnedBefore).toHaveLength(1);
 
@@ -136,7 +136,7 @@ describe('pinned translation layers and the edit history', () => {
     await loadRecord('layer-history-roundtrip');
     await typeBaseAtStart();
     await selectFirstLine();
-    chooseCreateItem('Add AA track');
+    chooseCreateItem('Pin translation');
     const pinnedState = durableState();
     expect(layers('layer-history-roundtrip')).toHaveLength(1);
 
@@ -149,12 +149,12 @@ describe('pinned translation layers and the edit history', () => {
   it('Undo of a layer removal brings the layer back, and Redo removes it again', async () => {
     await loadRecord('layer-history-remove');
     await selectFirstLine();
-    chooseCreateItem('Add AA track');
+    chooseCreateItem('Pin translation');
     const pinned = layers('layer-history-remove');
     expect(pinned).toHaveLength(1);
 
     // The new layer is selected, so the same menu entry now removes it.
-    chooseCreateItem('Remove AA track');
+    chooseCreateItem('Remove translation');
     expect(layers('layer-history-remove')).toEqual([]);
 
     await undo();

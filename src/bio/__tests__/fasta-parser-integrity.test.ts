@@ -31,4 +31,14 @@ describe('FASTA input integrity', () => {
   it('rejects non-ASCII whitespace instead of silently changing the sequence', () => {
     expect(() => parseFasta('>record\nACG\u00a0T\n')).toThrowError(/invalid character/iu);
   });
+
+  it('keeps records and diagnostic offsets across mixed line endings', () => {
+    expect(parseFasta('>first\rAC\r\nGT\n>second\rTG')).toMatchObject([
+      { header: 'first', sequence: 'ACGT' },
+      { header: 'second', sequence: 'TG' },
+    ]);
+    expect(() => parseFasta('>first\rAC\r\nGT?')).toThrowError(expect.objectContaining({
+      line: 3, column: 3, offset: 13,
+    }));
+  });
 });

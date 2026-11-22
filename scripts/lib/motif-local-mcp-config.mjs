@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {
+  accessSync,
   closeSync,
   constants,
   existsSync,
@@ -101,7 +102,8 @@ function assertRealDirectoryChain(directory, purpose) {
 function executable(path) {
   try {
     assertRegularFile(path, 'Node.js executable');
-    return Boolean(lstatSync(path).mode & 0o111);
+    accessSync(path, constants.X_OK);
+    return true;
   } catch {
     return false;
   }
@@ -116,15 +118,20 @@ export function resolveNodeBinary({ environment = process.env, current = process
     return configured;
   }
 
+  const cellar = current.match(/^(.*)\/Cellar\/(node(?:@\d+)?)\/[^/]+\/bin\/node$/u);
+  const versioned = /\/(?:Cellar|(?:node-)?versions|installs|tools\/image)\/|\/(?:node-)?v?\d+\.\d+\.\d+[^/]*\//u.test(current);
   const candidates = [
-    current,
-    '/opt/homebrew/bin/node',
-    '/usr/local/bin/node',
+    ...(cellar ? [join(cellar[1], 'opt', cellar[2], 'bin', 'node')] : []),
+    '/opt/homebrew/opt/node/bin/node',
     '/usr/local/opt/node/bin/node',
+    ...(!versioned ? [current] : []),
+    '/usr/local/bin/node',
+    '/usr/bin/node',
+    '/bin/node',
   ];
   const found = candidates.find(candidate => isAbsolute(candidate) && executable(candidate));
   if (!found) {
-    throw new Error('Could not locate an absolute Node.js executable for the Motif connector');
+    throw new Error('Could not locate a stable Node.js path. Set MOTIF_NODE_BIN to an absolute executable Node.js path.');
   }
   return found;
 }
@@ -261,6 +268,34 @@ export function describeMotifLocalMismatch(server, desired) {
 
 export function motifLocalServerMatches(server, desired) {
   return describeMotifLocalMismatch(server, desired).length === 0;
+}
+
+export function readRegisteredMotifLocalServer(configPath) {
+  const { config } = readLocalMcpConfig(configPath);
+  const entry = config.servers.find(server => server?.name === MOTIF_LOCAL_CONNECTOR_NAME);
+  if (!entry) throw new Error(`${MOTIF_LOCAL_CONNECTOR_NAME} is not registered`);
+
+  const nodeBinary = entry.env?.MOTIF_NODE_BIN;
+  const root = entry.env?.MOTIF_ROOT;
+  if (typeof nodeBinary !== 'string' || !isAbsolute(nodeBinary)
+    || typeof root !== 'string' || !isAbsolute(root)
+    || !motifLocalServerMatches(entry, desiredMotifLocalServer(root, { nodeBinary }))) {
+    throw new Error(`${MOTIF_LOCAL_CONNECTOR_NAME} does not use the managed launcher command and environment`);
+  }
+  try {
+    assertRegularFile(nodeBinary, 'Registered Node.js executable');
+    accessSync(nodeBinary, constants.X_OK);
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      throw new Error('Registered MOTIF_NODE_BIN is missing. Re-register with a stable Node.js path.');
+    }
+    throw new Error('Registered MOTIF_NODE_BIN is not an accessible executable regular file.');
+  }
+  try {
+    return { entry, paths: preflightConnectorFiles(root) };
+  } catch (error) {
+    throw new Error(error.message.replaceAll(root, '<registered checkout>'));
+  }
 }
 
 export function installMotifLocalServer(config, desired) {

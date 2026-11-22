@@ -4,6 +4,7 @@ import type { PortableTranslationTrack } from '../claude-science-session';
 import {
   applySequenceEditToAnchors,
   confirmNoteRangeAnchor,
+  contiguousEditSpan,
   describeNetSequenceEdit,
   describeSequenceEdit,
   getNoteRangeAnchorReview,
@@ -12,6 +13,7 @@ import {
   shouldAnnounceSequenceEdit,
   snapshotNoteAnchors,
   transformSequenceRange,
+  withRemovedFeatures,
 } from '../claude-science-sequence-edit';
 
 const EDITED_AT = '2026-07-18T18:00:00.000Z';
@@ -200,6 +202,44 @@ describe('sequence-edit anchor transactions', () => {
     expect(result.removedLayerCount).toBe(1);
   });
 
+  it('moves a layer across the origin of a circular record by its two pieces', () => {
+    // Bases 16..20 and 0..4 of a 20 bp ring, stored as 16..24.
+    const across = (edit: { start: number; deletedLength: number; insertedLength: number }) => applySequenceEditToAnchors({
+      recordId: 'record-1',
+      notes: [],
+      translationLayers: [translationLayer({ start: 16, end: 24 })],
+      edit: { ...edit, oldLength: 20 },
+      editedAt: EDITED_AT,
+    }).translationLayers;
+
+    // Between the pieces: both keep their bases, and the record end moves.
+    const between = across({ start: 8, deletedLength: 0, insertedLength: 3 });
+    expect(between).toEqual([expect.objectContaining({ start: 19, end: 27 })]);
+    expect(between[0].needsReview).toBeUndefined();
+    // Inside the piece past the origin: that piece grows.
+    expect(across({ start: 2, deletedLength: 0, insertedLength: 3 })).toEqual([
+      expect.objectContaining({ start: 19, end: 30, needsReview: true }),
+    ]);
+    // Inside the piece before the origin.
+    expect(across({ start: 18, deletedLength: 1, insertedLength: 0 })).toEqual([
+      expect.objectContaining({ start: 16, end: 23, needsReview: true }),
+    ]);
+    // At the origin, from either end of the record: the new bases join the layer.
+    expect(across({ start: 20, deletedLength: 0, insertedLength: 2 })).toEqual([
+      expect.objectContaining({ start: 16, end: 26, needsReview: true }),
+    ]);
+    expect(across({ start: 0, deletedLength: 0, insertedLength: 2 })).toEqual([
+      expect.objectContaining({ start: 18, end: 28, needsReview: true }),
+    ]);
+    // Deleting one whole piece leaves the other as the layer.
+    expect(across({ start: 0, deletedLength: 4, insertedLength: 0 })).toEqual([
+      expect.objectContaining({ start: 12, end: 16, needsReview: true }),
+    ]);
+    expect(across({ start: 14, deletedLength: 6, insertedLength: 0 })).toEqual([
+      expect.objectContaining({ start: 0, end: 4, needsReview: true }),
+    ]);
+  });
+
   it('preserves a valid imported short layer through an unrelated sequence edit', () => {
     const result = applySequenceEditToAnchors({
       recordId: 'record-1',
@@ -347,6 +387,49 @@ describe('announcing sequence edits', () => {
     expect(describeNetSequenceEdit({ before, after: 'TCGCGCGTCGG', unit: 'bp' }))
       .toBe('Deleted 2 bp (9–10).');
     expect(describeNetSequenceEdit({ before, after: before, unit: 'bp' })).toBeNull();
+  });
+
+  it('joins only edits at the same or neighbouring bases into one run', () => {
+    const edit = (start: number, deletedLength: number, insertedLength: number) => (
+      { start, deletedLength, insertedLength, oldLength: 2686 }
+    );
+    // Replace mode: G typed over base 5, then base 6, then base 7.
+    expect(contiguousEditSpan([edit(4, 1, 1), edit(5, 1, 1), edit(6, 1, 1)])).toEqual({ start: 4, end: 7 });
+    // Insert mode: three bases typed at 100.
+    expect(contiguousEditSpan([edit(100, 0, 1), edit(101, 0, 1), edit(102, 0, 1)])).toEqual({ start: 100, end: 103 });
+    // Backspace three times from 100, then forward Delete twice at 97.
+    expect(contiguousEditSpan([edit(99, 1, 0), edit(98, 1, 0), edit(97, 1, 0)])).toEqual({ start: 97, end: 97 });
+    expect(contiguousEditSpan([edit(97, 1, 0), edit(97, 1, 0)])).toEqual({ start: 97, end: 97 });
+    // A typed base, then a Backspace over it, then one more Backspace before it.
+    expect(contiguousEditSpan([edit(50, 0, 1), edit(50, 1, 0), edit(49, 1, 0)])).toEqual({ start: 49, end: 49 });
+    // Base 11 then base 2,000: two edits, not one 1,990 bp replacement.
+    expect(contiguousEditSpan([edit(10, 1, 1), edit(1_999, 1, 1)])).toBeNull();
+    // One base apart is not neighbouring: base 13 is untouched between 12 and 14.
+    expect(contiguousEditSpan([edit(11, 1, 1), edit(13, 1, 1)])).toBeNull();
+    expect(contiguousEditSpan([edit(13, 1, 1), edit(11, 1, 1)])).toBeNull();
+    // The base just before the run, and an insertion just after it, still join.
+    expect(contiguousEditSpan([edit(20, 1, 1), edit(19, 1, 1)])).toEqual({ start: 19, end: 21 });
+    expect(contiguousEditSpan([edit(20, 1, 1), edit(21, 0, 3)])).toEqual({ start: 20, end: 24 });
+    // A later edit that covers the whole run replaces it.
+    expect(contiguousEditSpan([edit(20, 0, 2), edit(18, 6, 1)])).toEqual({ start: 18, end: 19 });
+    expect(contiguousEditSpan([])).toBeNull();
+  });
+
+  it('names the features an edit took out, three at most', () => {
+    const feature = (id: string, name: string) => ({ id, name, type: 'misc_feature' });
+    const before = [feature('a', 'primer_1'), feature('b', 'lacZ'), feature('c', 'ori'), feature('d', 'AmpR'), feature('e', 'rop')];
+    expect(withRemovedFeatures('Deleted 31 bp (350–380).', before, before)).toBe('Deleted 31 bp (350–380).');
+    expect(withRemovedFeatures('Deleted 31 bp (350–380).', before, before.slice(1)))
+      .toBe('Deleted 31 bp (350–380) and the feature primer_1.');
+    expect(withRemovedFeatures('Deleted 31 bp (350–380).', before, before.slice(2)))
+      .toBe('Deleted 31 bp (350–380) and the features primer_1 and lacZ.');
+    expect(withRemovedFeatures('Deleted 31 bp (350–380).', before, []))
+      .toBe('Deleted 31 bp (350–380) and the features primer_1, lacZ, ori and 2 more.');
+    expect(withRemovedFeatures('Replaced 6 bp (21–26) with T.', before, before.slice(1)))
+      .toBe('Replaced 6 bp (21–26) with T, removing the feature primer_1.');
+    // An unnamed feature is named by its type.
+    expect(withRemovedFeatures('Deleted A at 5.', [{ id: 'x', name: '', type: 'primer_bind' }], []))
+      .toBe('Deleted A at 5 and the feature primer_bind.');
   });
 
   it('flags an edit that would leave a record with no residues', () => {

@@ -9,8 +9,9 @@ const RESOLVED = 'https://registry.npmjs.org/reviewed-package/-/reviewed-package
 const INTEGRITY = 'sha512-AAAA=';
 const COMMIT_SHA_40 = 'a'.repeat(40);
 const COMMIT_SHA_64 = 'b'.repeat(64);
+const OMIT = Symbol('omit coolingOffDays');
 
-function fixture({ publishedAt = '2026-07-01T00:00:00.000Z', currentVersion = '1.0.0', baselineVersion = '0.9.0', exceptions = [] } = {}) {
+function fixture({ publishedAt = '2026-07-01T00:00:00.000Z', currentVersion = '1.0.0', baselineVersion = '0.9.0', exceptions = [], coolingOffDays = 7 } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'motif-cooling-off-test-'));
   mkdirSync(join(directory, 'security'), { recursive: true });
   const currentResolved = RESOLVED.replace('1.0.0', currentVersion);
@@ -25,7 +26,7 @@ function fixture({ publishedAt = '2026-07-01T00:00:00.000Z', currentVersion = '1
   writeFileSync(join(directory, 'security/dependency-policy.json'), JSON.stringify({
     schema: 'motif.dependency-policy.v1',
     registry: 'https://registry.npmjs.org/',
-    coolingOffDays: 7,
+    coolingOffDays: coolingOffDays === OMIT ? undefined : coolingOffDays,
     coolingOffExceptions: exceptions,
     directDependenciesMustBeExact: true,
     allowedLifecycleScripts: {},
@@ -143,13 +144,80 @@ describe('dependency cooling-off policy', () => {
     rmSync(fixtureData.directory, { recursive: true, force: true });
   });
 
-  it('rejects a changed dependency younger than seven days', async () => {
+  it('rejects a changed dependency younger than a configured seven-day window', async () => {
     const fixtureData = fixture({ publishedAt: '2026-08-06T00:00:00.000Z' });
     await expect(checkDependencyCoolingOff(fixtureData.directory, {
       baseLockfileText: fixtureData.baseline,
       now: NOW,
       fetchImpl: fetchFrom(fixtureData.metadata),
     })).rejects.toThrow(/only 2\.00 days old/);
+    rmSync(fixtureData.directory, { recursive: true, force: true });
+  });
+
+  it('accepts a changed dependency of any age when the policy sets no waiting period', async () => {
+    const fixtureData = fixture({ coolingOffDays: 0, publishedAt: '2026-08-07T23:59:00.000Z' });
+    await expect(checkDependencyCoolingOff(fixtureData.directory, {
+      baseLockfileText: fixtureData.baseline,
+      now: NOW,
+      fetchImpl: fetchFrom(fixtureData.metadata),
+    })).resolves.toMatchObject({ coolingOffDays: 0, changedPackageCount: 1, checked: [{ identity: 'reviewed-package@1.0.0', exception: false }] });
+    rmSync(fixtureData.directory, { recursive: true, force: true });
+  });
+
+  it('still rejects a future publish timestamp, a tarball mismatch, and an expired exception with no waiting period', async () => {
+    const future = fixture({ coolingOffDays: 0, publishedAt: '2026-08-09T00:00:00.000Z' });
+    await expect(checkDependencyCoolingOff(future.directory, {
+      baseLockfileText: future.baseline,
+      now: NOW,
+      fetchImpl: fetchFrom(future.metadata),
+    })).rejects.toThrow(/future/);
+    rmSync(future.directory, { recursive: true, force: true });
+
+    const tampered = fixture({ coolingOffDays: 0 });
+    const metadata = JSON.parse(tampered.metadata);
+    metadata.versions['1.0.0'].dist.tarball = 'https://registry.npmjs.org/reviewed-package/-/wrong.tgz';
+    await expect(checkDependencyCoolingOff(tampered.directory, {
+      baseLockfileText: tampered.baseline,
+      now: NOW,
+      fetchImpl: fetchFrom(JSON.stringify(metadata)),
+    })).rejects.toThrow(/tarball mismatch/);
+    rmSync(tampered.directory, { recursive: true, force: true });
+
+    const expired = fixture({
+      coolingOffDays: 0,
+      exceptions: [{ name: 'reviewed-package', version: '1.0.0', rationale: 'urgent security repair', reviewer: 'security-team', expiresAt: '2026-08-07T23:59:59.000Z' }],
+    });
+    await expect(checkDependencyCoolingOff(expired.directory, {
+      baseLockfileText: expired.baseline,
+      now: NOW,
+      fetchImpl: fetchFrom(expired.metadata),
+    })).rejects.toThrow(/expired/);
+    rmSync(expired.directory, { recursive: true, force: true });
+  });
+
+  it('still enforces a raised window, so the number can be increased again', async () => {
+    const fixtureData = fixture({ coolingOffDays: 30, publishedAt: '2026-07-20T00:00:00.000Z' });
+    await expect(checkDependencyCoolingOff(fixtureData.directory, {
+      baseLockfileText: fixtureData.baseline,
+      now: NOW,
+      fetchImpl: fetchFrom(fixtureData.metadata),
+    })).rejects.toThrow(/only 19\.00 days old; cooling-off requires 30 days/);
+    rmSync(fixtureData.directory, { recursive: true, force: true });
+  });
+
+  it.each([
+    ['missing', OMIT],
+    ['null', null],
+    ['a string', '0'],
+    ['negative', -1],
+    ['a boolean', false],
+  ])('fails closed when coolingOffDays is %s', async (_label, coolingOffDays) => {
+    const fixtureData = fixture({ coolingOffDays });
+    await expect(checkDependencyCoolingOff(fixtureData.directory, {
+      baseLockfileText: fixtureData.baseline,
+      now: NOW,
+      fetchImpl: fetchFrom(fixtureData.metadata),
+    })).rejects.toThrow(/coolingOffDays must be a finite number/);
     rmSync(fixtureData.directory, { recursive: true, force: true });
   });
 
@@ -304,6 +372,25 @@ describe('dependency cooling-off policy', () => {
     rmSync(fixtureData.directory, { recursive: true, force: true });
   });
 
+  it.each([false, true])('validates every lock path when a repeated version has inconsistent identity (%s)', async invalidFirst => {
+    const data = fixture({ coolingOffDays: 0 });
+    const path = join(data.directory, 'package-lock.json');
+    const lock = JSON.parse(readFileSync(path, 'utf8'));
+    const original = lock.packages['node_modules/reviewed-package'];
+    const altered = { ...original, integrity: 'sha512-BBBB=' };
+    lock.packages['node_modules/reviewed-package'] = invalidFirst ? altered : original;
+    lock.packages['node_modules/other/node_modules/reviewed-package'] = invalidFirst ? original : altered;
+    writeFileSync(path, JSON.stringify(lock));
+    try {
+      await expect(checkDependencyCoolingOff(data.directory, {
+        now: NOW,
+        baseLockfileText: data.baseline,
+        fetchImpl: fetchFrom(data.metadata),
+      })).rejects.toThrow(/Registry integrity mismatch/u);
+    } finally {
+      rmSync(data.directory, { recursive: true, force: true });
+    }
+  });
   it('does not make registry requests when the lockfile has no changed entries', async () => {
     const fixtureData = fixture();
     let calls = 0;

@@ -10,8 +10,8 @@ import {
 } from 'react';
 import type { Topology } from '../bio/types';
 import {
-  GOLDEN_GATE_FIDELITY_CONDITIONS,
-  GOLDEN_GATE_FIDELITY_DATASETS,
+  getGoldenGateFidelityConditions,
+  getGoldenGateFidelityDatasets,
 } from '../bio/golden-gate-fidelity';
 import {
   createArtifactAssemblyArtifacts,
@@ -227,7 +227,7 @@ export function ClaudeScienceAssemblyWorkspace({
   }), [orderedParts, recordsById]);
   const topology = topologies[mode];
   const fidelityCondition = fidelityDatasetId
-    ? GOLDEN_GATE_FIDELITY_CONDITIONS[fidelityDatasetId] ?? null
+    ? getGoldenGateFidelityConditions()[fidelityDatasetId] ?? null
     : undefined;
 
   const plan = useMemo<ArtifactAssemblyPlan>(() => {
@@ -448,10 +448,7 @@ export function ClaudeScienceAssemblyWorkspace({
         onKeyDown={embedded ? undefined : handleWorkspaceKeyDown}
       >
         {embedded ? null : <header className="motif-cs-assembly-header">
-          <div>
-            <span className="motif-cs-kicker">Cloning</span>
-            <h2 id={titleId}>Assembly workspace</h2>
-          </div>
+          <h2 id={titleId}>Assembly</h2>
           <button
             ref={closeRef}
             className="motif-cs-window-icon motif-cs-window-close"
@@ -493,7 +490,7 @@ export function ClaudeScienceAssemblyWorkspace({
             onClick={() => setMode('ligation')}
             onKeyDown={(event) => handleModeTabKeyDown(event, 'ligation')}
           >
-            Traditional ligation
+            Ligation
           </button>
         </div>
 
@@ -506,18 +503,15 @@ export function ClaudeScienceAssemblyWorkspace({
           <div className="motif-cs-assembly-main">
             <section className="motif-cs-assembly-section" aria-labelledby={`${tabPanelId}-parts-heading`}>
               <div className="motif-cs-assembly-section-heading">
-                <div>
-                  <span className="motif-cs-kicker">Ordered inputs</span>
-                  <h3 id={`${tabPanelId}-parts-heading`}>Parts</h3>
-                </div>
+                <h3 id={`${tabPanelId}-parts-heading`}>Parts</h3>
                 <span>{orderedParts.length} selected</span>
               </div>
               <p id={partInstructionsId} className="motif-cs-assembly-hint">
-                Order defines the intended junctions. Use the arrow controls, or Alt+↑ and Alt+↓ on a row.
+                Order sets junctions. Move parts with buttons or Alt+↑/↓.
               </p>
               <div className="motif-cs-assembly-part-list" role="list" data-testid="assembly-part-list">
                 {orderedParts.length === 0 ? (
-                  <div className="motif-cs-assembly-empty">Add at least two DNA records to evaluate an assembly.</div>
+                  <div className="motif-cs-assembly-empty">Add two DNA parts.</div>
                 ) : orderedParts.map((part, index) => {
                   const record = recordsById.get(part.recordId);
                   const goldenGatePart = goldenGateParts[index];
@@ -563,7 +557,7 @@ export function ClaudeScienceAssemblyWorkspace({
                           onClick={() => movePart(index, -1)}
                           disabled={index === 0}
                         >
-                          <span aria-hidden="true">↑</span>
+                          Up
                         </button>
                         <button
                           type="button"
@@ -571,10 +565,10 @@ export function ClaudeScienceAssemblyWorkspace({
                           onClick={() => movePart(index, 1)}
                           disabled={index === orderedParts.length - 1}
                         >
-                          <span aria-hidden="true">↓</span>
+                          Down
                         </button>
                         <button type="button" aria-label={`Remove ${record.name}`} onClick={() => removePart(part.key)}>
-                          <span aria-hidden="true">×</span>
+                          Remove
                         </button>
                       </div>
                     </div>
@@ -608,14 +602,11 @@ export function ClaudeScienceAssemblyWorkspace({
 
             <section className="motif-cs-assembly-section" aria-labelledby={`${tabPanelId}-junctions-heading`}>
               <div className="motif-cs-assembly-section-heading">
-                <div>
-                  <span className="motif-cs-kicker">Predicted chemistry</span>
-                  <h3 id={`${tabPanelId}-junctions-heading`}>Junctions</h3>
-                </div>
+                <h3 id={`${tabPanelId}-junctions-heading`}>Junctions</h3>
                 <span>{plan.junctions.length}</span>
               </div>
               {plan.junctions.length === 0 ? (
-                <div className="motif-cs-assembly-empty">Add a second part to inspect junction compatibility.</div>
+                <div className="motif-cs-assembly-empty">Add a second part to check junctions.</div>
               ) : (
                 <div className="motif-cs-assembly-table-wrap">
                   <table className="motif-cs-assembly-junction-table" data-testid="assembly-junction-table">
@@ -655,7 +646,6 @@ export function ClaudeScienceAssemblyWorkspace({
 
           <aside className="motif-cs-assembly-sidebar" aria-label="Assembly settings and validation">
             <section className="motif-cs-assembly-settings">
-              <span className="motif-cs-kicker">Settings</span>
               {mode === 'golden_gate' ? (
                 <>
                   <label className="motif-cs-assembly-field">
@@ -665,14 +655,14 @@ export function ClaudeScienceAssemblyWorkspace({
                     </select>
                   </label>
                   <label className="motif-cs-assembly-field">
-                    <span>Empirical ligation condition</span>
+                    <span>Ligation condition</span>
                     <select
                       value={fidelityDatasetId}
                       onChange={(event) => setFidelityDatasetId(event.target.value)}
                       data-testid="assembly-fidelity-condition"
                     >
                       <option value="">Not selected — report unknown</option>
-                      {GOLDEN_GATE_FIDELITY_DATASETS.map((dataset) => (
+                      {getGoldenGateFidelityDatasets().map((dataset) => (
                         <option key={dataset.id} value={dataset.id}>
                           {dataset.condition.enzyme} · {dataset.provenance.table}
                         </option>
@@ -680,12 +670,12 @@ export function ClaudeScienceAssemblyWorkspace({
                     </select>
                   </label>
                   <p className="motif-cs-assembly-enzyme-detail">
-                    Scores are available only for an exact published enzyme, ligase, buffer, concentration, and cycling condition.
+                    Scores need an exact published enzyme, ligase, buffer, and cycling condition.
                   </p>
                 </>
               ) : null}
               <fieldset className="motif-cs-assembly-topology">
-                <legend>Product topology</legend>
+                <legend>Topology</legend>
                 <div className="motif-cs-segmented">
                   {(['linear', 'circular'] as const).map((value) => (
                     <button
@@ -709,7 +699,6 @@ export function ClaudeScienceAssemblyWorkspace({
 
             <section className="motif-cs-assembly-validation" aria-labelledby={`${tabPanelId}-validation-heading`}>
               <div className="motif-cs-assembly-plan-state" data-state={plan.status} data-testid="assembly-plan-status">
-                <span className="motif-cs-kicker">Validation</span>
                 <strong id={`${tabPanelId}-validation-heading`}>
                   {plan.status === 'ready'
                     ? plan.kind === 'ligation' ? 'Ends support this order' : 'Ready to save'
@@ -751,13 +740,13 @@ export function ClaudeScienceAssemblyWorkspace({
               ) : null}
               {mode === 'golden_gate' && plan.kind === 'golden_gate' ? (
                 <div className="motif-cs-assembly-fidelity" data-state={plan.fidelity.status} role="note" data-testid="assembly-fidelity-receipt">
-                  <strong>Empirical ligation fidelity</strong>
+                  <strong>Ligation fidelity</strong>
                   <span>
                     {plan.fidelity.assembly.estimatedFidelity === null
                       ? plan.fidelity.status === 'unknown'
-                        ? 'Unknown — select an exact published condition to evaluate.'
-                        : `${plan.fidelity.status[0].toUpperCase()}${plan.fidelity.status.slice(1)} — no complete empirical estimate.`
-                      : `${(plan.fidelity.assembly.estimatedFidelity * 100).toFixed(1)}% estimated whole-assembly fidelity (${Math.round(plan.fidelity.assembly.coverage * 100)}% junction coverage).`}
+                        ? 'Select a matching published condition.'
+                        : `${plan.fidelity.status[0].toUpperCase()}${plan.fidelity.status.slice(1)} · estimate incomplete.`
+                      : `Estimated fidelity ${(plan.fidelity.assembly.estimatedFidelity * 100).toFixed(1)}% · junction coverage ${Math.round(plan.fidelity.assembly.coverage * 100)}%.`}
                   </span>
                   {plan.fidelity.provenance ? (
                     <small>
@@ -832,7 +821,7 @@ export function ClaudeScienceAssemblyWorkspace({
             </button>
           </div>
           <p className="motif-cs-assembly-save-error" role="alert" data-empty={!saveError || undefined}>{saveError}</p>
-          <p className="motif-cs-assembly-live-status" role="status" aria-live="polite" data-empty={!status || undefined}>{status}</p>
+          <p className="motif-cs-assembly-live-status" role="status" aria-live="polite" data-empty={!status || undefined} data-quiet={!/\bsaved\b/.test(status) || undefined}>{status}</p>
         </footer>
       </section>
     </div>

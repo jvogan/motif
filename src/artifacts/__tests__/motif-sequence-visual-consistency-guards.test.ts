@@ -106,149 +106,114 @@ function deltaE(a: Rgb, b: Rgb): number {
 /**
  * Floor on how far a 24% feature fill sits from the sequence surface in CIELAB.
  *
- * It exists because the block no longer carries an outline: a clip-path was
- * cutting the border off both diagonals of every arrowhead, so the edge is gone
- * and the fill is what draws the shape. Across the four themes and the shipped
- * pUC19 palette the fills measure dE 15.12 to 31.25; 10 sits under the weakest
- * with room for a palette tweak and far above the ~2.3 a reader can just detect.
+ * The block carries no outline: a clip-path would cut a border off both diagonals
+ * of every arrowhead, so the fill is what draws the shape. Across both themes and
+ * the shipped pUC19 palette 10 sits under the weakest fill with room for a palette
+ * tweak and far above the ~2.3 a reader can just detect.
  *
- * The assertion this replaces recomputed the removed border's colour from the
- * theme tokens and checked it cleared 3:1. It never read the stylesheet, so it
- * would have gone on passing about a colour nothing paints.
+ * The guard reads the fills the stylesheet paints. It does not recompute a border
+ * colour from the theme tokens, which would pass about a colour nothing paints.
  */
 const MIN_FEATURE_FILL_DELTA_E = 10;
 
 describe('Sequence visual consistency guards', () => {
-  it('uses one metric grid for Sequence toggles and actions', () => {
-    const metrics = cssBlock([
-      '.motif-cs-sequence-panel .motif-cs-edit-toolbar .motif-cs-segmented button,',
-      '.motif-cs-sequence-panel .motif-cs-edit-toolbar .motif-cs-display-switch,',
-      '.motif-cs-sequence-panel .motif-cs-selection-actions .motif-cs-mini-button',
-    ].join('\n'));
-
-    expect(metrics).toMatch(/height:\s*26px/);
-    expect(metrics).toMatch(/min-height:\s*26px/);
-    expect(metrics).toMatch(/padding:\s*0 8px/);
-    expect(metrics).toMatch(/border-width:\s*1px/);
-    expect(metrics).toMatch(/border-radius:\s*var\(--radius-sm\)/);
-    expect(metrics).toMatch(/font-size:\s*12px/);
-    expect(metrics).toMatch(/font-weight:\s*700/);
-  });
-
-  it('gives every idle selection action the same complete rectangle', () => {
-    const disabled = cssBlock('.motif-cs-selection-bar[data-empty] .motif-cs-selection-actions .motif-cs-mini-button:disabled');
-    const weight = /border-color:\s*color-mix\(in srgb, var\(--border-control\) (\d+)%, transparent\)/.exec(disabled);
-    expect(weight, 'idle border weight').not.toBeNull();
-    // Present but subordinate. The live edge is this same token at 100%, and above
-    // 70% the four idle actions start competing with the two available ones again.
-    expect(Number(weight![1])).toBeGreaterThanOrEqual(40);
-    expect(Number(weight![1])).toBeLessThan(70);
-    expect(disabled).toMatch(/background:\s*var\(--control-bg\)/);
-    expect(disabled).toMatch(/color:\s*var\(--text-muted\)/);
-    expect(disabled).toMatch(/opacity:\s*1/);
-    expect(disabled).not.toMatch(/border-color:\s*transparent/);
-    expect(disabled).not.toMatch(/display:\s*none/);
-  });
-
-  it('sizes the action strip from the metric grid that sizes its buttons', () => {
-    const metrics = cssBlock([
-      '.motif-cs-sequence-panel .motif-cs-edit-toolbar .motif-cs-segmented button,',
-      '.motif-cs-sequence-panel .motif-cs-edit-toolbar .motif-cs-display-switch,',
-      '.motif-cs-sequence-panel .motif-cs-selection-actions .motif-cs-mini-button',
-    ].join('\n'));
-    // Read the button height out of the grid that sets it. A hardcoded 26 here
-    // would go on passing after the grid moved and the strip did not, which is
-    // how a 24px strip came to clip 2px off the bottom border of every button.
-    const buttonHeight = /height:\s*(\d+)px/.exec(metrics);
-    expect(buttonHeight, 'metric grid height').not.toBeNull();
-
-    const base = cssBlock('.motif-cs-selection-actions');
-    const clipPad = /padding-block:\s*(\d+)px/.exec(base);
-    expect(clipPad, 'strip clip padding').not.toBeNull();
-
-    for (const anchor of [
-      '@container (max-width: 400px)',
-      '@container (max-width: 360px)',
-    ]) {
-      const strip = cssBlockAfter(anchor, '.motif-cs-selection-actions');
-      const basis = /flex:\s*0 0 (\d+)px/.exec(strip);
-      expect(basis, `strip flex-basis under ${anchor}`).not.toBeNull();
-      // border-box, so the basis has to hold the button and both clip margins.
-      expect(
-        Number(basis![1]) - 2 * Number(clipPad![1]),
-        `strip content height under ${anchor}`,
-      ).toBeGreaterThanOrEqual(Number(buttonHeight![1]));
+  it('uses the 28px small-control height for every Sequence toggle and action', () => {
+    const toolbar = cssBlock('.motif-cs-sequence-panel .motif-cs-edit-toolbar button');
+    const actions = cssBlock('.motif-cs-sequence-panel .motif-cs-selection-actions .motif-cs-mini-button');
+    for (const metrics of [toolbar, actions]) {
+      expect(metrics).toMatch(/height:\s*var\(--control-h-sm\)/);
+      expect(metrics).toMatch(/min-height:\s*var\(--control-h-sm\)/);
+      expect(metrics).toMatch(/padding:\s*0 var\(--space-2\)/);
+      expect(metrics).toMatch(/border-radius:\s*var\(--radius-sm\)/);
+      expect(metrics).toMatch(/font-size:\s*var\(--fs-sm\)/);
+      expect(metrics).toMatch(/font-weight:\s*500/);
     }
+    // The options of a segmented group in the edit toolbar fill the whole group.
+    const options = cssBlock('.motif-cs-sequence-panel .motif-cs-edit-toolbar .motif-cs-segmented button');
+    expect(options).toMatch(/height:\s*var\(--control-h-sm\)/);
+    expect(options).toMatch(/min-height:\s*var\(--control-h-sm\)/);
+    const group = cssBlock('.motif-cs-edit-toolbar .motif-cs-segmented');
+    expect(group).toMatch(/padding:\s*0;/);
+    // One control height, 28, for the group AND each option: the group's 1px edge is an
+    // inset shadow that takes no layout space, so the options fill the full 28px.
+    expect(group).toMatch(/border:\s*0;/);
+    expect(group).toMatch(/box-shadow:\s*inset 0 0 0 1px var\(--border-strong\);/);
+    expect(group).not.toMatch(/(^|[\s;])(min-|max-)?height:/);
+    expect(Number(/--control-h-sm:\s*(\d+)px;/.exec(artifactCss)?.[1])).toBe(28);
+    // The on fill stops inside the option's clear 1px edge, so it never covers the group's edge.
+    expect(cssBlock('html[data-theme] .motif-cs-edit-toolbar .motif-cs-segmented > button[data-active]')).toMatch(/background-clip:\s*padding-box;/);
+    const shape = cssBlock('.motif-cs-map-toolbar .motif-cs-map-shape');
+    expect(shape).toMatch(/height:\s*28px;/);
+    expect(shape).toMatch(/border:\s*0;/);
+    expect(shape).toMatch(/box-shadow:\s*inset 0 0 0 1px var\(--border-strong\);/);
+    const segment = cssBlock('.motif-cs-map-toolbar .motif-cs-map-shape > button');
+    expect(segment).toMatch(/height:\s*28px;/);
+    expect(segment).toMatch(/min-height:\s*28px;/);
+    expect(segment).toMatch(/border:\s*1px solid transparent;/);
+    // Forced colours drop the shadow; a system-colour outline drawn inside keeps the edge.
+    expect(artifactCss).toMatch(/@media \(forced-colors: active\) \{\s*\.motif-cs-edit-toolbar \.motif-cs-segmented,\s*\.motif-cs-map-toolbar \.motif-cs-map-shape \{\s*outline: 1px solid CanvasText;\s*outline-offset: -1px;/);
   });
 
-  it('leaves the action strip enough clip for the shared focus ring', () => {
-    const ring = cssBlock([
-      '.motif-cs-window-icon:focus-visible,',
-      'summary.motif-cs-panel-head:focus-visible',
-    ].join('\n'));
-    const width = /outline:\s*(\d+)px/.exec(ring);
-    const offset = /outline-offset:\s*(\d+)px/.exec(ring);
-    expect(width, 'focus outline width').not.toBeNull();
-    expect(offset, 'focus outline offset').not.toBeNull();
-
-    const base = cssBlock('.motif-cs-selection-actions');
-    const pad = /padding-block:\s*(\d+)px/.exec(base);
-    const pull = /margin-block:\s*-(\d+)px/.exec(base);
-    expect(pad, 'strip clip padding').not.toBeNull();
-    expect(pull, 'strip clip pullback').not.toBeNull();
-
-    // The outermost 1px of the ring may fall outside the clip: measured on the
-    // built artifact, 3px of clip against a 2px outline at a 2px offset leaves
-    // the ring at 5.20-6.51:1 on all four sides in all four themes.
-    expect(Number(pad![1])).toBeGreaterThanOrEqual(Number(width![1]) + Number(offset![1]) - 1);
-    // The pullback has to match the padding, or the strip changes the bar's height.
-    expect(Number(pull![1])).toBe(Number(pad![1]));
+  it('leaves the toolbar flat: no box around a toggle until it is hovered', () => {
+    const toolbar = cssBlock('.motif-cs-sequence-panel .motif-cs-edit-toolbar button');
+    expect(toolbar).toMatch(/border:\s*1px solid transparent/);
+    expect(toolbar).toMatch(/background:\s*transparent/);
+    // A switch reads "on" from its track and a heavier label. Its fill stays
+    // transparent in every theme, because the per-theme active fill would
+    // otherwise paint --accent-contrast white on the pane.
+    const on = cssBlock('.motif-cs-sequence-panel .motif-cs-edit-toolbar .motif-cs-display-switch[data-active="true"]');
+    expect(on).toMatch(/background:\s*transparent/);
+    expect(on).toMatch(/border-color:\s*transparent/);
+    expect(on).toMatch(/color:\s*var\(--text-primary\)/);
+    expect(on).toMatch(/font-weight:\s*600/);
+    // Keyboard focus keeps a visible ring on every toolbar button.
+    expect(cssBlock('.motif-cs-sequence-panel .motif-cs-edit-toolbar button:focus-visible')).toMatch(/outline:\s*2px solid var\(--focus-ring\)/);
   });
 
-  it('uses complete compact labels instead of fragments', () => {
+  it('shows one hint while nothing is selected and keeps one row height', () => {
+    // Copy and Add feature stay in place without a selection, disabled, so a
+    // selection never shifts the dock; no rule hides a dock control by state.
+    expect(artifactCss).not.toContain('.motif-cs-selection-bar[data-empty] .motif-cs-selection-actions > .motif-cs-mini-button');
+    expect(cssBlock('.motif-cs-selection-bar')).toMatch(/min-height:\s*32px/);
+    const hint = cssBlock('.motif-cs-selection-bar[data-empty] .motif-cs-selection-name');
+    expect(hint).toMatch(/color:\s*var\(--text-secondary\)/);
+    expect(hint).toMatch(/font-weight:\s*400/);
+    // The length is part of the one readout ("1–38 · 38 bp"), not a second chip.
+    expect(artifactCss).not.toContain('.motif-cs-selection-label .motif-cs-chip');
+    // The readout fills its slot whatever it says, and its digits keep one width
+    // while a drag changes them.
+    expect(/\n\.motif-cs-selection-name \{([^}]*)\}/.exec(artifactCss)?.[1]).toMatch(/flex:\s*1 1 auto/);
+    expect(cssBlock('.motif-cs-selection-label')).toMatch(/font-variant-numeric:\s*tabular-nums/);
+  });
+
+  it('keeps every selection action reachable at every width without a scroller', () => {
+    const bar = cssBlock('.motif-cs-selection-bar');
+    expect(bar).toMatch(/display:\s*flex/);
+    expect(bar).toMatch(/flex-wrap:\s*wrap/);
+    // The bare selector also ends the empty-bar rule, so match the rule that opens a line.
+    const actions = /\n\.motif-cs-selection-actions \{([^}]*)\}/.exec(artifactCss)?.[1] ?? '';
+    expect(actions, 'missing .motif-cs-selection-actions rule').not.toBe('');
+    expect(actions).toMatch(/display:\s*flex/);
+    expect(actions).toMatch(/flex:\s*0 0 auto/);
+    expect(actions).not.toMatch(/overflow/);
+    // The readout gives way first, so a long feature name never pushes Create away.
+    const label = cssBlock('.motif-cs-selection-label');
+    expect(label).toMatch(/flex:\s*1 1 8ch/);
+    expect(label).toMatch(/min-width:\s*0/);
+    expect(/\n\.motif-cs-selection-name \{([^}]*)\}/.exec(artifactCss)?.[1]).toMatch(/text-overflow:\s*ellipsis/);
+  });
+
+  it('uses complete labels instead of fragments', () => {
     expect(artifactCss).toMatch(/@media \(max-width: 960px\)[\s\S]*?\.motif-cs-map-title-full\s*\{[\s\S]*?display:\s*none[\s\S]*?\.motif-cs-map-title-compact\s*\{[\s\S]*?display:\s*inline/);
-    // The Sequence pane no longer swaps to fragments anywhere: its three dock
-    // actions fit at every width, and the four that did not live in Create in
-    // full words. "Add AA / Primers / + RC / + Prot" painted at every
-    // side-by-side window from 1560 to 2150px wide.
+    // The Sequence pane never swaps to fragments: three dock actions fit at every
+    // width, and the rest live in Create in full words.
     expect(artifactCss).not.toContain('.motif-cs-label-short');
     expect(artifactCss).not.toContain('.motif-cs-label-full');
   });
 
-  it('keeps every selection action reachable across the compact-width handoffs', () => {
-    const actions = cssBlock('.motif-cs-selection-actions');
-    expect(actions).toMatch(/display:\s*flex/);
-    expect(actions).toMatch(/flex-wrap:\s*nowrap/);
-    expect(actions).toMatch(/min-width:\s*0/);
-    expect(actions).toMatch(/overflow-x:\s*auto/);
-    expect(actions).toMatch(/overflow-y:\s*hidden/);
-    expect(actions).toMatch(/scroll-padding-inline:\s*3px/);
-    expect(actions).toMatch(/scrollbar-width:\s*thin/);
-    expect(actions).toMatch(/scrollbar-color:/);
-    expect(cssBlock('.motif-cs-selection-actions .motif-cs-mini-button'))
-      .toMatch(/scroll-margin-inline:\s*3px/);
-
-    const twoLineActions = cssBlockAfter('@container (max-width: 400px)', '.motif-cs-selection-actions');
-    expect(twoLineActions).toMatch(/width:\s*100%/);
-    expect(twoLineActions).toMatch(/max-width:\s*none/);
-    expect(twoLineActions).toMatch(/flex-wrap:\s*nowrap/);
-
-    const narrowActions = cssBlockAfter('@container (max-width: 360px)', '.motif-cs-selection-actions');
-    expect(narrowActions).toMatch(/overflow-x:\s*auto/);
-    expect(narrowActions).toMatch(/overflow-y:\s*hidden/);
-    expect(narrowActions).toMatch(/flex-wrap:\s*nowrap/);
-
-    const finalNarrowInset = cssBlockAfter(
-      '/* The shared 520px metric rule above follows the 360px shorthand-label rule in',
-      '.motif-cs-sequence-panel .motif-cs-selection-actions .motif-cs-mini-button',
-    );
-    expect(finalNarrowInset).toMatch(/padding-inline:\s*3px/);
-  });
-
   it('keeps Sequence annotations above their text and non-text contrast floors in every theme', () => {
     // Read the weight out of the rule rather than restating it. A hardcoded 0.24
-    // here would go on testing a fill the stylesheet had stopped painting — the
-    // same way the removed border assertion did.
+    // here would go on testing a fill the stylesheet may no longer paint.
     const fillDeclaration = cssBlockAfter('.motif-cs-feature-track-lane', '.motif-cs-feature-block');
     const weightMatch = /background:\s*color-mix\(in srgb, var\(--feature-color\) (\d+)%/.exec(fillDeclaration);
     expect(weightMatch, 'feature fill weight').not.toBeNull();
@@ -257,24 +222,27 @@ describe('Sequence visual consistency guards', () => {
     const themes = [
       cssBlock(':root,\nhtml[data-theme="light"]'),
       cssBlock('html[data-theme="dark"]'),
-      cssBlock('html[data-theme="claude-light"]'),
-      cssBlock('html[data-theme="claude-dark"]'),
     ].map((block) => ({
       background: rgb(cssVariable(block, '--bg-primary')),
       secondary: rgb(cssVariable(block, '--bg-secondary')),
       primaryText: rgb(cssVariable(block, '--text-primary')),
       mutedText: rgb(cssVariable(block, '--text-muted')),
       amber: rgb(cssVariable(block, '--amber')),
-      subtleBorder: rgb(cssVariable(block, '--border-subtle')),
     }));
     const featureColors = [...new Set(vectors.find((record) => record.name === 'pUC19')!.features.map((feature) => feature.color))]
       .map(rgb);
+    // The underline is what marks a label as a button, so it is held to the text floor, and its weight
+    // is read out of the rule rather than restated.
+    const underline = /border-bottom:\s*1px solid color-mix\(in srgb, var\(--amber\) (\d+)%, var\(--bg-primary\)\)/
+      .exec(cssBlock('.motif-cs-restriction-label'));
+    expect(underline, 'enzyme underline declaration').not.toBeNull();
+    const underlineWeight = Number(underline![1]) / 100;
 
     for (const theme of themes) {
       const emptyBar = mix(theme.background, theme.secondary, 0.94);
       expect(contrast(theme.mutedText, emptyBar), 'disabled text fell below 3:1').toBeGreaterThanOrEqual(3);
       expect(contrast(theme.mutedText, theme.background), 'enzyme label text fell below 4.5:1').toBeGreaterThanOrEqual(4.5);
-      expect(contrast(mix(theme.amber, theme.subtleBorder, 0.62), theme.background), 'enzyme underline fell below 3:1').toBeGreaterThanOrEqual(3);
+      expect(contrast(mix(theme.amber, theme.background, underlineWeight), theme.background), 'enzyme underline fell below 4.5:1').toBeGreaterThanOrEqual(4.5);
 
       for (const featureColor of featureColors) {
         const fill = mix(featureColor, theme.background, featureFillWeight);
@@ -285,25 +253,29 @@ describe('Sequence visual consistency guards', () => {
     }
   });
 
-  it('gives the active pane nav one neutral grammar in every theme', () => {
-    // It had two: light and dark took no pill and coloured only the ICON with
-    // the accent, while the claude themes took a solid --accent-base fill with
-    // --accent-contrast on label and icon. Same control, same state, two
-    // languages. The reference discipline puts a grey pill on an active nav and
-    // reserves the accent for links, primary buttons, real toggles, focus rings
-    // and text selection. Composited: the pill measures 1.19-1.28:1 against its
-    // bar in the four themes, the active label 11.08-16.01:1 on the pill, and
-    // the resting label 5.33-7.73:1 on the bar.
+  it('gives every top-bar toggle one on/off grammar in every theme', () => {
+    // One grammar for every theme: no outline (the 1px stays, transparent), off is
+    // secondary text with a muted icon, on is the one --bg-active fill (neutral)
+    // with primary text and a primary icon. Two cues, so on and off differ by more
+    // than the fill's 1.1:1. Not a solid accent block, and the weight does not
+    // change, because a bolder label is wider and would move the row. A grey pill
+    // on a borderless label would make the panes read as tabs and an off pane
+    // ("Records") as plain text.
+    const base = cssBlock('.motif-cs-pane-toggle');
+    expect(base).toContain('border: 1px solid transparent');
+    expect(base).toContain('background: transparent');
+    expect(base).toContain('color: var(--text-secondary)');
     const active = cssBlock('.motif-cs-pane-toggle[data-active="true"]');
-    expect(active).toContain('background: color-mix(in srgb, var(--text-primary) 9%, transparent)');
+    expect(active).toContain('background-color: var(--bg-active)');
+    expect(active).toContain('border-color: transparent');
+    expect(active).toContain('box-shadow: none');
+    expect(active).toContain('color: var(--text-primary)');
     expect(active).not.toMatch(/background:\s*var\(--accent/);
-    expect(cssBlock('.motif-cs-pane-toggle[data-active="true"] .motif-cs-nav-icon')).toContain('color: inherit');
+    expect(active).not.toMatch(/font-weight/);
+    expect(cssBlock('.motif-cs-pane-toggle[data-active="true"] .motif-cs-nav-icon')).toContain('color: var(--text-primary)');
 
     // No per-theme copy may reintroduce the accent fill or the accent icon.
-    for (const theme of ['claude-light', 'claude-dark']) {
-      expect(artifactCss).not.toContain(`html[data-theme="${theme}"] .motif-cs-pane-toggle[data-active="true"]`);
-      expect(artifactCss).not.toContain(`html[data-theme="${theme}"] .motif-cs-window-toggle[data-active="true"]`);
-    }
+    expect(artifactCss).not.toMatch(/html\[data-theme="[a-z-]+"\] \.motif-cs-(pane|window)-toggle\[data-active="true"\]/);
   });
 
   it('leaves the clip-path arrowhead unoutlined on all four sides', () => {
@@ -339,10 +311,10 @@ describe('Sequence visual consistency guards', () => {
   });
 
   it('draws focus inside the arrowhead, the panel summaries and the record tabs, where an outer ring is cut', () => {
-    // The clip-path above cut the shared 2px-outside outline too: a focused
-    // arrowhead painted only its hover tint (0 of 46 tab stops on a headed block
-    // showed a ring). `details.motif-cs-panel` clips its summary's outline, and
-    // the record tab strip clips a tab's. Each now draws its ring inside.
+    // The clip-path above cuts the shared 2px-outside outline too: a focused
+    // arrowhead would paint only its hover tint. `details.motif-cs-panel` clips
+    // its summary's outline, and the record tab strip clips a tab's. Each draws
+    // its ring inside.
     const head = cssBlock('.motif-cs-feature-block[data-head="true"]:focus-visible');
     expect(head).toMatch(/inset 0 0 0 2px var\(--focus-ring\)/);
     expect(head).toMatch(/inset 0 0 0 3px var\(--bg-primary\)/);
@@ -352,7 +324,7 @@ describe('Sequence visual consistency guards', () => {
     expect(shared).toBeGreaterThanOrEqual(0);
     expect(artifactCss.indexOf('.motif-cs-feature-block[data-head="true"]:focus-visible {')).toBeGreaterThan(shared);
 
-    // The shell-wide `#root :focus-visible` (1,1,0) sets outline-offset: 2px, so
+    // The shell-wide `#root :focus-visible` (1,1,0) sets the outline offset, so
     // only a #root-scoped rule can move these rings inward.
     const inset = cssBlock('#root summary.motif-cs-panel-head:focus-visible,\n#root .motif-cs-record-tab:focus-visible');
     expect(inset).toMatch(/outline-offset:\s*-2px/);
@@ -366,8 +338,6 @@ describe('Sequence visual consistency guards', () => {
     for (const block of [
       cssBlock(':root,\nhtml[data-theme="light"]'),
       cssBlock('html[data-theme="dark"]'),
-      cssBlock('html[data-theme="claude-light"]'),
-      cssBlock('html[data-theme="claude-dark"]'),
     ]) {
       const background = rgb(cssVariable(block, '--bg-primary'));
       const ringHex = /--focus-ring:\s*(#[0-9a-f]{6})/i.exec(block)?.[1] ?? cssVariable(block, '--accent');
@@ -394,8 +364,6 @@ describe('Sequence visual consistency guards', () => {
     const themes = [
       cssBlock(':root,\nhtml[data-theme="light"]'),
       cssBlock('html[data-theme="dark"]'),
-      cssBlock('html[data-theme="claude-light"]'),
-      cssBlock('html[data-theme="claude-dark"]'),
     ].map((theme) => ({
       background: rgb(cssVariable(theme, '--bg-primary')),
       mutedText: rgb(cssVariable(theme, '--text-muted')),
@@ -403,9 +371,17 @@ describe('Sequence visual consistency guards', () => {
       accent: rgb(cssVariable(theme, '--accent')),
     }));
 
+    // The wash is the shared selection token, so read its weight out of the token
+    // rather than restating it, so the guard follows the tint the stylesheet paints.
+    const washWeight = Number(
+      /--selection-bg:\s*color-mix\(in srgb, var\(--accent\) (\d+)%, var\(--bg-primary\)\)/.exec(artifactCss)?.[1],
+    ) / 100;
+    expect(washWeight, 'selection token weight').toBeGreaterThan(0);
+    expect(cssBlock('.motif-cs-seq-hl')).toMatch(/background:\s*var\(--selection-bg\)/);
+
     for (const theme of themes) {
       const effectiveText = mix(theme.mutedText, theme.background, opacity);
-      const selectionWash = mix(theme.accent, theme.background, 0.3);
+      const selectionWash = mix(theme.accent, theme.background, washWeight);
       expect(contrast(effectiveText, theme.background), 'complement text fell below 4.5:1').toBeGreaterThanOrEqual(4.5);
       expect(contrast(theme.secondaryText, selectionWash), 'selected complement text fell below 4.5:1').toBeGreaterThanOrEqual(4.5);
     }

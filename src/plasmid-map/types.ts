@@ -269,6 +269,8 @@ export interface MapCenterTitle {
   lenBaselineY: number;
   /** type size of the length line; absent means the stylesheet's 14. */
   lenFontSize?: number;
+  /** false when the length line would cross the feature arcs and is not drawn. */
+  showLength?: boolean;
 }
 
 export interface MapBudgets {
@@ -304,6 +306,12 @@ export interface MapDisplayOptions {
   labelDensity?: 'auto' | 'low' | 'medium' | 'high';
   /** Circular-only: lower values reserve less outside gutter, making the ring larger. */
   circularOutsideGutterScale?: number;
+  /**
+   * Circular-only: the pane is too small for the full-size drawing (see
+   * SMALL_MAP_PANE_RING_PX in readable-layout.ts), so lay the ring out as a miniature.
+   * Absent or false leaves the layout exactly as it is for a full-size ring.
+   */
+  smallRing?: boolean;
 }
 
 /**
@@ -375,6 +383,18 @@ export interface MapLayout {
    * the clearance tracks a long name instead of a constant that only fits short ones.
    */
   centerLabelRadius?: number;
+  /**
+   * circular-only: outer radius of the outermost feature lane. The coordinate ruler
+   * band lies between this and `radius`.
+   */
+  featureLaneOuterRadius?: number;
+  /**
+   * circular-only: inner radius of the innermost drawn feature lane. A selected
+   * range is a wedge whose inner arc starts just inside this radius (or a third of
+   * the way out from the centre, if that is deeper) and out past the ring, so the
+   * wash spans every lane the range crosses without reaching the centre title.
+   */
+  featureLaneInnerRadius?: number;
   topology: Topology;
   sequenceType: SequenceType;
   features: readonly MapFeatureRender[];
@@ -390,6 +410,8 @@ export interface MapLayout {
    * beside the drawing, as controls that open the list each one counts from.
    */
   overflowSummaries?: readonly MapOverflowSummary[];
+  /** Circular-only: laid out as a miniature (MapDisplayOptions.smallRing). Absent at full size. */
+  smallRing?: true;
   budgets: MapBudgets;
 }
 

@@ -8,6 +8,7 @@
 import type { MapLabelRender, MapLayout, Pt } from './types';
 import type { MapRangeOverlayRender } from './range-overlays';
 import { materializeFeatureColor } from '../bio/feature-palette';
+import { selectionFadeGradients, selectionFadeGradientSvg } from './selection-overlay';
 
 export interface MapLayoutSvgTheme {
   background: string;
@@ -27,8 +28,15 @@ export interface ExportMapLayoutSvgOptions {
   theme?: Partial<MapLayoutSvgTheme>;
   rangeOverlays?: readonly MapRangeOverlayRender[];
   selectionPaths?: readonly string[];
+  /** Boundary lines (and their markers) of the selection, e.g. from
+   * circularSelectionEdgePath: stroked and filled in the label colour. */
+  selectionEdgePaths?: readonly string[];
   title?: string;
 }
+
+/** No exported text is drawn below this size: the map's names, ruler numbers,
+ * overflow counts and the length line all start here. */
+const EXPORT_MIN_FONT_PX = 12;
 
 const DEFAULT_THEME: MapLayoutSvgTheme = {
   background: '#ffffff',
@@ -70,7 +78,7 @@ function labelSvg(label: MapLabelRender, theme: MapLayoutSvgTheme): string {
     ? ` transform="rotate(${label.rotate} ${label.x} ${label.y})"`
     : '';
   const baseline = label.baseline ? ` dominant-baseline="${label.baseline}"` : '';
-  return `${polyline(label.leader, theme.coordinate)}<text x="${label.x}" y="${label.y}" text-anchor="${label.anchor}"${baseline}${rotate} fill="${theme.label}" font-family="Arial, sans-serif" font-size="10">${escapeText(label.text)}</text>`;
+  return `${polyline(label.leader, theme.coordinate)}<text x="${label.x}" y="${label.y}" text-anchor="${label.anchor}"${baseline}${rotate} fill="${theme.label}" font-family="Arial, sans-serif" font-size="${EXPORT_MIN_FONT_PX}">${escapeText(label.text)}</text>`;
 }
 
 function mapUnit(layout: MapLayout): 'aa' | 'bp' {
@@ -135,7 +143,7 @@ export function exportMapLayoutSvg(layout: MapLayout, options: ExportMapLayoutSv
       const rotate = Number.isFinite(coordinate.label.rotate ?? NaN)
         ? ` transform="rotate(${coordinate.label.rotate} ${coordinate.label.x} ${coordinate.label.y})"`
         : '';
-      chunks.push(`<text x="${coordinate.label.x}" y="${coordinate.label.y}" text-anchor="${coordinate.label.anchor}"${rotate} fill="${theme.coordinate}" font-family="Arial, sans-serif" font-size="9">${escapeText(coordinate.label.text)}</text>`);
+      chunks.push(`<text x="${coordinate.label.x}" y="${coordinate.label.y}" text-anchor="${coordinate.label.anchor}"${rotate} fill="${theme.coordinate}" font-family="Arial, sans-serif" font-size="${EXPORT_MIN_FONT_PX}">${escapeText(coordinate.label.text)}</text>`);
     }
   }
 
@@ -167,7 +175,7 @@ export function exportMapLayoutSvg(layout: MapLayout, options: ExportMapLayoutSv
   }
 
   for (const overflow of layout.overflows ?? []) {
-    chunks.push(`<text x="${overflow.x}" y="${overflow.y}" text-anchor="${overflow.anchor}" fill="${theme.overflow}" font-family="Arial, sans-serif" font-size="10">${escapeText(overflow.text)}</text>`);
+    chunks.push(`<text x="${overflow.x}" y="${overflow.y}" text-anchor="${overflow.anchor}" fill="${theme.overflow}" font-family="Arial, sans-serif" font-size="${EXPORT_MIN_FONT_PX}">${escapeText(overflow.text)}</text>`);
   }
 
   if (layout.mode === 'circular') {
@@ -178,13 +186,39 @@ export function exportMapLayoutSvg(layout: MapLayout, options: ExportMapLayoutSv
     for (const line of centerTitle.lines) {
       chunks.push(`<text x="${layout.center.x}" y="${line.baselineY}" text-anchor="middle" fill="${theme.label}" font-family="Arial, sans-serif" font-size="${line.fontSize}" font-weight="650">${escapeText(line.text)}</text>`);
     }
-    chunks.push(`<text x="${layout.center.x}" y="${centerTitle.lenBaselineY}" text-anchor="middle" fill="${theme.coordinate}" font-family="Arial, sans-serif" font-size="10">${layout.length} ${mapUnit(layout)}</text>`);
+    chunks.push(`<text x="${layout.center.x}" y="${centerTitle.lenBaselineY}" text-anchor="middle" fill="${theme.coordinate}" font-family="Arial, sans-serif" font-size="${Math.max(EXPORT_MIN_FONT_PX, centerTitle.lenFontSize ?? 14)}">${layout.length} ${mapUnit(layout)}</text>`);
   }
 
-  for (const d of options.selectionPaths ?? []) {
-    chunks.push(`<path d="${escapeAttr(d)}" fill="${theme.selection}" opacity="0.18" stroke="${theme.selection}" stroke-width="1.5"/>`);
+  // The wash and the end lines fade away from the backbone, as on the live map.
+  // The gradient ids hash everything the selection draws, so two different maps
+  // in one document cannot share one, and identical exports define identical ones.
+  const selectionPaths = options.selectionPaths ?? [];
+  const selectionEdgePaths = options.selectionEdgePaths ?? [];
+  const fade = selectionPaths.length + selectionEdgePaths.length > 0 ? selectionFadeGradients(layout) : null;
+  const fadeId = fade
+    ? `motif-export-selection-${fnv1a(JSON.stringify([fade, theme.selection, theme.label, selectionPaths, selectionEdgePaths]))}`
+    : '';
+  if (fade) {
+    chunks.push(`<defs>${selectionFadeGradientSvg(fade.wash, `${fadeId}-wash`, theme.selection)}${selectionFadeGradientSvg(fade.edge, `${fadeId}-edge`, theme.label)}</defs>`);
+  }
+  for (const d of selectionPaths) {
+    // One light wash with no outline, as the live map draws a selected range.
+    chunks.push(`<path d="${escapeAttr(d)}" fill="${fade ? `url(#${fadeId}-wash)` : theme.selection}" fill-opacity="0.06"/>`);
+  }
+  for (const d of selectionEdgePaths) {
+    // A thin line at each end, and its inward triangle, in the label colour.
+    chunks.push(`<path d="${escapeAttr(d)}" fill="${theme.label}" stroke="${fade ? `url(#${fadeId}-edge)` : theme.label}" stroke-width="1.5" stroke-linejoin="round"/>`);
   }
 
   chunks.push(`</svg>`);
   return chunks.join('\n');
+}
+
+function fnv1a(text: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(36);
 }

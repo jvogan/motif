@@ -52,7 +52,7 @@ function chipCount(layout: MapLayout): number {
     .find((overflow) => overflow.kind === 'restriction-labels');
   if (!chip) return 0;
   expect(chip.text, 'chip sentence').toMatch(
-    new RegExp(`^${chip.unlabelled} unnamed( ${chip.unlabelled === 1 ? 'site' : 'sites'})?$`),
+    new RegExp(`^\\+${chip.unlabelled}( ${chip.unlabelled === 1 ? 'site' : 'sites'})?$`),
   );
   return chip.unlabelled;
 }
@@ -269,7 +269,7 @@ describe('the circular count is stated beside the ring, not in it', () => {
         expect(chipCount(layout)).toBe(unnamedSitesFromDrawnLabels(layout));
         expect(summary.title).toMatch(/^\d+ of \d+ cut sites? /);
         // The four pane/record pairs that used to print "N unnamed" print it in full.
-        expect(summary.text).toMatch(/^\d+ unnamed sites?$/);
+        expect(summary.text).toMatch(/^\+\d+ sites?$/);
       }
     }
     // Without this the loop could pass on maps that report nothing.

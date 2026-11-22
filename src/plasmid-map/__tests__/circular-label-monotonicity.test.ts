@@ -61,6 +61,17 @@ import type { MapLayout } from '../types';
  * and dropping the count's digits instead ("HaeIII +" for "HaeI… +1"). No pane lost a
  * label. pUC19 gained a feature name at baseSide 290 to 296, which it drops again at
  * 298, and that drop is the new step.
+ *
+ * A wide pane under baseSide 480 lets feature names beside the ring use the free side
+ * room. That layout is kept only when it names everything the short-side layout names,
+ * so a pane that gains a name there can lose it again a step later when the wider names
+ * stop fitting: pUC19 12 and pET-28a(+) 17.
+ *
+ * Feature bands are 19 units tall so a name riding its arc fits inside its band, and
+ * features sharing a lane keep 6 units of arc between them, so short features do not
+ * stack onto extra lanes. Every lane radius sits where those two put it, so the radial
+ * placer meets its own obstacles (pBR322 13, pcDNA3.1(+) 14), and the worst step stays
+ * -3. The census is 88.
  */
 
 /** The artifact's own map-label shortening, so these names match the painted page. */
@@ -157,28 +168,37 @@ const signature = (reading: Reading): string =>
   `${[...reading.namedTicks].sort().join(';')}||${[...reading.namedFeatures].sort().join(';')}`;
 
 describe('circular label placement across pane sizes', () => {
-  it('reads the pane only through min(width, height)', () => {
-    // Nothing in the circular label pipeline reads width and height separately: every
-    // radius, gutter, text budget and threshold is a function of `baseSide`. That makes
-    // the label set a function of ONE number, which is what lets the census below sweep
-    // a single axis and still cover every pane shape.
+  it('reads the pane through min(width, height), and its side room only to name more', () => {
+    // Every radius, gutter, text budget and threshold is a function of `baseSide`. The
+    // one exception is a wide pane under baseSide 480: feature names beside the ring may
+    // use the free side room, and that layout is kept only when it names everything the
+    // short-side layout names. So portrait and square panes name exactly the same set,
+    // and a landscape pane names that set or more.
     const differences: string[] = [];
+    const gains: string[] = [];
     let comparisons = 0;
     for (const name of RECORDS) {
       for (let baseSide = 240; baseSide <= 960; baseSide += 20) {
-        const landscape = signature(read(circularLayout(name, baseSide + 400, baseSide)));
+        const landscape = read(circularLayout(name, baseSide + 400, baseSide));
         const portrait = signature(read(circularLayout(name, baseSide, baseSide + 400)));
-        const square = signature(read(circularLayout(name, baseSide, baseSide)));
+        const squareReading = read(circularLayout(name, baseSide, baseSide));
+        const square = signature(squareReading);
         comparisons += 2;
-        if (portrait !== landscape) differences.push(`${name} ${baseSide}: portrait differs from landscape`);
-        if (square !== landscape) differences.push(`${name} ${baseSide}: square differs from landscape`);
+        if (portrait !== square) differences.push(`${name} ${baseSide}: portrait differs from square`);
+        const lost = [...squareReading.namedTicks].filter((id) => !landscape.namedTicks.has(id)).length
+          + [...squareReading.namedFeatures].filter((id) => !landscape.namedFeatures.has(id)).length;
+        if (lost > 0) differences.push(`${name} ${baseSide}: landscape names less than square`);
+        if (signature(landscape) !== square) gains.push(`${name} ${baseSide}`);
       }
     }
     expect(comparisons).toBe(370);
     expect(differences).toEqual([]);
+    // repin:side-room-gains:start
+    expect(gains).toEqual(['pET-28a(+) 360', 'pBR322 420', 'pBR322 440', 'pcDNA3.1(+) 360', 'pcDNA3.1(+) 380']);
+    // repin:side-room-gains:end
   }, 120_000);
 
-  it('drops a label at 87 of the 1800 steps that make the pane bigger', () => {
+  it('drops a label at 88 of the 1800 steps that make the pane bigger', () => {
     // The census. Each record is swept over baseSide 240 to 960 in 2px steps, which
     // spans every map pane the artifact produces (260 at the shortest dock, 955 at the
     // tallest window). A step counts as a shrink when the pane grew and the map came
@@ -210,14 +230,39 @@ describe('circular label placement across pane sizes', () => {
     expect({ steps, worst, ...shrinkByRecord }).toEqual({
       steps: 1800,
       worst: -3,
-      'pUC19': 11,
-      'pET-28a(+)': 16,
+      'pUC19': 12,
+      'pET-28a(+)': 17,
       'pETDuet-1': 32,
-      'pBR322': 15,
-      'pcDNA3.1(+)': 13,
+      'pBR322': 13,
+      'pcDNA3.1(+)': 14,
     });
     // repin:census:end
   }, 120_000);
+
+  it('stacks a feature inward only when it overlaps one on the lane above', () => {
+    // pUC19's primers, polylinker and lac promoter sit inside or just past lacZ-alpha.
+    // Keeping 18 units of arc between lane neighbours would give the reverse primer 7 bp
+    // past lacZ-alpha and the promoter 12 bp past the primer a lane of their own, so short
+    // features would draw at three or four radii. Count the radii per pane size.
+    const lanesAt = (name: string) => {
+      const counts: Record<number, number> = {};
+      for (let baseSide = 240; baseSide <= 960; baseSide += 40) {
+        const layout = circularLayout(name, baseSide + 400, baseSide);
+        const lanes = new Set(layout.features.filter((f) => f.segmentPaths.length > 0).map((f) => f.lane)).size;
+        counts[lanes] = (counts[lanes] ?? 0) + 1;
+      }
+      return counts;
+    };
+    // repin:lane-count:start
+    expect(RECORDS.map((name) => `${name} ${JSON.stringify(lanesAt(name))}`)).toEqual([
+      'pUC19 {"2":17,"3":2}',
+      'pET-28a(+) {"2":19}',
+      'pETDuet-1 {"2":19}',
+      'pBR322 {"2":19}',
+      'pcDNA3.1(+) {"1":7,"2":12}',
+    ]);
+    // repin:lane-count:end
+  });
 
   it('trades labels for enzyme names at the baseSide 480 text-budget step', () => {
     // A cliff every record falls off. Growing the pane by 2px here costs pET-28a(+)

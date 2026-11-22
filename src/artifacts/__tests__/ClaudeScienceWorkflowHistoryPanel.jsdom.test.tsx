@@ -25,7 +25,7 @@ describe('ClaudeScienceWorkflowHistoryPanel', () => {
   it('shows an actionable empty state', () => {
     render(<ClaudeScienceWorkflowHistoryPanel results={[]} recordNames={{}} onRevealRecord={vi.fn()} onRemove={vi.fn()} />);
     expect(screen.getByText('No saved results')).toBeTruthy();
-    expect(screen.getByText(/Save a digest, gel, Golden Gate/)).toBeTruthy();
+    expect(screen.getByText('Save a digest, gel, or assembly result here.')).toBeTruthy();
   });
 
   it('renders provenance as inert text and reveals a surviving output record', async () => {

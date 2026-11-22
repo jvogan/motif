@@ -1778,7 +1778,7 @@ export function designPrimerPairWithDiagnostics(
       }
 
       const productLength = rev.end - fwd.start;
-      if (productLength <= 0) {
+      if (productLength < Math.max(fwd.length, rev.length)) {
         rejections.productLength++;
         continue;
       }
@@ -1822,7 +1822,7 @@ export function designPrimerPairWithDiagnostics(
           continue;
         }
         const productLength = rev.end - fwd.start;
-        if (productLength <= 0) {
+        if (productLength < Math.max(fwd.length, rev.length)) {
           rejections.productLength++;
           continue;
         }

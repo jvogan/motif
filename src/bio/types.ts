@@ -195,6 +195,9 @@ export interface NucleotideComposition {
   C: number;
   N: number;
   other: number;
+  /** Subsets of other, counted separately for GC content. */
+  S?: number;
+  otherCalled?: number;
 }
 
 export interface ProteinAnalysis {
@@ -229,8 +232,7 @@ export interface FastaRecord {
    *
    * `header` remains the first whitespace-delimited token because GFF/UniProt
    * and accession-oriented flows use it as a stable sequence identifier.
-   * Import UI can use `rawHeader` when the user-entered name is the full line
-   * (for example `>test 1` vs `>test 2`).
+   * Callers can use `rawHeader` to keep the identifier and description together.
    */
   rawHeader?: string;
   /**

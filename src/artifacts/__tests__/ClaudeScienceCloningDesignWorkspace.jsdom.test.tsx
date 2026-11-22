@@ -63,14 +63,14 @@ describe('ClaudeScienceCloningDesignWorkspace', () => {
     const user = userEvent.setup();
     render(<ClaudeScienceCloningDesignWorkspace {...props()} />);
 
-    expect(screen.getByRole('dialog', { name: 'Design Workspace' })).toBeTruthy();
+    expect(screen.getByRole('dialog', { name: 'Cloning design' })).toBeTruthy();
     expect(screen.getByRole('tab', { name: /Golden Gate/ }).getAttribute('aria-selected')).toBe('true');
     const initialPanel = screen.getByRole('tabpanel');
     expect(initialPanel.getAttribute('aria-labelledby')).toBe(screen.getByRole('tab', { name: /Golden Gate/ }).id);
     expect(screen.getByLabelText('Assembly route')).toBeTruthy();
     expect(screen.getByLabelText('Golden Gate profile')).toBeTruthy();
     expect(screen.getByLabelText('Type IIS enzyme')).toBeTruthy();
-    expect(screen.getByText('Preparation Checklist')).toBeTruthy();
+    expect(screen.getByText('Preparation checklist')).toBeTruthy();
 
     const goldenGateTab = screen.getByRole('tab', { name: /Golden Gate/ });
     goldenGateTab.focus();
@@ -95,16 +95,28 @@ describe('ClaudeScienceCloningDesignWorkspace', () => {
     render(<ClaudeScienceCloningDesignWorkspace {...props({ records, initialRecordIds: ['single-part'] })} />);
 
     expect(screen.getByTestId('cloning-design-product-empty').textContent)
-      .toBe('Two Parts NeededAdd a second part in step 02.');
-    expect(screen.getByText('Preparation Checklist').parentElement?.textContent).toContain('Not checked');
+      .toBe('Two parts neededAdd a second part in Parts.');
+    expect(screen.getByText('Preparation checklist').parentElement?.textContent).toContain('Not checked');
     expect(screen.getByText('Add a second part').parentElement?.textContent).toContain('Checks start at 2 parts.');
     expect(screen.queryByText('Preparation Complete')).toBeNull();
+  });
+
+  it('says a design waiting for parts needs them, in the muted tone, not a red "Blocked"', () => {
+    const records = [bsaIPart('single-part', 'GGAG', 'ATGAAATTT', 'GCTT')];
+    render(<ClaudeScienceCloningDesignWorkspace {...props({ records, initialRecordIds: ['single-part'] })} />);
+    const badge = screen.getByTestId('cloning-design-plan-status');
+    expect(badge.dataset.state).toBe('incomplete');
+    expect(badge.textContent).toBe('Needs a second part');
+    const review = screen.getByText('Design review').parentElement!.querySelector('strong')!;
+    expect(review.dataset.state).toBe('incomplete');
+    expect(review.textContent).toBe('Needs a second part');
+    expect(screen.queryByText('Blocked')).toBeNull();
   });
 
   it('says what the part count beside the parts heading counts', () => {
     const records = [bsaIPart('single-part', 'GGAG', 'ATGAAATTT', 'GCTT')];
     render(<ClaudeScienceCloningDesignWorkspace {...props({ records, initialRecordIds: ['single-part'] })} />);
-    const heading = screen.getByRole('heading', { name: 'Ordered Parts' });
+    const heading = screen.getByRole('heading', { name: 'Parts' });
     expect(heading.nextElementSibling?.textContent).toBe('1 of 10 parts');
   });
 
@@ -193,12 +205,12 @@ describe('ClaudeScienceCloningDesignWorkspace', () => {
 
     expect(screen.queryByLabelText('Golden Gate profile')).toBeNull();
     expect(screen.queryByLabelText('Type IIS enzyme')).toBeNull();
-    expect(screen.getByTestId('cloning-design-organization-help').textContent).toContain('level α destination with BsaI');
+    expect(screen.getByTestId('cloning-design-organization-help').textContent).toContain('Entry parts → level α vector');
     expect(screen.getByTestId('cloning-design-plan-status').dataset.state).toBe('needs_preparation');
     expect((screen.getByRole('button', { name: 'Save product' }) as HTMLButtonElement).disabled).toBe(true);
     await user.selectOptions(screen.getByLabelText('GoldenBraid destination vector'), 'alpha-destination');
     expect((screen.getByLabelText('GoldenBraid destination type') as HTMLSelectElement).value).toBe('1');
-    expect(screen.getByText('GoldenBraid 3.0 Reference')).toBeTruthy();
+    expect(screen.getByText('GoldenBraid 3.0 reference')).toBeTruthy();
     expect(screen.getByText(/Next level:/).closest('p')?.textContent).toContain('Level alpha TU with BsmBI');
     expect((screen.getByRole('button', { name: 'Apply suggested order' }) as HTMLButtonElement).disabled).toBe(false);
     expect(partNames()).toEqual(['terminator', 'promoter', 'cds']);
@@ -219,7 +231,7 @@ describe('ClaudeScienceCloningDesignWorkspace', () => {
     render(<ClaudeScienceCloningDesignWorkspace {...props({ records, initialRecordIds: ['alpha-one', 'alpha-two'] })} />);
 
     await user.selectOptions(screen.getByLabelText('Assembly route'), 'golden_braid_alpha_omega');
-    expect(screen.getByRole('heading', { name: 'Source Modules' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Source modules' })).toBeTruthy();
     expect(screen.getByTestId('cloning-design-organization-help').textContent).toContain('Reaction: BsmBI · Esp3I compatible');
     expect(screen.getByTestId('cloning-design-plan-status').dataset.state).toBe('needs_preparation');
     await user.selectOptions(screen.getByLabelText('GoldenBraid source type for alpha-one'), '1');
@@ -241,7 +253,7 @@ describe('ClaudeScienceCloningDesignWorkspace', () => {
     render(<ClaudeScienceCloningDesignWorkspace {...props({ onDesignPrimers })} />);
 
     expect(screen.getByTestId('cloning-design-plan-status').dataset.state).toBe('needs_preparation');
-    expect(screen.getByTestId('cloning-design-product-empty').textContent).toContain('no product sequence is invented');
+    expect(screen.getByTestId('cloning-design-product-empty').textContent).toContain('No product is shown until junctions resolve');
     // Neither part has boundaries yet, so each checklist item offers the control
     // that sets them in place of a disabled primer button and a note naming it.
     expect(screen.getByRole('button', { name: 'Set fusion sites for Destination vector' })).toBeTruthy();
@@ -289,7 +301,7 @@ describe('ClaudeScienceCloningDesignWorkspace', () => {
     expect(pill.getAttribute('aria-expanded')).toBe('true');
     expect(document.activeElement).toBe(screen.getByLabelText('Left fusion site for Destination vector'));
 
-    // The Fusion cell used to stay at "— → —" after both boundaries were entered.
+    // The Fusion cell reads "— → —" until both boundaries are entered, then Planned.
     expect(within(row).getByText('Fusion').parentElement?.textContent).toBe('Fusion— → —');
     await user.keyboard('GGAG');
     await user.type(screen.getByLabelText('Right fusion site for Destination vector'), 'GCTT');
@@ -403,8 +415,8 @@ describe('ClaudeScienceCloningDesignWorkspace', () => {
     expect(screen.getByTestId('cloning-design-product-preview').textContent).toContain('Right arm');
     expect(within(screen.getByTestId('gibson-junction-lanes')).getByText('20 bp · 58.7 °C')).toBeTruthy();
 
-    await user.clear(screen.getByRole('textbox', { name: 'Design Name' }));
-    await user.type(screen.getByRole('textbox', { name: 'Design Name' }), 'Reporter assembly');
+    await user.clear(screen.getByRole('textbox', { name: 'Design name' }));
+    await user.type(screen.getByRole('textbox', { name: 'Design name' }), 'Reporter assembly');
     await user.click(screen.getByRole('button', { name: 'Save plan' }));
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
     expect(onSave.mock.calls[0][0]).toMatchObject({
@@ -441,7 +453,7 @@ describe('ClaudeScienceCloningDesignWorkspace', () => {
     expect((screen.getByRole('button', { name: 'Save plan' }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByTestId('cloning-design-plan-status').dataset.state).toBe('blocked');
     expect(screen.getByTestId('cloning-design-product-empty').textContent)
-      .toBe('Two Parts NeededAdd a second part in step 02.');
+      .toBe('Two parts neededAdd a second part in Parts.');
     expect(screen.queryByText('Preparation Complete')).toBeNull();
   });
 

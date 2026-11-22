@@ -1,5 +1,5 @@
 import {
-  GOLDEN_GATE_FIDELITY_RAW_DATASETS,
+  getGoldenGateFidelityRawDatasets,
   type GoldenGateFidelityRawDataset,
 } from './golden-gate-fidelity-data';
 import { reverseComplement } from './reverse-complement';
@@ -234,7 +234,20 @@ function copyCondition(condition: GoldenGateFidelityCondition | null | undefined
   };
 }
 
-function buildDataset(raw: GoldenGateFidelityRawDataset): GoldenGateFidelityDataset {
+function sparseMatrix(raw: GoldenGateFidelityRawDataset): Map<string, number> {
+  const values = new Map<string, number>();
+  for (const [row, column, count] of sparseCounts(raw)) {
+    if (row < 0 || row >= raw.overhangs.length || column < 0 || column >= raw.overhangs.length) {
+      throw new Error(`Dataset ${raw.id} contains an out-of-range sparse count.`);
+    }
+    const key = `${row}:${column}`;
+    if (values.has(key)) throw new Error(`Dataset ${raw.id} contains duplicate sparse counts.`);
+    values.set(key, count);
+  }
+  return values;
+}
+
+function buildDataset(raw: GoldenGateFidelityRawDataset, deferMatrix = false): GoldenGateFidelityDataset {
   if (!raw || typeof raw !== 'object' || !raw.id || !sourceHashIsValid(raw)
     || !raw.source || raw.source.license !== 'CC BY 4.0'
     || ![raw.source.citation, raw.source.doi, raw.source.articleUrl, raw.source.dataUrl, raw.source.table]
@@ -261,15 +274,7 @@ function buildDataset(raw: GoldenGateFidelityRawDataset): GoldenGateFidelityData
     }
     index.set(overhang, position);
   });
-  const values = new Map<string, number>();
-  for (const [row, column, count] of sparseCounts(raw)) {
-    if (row < 0 || row >= raw.overhangs.length || column < 0 || column >= raw.overhangs.length) {
-      throw new Error(`Dataset ${raw.id} contains an out-of-range sparse count.`);
-    }
-    const key = `${row}:${column}`;
-    if (values.has(key)) throw new Error(`Dataset ${raw.id} contains duplicate sparse counts.`);
-    values.set(key, count);
-  }
+  let values = deferMatrix ? undefined : sparseMatrix(raw);
   // Retain the published orientation-specific counts exactly.  The source
   // tables are indexed by the two 5′→3′ overhang axes, but their observed
   // entries are not guaranteed to be byte-for-byte symmetric at every cell.
@@ -278,7 +283,6 @@ function buildDataset(raw: GoldenGateFidelityRawDataset): GoldenGateFidelityData
   // source cell; reverse-complement orientation is handled by the caller's
   // junction representation rather than by silently rewriting the matrix.
   const condition = makeCondition(raw);
-  const sparse = values;
   return {
     id: raw.id,
     condition,
@@ -301,16 +305,27 @@ function buildDataset(raw: GoldenGateFidelityRawDataset): GoldenGateFidelityData
       const row = index.get(reverseComplement(right).toUpperCase());
       const column = index.get(left);
       if (row === undefined || column === undefined) return 0;
-      return sparse.get(`${row}:${column}`) ?? 0;
+      values ??= sparseMatrix(raw);
+      return values.get(`${row}:${column}`) ?? 0;
     },
   };
 }
 
-export const GOLDEN_GATE_FIDELITY_DATASETS: readonly GoldenGateFidelityDataset[] = GOLDEN_GATE_FIDELITY_RAW_DATASETS.map(buildDataset);
+// Only bundled datasets defer matrix parsing. Imported datasets validate every
+// cell before they are eligible for scoring.
+export const GOLDEN_GATE_FIDELITY_DATASETS: readonly GoldenGateFidelityDataset[] =
+  getGoldenGateFidelityRawDatasets().map((raw) => buildDataset(raw, true));
 
-export const GOLDEN_GATE_FIDELITY_CONDITIONS: Readonly<Record<string, GoldenGateFidelityCondition>> = Object.fromEntries(
-  GOLDEN_GATE_FIDELITY_DATASETS.map((dataset) => [dataset.id, dataset.condition]),
-);
+export const GOLDEN_GATE_FIDELITY_CONDITIONS: Readonly<Record<string, GoldenGateFidelityCondition>> =
+  Object.fromEntries(GOLDEN_GATE_FIDELITY_DATASETS.map((dataset) => [dataset.id, dataset.condition]));
+
+export function getGoldenGateFidelityDatasets(): readonly GoldenGateFidelityDataset[] {
+  return GOLDEN_GATE_FIDELITY_DATASETS;
+}
+
+export function getGoldenGateFidelityConditions(): Readonly<Record<string, GoldenGateFidelityCondition>> {
+  return GOLDEN_GATE_FIDELITY_CONDITIONS;
+}
 
 /** Return only a condition-exact dataset; no enzyme or buffer substitution is allowed. */
 export function findGoldenGateFidelityDataset(
@@ -318,7 +333,7 @@ export function findGoldenGateFidelityDataset(
 ): GoldenGateFidelityDataset | null {
   const key = conditionKey(condition);
   if (key === null) return null;
-  return GOLDEN_GATE_FIDELITY_DATASETS.find((dataset) => conditionKey(dataset.condition) === key) ?? null;
+  return getGoldenGateFidelityDatasets().find((dataset) => conditionKey(dataset.condition) === key) ?? null;
 }
 
 /** Validate an imported dataset before it is eligible to produce a score. */

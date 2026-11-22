@@ -4,14 +4,12 @@ import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isDirectScriptExecution } from './lib/direct-script.mjs';
+import { checkRegisteredConnector } from './doctor-motif-claude-science-local.mjs';
 import {
   DEFAULT_CLAUDE_SCIENCE_CONFIG_PATH,
   MOTIF_LOCAL_CONNECTOR_NAME,
-  describeMotifLocalMismatch,
   desiredMotifLocalServer,
-  motifLocalServerMatches,
   preflightConnectorFiles,
-  readLocalMcpConfig,
   updateLocalMcpConfigFile,
 } from './lib/motif-local-mcp-config.mjs';
 
@@ -83,27 +81,20 @@ function printClaudeScienceNextSteps() {
   process.stdout.write('    3. Open Customize -> Connectors -> motif-local and press Reconnect.\n');
 }
 
-export function runConfigure(options) {
+export async function runConfigure(options) {
   if (options.help) {
     process.stdout.write(usage());
     return { ok: true, changed: false };
   }
 
-  const desired = options.mode === 'remove' ? undefined : desiredMotifLocalServer(root);
-  if (options.mode !== 'remove') preflightConnectorFiles(root, { requireBuild: true });
-
   if (options.mode === 'check') {
-    const document = readLocalMcpConfig(options.configPath);
-    const existing = document.config.servers.find(server => server?.name === MOTIF_LOCAL_CONNECTOR_NAME);
-    if (!motifLocalServerMatches(existing, desired)) {
-      const fields = describeMotifLocalMismatch(existing, desired);
-      process.stderr.write(`\u2717 ${MOTIF_LOCAL_CONNECTOR_NAME} registration needs attention\n`);
-      process.stderr.write(`  mismatched managed fields: ${fields.join(', ')}\n`);
-      return { ok: false, changed: false, fields };
-    }
-    process.stdout.write(`\u2713 ${MOTIF_LOCAL_CONNECTOR_NAME} build and registration are ready\n`);
+    await checkRegisteredConnector(options.configPath);
+    process.stdout.write(`\u2713 ${MOTIF_LOCAL_CONNECTOR_NAME} registered command initialized over stdio\n`);
     return { ok: true, changed: false };
   }
+
+  const desired = options.mode === 'remove' ? undefined : desiredMotifLocalServer(root);
+  if (options.mode !== 'remove') preflightConnectorFiles(root, { requireBuild: true });
 
   const result = updateLocalMcpConfigFile({
     configPath: options.configPath,
@@ -133,7 +124,7 @@ const isMain = process.argv[1]
 
 if (isMain) {
   try {
-    const result = runConfigure(parseConfigureArgs(process.argv.slice(2)));
+    const result = await runConfigure(parseConfigureArgs(process.argv.slice(2)));
     if (!result.ok) process.exitCode = 1;
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown configuration error';
