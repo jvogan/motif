@@ -1,4 +1,4 @@
-# Contributing to Motif for Claude Science
+# Contributing to Motif
 
 Thank you for helping improve Motif. This repository is public, so every
 commit, pull request, issue, test artifact, and CI log must be safe to publish.
