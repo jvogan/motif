@@ -124,7 +124,7 @@ export async function loadMotifRuntimeAssets(
 
 export async function readMotifVersion(
   candidates: MotifVersionManifestCandidate[],
-  fallbackVersion = '0.4.0',
+  fallbackVersion = '0.5.0',
 ): Promise<string> {
   for (const candidate of candidates) {
     const text = await readBoundedUtf8File(candidate.path, candidate.label, 128 * 1024, true);

@@ -1,6 +1,6 @@
 {
   "name": "motif",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Create portable Motif workbenches for DNA, RNA, protein, annotations, alignments, traces, and results.",
   "author": {
     "name": "Jacob Vogan",
