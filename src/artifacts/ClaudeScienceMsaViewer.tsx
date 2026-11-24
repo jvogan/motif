@@ -5942,7 +5942,7 @@ export function ClaudeScienceMsaViewer({
                 View
                 <ChevronDown size={12} aria-hidden="true" />
               </summary>
-              <div className="motif-cs-msa-view-menu-panel" data-testid="msa-view-menu" data-motif-cs-escape-scope={viewMenuOpen || undefined}>
+              <div className="motif-cs-msa-view-menu-panel" data-testid="msa-view-menu" data-motif-cs-escape-scope={viewMenuOpen || undefined} tabIndex={-1}>
                 <strong>Display tracks</strong>
                 {([
                   ['showOverview', 'Overview'],
@@ -6246,7 +6246,7 @@ export function ClaudeScienceMsaViewer({
                         : activeReferenceCoordinates ? 'Go to \u00b7 reference' : 'Go to \u00b7 template'}</span>
                       <ChevronDown size={12} aria-hidden="true" />
                     </summary>
-                    <div className="motif-cs-msa-goto-menu-panel" data-testid="msa-goto-menu" data-motif-cs-escape-scope={gotoMenuOpen || undefined}>
+                    <div className="motif-cs-msa-goto-menu-panel" data-testid="msa-goto-menu" data-motif-cs-escape-scope={gotoMenuOpen || undefined} tabIndex={-1}>
                         <form
                           className="motif-cs-msa-column-jump"
                           data-invalid={columnError ? true : undefined}
@@ -6334,7 +6334,7 @@ export function ClaudeScienceMsaViewer({
                     <span>Export</span>
                     <ChevronDown size={12} aria-hidden="true" />
                   </summary>
-                  <div className="motif-cs-msa-export-row motif-cs-msa-export-menu-panel" data-testid="msa-export-menu" data-motif-cs-escape-scope={exportMenuOpen || undefined}>
+                  <div className="motif-cs-msa-export-row motif-cs-msa-export-menu-panel" data-testid="msa-export-menu" data-motif-cs-escape-scope={exportMenuOpen || undefined} tabIndex={-1}>
                     <label>
                       <span>Format</span>
                       <select value={textFormat} onChange={(event) => updateViewPreferences({ textFormat: event.target.value as TextFormat })}>
@@ -6408,7 +6408,7 @@ export function ClaudeScienceMsaViewer({
                     <span>More</span>
                     <ChevronDown size={12} aria-hidden="true" />
                   </summary>
-                  <div className="motif-cs-msa-more-menu-panel" data-testid="msa-more-menu" data-motif-cs-escape-scope={moreMenuOpen || undefined}>
+                  <div className="motif-cs-msa-more-menu-panel" data-testid="msa-more-menu" data-motif-cs-escape-scope={moreMenuOpen || undefined} tabIndex={-1}>
                     {items}
                   </div>
                 </details>
