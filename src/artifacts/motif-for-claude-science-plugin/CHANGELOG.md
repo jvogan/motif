@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.0 — 2026-11-24
+
+- Redesigned the workbench around one top bar, a Library pane for records, a
+  labeled Tools drawer, and one control height and text scale. Light is the
+  default theme, with a light/dark switch in the top bar.
+- Added a Find bar, a right-click menu on the sequence, and edit notices with
+  their own Undo. A click changes the selection without moving the view, and
+  a selection in the sequence or on the map selects the same feature in both.
+- Corrected restriction, PCR, primer, Golden Gate, Gibson, ORF, and GenBank
+  results, kept more of a record through GenBank export and cloning products,
+  and put translation layers and genetic-code changes on the Undo history.
+- The connector reads a raw sequence's alphabet when no molecule type is
+  given and quotes record names from its input as untrusted labels. Release
+  rollback restores only the Motif connector entry.
+
 ## 0.4.0 — 2026-09-01
 
 - Added a Codex adapter and deterministic local-marketplace package around the

@@ -349,7 +349,7 @@ import {
 } from './claude-science-linked-selection';
 import './motif-artifact.css';
 
-const MOTIF_ARTIFACT_VERSION = '0.4.0';
+const MOTIF_ARTIFACT_VERSION = '0.5.0';
 const MOTIF_ARTIFACT_BUILD_ID = (() => {
   if (typeof document === 'undefined') return 'development';
   const value = document.querySelector<HTMLMetaElement>('meta[name="motif-build-id"]')?.content.trim() ?? '';

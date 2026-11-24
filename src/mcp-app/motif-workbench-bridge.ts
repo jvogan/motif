@@ -67,7 +67,7 @@ class MotifParentTransport implements Transport {
 class MotifApp extends App {
   constructor() {
     super(
-      { name: 'Motif', version: '0.4.0' },
+      { name: 'Motif', version: '0.5.0' },
       { availableDisplayModes: ['inline', 'fullscreen'] },
       { autoResize: false },
     );

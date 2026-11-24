@@ -44,7 +44,7 @@ npm run test:codex-skills-plugin
 The deterministic archive is written to:
 
 ```text
-dist-motif/motif-0.4.0-skills-only-plugin.zip
+dist-motif/motif-0.5.0-skills-only-plugin.zip
 ```
 
 The archive contains the skill, local workbench helper, Motif runtime, logo,

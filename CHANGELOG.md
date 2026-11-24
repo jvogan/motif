@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 — 2026-11-24
 
 - Redesigned the workbench. The top bar holds the record's facts and actions
   on one row, records live in a Library pane, a labeled Tools drawer replaces
