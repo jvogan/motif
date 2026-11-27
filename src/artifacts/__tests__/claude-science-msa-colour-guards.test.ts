@@ -226,6 +226,33 @@ function contrastRatio(a: Rgb, b: Rgb): number {
 
 const THEMES = Object.keys(THEME_SELECTORS);
 
+describe('MSA residue colours form an edge-to-edge matrix', () => {
+  it('keeps explicit colour-scheme cells square without corner gaps', () => {
+    const selector = "\\.motif-cs-msa-matrix\\[data-color-scheme\\] \\.motif-cs-msa-symbol\\[data-color-key\\]";
+    expect(declaredValue(OVERLAY_RULES, selector, 'border-radius')).toBe('0');
+  });
+
+  it('preserves a square difference cue with scheme fills, Blocks, and forced colors', () => {
+    const normalCue = OVERLAY_RULES.filter((rule) =>
+      !rule.conditional &&
+      rule.selectors.includes(".motif-cs-msa-matrix[data-blocks='true']") &&
+      rule.selectors.includes('.motif-cs-msa-matrix[data-color-scheme]') &&
+      rule.selectors.includes(".motif-cs-msa-symbol[data-difference='true']"));
+    expect(normalCue).toHaveLength(1);
+    expect(normalCue[0].selectors).toContain(':where(');
+    expect(normalCue[0].body).toContain('border-block-start: 1px solid var(--text-primary)');
+    expect(normalCue[0].body).toContain('padding-block-end: 1px');
+
+    const differenceSelector = "\\.motif-cs-msa-symbol\\[data-difference='true'\\]";
+    const forced = matchingRules(OVERLAY_RULES, differenceSelector).conditional
+      .filter((rule) => rule.body.includes('CanvasText'));
+    expect(forced).toHaveLength(1);
+    expect(forced[0].body).toContain('border-inline: 1px solid CanvasText');
+    expect(forced[0].body).not.toContain('border-block');
+    expect(forced[0].body).not.toContain('forced-color-adjust');
+  });
+});
+
 describe('MSA selection band stays undiluted accent', () => {
   it('declares the selection rule as the theme accent with no mix toward ink', () => {
     const declaration = declaredValue(OVERLAY_RULES, '\\.motif-cs-msa-matrix', '--motif-cs-msa-selection-rule');

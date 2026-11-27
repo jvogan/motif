@@ -11077,41 +11077,14 @@ summary.motif-cs-panel-head:focus-visible {
   font-weight: 600;
 }
 
-/* A comparison view exists to answer "what changed", so a residue that differs
- * from the template is the highest-priority mark in the matrix and is styled
- * once, here. A wash of amber at 10% would be roughly a 1.05:1 delta against
- * the cell beside it, which measures as no mark at all, and a weight of 720
- * would be LIGHTER than the 760 that `data-conserved` gives the identical
- * residues around it, so a change would read as fainter than the sameness it
- * interrupts.
- *
- * The mark uses outline + weight + ink and leaves `background` alone:
- * background is the residue-chemistry channel (the `data-color-key` scheme
- * fills), and claiming it here would force a reader to choose between seeing
- * chemistry and seeing change. `--red` is themed per palette, so one rule
- * holds its contrast across both themes.
- *
- * `:not([data-quiet])` lifts specificity above the `data-tone` colour rules
- * below deliberately: for the handful of cells that differ, "this changed"
- * outranks "this is polar", and the ring plus weight still carry the mark when
- * a scheme fill sits underneath. Quiet cells are matches in differences mode
- * and never differences, so the clause excludes nothing real. */
+/* Difference fills span the full cell in claude-science-msa.css, so adjacent
+ * differences form a continuous strip. The active cell has its own outline. */
 .motif-cs-msa-symbol[data-difference="true"]:not([data-quiet]) {
-  outline: 1.5px solid color-mix(in srgb, var(--red) 80%, transparent);
-  outline-offset: -1.5px;
-  border-radius: 2px;
   font-weight: 600;
 }
 
-/* The ink is claimed only when nothing else is using it. Colouring every
- * changed residue red collapses C, D and V into one colour, which loses the
- * chemistry of what the residue changed TO — on a variant panel that is the
- * interesting half of the fact. So when a scheme is carrying meaning the glyph
- * keeps its own colour and the mark rides on outline and weight; when the grid
- * is monochrome the ink is free and the mark takes it. */
-/* Mixed a fifth of the way toward --text-primary, so the red moves away from the cell in
-   both themes: plain --red would read 4.12:1 light and 3.82:1 dark on the red wash under the
-   jump column's band. */
+/* Use red for differences with monochrome ink. Blending toward text-primary
+ * keeps the glyph legible against the red wash in both themes. */
 .motif-cs-msa-symbol[data-difference="true"][data-tone="mono"]:not([data-quiet]) {
   color: color-mix(in srgb, var(--red) 80%, var(--text-primary));
 }

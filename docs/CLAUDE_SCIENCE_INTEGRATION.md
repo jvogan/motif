@@ -1,6 +1,6 @@
 # Motif + Claude Science integration
 
-Last reviewed: September 1, 2026. Connector version: `0.5.0`.
+Last reviewed: November 27, 2026. Connector version: `0.5.1`.
 
 This is the maintainer and technical reference for the Motif-owned local
 connector. End users should start with the

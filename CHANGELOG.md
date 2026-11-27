@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.1 — 2026-11-27
+
+- Made multiple-sequence-alignment colour cells meet edge to edge without
+  rounded-corner gaps, while keeping differences visible in letter, Blocks,
+  and forced-colour views.
+
 ## 0.5.0 — 2026-11-24
 
 - Redesigned the workbench. The top bar holds the record's facts and actions

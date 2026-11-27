@@ -551,7 +551,9 @@ html[data-theme='dark'] {
 
 /* ===== Residue colour schemes (letter-cell backgrounds) ===== */
 .motif-cs-msa-matrix[data-color-scheme] .motif-cs-msa-symbol[data-color-key] {
-  border-radius: 2px;
+  /* Alignment colour is a continuous matrix channel, not a field of chips.
+     Square cells meet edge-to-edge without leaking the canvas at each corner. */
+  border-radius: 0;
 }
 /* Nucleotide */
 .motif-cs-msa-symbol[data-color-key='nt-a'] { background: color-mix(in srgb, #2ea043 34%, var(--bg-primary)); }
@@ -652,7 +654,7 @@ html[data-theme='dark'] {
  * (green on light) against a 4.5:1 floor, so every dimming level tested took
  * them under it — 0.55 opacity reached 2.22:1, and even 0.80 only reached
  * 3.50:1. So when a colour scheme is carrying meaning, matching residues keep
- * full strength and the difference mark wins on outline and weight instead. */
+ * full strength and differences retain their heavier weight. */
 .motif-cs-msa-matrix-row:not([data-template])
   .motif-cs-msa-symbol[data-cell-outcome='match'][data-tone='mono']:not([data-quiet]):not([data-active-cell='true']) {
   color: color-mix(in srgb, var(--text-primary) 58%, var(--bg-primary));
@@ -987,6 +989,18 @@ html[data-theme='dark'] {
 .motif-cs-msa-matrix[data-blocks='true'] .motif-cs-msa-symbol[data-tone='negative'] { background: color-mix(in srgb, var(--red) 52%, var(--bg-primary)); }
 .motif-cs-msa-matrix[data-blocks='true'] .motif-cs-msa-symbol[data-tone='positive'] { background: color-mix(in srgb, var(--purple) 50%, var(--bg-primary)); }
 .motif-cs-msa-matrix[data-blocks='true'] .motif-cs-msa-symbol[data-tone='ambiguous'] { background: color-mix(in srgb, var(--text-secondary) 34%, var(--bg-primary)); }
+/* Letters disappear in Blocks mode, while explicit residue schemes can put the
+   difference ink on a low-contrast chemistry fill. A single square top edge
+   survives both without boxing each tile; adjacent differences join into one
+   continuous rule. The opposite padding keeps the fixed-height cell geometry
+   symmetric. `:where` leaves this low enough for forced-colours ink to win. */
+:where(
+  .motif-cs-msa-matrix[data-blocks='true'],
+  .motif-cs-msa-matrix[data-color-scheme]
+) .motif-cs-msa-symbol[data-difference='true'] {
+  border-block-start: 1px solid var(--text-primary);
+  padding-block-end: 1px;
+}
 /* ===== Amino-acid translation track ===== */
 .motif-cs-msa-translation-row {
   position: relative;
@@ -1095,6 +1109,12 @@ html[data-theme='dark'] {
     border-bottom: 2px solid LinkText;
     forced-color-adjust: none;
     box-shadow: none;
+  }
+  /* Forced colours flatten the normal residue fills and custom difference ink.
+     Horizontal edges merge into the matrix's row rules, so square inline rails
+     keep differences visible in both letter and three-pixel Blocks views. */
+  .motif-cs-msa-symbol[data-difference='true'] {
+    border-inline: 1px solid CanvasText;
   }
   /* Forced-colors collapses every border and outline onto one system ink, which
      would re-merge the cursor and the selection rule that the cursor token above

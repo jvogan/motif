@@ -36,7 +36,7 @@ async function connectedClient(options: {
   readArtifactTemplate?: () => Promise<string>;
 } = {}): Promise<Client> {
   const server = createMotifClaudeScienceServer({
-    version: '0.5.0',
+    version: '0.5.1',
     runtimeBuildId,
     readWorkbenchHtml: options.readWorkbenchHtml ?? (async () => '<html>Motif</html>'),
     readArtifactTemplate: options.readArtifactTemplate ?? (async () => (
